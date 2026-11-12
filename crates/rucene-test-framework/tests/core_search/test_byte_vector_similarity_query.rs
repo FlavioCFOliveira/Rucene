@@ -156,15 +156,7 @@ impl AbstractVectorSimilarityQueryImpl for ThrowingByteVectorSimilarityQuery {
         self.inner.similarity_base()
     }
 
-    fn as_query(&self) -> &dyn Query {
-        self
-    }
-
     fn clone_similarity_query(&self) -> Arc<dyn AbstractVectorSimilarityQueryImpl> {
-        Arc::new(self.clone())
-    }
-
-    fn clone_as_query(&self) -> Arc<dyn Query> {
         Arc::new(self.clone())
     }
 

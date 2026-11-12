@@ -12,7 +12,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use super::exceptions::LockObtainFailedException;
 use super::lock_verify_server::START_GUN_SIGNAL;
 use super::verifying_lock_factory::VerifyingLockFactory;
-use super::{LockFactory, NIOFSDirectory, NativeFSLockFactory, NoLockFactory, SimpleFSLockFactory};
+use super::{
+    FSLockFactory, LockFactory, NIOFSDirectory, NativeFSLockFactory, NoLockFactory,
+    SimpleFSLockFactory,
+};
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 /// Name of the lock file the stress test contends on.
@@ -279,7 +282,7 @@ impl LockStressTest {
         if rnd.next_int(10) == 0 {
             if rnd.next_bool() {
                 *verify_lf = VerifyingLockFactory::new(
-                    Self::get_new_lock_factory(lock_factory_class_name)?,
+                    Self::get_new_lock_factory(lock_factory_class_name)? as Box<dyn LockFactory>,
                     Box::new(socket.try_clone()?),
                     Box::new(socket.try_clone()?),
                 );
@@ -315,17 +318,13 @@ impl LockStressTest {
     /// command line. Rust has no reflection, so this port resolves the name
     /// against the filesystem lock factories the crate provides —
     /// [`NativeFSLockFactory`] and [`SimpleFSLockFactory`] — accepting both the
-    /// simple and the fully qualified Java class name. The returned value is
-    /// typed as [`LockFactory`] rather than as `FSLockFactory` because Rust
-    /// gained trait-object upcasting only in 1.86, after this crate's minimum
-    /// supported version; the factories returned are filesystem factories all
-    /// the same.
+    /// simple and the fully qualified Java class name.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::Io`] for an unknown name, exactly as Java throws
     /// `IOException("Cannot get lock factory singleton of …")`.
-    pub fn get_new_lock_factory(lock_factory_class_name: &str) -> Result<Box<dyn LockFactory>> {
+    pub fn get_new_lock_factory(lock_factory_class_name: &str) -> Result<Box<dyn FSLockFactory>> {
         let simple_name = lock_factory_class_name
             .rsplit('.')
             .next()

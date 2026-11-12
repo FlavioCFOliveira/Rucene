@@ -297,6 +297,11 @@ impl DataInput for SerializedIOCountingIndexInput {
         self.r#in.read_bytes(b, offset, len)
     }
 
+    fn read_bytes_out_of_range(&mut self, b: &mut [u8], offset: i32, len: i32) -> Result<()> {
+        self.on_read(self.file_pointer()?, i64::from(len));
+        self.r#in.read_bytes_out_of_range(b, offset, len)
+    }
+
     /// `IndexInput.skipBytes`: `seek(getFilePointer() + numBytes)`.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {

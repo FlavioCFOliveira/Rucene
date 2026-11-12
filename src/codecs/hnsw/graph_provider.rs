@@ -238,19 +238,9 @@ impl KnnVectorValues for LegacyKnnVectorValues {
 
 /// The shared handle on one field's vectors that the prefetching wrappers keep.
 ///
-/// Java holds a `KnnVectorValues`, which is the common supertype of both
-/// encodings and of `LegacyQuantizedByteVectorValues`. This port keeps the kind
-/// in the variant because `prefetch` has to be reached through the
-/// kind-specific trait: `dyn FloatVectorValues` cannot be coerced to `dyn
-/// KnnVectorValues` at the crate's minimum supported Rust version.
-enum SharedVectorValues {
-    /// Float vectors.
-    Float(Arc<SharedFloatVectorValues>),
-    /// Byte vectors.
-    Byte(Arc<SharedByteVectorValues>),
-    /// Legacy scalar-quantized vectors.
-    Legacy(Arc<LegacyKnnVectorValues>),
-}
+/// Java holds a `KnnVectorValues`, the common supertype of both encodings and
+/// of `LegacyQuantizedByteVectorValues`; so does this handle.
+struct SharedVectorValues(Arc<dyn KnnVectorValues>);
 
 impl SharedVectorValues {
     /// Takes ownership of `values` and returns the shared handle together with
@@ -261,10 +251,7 @@ impl SharedVectorValues {
         let alias = Box::new(SharedFloatVectorValues {
             inner: Arc::clone(&inner),
         });
-        (
-            Self::Float(Arc::new(SharedFloatVectorValues { inner })),
-            alias,
-        )
+        (Self(Arc::new(SharedFloatVectorValues { inner })), alias)
     }
 
     /// As [`from_float`](Self::from_float), for byte vectors.
@@ -273,10 +260,7 @@ impl SharedVectorValues {
         let alias = Box::new(SharedByteVectorValues {
             inner: Arc::clone(&inner),
         });
-        (
-            Self::Byte(Arc::new(SharedByteVectorValues { inner })),
-            alias,
-        )
+        (Self(Arc::new(SharedByteVectorValues { inner })), alias)
     }
 
     /// Returns a handle for the prefetching wrapper and the values to hand
@@ -308,16 +292,12 @@ impl SharedVectorValues {
         let shared = Arc::new(LegacyKnnVectorValues {
             inner: Arc::from(values.copy_legacy()?),
         });
-        Ok((Self::Legacy(shared), values))
+        Ok((Self(shared), values))
     }
 
     /// Returns the values as the base type Java's `values()` returns.
     fn as_knn_vector_values(&self) -> &dyn KnnVectorValues {
-        match self {
-            Self::Float(values) => values.as_ref(),
-            Self::Byte(values) => values.as_ref(),
-            Self::Legacy(values) => values.as_ref(),
-        }
+        &*self.0
     }
 
     /// Hands out another handle onto the same values.
@@ -325,11 +305,7 @@ impl SharedVectorValues {
     /// Equivalent to passing the same `KnnVectorValues` reference again, which
     /// is what Java's `PrefetchableRandomVectorScorerSupplier.scorer()` does.
     fn share(&self) -> Self {
-        match self {
-            Self::Float(values) => Self::Float(Arc::clone(values)),
-            Self::Byte(values) => Self::Byte(Arc::clone(values)),
-            Self::Legacy(values) => Self::Legacy(Arc::clone(values)),
-        }
+        Self(Arc::clone(&self.0))
     }
 
     /// Returns an independent copy of the values.
@@ -341,17 +317,7 @@ impl SharedVectorValues {
     ///
     /// Propagates whatever copying the underlying values raises.
     fn copy(&self) -> Result<Self> {
-        Ok(match self {
-            Self::Float(values) => Self::Float(Arc::new(SharedFloatVectorValues {
-                inner: Arc::from(values.copy_float()?),
-            })),
-            Self::Byte(values) => Self::Byte(Arc::new(SharedByteVectorValues {
-                inner: Arc::from(values.copy_byte()?),
-            })),
-            Self::Legacy(values) => Self::Legacy(Arc::new(LegacyKnnVectorValues {
-                inner: Arc::from(values.inner.copy_legacy()?),
-            })),
-        })
+        Ok(Self(Arc::from(self.0.copy()?)))
     }
 
     /// Hints that `num_ords` of `ords_to_prefetch` are about to be scored.
@@ -360,11 +326,7 @@ impl SharedVectorValues {
     ///
     /// Propagates whatever the underlying values raise.
     fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
-        match self {
-            Self::Float(values) => values.prefetch(ords_to_prefetch, num_ords),
-            Self::Byte(values) => values.prefetch(ords_to_prefetch, num_ords),
-            Self::Legacy(values) => values.prefetch(ords_to_prefetch, num_ords),
-        }
+        self.0.prefetch(ords_to_prefetch, num_ords)
     }
 }
 

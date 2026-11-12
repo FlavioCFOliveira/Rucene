@@ -157,8 +157,4 @@ impl BytesReader for ByteArrayBytesReader<'_> {
     fn set_position(&mut self, pos: i64) {
         self.position = pos as i32;
     }
-
-    fn as_data_input(&mut self) -> &mut dyn DataInput {
-        self
-    }
 }

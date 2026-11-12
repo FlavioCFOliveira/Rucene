@@ -141,21 +141,18 @@ impl PackedInts {
         }
     }
 
+    /// Equivalent to `PackedInts.checkVersion(int)`
+    /// (`PackedInts.java:57-65`), which throws `IllegalArgumentException`.
     pub fn check_version(version: i32) -> Result<()> {
         if version < Self::VERSION_START {
-            return Err(LuceneError::from(LuceneErrorKind::IndexFormatNotSupported(
-                format!(
-                    "PackedInts version {version} is too old, expected at least {}",
-                    Self::VERSION_START
-                ),
+            return Err(LuceneError::illegal_argument(format!(
+                "Version is too old, should be at least {} (got {version})",
+                Self::VERSION_START
             )));
-        }
-        if version > Self::VERSION_CURRENT {
-            return Err(LuceneError::from(LuceneErrorKind::IndexFormatNotSupported(
-                format!(
-                    "PackedInts version {version} is too new, expected at most {}",
-                    Self::VERSION_CURRENT
-                ),
+        } else if version > Self::VERSION_CURRENT {
+            return Err(LuceneError::illegal_argument(format!(
+                "Version is too new, should be at most {} (got {version})",
+                Self::VERSION_CURRENT
             )));
         }
         Ok(())
@@ -164,7 +161,7 @@ impl PackedInts {
     pub fn bits_required(max_value: i64) -> Result<i32> {
         if max_value < 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "maxValue must be non-negative, got {max_value}"
+                "maxValue must be non-negative (got: {max_value})"
             )));
         }
         Ok(Self::unsigned_bits_required(max_value))
@@ -173,7 +170,7 @@ impl PackedInts {
     pub fn bits_required_i32(max_value: i32) -> Result<i32> {
         if max_value < 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "maxValue must be non-negative, got {max_value}"
+                "maxValue must be non-negative (got: {max_value})"
             )));
         }
         Ok(Self::unsigned_bits_required_i32(max_value))
@@ -224,11 +221,18 @@ impl PackedInts {
                 "blockSize must be non-zero".to_string(),
             ));
         }
-        let blocks = (size as u64)
-            .div_ceil(block_size as u64)
-            .try_into()
-            .map_err(|_| LuceneError::illegal_argument("size is too large".to_string()))?;
-        Ok(blocks)
+        // `PackedInts.numBlocks(long, int)` (`PackedInts.java:903-909`): the
+        // block count is truncated to an `int`, and the product check catches
+        // a size that does not fit.
+        let block_size = block_size as i64;
+        let num_blocks =
+            ((size / block_size) as i32).wrapping_add(if size % block_size == 0 { 0 } else { 1 });
+        if (num_blocks as i64) * block_size < size {
+            return Err(LuceneError::illegal_argument(
+                "size is too large for this block size",
+            ));
+        }
+        Ok(num_blocks as usize)
     }
 }
 
@@ -1089,8 +1093,8 @@ impl<'a> DirectMonotonicWriter<'a> {
     pub fn add(&mut self, v: i64) -> Result<()> {
         if v < self.previous {
             return Err(LuceneError::illegal_argument(format!(
-                "values are not monotonic: {} before {}",
-                self.previous, v
+                "Values do not come in order: {}, {v}",
+                self.previous
             )));
         }
         if self.buffer_size == self.buffer.len() {

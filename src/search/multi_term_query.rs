@@ -125,15 +125,6 @@ pub trait MultiTermQuery: Query {
         None
     }
 
-    /// Returns this query viewed as a [`Query`].
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java gets this for free, because
-    /// `MultiTermQuery extends Query`. Rust cannot coerce a
-    /// `&dyn MultiTermQuery` into a `&dyn Query` below 1.86, and this crate's
-    /// minimum supported Rust version is 1.80, so the upcast is spelled out.
-    /// Every implementation writes `self`.
-    fn as_query(&self) -> &dyn Query;
-
     /// Returns a shared handle to a copy of this query.
     ///
     /// **Divergence from Lucene 10.5.0.** Java hands `this` to
@@ -202,7 +193,7 @@ pub fn multi_term_rewrite(
 pub fn multi_term_query_hash(query: &dyn MultiTermQuery) -> i32 {
     // `MultiTermQuery.hashCode()` (`MultiTermQuery.java:337-343`).
     let prime = 31i32;
-    let mut result = query.as_query().class_hash();
+    let mut result = (query as &dyn Query).class_hash();
     result = prime
         .wrapping_mul(result)
         .wrapping_add(query.get_rewrite_method().method_hash());

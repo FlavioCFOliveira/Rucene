@@ -1775,10 +1775,14 @@ impl<'a> MergedDocValuesProducer<'a> {
         }
     }
 
-    /// Fails when asked for a field other than the one being merged.
-    fn check_field(&self, field: &FieldInfo) -> Result<()> {
+    /// Fails when asked for a field other than the one being merged, with the
+    /// message of the Java guard: `"wrong fieldInfo"` in the numeric and
+    /// binary producers (`DocValuesConsumer.java:191,309`), `"wrong
+    /// FieldInfo"` in the sorted, sorted-numeric and sorted-set ones
+    /// (`DocValuesConsumer.java:420,650,863`).
+    fn check_field(&self, field: &FieldInfo, message: &str) -> Result<()> {
         if field.name != self.field.name {
-            return Err(LuceneError::illegal_argument("wrong fieldInfo".to_string()));
+            return Err(LuceneError::illegal_argument(message));
         }
         Ok(())
     }
@@ -1792,18 +1796,17 @@ impl<'a> MergedDocValuesProducer<'a> {
         })
     }
 
-    fn unsupported(&self, kind: &str) -> LuceneError {
-        LuceneError::unsupported_operation(format!(
-            "the merged view of field '{}' does not provide {kind} doc values",
-            self.field.name
-        ))
+    /// `new UnsupportedOperationException()` of `EmptyDocValuesProducer`
+    /// (`index/EmptyDocValuesProducer.java:54-68`): no message.
+    fn unsupported(&self) -> LuceneError {
+        LuceneError::unsupported_operation(String::new())
     }
 }
 
 impl DocValuesProducer for MergedDocValuesProducer<'_> {
     fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         let values: Result<Box<dyn NumericDocValues>> = {
-            self.check_field(field)?;
+            self.check_field(field, "wrong fieldInfo")?;
             get_merged_numeric_doc_values(self.merge_state, self.field)
         };
         Ok(Some(values?))
@@ -1811,7 +1814,7 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
 
     fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
         let values: Result<Box<dyn BinaryDocValues>> = {
-            self.check_field(field)?;
+            self.check_field(field, "wrong fieldInfo")?;
             get_merged_binary_doc_values(self.field, self.merge_state)
         };
         Ok(Some(values?))
@@ -1819,7 +1822,7 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
 
     fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
         let values: Result<Box<dyn SortedDocValues>> = {
-            self.check_field(field)?;
+            self.check_field(field, "wrong FieldInfo")?;
             get_merged_sorted_doc_values(self.field, self.merge_state, self.map()?)
         };
         Ok(Some(values?))
@@ -1830,7 +1833,7 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
         field: &FieldInfo,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
         let values: Result<Box<dyn SortedNumericDocValues>> = {
-            self.check_field(field)?;
+            self.check_field(field, "wrong FieldInfo")?;
             get_merged_sorted_numeric_doc_values(self.field, self.merge_state)
         };
         Ok(Some(values?))
@@ -1838,7 +1841,7 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
 
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         let values: Result<Box<dyn SortedSetDocValues>> = {
-            self.check_field(field)?;
+            self.check_field(field, "wrong FieldInfo")?;
             get_merged_sorted_set_doc_values(self.field, self.merge_state, self.map()?)
         };
         Ok(Some(values?))
@@ -1848,7 +1851,7 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
     /// `DocValuesConsumer` inherit from `EmptyDocValuesProducer`
     /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(self.unsupported("skip-index"))
+        Err(self.unsupported())
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -1856,7 +1859,7 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        Err(self.unsupported("merge-instance"))
+        Err(self.unsupported())
     }
 
     fn close(&self) -> Result<()> {

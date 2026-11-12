@@ -15,7 +15,6 @@ use crate::search::abstract_doc_id_set_iterator::AbstractDocIdSetIterator;
 use crate::search::constant_score_scorer_supplier::ConstantScoreScorerSupplier;
 use crate::search::constant_score_weight::{ConstantScoreWeight, ConstantScoreWeightImpl};
 use crate::search::doc_id_set_iterator::{all, empty, range, DocIdSetIterator, NO_MORE_DOCS};
-use crate::search::doc_values_iteration::numeric_as_iterator;
 use crate::search::field_comparator::SortValue;
 use crate::search::field_exists_query::FieldExistsQuery;
 use crate::search::index_searcher::IndexSearcher;
@@ -623,7 +622,7 @@ impl IndexSortSortedNumericDocValuesRangeQuery {
             return Ok(None);
         };
         if let Some(it_and_count) =
-            self.doc_id_set_iterator_from_bkd(context, numeric_as_iterator(numeric_values))?
+            self.doc_id_set_iterator_from_bkd(context, numeric_values as Box<dyn DocIdSetIterator>)?
         {
             return Ok(Some(it_and_count));
         }
@@ -650,7 +649,7 @@ impl IndexSortSortedNumericDocValuesRangeQuery {
             sort_field,
             sort_field_type,
             context,
-            numeric_as_iterator(numeric_values),
+            numeric_values as Box<dyn DocIdSetIterator>,
         )
         .map(Some)
     }
@@ -830,7 +829,7 @@ impl ConstantScoreWeightImpl for IndexSortRangeWeight {
                 if let Some(numeric_values) = numeric_values {
                     it_and_count = self.query.doc_id_set_iterator_from_bkd(
                         context,
-                        numeric_as_iterator(numeric_values),
+                        numeric_values as Box<dyn DocIdSetIterator>,
                     )?;
                 }
             }
@@ -867,7 +866,7 @@ impl ConstantScoreWeightImpl for IndexSortRangeWeight {
                                         sort_field,
                                         sort_field_type,
                                         context,
-                                        numeric_as_iterator(numeric_values),
+                                        numeric_values as Box<dyn DocIdSetIterator>,
                                     )?;
                                     if it_and_count.count != -1 {
                                         return Ok(it_and_count.count);

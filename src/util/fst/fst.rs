@@ -194,14 +194,6 @@ pub fn target_has_arcs<T>(arc: &Arc<T>) -> bool {
 /// Equivalent to the abstract class `FST.BytesReader`, which extends
 /// `DataInput` with an absolute position. Implementations must accept negative
 /// counts in [`DataInput::skip_bytes`]: the FST walks its byte stream both ways.
-///
-/// # Java to Rust adaptations
-///
-/// * [`BytesReader::as_data_input`] performs, by hand, the `dyn BytesReader`
-///   to `dyn DataInput` upcast that Java gets from subclassing. Rust only
-///   supports trait-object upcasting from 1.86 and this crate's MSRV is 1.80,
-///   so the upcast is spelled out as a trait method that every implementation
-///   satisfies with `self`.
 pub trait BytesReader: DataInput {
     /// Returns the current read position.
     ///
@@ -212,12 +204,6 @@ pub trait BytesReader: DataInput {
     ///
     /// Equivalent to `FST.BytesReader.setPosition`.
     fn set_position(&mut self, pos: i64);
-
-    /// Returns this reader as a [`DataInput`].
-    ///
-    /// See the trait documentation: this replaces Java's implicit upcast from
-    /// `FST.BytesReader` to `DataInput`.
-    fn as_data_input(&mut self) -> &mut dyn DataInput;
 }
 
 /// Represents a single arc of an FST.
@@ -828,7 +814,7 @@ impl<O: Outputs> FST<O> {
             if num_bytes > 0 {
                 reader.set_position(num_bytes as i64 - 1);
             }
-            Some(outputs.read_final_output(reader.as_data_input())?)
+            Some(outputs.read_final_output(&mut *reader)?)
         } else {
             None
         };
@@ -1058,7 +1044,7 @@ impl<O: Outputs> FST<O> {
             arc.bytes_per_arc = input.read_v_int()?;
             if flags == ARCS_FOR_DIRECT_ADDRESSING {
                 self.read_presence_bytes(arc, input)?;
-                arc.first_label = self.read_label(input.as_data_input())?;
+                arc.first_label = self.read_label(&mut *input)?;
                 arc.pos_arcs_start = input.position();
                 self.read_last_arc_by_direct_addressing(arc, input)?;
             } else if flags == ARCS_FOR_BINARY_SEARCH {
@@ -1066,7 +1052,7 @@ impl<O: Outputs> FST<O> {
                 arc.pos_arcs_start = input.position();
                 self.read_next_real_arc(arc, input)?;
             } else {
-                arc.first_label = self.read_label(input.as_data_input())?;
+                arc.first_label = self.read_label(&mut *input)?;
                 arc.pos_arcs_start = input.position();
                 self.read_last_arc_by_continuous(arc, input)?;
             }
@@ -1076,14 +1062,12 @@ impl<O: Outputs> FST<O> {
             arc.bytes_per_arc = 0;
             while !arc.is_last() {
                 // Skip this arc.
-                self.read_label(input.as_data_input())?;
+                self.read_label(&mut *input)?;
                 if arc.flag(BIT_ARC_HAS_OUTPUT) {
-                    self.metadata.outputs.skip_output(input.as_data_input())?;
+                    self.metadata.outputs.skip_output(&mut *input)?;
                 }
                 if arc.flag(BIT_ARC_HAS_FINAL_OUTPUT) {
-                    self.metadata
-                        .outputs
-                        .skip_final_output(input.as_data_input())?;
+                    self.metadata.outputs.skip_final_output(&mut *input)?;
                 }
                 if !arc.flag(BIT_STOP_NODE) && !arc.flag(BIT_TARGET_NEXT) {
                     read_unpacked_node_target(input)?;
@@ -1189,10 +1173,10 @@ impl<O: Outputs> FST<O> {
             arc.arc_idx = -1;
             if flags == ARCS_FOR_DIRECT_ADDRESSING {
                 self.read_presence_bytes(arc, input)?;
-                arc.first_label = self.read_label(input.as_data_input())?;
+                arc.first_label = self.read_label(&mut *input)?;
                 arc.presence_index = -1;
             } else if flags == ARCS_FOR_CONTINUOUS {
-                arc.first_label = self.read_label(input.as_data_input())?;
+                arc.first_label = self.read_label(&mut *input)?;
             }
             arc.pos_arcs_start = input.position();
         } else {
@@ -1335,7 +1319,7 @@ impl<O: Outputs> FST<O> {
                 }
             }
         }
-        self.read_label(input.as_data_input())
+        self.read_label(&mut *input)
     }
 
     /// Reads the arc with the provided index of a binary-search node.
@@ -1507,19 +1491,17 @@ impl<O: Outputs> FST<O> {
         if arc.node_flags == ARCS_FOR_DIRECT_ADDRESSING || arc.node_flags == ARCS_FOR_CONTINUOUS {
             arc.label = arc.first_label + arc.arc_idx;
         } else {
-            arc.label = self.read_label(input.as_data_input())?;
+            arc.label = self.read_label(&mut *input)?;
         }
 
         arc.output = if arc.flag(BIT_ARC_HAS_OUTPUT) {
-            self.metadata.outputs.read(input.as_data_input())?
+            self.metadata.outputs.read(&mut *input)?
         } else {
             self.metadata.outputs.no_output()
         };
 
         arc.next_final_output = if arc.flag(BIT_ARC_HAS_FINAL_OUTPUT) {
-            self.metadata
-                .outputs
-                .read_final_output(input.as_data_input())?
+            self.metadata.outputs.read_final_output(&mut *input)?
         } else {
             self.metadata.outputs.no_output()
         };
@@ -1671,7 +1653,7 @@ impl<O: Outputs> FST<O> {
             arc.num_arcs = input.read_v_int()?; // This is in fact the label range.
             arc.bytes_per_arc = input.read_v_int()?;
             self.read_presence_bytes(arc, input)?;
-            arc.first_label = self.read_label(input.as_data_input())?;
+            arc.first_label = self.read_label(&mut *input)?;
             arc.pos_arcs_start = input.position();
 
             let arc_index = label_to_match - arc.first_label;
@@ -1696,7 +1678,7 @@ impl<O: Outputs> FST<O> {
                 input.set_position(
                     arc.pos_arcs_start - (i64::from(arc.bytes_per_arc) * i64::from(mid) + 1),
                 );
-                let mid_label = self.read_label(input.as_data_input())?;
+                let mid_label = self.read_label(&mut *input)?;
                 let cmp = mid_label - label_to_match;
                 if cmp < 0 {
                     low = mid + 1;
@@ -1712,7 +1694,7 @@ impl<O: Outputs> FST<O> {
         } else if flags == ARCS_FOR_CONTINUOUS {
             arc.num_arcs = input.read_v_int()?;
             arc.bytes_per_arc = input.read_v_int()?;
-            arc.first_label = self.read_label(input.as_data_input())?;
+            arc.first_label = self.read_label(&mut *input)?;
             arc.pos_arcs_start = input.position();
             let arc_index = label_to_match - arc.first_label;
             if arc_index < 0 || arc_index >= arc.num_arcs {
@@ -1731,7 +1713,7 @@ impl<O: Outputs> FST<O> {
             let flags = input.read_byte()?;
             arc.flags = flags;
             let pos = input.position();
-            let label = self.read_label(input.as_data_input())?;
+            let label = self.read_label(&mut *input)?;
             if label == label_to_match {
                 input.set_position(pos);
                 self.read_arc(arc, input)?;
@@ -1742,12 +1724,10 @@ impl<O: Outputs> FST<O> {
                 return Ok(false);
             } else {
                 if flag_is_set(i32::from(flags), BIT_ARC_HAS_OUTPUT) {
-                    self.metadata.outputs.skip_output(input.as_data_input())?;
+                    self.metadata.outputs.skip_output(&mut *input)?;
                 }
                 if flag_is_set(i32::from(flags), BIT_ARC_HAS_FINAL_OUTPUT) {
-                    self.metadata
-                        .outputs
-                        .skip_final_output(input.as_data_input())?;
+                    self.metadata.outputs.skip_final_output(&mut *input)?;
                 }
                 if !flag_is_set(i32::from(flags), BIT_STOP_NODE)
                     && !flag_is_set(i32::from(flags), BIT_TARGET_NEXT)
@@ -1764,16 +1744,14 @@ impl<O: Outputs> FST<O> {
     fn seek_to_next_node(&self, input: &mut dyn BytesReader) -> Result<()> {
         loop {
             let flags = i32::from(input.read_byte()?);
-            self.read_label(input.as_data_input())?;
+            self.read_label(&mut *input)?;
 
             if flag_is_set(flags, BIT_ARC_HAS_OUTPUT) {
-                self.metadata.outputs.skip_output(input.as_data_input())?;
+                self.metadata.outputs.skip_output(&mut *input)?;
             }
 
             if flag_is_set(flags, BIT_ARC_HAS_FINAL_OUTPUT) {
-                self.metadata
-                    .outputs
-                    .skip_final_output(input.as_data_input())?;
+                self.metadata.outputs.skip_final_output(&mut *input)?;
             }
 
             if !flag_is_set(flags, BIT_STOP_NODE) && !flag_is_set(flags, BIT_TARGET_NEXT) {

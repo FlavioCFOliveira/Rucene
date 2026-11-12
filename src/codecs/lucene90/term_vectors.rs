@@ -3521,24 +3521,57 @@ impl std::fmt::Display for TVPostingsEnum {
     }
 }
 
+impl TVPostingsEnum {
+    /// `TVPostingsEnum.checkDoc()`
+    /// (`Lucene90CompressingTermVectorsReader.java:1245-1251`): the message of
+    /// the `IllegalStateException` it throws, if any.
+    fn check_doc(&self) -> Option<&'static str> {
+        if self.doc == NO_MORE_DOCS {
+            Some("DocsEnum exhausted")
+        } else if self.doc == -1 {
+            Some("DocsEnum not started")
+        } else {
+            None
+        }
+    }
+
+    /// `TVPostingsEnum.checkPosition()`
+    /// (`Lucene90CompressingTermVectorsReader.java:1253-1260`), thrown as the
+    /// crate throws an unchecked Java exception from an infallible method
+    /// ([`throw_unchecked`](crate::store::java_nio_file::throw_unchecked)).
+    fn check_position(&self) {
+        let message = self.check_doc().or(if self.i < 0 {
+            Some("Position enum not started")
+        } else if self.i >= self.term_freq {
+            Some("Read past last position")
+        } else {
+            None
+        });
+        if let Some(message) = message {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalStateException",
+                Some(message),
+            );
+        }
+    }
+}
+
 impl PostingsEnum for TVPostingsEnum {
     /// Equivalent to `TVPostingsEnum.freq()`: `checkDoc()`
     /// (`Lucene90CompressingTermVectorsReader.java:1246-1252`), then the
     /// term's frequency.
     fn freq(&self) -> Result<i32> {
-        if self.doc == NO_MORE_DOCS {
-            return Err(LuceneError::illegal_state("DocsEnum exhausted"));
-        } else if self.doc == -1 {
-            return Err(LuceneError::illegal_state("DocsEnum not started"));
+        if let Some(message) = self.check_doc() {
+            return Err(LuceneError::illegal_state(message));
         }
         Ok(self.term_freq)
     }
 
     fn next_position(&mut self) -> Result<i32> {
+        // `new IllegalStateException()`, no message
+        // (`Lucene90CompressingTermVectorsReader.java:1264-1265`).
         if self.doc != 0 {
-            return Err(LuceneError::illegal_state(
-                "next_position called on unpositioned postings enum".to_string(),
-            ));
+            return Err(LuceneError::illegal_state(String::new()));
         }
         if self.i >= self.term_freq - 1 {
             return Err(LuceneError::illegal_state("Read past last position"));
@@ -3583,20 +3616,20 @@ impl PostingsEnum for TVPostingsEnum {
         }
     }
 
+    /// Equivalent to `TVPostingsEnum.startOffset()`
+    /// (`Lucene90CompressingTermVectorsReader.java:1284-1292`).
     fn start_offset(&self) -> i32 {
-        if self.i < 0 || self.i >= self.term_freq {
-            return -1;
-        }
+        self.check_position();
         match &self.start_offsets {
             Some(offsets) => offsets[(self.position_index + self.i) as usize],
             None => -1,
         }
     }
 
+    /// Equivalent to `TVPostingsEnum.endOffset()`
+    /// (`Lucene90CompressingTermVectorsReader.java:1294-1302`).
     fn end_offset(&self) -> i32 {
-        if self.i < 0 || self.i >= self.term_freq {
-            return -1;
-        }
+        self.check_position();
         match (&self.start_offsets, &self.lengths) {
             (Some(offsets), Some(lengths)) => {
                 // `startOffsets[i] + lengths[i]` in Java, on `int`s decoded
@@ -3608,11 +3641,11 @@ impl PostingsEnum for TVPostingsEnum {
         }
     }
 
+    /// Equivalent to `TVPostingsEnum.getPayload()`
+    /// (`Lucene90CompressingTermVectorsReader.java:1304-1312`).
     fn get_payload(&self) -> Result<Option<&[u8]>> {
-        if self.i < 0 || self.i >= self.term_freq {
-            return Ok(None);
-        }
-        if self.payload.length == 0 {
+        self.check_position();
+        if self.payload_index.is_none() || self.payload.length == 0 {
             return Ok(None);
         }
         Ok(Some(self.payload.slice()))

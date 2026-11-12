@@ -391,9 +391,11 @@ impl BytesRefHash {
         capacity: usize,
         mut bytes_start_array: Box<dyn BytesStartArray>,
     ) -> Self {
+        // `BytesRefHash.java:122-128`.
+        assert!(capacity > 0, "capacity must be greater than 0");
         assert!(
-            capacity > 0 && capacity.is_power_of_two(),
-            "capacity must be a positive power of two, got {capacity}"
+            capacity.is_power_of_two(),
+            "capacity must be a power of two, got {capacity}"
         );
         let bytes_start = Some(bytes_start_array.init());
         let bytes_used = bytes_start_array

@@ -756,76 +756,33 @@ impl PendingSoftDeletes {
         Ok(())
     }
 
+    /// The soft-delete branch of `PendingSoftDeletes.onNewReader`
+    /// (`PendingSoftDeletes.java:79-88`): a first
+    /// `FieldExistsQuery.getDocValuesDocIdSetIterator` probes for any document,
+    /// and only then a second one is applied to the live-docs bits, lazily.
     fn apply_soft_deletes_from_reader(&mut self, reader: &SegmentReader) -> Result<i32> {
-        let docs_with_values = match Self::doc_values_doc_ids(reader, &self.field)? {
-            Some(docs) => docs,
-            None => return Ok(0),
+        use crate::search::field_exists_query::FieldExistsQuery;
+        let Some(mut iterator) =
+            FieldExistsQuery::get_doc_values_doc_id_set_iterator(&self.field, reader)?
+        else {
+            return Ok(0);
         };
-        // `PendingSoftDeletes.onNewReader` only touches the live-docs bit set
-        // when the iterator produced at least one document; an empty iterator
-        // means "nothing is soft-deleted in this segment" and leaves the bits
-        // un-materialised.
-        if docs_with_values.is_empty() {
+        if iterator.next_doc()? == NO_MORE_DOCS {
+            // nothing is deleted we don't have a soft deletes field in this
+            // segment
             return Ok(0);
         }
-
+        let mut iterator =
+            FieldExistsQuery::get_doc_values_doc_id_set_iterator(&self.field, reader)?
+                .ok_or_else(LuceneError::null_pointer)?;
         let mutable = self.get_mutable_bits();
-        let mut docs = docs_with_values.into_iter();
         // Java hands `applySoftDeletes` a plain doc-values iterator here, which
         // is not a `DocValuesFieldUpdates.Iterator`, so its `hasValue` is null
         // and every document takes the clear branch.
-        Self::apply_soft_deletes(mutable, || Ok(docs.next().map(|doc| (doc, true))))
-    }
-
-    /// Returns the documents that carry a value for `field`, or `None` when the
-    /// segment has no doc values for it.
-    ///
-    /// Equivalent to `org.apache.lucene.search.FieldExistsQuery#getDocValuesDocIdSetIterator`,
-    /// which `PendingSoftDeletes.onNewReader` uses to find the soft-deleted
-    /// documents. All five doc-values kinds are covered, as they are in Java: a
-    /// soft-deletes field is normally numeric, but nothing in Lucene requires
-    /// that, and returning nothing for the other three kinds made this port
-    /// disagree with the segment's own soft-delete count.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java returns the iterator itself and
-    /// consumes it lazily; this collects the document ids first, because the
-    /// five doc-values traits here cannot be handed back as one boxed
-    /// `DocIdSetIterator` without a trait upcast.
-    fn doc_values_doc_ids(reader: &SegmentReader, field: &str) -> Result<Option<Vec<i32>>> {
-        let field_infos = reader.get_field_infos();
-        let dv_type = match field_infos.field_info(field) {
-            Some(fi) => fi.get_doc_values_type(),
-            None => return Ok(None),
-        };
-
-        macro_rules! drain {
-            ($values:expr) => {{
-                match $values? {
-                    Some(mut values) => {
-                        let mut docs = Vec::new();
-                        while values.next_doc()? != NO_MORE_DOCS {
-                            docs.push(values.doc_id());
-                        }
-                        Some(docs)
-                    }
-                    None => None,
-                }
-            }};
-        }
-
-        let docs = match dv_type {
-            DocValuesType::NONE => None,
-            DocValuesType::NUMERIC => drain!(LeafReader::get_numeric_doc_values(reader, field)),
-            DocValuesType::BINARY => drain!(LeafReader::get_binary_doc_values(reader, field)),
-            DocValuesType::SORTED => drain!(LeafReader::get_sorted_doc_values(reader, field)),
-            DocValuesType::SORTED_NUMERIC => {
-                drain!(LeafReader::get_sorted_numeric_doc_values(reader, field))
-            }
-            DocValuesType::SORTED_SET => {
-                drain!(LeafReader::get_sorted_set_doc_values(reader, field))
-            }
-        };
-        Ok(docs)
+        Self::apply_soft_deletes(mutable, || {
+            let doc = iterator.next_doc()?;
+            Ok((doc != NO_MORE_DOCS).then_some((doc, true)))
+        })
     }
 
     /// Clears every bit that is set and is also produced by `next`, and sets

@@ -57,7 +57,7 @@ pub use bkd_radix_selector::{BKDRadixSelector, PathSlice};
 pub use mutable_point_tree_reader_utils::MutablePointTreeReaderUtils;
 
 use std::cmp::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::index::documents_writer::SharedDirectory;
 use crate::index::merge::DocMap;
@@ -1436,75 +1436,94 @@ impl DocIdsWriter {
 
     /// Reads `count` doc ids from `in_` into `out`.
     ///
-    /// `version` is the BKD format version of the index being read; it selects
-    /// between the scalar and vectorized `BPV_24` layouts, exactly as
-    /// `DocIdsWriter.readInts` does in Lucene Core 10.5.0.
+    /// Equivalent to `DocIdsWriter.readInts(IndexInput, int, int[])`
+    /// (`DocIdsWriter.java:240-271`). `version` is the BKD format version of
+    /// the index being read; it selects between the scalar and vectorized
+    /// `BPV_24` layouts. `out` is Java's `docIDs` array — in `BKDReader` the
+    /// reused `int[maxPointsInLeafNode]` of its scratch iterator — and its
+    /// length is also that of `DocIdsWriter`'s own `scratch`
+    /// (`int[maxPointsInLeafNode]`, `DocIdsWriter.java:42,58`). `count` is the
+    /// leaf's unchecked `int`: a write outside either array is the
+    /// `ArrayIndexOutOfBoundsException` Java throws there, after the value it
+    /// stores was read; a negative count reads nothing in the loops it bounds.
+    ///
+    /// # Errors
+    ///
+    /// The I/O error of a read, the `ArrayIndexOutOfBoundsException` above,
+    /// and `IOException("Unsupported number of bits per value: " + bpv)` for
+    /// an unknown encoding.
     pub fn read_doc_ids(
         in_: &mut dyn IndexInput,
-        count: usize,
+        count: i32,
         out: &mut [i32],
         version: i32,
     ) -> Result<()> {
-        if count > out.len() {
-            return Err(LuceneError::illegal_argument(
-                "read_doc_ids output buffer too small".to_string(),
-            ));
-        }
         let bpv = in_.read_byte()? as i8;
+        let scratch_len = out.len();
         match bpv {
             CONTINUOUS_IDS => Self::read_continuous_ids(in_, count, out),
             BITSET_IDS => Self::read_bit_set(in_, count, out),
             DELTA_BPV_16 => Self::read_delta16(in_, count, out),
-            BPV_21 => Self::read_ints21(in_, count, out),
+            BPV_21 => Self::read_ints21(in_, count, out, &mut vec![0; scratch_len]),
             BPV_24 => {
                 if version < VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21 {
                     Self::read_scalar_ints24(in_, count, out)
                 } else {
-                    Self::read_ints24(in_, count, out)
+                    Self::read_ints24(in_, count, out, &mut vec![0; scratch_len])
                 }
             }
             BPV_32 => Self::read_ints32(in_, count, out),
             LEGACY_DELTA_VINT => Self::read_legacy_delta_vints(in_, count, out),
-            _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!("Unsupported number of bits per value: {}", bpv),
-            ))),
+            // `throw new IOException("Unsupported number of bits per value: "
+            // + bpv)` (`DocIdsWriter.java:269-270`).
+            _ => Err(LuceneError::from(std::io::Error::other(format!(
+                "Unsupported number of bits per value: {}",
+                bpv
+            )))),
         }
     }
 
     /// Reads `count` doc IDs and hands them to `visitor`: a run of
     /// consecutive IDs and a bit set as a [`DocIdSetIterator`], the
     /// legacy delta-vInt encoding one `visit(int)` per ID, every other
-    /// encoding decoded into `buffer` (or a scratch array) and passed as an
-    /// [`IntsRef`].
+    /// encoding decoded into `buffer` (or `DocIdsWriter`'s scratch, of the
+    /// same `int[maxPointsInLeafNode]` length) and passed as an [`IntsRef`].
     ///
     /// Equivalent to `DocIdsWriter.readInts(IndexInput, int,
     /// IntersectVisitor, int[])` (`DocIdsWriter.java:443-533`), with the
     /// writer's `version` passed in as Rucene's [`DocIdsWriter`] is
     /// stateless.
     ///
+    /// **Divergence from Lucene 10.5.0.** A negative `count` reaches the
+    /// visitor as an empty [`IntsRef`]: Java's `IntsRef.length` is an `int`
+    /// that carries it, which `IntsRef`'s `usize` length cannot; a visitor
+    /// iterating `offset..offset + length` visits nothing either way.
+    ///
     /// # Errors
     ///
-    /// The I/O error of a read, and [`LuceneErrorKind::CorruptIndex`]
-    /// (`Unsupported number of bits per value: …`) for an unknown encoding.
+    /// The I/O error of a read, `ArrayIndexOutOfBoundsException` for a write
+    /// outside the arrays, and `IOException("Unsupported number of bits per
+    /// value: …")` for an unknown encoding.
     pub fn read_doc_ids_visitor(
         in_: &mut dyn IndexInput,
-        count: usize,
+        count: i32,
         visitor: &mut dyn IntersectVisitor,
         buffer: &mut [i32],
         version: i32,
     ) -> Result<()> {
         let bpv = in_.read_byte()? as i8;
-        // `scratchIntsRef` of Java, over `scratch` or `buffer`.
+        let scratch_len = buffer.len();
+        // `scratchIntsRef` of Java, over `scratch` or `buffer`, `length =
+        // count`.
         let visit_ints = |visitor: &mut dyn IntersectVisitor, ints: &[i32]| -> Result<()> {
-            visitor.visit_ints_ref(&IntsRef::with_offset_length(ints.to_vec(), 0, count))
+            let length = count.max(0) as usize;
+            visitor.visit_ints_ref(&IntsRef::with_offset_length(ints.to_vec(), 0, length))
         };
         match bpv {
             CONTINUOUS_IDS => {
                 let start = in_.read_v_int()?;
-                let mut iterator = crate::search::doc_id_set_iterator::range(
-                    start,
-                    start.wrapping_add(count as i32),
-                )?;
+                let mut iterator =
+                    crate::search::doc_id_set_iterator::range(start, start.wrapping_add(count))?;
                 visitor.visit_iterator(&mut iterator)
             }
             BITSET_IDS => {
@@ -1512,32 +1531,33 @@ impl DocIdsWriter {
                 visitor.visit_iterator(&mut iterator)
             }
             DELTA_BPV_16 => {
-                let mut scratch = vec![0i32; count];
+                let mut scratch = vec![0i32; scratch_len];
                 Self::read_delta16(in_, count, &mut scratch)?;
-                visit_ints(visitor, &scratch[..count])
+                visit_ints(visitor, &scratch)
             }
             BPV_21 => {
-                Self::read_ints21(in_, count, buffer)?;
-                visit_ints(visitor, &buffer[..count])
+                Self::read_ints21(in_, count, buffer, &mut vec![0; scratch_len])?;
+                visit_ints(visitor, buffer)
             }
             BPV_24 => {
                 if version < VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21 {
-                    let mut scratch = vec![0i32; count];
+                    let mut scratch = vec![0i32; scratch_len];
                     Self::read_scalar_ints24(in_, count, &mut scratch)?;
-                    visit_ints(visitor, &scratch[..count])
+                    visit_ints(visitor, &scratch)
                 } else {
-                    Self::read_ints24(in_, count, buffer)?;
-                    visit_ints(visitor, &buffer[..count])
+                    Self::read_ints24(in_, count, buffer, &mut vec![0; scratch_len])?;
+                    visit_ints(visitor, buffer)
                 }
             }
             BPV_32 => {
-                let mut scratch = vec![0i32; count];
+                // `in.readInts(scratch, 0, count)`.
+                let mut scratch = vec![0i32; scratch_len];
                 Self::read_ints32(in_, count, &mut scratch)?;
-                visit_ints(visitor, &scratch[..count])
+                visit_ints(visitor, &scratch)
             }
             LEGACY_DELTA_VINT => {
                 let mut doc = 0i32;
-                for _ in 0..count {
+                for _ in 0..count.max(0) {
                     doc = doc.wrapping_add(in_.read_v_int()?);
                     visitor.visit(doc)?;
                 }
@@ -1552,11 +1572,11 @@ impl DocIdsWriter {
         }
     }
 
-    fn read_continuous_ids(in_: &mut dyn IndexInput, count: usize, out: &mut [i32]) -> Result<()> {
+    fn read_continuous_ids(in_: &mut dyn IndexInput, count: i32, out: &mut [i32]) -> Result<()> {
         let start = in_.read_v_int()?;
-        for (i, slot) in out.iter_mut().enumerate().take(count) {
+        for i in 0..count.max(0) {
             // Java computes `start + i` in 32-bit arithmetic, which wraps.
-            *slot = start.wrapping_add(i as i32);
+            int_array_store(out, i, start.wrapping_add(i))?;
         }
         Ok(())
     }
@@ -1573,7 +1593,7 @@ impl DocIdsWriter {
     /// I/O error.
     fn read_bit_set_iterator(
         in_: &mut dyn IndexInput,
-        count: usize,
+        count: i32,
     ) -> Result<DocBaseBitSetIterator> {
         let offset_words = in_.read_v_int()?;
         let long_len = in_.read_v_int()?;
@@ -1635,50 +1655,44 @@ impl DocIdsWriter {
         // `longLen` so that `FixedBitSet` never sees stale words; a fresh
         // zero-filled `Vec` of exactly `longLen` words has nothing stale in it.
         let bit_set = FixedBitSet::from_bits(words, long_len << 6)?;
-        DocBaseBitSetIterator::new(Arc::new(bit_set), count as i64, doc_base as i32)
+        DocBaseBitSetIterator::new(Arc::new(bit_set), i64::from(count), doc_base as i32)
     }
 
-    fn read_bit_set(in_: &mut dyn IndexInput, count: usize, out: &mut [i32]) -> Result<()> {
+    fn read_bit_set(in_: &mut dyn IndexInput, count: i32, out: &mut [i32]) -> Result<()> {
         let mut iterator = Self::read_bit_set_iterator(in_, count)?;
-        let mut pos = 0;
+        let mut pos: i32 = 0;
         loop {
             let doc_id = iterator.next_doc()?;
             if doc_id == NO_MORE_DOCS {
                 break;
             }
-            // Java's `docIDs[pos++] = docId`: an index past the array throws
-            // `ArrayIndexOutOfBoundsException`.
-            let Some(slot) = out.get_mut(pos) else {
-                return Err(LuceneError::from(LuceneErrorKind::Unchecked {
-                    class: "java.lang.ArrayIndexOutOfBoundsException",
-                    message: Some(format!(
-                        "Index {pos} out of bounds for length {}",
-                        out.len()
-                    )),
-                    cause: None,
-                }));
-            };
-            *slot = doc_id;
+            // `docIDs[pos++] = docId`.
+            int_array_store(out, pos, doc_id)?;
             pos += 1;
         }
         debug_assert!(pos == count, "pos: {pos}, count: {count}");
         Ok(())
     }
 
-    fn read_delta16(in_: &mut dyn IndexInput, count: usize, out: &mut [i32]) -> Result<()> {
+    fn read_delta16(in_: &mut dyn IndexInput, count: i32, out: &mut [i32]) -> Result<()> {
         let min = in_.read_v_int()?;
         let half = count >> 1;
-        for slot in out.iter_mut().take(half) {
-            *slot = in_.read_int()?;
+        // `in.readInts(docIds, 0, half)`.
+        for i in 0..half.max(0) {
+            let value = in_.read_int()?;
+            int_array_store(out, i, value)?;
         }
         // Java calls `decode16` twice from two arms of an `if`, once with the
         // constant `DEFAULT_MAX_POINTS_IN_LEAF_NODE / 2` so the JIT can
         // specialise the loop for the common leaf size. Both arms run the same
         // code on the same values, so this port keeps one call.
-        Self::decode16(out, half, min);
+        Self::decode16(out, half, min)?;
         // Read the remaining doc if count is odd.
-        for i in (half << 1)..count {
-            out[i] = (in_.read_short()? as i32 & 0xFFFF).wrapping_add(min);
+        let mut i = half.wrapping_shl(1);
+        while i < count {
+            let value = (i32::from(in_.read_short()?) & 0xFFFF).wrapping_add(min);
+            int_array_store(out, i, value)?;
+            i += 1;
         }
         Ok(())
     }
@@ -1687,132 +1701,201 @@ impl DocIdsWriter {
     ///
     /// Equivalent to `org.apache.lucene.util.bkd.DocIdsWriter#decode16`. Java
     /// adds `min` in 32-bit arithmetic, which wraps.
-    fn decode16(doc_ids: &mut [i32], half: usize, min: i32) {
-        for i in 0..half {
-            let l = doc_ids[i];
-            doc_ids[i] = ((l as u32 >> 16) as i32).wrapping_add(min);
-            doc_ids[i + half] = (l & 0xFFFF).wrapping_add(min);
+    fn decode16(doc_ids: &mut [i32], half: i32, min: i32) -> Result<()> {
+        for i in 0..half.max(0) {
+            let l = int_array_load(doc_ids, i)?;
+            int_array_store(doc_ids, i, ((l as u32 >> 16) as i32).wrapping_add(min))?;
+            int_array_store(
+                doc_ids,
+                i.wrapping_add(half),
+                (l & 0xFFFF).wrapping_add(min),
+            )?;
         }
+        Ok(())
     }
 
-    fn read_ints21(in_: &mut dyn IndexInput, count: usize, out: &mut [i32]) -> Result<()> {
-        let one_third = floor_to_multiple_of_16((count / 3) as i32) as usize;
-        let num_ints = one_third * 2;
-        let mut scratch = vec![0i32; num_ints];
-        for slot in scratch.iter_mut() {
-            *slot = in_.read_int()?;
+    fn read_ints21(
+        in_: &mut dyn IndexInput,
+        count: i32,
+        out: &mut [i32],
+        scratch: &mut [i32],
+    ) -> Result<()> {
+        // `floorToMultipleOf16(count / 3)`, whose `assert n >= 0` a negative
+        // count fails.
+        debug_assert!(count / 3 >= 0);
+        let one_third = (count / 3) & !0xF;
+        let num_ints = one_third.wrapping_shl(1);
+        // `in.readInts(scratch, 0, numInts)`.
+        for i in 0..num_ints.max(0) {
+            let value = in_.read_int()?;
+            int_array_store(scratch, i, value)?;
         }
-        Self::decode21(out, &scratch, one_third, num_ints);
-        let mut i = one_third * 3;
-        while i + 2 < count {
+        Self::decode21(out, scratch, one_third, num_ints)?;
+        let mut i = one_third.wrapping_mul(3);
+        while i < count.wrapping_sub(2) {
             let l = in_.read_long()? as u64;
-            out[i] = (l & 0x1FFFFF) as i32;
-            out[i + 1] = ((l >> 21) & 0x1FFFFF) as i32;
-            out[i + 2] = (l >> 42) as i32;
-            i += 3;
+            int_array_store(out, i, (l & 0x1FFFFF) as i32)?;
+            int_array_store(out, i.wrapping_add(1), ((l >> 21) & 0x1FFFFF) as i32)?;
+            int_array_store(out, i.wrapping_add(2), (l >> 42) as i32)?;
+            i = i.wrapping_add(3);
         }
         while i < count {
-            let low = (in_.read_short()? as i32) & 0xFFFF;
-            let high = (in_.read_byte()? as i32) << 16;
-            out[i] = low | high;
+            let low = i32::from(in_.read_short()?) & 0xFFFF;
+            let high = (i32::from(in_.read_byte()?) & 0xFF) << 16;
+            int_array_store(out, i, low | high)?;
             i += 1;
         }
         Ok(())
     }
 
-    fn decode21(doc_ids: &mut [i32], scratch: &[i32], one_third: usize, num_ints: usize) {
-        for i in 0..num_ints {
-            doc_ids[i] = (scratch[i] as u32 >> 11) as i32;
+    fn decode21(doc_ids: &mut [i32], scratch: &[i32], one_third: i32, num_ints: i32) -> Result<()> {
+        for i in 0..num_ints.max(0) {
+            let value = (int_array_load(scratch, i)? as u32 >> 11) as i32;
+            int_array_store(doc_ids, i, value)?;
         }
-        for i in 0..one_third {
-            doc_ids[i + num_ints] = (scratch[i] & 0x7FF) | ((scratch[i + one_third] & 0x7FF) << 11);
+        for i in 0..one_third.max(0) {
+            let value = (int_array_load(scratch, i)? & 0x7FF)
+                | ((int_array_load(scratch, i.wrapping_add(one_third))? & 0x7FF) << 11);
+            int_array_store(doc_ids, i.wrapping_add(num_ints), value)?;
         }
+        Ok(())
     }
 
-    fn read_ints24(in_: &mut dyn IndexInput, count: usize, out: &mut [i32]) -> Result<()> {
+    fn read_ints24(
+        in_: &mut dyn IndexInput,
+        count: i32,
+        out: &mut [i32],
+        scratch: &mut [i32],
+    ) -> Result<()> {
         let quarter = count >> 2;
-        let num_ints = quarter * 3;
-        if count == BKDConfig::DEFAULT_MAX_POINTS_IN_LEAF_NODE as usize {
+        let num_ints = quarter.wrapping_mul(3);
+        // `in.readInts(scratch, 0, numInts)`.
+        for i in 0..num_ints.max(0) {
+            let value = in_.read_int()?;
+            int_array_store(scratch, i, value)?;
+        }
+        if count == BKDConfig::DEFAULT_MAX_POINTS_IN_LEAF_NODE {
             // Java specializes this case (`DocIdsWriter.java:381-391`); the
             // decoding is the same, so only its assertion is reproduced.
             debug_assert!(
-                floor_to_multiple_of_16(quarter as i32) == quarter as i32,
+                floor_to_multiple_of_16(quarter) == quarter,
                 "We are relying on the fact that quarter of BKDConfig.DEFAULT_MAX_POINTS_IN_LEAF_NODE \
                  is a multiple of 16 to vectorize the decoding loop, \
                  please check performance issue if you want to break this assumption."
             );
         }
-        let mut scratch = vec![0i32; num_ints];
-        for slot in scratch.iter_mut() {
-            *slot = in_.read_int()?;
-        }
-        Self::decode24(out, &scratch, quarter, num_ints);
-        let mut i = quarter << 2;
+        Self::decode24(out, scratch, quarter, num_ints)?;
+        // Now read the remaining 0, 1, 2 or 3 values.
+        let mut i = quarter.wrapping_shl(2);
         while i < count {
-            let low = (in_.read_short()? as i32) & 0xFFFF;
-            let high = (in_.read_byte()? as i32) << 16;
-            out[i] = low | high;
+            let low = i32::from(in_.read_short()?) & 0xFFFF;
+            let high = (i32::from(in_.read_byte()?) & 0xFF) << 16;
+            int_array_store(out, i, low | high)?;
             i += 1;
         }
         Ok(())
     }
 
-    fn decode24(doc_ids: &mut [i32], scratch: &[i32], quarter: usize, num_ints: usize) {
-        for i in 0..num_ints {
-            doc_ids[i] = (scratch[i] as u32 >> 8) as i32;
+    fn decode24(doc_ids: &mut [i32], scratch: &[i32], quarter: i32, num_ints: i32) -> Result<()> {
+        for i in 0..num_ints.max(0) {
+            let value = (int_array_load(scratch, i)? as u32 >> 8) as i32;
+            int_array_store(doc_ids, i, value)?;
         }
-        for i in 0..quarter {
-            doc_ids[i + num_ints] = (scratch[i] & 0xFF)
-                | ((scratch[i + quarter] & 0xFF) << 8)
-                | ((scratch[i + quarter * 2] & 0xFF) << 16);
+        for i in 0..quarter.max(0) {
+            let value = (int_array_load(scratch, i)? & 0xFF)
+                | ((int_array_load(scratch, i.wrapping_add(quarter))? & 0xFF) << 8)
+                | ((int_array_load(scratch, i.wrapping_add(quarter.wrapping_mul(2)))? & 0xFF)
+                    << 16);
+            int_array_store(doc_ids, i.wrapping_add(num_ints), value)?;
         }
+        Ok(())
     }
 
-    fn read_scalar_ints24(in_: &mut dyn IndexInput, count: usize, out: &mut [i32]) -> Result<()> {
-        let mut i = 0;
-        while i + 8 <= count {
+    fn read_scalar_ints24(in_: &mut dyn IndexInput, count: i32, out: &mut [i32]) -> Result<()> {
+        let mut i: i32 = 0;
+        while i < count.wrapping_sub(7) {
             let l1 = in_.read_long()? as u64;
             let l2 = in_.read_long()? as u64;
             let l3 = in_.read_long()? as u64;
-            out[i] = (l1 >> 40) as i32;
-            out[i + 1] = ((l1 >> 16) & 0xffffff) as i32;
-            out[i + 2] = (((l1 & 0xffff) << 8) | (l2 >> 56)) as i32;
-            out[i + 3] = ((l2 >> 32) & 0xffffff) as i32;
-            out[i + 4] = ((l2 >> 8) & 0xffffff) as i32;
-            out[i + 5] = (((l2 & 0xff) << 16) | (l3 >> 48)) as i32;
-            out[i + 6] = ((l3 >> 24) & 0xffffff) as i32;
-            out[i + 7] = (l3 & 0xffffff) as i32;
-            i += 8;
+            int_array_store(out, i, (l1 >> 40) as i32)?;
+            int_array_store(out, i.wrapping_add(1), ((l1 >> 16) & 0xffffff) as i32)?;
+            int_array_store(
+                out,
+                i.wrapping_add(2),
+                (((l1 & 0xffff) << 8) | (l2 >> 56)) as i32,
+            )?;
+            int_array_store(out, i.wrapping_add(3), ((l2 >> 32) & 0xffffff) as i32)?;
+            int_array_store(out, i.wrapping_add(4), ((l2 >> 8) & 0xffffff) as i32)?;
+            int_array_store(
+                out,
+                i.wrapping_add(5),
+                (((l2 & 0xff) << 16) | (l3 >> 48)) as i32,
+            )?;
+            int_array_store(out, i.wrapping_add(6), ((l3 >> 24) & 0xffffff) as i32)?;
+            int_array_store(out, i.wrapping_add(7), (l3 & 0xffffff) as i32)?;
+            i = i.wrapping_add(8);
         }
         while i < count {
-            let high = (in_.read_short()? as i32 & 0xFFFF) << 8;
-            let low = in_.read_byte()? as i32 & 0xFF;
-            out[i] = high | low;
+            let high = (i32::from(in_.read_short()?) & 0xFFFF) << 8;
+            let low = i32::from(in_.read_byte()?) & 0xFF;
+            int_array_store(out, i, high | low)?;
             i += 1;
         }
         Ok(())
     }
 
-    fn read_ints32(in_: &mut dyn IndexInput, count: usize, out: &mut [i32]) -> Result<()> {
-        for slot in out.iter_mut().take(count) {
-            *slot = in_.read_int()?;
+    /// `in.readInts(docIDs, 0, count)`.
+    fn read_ints32(in_: &mut dyn IndexInput, count: i32, out: &mut [i32]) -> Result<()> {
+        for i in 0..count.max(0) {
+            let value = in_.read_int()?;
+            int_array_store(out, i, value)?;
         }
         Ok(())
     }
 
     fn read_legacy_delta_vints(
         in_: &mut dyn IndexInput,
-        count: usize,
+        count: i32,
         out: &mut [i32],
     ) -> Result<()> {
         let mut doc: i32 = 0;
-        for slot in out.iter_mut().take(count) {
+        for i in 0..count.max(0) {
             // `doc += in.readVInt()`: Java's `int` addition wraps.
             doc = doc.wrapping_add(in_.read_v_int()?);
-            *slot = doc;
+            int_array_store(out, i, doc)?;
         }
         Ok(())
     }
+}
+
+/// The `ArrayIndexOutOfBoundsException` of an `int[]` access at `index` in
+/// an array of `length` elements: `Index index out of bounds for length
+/// length`.
+fn array_index_out_of_bounds(index: i64, length: usize) -> LuceneError {
+    LuceneError::from(LuceneErrorKind::Unchecked {
+        class: "java.lang.ArrayIndexOutOfBoundsException",
+        message: Some(format!("Index {index} out of bounds for length {length}")),
+        cause: None,
+    })
+}
+
+/// Java's `array[index] = value` on an `int[]`.
+fn int_array_store(array: &mut [i32], index: i32, value: i32) -> Result<()> {
+    match usize::try_from(index).ok().and_then(|i| array.get_mut(i)) {
+        Some(slot) => {
+            *slot = value;
+            Ok(())
+        }
+        None => Err(array_index_out_of_bounds(i64::from(index), array.len())),
+    }
+}
+
+/// Java's `array[index]` on an `int[]`.
+fn int_array_load(array: &[i32], index: i32) -> Result<i32> {
+    usize::try_from(index)
+        .ok()
+        .and_then(|i| array.get(i).copied())
+        .ok_or_else(|| array_index_out_of_bounds(i64::from(index), array.len()))
 }
 
 // -----------------------------------------------------------------------------
@@ -1841,14 +1924,16 @@ use crate::index::point_values::{PointTree, PointValues};
 /// Equivalent to `org.apache.lucene.util.bkd.BKDReader.BKDReaderDocIDSetIterator`.
 pub struct BkdReaderDocIdSetIterator<'a> {
     doc_ids: &'a [i32],
-    offset: usize,
-    length: usize,
-    idx: usize,
+    offset: i32,
+    length: i32,
+    idx: i32,
     doc: i32,
 }
 
 impl<'a> BkdReaderDocIdSetIterator<'a> {
-    /// Creates an iterator over the given doc-ID slice, initially unpositioned.
+    /// Creates an iterator over the given doc-ID array, initially
+    /// unpositioned. In `BKDReader` the array is the reused
+    /// `int[maxPointsInLeafNode]` of the scratch iterator.
     pub fn new(doc_ids: &'a [i32]) -> Self {
         Self {
             doc_ids,
@@ -1861,12 +1946,14 @@ impl<'a> BkdReaderDocIdSetIterator<'a> {
 
     /// Repositions the iterator to before `offset` for a run of `length` doc IDs.
     ///
-    /// After calling this, [`doc_id`](Self::doc_id) returns `-1` and the first
-    /// [`next_doc`](Self::next_doc) will yield `doc_ids[offset]`.
-    pub fn reset(&mut self, offset: usize, length: usize) {
+    /// Equivalent to `BKDReaderDocIDSetIterator.reset(int, int)`
+    /// (`BKDReader.java:1050-1056`): the two `int`s are taken unchecked, as a
+    /// corrupt leaf hands them over, behind Java's `assert offset + length <=
+    /// docIDs.length`.
+    pub fn reset(&mut self, offset: i32, length: i32) {
         self.offset = offset;
         self.length = length;
-        debug_assert!(offset + length <= self.doc_ids.len());
+        debug_assert!(i64::from(offset) + i64::from(length) <= self.doc_ids.len() as i64);
         self.doc = -1;
         self.idx = 0;
     }
@@ -1877,12 +1964,17 @@ impl<'a> DocIdSetIterator for BkdReaderDocIdSetIterator<'a> {
         self.doc
     }
 
+    /// Equivalent to `BKDReaderDocIDSetIterator.nextDoc()`
+    /// (`BKDReader.java:1058-1067`): exhausted on `idx == length` only, so a
+    /// run longer than the block reads the stale doc IDs an earlier leaf left
+    /// in the reused array, and a negative one walks it until an index leaves
+    /// it, the `ArrayIndexOutOfBoundsException` Java throws.
     fn next_doc(&mut self) -> Result<i32> {
-        if self.idx >= self.length {
+        if self.idx == self.length {
             self.doc = NO_MORE_DOCS;
         } else {
-            self.doc = self.doc_ids[self.offset + self.idx];
-            self.idx += 1;
+            self.doc = int_array_load(self.doc_ids, self.offset.wrapping_add(self.idx))?;
+            self.idx = self.idx.wrapping_add(1);
         }
         Ok(self.doc)
     }
@@ -1892,7 +1984,7 @@ impl<'a> DocIdSetIterator for BkdReaderDocIdSetIterator<'a> {
     }
 
     fn cost(&self) -> i64 {
-        self.length as i64
+        i64::from(self.length)
     }
 }
 
@@ -2086,176 +2178,150 @@ impl BKDReader {
         Ok(counter.count != last_leaf_node_point_count)
     }
 
+    /// Visits one leaf: its doc IDs into the reused scratch array, then its
+    /// values.
+    ///
+    /// Equivalent to `BKDPointTree.visitDocValues(IntersectVisitor, long)` and
+    /// `readDocIDs` (`BKDReader.java:640-674`): the point count is read
+    /// unchecked into an `int`, and every array is the tree's reused scratch,
+    /// so a corrupt count or run fails where Java's does — an
+    /// `ArrayIndexOutOfBoundsException` on the arrays, stale doc IDs from an
+    /// earlier leaf, or the late "Sub blocks do not add up" check.
     fn visit_leaf(
         leaf_in: &mut Box<dyn IndexInput>,
         config: &BKDConfig,
         version: i32,
         block_fp: i64,
         visitor: &mut dyn IntersectVisitor,
+        scratch: &mut LeafScratch,
     ) -> Result<()> {
         leaf_in.seek(block_fp)?;
-        let count = read_leaf_count(leaf_in.as_mut(), config)?;
-        // Java decodes into `scratchIterator.docIDs`, an
-        // `int[maxPointsInLeafNode]` (`BKDReader.java:1042-1046`).
-        let mut doc_ids = vec![0i32; count.max(config.max_points_in_leaf_node.max(0) as usize)];
-        DocIdsWriter::read_doc_ids(leaf_in.as_mut(), count, &mut doc_ids, version)?;
-        let doc_ids = &doc_ids[..count];
-        let mut common_prefix_lengths = vec![0usize; config.num_dims as usize];
-        let mut scratch_packed = vec![0u8; config.packed_bytes_length() as usize];
-        read_common_prefixes(
-            leaf_in.as_mut(),
-            &mut common_prefix_lengths,
-            &mut scratch_packed,
-            config,
-        )?;
+        // How many points are stored in this leaf cell:
+        let count = leaf_in.read_v_int()?;
+        DocIdsWriter::read_doc_ids(leaf_in.as_mut(), count, &mut scratch.doc_ids, version)?;
         if version >= VERSION_LOW_CARDINALITY_LEAVES {
-            Self::visit_leaf_with_cardinality(
-                leaf_in,
-                config,
-                version,
-                &mut common_prefix_lengths,
-                &mut scratch_packed,
-                doc_ids,
-                visitor,
-            )
+            Self::visit_leaf_with_cardinality(leaf_in, config, version, scratch, count, visitor)
         } else {
-            Self::visit_leaf_no_cardinality(
-                leaf_in,
-                config,
-                version,
-                &mut common_prefix_lengths,
-                &mut scratch_packed,
-                doc_ids,
-                visitor,
-            )
+            Self::visit_leaf_no_cardinality(leaf_in, config, version, scratch, count, visitor)
         }
     }
 
     /// Visits a leaf block written in the version-7-and-later layout, where the
     /// compressed-dimension byte precedes the actual value bounds.
     ///
-    /// Equivalent to `BKDReader.visitDocValuesWithCardinality`.
+    /// Equivalent to `BKDReader.visitDocValuesWithCardinality`
+    /// (`BKDReader.java:801-860`).
     fn visit_leaf_with_cardinality(
         leaf_in: &mut Box<dyn IndexInput>,
         config: &BKDConfig,
         version: i32,
-        common_prefix_lengths: &mut [usize],
-        scratch_packed: &mut [u8],
-        doc_ids: &[i32],
+        scratch: &mut LeafScratch,
+        count: i32,
         visitor: &mut dyn IntersectVisitor,
     ) -> Result<()> {
+        read_common_prefixes(
+            leaf_in.as_mut(),
+            &mut scratch.common_prefix_lengths,
+            &mut scratch.data_packed,
+            config,
+        )?;
         let compressed_dim = read_compressed_dim(leaf_in.as_mut(), version, config)?;
         if compressed_dim == -1 {
-            // All values in the leaf are identical: the packed value is fully
-            // determined by the common prefixes, and no bounds are stored, even
-            // when there are several index dimensions.
-            //
-            // Equivalent to `BKDReader.visitUniqueRawDocValues`: one bulk
-            // `visit(DocIdSetIterator, byte[])` call, not N per-doc calls.
-            visitor.grow(doc_ids.len() as i32)?;
-            let mut iter = BkdReaderDocIdSetIterator::new(doc_ids);
-            iter.reset(0, doc_ids.len());
-            visitor.visit_iterator_with_value(&mut iter, scratch_packed)?;
+            // all values are the same
+            visitor.grow(count)?;
+            visit_unique_raw_doc_values(&scratch.data_packed, &scratch.doc_ids, count, visitor)?;
             return Ok(());
         }
         if config.num_index_dims != 1 {
             if Self::refine_relation_with_leaf_bounds(
                 leaf_in.as_mut(),
                 config,
-                common_prefix_lengths,
-                scratch_packed,
-                doc_ids,
+                scratch,
+                count,
                 visitor,
             )? {
                 return Ok(());
             }
         } else {
-            // Single index dimension: the cell bounds from the index are the
-            // bounds of the values, so no refinement is possible.
-            visitor.grow(doc_ids.len() as i32)?;
+            visitor.grow(count)?;
         }
         if compressed_dim == -2 {
+            // low cardinality values
             visit_sparse_doc_values(
                 leaf_in.as_mut(),
                 config,
-                common_prefix_lengths,
-                scratch_packed,
-                doc_ids,
+                &scratch.common_prefix_lengths,
+                &mut scratch.data_packed,
+                &scratch.doc_ids,
+                count,
                 visitor,
-            )?;
+            )
         } else {
+            // high cardinality
             visit_compressed_doc_values(
                 leaf_in.as_mut(),
                 config,
-                common_prefix_lengths,
-                scratch_packed,
-                doc_ids,
+                &mut scratch.common_prefix_lengths,
+                &mut scratch.data_packed,
+                &scratch.doc_ids,
+                count,
                 visitor,
-                compressed_dim,
-            )?;
+                i32::from(compressed_dim),
+            )
         }
-        Ok(())
     }
 
     /// Visits a leaf block written in the pre-version-7 layout, where the actual
     /// value bounds precede the compressed-dimension byte.
     ///
-    /// Equivalent to `BKDReader.visitDocValuesNoCardinality`.
+    /// Equivalent to `BKDReader.visitDocValuesNoCardinality`
+    /// (`BKDReader.java:747-799`).
     fn visit_leaf_no_cardinality(
         leaf_in: &mut Box<dyn IndexInput>,
         config: &BKDConfig,
         version: i32,
-        common_prefix_lengths: &mut [usize],
-        scratch_packed: &mut [u8],
-        doc_ids: &[i32],
+        scratch: &mut LeafScratch,
+        count: i32,
         visitor: &mut dyn IntersectVisitor,
     ) -> Result<()> {
+        read_common_prefixes(
+            leaf_in.as_mut(),
+            &mut scratch.common_prefix_lengths,
+            &mut scratch.data_packed,
+            config,
+        )?;
         if config.num_index_dims != 1 && version >= VERSION_LEAF_STORES_BOUNDS {
             if Self::refine_relation_with_leaf_bounds(
                 leaf_in.as_mut(),
                 config,
-                common_prefix_lengths,
-                scratch_packed,
-                doc_ids,
+                scratch,
+                count,
                 visitor,
             )? {
                 return Ok(());
             }
         } else {
-            visitor.grow(doc_ids.len() as i32)?;
+            visitor.grow(count)?;
         }
         let compressed_dim = read_compressed_dim(leaf_in.as_mut(), version, config)?;
         if compressed_dim == -1 {
-            // All values are the same; `grow` was already called above.
-            //
-            // Equivalent to `BKDReader.visitUniqueRawDocValues`: one bulk
-            // `visit(DocIdSetIterator, byte[])` call, not N per-doc calls.
-            let mut iter = BkdReaderDocIdSetIterator::new(doc_ids);
-            iter.reset(0, doc_ids.len());
-            visitor.visit_iterator_with_value(&mut iter, scratch_packed)?;
+            visit_unique_raw_doc_values(&scratch.data_packed, &scratch.doc_ids, count, visitor)
         } else {
             visit_compressed_doc_values(
                 leaf_in.as_mut(),
                 config,
-                common_prefix_lengths,
-                scratch_packed,
-                doc_ids,
+                &mut scratch.common_prefix_lengths,
+                &mut scratch.data_packed,
+                &scratch.doc_ids,
+                count,
                 visitor,
-                compressed_dim,
-            )?;
+                i32::from(compressed_dim),
+            )
         }
-        Ok(())
     }
 
     /// Reads the leaf's actual value bounds and re-checks the visitor relation
     /// against them, refining what the cell bounds from the index implied.
-    ///
-    /// The cell bounds reflect the splits that produced the leaf, but the
-    /// actual values stored in it can span a far narrower range — especially
-    /// when dimensions are correlated, so that splitting on one dimension
-    /// significantly changes the range of another. Re-checking here is cheap
-    /// and can reveal that the block either entirely matches or does not match
-    /// at all.
     ///
     /// Returns `Ok(true)` when the leaf was fully handled by this check: the
     /// bounds fall outside the query (nothing visited) or they fall entirely
@@ -2267,38 +2333,35 @@ impl BKDReader {
     ///
     /// Equivalent to the `readMinMax` + `visitor.compare` block shared by
     /// `BKDReader.visitDocValuesNoCardinality` and
-    /// `BKDReader.visitDocValuesWithCardinality`.
+    /// `BKDReader.visitDocValuesWithCardinality` (`BKDReader.java:759-786`),
+    /// over the tree's reused `scratchMinIndexPackedValue` and
+    /// `scratchMaxIndexPackedValue`.
     fn refine_relation_with_leaf_bounds(
         leaf_in: &mut dyn IndexInput,
         config: &BKDConfig,
-        common_prefix_lengths: &[usize],
-        scratch_packed: &[u8],
-        doc_ids: &[i32],
+        scratch: &mut LeafScratch,
+        count: i32,
         visitor: &mut dyn IntersectVisitor,
     ) -> Result<bool> {
         let bounds_len = config.packed_index_bytes_length() as usize;
-        let mut min_packed = vec![0u8; bounds_len];
-        let mut max_packed = vec![0u8; bounds_len];
-        // Seed both bounds with the common prefixes before reading the
-        // adjusted box from the stream.
-        min_packed.copy_from_slice(&scratch_packed[..bounds_len]);
-        max_packed.copy_from_slice(&scratch_packed[..bounds_len]);
+        // Copy common prefixes before reading adjusted box.
+        scratch.min_packed[..bounds_len].copy_from_slice(&scratch.data_packed[..bounds_len]);
+        scratch.max_packed[..bounds_len].copy_from_slice(&scratch.min_packed[..bounds_len]);
         read_min_max(
             leaf_in,
             config,
-            common_prefix_lengths,
-            &mut min_packed,
-            &mut max_packed,
+            &scratch.common_prefix_lengths,
+            &mut scratch.min_packed,
+            &mut scratch.max_packed,
         )?;
 
-        let relation = visitor.compare(&min_packed, &max_packed)?;
+        let relation = visitor.compare(&scratch.min_packed, &scratch.max_packed)?;
         if relation == Relation::CellOutsideQuery {
             return Ok(true);
         }
-        visitor.grow(doc_ids.len() as i32)?;
+        visitor.grow(count)?;
         if relation == Relation::CellInsideQuery {
-            let ints_ref = IntsRef::new(doc_ids.to_vec());
-            visitor.visit_ints_ref(&ints_ref)?;
+            visit_scratch_ints_ref(visitor, &scratch.doc_ids, count)?;
             return Ok(true);
         }
         Ok(false)
@@ -2656,8 +2719,9 @@ pub struct BKDPointTree {
     last_leaf_node_point_count: i32,
     right_most_leaf_node: i32,
     is_tree_balanced: bool,
-    /// Reusable scratch for `visit_doc_ids` (the `addAll` bulk-accept walk).
-    scratch_doc_ids: Vec<i32>,
+    /// The reused leaf scratch, shared with the trees cloned from this one;
+    /// see [`LeafScratch`].
+    scratch: Arc<Mutex<LeafScratch>>,
 }
 
 impl BKDPointTree {
@@ -2669,6 +2733,7 @@ impl BKDPointTree {
     /// leaf-block-FP delta, matching Java).
     fn new(reader: &BKDReader) -> Result<Self> {
         let config = reader.config.clone();
+        let scratch = Arc::new(Mutex::new(LeafScratch::new(&config)));
         let num_leaves = reader.num_leaves;
         let version = reader.version;
         let point_count = reader.point_count;
@@ -2723,7 +2788,7 @@ impl BKDPointTree {
             last_leaf_node_point_count,
             right_most_leaf_node,
             is_tree_balanced,
-            scratch_doc_ids: Vec::new(),
+            scratch,
         })
     }
 
@@ -2843,21 +2908,19 @@ impl BKDPointTree {
             );
             let block_fp = self.current().leaf_block_fp;
             self.leaf.seek(block_fp)?;
-            let count = read_leaf_count(self.leaf.as_mut(), &self.config)?;
-            // Java's `scratchIterator.docIDs` is an `int[maxPointsInLeafNode]`
-            // (`BKDReader.java:1042-1046`).
-            self.scratch_doc_ids.clear();
-            self.scratch_doc_ids.resize(
-                count.max(self.config.max_points_in_leaf_node.max(0) as usize),
-                0,
-            );
+            // How many points are stored in this leaf cell:
+            let count = self.leaf.read_v_int()?;
             // No need to call grow(), it has been called up-front. Borrow
             // `scratchIterator.docIDs` as decoding buffer.
+            let mut scratch = self
+                .scratch
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             DocIdsWriter::read_doc_ids_visitor(
                 self.leaf.as_mut(),
                 count,
                 visitor,
-                &mut self.scratch_doc_ids,
+                &mut scratch.doc_ids,
                 self.version,
             )?;
         } else {
@@ -2882,12 +2945,17 @@ impl BKDPointTree {
                 self.current().node_id
             );
             let block_fp = self.current().leaf_block_fp;
+            let mut scratch = self
+                .scratch
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             BKDReader::visit_leaf(
                 &mut self.leaf,
                 &self.config,
                 self.version,
                 block_fp,
                 visitor,
+                &mut scratch,
             )?;
         } else {
             self.push_left()?;
@@ -2925,7 +2993,7 @@ impl PointTree for BKDPointTree {
             last_leaf_node_point_count: self.last_leaf_node_point_count,
             right_most_leaf_node: self.right_most_leaf_node,
             is_tree_balanced: self.is_tree_balanced,
-            scratch_doc_ids: Vec::new(),
+            scratch: Arc::clone(&self.scratch),
         }))
     }
 
@@ -3076,300 +3144,241 @@ fn balance_tree_node_position(
     }
 }
 
-/// Reads a leaf block's point count and refuses one that cannot describe a
-/// leaf.
-///
-/// **Divergence from Lucene 10.5.0.** Java reads the count unchecked
-/// (`BKDReader.java:668`, `BKDReader.java:604`); its failure on a count
-/// outside `[0, maxPointsInLeafNode]` depends on the leaf's doc-ID encoding
-/// and on the input implementation (an `ArrayIndexOutOfBoundsException` or
-/// `IndexOutOfBoundsException` from an unchecked array write, or none at all
-/// for a continuous leaf visited in bulk). The port's decoders write into
-/// slices, where the same write is a panic rather than an exception, so the
-/// count is refused here with `CorruptIndexException`.
-///
-/// Java reads the count into a **fixed** `int[maxPointsInLeafNode]` that the
-/// cursor reuses across leaves (`BKDReader.readDocIDs`,
-/// `BKDReaderDocIDSetIterator`), so a count above that array's length throws
-/// `ArrayIndexOutOfBoundsException` inside `DocIdsWriter.readInts` and a
-/// negative one never fills anything. This port allocates the doc-ID buffer
-/// per leaf, which would size an allocation from the file, so the same range
-/// is enforced up front: it refuses exactly the counts Java cannot read, and
-/// no others.
-fn read_leaf_count(in_: &mut dyn IndexInput, config: &BKDConfig) -> Result<usize> {
-    let count = in_.read_v_int()?;
-    if count < 0 || count > config.max_points_in_leaf_node {
-        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-            format!(
-                "leaf block declares {count} points, but a leaf holds at most {}",
-                config.max_points_in_leaf_node
-            ),
-        )));
+/// The scratch arrays a `BKDPointTree` allocates once and reuses for every
+/// leaf it visits, shared with the trees `clone()` makes of it
+/// (`BKDReader.java:233-260,342-360`): `scratchIterator.docIDs`
+/// (`int[maxPointsInLeafNode]`), `commonPrefixLengths` (`int[numDims]`),
+/// `scratchDataPackedValue` (`byte[packedBytesLength]`) and the two
+/// `byte[packedIndexBytesLength]` bounds. What a leaf does not overwrite
+/// keeps the previous leaf's contents, as in Java.
+pub(crate) struct LeafScratch {
+    doc_ids: Vec<i32>,
+    common_prefix_lengths: Vec<i32>,
+    data_packed: Vec<u8>,
+    min_packed: Vec<u8>,
+    max_packed: Vec<u8>,
+}
+
+impl LeafScratch {
+    fn new(config: &BKDConfig) -> Self {
+        Self {
+            doc_ids: vec![0; config.max_points_in_leaf_node.max(0) as usize],
+            common_prefix_lengths: vec![0; config.num_dims.max(0) as usize],
+            data_packed: vec![0; config.packed_bytes_length().max(0) as usize],
+            min_packed: vec![0; config.packed_index_bytes_length().max(0) as usize],
+            max_packed: vec![0; config.packed_index_bytes_length().max(0) as usize],
+        }
     }
-    Ok(count as usize)
+}
+
+/// Java's `array[index] = value` on a `byte[]`.
+fn byte_array_store(array: &mut [u8], index: i32, value: u8) -> Result<()> {
+    match usize::try_from(index).ok().and_then(|i| array.get_mut(i)) {
+        Some(slot) => {
+            *slot = value;
+            Ok(())
+        }
+        None => Err(array_index_out_of_bounds(i64::from(index), array.len())),
+    }
+}
+
+/// `scratchIntsRef.ints = scratchIterator.docIDs; scratchIntsRef.length =
+/// count; visitor.visit(scratchIntsRef)` (`BKDReader.java:781-784`).
+///
+/// **Divergence from Lucene 10.5.0.** Java's `IntsRef` takes any `int`
+/// length; this port's `usize` length cannot carry a negative one, which
+/// reaches the visitor as an empty reference, and a length past the array is
+/// handed over as the whole array followed by the
+/// `ArrayIndexOutOfBoundsException` the default `visit(IntsRef)` loop throws
+/// at that index.
+fn visit_scratch_ints_ref(
+    visitor: &mut dyn IntersectVisitor,
+    doc_ids: &[i32],
+    count: i32,
+) -> Result<()> {
+    let length = count.max(0) as usize;
+    if length > doc_ids.len() {
+        visitor.visit_ints_ref(&IntsRef::with_offset_length(
+            doc_ids.to_vec(),
+            0,
+            doc_ids.len(),
+        ))?;
+        return Err(array_index_out_of_bounds(
+            doc_ids.len() as i64,
+            doc_ids.len(),
+        ));
+    }
+    visitor.visit_ints_ref(&IntsRef::with_offset_length(doc_ids.to_vec(), 0, length))
 }
 
 /// Reads the common prefix of every dimension of a leaf.
 ///
-/// Equivalent to `BKDReader.readCommonPrefixes` (`BKDReader.java:983-993`).
-///
-/// **Divergence from Lucene 10.5.0.** Java stores the prefix unchecked; a
-/// prefix outside `[0, bytesPerDim]` later reaches `readBytes` with a negative
-/// length (`bytesPerDim - prefix`), which `BufferedIndexInput` ignores and
-/// `MemorySegmentIndexInput` rejects. [`DataInput::read_bytes`] takes a
-/// `usize` length, which cannot carry a negative one, so the prefix is refused
-/// here with `CorruptIndexException`.
+/// Equivalent to `BKDReader.readCommonPrefixes` (`BKDReader.java:983-993`):
+/// each prefix is stored unchecked, and a positive one reads that many bytes
+/// at its dimension's offset.
 fn read_common_prefixes(
     in_: &mut dyn IndexInput,
-    common_prefix_lengths: &mut [usize],
+    common_prefix_lengths: &mut [i32],
     scratch_packed: &mut [u8],
     config: &BKDConfig,
 ) -> Result<()> {
-    for (dim, slot) in common_prefix_lengths
-        .iter_mut()
-        .enumerate()
-        .take(config.num_dims as usize)
-    {
+    for dim in 0..config.num_dims {
         let prefix = in_.read_v_int()?;
-        // A common prefix can only be as long as the dimension it prefixes:
-        // that is the whole range `BKDWriter` can write. Java stores the value
-        // unchecked and then either passes a negative length to `readBytes`,
-        // or overwrites the next dimension and underflows
-        // `bytesPerDim - prefix` further down — both of which end in an
-        // exception (`BKDReader.java:983-993`), so refusing it here refuses
-        // nothing Java could have read.
-        if prefix < 0 || prefix > config.bytes_per_dim {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "Got prefix={prefix} for dim={dim}, but bytesPerDim={}",
-                    config.bytes_per_dim
-                ),
-            )));
-        }
-        let prefix = prefix as usize;
-        *slot = prefix;
+        int_array_store(common_prefix_lengths, dim, prefix)?;
         if prefix > 0 {
-            let off = dim * config.bytes_per_dim as usize;
-            in_.read_bytes(Some(scratch_packed), off, prefix)?;
+            crate::store::read_bytes_java(
+                in_,
+                scratch_packed,
+                dim.wrapping_mul(config.bytes_per_dim),
+                prefix,
+            )?;
         }
     }
     Ok(())
 }
 
+/// Equivalent to `BKDReader.readCompressedDim` (`BKDReader.java:972-981`).
 fn read_compressed_dim(in_: &mut dyn IndexInput, version: i32, config: &BKDConfig) -> Result<i8> {
-    let dim = in_.read_byte()? as i8;
-    if dim < -2 || dim as i32 >= config.num_dims {
-        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-            format!("Got compressedDim={}", dim),
-        )));
+    let compressed_dim = in_.read_byte()? as i8;
+    if compressed_dim < -2
+        || i32::from(compressed_dim) >= config.num_dims
+        || (version < VERSION_LOW_CARDINALITY_LEAVES && compressed_dim == -2)
+    {
+        return Err(LuceneError::corrupt_index(
+            format!("Got compressedDim={compressed_dim}"),
+            in_.to_java_string(),
+        ));
     }
-    if version < VERSION_LOW_CARDINALITY_LEAVES && dim == -2 {
-        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-            "LOW_CARDINALITY not supported in this version".to_string(),
-        )));
-    }
-    Ok(dim)
+    Ok(compressed_dim)
 }
 
 /// Reads the leaf's actual value bounds, one min/max pair per index dimension,
 /// skipping the common prefix of each dimension.
 ///
-/// Equivalent to `BKDReader.readMinMax`.
+/// Equivalent to `BKDReader.readMinMax` (`BKDReader.java:862-871`): the
+/// lengths `bytesPerDim - prefix` are Java `int`s, negative after a corrupt
+/// prefix, and go to the input as they are.
 fn read_min_max(
     in_: &mut dyn IndexInput,
     config: &BKDConfig,
-    common_prefix_lengths: &[usize],
+    common_prefix_lengths: &[i32],
     min_packed: &mut [u8],
     max_packed: &mut [u8],
 ) -> Result<()> {
-    for (dim, &prefix) in common_prefix_lengths
-        .iter()
-        .enumerate()
-        .take(config.num_index_dims as usize)
-    {
-        let off = dim * config.bytes_per_dim as usize + prefix;
-        let suffix = config.bytes_per_dim as usize - prefix;
-        in_.read_bytes(Some(min_packed), off, suffix)?;
-        in_.read_bytes(Some(max_packed), off, suffix)?;
+    for dim in 0..config.num_index_dims {
+        let prefix = int_array_load(common_prefix_lengths, dim)?;
+        let off = dim.wrapping_mul(config.bytes_per_dim).wrapping_add(prefix);
+        let len = config.bytes_per_dim.wrapping_sub(prefix);
+        crate::store::read_bytes_java(in_, min_packed, off, len)?;
+        crate::store::read_bytes_java(in_, max_packed, off, len)?;
     }
     Ok(())
 }
 
+/// Reads the suffix of every dimension of one value.
+fn read_suffixes(
+    in_: &mut dyn IndexInput,
+    config: &BKDConfig,
+    common_prefix_lengths: &[i32],
+    scratch_packed: &mut [u8],
+) -> Result<()> {
+    for dim in 0..config.num_dims {
+        let prefix = int_array_load(common_prefix_lengths, dim)?;
+        crate::store::read_bytes_java(
+            in_,
+            scratch_packed,
+            dim.wrapping_mul(config.bytes_per_dim).wrapping_add(prefix),
+            config.bytes_per_dim.wrapping_sub(prefix),
+        )?;
+    }
+    Ok(())
+}
+
+/// Equivalent to `BKDReader.visitUniqueRawDocValues` (`BKDReader.java:897-905`):
+/// one bulk `visit(DocIdSetIterator, byte[])` over the first `count` doc IDs.
+fn visit_unique_raw_doc_values(
+    scratch_packed: &[u8],
+    doc_ids: &[i32],
+    count: i32,
+    visitor: &mut dyn IntersectVisitor,
+) -> Result<()> {
+    let mut iter = BkdReaderDocIdSetIterator::new(doc_ids);
+    iter.reset(0, count);
+    visitor.visit_iterator_with_value(&mut iter, scratch_packed)
+}
+
+/// Equivalent to `BKDReader.visitSparseRawDocValues` (`BKDReader.java:873-895`):
+/// each run's length is read unchecked and handed to the reused scratch
+/// iterator, so a run past the block visits stale doc IDs or walks off the
+/// array, and the trailing check reports a total that does not add up.
 fn visit_sparse_doc_values(
     in_: &mut dyn IndexInput,
     config: &BKDConfig,
-    common_prefix_lengths: &[usize],
+    common_prefix_lengths: &[i32],
     scratch_packed: &mut [u8],
     doc_ids: &[i32],
+    count: i32,
     visitor: &mut dyn IntersectVisitor,
 ) -> Result<()> {
-    let mut i = 0;
-    while i < doc_ids.len() {
+    let mut i: i32 = 0;
+    while i < count {
         let length = in_.read_v_int()?;
-        // **Divergence from Lucene 10.5.0.** See the explanation below: the
-        // run is refused before it is visited.
-        if length < 0 || length as usize > doc_ids.len() - i {
-            // Java hands `scratchIterator.reset(i, length)`
-            // (`BKDReader.java:916`) a *reusable* `int[maxPointsInLeafNode]`
-            // (`BKDReader.java:1046`), so a run longer than the block visits
-            // stale doc IDs left over from an earlier leaf and fails at the
-            // trailing `i != count` check, or throws
-            // `ArrayIndexOutOfBoundsException` once it leaves the array; a
-            // negative one walks `i` backwards until it does the same. Either
-            // way the block is refused. This port holds a slice of exactly
-            // `count` doc IDs, so it refuses the block at the point the run
-            // overruns rather than reading out of bounds.
-            //
-            // For an over-long run the number reported below is Java's own:
-            // Java exits its loop on the very iteration that overruns, so the
-            // accumulated `i` it prints is exactly the `i + length` printed
-            // here. A *negative* length is not the same: `nextDoc` stops on
-            // `idx == length`, which a negative length never reaches, so Java
-            // walks off `docIDs` and throws `ArrayIndexOutOfBoundsException`
-            // without printing any number at all. Both are refusals; only the
-            // first has a Java message to match.
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "Sub blocks do not add up to the expected count: {} != {}",
-                    doc_ids.len(),
-                    i as i64 + i64::from(length)
-                ),
-            )));
-        }
-        let length = length as usize;
-        for (dim, &prefix) in common_prefix_lengths
-            .iter()
-            .enumerate()
-            .take(config.num_dims as usize)
-        {
-            let off = dim * config.bytes_per_dim as usize + prefix;
-            in_.read_bytes(
-                Some(scratch_packed),
-                off,
-                config.bytes_per_dim as usize - prefix,
-            )?;
-        }
-        // One `visit(DocIdSetIterator, byte[])` per run of equal values
-        // (`BKDReader.java:915-917`), not one `visit(int, byte[])` per doc.
+        read_suffixes(in_, config, common_prefix_lengths, scratch_packed)?;
         let mut scratch_iterator = BkdReaderDocIdSetIterator::new(doc_ids);
         scratch_iterator.reset(i, length);
         visitor.visit_iterator_with_value(&mut scratch_iterator, scratch_packed)?;
-        i += length;
+        i = i.wrapping_add(length);
     }
-    if i != doc_ids.len() {
+    if i != count {
         return Err(LuceneError::corrupt_index(
-            format!(
-                "Sub blocks do not add up to the expected count: {} != {}",
-                doc_ids.len(),
-                i
-            ),
-            in_.resource_description(),
+            format!("Sub blocks do not add up to the expected count: {count} != {i}"),
+            in_.to_java_string(),
         ));
     }
     Ok(())
 }
 
+/// Equivalent to `BKDReader.visitCompressedDocValues` (`BKDReader.java:907-970`):
+/// the byte at `compressedByteOffset` is run-length compressed, the other
+/// suffix bytes are stored verbatim. The offset and the incremented prefix are
+/// Java `int`s taken unchecked, and every doc ID is read from the reused
+/// scratch array at `i + j`.
+#[allow(clippy::too_many_arguments)]
 fn visit_compressed_doc_values(
     in_: &mut dyn IndexInput,
     config: &BKDConfig,
-    common_prefix_lengths: &mut [usize],
+    common_prefix_lengths: &mut [i32],
     scratch_packed: &mut [u8],
     doc_ids: &[i32],
+    count: i32,
     visitor: &mut dyn IntersectVisitor,
-    compressed_dim: i8,
+    compressed_dim: i32,
 ) -> Result<()> {
-    let compressed_dim = compressed_dim as usize;
-    // The compressed byte is the first one *after* that dimension's own common
-    // prefix, so the dimension must have a byte left to compress. That is
-    // exactly the invariant `BKDWriter` asserts before it writes the block —
-    // `assert commonPrefixLengths[sortedDim] < config.bytesPerDim()`
-    // (`BKDWriter.java:1345`) — and a leaf whose whole packed value is covered
-    // by its prefixes is written as `compressedDim == -1` instead, so no
-    // segment Lucene has written can name a dimension that fails it.
-    //
-    // Bounding the *global* offset by `packedBytesLength` is not the same
-    // check: it only fires when the named dimension happens to be the last
-    // one. A constant non-final dimension — which `readCommonPrefixes`
-    // legitimately stores as `prefix == bytesPerDim` — passes it, and then
-    // `commonPrefixLengths[compressedDim]++` makes `bytesPerDim - prefix`
-    // underflow.
-    //
-    // **Divergence from Lucene 10.5.0.** Java has no reader-side check at
-    // all: it reaches
-    // `in.readBytes(scratchPackedValue, off, -1)` (`BKDReader.java:953` and the
-    // suffix reads that follow it), which `BufferedIndexInput` silently
-    // ignores because it is guarded by `if (len > 0)`, and which other
-    // `IndexInput` implementations throw on — in no case does the JVM abort.
-    // Refusing the block is the faithful answer for this port, because Rust's
-    // `usize` cannot express the negative length that Java passes on: this is
-    // a declared divergence in the error *surface* only, never in which
-    // segments are accepted.
-    if common_prefix_lengths[compressed_dim] >= config.bytes_per_dim as usize {
-        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-            format!(
-                "compressedDim={compressed_dim} has a common prefix of {} bytes, \
-             but bytesPerDim={} leaves no byte to compress",
-                common_prefix_lengths[compressed_dim], config.bytes_per_dim
-            ),
-        )));
-    }
-    let compressed_byte_offset =
-        compressed_dim * config.bytes_per_dim as usize + common_prefix_lengths[compressed_dim];
-    common_prefix_lengths[compressed_dim] += 1;
-    let mut i = 0;
-    while i < doc_ids.len() {
-        scratch_packed[compressed_byte_offset] = in_.read_byte()?;
-        let run_len = in_.read_byte()? as usize;
-        // **Divergence from Lucene 10.5.0.** See the explanation below: the
-        // run is refused before it is visited.
-        if run_len > doc_ids.len() - i {
-            // Java indexes a *reusable* `int[maxPointsInLeafNode]` here
-            // (`BKDReader.java:963`), so an over-long run visits stale doc IDs
-            // left over from an earlier leaf and only fails at the trailing
-            // `i != count` check, or throws `ArrayIndexOutOfBoundsException`
-            // once it leaves the array. Either way the block is refused and
-            // whatever the visitor saw in between is discarded. This port
-            // holds a slice of exactly `count` doc IDs, so it refuses the
-            // block at the point the run overruns rather than reading out of
-            // bounds — the same outcome, reached one step earlier, and with
-            // the same numbers whenever Java reaches its own check: `runLen`
-            // is an unsigned byte, so it is never negative, and Java exits its
-            // loop on the iteration that overruns, which makes the `i` it
-            // prints exactly the `i + run_len` printed here.
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "Sub blocks do not add up to the expected count: {} != {}",
-                    doc_ids.len(),
-                    i + run_len
-                ),
-            )));
+    let compressed_prefix = int_array_load(common_prefix_lengths, compressed_dim)?;
+    let compressed_byte_offset = compressed_dim
+        .wrapping_mul(config.bytes_per_dim)
+        .wrapping_add(compressed_prefix);
+    int_array_store(
+        common_prefix_lengths,
+        compressed_dim,
+        compressed_prefix.wrapping_add(1),
+    )?;
+    let mut i: i32 = 0;
+    while i < count {
+        let byte = in_.read_byte()?;
+        byte_array_store(scratch_packed, compressed_byte_offset, byte)?;
+        let run_len = i32::from(in_.read_byte()?);
+        for j in 0..run_len {
+            read_suffixes(in_, config, common_prefix_lengths, scratch_packed)?;
+            let doc = int_array_load(doc_ids, i.wrapping_add(j))?;
+            visitor.visit_with_value(doc, scratch_packed)?;
         }
-        for _ in 0..run_len {
-            for (dim, &prefix) in common_prefix_lengths
-                .iter()
-                .enumerate()
-                .take(config.num_dims as usize)
-            {
-                let off = dim * config.bytes_per_dim as usize + prefix;
-                in_.read_bytes(
-                    Some(scratch_packed),
-                    off,
-                    config.bytes_per_dim as usize - prefix,
-                )?;
-            }
-            visitor.visit_with_value(doc_ids[i], scratch_packed)?;
-            i += 1;
-        }
+        i = i.wrapping_add(run_len);
     }
-    if i != doc_ids.len() {
-        // BKDReader.java:966-969.
+    if i != count {
         return Err(LuceneError::corrupt_index(
-            format!(
-                "Sub blocks do not add up to the expected count: {} != {}",
-                doc_ids.len(),
-                i
-            ),
-            in_.resource_description(),
+            format!("Sub blocks do not add up to the expected count: {count} != {i}"),
+            in_.to_java_string(),
         ));
     }
     Ok(())
@@ -4051,12 +4060,7 @@ impl BKDWriter {
         doc_maps: Option<&[DocMap]>,
         readers: &[&dyn PointValues],
     ) -> Result<Option<BKDFinalizer>> {
-        // `Option::is_none_or` would read better but is newer than this
-        // crate's MSRV of 1.80.
-        #[allow(clippy::unnecessary_map_or)]
-        {
-            debug_assert!(doc_maps.map_or(true, |maps| maps.len() == readers.len()));
-        }
+        debug_assert!(doc_maps.is_none_or(|maps| maps.len() == readers.len()));
 
         let mut queue = PriorityQueue::new(
             readers.len(),
@@ -6512,7 +6516,7 @@ mod tests {
                 let bytes = out.into_inner();
                 let mut input = MockIndexInput::new(bytes, "docids.bin");
                 let mut decoded = vec![0i32; doc_ids.len()];
-                DocIdsWriter::read_doc_ids(&mut input, doc_ids.len(), &mut decoded, version)
+                DocIdsWriter::read_doc_ids(&mut input, doc_ids.len() as i32, &mut decoded, version)
                     .unwrap();
                 assert_eq!(
                     decoded, *doc_ids,
@@ -6564,7 +6568,8 @@ mod tests {
             let bytes = out.into_inner();
             let mut input = MockIndexInput::new(bytes, "docids.bin");
             let mut decoded = vec![0i32; doc_ids.len()];
-            DocIdsWriter::read_doc_ids(&mut input, doc_ids.len(), &mut decoded, version).unwrap();
+            DocIdsWriter::read_doc_ids(&mut input, doc_ids.len() as i32, &mut decoded, version)
+                .unwrap();
             assert_eq!(
                 decoded, doc_ids,
                 "BPV_24 round-trip failed at version {}",
@@ -6592,8 +6597,13 @@ mod tests {
 
         let mut input = MockIndexInput::new(bytes, "bpv21.bin");
         let mut decoded = vec![0i32; doc_ids.len()];
-        DocIdsWriter::read_doc_ids(&mut input, doc_ids.len(), &mut decoded, VERSION_CURRENT)
-            .unwrap();
+        DocIdsWriter::read_doc_ids(
+            &mut input,
+            doc_ids.len() as i32,
+            &mut decoded,
+            VERSION_CURRENT,
+        )
+        .unwrap();
         assert_eq!(decoded, doc_ids, "BPV_21 round-trip failed");
 
         // At version 9 the BPV_21 branch is gated off, so the same doc ids fall
@@ -6631,8 +6641,13 @@ mod tests {
 
         let mut input = MockIndexInput::new(bytes, "delta16.bin");
         let mut decoded = vec![0i32; doc_ids.len()];
-        DocIdsWriter::read_doc_ids(&mut input, doc_ids.len(), &mut decoded, VERSION_CURRENT)
-            .unwrap();
+        DocIdsWriter::read_doc_ids(
+            &mut input,
+            doc_ids.len() as i32,
+            &mut decoded,
+            VERSION_CURRENT,
+        )
+        .unwrap();
         assert_eq!(decoded, doc_ids, "DELTA_BPV_16 round-trip failed");
     }
 
@@ -6662,8 +6677,13 @@ mod tests {
 
         let mut input = MockIndexInput::new(bytes, "bitset.bin");
         let mut decoded = vec![0i32; doc_ids.len()];
-        DocIdsWriter::read_doc_ids(&mut input, doc_ids.len(), &mut decoded, VERSION_CURRENT)
-            .unwrap();
+        DocIdsWriter::read_doc_ids(
+            &mut input,
+            doc_ids.len() as i32,
+            &mut decoded,
+            VERSION_CURRENT,
+        )
+        .unwrap();
         assert_eq!(decoded, doc_ids, "BITSET_IDS round-trip failed");
     }
 
@@ -7959,7 +7979,8 @@ mod tests {
         leaf.seek(node.leaf_block_fp).unwrap();
         let count = leaf.read_v_int().unwrap() as usize;
         let mut doc_ids = vec![0i32; count];
-        DocIdsWriter::read_doc_ids(leaf.as_mut(), count, &mut doc_ids, reader.version).unwrap();
+        DocIdsWriter::read_doc_ids(leaf.as_mut(), count as i32, &mut doc_ids, reader.version)
+            .unwrap();
         doc_ids
             .into_iter()
             .map(|d| (d, by_doc.get(&d).cloned().unwrap_or_default()))

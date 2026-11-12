@@ -103,10 +103,6 @@ use crate::index::{
     IndexableFieldType, SegmentInfo,
 };
 use crate::index::{NumericValue, StoredValue};
-use crate::search::doc_values_iteration::{
-    binary_as_iterator, numeric_as_iterator, sorted_as_iterator, sorted_numeric_as_iterator,
-    sorted_set_as_iterator,
-};
 use crate::search::Similarity;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::TrackingDirectoryWrapper;
@@ -4433,24 +4429,26 @@ impl IndexingChain for DefaultIndexingChain {
         let producer = writer.get_doc_values(&self.doc_values_byte_pool)?;
         Ok(Some(match info.doc_values_type {
             DocValuesType::NONE => return Ok(None),
-            DocValuesType::NUMERIC => numeric_as_iterator(crate::codecs::doc_values::non_null(
-                producer.get_numeric(info)?,
-                info,
-            )?),
-            DocValuesType::BINARY => binary_as_iterator(crate::codecs::doc_values::non_null(
-                producer.get_binary(info)?,
-                info,
-            )?),
-            DocValuesType::SORTED => sorted_as_iterator(crate::codecs::doc_values::non_null(
-                producer.get_sorted(info)?,
-                info,
-            )?),
-            DocValuesType::SORTED_NUMERIC => sorted_numeric_as_iterator(
-                crate::codecs::doc_values::non_null(producer.get_sorted_numeric(info)?, info)?,
-            ),
-            DocValuesType::SORTED_SET => sorted_set_as_iterator(
-                crate::codecs::doc_values::non_null(producer.get_sorted_set(info)?, info)?,
-            ),
+            DocValuesType::NUMERIC => {
+                (crate::codecs::doc_values::non_null(producer.get_numeric(info)?, info)?)
+                    as Box<dyn DocIdSetIterator>
+            }
+            DocValuesType::BINARY => {
+                (crate::codecs::doc_values::non_null(producer.get_binary(info)?, info)?)
+                    as Box<dyn DocIdSetIterator>
+            }
+            DocValuesType::SORTED => {
+                (crate::codecs::doc_values::non_null(producer.get_sorted(info)?, info)?)
+                    as Box<dyn DocIdSetIterator>
+            }
+            DocValuesType::SORTED_NUMERIC => {
+                (crate::codecs::doc_values::non_null(producer.get_sorted_numeric(info)?, info)?)
+                    as Box<dyn DocIdSetIterator>
+            }
+            DocValuesType::SORTED_SET => {
+                (crate::codecs::doc_values::non_null(producer.get_sorted_set(info)?, info)?)
+                    as Box<dyn DocIdSetIterator>
+            }
         }))
     }
 

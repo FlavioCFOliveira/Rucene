@@ -22,8 +22,8 @@ use crate::internal::vectorization::{DefaultVectorUtilSupport, VectorUtilSupport
 /// and on a minimum input length — and when a guard fails the tail computes the
 /// whole result on its own.
 ///
-/// Stable Rust has no portable SIMD (`std::simd` is nightly-only; this crate's
-/// MSRV is 1.80), so the lane path cannot be reproduced.
+/// Stable Rust has no portable SIMD (`std::simd` is nightly-only; this crate
+/// targets stable Rust), so the lane path cannot be reproduced.
 /// [`PanamaVectorConstants::PREFERRED_VECTOR_BITSIZE`](super::PanamaVectorConstants::PREFERRED_VECTOR_BITSIZE)
 /// is therefore zero and every guard fails, which makes **the whole
 /// computation Lucene's own scalar tail** — the same code path a JVM takes

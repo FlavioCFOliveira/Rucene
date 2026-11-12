@@ -139,6 +139,10 @@ impl Default for GrowableByteArrayDataOutput {
 }
 
 impl DataOutput for GrowableByteArrayDataOutput {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.util.fst.GrowableByteArrayDataOutput"
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.ensure_capacity(1);
         self.bytes[self.next_write] = b;

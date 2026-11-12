@@ -432,6 +432,15 @@ impl Debug for DefaultAttributeFactory {
 }
 
 impl AttributeFactory for DefaultAttributeFactory {
+    /// Equivalent to `DefaultAttributeFactory.createAttributeInstance`, whose
+    /// missing implementation surfaces as `new IllegalArgumentException("Cannot
+    /// find implementing class for: " + attClass.getName(), cnfe)`
+    /// (`AttributeFactory.java:79-87`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** The message names the attribute by
+    /// its [`TypeId`] (its `Debug` form) instead of the Java class name: the
+    /// factory receives only a `TypeId`, and Rust has no reflection that maps
+    /// a `TypeId` back to a type name. The message prefix is Java's.
     fn create_attribute_instance(
         &self,
         attribute_type: TypeId,
@@ -441,8 +450,7 @@ impl AttributeFactory for DefaultAttributeFactory {
             .map(|ctor| ctor())
             .ok_or_else(|| {
                 LuceneError::illegal_argument(format!(
-                    "no AttributeImpl registered for TypeId {:?}",
-                    attribute_type
+                    "Cannot find implementing class for: {attribute_type:?}"
                 ))
             })
     }

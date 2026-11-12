@@ -19,7 +19,7 @@ use crate::util::vector_util;
 /// Every method in the Java class is a `FloatVector` loop over
 /// `FLOAT_SPECIES.loopBound(elementCount)` elements followed by a scalar loop
 /// that finishes the remainder. Stable Rust has no portable SIMD (`std::simd`
-/// is nightly-only; this crate's MSRV is 1.80), so
+/// is nightly-only; this crate targets stable Rust), so
 /// [`PanamaVectorConstants::PREFERRED_VECTOR_BITSIZE`](super::PanamaVectorConstants::PREFERRED_VECTOR_BITSIZE)
 /// is zero, the loop bound is zero, and **Lucene's own scalar remainder
 /// computes the whole result**. Each method below is that remainder,

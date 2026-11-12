@@ -22,9 +22,12 @@ pub struct Pair<A, B> {
     pub output2: B,
 }
 
-impl<A: fmt::Debug, B: fmt::Debug> fmt::Display for Pair<A, B> {
+/// Equivalent to `Pair.toString()` (`PairOutputs.java:63-66`):
+/// `"Pair(" + output1 + "," + output2 + ")"`, each half by its own
+/// `toString()`.
+impl<A: fmt::Display, B: fmt::Display> fmt::Display for Pair<A, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Pair({:?},{:?})", self.output1, self.output2)
+        write!(f, "Pair({},{})", self.output1, self.output2)
     }
 }
 

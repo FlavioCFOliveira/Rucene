@@ -1809,7 +1809,7 @@ impl Tessellation {
                         self.sort_by_morton_with_reset(search_node);
                         self.sort_by_morton_with_reset(split_node);
                     }
-                    self.notify_monitor_split(depth, monitor, search_node, split_node)?;
+                    self.notify_monitor_split(depth, monitor, Some(search_node), Some(split_node))?;
                     self.earcut_linked_list(
                         Some(search_node),
                         tessellation,
@@ -1966,14 +1966,23 @@ impl Tessellation {
         Ok(())
     }
 
+    /// Equivalent to `Tessellator.notifyMonitorSplit` (`Tessellator.java:1565-1572`):
+    /// with a monitor, a `null` node is `IllegalStateException("Invalid split
+    /// provided to monitor")`. Its one caller passes the nodes `filterPoints`
+    /// returned, which are never `null` for a non-`null` start.
     fn notify_monitor_split(
         &self,
         depth: usize,
         monitor: &mut Option<&mut dyn Monitor>,
-        search_node: usize,
-        diagonal_node: usize,
+        search_node: Option<usize>,
+        diagonal_node: Option<usize>,
     ) -> Result<()> {
         if monitor.is_some() {
+            let (Some(search_node), Some(diagonal_node)) = (search_node, diagonal_node) else {
+                return Err(LuceneError::illegal_state(
+                    "Invalid split provided to monitor",
+                ));
+            };
             let left = self.get_points(search_node)?;
             let right = self.get_points(diagonal_node)?;
             if let Some(m) = monitor.as_deref_mut() {

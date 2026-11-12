@@ -1433,7 +1433,7 @@ impl RoaringDocIdSetBuilder {
     pub fn add(&mut self, doc_id: usize) -> crate::error::Result<()> {
         if doc_id as i32 <= self.last_doc_id {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "doc ids must be added in-order, got {doc_id} which is <= lastDocId={}",
+                "Doc ids must be added in-order, got {doc_id} which is <= lastDocID={}",
                 self.last_doc_id
             )));
         }
@@ -1469,13 +1469,13 @@ impl RoaringDocIdSetBuilder {
         }
         if min as i32 <= self.last_doc_id {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "doc ids must be added in-order, got range starting at {min} which is <= lastDocId={}",
+                "Doc ids must be added in-order, got range starting at {min} which is <= lastDocID={}",
                 self.last_doc_id
             )));
         }
         if max > self.max_doc {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "max={max} exceeds maxDoc={}",
+                "max must be <= maxDoc ({}), got max={max}",
                 self.max_doc
             )));
         }

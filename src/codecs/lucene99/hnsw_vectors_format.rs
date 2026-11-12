@@ -30,7 +30,7 @@ use crate::codecs::lucene99::flat_vectors_format::Lucene99FlatVectorsFormat;
 use crate::codecs::postings::MergeState;
 use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::{LuceneError, Result};
 use crate::index::vector_values::{
     ByteVectorValues, DocIndexIterator, FloatVectorValues, KnnVectorValues,
 };
@@ -1242,7 +1242,7 @@ impl HnswWriterState {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`] when this writer is already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when this writer is already
     /// closed, and whatever merging or writing the graph raises.
     ///
     /// Equivalent to
@@ -1932,14 +1932,33 @@ fn dist_func_to_ord(similarity: VectorSimilarityFunction) -> i32 {
     }
 }
 
-fn read_vector_encoding(ordinal: i32) -> Result<VectorEncoding> {
+/// `VectorEncoding.values()[ordinal]`, `None` outside the table.
+fn read_vector_encoding(ordinal: i32) -> Option<VectorEncoding> {
     match ordinal {
-        0 => Ok(VectorEncoding::BYTE),
-        1 => Ok(VectorEncoding::FLOAT32),
-        _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-            format!("invalid VectorEncoding ordinal: {ordinal}"),
-        ))),
+        0 => Some(VectorEncoding::BYTE),
+        1 => Some(VectorEncoding::FLOAT32),
+        _ => None,
     }
+}
+
+/// Reads a vector encoding from the metadata stream.
+///
+/// Equivalent to `Lucene99HnswVectorsReader.readVectorEncoding(DataInput)`
+/// (`Lucene99HnswVectorsReader.java:240-246`), which the flat and scalar
+/// quantized readers import as well.
+///
+/// # Errors
+///
+/// Returns `CorruptIndexException("Invalid vector encoding id: " +
+/// encodingId, input)` for an id outside `VectorEncoding.values()`.
+pub(crate) fn read_vector_encoding_input(input: &mut dyn DataInput) -> Result<VectorEncoding> {
+    let encoding_id = input.read_int()?;
+    read_vector_encoding(encoding_id).ok_or_else(|| {
+        LuceneError::corrupt_index(
+            format!("Invalid vector encoding id: {encoding_id}"),
+            input.to_java_string(),
+        )
+    })
 }
 
 /// Reads a similarity function from the metadata stream.
@@ -1953,23 +1972,24 @@ fn read_vector_encoding(ordinal: i32) -> Result<VectorEncoding> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneErrorKind::IllegalArgument`] when the ordinal names no
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the ordinal names no
 /// similarity function, which is the `IllegalArgumentException` Java raises.
-fn read_similarity_function(input: &mut dyn DataInput) -> Result<VectorSimilarityFunction> {
+pub(crate) fn read_similarity_function(
+    input: &mut dyn DataInput,
+) -> Result<VectorSimilarityFunction> {
     let i = input.read_int()?;
     read_vector_similarity(i)
-        .map_err(|_| LuceneError::illegal_argument(format!("invalid distance function: {i}")))
+        .ok_or_else(|| LuceneError::illegal_argument(format!("invalid distance function: {i}")))
 }
 
-fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
+/// `SIMILARITY_FUNCTIONS.get(ordinal)`, `None` outside the list.
+fn read_vector_similarity(ordinal: i32) -> Option<VectorSimilarityFunction> {
     match ordinal {
-        0 => Ok(VectorSimilarityFunction::EUCLIDEAN),
-        1 => Ok(VectorSimilarityFunction::DOT_PRODUCT),
-        2 => Ok(VectorSimilarityFunction::COSINE),
-        3 => Ok(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT),
-        _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-            format!("invalid VectorSimilarityFunction ordinal: {ordinal}"),
-        ))),
+        0 => Some(VectorSimilarityFunction::EUCLIDEAN),
+        1 => Some(VectorSimilarityFunction::DOT_PRODUCT),
+        2 => Some(VectorSimilarityFunction::COSINE),
+        3 => Some(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT),
+        _ => None,
     }
 }
 
@@ -2691,7 +2711,7 @@ fn read_fields(
     let mut fields = IntObjectHashMap::new();
     let mut field_number = input.read_int()?;
     while field_number != -1 {
-        let Some(info) = field_infos.field_info_by_number(field_number) else {
+        let Some(info) = field_infos.field_info_checked(field_number)? else {
             return Err(LuceneError::corrupt_index(
                 format!("Invalid field number: {field_number}"),
                 input.to_java_string(),
@@ -2715,7 +2735,7 @@ fn read_fields(
 /// Equivalent to
 /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader#readField`.
 fn read_field(input: &mut dyn DataInput, info: &FieldInfo) -> Result<FieldEntry> {
-    let vector_encoding = read_vector_encoding(input.read_int()?)?;
+    let vector_encoding = read_vector_encoding_input(input)?;
     let similarity_function = read_similarity_function(input)?;
     if similarity_function != info.vector_similarity_function {
         // Lucene99HnswVectorsReader.java:251-259; the enum's `toString()` is
@@ -3131,6 +3151,7 @@ impl HnswGraph for OffHeapHnswGraph {
 
 #[cfg(test)]
 mod tests {
+    use crate::error::LuceneErrorKind;
     /// The four serialization sites for `VectorEncoding` and
     /// `VectorSimilarityFunction` each carry their own ordinal table. Java has
     /// one, `Enum.ordinal()`, so the tables must agree with the declaration

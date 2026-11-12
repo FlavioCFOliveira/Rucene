@@ -82,8 +82,4 @@ impl BytesReader for ForwardBytesReader<'_> {
     fn set_position(&mut self, pos: i64) {
         self.pos = pos;
     }
-
-    fn as_data_input(&mut self) -> &mut dyn DataInput {
-        self
-    }
 }

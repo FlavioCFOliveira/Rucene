@@ -221,7 +221,17 @@ impl<'a> FieldsWriter<'a> {
             let identity = format_identity(&format);
 
             let group = match groups.entry(identity) {
-                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    // we've already seen this format, so just grab its suffix
+                    // (`PerFieldPostingsFormat.java:243-248`)
+                    if !suffixes.contains_key(&format_name) {
+                        return Err(LuceneError::illegal_state(format!(
+                            "no suffix for format name: {format_name}, expected: {}",
+                            entry.get().suffix
+                        )));
+                    }
+                    entry.into_mut()
+                }
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     // First time we are seeing this format; create a new instance
                     let suffix = suffixes.get(&format_name).copied().unwrap_or(0);
@@ -1453,18 +1463,6 @@ impl KnnFieldsReader {
             names,
         })
     }
-
-    fn reader_for(&self, field: &FieldInfo) -> Result<&(dyn KnnVectorsReader + '_)> {
-        let suffix = self.fields.get(field.number).ok_or_else(|| {
-            LuceneError::illegal_argument(format!(
-                "field \"{}\" has no KNN-vectors reader",
-                field.name
-            ))
-        })?;
-        self.formats.get(suffix).map(|b| b.as_ref()).ok_or_else(|| {
-            LuceneError::illegal_state(format!("missing KNN-vectors reader for suffix {suffix}"))
-        })
-    }
 }
 
 #[cfg(test)]
@@ -1626,11 +1624,17 @@ impl KnnVectorsReader for KnnFieldsReader {
         Ok(())
     }
 
+    /// Equivalent to `PerFieldKnnVectorsFormat.FieldsReader.getOffHeapByteSize`
+    /// (`PerFieldKnnVectorsFormat.java:329-332`): the field's reader answers,
+    /// and a field without one is the `NullPointerException` of
+    /// dereferencing `fields.get(fieldInfo.number)`.
     fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> Result<HashMap<String, i64>> {
-        match self.reader_for(field_info) {
-            Ok(reader) => reader.get_off_heap_byte_size(field_info),
-            Err(_) => Ok(HashMap::new()),
-        }
+        let reader = self
+            .fields
+            .get(field_info.number)
+            .and_then(|suffix| self.formats.get(suffix))
+            .ok_or_else(LuceneError::null_pointer)?;
+        reader.get_off_heap_byte_size(field_info)
     }
 
     /// Equivalent to `PerFieldKnnVectorsFormat.FieldsReader.close()`

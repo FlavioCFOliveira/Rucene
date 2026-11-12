@@ -838,7 +838,10 @@ impl NumericUtils {
             }
             Ordering::Equal => full_big_int_bytes.copy_from_slice(big_int),
             Ordering::Greater => {
-                panic!("BigInteger requires more than {big_int_size} bytes storage")
+                panic!(
+                    "BigInteger: {} requires more than {big_int_size} bytes storage",
+                    big_integer_to_string(big_int)
+                )
             }
         }
         // Flip the sign bit so negative bigints sort before positive bigints:
@@ -859,6 +862,47 @@ impl NumericUtils {
         big_int_bytes[0] ^= 0x80;
         big_int_bytes
     }
+}
+
+/// `BigInteger.toString()` (radix 10) of the value whose
+/// `BigInteger.toByteArray()` form — minimal two's-complement big-endian
+/// bytes — is `bytes`: an optional `-` followed by the decimal digits of the
+/// magnitude, `"0"` for zero (`BigInteger.java` `toString(int)`).
+fn big_integer_to_string(bytes: &[u8]) -> String {
+    let negative = bytes.first().is_some_and(|b| b & 0x80 != 0);
+    // Magnitude, big-endian: the two's complement negation of a negative value.
+    let mut magnitude: Vec<u8> = if negative {
+        let mut m: Vec<u8> = bytes.iter().map(|b| !b).collect();
+        for b in m.iter_mut().rev() {
+            let (v, carry) = b.overflowing_add(1);
+            *b = v;
+            if !carry {
+                break;
+            }
+        }
+        m
+    } else {
+        bytes.to_vec()
+    };
+    let mut digits = Vec::new();
+    while magnitude.iter().any(|&b| b != 0) {
+        // Divide the big-endian magnitude by 10, collecting the remainder.
+        let mut rem = 0u32;
+        for b in magnitude.iter_mut() {
+            let cur = (rem << 8) | u32::from(*b);
+            *b = (cur / 10) as u8;
+            rem = cur % 10;
+        }
+        digits.push(b'0' + rem as u8);
+    }
+    if digits.is_empty() {
+        digits.push(b'0');
+    }
+    if negative {
+        digits.push(b'-');
+    }
+    digits.reverse();
+    String::from_utf8(digits).expect("ASCII digits")
 }
 
 // ---------------------------------------------------------------------------

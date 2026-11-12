@@ -394,10 +394,10 @@ impl FieldInfo {
     /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the field is not indexed.
     pub fn set_omits_norms(&mut self) -> Result<()> {
         if self.index_options == IndexOptions::NONE {
-            return Err(LuceneError::illegal_state(format!(
-                "cannot omit norms: field '{}' is not indexed",
-                self.name
-            )));
+            // `FieldInfo.java:630-632`.
+            return Err(LuceneError::illegal_state(
+                "cannot omit norms: this field is not indexed",
+            ));
         }
         self.omit_norms = true;
         Ok(())
@@ -1083,6 +1083,25 @@ impl FieldInfos {
         self.by_name
             .get(name)
             .and_then(|&number| self.field_info_by_number(number))
+    }
+
+    /// Looks up a field by number with Java's argument check.
+    ///
+    /// Equivalent to `FieldInfos.fieldInfo(int)` (`FieldInfos.java:341-346`):
+    /// a negative number throws `IllegalArgumentException("Illegal field
+    /// number: " + fieldNumber)`, an unknown one yields `null` (`None`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
+    /// for a negative number.
+    pub fn field_info_checked(&self, number: i32) -> Result<Option<&FieldInfo>> {
+        if number < 0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "Illegal field number: {number}"
+            )));
+        }
+        Ok(self.field_info_by_number(number))
     }
 
     /// Looks up a visible field by number.

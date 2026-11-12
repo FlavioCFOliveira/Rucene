@@ -339,14 +339,6 @@ impl PackedIntsMutable for Packed64 {
     fn clear(&mut self) {
         self.blocks.fill(0);
     }
-
-    fn as_packed_ints_reader(&self) -> &dyn PackedIntsReader {
-        self
-    }
-
-    fn into_packed_ints_reader(self: Box<Self>) -> Box<dyn PackedIntsReader + Send + Sync> {
-        self
-    }
 }
 
 impl Accountable for Packed64 {
@@ -652,14 +644,6 @@ impl PackedIntsMutable for Packed64SingleBlock {
 
     fn clear(&mut self) {
         self.blocks.fill(0);
-    }
-
-    fn as_packed_ints_reader(&self) -> &dyn PackedIntsReader {
-        self
-    }
-
-    fn into_packed_ints_reader(self: Box<Self>) -> Box<dyn PackedIntsReader + Send + Sync> {
-        self
     }
 }
 

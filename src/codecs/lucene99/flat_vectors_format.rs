@@ -880,25 +880,23 @@ fn vector_similarity_ordinal(similarity: VectorSimilarityFunction) -> i32 {
     }
 }
 
-fn read_vector_encoding(ordinal: i32) -> Result<VectorEncoding> {
+#[cfg(test)]
+fn read_vector_encoding(ordinal: i32) -> Option<VectorEncoding> {
     match ordinal {
-        0 => Ok(VectorEncoding::BYTE),
-        1 => Ok(VectorEncoding::FLOAT32),
-        _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-            format!("invalid VectorEncoding ordinal: {ordinal}"),
-        ))),
+        0 => Some(VectorEncoding::BYTE),
+        1 => Some(VectorEncoding::FLOAT32),
+        _ => None,
     }
 }
 
-fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
+#[cfg(test)]
+fn read_vector_similarity(ordinal: i32) -> Option<VectorSimilarityFunction> {
     match ordinal {
-        0 => Ok(VectorSimilarityFunction::EUCLIDEAN),
-        1 => Ok(VectorSimilarityFunction::DOT_PRODUCT),
-        2 => Ok(VectorSimilarityFunction::COSINE),
-        3 => Ok(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT),
-        _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-            format!("invalid VectorSimilarityFunction ordinal: {ordinal}"),
-        ))),
+        0 => Some(VectorSimilarityFunction::EUCLIDEAN),
+        1 => Some(VectorSimilarityFunction::DOT_PRODUCT),
+        2 => Some(VectorSimilarityFunction::COSINE),
+        3 => Some(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT),
+        _ => None,
     }
 }
 
@@ -1338,13 +1336,13 @@ fn read_fields(
     let mut fields = HashMap::new();
     let mut field_number = input.read_int()?;
     while field_number != -1 {
-        let info = field_infos
-            .field_info_by_number(field_number)
-            .ok_or_else(|| {
-                LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                    "invalid field number: {field_number}"
-                )))
-            })?;
+        // `Lucene99FlatVectorsReader.java:178-181`.
+        let Some(info) = field_infos.field_info_checked(field_number)? else {
+            return Err(LuceneError::corrupt_index(
+                format!("Invalid field number: {field_number}"),
+                input.to_java_string(),
+            ));
+        };
         let entry = FieldEntry::create(input, info)?;
         fields.insert(info.number, entry);
         field_number = input.read_int()?;
@@ -1354,46 +1352,49 @@ fn read_fields(
 
 impl FieldEntry {
     fn create(input: &mut dyn DataInput, field_info: &FieldInfo) -> Result<Self> {
-        let vector_encoding = read_vector_encoding(input.read_int()?)?;
-        let similarity_function = read_vector_similarity(input.read_int()?)?;
+        // `Lucene99FlatVectorsReader.java:366-367`, through the static
+        // imports of `Lucene99HnswVectorsReader`.
+        let vector_encoding =
+            crate::codecs::lucene99::hnsw_vectors_format::read_vector_encoding_input(input)?;
+        let similarity_function =
+            crate::codecs::lucene99::hnsw_vectors_format::read_similarity_function(input)?;
         let vector_data_offset = input.read_v_long()?;
         let vector_data_length = input.read_v_long()?;
         let dimension = input.read_v_int()?;
         let size = input.read_int()?;
         let ord_to_doc = OrdToDocDISIReaderConfiguration::read_stored_meta(input, size)?;
 
+        // The `FieldEntry` constructor checks
+        // (`Lucene99FlatVectorsReader.java:322-361`).
         if similarity_function != field_info.vector_similarity_function {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "inconsistent vector similarity function for field=\"{}\"",
-                    field_info.name
-                ),
+            return Err(LuceneError::illegal_state(format!(
+                "Inconsistent vector similarity function for field=\"{}\"; {:?} != {:?}",
+                field_info.name, similarity_function, field_info.vector_similarity_function
             )));
         }
-        if dimension != field_info.vector_dimension {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "inconsistent vector dimension for field=\"{}\"",
-                    field_info.name
-                ),
+        let info_vector_dimension = field_info.vector_dimension;
+        if info_vector_dimension != dimension {
+            return Err(LuceneError::illegal_state(format!(
+                "Inconsistent vector dimension for field=\"{}\"; {info_vector_dimension} != {dimension}",
+                field_info.name
             )));
         }
 
-        let byte_size = vector_encoding.byte_size();
-        let expected_length = (size as i64)
-            .checked_mul(dimension as i64)
-            .and_then(|v| v.checked_mul(byte_size as i64))
-            .ok_or_else(|| {
-                LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                    "vector data length overflow for field=\"{}\"",
-                    field_info.name
-                )))
-            })?;
-        if expected_length != vector_data_length {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                "vector data length {vector_data_length} does not match size={size} * dim={dimension} * byteSize={byte_size} = {expected_length} for field=\"{}\"",
-                field_info.name
-            ))));
+        // The byte size of the field info's encoding; `Math.multiplyExact`
+        // throws `ArithmeticException("long overflow")`.
+        let byte_size = field_info.vector_encoding.byte_size();
+        let long_overflow =
+            || LuceneError::from(LuceneErrorKind::Arithmetic("long overflow".to_string()));
+        let vector_bytes = i64::from(info_vector_dimension)
+            .checked_mul(i64::from(byte_size))
+            .ok_or_else(long_overflow)?;
+        let num_bytes = vector_bytes
+            .checked_mul(i64::from(size))
+            .ok_or_else(long_overflow)?;
+        if num_bytes != vector_data_length {
+            return Err(LuceneError::illegal_state(format!(
+                "Vector data length {vector_data_length} not matching size={size} * dim={dimension} * byteSize={byte_size} = {num_bytes}"
+            )));
         }
 
         Ok(Self {

@@ -4,17 +4,19 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::error::Result;
 use crate::index::LeafReaderContext;
+use crate::search::comparators::long_comparator::LongComparator;
+use crate::search::comparators::numeric_comparator::NumericLeafState;
 use crate::search::double_values::DoubleValues;
 use crate::search::double_values_source::DoubleValuesSource;
 use crate::search::field_comparator::{
-    java_long_compare, FieldComparator, SharedFieldComparator, SlotComparator, SortValue,
+    FieldComparator, SharedFieldComparator, SlotComparator, SortValue,
 };
 use crate::search::field_comparator_source::FieldComparatorSource;
 use crate::search::index_searcher::IndexSearcher;
@@ -260,65 +262,100 @@ impl SegmentCacheable for FieldValuesSource {
     }
 }
 
-/// Presents a [`LongValues`] as a [`NumericDocValues`].
+/// The per-leaf holder a [`LongValuesComparatorSource`] comparator fills in
+/// `setScorer` and its doc values read through.
 ///
-/// Equivalent to the anonymous `NumericDocValues` of the private static
-/// `LongValuesSource.asNumericDocValues(LongValuesHolder)`, whose iteration
-/// methods all throw: the comparator only ever positions it with
-/// `advanceExact` and reads `longValue`.
-pub struct LongValuesAsNumericDocValues<'a> {
-    values: Box<dyn LongValues + 'a>,
+/// Equivalent to the private static `LongValuesSource.LongValuesHolder`
+/// (`LongValuesSource.java:330-332`), whose `values` is `null` until the
+/// first `setScorer`.
+#[derive(Clone, Default)]
+pub struct LongValuesHolder {
+    values: Rc<RefCell<Option<Box<dyn LongValues>>>>,
 }
 
-impl std::fmt::Debug for LongValuesAsNumericDocValues<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("LongValuesAsNumericDocValues")
+impl LongValuesHolder {
+    /// Replaces the held values, Java's `holder.values = ...`.
+    pub fn set_values(&self, values: Box<dyn LongValues>) {
+        *self.values.borrow_mut() = Some(values);
+    }
+
+    /// Runs `f` over the held values; `null` values are the
+    /// `NullPointerException` Java's dereference throws.
+    fn with_values<T>(&self, f: impl FnOnce(&mut dyn LongValues) -> Result<T>) -> Result<T> {
+        match self.values.borrow_mut().as_mut() {
+            Some(values) => f(values.as_mut()),
+            None => Err(crate::error::LuceneError::null_pointer()),
+        }
     }
 }
 
-/// Presents `values` as a [`NumericDocValues`].
+impl std::fmt::Debug for LongValuesHolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LongValuesHolder")
+            .field("set", &self.values.borrow().is_some())
+            .finish()
+    }
+}
+
+/// The [`NumericDocValues`](crate::index::NumericDocValues) view of a
+/// [`LongValuesHolder`].
+///
+/// Equivalent to the anonymous `NumericDocValues` of the private static
+/// `LongValuesSource.asNumericDocValues(LongValuesHolder)`
+/// (`LongValuesSource.java:387-420`): `longValue` and `advanceExact` read the
+/// holder's current values, and the iteration methods throw
+/// `UnsupportedOperationException` with no message.
+#[derive(Debug)]
+pub struct LongValuesAsNumericDocValues {
+    holder: LongValuesHolder,
+}
+
+/// Presents `holder` as a [`NumericDocValues`](crate::index::NumericDocValues).
 ///
 /// Equivalent to the private static
 /// `LongValuesSource.asNumericDocValues(LongValuesHolder)`.
-pub fn as_numeric_doc_values<'a>(
-    values: Box<dyn LongValues + 'a>,
-) -> LongValuesAsNumericDocValues<'a> {
-    LongValuesAsNumericDocValues { values }
+pub fn as_numeric_doc_values(holder: LongValuesHolder) -> LongValuesAsNumericDocValues {
+    LongValuesAsNumericDocValues { holder }
 }
 
-impl crate::search::DocIdSetIterator for LongValuesAsNumericDocValues<'_> {
+impl crate::search::DocIdSetIterator for LongValuesAsNumericDocValues {
     fn doc_id(&self) -> i32 {
-        unimplemented!("LongValuesSource.asNumericDocValues does not iterate")
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
     }
 
     fn next_doc(&mut self) -> Result<i32> {
         Err(crate::error::LuceneError::unsupported_operation(
-            "LongValuesSource.asNumericDocValues does not iterate".to_string(),
+            String::new(),
         ))
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
         Err(crate::error::LuceneError::unsupported_operation(
-            "LongValuesSource.asNumericDocValues does not iterate".to_string(),
+            String::new(),
         ))
     }
 
     fn cost(&self) -> i64 {
-        unimplemented!("LongValuesSource.asNumericDocValues does not iterate")
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
     }
 }
 
-impl crate::index::DocValuesIterator for LongValuesAsNumericDocValues<'_> {
+impl crate::index::DocValuesIterator for LongValuesAsNumericDocValues {
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
-        self.values.advance_exact(target)
+        self.holder
+            .with_values(|values| values.advance_exact(target))
     }
 }
 
-impl crate::index::NumericDocValues for LongValuesAsNumericDocValues<'_> {
+impl crate::index::NumericDocValues for LongValuesAsNumericDocValues {
     fn long_value(&self) -> Result<i64> {
-        Err(crate::error::LuceneError::unsupported_operation(
-            "LongValuesSource.asNumericDocValues reads through long_value_mut".to_string(),
-        ))
+        self.holder.with_values(|values| values.long_value())
     }
 }
 
@@ -513,27 +550,39 @@ impl FieldComparatorSource for LongValuesComparatorSource {
         Some(self)
     }
 
+    /// Equivalent to `LongValuesComparatorSource.newComparator`
+    /// (`LongValuesSource.java:347-373`): a `LongComparator` with
+    /// `Pruning.NONE` whose leaves read the producer's values through a
+    /// [`LongValuesHolder`].
     fn new_comparator(
         &self,
-        _fieldname: &str,
+        fieldname: &str,
         num_hits: usize,
         _pruning: Pruning,
-        _reversed: bool,
+        reversed: bool,
     ) -> Result<Box<dyn FieldComparator>> {
         Ok(Box::new(SharedFieldComparator::new(LongValuesComparator {
+            inner: LongComparator::new(
+                num_hits,
+                fieldname,
+                Some(self.missing_value()),
+                reversed,
+                Pruning::NONE,
+            ),
             producer: Arc::clone(&self.producer),
-            missing_value: self.missing_value(),
-            values: vec![0; num_hits],
-            bottom: 0,
-            top_value: 0,
         })))
     }
 }
 
-/// Values reading the score a comparator publishes before each comparison; see
-/// the comparator of
-/// [`DoubleValuesComparatorSource`](crate::search::DoubleValuesComparatorSource)
-/// for why the score travels through a cell.
+/// The `DoubleValues` of `DoubleValuesSource.fromScorer(scorer)`, read
+/// through the score the comparator publishes before each comparison.
+///
+/// **Divergence from Lucene 10.5.0.** Java captures the `Scorable` in
+/// `setScorer` and the producer's values read `scorer.score()` through it.
+/// Rust's collector contract hands the scorable to each comparison rather than
+/// keeping it, so the comparator publishes the score into this cell — when the
+/// producer [needs scores](LongValuesSource::needs_scores) — immediately before
+/// every read; the value read is the one Java's captured scorable returns.
 struct ScoreCellDoubleValues {
     score: Rc<Cell<f64>>,
 }
@@ -551,66 +600,37 @@ impl DoubleValues for ScoreCellDoubleValues {
 /// The comparator a [`LongValuesComparatorSource`] builds.
 ///
 /// Equivalent to the anonymous `LongComparator` subclass that
-/// `LongValuesComparatorSource.newComparator` returns, which reads its values
-/// from the producer and is built with [`Pruning::NONE`], so none of the
-/// skipping machinery applies.
-///
-/// **Divergence from Lucene 10.5.0.** Java subclasses `LongComparator` and overrides its
-/// leaf comparator's `getNumericDocValues` to return
-/// `asNumericDocValues(holder)` and its `setScorer` to fill the holder with
-/// `producer.getValues(ctx, DoubleValuesSource.fromScorer(scorer))`
-/// (`LongValuesSource.java:347-371`). This port's numeric comparator takes its doc
-/// values from a `Send + Sync` [`NumericDocValuesSource`](crate::search::comparators::numeric_comparator::NumericDocValuesSource)
-/// and never passes the scorer to its value lookups, while the producer's
-/// values here read the score through a thread-confined cell
-/// (`ScoreCellDoubleValues`), so the holder cannot be shared with it. The
-/// comparator therefore reproduces the leaf comparator's `getValueForDoc`,
-/// `compare*`, `copy` and missing-value logic directly; with `Pruning.NONE`
-/// the numeric comparator's skipping state is never used, so the results are
-/// identical.
+/// `LongValuesComparatorSource.newComparator` returns
+/// (`LongValuesSource.java:350-372`): every comparison is the
+/// [`LongComparator`]'s, over the doc values its leaf comparator's
+/// `getNumericDocValues` override returns — `asNumericDocValues(holder)` — and
+/// its `setScorer` override fills the holder with
+/// `producer.getValues(ctx, DoubleValuesSource.fromScorer(scorer))` before
+/// calling `super.setScorer(scorer)`.
+#[derive(Debug)]
 struct LongValuesComparator {
+    inner: LongComparator,
     producer: Arc<dyn LongValuesSource>,
-    missing_value: i64,
-    values: Vec<i64>,
-    bottom: i64,
-    top_value: i64,
 }
 
-/// The per-segment state of a [`LongValuesComparator`]: the producer's values
-/// for the segment, and the cell through which they read the current score.
+/// The leaf comparator of a [`LongValuesComparator`]: the
+/// `LongComparator.LongLeafComparator` state, the leaf's context (Java's
+/// `ctx` field), the holder, and the score cell its values read.
 struct LongValuesLeaf {
+    leaf: NumericLeafState,
+    ctx: LeafReaderContext,
+    holder: LongValuesHolder,
     score: Rc<Cell<f64>>,
-    values: Box<dyn LongValues>,
-}
-
-impl Debug for LongValuesComparator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LongValuesComparator")
-            .field("producer", &self.producer)
-            .field("missing_value", &self.missing_value)
-            .finish_non_exhaustive()
-    }
 }
 
 impl LongValuesComparator {
-    /// Equivalent to `LongLeafComparator.getValueForDoc(int)` over the
-    /// producer's values.
-    fn get_value_for_doc(
-        &self,
-        leaf: &mut LongValuesLeaf,
-        doc: i32,
-        scorer: &mut dyn Scorable,
-    ) -> Result<i64> {
+    /// Publishes the current score for the producer's values; see
+    /// [`ScoreCellDoubleValues`].
+    fn publish_score(&self, leaf: &LongValuesLeaf, scorer: &mut dyn Scorable) -> Result<()> {
         if self.producer.needs_scores() {
             leaf.score.set(f64::from(scorer.score()?));
         }
-        let missing_value = self.missing_value;
-        let values = &mut leaf.values;
-        if values.advance_exact(doc)? {
-            values.long_value()
-        } else {
-            Ok(missing_value)
-        }
+        Ok(())
     }
 }
 
@@ -618,31 +638,42 @@ impl SlotComparator for LongValuesComparator {
     type Leaf = LongValuesLeaf;
 
     fn compare(&self, slot1: i32, slot2: i32) -> i32 {
-        java_long_compare(self.values[slot1 as usize], self.values[slot2 as usize])
+        self.inner.compare(slot1, slot2)
     }
 
     fn set_top_value(&mut self, value: SortValue) {
-        if let SortValue::Long(value) = value {
-            self.top_value = value;
-        }
+        self.inner.set_top_value(value);
     }
 
     fn value(&self, slot: i32) -> SortValue {
-        SortValue::Long(self.values[slot as usize])
+        self.inner.value(slot)
     }
 
+    fn set_single_sort(&mut self) {
+        self.inner.set_single_sort();
+    }
+
+    fn disable_skipping(&mut self) {
+        self.inner.disable_skipping();
+    }
+
+    /// `getLeafComparator(context)`: a new holder, and a
+    /// `LongLeafComparator(context)` whose `getNumericDocValues` returns
+    /// `asNumericDocValues(holder)`.
     fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<LongValuesLeaf> {
-        let score = Rc::new(Cell::new(0.0));
-        let scores: Box<dyn DoubleValues> = Box::new(ScoreCellDoubleValues {
-            score: Rc::clone(&score),
-        });
-        let values = Arc::clone(&self.producer).get_values(context, Some(scores))?;
-        Ok(LongValuesLeaf { score, values })
+        let holder = LongValuesHolder::default();
+        let doc_values = Box::new(as_numeric_doc_values(holder.clone()));
+        let leaf = self.inner.new_leaf_with_doc_values(context, doc_values)?;
+        Ok(LongValuesLeaf {
+            leaf,
+            ctx: context.clone(),
+            holder,
+            score: Rc::new(Cell::new(0.0)),
+        })
     }
 
-    fn set_bottom(&mut self, _leaf: &mut LongValuesLeaf, slot: i32) -> Result<()> {
-        self.bottom = self.values[slot as usize];
-        Ok(())
+    fn set_bottom(&mut self, leaf: &mut LongValuesLeaf, slot: i32) -> Result<()> {
+        self.inner.set_bottom(&mut leaf.leaf, slot)
     }
 
     fn compare_bottom(
@@ -651,8 +682,8 @@ impl SlotComparator for LongValuesComparator {
         doc: i32,
         scorer: &mut dyn Scorable,
     ) -> Result<i32> {
-        let value = self.get_value_for_doc(leaf, doc, scorer)?;
-        Ok(java_long_compare(self.bottom, value))
+        self.publish_score(leaf, scorer)?;
+        self.inner.compare_bottom(&mut leaf.leaf, doc, scorer)
     }
 
     fn compare_top(
@@ -661,8 +692,8 @@ impl SlotComparator for LongValuesComparator {
         doc: i32,
         scorer: &mut dyn Scorable,
     ) -> Result<i32> {
-        let value = self.get_value_for_doc(leaf, doc, scorer)?;
-        Ok(java_long_compare(self.top_value, value))
+        self.publish_score(leaf, scorer)?;
+        self.inner.compare_top(&mut leaf.leaf, doc, scorer)
     }
 
     fn copy(
@@ -672,11 +703,29 @@ impl SlotComparator for LongValuesComparator {
         doc: i32,
         scorer: &mut dyn Scorable,
     ) -> Result<()> {
-        self.values[slot as usize] = self.get_value_for_doc(leaf, doc, scorer)?;
-        Ok(())
+        self.publish_score(leaf, scorer)?;
+        self.inner.copy(&mut leaf.leaf, slot, doc, scorer)
     }
 
-    fn set_scorer(&mut self, _leaf: &mut LongValuesLeaf, _scorer: &mut dyn Scorable) -> Result<()> {
-        Ok(())
+    /// `holder.values = producer.getValues(ctx,
+    /// DoubleValuesSource.fromScorer(scorer)); super.setScorer(scorer);`
+    fn set_scorer(&mut self, leaf: &mut LongValuesLeaf, scorer: &mut dyn Scorable) -> Result<()> {
+        let scores: Box<dyn DoubleValues> = Box::new(ScoreCellDoubleValues {
+            score: Rc::clone(&leaf.score),
+        });
+        leaf.holder
+            .set_values(Arc::clone(&self.producer).get_values(&leaf.ctx, Some(scores))?);
+        self.inner.set_scorer(&mut leaf.leaf, scorer)
+    }
+
+    fn competitive_iterator(
+        &mut self,
+        leaf: &mut LongValuesLeaf,
+    ) -> Result<Option<Box<dyn crate::search::DocIdSetIterator>>> {
+        self.inner.competitive_iterator(&mut leaf.leaf)
+    }
+
+    fn set_hits_threshold_reached(&mut self, leaf: &mut LongValuesLeaf) -> Result<()> {
+        self.inner.set_hits_threshold_reached(&mut leaf.leaf)
     }
 }

@@ -206,10 +206,6 @@ impl AbstractKnnVectorQueryImpl for SeededKnnVectorQuery {
         &self.base
     }
 
-    fn as_query(&self) -> &dyn Query {
-        self
-    }
-
     fn clone_knn_query(&self) -> Arc<dyn AbstractKnnVectorQueryImpl> {
         Arc::new(self.clone())
     }
@@ -266,7 +262,7 @@ impl Query for SeededKnnVectorQuery {
                 None => "null".to_string(),
                 Some(weight) => format!("{weight:?}"),
             },
-            crate::search::query_to_string(self.delegate.as_query())
+            crate::search::query_to_string(&*self.delegate as &dyn Query)
         )
     }
 
@@ -305,7 +301,7 @@ impl Query for SeededKnnVectorQuery {
                         (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                         _ => false,
                     }
-                    && self.delegate.query_eq(other.delegate.as_query())
+                    && self.delegate.query_eq(&*other.delegate as &dyn Query)
             }
             None => false,
         }

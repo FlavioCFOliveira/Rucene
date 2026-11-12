@@ -406,10 +406,6 @@ impl MultiTermQuery for FuzzyQuery {
         )?))
     }
 
-    fn as_query(&self) -> &dyn Query {
-        self
-    }
-
     fn to_multi_term_query_arc(&self) -> Arc<dyn MultiTermQuery> {
         Arc::new(self.clone())
     }

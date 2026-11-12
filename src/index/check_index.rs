@@ -5060,8 +5060,11 @@ pub fn test_stored_fields(
     let outcome = record_throwable(fail_fast, || -> Result<()> {
         print(info_stream, "    test: stored fields.......");
         let live_docs = reader.get_live_docs();
+        // `reader.getFieldsReader().getMergeInstance()`
+        // (`CheckIndex.java:3301`): a `null` fields reader is the
+        // `NullPointerException` the dereference throws.
         let Some(stored_fields) = reader.get_fields_reader()? else {
-            return Ok(());
+            return Err(LuceneError::null_pointer());
         };
         let stored_fields = stored_fields.get_merge_instance()?;
         for j in 0..reader.max_doc() {
@@ -5080,10 +5083,10 @@ pub fn test_stored_fields(
         }
 
         if status.doc_count != reader.num_docs() {
+            // `CheckIndex.java:3318-3321` prints `status.docCount` twice.
             return Err(check_index_error(format!(
                 "docCount={} but saw {} undeleted docs",
-                reader.num_docs(),
-                status.doc_count
+                status.doc_count, status.doc_count
             )));
         }
 

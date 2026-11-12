@@ -1583,7 +1583,7 @@ impl ModelBuilder {
         }
         if let Some(v) = any.downcast_ref::<PackedDeltaLongValues>() {
             return self.shared(address, "org.apache.lucene.index.OrdinalMap$1", |b| {
-                let deltas = b.packed_ints_reader(v.deltas().as_packed_ints_reader());
+                let deltas = b.packed_ints_reader(v.deltas());
                 NodeShape::Object {
                     aligned_shallow_size: aligned_shallow_instance_size(&[REF]),
                     fields: vec![("val$newDeltas", node(deltas))],
@@ -2034,7 +2034,7 @@ impl ModelBuilder {
             writer as *const GrowableWriter as *const (),
             "org.apache.lucene.util.packed.GrowableWriter",
             |b| {
-                let current = b.packed_ints_reader(writer.mutable().as_packed_ints_reader());
+                let current = b.packed_ints_reader(writer.mutable());
                 NodeShape::Object {
                     aligned_shallow_size: aligned_shallow_instance_size(&[8, REF, 4]),
                     fields: vec![("current", node(current))],
@@ -2064,7 +2064,7 @@ impl ModelBuilder {
     fn sub_mutables(&mut self, base: &AbstractPagedMutable) -> Rc<JavaNode> {
         let elements: Vec<NodeChild> = (0..base.page_count())
             .map(|i| match base.page(i) {
-                Some(page) => node(self.packed_ints_reader(page.as_packed_ints_reader())),
+                Some(page) => node(self.packed_ints_reader(page)),
                 None => NodeChild::Null,
             })
             .collect();

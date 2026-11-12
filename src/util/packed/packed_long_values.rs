@@ -700,7 +700,7 @@ fn base_pack(
         while i < num_values {
             i += mutable.set_bulk(i as i32, pending, i, num_values - i) as usize;
         }
-        state.values[block] = Some(mutable.into_packed_ints_reader());
+        state.values[block] = Some(mutable as Box<dyn PackedIntsReader + Send + Sync>);
     }
     Ok(())
 }

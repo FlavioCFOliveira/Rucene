@@ -215,10 +215,14 @@ impl ResourceLoader for ClasspathResourceLoader {
         };
         match self.resources.get(&key) {
             Some(bytes) => Ok(Box::new(Cursor::new(bytes.as_ref().clone()))),
-            None => Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Resource not found: {resource}"),
-            )))),
+            // `ClasspathResourceLoader.java:64-68`: a plain `IOException`.
+            None => Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other(format!(
+                    "Resource not found (if you use Java Module System, make sure to open \
+                     module and package containing resources to 'org.apache.lucene.core' \
+                     module): {resource}"
+                )),
+            ))),
         }
     }
 }

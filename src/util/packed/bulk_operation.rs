@@ -1756,12 +1756,6 @@ static PACKED_SINGLE_BLOCK_BULK_OPS: LazyLock<Vec<Option<Box<dyn BulkOperation +
 ///
 /// Equivalent to `BulkOperation.of(PackedInts.Format, int)`.
 ///
-/// Lucene declares `PackedInts.getDecoder` and `PackedInts.getEncoder` as
-/// returning the narrower `Decoder` and `Encoder` interfaces. Coercing one
-/// trait object to a supertrait object is not available at this crate's
-/// minimum supported Rust version, so the concrete [`BulkOperation`], which
-/// implements both, is returned instead.
-///
 /// # Errors
 ///
 /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `bits_per_value` is outside
@@ -1802,16 +1796,16 @@ pub fn bulk_operation_of(format: Format, bits_per_value: i32) -> Result<SharedBu
 ///
 /// # Errors
 ///
-/// Returns [`LuceneErrorKind::IndexFormatNotSupported`](crate::error::LuceneErrorKind::IndexFormatNotSupported) when `version` is outside
-/// the supported range, and [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the width is
-/// not one the format supports.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
+/// when `version` is outside the supported range (`PackedInts.checkVersion`)
+/// and when the width is not one the format supports.
 pub fn get_decoder(
     format: Format,
     version: i32,
     bits_per_value: i32,
-) -> Result<SharedBulkOperation> {
+) -> Result<&'static (dyn PackedIntsDecoder + Send + Sync)> {
     PackedInts::check_version(version)?;
-    bulk_operation_of(format, bits_per_value)
+    Ok(bulk_operation_of(format, bits_per_value)?)
 }
 
 /// Returns the shared encoder for `format` and `bits_per_value`.
@@ -1820,14 +1814,14 @@ pub fn get_decoder(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneErrorKind::IndexFormatNotSupported`](crate::error::LuceneErrorKind::IndexFormatNotSupported) when `version` is outside
-/// the supported range, and [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the width is
-/// not one the format supports.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
+/// when `version` is outside the supported range (`PackedInts.checkVersion`)
+/// and when the width is not one the format supports.
 pub fn get_encoder(
     format: Format,
     version: i32,
     bits_per_value: i32,
-) -> Result<SharedBulkOperation> {
+) -> Result<&'static (dyn PackedIntsEncoder + Send + Sync)> {
     PackedInts::check_version(version)?;
-    bulk_operation_of(format, bits_per_value)
+    Ok(bulk_operation_of(format, bits_per_value)?)
 }

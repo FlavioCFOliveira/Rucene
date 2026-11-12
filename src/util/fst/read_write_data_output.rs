@@ -124,6 +124,10 @@ impl std::fmt::Debug for ReadWriteDataOutput {
 }
 
 impl DataOutput for ReadWriteDataOutput {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.util.fst.ReadWriteDataOutput"
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         debug_assert!(!self.frozen);
         self.ensure_block();
@@ -288,10 +292,6 @@ impl<B: AsRef<[Vec<u8>]>> BytesReader for BlockReverseBytesReader<B> {
             "pos={pos} getPos()={}",
             self.position()
         );
-    }
-
-    fn as_data_input(&mut self) -> &mut dyn DataInput {
-        self
     }
 }
 

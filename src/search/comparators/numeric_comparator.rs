@@ -14,7 +14,6 @@ use crate::index::{
 };
 use crate::search::comparators::updateable_doc_id_set_iterator::UpdateableDocIdSetIterator;
 use crate::search::doc_id_set_iterator::{all, DocIdSetIterator, NO_MORE_DOCS};
-use crate::search::doc_values_iteration::numeric_as_iterator;
 use crate::search::field_comparator::java_long_compare;
 use crate::search::pruning::Pruning;
 use crate::search::scorable::Scorable;
@@ -342,9 +341,31 @@ impl NumericComparator {
         context: &LeafReaderContext,
         top_as_comparable_long: i64,
     ) -> Result<NumericLeafState> {
+        let doc_values = self.open_doc_values(context.leaf_reader().as_ref())?;
+        self.new_leaf_with_doc_values(context, top_as_comparable_long, doc_values)
+    }
+
+    /// Builds the per-segment state over `doc_values`, the doc values a
+    /// subclass's `getNumericDocValues(LeafReaderContext, String)` override
+    /// returns for `context` — for example `asNumericDocValues(holder)` in
+    /// `LongValuesSource.LongValuesComparatorSource`
+    /// (`LongValuesSource.java:357-362`).
+    ///
+    /// Equivalent to the `NumericLeafComparator(LeafReaderContext)`
+    /// constructor (`NumericComparator.java:117-153`) with that override in
+    /// place.
+    ///
+    /// # Errors
+    ///
+    /// As [`new_leaf`](Self::new_leaf), for building the competitive iterator.
+    pub fn new_leaf_with_doc_values(
+        &self,
+        context: &LeafReaderContext,
+        top_as_comparable_long: i64,
+        doc_values: Box<dyn NumericDocValues>,
+    ) -> Result<NumericLeafState> {
         let reader = context.leaf_reader();
         let max_doc = reader.max_doc();
-        let doc_values = self.open_doc_values(reader.as_ref())?;
         let competitive =
             self.build_competitive_disi_builder(&reader, max_doc, top_as_comparable_long)?;
         Ok(NumericLeafState {
@@ -828,7 +849,7 @@ impl NumericComparator {
                         builder
                             .common
                             .competitive_iterator
-                            .update(numeric_as_iterator(doc_values));
+                            .update(doc_values as Box<dyn DocIdSetIterator>);
                         *iterator_cost = i64::from(doc_count);
                     }
                     return Ok(());

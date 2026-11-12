@@ -744,9 +744,9 @@ impl OrdsSegmentTermsEnum {
                         fst_reader.set_position(arc.pos_arcs_start());
                         fst_reader.skip_bytes(i64::from(arc.bytes_per_arc()) * i64::from(mid))?;
                         let flags = fst_reader.read_byte()?;
-                        index.read_label(fst_reader.as_data_input())?;
+                        index.read_label(&mut *fst_reader)?;
                         let min_arc_output = if (i32::from(flags) & BIT_ARC_HAS_OUTPUT) != 0 {
-                            FST_OUTPUTS.add(&output, &FST_OUTPUTS.read(fst_reader.as_data_input())?)
+                            FST_OUTPUTS.add(&output, &FST_OUTPUTS.read(&mut *fst_reader)?)
                         } else {
                             output.clone()
                         };

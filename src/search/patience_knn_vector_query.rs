@@ -189,10 +189,6 @@ impl AbstractKnnVectorQueryImpl for PatienceKnnVectorQuery {
         &self.base
     }
 
-    fn as_query(&self) -> &dyn Query {
-        self
-    }
-
     fn clone_knn_query(&self) -> Arc<dyn AbstractKnnVectorQueryImpl> {
         Arc::new(self.clone())
     }
@@ -249,7 +245,7 @@ impl Query for PatienceKnnVectorQuery {
             "PatienceKnnVectorQuery{{saturationThreshold={}, patience={}, delegate={}}}",
             self.saturation_threshold,
             self.patience,
-            crate::search::query_to_string(self.delegate.as_query())
+            crate::search::query_to_string(&*self.delegate as &dyn Query)
         )
     }
 
@@ -303,7 +299,7 @@ impl Query for PatienceKnnVectorQuery {
                 self.base.base_eq(&other.base)
                     && self.saturation_threshold == other.saturation_threshold
                     && self.patience == other.patience
-                    && self.delegate.query_eq(other.delegate.as_query())
+                    && self.delegate.query_eq(&*other.delegate as &dyn Query)
             }
             None => false,
         }

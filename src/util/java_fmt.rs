@@ -840,10 +840,11 @@ mod tests {
 /// `0`, `,`, `.`, `%`, `\u{2030}`, `-`, `E`, `\u{221e}` (infinity) and `NaN`,
 /// with currency symbol `\u{a4}` and international currency symbol `XXX`.
 ///
-/// Digits follow `DigitList.set(boolean, double, int, boolean)`: the shortest
-/// decimal that rounds to the value, rounded half-even only when the pattern
-/// cannot show all of it; that rounding decides ties from the exact binary
-/// value, which is what rounding the exact value itself gives.
+/// Digits follow `DigitList.set(boolean, double, int, boolean)`: the digits
+/// of `FloatingDecimal.getBinaryToASCIIConverter(double)` (see `Converted`),
+/// rounded half-even only when the pattern cannot show all of them, with the
+/// converter's `digitsRoundedUp()` and `decimalDigitsExact()` flags deciding
+/// a tie on its last digit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecimalFormat {
     /// The pattern this format was built from.
@@ -1525,28 +1526,200 @@ impl DigitList {
 }
 
 /// The output of `FloatingDecimal.getBinaryToASCIIConverter(double)` for a
-/// positive finite value, read as specification
-/// (`jdk.internal.math.FloatingDecimal.BinaryToASCIIBuffer.dtoa`): its digits
-/// and decimal position, and the two flags `DigitList` rounds with.
+/// positive finite value (`jdk.internal.math.FloatingDecimal`, JDK 21): its
+/// digits and decimal position, and the two flags `DigitList` rounds with.
 ///
 /// An integral value below 2^63 takes the converter's integer path
 /// (`developLongDigits`): the integer's digits, its low digits beyond the 53
 /// significant bits rounded half up away, and both flags false. Every other
-/// value takes the general path, whose digits are the shortest decimal that
-/// rounds to the value; `decimalDigitsExact()` is then whether those digits
-/// are the value's exact expansion and `digitsRoundedUp()` whether they
-/// exceed it.
+/// value takes the general path of `BinaryToASCIIBuffer.dtoa`, the free-format
+/// digit generation of Steele and White as the JDK implements it — which is
+/// not always the shortest decimal (`1.0E23` renders `9.999999999999999E22`).
 ///
-/// **Divergence from the JDK.** The general path of the JDK's converter is
-/// not always shortest: it renders `1.0E23` as `9.999999999999999E22` and
-/// `Double.MIN_VALUE` as `4.9E-324`. Reproducing it would mean porting
-/// `FloatingDecimal.dtoa`, which is GPL-licensed and may not be copied into
-/// this crate; such values format here from their shortest decimal.
+/// This is an independent implementation of that general path, written from
+/// the JDK source read as a specification only: it reproduces the JDK's
+/// decimal-exponent estimate, its choice between `int`, `long` and big-integer
+/// arithmetic (whose stopping tests differ: `b + m > 10s` for the machine
+/// integers, `B + M >= 10S` for the big integers), the forced second digit of
+/// E-form values, the halfway rounding of the last digit, and the two flags:
+/// `decimalDigitsExact()` (the remainder is zero when generation stops) and
+/// `digitsRoundedUp()` (the last digit was incremented without a carry out of
+/// the first digit).
 struct Converted {
-    value: f64,
     digits: Vec<u8>,
     decimal_at: i32,
-    integer_path: bool,
+    exact: bool,
+    rounded_up: bool,
+}
+
+/// `ceil(log2(5^i))` for `i >= 1`, `0` for `i == 0`, as the JDK's `N_5_BITS`
+/// table holds it for `i < 27`, and its `i * 3` fallback beyond.
+fn n_5_bits(i: i32) -> i32 {
+    if i <= 0 {
+        0
+    } else if i < 27 {
+        64 - 5u64.pow(i as u32).leading_zeros() as i32
+    } else {
+        i * 3
+    }
+}
+
+/// `FloatingDecimal.estimateDecExp(long, int)`: `floor(log10(d))`, estimated
+/// in `double` arithmetic from the significand and the binary exponent, as the
+/// JDK computes it (the estimate may be one too high; the digit loop then
+/// drops a leading zero).
+// The JDK's own constants: `0.301029995663981` is its truncated `log10(2)`,
+// not `std::f64::consts::LOG10_2`.
+#[allow(clippy::approx_constant, clippy::excessive_precision)]
+fn estimate_dec_exp(fract_bits: u64, bin_exp: i32) -> i32 {
+    const SIGNIF_BIT_MASK: u64 = (1 << 52) - 1;
+    let d2 = f64::from_bits(0x3FF0_0000_0000_0000 | (fract_bits & SIGNIF_BIT_MASK));
+    let d = (d2 - 1.5) * 0.289529654 + 0.176091259 + f64::from(bin_exp) * 0.301029995663981;
+    let d_bits = d.to_bits();
+    let exponent = ((d_bits >> 52) & 0x7FF) as i32 - 1023;
+    let is_negative = (d_bits >> 63) != 0;
+    if (0..52).contains(&exponent) {
+        let mask = SIGNIF_BIT_MASK >> exponent;
+        let r = (((d_bits & SIGNIF_BIT_MASK) | (1 << 52)) >> (52 - exponent)) as i32;
+        if is_negative {
+            if mask & d_bits == 0 {
+                -r
+            } else {
+                -r - 1
+            }
+        } else {
+            r
+        }
+    } else if exponent < 0 {
+        if d_bits & !(1u64 << 63) == 0 {
+            0
+        } else if is_negative {
+            -1
+        } else {
+            0
+        }
+    } else {
+        d as i32
+    }
+}
+
+/// A minimal non-negative big integer (little-endian base-2^32 limbs) for the
+/// big-integer branch of the digit generation.
+#[derive(Clone, PartialEq, Eq)]
+struct BigNat(Vec<u32>);
+
+impl BigNat {
+    fn from_u64(v: u64) -> Self {
+        let mut n = BigNat(vec![v as u32, (v >> 32) as u32]);
+        n.trim();
+        n
+    }
+
+    fn trim(&mut self) {
+        while self.0.last() == Some(&0) {
+            self.0.pop();
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn mul_small(&mut self, m: u32) {
+        let mut carry = 0u64;
+        for limb in self.0.iter_mut() {
+            let v = u64::from(*limb) * u64::from(m) + carry;
+            *limb = v as u32;
+            carry = v >> 32;
+        }
+        if carry != 0 {
+            self.0.push(carry as u32);
+        }
+    }
+
+    fn shl(&mut self, bits: u32) {
+        if self.is_zero() || bits == 0 {
+            return;
+        }
+        let words = (bits / 32) as usize;
+        let rem = bits % 32;
+        if rem != 0 {
+            let mut carry = 0u32;
+            for limb in self.0.iter_mut() {
+                let v = (*limb << rem) | carry;
+                carry = *limb >> (32 - rem);
+                *limb = v;
+            }
+            if carry != 0 {
+                self.0.push(carry);
+            }
+        }
+        self.0.splice(0..0, std::iter::repeat_n(0, words));
+    }
+
+    /// `v * 5^p5 * 2^p2`.
+    fn mul_pow52(v: u64, p5: i32, p2: i32) -> Self {
+        let mut n = BigNat::from_u64(v);
+        for _ in 0..p5 {
+            n.mul_small(5);
+        }
+        n.shl(p2 as u32);
+        n
+    }
+
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0
+            .len()
+            .cmp(&other.0.len())
+            .then_with(|| self.0.iter().rev().cmp(other.0.iter().rev()))
+    }
+
+    fn add(&self, other: &Self) -> Self {
+        let (long, short) = if self.0.len() >= other.0.len() {
+            (self, other)
+        } else {
+            (other, self)
+        };
+        let mut out = Vec::with_capacity(long.0.len() + 1);
+        let mut carry = 0u64;
+        for (k, &limb) in long.0.iter().enumerate() {
+            let v = u64::from(limb) + u64::from(short.0.get(k).copied().unwrap_or(0)) + carry;
+            out.push(v as u32);
+            carry = v >> 32;
+        }
+        if carry != 0 {
+            out.push(carry as u32);
+        }
+        BigNat(out)
+    }
+
+    fn sub_assign(&mut self, other: &Self) {
+        let mut borrow = 0i64;
+        for k in 0..self.0.len() {
+            let v = i64::from(self.0[k]) - i64::from(other.0.get(k).copied().unwrap_or(0)) - borrow;
+            if v < 0 {
+                self.0[k] = (v + (1i64 << 32)) as u32;
+                borrow = 1;
+            } else {
+                self.0[k] = v as u32;
+                borrow = 0;
+            }
+        }
+        self.trim();
+    }
+
+    /// `FDBigInteger.quoRemIteration(S)`: returns `q = this / s` (a single
+    /// decimal digit) and replaces `this` with `10 * (this % s)`.
+    fn quo_rem_iteration(&mut self, s: &Self) -> u32 {
+        let mut q = 0u32;
+        while self.cmp(s) != std::cmp::Ordering::Less {
+            self.sub_assign(s);
+            q += 1;
+        }
+        self.mul_small(10);
+        self.trim();
+        q
+    }
 }
 
 impl Converted {
@@ -1581,70 +1754,256 @@ impl Converted {
                 digits.pop();
             }
             return Self {
-                value,
                 digits,
                 decimal_at,
-                integer_path: true,
+                exact: false,
+                rounded_up: false,
             };
         }
-        let decimal = giulietti_decimal(
-            format!("{value:e}"),
-            format!("{value:.1e}"),
-            |digits| format!("{value:.*e}", digits.min(800)),
-            |s| {
-                s.parse::<f64>()
-                    .is_ok_and(|v| v.to_bits() == value.to_bits())
-            },
-        );
-        let (digits, decimal_at) = split_scientific(&decimal);
-        Self {
-            value,
-            digits,
-            decimal_at,
-            integer_path: false,
-        }
+        Self::dtoa(value)
     }
 
-    /// The exact decimal expansion of the value: a `double` has at most 767
-    /// significant digits.
-    fn exact_expansion(&self) -> (Vec<u8>, i32) {
-        split_scientific(&format!("{:.800e}", self.value))
+    /// The general path of `BinaryToASCIIBuffer.dtoa(int, long, int,
+    /// boolean)` with `isCompatibleFormat == true`, as
+    /// `getBinaryToASCIIConverter(double)` calls it, for a positive finite
+    /// non-integral (or out-of-`long`-range) value.
+    fn dtoa(value: f64) -> Self {
+        const EXP_SHIFT: i32 = 52;
+        let bits = value.to_bits();
+        let mut fract_bits = bits & ((1u64 << 52) - 1);
+        let mut bin_exp = ((bits >> 52) & 0x7FF) as i32;
+        let n_significant_bits;
+        if bin_exp == 0 {
+            // Normalize a subnormal.
+            let leading_zeros = fract_bits.leading_zeros() as i32;
+            let shift = leading_zeros - (63 - EXP_SHIFT);
+            fract_bits <<= shift;
+            bin_exp = 1 - shift;
+            n_significant_bits = 64 - leading_zeros;
+        } else {
+            fract_bits |= 1u64 << EXP_SHIFT;
+            n_significant_bits = EXP_SHIFT + 1;
+        }
+        bin_exp -= 1023;
+
+        let tail_zeros = fract_bits.trailing_zeros() as i32;
+        let n_fract_bits = EXP_SHIFT + 1 - tail_zeros;
+        let n_tiny_bits = (n_fract_bits - bin_exp - 1).max(0);
+
+        let mut dec_exp = estimate_dec_exp(fract_bits, bin_exp);
+        let b5 = (-dec_exp).max(0);
+        let mut b2 = b5 + n_tiny_bits + bin_exp;
+        let s5 = dec_exp.max(0);
+        let mut s2 = s5 + n_tiny_bits;
+        let m5 = b5;
+        let mut m2 = b2 - n_significant_bits;
+
+        fract_bits >>= tail_zeros;
+        b2 -= n_fract_bits - 1;
+        let common2factor = b2.min(s2);
+        b2 -= common2factor;
+        s2 -= common2factor;
+        m2 -= common2factor;
+        // For an exact power of two the next smaller value is half as far.
+        if n_fract_bits == 1 {
+            m2 -= 1;
+        }
+        if m2 < 0 {
+            b2 -= m2;
+            s2 -= m2;
+            m2 = 0;
+        }
+
+        let e_form = |dec_exp: i32| !(-3..8).contains(&dec_exp);
+        let mut digits: Vec<u8> = Vec::with_capacity(20);
+        let low;
+        let high;
+        let low_digit_difference: i64;
+        let exact;
+
+        let b_bits = n_fract_bits + b2 + n_5_bits(b5);
+        let ten_s_bits = s2 + 1 + n_5_bits(s5 + 1);
+        if b_bits < 64 && ten_s_bits < 64 {
+            if b_bits < 32 && ten_s_bits < 32 {
+                // `int` arithmetic, with Java's wrapping and shift masking.
+                let pow5 = |p: i32| 5i32.wrapping_pow(p as u32);
+                let mut b = (fract_bits as i32)
+                    .wrapping_mul(pow5(b5))
+                    .wrapping_shl(b2 as u32);
+                let s = pow5(s5).wrapping_shl(s2 as u32);
+                let mut m = pow5(m5).wrapping_shl(m2 as u32);
+                let tens = s.wrapping_mul(10);
+                let mut q = b / s;
+                b = (b % s).wrapping_mul(10);
+                m = m.wrapping_mul(10);
+                let mut lo = b < m;
+                let mut hi = b.wrapping_add(m) > tens;
+                if q == 0 && !hi {
+                    dec_exp -= 1;
+                } else {
+                    digits.push(b'0' + q as u8);
+                }
+                if e_form(dec_exp) {
+                    hi = false;
+                    lo = false;
+                }
+                while !lo && !hi {
+                    q = b / s;
+                    b = (b % s).wrapping_mul(10);
+                    m = m.wrapping_mul(10);
+                    if m > 0 {
+                        lo = b < m;
+                        hi = b.wrapping_add(m) > tens;
+                    } else {
+                        lo = true;
+                        hi = true;
+                    }
+                    digits.push(b'0' + q as u8);
+                }
+                low = lo;
+                high = hi;
+                low_digit_difference = i64::from(b.wrapping_shl(1).wrapping_sub(tens));
+                exact = b == 0;
+            } else {
+                // `long` arithmetic.
+                let pow5 = |p: i32| 5i64.wrapping_pow(p as u32);
+                let mut b = (fract_bits as i64)
+                    .wrapping_mul(pow5(b5))
+                    .wrapping_shl(b2 as u32);
+                let s = pow5(s5).wrapping_shl(s2 as u32);
+                let mut m = pow5(m5).wrapping_shl(m2 as u32);
+                let tens = s.wrapping_mul(10);
+                let mut q = b / s;
+                b = (b % s).wrapping_mul(10);
+                m = m.wrapping_mul(10);
+                let mut lo = b < m;
+                let mut hi = b.wrapping_add(m) > tens;
+                if q == 0 && !hi {
+                    dec_exp -= 1;
+                } else {
+                    digits.push(b'0' + q as u8);
+                }
+                if e_form(dec_exp) {
+                    hi = false;
+                    lo = false;
+                }
+                while !lo && !hi {
+                    q = b / s;
+                    b = (b % s).wrapping_mul(10);
+                    m = m.wrapping_mul(10);
+                    if m > 0 {
+                        lo = b < m;
+                        hi = b.wrapping_add(m) > tens;
+                    } else {
+                        lo = true;
+                        hi = true;
+                    }
+                    digits.push(b'0' + q as u8);
+                }
+                low = lo;
+                high = hi;
+                low_digit_difference = b.wrapping_shl(1).wrapping_sub(tens);
+                exact = b == 0;
+            }
+        } else {
+            // Big-integer arithmetic. The JDK normalizes `S` (and scales the
+            // others alike) only to speed its division up; the comparisons and
+            // quotients are scale-invariant.
+            let s_val = BigNat::mul_pow52(1, s5, s2);
+            let mut b_val = BigNat::mul_pow52(fract_bits, b5, b2);
+            let mut m_val = BigNat::mul_pow52(1, m5 + 1, m2 + 1);
+            let ten_s_val = BigNat::mul_pow52(1, s5 + 1, s2 + 1);
+            let mut q = b_val.quo_rem_iteration(&s_val);
+            let mut lo = b_val.cmp(&m_val).is_lt();
+            let mut hi = ten_s_val.cmp(&b_val.add(&m_val)).is_le();
+            if q == 0 && !hi {
+                dec_exp -= 1;
+            } else {
+                digits.push(b'0' + q as u8);
+            }
+            if e_form(dec_exp) {
+                hi = false;
+                lo = false;
+            }
+            while !lo && !hi {
+                q = b_val.quo_rem_iteration(&s_val);
+                m_val.mul_small(10);
+                lo = b_val.cmp(&m_val).is_lt();
+                hi = ten_s_val.cmp(&b_val.add(&m_val)).is_le();
+                digits.push(b'0' + q as u8);
+            }
+            low = lo;
+            high = hi;
+            low_digit_difference = if hi && lo {
+                let mut twice = b_val.clone();
+                twice.shl(1);
+                match twice.cmp(&ten_s_val) {
+                    std::cmp::Ordering::Less => -1,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                }
+            } else {
+                0
+            };
+            exact = b_val.is_zero();
+        }
+
+        let mut dec_exponent = dec_exp + 1;
+        let mut rounded_up = false;
+        // The last digit is rounded on the stopping condition.
+        let round_up = high
+            && (!low
+                || low_digit_difference > 0
+                || (low_digit_difference == 0 && (digits[digits.len() - 1] & 1) != 0));
+        if round_up {
+            // `roundup()`: a carry out of the first digit makes it `1` with a
+            // larger exponent and leaves `digitsRoundedUp()` false.
+            let mut i = digits.len() - 1;
+            let mut q = digits[i];
+            let mut carried_out = false;
+            if q == b'9' {
+                while q == b'9' && i > 0 {
+                    digits[i] = b'0';
+                    i -= 1;
+                    q = digits[i];
+                }
+                if q == b'9' {
+                    dec_exponent += 1;
+                    digits[0] = b'1';
+                    carried_out = true;
+                }
+            }
+            if !carried_out {
+                digits[i] = q + 1;
+                rounded_up = true;
+            }
+        }
+        // `DigitList.set` reads the digits back from `toJavaFormatString()`,
+        // skipping a leading zero (a first quotient of zero kept because the
+        // stopping test already held) into the decimal position, and drops
+        // trailing zeros.
+        while digits.len() > 1 && digits[0] == b'0' {
+            digits.remove(0);
+            dec_exponent -= 1;
+        }
+        while digits.len() > 1 && digits.last() == Some(&b'0') {
+            digits.pop();
+        }
+        Self {
+            digits,
+            decimal_at: dec_exponent,
+            exact,
+            rounded_up,
+        }
     }
 
     /// `decimalDigitsExact()`.
     fn exact(&self) -> bool {
-        !self.integer_path && self.exact_expansion() == (self.digits.clone(), self.decimal_at)
+        self.exact
     }
 
     /// `digitsRoundedUp()`.
     fn rounded_up(&self) -> bool {
-        if self.integer_path {
-            return false;
-        }
-        let (exact_digits, exact_decimal_at) = self.exact_expansion();
-        if self.decimal_at != exact_decimal_at {
-            return self.decimal_at > exact_decimal_at;
-        }
-        let len = self.digits.len().max(exact_digits.len());
-        let at = |d: &[u8], i: usize| d.get(i).copied().unwrap_or(b'0');
-        for i in 0..len {
-            let (a, b) = (at(&self.digits, i), at(&exact_digits, i));
-            if a != b {
-                return a > b;
-            }
-        }
-        false
+        self.rounded_up
     }
-}
-
-/// The digits (trailing zeros removed) and decimal position
-/// (`0.ddd x 10^decimal_at`) of a positive `d.ddde[-]n` rendering.
-fn split_scientific(sci: &str) -> (Vec<u8>, i32) {
-    let (mantissa, exponent) = sci.split_once('e').expect("scientific notation");
-    let exponent: i32 = exponent.parse().expect("exponent");
-    let mut digits: Vec<u8> = mantissa.bytes().filter(u8::is_ascii_digit).collect();
-    while digits.len() > 1 && digits.last() == Some(&b'0') {
-        digits.pop();
-    }
-    (digits, exponent + 1)
 }

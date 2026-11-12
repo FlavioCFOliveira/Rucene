@@ -163,15 +163,6 @@ pub trait AbstractKnnVectorQueryImpl: Query {
     /// `searchStrategy` fields.
     fn knn_base(&self) -> &AbstractKnnVectorQuery;
 
-    /// Returns this query viewed as a [`Query`].
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java gets this for free, because
-    /// `AbstractKnnVectorQuery extends Query`. Rust before 1.86 cannot coerce a
-    /// `&dyn AbstractKnnVectorQueryImpl` into a `&dyn Query`, and this crate's
-    /// minimum supported Rust version is 1.80, so the upcast is spelled out as
-    /// a method. Every implementation writes `self`.
-    fn as_query(&self) -> &dyn Query;
-
     /// Returns this query as a shared handle on itself.
     ///
     /// **Divergence from Lucene 10.5.0.** Java's `rewrite` hands `this` to the

@@ -432,10 +432,6 @@ impl AbstractKnnVectorQueryImpl for AssertingSeededKnnVectorQuery {
         self.inner.knn_base()
     }
 
-    fn as_query(&self) -> &dyn Query {
-        self
-    }
-
     fn clone_knn_query(&self) -> Arc<dyn AbstractKnnVectorQueryImpl> {
         Arc::new(self.clone())
     }

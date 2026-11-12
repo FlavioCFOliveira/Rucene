@@ -128,6 +128,15 @@ impl<'a> From<ReadWriteDataOutput> for FstOutputSink<'a> {
 }
 
 impl DataOutput for FstOutputSink<'_> {
+    /// The `toString()` of the output this sink stands for: Java's
+    /// `dataOutput` field is that output itself.
+    fn to_java_string(&self) -> String {
+        match self {
+            FstOutputSink::OnHeap(output) => output.to_java_string(),
+            FstOutputSink::Streaming(output) => output.to_java_string(),
+        }
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         match self {
             FstOutputSink::OnHeap(output) => output.write_byte(b),
@@ -730,19 +739,15 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the sink is not the on-heap
-    /// one and therefore cannot be read back.
-    ///
-    /// **Divergence from Lucene 10.5.0.** `FSTCompiler.getFSTReader`
-    /// (`FSTCompiler.java:227-233`) appends `", but got " + dataOutput`, the
-    /// `toString()` of the sink. [`DataOutput`] carries no `toString()`
-    /// counterpart (unlike [`crate::store::DataInput::to_java_string`]), so
-    /// the suffix cannot be rendered and the message stops at the prefix.
+    /// one and therefore cannot be read back: `"The DataOutput must
+    /// implement FSTReader, but got " + dataOutput` (`FSTCompiler.java:227-233`).
     pub fn fst_reader(&self) -> Result<&dyn FSTReader> {
         match &self.data_output {
             FstOutputSink::OnHeap(output) => Ok(output),
-            FstOutputSink::Streaming(_) => Err(LuceneError::illegal_state(
-                "The DataOutput must implement FSTReader".to_string(),
-            )),
+            FstOutputSink::Streaming(output) => Err(LuceneError::illegal_state(format!(
+                "The DataOutput must implement FSTReader, but got {}",
+                output.to_java_string()
+            ))),
         }
     }
 
@@ -760,9 +765,10 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     pub fn into_fst_reader(self) -> Result<Box<dyn FSTReader>> {
         match self.data_output {
             FstOutputSink::OnHeap(output) => Ok(Box::new(output)),
-            FstOutputSink::Streaming(_) => Err(LuceneError::illegal_state(
-                "The DataOutput must implement FSTReader".to_string(),
-            )),
+            FstOutputSink::Streaming(output) => Err(LuceneError::illegal_state(format!(
+                "The DataOutput must implement FSTReader, but got {}",
+                output.to_java_string()
+            ))),
         }
     }
 

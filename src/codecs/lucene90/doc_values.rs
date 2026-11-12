@@ -2103,7 +2103,7 @@ impl Lucene90DocValuesProducer {
             if field_number == -1 {
                 break;
             }
-            let Some(info) = field_infos.field_info_by_number(field_number) else {
+            let Some(info) = field_infos.field_info_checked(field_number)? else {
                 return corrupt(format!("Invalid field number: {field_number}"));
             };
             let kind = meta.read_byte()?;

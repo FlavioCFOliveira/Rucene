@@ -121,9 +121,14 @@ impl BaseCompositeReader {
     ///
     /// Equivalent to `BaseCompositeReader.readerBase(int)`.
     pub fn reader_base(&self, reader_index: usize) -> Result<i32> {
-        self.starts.get(reader_index).copied().ok_or_else(|| {
-            LuceneError::illegal_argument(format!("readerIndex {reader_index} is out of bounds"))
-        })
+        // `BaseCompositeReader.java:271-276`: the bound is the sub-reader
+        // count, not the length of `starts` (which carries `maxDoc` last).
+        if reader_index >= self.sub_readers.len() {
+            return Err(LuceneError::illegal_argument(
+                "readerIndex must be >= 0 and < getSequentialSubReaders().size()",
+            ));
+        }
+        Ok(self.starts[reader_index])
     }
 
     /// Returns the index of the sub-reader that owns `doc_id`.

@@ -271,9 +271,8 @@ impl NormsConsumer for Lucene90NormsConsumer {
             let offset = self.data.file_pointer();
             self.meta.write_long(offset)?;
             let mut it = crate::codecs::doc_values::non_null(values.get_norms(field)?, field)?;
-            let mut docs = NormsDocs::new(it.as_mut());
             let jump_table_entry_count =
-                write_bit_set(&mut docs, self.data.as_mut(), DEFAULT_DENSE_RANK_POWER)?;
+                write_bit_set(it.as_mut(), self.data.as_mut(), DEFAULT_DENSE_RANK_POWER)?;
             self.meta.write_long(self.data.file_pointer() - offset)?;
             self.meta.write_short(jump_table_entry_count)?;
             self.meta.write_byte(DEFAULT_DENSE_RANK_POWER as u8)?;
@@ -310,42 +309,6 @@ impl NormsConsumer for Lucene90NormsConsumer {
         }
         self.closed = true;
         Self::close_outputs(Some(&mut self.data), Some(&mut self.meta))
-    }
-}
-
-/// Views the documents of a [`NumericDocValues`] as a plain
-/// [`DocIdSetIterator`].
-///
-/// `write_bit_set` takes a `&mut dyn DocIdSetIterator`, and this crate's MSRV
-/// (1.80) predates trait upcasting, so a `&mut dyn NumericDocValues` cannot be
-/// coerced to its supertrait object. Delegating through a thin adapter keeps
-/// the streaming behaviour of Java's
-/// `IndexedDISI.writeBitSet(values, data, ...)` without buffering the doc ids.
-struct NormsDocs<'a> {
-    values: &'a mut dyn NumericDocValues,
-}
-
-impl<'a> NormsDocs<'a> {
-    fn new(values: &'a mut dyn NumericDocValues) -> Self {
-        Self { values }
-    }
-}
-
-impl DocIdSetIterator for NormsDocs<'_> {
-    fn doc_id(&self) -> i32 {
-        self.values.doc_id()
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        self.values.next_doc()
-    }
-
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        self.values.advance(target)
-    }
-
-    fn cost(&self) -> i64 {
-        self.values.cost()
     }
 }
 
@@ -723,15 +686,18 @@ fn read_fields(
         if field_number == -1 {
             break;
         }
-        let info = infos.field_info_by_number(field_number).ok_or_else(|| {
-            LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                "Invalid field number: {field_number}"
-            )))
-        })?;
+        // `Lucene90NormsProducer.java:217-221`.
+        let Some(info) = infos.field_info_checked(field_number)? else {
+            return Err(LuceneError::corrupt_index(
+                format!("Invalid field number: {field_number}"),
+                meta.to_java_string(),
+            ));
+        };
         if !info.has_norms() {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!("Invalid field: {} (no norms)", info.name),
-            )));
+            return Err(LuceneError::corrupt_index(
+                format!("Invalid field: {}", info.name),
+                meta.to_java_string(),
+            ));
         }
         let mut entry = NormsEntry {
             docs_with_field_offset: meta.read_long()?,
@@ -745,12 +711,14 @@ fn read_fields(
         match entry.bytes_per_norm {
             0 | 1 | 2 | 4 | 8 => {}
             _ => {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                // `Lucene90NormsProducer.java:239-241`.
+                return Err(LuceneError::corrupt_index(
                     format!(
-                        "Invalid bytesPerNorm: {}, field: {}",
+                        "Invalid bytesPerValue: {}, field: {}",
                         entry.bytes_per_norm, info.name
                     ),
-                )))
+                    meta.to_java_string(),
+                ));
             }
         }
         entry.norms_offset = meta.read_long()?;
@@ -2293,7 +2261,7 @@ mod tests {
             .unwrap_err();
         let message = error.to_string();
         assert!(
-            message.contains("Invalid bytesPerNorm"),
+            message.contains("Invalid bytesPerValue"),
             "the entry failure must be the one reported, got: {message}"
         );
     }
@@ -2321,7 +2289,7 @@ mod tests {
             "the corruption must be the one reported, got: {message}"
         );
         assert!(
-            !message.contains("Invalid bytesPerNorm"),
+            !message.contains("Invalid bytesPerValue"),
             "the entry failure is suppressed, not in the message: {message}"
         );
     }

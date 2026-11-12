@@ -37,7 +37,7 @@ use crate::codecs::points::{
 use crate::codecs::postings::MergeState;
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::{LuceneError, Result};
 use crate::index::{segment_file_name, FieldInfos};
 use crate::store::SharedIndexInput;
 use crate::store::{DataInput, Directory, IndexInput, IndexOutput};
@@ -99,7 +99,7 @@ impl Lucene90PointsFormat {
     pub fn with_version(version: i32) -> Result<Self> {
         if ![VERSION_START, VERSION_BKD_VECTORIZED_BPV24].contains(&version) {
             return Err(LuceneError::illegal_argument(format!(
-                "invalid Lucene90PointsFormat version: {version}"
+                "Invalid version: {version}"
             )));
         }
         Ok(Self { version })
@@ -775,9 +775,11 @@ impl Lucene90PointsReader {
                     break;
                 }
                 if field_number < 0 {
-                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                        format!("illegal field number in points meta file: {field_number}"),
-                    )));
+                    // `Lucene90PointsReader.java:104-106`.
+                    return Err(LuceneError::corrupt_index(
+                        format!("Illegal field number: {field_number}"),
+                        meta_in.to_java_string(),
+                    ));
                 }
                 let reader = BKDReader::new(meta_in.as_mut(), index_in.as_mut(), data_in.as_mut())?;
                 readers.insert(field_number, BkdPointValues::new(reader));
@@ -973,6 +975,7 @@ impl IntersectVisitor for AddToBkdWriter<'_> {
 
 #[cfg(test)]
 mod tests {
+    use crate::error::LuceneErrorKind;
     use std::collections::HashMap;
 
     use super::*;

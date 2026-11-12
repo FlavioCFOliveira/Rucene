@@ -19,10 +19,8 @@ use crate::search::max_score_cache::MaxScoreCache;
 /// **Divergence from Lucene 10.5.0.** Java takes the iterator and a
 /// [`MaxScoreCache`] built from the *same* `ImpactsEnum`, holding it twice.
 /// Rust forbids that aliasing, so this type owns the source once and hands it to
-/// the cache on every call. It is generic over the concrete type because,
-/// below this crate's minimum supported Rust version of 1.86, a
-/// `dyn ImpactsEnum` cannot be coerced to the `dyn ImpactsSource` the cache
-/// takes.
+/// the cache on every call, as a `&mut dyn ImpactsSource`; that coercion
+/// needs a sized source, so this type is generic over it.
 ///
 /// The bound is `DocIdSetIterator + ImpactsSource` rather than `ImpactsEnum`,
 /// because Java's constructor takes the iterator and the cache separately and

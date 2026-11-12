@@ -1954,15 +1954,14 @@ impl Lucene104ScalarQuantizedVectorsReader {
             if field_number == -1 {
                 break;
             }
-            let info = field_infos
-                .field_info_by_number(field_number)
-                .ok_or_else(|| {
-                    LuceneError::corrupt_index(
-                        format!("invalid field number: {field_number}"),
-                        "quantized vectors metadata",
-                    )
-                })?
-                .clone();
+            // `Lucene104ScalarQuantizedVectorsReader.java:147-150`.
+            let Some(info) = field_infos.field_info_checked(field_number)? else {
+                return Err(LuceneError::corrupt_index(
+                    format!("Invalid field number: {field_number}"),
+                    meta.to_java_string(),
+                ));
+            };
+            let info = info.clone();
 
             let field_entry = Self::read_field(meta, &info)?;
             Self::validate_field_entry(&info, &field_entry)?;
@@ -1984,30 +1983,12 @@ impl Lucene104ScalarQuantizedVectorsReader {
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsReader#readField`.
     pub fn read_field(input: &mut dyn IndexInput, info: &FieldInfo) -> Result<FieldEntry> {
-        let encoding_ordinal = input.read_int()?;
-        let vector_encoding = match encoding_ordinal {
-            0 => VectorEncoding::BYTE,
-            1 => VectorEncoding::FLOAT32,
-            other => {
-                return Err(LuceneError::corrupt_index(
-                    format!("invalid vector encoding ordinal: {other}"),
-                    "quantized vectors metadata",
-                ))
-            }
-        };
-        let similarity_ordinal = input.read_int()?;
-        let similarity_function = match similarity_ordinal {
-            0 => VectorSimilarityFunction::EUCLIDEAN,
-            1 => VectorSimilarityFunction::DOT_PRODUCT,
-            2 => VectorSimilarityFunction::COSINE,
-            3 => VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
-            other => {
-                return Err(LuceneError::corrupt_index(
-                    format!("invalid vector similarity ordinal: {other}"),
-                    "quantized vectors metadata",
-                ))
-            }
-        };
+        // `Lucene104ScalarQuantizedVectorsReader.java:404-405`, through the
+        // static imports of `Lucene99HnswVectorsReader`.
+        let vector_encoding =
+            crate::codecs::lucene99::hnsw_vectors_format::read_vector_encoding_input(input)?;
+        let similarity_function =
+            crate::codecs::lucene99::hnsw_vectors_format::read_similarity_function(input)?;
         if similarity_function != info.vector_similarity_function {
             return Err(LuceneError::illegal_state(format!(
                 "Inconsistent vector similarity function for field=\"{}\"; {:?} != {:?}",

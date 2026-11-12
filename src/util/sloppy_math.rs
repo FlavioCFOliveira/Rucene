@@ -65,9 +65,12 @@ struct Tables {
     asin_qs4: f64,
 }
 
-/// `java.lang.Math.toRadians`.
+/// `java.lang.Math.toRadians`, which is `angdeg * DEGREES_TO_RADIANS` with
+/// `DEGREES_TO_RADIANS = 0.017453292519943295` (`java/lang/Math.java`).
 fn to_radians(angdeg: f64) -> f64 {
-    angdeg / 180.0 * std::f64::consts::PI
+    #[allow(clippy::excessive_precision)]
+    const DEGREES_TO_RADIANS: f64 = 0.017453292519943295;
+    angdeg * DEGREES_TO_RADIANS
 }
 
 static TABLES: LazyLock<Tables> = LazyLock::new(|| {

@@ -144,6 +144,24 @@ impl DoubleComparator {
     }
 }
 
+impl DoubleComparator {
+    /// `getLeafComparator(context)` of a subclass whose leaf comparator
+    /// overrides `getNumericDocValues` to return `doc_values`; see
+    /// [`NumericComparator::new_leaf_with_doc_values`].
+    ///
+    /// # Errors
+    ///
+    /// As [`NumericComparator::new_leaf_with_doc_values`].
+    pub fn new_leaf_with_doc_values(
+        &mut self,
+        context: &LeafReaderContext,
+        doc_values: Box<dyn crate::index::NumericDocValues>,
+    ) -> Result<NumericLeafState> {
+        let top = self.top_as_comparable_long();
+        self.base.new_leaf_with_doc_values(context, top, doc_values)
+    }
+}
+
 impl SlotComparator for DoubleComparator {
     /// `DoubleComparator.DoubleLeafComparator` adds no field to
     /// `NumericLeafComparator`'s.

@@ -195,14 +195,6 @@ pub trait AbstractVectorSimilarityQueryImpl: Query {
     /// Returns the base state of this query.
     fn similarity_base(&self) -> &AbstractVectorSimilarityQuery;
 
-    /// Returns this query viewed as a [`Query`].
-    ///
-    /// **Divergence from Lucene 10.5.0.** Rust before 1.86 cannot coerce a
-    /// `&dyn AbstractVectorSimilarityQueryImpl` into a `&dyn Query`, and this
-    /// crate's minimum supported Rust version is 1.80, so the upcast is spelled
-    /// out. Every implementation writes `self`.
-    fn as_query(&self) -> &dyn Query;
-
     /// Returns this query as a shared handle on itself, so that the weight can
     /// outlive the `&self` that created it.
     ///
@@ -210,15 +202,6 @@ pub trait AbstractVectorSimilarityQueryImpl: Query {
     /// the enclosing query; a Rust weight has to own a handle on it. Every
     /// implementation is `Arc::new(self.clone())`.
     fn clone_similarity_query(&self) -> Arc<dyn AbstractVectorSimilarityQueryImpl>;
-
-    /// Returns this query as a shared handle typed as a [`Query`].
-    ///
-    /// **Divergence from Lucene 10.5.0.** It exists for the same reason
-    /// [`as_query`](Self::as_query) does: an `Arc<dyn AbstractVectorSimilarityQueryImpl>`
-    /// cannot be coerced into an `Arc<dyn Query>` before Rust 1.86, and
-    /// [`Weight::get_query`] must hand one out. Every implementation is
-    /// `Arc::new(self.clone())`.
-    fn clone_as_query(&self) -> Arc<dyn Query>;
 
     /// Creates the exact vector scorer of one leaf.
     ///
@@ -329,7 +312,7 @@ pub fn vector_similarity_create_weight(
         query.get_knn_collector_manager(),
         query_timeout.clone(),
     );
-    let parent_query = query.clone_as_query();
+    let parent_query = Arc::clone(&query) as Arc<dyn Query>;
     Ok(Arc::new(VectorSimilarityWeight {
         parent_query,
         query,

@@ -2377,6 +2377,9 @@ impl Lucene103BlockTreeTermsReader {
 
         let meta_name = segment_file_name(&segment, &segment_suffix, TERMS_META_EXTENSION);
         let mut meta_in = state.directory.open_checksum_input(&meta_name)?;
+        // `Objects.toString(metaIn)`, the resource every `CorruptIndexException`
+        // of the meta loop quotes (`Lucene103BlockTreeTermsReader.java:155-215`).
+        let meta_desc = meta_in.to_java_string();
         // The `try` block of the try-with-resources over `metaIn`, whose
         // failure `CodecUtil.checkFooter(metaIn, priorE)` weighs in the
         // `finally` (`Lucene103BlockTreeTermsReader.java:150-246`).
@@ -2408,7 +2411,7 @@ impl Lucene103BlockTreeTermsReader {
             if num_fields < 0 {
                 return Err(LuceneError::corrupt_index(
                     format!("invalid numFields: {num_fields}"),
-                    &meta_name,
+                    &meta_desc,
                 ));
             }
 
@@ -2419,17 +2422,17 @@ impl Lucene103BlockTreeTermsReader {
                 let num_terms = meta_in.read_v_long()?;
                 if num_terms <= 0 {
                     return Err(LuceneError::corrupt_index(
-                        format!("illegal numTerms for field number {field_number}"),
-                        &meta_name,
+                        format!("Illegal numTerms for field number: {field_number}"),
+                        &meta_desc,
                     ));
                 }
                 let field_info = state
                     .field_infos
-                    .field_info_by_number(field_number)
+                    .field_info_checked(field_number)?
                     .ok_or_else(|| {
                         LuceneError::corrupt_index(
                             format!("invalid field number: {field_number}"),
-                            &meta_name,
+                            &meta_desc,
                         )
                     })?
                     .clone();
@@ -2443,7 +2446,7 @@ impl Lucene103BlockTreeTermsReader {
                     meta_in.read_v_long()?
                 };
                 let doc_count = meta_in.read_v_int()?;
-                let min_term = read_bytes_ref(meta_in.as_mut(), &meta_name)?;
+                let min_term = read_bytes_ref(meta_in.as_mut(), &meta_desc)?;
                 // The writer always emits both terms
                 // (`Lucene103BlockTreeTermsWriter.java:1091-1092`), so both must
                 // always be read. Java's `numTerms == 1` branch only *aliases*
@@ -2451,7 +2454,7 @@ impl Lucene103BlockTreeTermsReader {
                 // it does not skip the read. Skipping it left the max term's length
                 // and bytes in the stream, which threw off every field decoded after
                 // it and made the `.tmd` footer land in the wrong place.
-                let max_term_read = read_bytes_ref(meta_in.as_mut(), &meta_name)?;
+                let max_term_read = read_bytes_ref(meta_in.as_mut(), &meta_desc)?;
                 let max_term = if num_terms == 1 {
                     debug_assert_eq!(max_term_read, min_term);
                     min_term.clone()
@@ -2462,13 +2465,13 @@ impl Lucene103BlockTreeTermsReader {
                 if doc_count < 0 || doc_count > max_doc {
                     return Err(LuceneError::corrupt_index(
                         format!("invalid docCount: {doc_count} maxDoc: {max_doc}"),
-                        &meta_name,
+                        &meta_desc,
                     ));
                 }
                 if sum_doc_freq < i64::from(doc_count) {
                     return Err(LuceneError::corrupt_index(
                         format!("invalid sumDocFreq: {sum_doc_freq} docCount: {doc_count}"),
-                        &meta_name,
+                        &meta_desc,
                     ));
                 }
                 if sum_total_term_freq < sum_doc_freq {
@@ -2476,7 +2479,7 @@ impl Lucene103BlockTreeTermsReader {
                         format!(
                         "invalid sumTotalTermFreq: {sum_total_term_freq} sumDocFreq: {sum_doc_freq}"
                     ),
-                        &meta_name,
+                        &meta_desc,
                     ));
                 }
 
@@ -2495,7 +2498,7 @@ impl Lucene103BlockTreeTermsReader {
                 if fields.insert(name.clone(), reader).is_some() {
                     return Err(LuceneError::corrupt_index(
                         format!("duplicate field: {name}"),
-                        &meta_name,
+                        &meta_desc,
                     ));
                 }
             }

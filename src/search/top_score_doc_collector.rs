@@ -21,10 +21,7 @@ use crate::search::total_hits::{TotalHits, TotalHitsRelation};
 use crate::util::{NumericUtils, TernaryLongHeap};
 
 /// The raw IEEE-754 bit pattern of `f32::NEG_INFINITY`.
-///
-/// Spelled out as a literal because `f32::to_bits` only became `const` in Rust
-/// 1.83, after this crate's minimum supported Rust version of 1.80.
-const NEG_INFINITY_BITS: i32 = 0xFF80_0000u32 as i32;
+const NEG_INFINITY_BITS: i32 = f32::NEG_INFINITY.to_bits() as i32;
 
 /// Encodes a `(doc, score)` pair as an `i64` whose sort order is the same as
 /// comparing by score ascending and then by doc ID descending.
@@ -46,9 +43,8 @@ impl DocScoreEncoder {
     ///
     /// The body of [`encode`](Self::encode) with
     /// [`NumericUtils::float_to_sortable_int`] inlined, so that it can be a
-    /// `const fn` on this crate's minimum supported Rust version — where
-    /// `f32::to_bits` is not yet `const` — and back the
-    /// [`LEAST_COMPETITIVE_CODE`](Self::LEAST_COMPETITIVE_CODE) constant.
+    /// `const fn` — [`NumericUtils::float_to_sortable_int`] is not — and back
+    /// the [`LEAST_COMPETITIVE_CODE`](Self::LEAST_COMPETITIVE_CODE) constant.
     const fn encode_bits(doc_id: i32, score_bits: i32) -> i64 {
         let sortable = score_bits ^ ((score_bits >> 31) & i32::MAX);
         ((sortable as i64) << 32) | ((i32::MAX.wrapping_sub(doc_id)) as i64)
@@ -76,24 +72,11 @@ impl DocScoreEncoder {
     }
 }
 
-/// Reproduces `java.lang.Math.nextUp(float)`.
-///
-/// Rust's `f32::next_up` was stabilised in 1.86, after this crate's minimum
-/// supported Rust version of 1.80, so the JDK's bit manipulation is spelled
-/// out: `NaN` and positive infinity are returned unchanged, and `-0.0` is
-/// normalised to `0.0` before stepping.
+/// Reproduces `java.lang.Math.nextUp(float)`, the IEEE 754 `nextUp` that
+/// [`f32::next_up`] implements: `NaN` and positive infinity are returned
+/// unchanged, and `-0.0` steps to the smallest positive subnormal.
 fn next_up(f: f32) -> f32 {
-    if f.is_nan() || f == f32::INFINITY {
-        return f;
-    }
-    let f = f + 0.0;
-    let bits = f.to_bits() as i32;
-    let stepped = if f >= 0.0 {
-        bits.wrapping_add(1)
-    } else {
-        bits.wrapping_sub(1)
-    };
-    f32::from_bits(stepped as u32)
+    f.next_up()
 }
 
 /// Collects the top-scoring hits, returning them as a [`TopDocs`].

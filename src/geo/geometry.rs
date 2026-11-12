@@ -388,7 +388,7 @@ impl Polygon {
         };
         if lats.len() != lons.len() {
             return Err(LuceneError::illegal_argument(
-                "lats and lons must be equal length".to_string(),
+                "polyLats and polyLons must be equal length".to_string(),
             ));
         }
         if lats.len() < 4 {
@@ -831,7 +831,7 @@ impl XYLine {
         };
         if xs.len() != ys.len() {
             return Err(LuceneError::illegal_argument(
-                "xs and ys must be equal length".to_string(),
+                "x and y must be equal length".to_string(),
             ));
         }
         if xs.len() < 2 {
@@ -965,7 +965,7 @@ impl XYPolygon {
         };
         if xs.len() != ys.len() {
             return Err(LuceneError::illegal_argument(
-                "xs and ys must be equal length".to_string(),
+                "x and y must be equal length".to_string(),
             ));
         }
         if xs.len() < 4 {

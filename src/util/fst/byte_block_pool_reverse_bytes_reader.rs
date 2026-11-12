@@ -99,8 +99,4 @@ impl BytesReader for ByteBlockPoolReverseBytesReader<'_> {
     fn set_position(&mut self, pos: i64) {
         self.pos = pos - self.pos_delta;
     }
-
-    fn as_data_input(&mut self) -> &mut dyn DataInput {
-        self
-    }
 }

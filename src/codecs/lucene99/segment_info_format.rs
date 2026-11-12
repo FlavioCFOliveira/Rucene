@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::codecs::codec_util;
 use crate::codecs::segment_info::SegmentInfoFormat;
 use crate::codecs::stub::SegmentInfo;
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::{LuceneError, Result};
 use crate::index::index_file_names::{
     parse_segment_name, segment_file_name, SEGMENT_INFO_EXTENSION,
 };
@@ -126,17 +126,20 @@ fn parse_segment_info(
             input.read_int()? as u8,
         )?),
         _ => {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!("illegal boolean value {has_min_version}"),
-            )))
+            // `Lucene99SegmentInfoFormat.java:122-123`.
+            return Err(LuceneError::corrupt_index(
+                format!("Illegal boolean value {}", has_min_version as i8),
+                input.to_java_string(),
+            ));
         }
     };
 
     let doc_count = input.read_int()?;
     if doc_count < 0 {
-        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+        return Err(LuceneError::corrupt_index(
             format!("invalid docCount: {doc_count}"),
-        )));
+            input.to_java_string(),
+        ));
     }
 
     let is_compound_file = input.read_byte()? == SegmentInfo::YES as u8;
@@ -256,6 +259,7 @@ fn write_segment_sort(
 mod tests {
     use super::*;
     use crate::codecs::tests::test_segment_info;
+    use crate::error::LuceneErrorKind;
     use crate::search::{Sort, SortField, SortFieldType};
     use crate::store::ByteBuffersDirectory;
     use std::collections::HashSet;

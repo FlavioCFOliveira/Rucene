@@ -106,6 +106,39 @@ pub fn require_array<T>(array: Option<&mut [T]>) -> Result<&mut [T]> {
     array.ok_or_else(LuceneError::null_pointer)
 }
 
+/// `in.readBytes(b, offset, len)` with Java's `int` arguments: the plain
+/// [`DataInput::read_bytes`] when both are non-negative, else the input's
+/// [`DataInput::read_bytes_out_of_range`].
+///
+/// # Errors
+///
+/// What the input raises.
+pub fn read_bytes_java(
+    input: &mut (impl DataInput + ?Sized),
+    b: &mut [u8],
+    offset: i32,
+    len: i32,
+) -> Result<()> {
+    if offset >= 0 && len >= 0 {
+        input.read_bytes(Some(b), offset as usize, len as usize)
+    } else {
+        input.read_bytes_out_of_range(b, offset, len)
+    }
+}
+
+/// The `IndexOutOfBoundsException` of `Objects.checkFromIndexSize(offset,
+/// len, length)`: `Range [offset, offset + len) out of bounds for length
+/// length`.
+pub(crate) fn check_from_index_size_ioobe(offset: i32, len: i32, length: usize) -> LuceneError {
+    LuceneError::from(LuceneErrorKind::Unchecked {
+        class: "java.lang.IndexOutOfBoundsException",
+        message: Some(format!(
+            "Range [{offset}, {offset} + {len}) out of bounds for length {length}"
+        )),
+        cause: None,
+    })
+}
+
 /// Abstract base trait for reading Lucene's low-level data types.
 ///
 /// Equivalent to `org.apache.lucene.store.DataInput`. Implementations are not
@@ -149,6 +182,26 @@ pub trait DataInput {
         _use_buffer: bool,
     ) -> Result<()> {
         self.read_bytes(b, offset, len)
+    }
+
+    /// `readBytes(b, offset, len)` with an `offset` or a `len` that a `usize`
+    /// cannot carry: Java's `int` parameters accept negative ones, which a
+    /// corrupt file can produce (`BKDReader` reads `bytesPerDim - prefix`
+    /// bytes after a `prefix` it read unchecked, `BKDReader.java:942-993`).
+    /// [`read_bytes_java`] calls it for exactly those arguments.
+    ///
+    /// What happens is the input's own: the default is what
+    /// `BufferedIndexInput` and `ByteBuffersDataInput` do — a negative `len`
+    /// reads nothing (both guard their copy with `len > 0`), and a negative
+    /// `offset` with a positive `len` fails the destination range check of
+    /// `ByteBuffer.get` with `IndexOutOfBoundsException("Range [offset,
+    /// offset + len) out of bounds for length n")`. An input of another
+    /// behaviour, or one that delegates its reads, overrides it.
+    fn read_bytes_out_of_range(&mut self, b: &mut [u8], offset: i32, len: i32) -> Result<()> {
+        if len <= 0 {
+            return Ok(());
+        }
+        Err(check_from_index_size_ioobe(offset, len, b.len()))
     }
 
     /// Skips `num_bytes` bytes.
@@ -397,6 +450,39 @@ pub trait DataInput {
 pub trait DataOutput {
     /// Writes a single byte.
     fn write_byte(&mut self, b: u8) -> Result<()>;
+
+    /// Java's `toString()` of this output, which a message quotes — for
+    /// example `FSTCompiler.getFSTReader`'s `", but got " + dataOutput`
+    /// (`FSTCompiler.java:231-232`).
+    ///
+    /// The default is the `Object.toString()` every Java object inherits:
+    /// [`java_class_name`](Self::java_class_name), `@`, and the identity hash
+    /// in hexadecimal. Every [`IndexOutput`] overrides it with its resource
+    /// description, as `IndexOutput.toString()` does
+    /// (`IndexOutput.java:83-86`), and [`ByteBuffersDataOutput`] with its own
+    /// `toString()`.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** It stands for the
+    /// `toString()` every Java object has; a Rust trait object has none, so
+    /// the trait carries it. Rust has no identity hash: the address of the
+    /// value stands in for it, the crate's convention for
+    /// `System.identityHashCode`, so the digits differ from a JVM's exactly as
+    /// two JVM runs differ from each other.
+    fn to_java_string(&self) -> String {
+        format!(
+            "{}@{}",
+            self.java_class_name(),
+            crate::util::java_fmt::to_hex_string(self as *const Self as *const () as usize as i32)
+        )
+    }
+
+    /// Java's `getClass().getName()` of this output, which the default
+    /// [`to_java_string`](Self::to_java_string) prints. The default is the
+    /// Rust type name; the ports of Lucene's `DataOutput` classes return the
+    /// Java binary name.
+    fn java_class_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
 
     /// Writes `b[offset..offset + len]`.
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()>;
@@ -1067,6 +1153,10 @@ impl DataInput for FilterIndexInput {
 
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.inner.read_bytes(b, offset, len)
+    }
+
+    fn read_bytes_out_of_range(&mut self, b: &mut [u8], offset: i32, len: i32) -> Result<()> {
+        self.inner.read_bytes_out_of_range(b, offset, len)
     }
 
     // `readBytes(byte[], int, int, boolean)` is not overridden: `DataInput`'s
@@ -2294,6 +2384,12 @@ impl FilterIndexOutput {
 }
 
 impl DataOutput for FilterIndexOutput {
+    /// `IndexOutput.toString()`: the resource description
+    /// (`IndexOutput.java:83-86`).
+    fn to_java_string(&self) -> String {
+        self.resource_description().to_string()
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.inner.write_byte(b)
     }
@@ -2571,6 +2667,25 @@ impl DataInput for ByteArrayDataInput<'_> {
         Ok(b)
     }
 
+    /// `System.arraycopy(bytes, pos, b, offset, len)`
+    /// (`ByteArrayDataInput.java:141-144`): `ArrayIndexOutOfBoundsException`
+    /// for a negative length or destination index.
+    fn read_bytes_out_of_range(&mut self, b: &mut [u8], offset: i32, len: i32) -> Result<()> {
+        let message = if offset < 0 {
+            format!(
+                "arraycopy: destination index {offset} out of bounds for byte[{}]",
+                b.len()
+            )
+        } else {
+            format!("arraycopy: length {len} is negative")
+        };
+        Err(LuceneError::from(LuceneErrorKind::Unchecked {
+            class: "java.lang.ArrayIndexOutOfBoundsException",
+            message: Some(message),
+            cause: None,
+        }))
+    }
+
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         let b = crate::store::require_array(b)?;
         let end = offset
@@ -2844,6 +2959,10 @@ impl<'a> ByteArrayDataOutput<'a> {
 }
 
 impl DataOutput for ByteArrayDataOutput<'_> {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.store.ByteArrayDataOutput"
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         debug_assert!(
             self.pos < self.limit,
@@ -3063,6 +3182,10 @@ impl<W: Write> OutputStreamDataOutput<W> {
 }
 
 impl<W: Write> DataOutput for OutputStreamDataOutput<W> {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.store.OutputStreamDataOutput"
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.output.write_all(&[b]).map_err(LuceneError::from)
     }
@@ -3307,6 +3430,12 @@ impl MockIndexOutput {
 }
 
 impl DataOutput for MockIndexOutput {
+    /// `IndexOutput.toString()`: the resource description
+    /// (`IndexOutput.java:83-86`).
+    fn to_java_string(&self) -> String {
+        self.resource_description().to_string()
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.ensure_open()?;
         self.data.write_byte(b)
@@ -3396,6 +3525,22 @@ pub trait FileOpenHint: AsAny + std::fmt::Debug + Send + Sync {
     /// This is used to enforce that a context contains at most one hint of
     /// each type, matching `DefaultIOContext`'s validation in Lucene 10.5.0.
     fn same_type(&self, other: &dyn FileOpenHint) -> bool;
+
+    /// The hint's Java class name, Java's `getClass().getName()`.
+    ///
+    /// The default is the Rust type name; the hints of this crate return the
+    /// Lucene class name.
+    fn java_class_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
+    /// The hint's Java `toString()`: the enum constant's name for every
+    /// Lucene hint.
+    ///
+    /// The default is the `Debug` rendering.
+    fn java_to_string(&self) -> String {
+        format!("{self:?}")
+    }
 }
 
 /// Implements [`FileOpenHint`] for a hint type whose identity, for the
@@ -3406,10 +3551,19 @@ pub trait FileOpenHint: AsAny + std::fmt::Debug + Send + Sync {
 /// is an `enum`, all constants of one hint enum share a class and therefore
 /// count as the same type.
 macro_rules! impl_file_open_hint {
-    ($name:ident) => {
+    ($name:ident, $class:literal, |$v:ident| $to_string:expr) => {
         impl FileOpenHint for $name {
             fn same_type(&self, other: &dyn FileOpenHint) -> bool {
                 other.as_any().downcast_ref::<$name>().is_some()
+            }
+
+            fn java_class_name(&self) -> &'static str {
+                $class
+            }
+
+            fn java_to_string(&self) -> String {
+                let $v = self;
+                String::from($to_string)
             }
         }
     };
@@ -3434,7 +3588,14 @@ pub enum DataAccessHint {
     Sequential,
 }
 
-impl_file_open_hint!(DataAccessHint);
+impl_file_open_hint!(
+    DataAccessHint,
+    "org.apache.lucene.store.DataAccessHint",
+    |h| match h {
+        DataAccessHint::Random => "RANDOM",
+        DataAccessHint::Sequential => "SEQUENTIAL",
+    }
+);
 
 /// Port of `org.apache.lucene.store.ReadOnceHint`.
 ///
@@ -3444,7 +3605,9 @@ impl_file_open_hint!(DataAccessHint);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ReadOnceHint;
 
-impl_file_open_hint!(ReadOnceHint);
+impl_file_open_hint!(ReadOnceHint, "org.apache.lucene.store.ReadOnceHint", |_h| {
+    "INSTANCE"
+});
 
 impl ReadOnceHint {
     /// Returns the singleton instance.
@@ -3461,7 +3624,9 @@ impl ReadOnceHint {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PreloadHint;
 
-impl_file_open_hint!(PreloadHint);
+impl_file_open_hint!(PreloadHint, "org.apache.lucene.store.PreloadHint", |_h| {
+    "INSTANCE"
+});
 
 impl PreloadHint {
     /// Returns the singleton instance.
@@ -3492,7 +3657,14 @@ pub enum FileTypeHint {
     Data,
 }
 
-impl_file_open_hint!(FileTypeHint);
+impl_file_open_hint!(
+    FileTypeHint,
+    "org.apache.lucene.store.FileTypeHint",
+    |h| match h {
+        FileTypeHint::Index => "INDEX",
+        FileTypeHint::Data => "DATA",
+    }
+);
 
 /// Hint on the type of data stored in the file.
 ///
@@ -3512,7 +3684,14 @@ pub enum FileDataHint {
     KnnVectors,
 }
 
-impl_file_open_hint!(FileDataHint);
+impl_file_open_hint!(
+    FileDataHint,
+    "org.apache.lucene.store.FileDataHint",
+    |h| match h {
+        FileDataHint::Postings => "POSTINGS",
+        FileDataHint::KnnVectors => "KNN_VECTORS",
+    }
+);
 
 /// Metadata associated with a merge [`Context`].
 ///
@@ -3637,14 +3816,21 @@ impl DefaultIOContext {
     /// Returns [`LuceneErrorKind::IllegalArgument`] if more than one hint of the
     /// same concrete type is supplied.
     pub fn new(hints: Vec<Arc<dyn FileOpenHint>>) -> Result<Self> {
+        // `DefaultIOContext.java:30-37`: the hints grouped by class, and the
+        // message renders the offending `Map.Entry<Class, List<FileOpenHint>>`
+        // as `class <name>=[<hint>, <hint>]`.
         for i in 0..hints.len() {
-            for j in (i + 1)..hints.len() {
-                if hints[i].same_type(hints[j].as_ref()) {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "multiple hints of type {:?} specified",
-                        hints[i]
-                    )));
-                }
+            if (i + 1..hints.len()).any(|j| hints[i].same_type(hints[j].as_ref())) {
+                let group: Vec<String> = hints[i..]
+                    .iter()
+                    .filter(|h| hints[i].same_type(h.as_ref()))
+                    .map(|h| h.java_to_string())
+                    .collect();
+                return Err(LuceneError::illegal_argument(format!(
+                    "Multiple hints of type class {}=[{}] specified",
+                    hints[i].java_class_name(),
+                    group.join(", ")
+                )));
             }
         }
         Ok(Self { hints })
@@ -5174,6 +5360,22 @@ impl DataInput for BufferedChecksumIndexInput {
         self.main.read_bytes(Some(b), offset, len)?;
         self.digest.update_bytes(b, offset, len)?;
         Ok(())
+    }
+
+    /// `main.readBytes(b, offset, len)`, then `digest.update(b, offset, len)`,
+    /// whose `CRC32.update` range check throws
+    /// `ArrayIndexOutOfBoundsException("Range [offset, offset + len) out of
+    /// bounds for length n")` (`BufferedChecksumIndexInput.java:45-48`).
+    fn read_bytes_out_of_range(&mut self, b: &mut [u8], offset: i32, len: i32) -> Result<()> {
+        self.main.read_bytes_out_of_range(b, offset, len)?;
+        Err(LuceneError::from(LuceneErrorKind::Unchecked {
+            class: "java.lang.ArrayIndexOutOfBoundsException",
+            message: Some(format!(
+                "Range [{offset}, {offset} + {len}) out of bounds for length {}",
+                b.len()
+            )),
+            cause: None,
+        }))
     }
 
     /// Equivalent to `BufferedChecksumIndexInput.readShort()`
@@ -8172,7 +8374,7 @@ impl ByteBuffersDataOutput {
         }
     }
 
-    fn append_block(&mut self) {
+    fn append_block(&mut self) -> Result<()> {
         if !self.current.is_empty() {
             let full = std::mem::take(&mut self.current);
             self.completed.push(full);
@@ -8181,9 +8383,9 @@ impl ByteBuffersDataOutput {
         if self.completed.len() >= MAX_BLOCKS_BEFORE_BLOCK_EXPANSION
             && self.block_bits < self.max_bits
         {
-            self.rewrite_to_block_size(self.block_bits + 1);
+            self.rewrite_to_block_size(self.block_bits + 1)?;
             if self.current.capacity() > self.current.len() {
-                return;
+                return Ok(());
             }
             if !self.current.is_empty() && self.current.len() == self.current.capacity() {
                 let full = std::mem::take(&mut self.current);
@@ -8194,36 +8396,37 @@ impl ByteBuffersDataOutput {
         let required_size = 1usize << self.block_bits;
         self.current = self.allocate(required_size);
         debug_assert!(self.current.capacity() == required_size);
+        Ok(())
     }
 
-    fn rewrite_to_block_size(&mut self, target_bits: usize) {
+    /// Equivalent to `ByteBuffersDataOutput.rewriteToBlockSize(int)`
+    /// (`ByteBuffersDataOutput.java:512-533`): every block is polled in order,
+    /// copied to an output of the target block size and then handed to the
+    /// reuse callback, whose failure propagates with the remaining blocks
+    /// still held and the block size unchanged, as in Java.
+    fn rewrite_to_block_size(&mut self, target_bits: usize) -> Result<()> {
         debug_assert!(target_bits <= self.max_bits);
         // `new ByteBuffersDataOutput(targetBlockBits, targetBlockBits,
         // blockAllocate, NO_REUSE)`.
         let mut cloned =
-            Self::with_allocator_opt(target_bits, target_bits, self.block_allocate.clone(), None)
-                .expect("target bits valid");
-        for block in &self.completed {
-            cloned.write_bytes(block, 0, block.len()).unwrap();
-        }
+            Self::with_allocator_opt(target_bits, target_bits, self.block_allocate.clone(), None)?;
+        // Java's `blocks` deque ends with the current block.
         if !self.current.is_empty() {
-            cloned
-                .write_bytes(&self.current, 0, self.current.len())
-                .unwrap();
+            let current = std::mem::take(&mut self.current);
+            self.completed.push(current);
         }
-        if let Some(reuse) = &self.block_reuse {
-            for block in self.completed.drain(..) {
-                let _ = reuse(block);
+        while !self.completed.is_empty() {
+            let block = self.completed.remove(0);
+            cloned.write_bytes(&block, 0, block.len())?;
+            if let Some(reuse) = &self.block_reuse {
+                reuse(block)?;
             }
-            let _ = reuse(std::mem::take(&mut self.current));
-        } else {
-            self.completed.clear();
-            self.current.clear();
         }
         debug_assert!(self.completed.is_empty());
         self.block_bits = target_bits;
         self.completed = cloned.completed;
         self.current = cloned.current;
+        Ok(())
     }
 
     /// Writes a long string in chunks.
@@ -8276,9 +8479,15 @@ impl Default for ByteBuffersDataOutput {
 }
 
 impl DataOutput for ByteBuffersDataOutput {
+    /// `ByteBuffersDataOutput.toString()` (`ByteBuffersDataOutput.java:360-364`),
+    /// the [`Display`](std::fmt::Display) rendering.
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         if self.current.len() == self.current.capacity() {
-            self.append_block();
+            self.append_block()?;
         }
         self.current.push(b);
         Ok(())
@@ -8298,7 +8507,7 @@ impl DataOutput for ByteBuffersDataOutput {
         let mut remaining = len;
         while remaining > 0 {
             if self.current.len() == self.current.capacity() {
-                self.append_block();
+                self.append_block()?;
             }
             let space = self.current.capacity() - self.current.len();
             let chunk = remaining.min(space);
@@ -8375,7 +8584,7 @@ impl DataOutput for ByteBuffersDataOutput {
         }
         while num_bytes > 0 {
             if self.current.len() == self.current.capacity() {
-                self.append_block();
+                self.append_block()?;
             }
             let space = self.current.capacity() - self.current.len();
             let chunk = (num_bytes as usize).min(space);
@@ -9132,6 +9341,12 @@ impl ByteBuffersIndexOutput {
 }
 
 impl DataOutput for ByteBuffersIndexOutput {
+    /// `IndexOutput.toString()`: the resource description
+    /// (`IndexOutput.java:83-86`).
+    fn to_java_string(&self) -> String {
+        self.resource_description().to_string()
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.delegate_mut()?.write_byte(b)
     }
@@ -9358,6 +9573,12 @@ impl<W: Write + Send + Sync> OutputStreamIndexOutput<W> {
 }
 
 impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
+    /// `IndexOutput.toString()`: the resource description
+    /// (`IndexOutput.java:83-86`).
+    fn to_java_string(&self) -> String {
+        self.resource_description().to_string()
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.crc.update(b);
         self.out.write_all(&[b]).map_err(LuceneError::from)?;
@@ -9515,6 +9736,12 @@ impl FSIndexOutput {
 }
 
 impl DataOutput for FSIndexOutput {
+    /// `IndexOutput.toString()`: the resource description
+    /// (`IndexOutput.java:83-86`).
+    fn to_java_string(&self) -> String {
+        self.resource_description().to_string()
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.0.write_byte(b)
     }

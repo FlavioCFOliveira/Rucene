@@ -234,6 +234,12 @@ impl MockIndexOutputWrapper {
 }
 
 impl DataOutput for MockIndexOutputWrapper {
+    /// `IndexOutput.toString()`: the resource description
+    /// (`IndexOutput.java:83-86`).
+    fn to_java_string(&self) -> String {
+        self.resource_description().to_string()
+    }
+
     /// `writeByte(b)`: `writeBytes(singleByte, 0, 1)`.
     fn write_byte(&mut self, b: u8) -> Result<()> {
         let single_byte = [b];

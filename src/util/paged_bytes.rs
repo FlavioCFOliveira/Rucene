@@ -627,6 +627,10 @@ impl PagedBytesDataOutput<'_> {
 }
 
 impl DataOutput for PagedBytesDataOutput<'_> {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.util.PagedBytes$PagedBytesDataOutput"
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         if self.owner.upto == self.owner.block_size {
             if let Some(block) = self.owner.current_block.take() {

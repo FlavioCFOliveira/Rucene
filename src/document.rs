@@ -3747,21 +3747,11 @@ impl IndexableField for LongPoint {
 /// Returns the `f32` adjacent to `value` in the direction of positive infinity.
 ///
 /// Reproduces `java.lang.Math.nextUp(float)`, which
-/// [`FloatPoint::next_up`] delegates to. Rust's `f32::next_up` was stabilised
-/// in 1.86, above this crate's minimum supported version of 1.80, so the
-/// bit-level walk Java performs is written out here.
+/// [`FloatPoint::next_up`] delegates to: [`f32::next_up`] is the same IEEE
+/// 754 `nextUp` (NaN and positive infinity unchanged, `-0.0` stepping to the
+/// smallest positive subnormal).
 fn java_math_next_up_f32(value: f32) -> f32 {
-    if value.is_nan() || value == f32::INFINITY {
-        return value;
-    }
-    // Adding `0.0` turns `-0.0` into `+0.0`, which is what makes the branch
-    // below step away from zero rather than towards it.
-    let value = value + 0.0;
-    if value >= 0.0 {
-        f32::from_bits(value.to_bits().wrapping_add(1))
-    } else {
-        f32::from_bits(value.to_bits().wrapping_sub(1))
-    }
+    value.next_up()
 }
 
 /// Returns the `f32` adjacent to `value` in the direction of negative infinity.
@@ -3769,17 +3759,7 @@ fn java_math_next_up_f32(value: f32) -> f32 {
 /// Reproduces `java.lang.Math.nextDown(float)`, which
 /// [`FloatPoint::next_down`] delegates to.
 fn java_math_next_down_f32(value: f32) -> f32 {
-    if value.is_nan() || value == f32::NEG_INFINITY {
-        return value;
-    }
-    if value == 0.0 {
-        return -f32::from_bits(1);
-    }
-    if value > 0.0 {
-        f32::from_bits(value.to_bits().wrapping_sub(1))
-    } else {
-        f32::from_bits(value.to_bits().wrapping_add(1))
-    }
+    value.next_down()
 }
 
 /// Returns the `f64` adjacent to `value` in the direction of positive infinity.
@@ -3787,15 +3767,7 @@ fn java_math_next_down_f32(value: f32) -> f32 {
 /// Reproduces `java.lang.Math.nextUp(double)`, which
 /// [`DoublePoint::next_up`] delegates to.
 fn java_math_next_up_f64(value: f64) -> f64 {
-    if value.is_nan() || value == f64::INFINITY {
-        return value;
-    }
-    let value = value + 0.0;
-    if value >= 0.0 {
-        f64::from_bits(value.to_bits().wrapping_add(1))
-    } else {
-        f64::from_bits(value.to_bits().wrapping_sub(1))
-    }
+    value.next_up()
 }
 
 /// Returns the `f64` adjacent to `value` in the direction of negative infinity.
@@ -3803,17 +3775,7 @@ fn java_math_next_up_f64(value: f64) -> f64 {
 /// Reproduces `java.lang.Math.nextDown(double)`, which
 /// [`DoublePoint::next_down`] delegates to.
 fn java_math_next_down_f64(value: f64) -> f64 {
-    if value.is_nan() || value == f64::NEG_INFINITY {
-        return value;
-    }
-    if value == 0.0 {
-        return -f64::from_bits(1);
-    }
-    if value > 0.0 {
-        f64::from_bits(value.to_bits().wrapping_sub(1))
-    } else {
-        f64::from_bits(value.to_bits().wrapping_add(1))
-    }
+    value.next_down()
 }
 
 /// An indexed `f32` point field.
@@ -4466,9 +4428,13 @@ impl BinaryPoint {
     ) -> Result<Self> {
         let expected = field_type.point_dimension_count() * field_type.point_num_bytes();
         if packed_point.length as i32 != expected {
-            return Err(LuceneError::illegal_argument(
-                "packedPoint length does not match field type dimensions".to_string(),
-            ));
+            // `BinaryPoint.java:136-144`.
+            return Err(LuceneError::illegal_argument(format!(
+                "packedPoint is length={} but type.pointDimensionCount()={} and type.pointNumBytes()={}",
+                packed_point.length,
+                field_type.point_dimension_count(),
+                field_type.point_num_bytes()
+            )));
         }
         Ok(Self {
             name: name.to_string(),

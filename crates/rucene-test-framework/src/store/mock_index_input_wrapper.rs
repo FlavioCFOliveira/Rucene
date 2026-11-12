@@ -314,6 +314,11 @@ impl DataInput for MockIndexInputWrapper {
         self.r#in.read_bytes(b, offset, len)
     }
 
+    fn read_bytes_out_of_range(&mut self, b: &mut [u8], offset: i32, len: i32) -> Result<()> {
+        self.ensure_open_and_accessible()?;
+        self.r#in.read_bytes_out_of_range(b, offset, len)
+    }
+
     fn read_bytes_buffered(
         &mut self,
         b: Option<&mut [u8]>,

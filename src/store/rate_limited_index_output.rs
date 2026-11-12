@@ -80,6 +80,12 @@ impl RateLimitedIndexOutput {
 }
 
 impl DataOutput for RateLimitedIndexOutput {
+    /// `IndexOutput.toString()`: the resource description
+    /// (`IndexOutput.java:83-86`).
+    fn to_java_string(&self) -> String {
+        self.resource_description().to_string()
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.bytes_since_last_pause += 1;
         self.check_rate()?;

@@ -371,10 +371,15 @@ impl IntersectTermsEnumFrame {
             self.fp
         );
         self.next_ent += 1;
-        self.suffix = self.with_suffix_lengths(|r| r.read_v_int())?.max(0) as usize;
+        // `IntersectTermsEnumFrame.java:249-251`: the length is not clamped;
+        // a corrupt negative one goes to `suffixesReader.skipBytes`, whose
+        // failure (`ByteArrayDataInput::skip_bytes` rejects a negative count)
+        // is raised from here. Past the skip the length is known to be
+        // non-negative.
+        let suffix = self.with_suffix_lengths(|r| r.read_v_int())?;
         self.start_byte_pos = self.suffixes_pos;
-        let suffix = self.suffix as i64;
-        self.with_suffixes(|r| r.skip_bytes(suffix))?;
+        self.with_suffixes(|r| r.skip_bytes(i64::from(suffix)))?;
+        self.suffix = suffix as usize;
         Ok(())
     }
 

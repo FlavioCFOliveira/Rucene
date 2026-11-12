@@ -20,10 +20,10 @@ use crate::util::Bits;
 /// A [`Box<dyn ImpactsEnum>`] seen as an [`ImpactsEnum`].
 ///
 /// **Divergence from Lucene 10.5.0.** Java passes the `ImpactsEnum` straight to
-/// `ImpactsDISI`. This port's [`ImpactsDISI`] is generic over the concrete enum
-/// type — a `dyn ImpactsEnum` cannot be coerced to the `dyn ImpactsSource` its
-/// cache takes below Rust 1.86 — and `Box<dyn ImpactsEnum>` does not implement
-/// [`ImpactsEnum`] on its own, so this newtype forwards every method.
+/// `ImpactsDISI`. This port's [`ImpactsDISI`] is generic over a sized source
+/// type, which it coerces to the `dyn ImpactsSource` its cache takes, and
+/// `Box<dyn ImpactsEnum>` does not implement [`ImpactsEnum`] on its own, so
+/// this newtype forwards every method.
 pub struct BoxedImpactsEnum(Box<dyn ImpactsEnum>);
 
 impl BoxedImpactsEnum {

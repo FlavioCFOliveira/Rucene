@@ -2147,17 +2147,21 @@ impl BlockState {
     ) -> Result<()> {
         self.doc_base = fields_stream.read_v_int()?;
         let token = fields_stream.read_v_int()?;
-        self.chunk_docs = token >> 2;
-        self.sliced = (token & 1) != 0;
-
-        if !self.contains(doc_id) || self.doc_base + self.chunk_docs > num_docs {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+        // `token >>> 2` (`Lucene90CompressingStoredFieldsReader.java:464`).
+        self.chunk_docs = ((token as u32) >> 2) as i32;
+        // `Lucene90CompressingStoredFieldsReader.java:465-476`; Java's `int`
+        // sum wraps.
+        if !self.contains(doc_id) || self.doc_base.wrapping_add(self.chunk_docs) > num_docs {
+            return Err(LuceneError::corrupt_index(
                 format!(
-                    "Corrupted: doc_id={doc_id}, doc_base={}, chunk_docs={}, num_docs={num_docs}",
+                    "Corrupted: docID={doc_id}, docBase={}, chunkDocs={}, numDocs={num_docs}",
                     self.doc_base, self.chunk_docs
                 ),
-            )));
+                fields_stream.to_java_string(),
+            ));
         }
+
+        self.sliced = (token & 1) != 0;
 
         self.offsets.resize(self.chunk_docs as usize + 1, 0);
         self.num_stored_fields.resize(self.chunk_docs as usize, 0);
@@ -2185,9 +2189,11 @@ impl BlockState {
                 let len = self.offsets[i + 1] - self.offsets[i];
                 let stored = self.num_stored_fields[i];
                 if (len == 0) != (stored == 0) {
-                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                        format!("length={len}, num_stored_fields={stored}"),
-                    )));
+                    // `Lucene90CompressingStoredFieldsReader.java:497-501`.
+                    return Err(LuceneError::corrupt_index(
+                        format!("length={len}, numStoredFields={stored}"),
+                        fields_stream.to_java_string(),
+                    ));
                 }
             }
         }
@@ -2590,7 +2596,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
 
             let field_info = self
                 .field_infos
-                .field_info_by_number(field_number)
+                .field_info_checked(field_number)?
                 .ok_or_else(|| {
                     LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                         "field number {field_number} not found"

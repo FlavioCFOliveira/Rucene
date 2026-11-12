@@ -18,7 +18,6 @@ use crate::index::{
 use crate::search::abstract_doc_id_set_iterator::AbstractDocIdSetIterator;
 use crate::search::comparators::updateable_doc_id_set_iterator::UpdateableDocIdSetIterator;
 use crate::search::doc_id_set_iterator::{all, empty, DocIdSetIterator, NO_MORE_DOCS};
-use crate::search::doc_values_iteration::sorted_as_iterator;
 use crate::search::field_comparator::{SlotComparator, SortValue};
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::pruning::Pruning;
@@ -646,7 +645,7 @@ impl TermOrdValComparator {
                         };
                         competitive
                             .iterator
-                            .update(sorted_as_iterator(docs_with_field));
+                            .update(docs_with_field as Box<dyn DocIdSetIterator>);
                         *docs_with_field_installed = true;
                     }
                 } else if disjunction.is_none() {

@@ -60,8 +60,8 @@
 //! and it survives the port intact.
 //!
 //! The other, the `jdk.incubator.vector` Vector API, does not: Rust's portable
-//! SIMD (`std::simd`) is nightly-only and this crate targets stable Rust with
-//! an MSRV of 1.80. Every Panama kernel in Lucene is written twice — a lane
+//! SIMD (`std::simd`) is nightly-only and this crate targets stable Rust.
+//! Every Panama kernel in Lucene is written twice — a lane
 //! path, and a scalar loop that finishes the elements the lanes do not cover —
 //! and each lane path is guarded on a minimum vector width. This port sets
 //! [`PanamaVectorConstants::PREFERRED_VECTOR_BITSIZE`] to zero, which makes

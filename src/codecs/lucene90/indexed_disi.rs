@@ -103,8 +103,12 @@ pub fn write_bit_set(
     dense_rank_power: i8,
 ) -> Result<i16> {
     if (dense_rank_power < 7 || dense_rank_power > 15) && dense_rank_power != -1 {
+        // `IndexedDISI.java:195-203`; `(int) Math.pow(2, denseRankPower)`
+        // truncates and saturates as `as i32` does.
         return Err(LuceneError::illegal_argument(format!(
-            "denseRankPower must be in [7, 15] or -1, got {dense_rank_power}"
+            "Acceptable values for denseRankPower are 7-15 (every 128-32768 docIDs). \
+             The provided power was {dense_rank_power} (every {} docIDs)",
+            2f64.powi(i32::from(dense_rank_power)) as i32
         )));
     }
     let origo = out.file_pointer();
@@ -336,8 +340,11 @@ impl IndexedDISI {
         cost: i64,
     ) -> Result<Self> {
         if (dense_rank_power < 7 || dense_rank_power > 15) && dense_rank_power != -1 {
+            // `IndexedDISI.java:332-340`, whose message ends in `". "`.
             return Err(LuceneError::illegal_argument(format!(
-                "denseRankPower must be in [7, 15] or -1, got {dense_rank_power}"
+                "Acceptable values for denseRankPower are 7-15 (every 128-32768 docIDs). \
+                 The provided power was {dense_rank_power} (every {} docIDs). ",
+                2f64.powi(i32::from(dense_rank_power)) as i32
             )));
         }
         let rank_index_shift = if dense_rank_power == -1 {
