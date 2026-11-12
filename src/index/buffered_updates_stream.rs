@@ -240,18 +240,15 @@ impl BufferedUpdatesStream {
         }
     }
 
-    /// Returns the RAM a single packet accounts for.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java reads `packet.bytesUsed`, which
-    /// `FrozenBufferedUpdates` computes when it freezes the packet's
-    /// `PrefixCodedTerms` and query array. `BufferedUpdates` in this port does
-    /// not track its own RAM yet, so the weight is counted from the operations
-    /// the packet carries — which is what `any()` and `ram_bytes_used()` are
-    /// actually used for here. Both `push` and
-    /// [`check_delete_stats`](Self::check_delete_stats) go through this one
-    /// function, so the running total and the check always agree.
+    /// Returns the RAM a single packet accounts for: `packet.bytesUsed`, the
+    /// bytes `FrozenBufferedUpdates` charged when it froze the packet's
+    /// `PrefixCodedTerms`, query array and field updates
+    /// (`FrozenBufferedUpdates.java:108-111`), which `push` adds
+    /// (`BufferedUpdatesStream.java:80`), `finishedSegment` subtracts
+    /// (`BufferedUpdatesStream.java:164`) and `checkDeleteStats` sums
+    /// (`BufferedUpdatesStream.java:297-301`).
     fn packet_bytes_used(packet: &FrozenBufferedUpdates) -> i64 {
-        (packet.updates().terms_size() + packet.updates().queries_size()) as i64
+        crate::util::Accountable::ram_bytes_used(packet)
     }
 
     /// Appends `packet` to the stream and returns the generation it was given.

@@ -309,7 +309,8 @@ fn scores_with_rucene(
     .expect("dense query");
     let mut scorer = reader
         .get_random_vector_scorer_float(FIELD, &query)
-        .expect("query scorer");
+        .expect("query scorer")
+        .expect("the field has an entry");
     for ord in 0..scorer.max_ord() {
         let score = scorer.score(ord).expect("score");
         out.push(format!("score={ord}:{:08x}", score.to_bits()));

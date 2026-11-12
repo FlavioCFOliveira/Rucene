@@ -38,7 +38,7 @@ use crate::util::hnsw::scorer::{
     CloseableRandomVectorScorerSupplier, RandomVectorScorer, RandomVectorScorerSupplier,
     UpdateableRandomVectorScorer,
 };
-use crate::util::packed::SharedDirectMonotonicReader;
+use crate::util::packed::DirectMonotonicReader;
 use crate::util::quantization::{
     OptimizedScalarQuantizer, QuantizationResult, QuantizedByteVectorValues,
     QuantizedVectorsReader, ScalarEncoding, ScalarQuantizer,
@@ -171,7 +171,7 @@ pub struct OffHeapScalarQuantizedVectorValues {
     ///
     /// Equivalent to `SparseOffHeapVectorValues.ordToDoc`
     /// (`OffHeapScalarQuantizedVectorValues.java:377`).
-    ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    ord_to_doc: Option<Arc<DirectMonotonicReader>>,
     /// The `IndexedDISI disi` of a sparse field, which every `iterator()`
     /// call wraps (`OffHeapScalarQuantizedVectorValues.java:346, 378,
     /// 422-424`); `None` when the field is dense or empty.
@@ -253,7 +253,7 @@ impl OffHeapScalarQuantizedVectorValues {
     fn load_with_ord_to_doc(
         entry: FieldEntry,
         slice: Box<dyn IndexInput>,
-        ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+        ord_to_doc: Option<Arc<DirectMonotonicReader>>,
         is_query_side: bool,
     ) -> Result<Self> {
         debug_assert!(!is_query_side || entry.scalar_encoding.is_asymmetric());
@@ -597,7 +597,7 @@ pub struct OffHeapScalarQuantizedFloatVectorValues {
     ///
     /// Equivalent to `SparseOffHeapVectorValues.ordToDoc`
     /// (`OffHeapScalarQuantizedFloatVectorValues.java:294`).
-    ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    ord_to_doc: Option<Arc<DirectMonotonicReader>>,
     /// The `IndexedDISI disi` of a sparse field, which every `iterator()`
     /// call wraps (`OffHeapScalarQuantizedFloatVectorValues.java:275, 295,
     /// 337-339`); `None` when dense.
@@ -2526,24 +2526,17 @@ impl FlatVectorsReader for Lucene104ScalarQuantizedVectorsReader {
         )))
     }
 
-    /// Returns a scorer of `target` against `field`'s quantized vectors.
+    /// Returns a scorer of `target` against `field`'s quantized vectors, or
+    /// `None` for a field this reader holds no entry for.
     ///
-    /// Equivalent to `Lucene104ScalarQuantizedVectorsReader.getRandomVectorScorer(String, float[])`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java returns `null` for a field this
-    /// reader holds no entry for; the trait's return type is not optional, so
-    /// the absent field is an `IllegalArgumentException`-shaped error instead.
-    /// [`Self::random_vector_scorer_float`] keeps Java's optional form for the
-    /// callers inside this file that need to tell the two apart.
+    /// Equivalent to `Lucene104ScalarQuantizedVectorsReader.getRandomVectorScorer(String, float[])`
+    /// (`Lucene104ScalarQuantizedVectorsReader.java:195-217`).
     fn get_random_vector_scorer_float(
         &self,
         field: &str,
         target: &[f32],
-    ) -> Result<Box<dyn RandomVectorScorer>> {
-        self.random_vector_scorer_float(field, target)?
-            .ok_or_else(|| {
-                LuceneError::illegal_argument(format!("field=\"{field}\" has no vector values"))
-            })
+    ) -> Result<Option<Box<dyn RandomVectorScorer>>> {
+        self.random_vector_scorer_float(field, target)
     }
 
     /// Byte queries are not quantized, so the delegate answers.
@@ -2553,7 +2546,7 @@ impl FlatVectorsReader for Lucene104ScalarQuantizedVectorsReader {
         &self,
         field: &str,
         target: &[u8],
-    ) -> Result<Box<dyn RandomVectorScorer>> {
+    ) -> Result<Option<Box<dyn RandomVectorScorer>>> {
         self.raw_vectors_reader
             .get_random_vector_scorer_byte(field, target)
     }
@@ -3042,6 +3035,18 @@ impl FlatFieldVectorsWriter<Vec<f32>> for SqFieldWriter {
     /// its lock; see [`FlatFieldVectorsWriter`].
     fn vectors(&self) -> Cow<'_, [Vec<f32>]> {
         Cow::Owned(self.flat().vectors().into_owned())
+    }
+
+    /// The raw delegate's vector count, read under its lock without copying
+    /// the vectors.
+    fn vector_count(&self) -> usize {
+        self.flat().vector_count()
+    }
+
+    /// The raw delegate's vector `ord`, read under its lock without copying
+    /// the other vectors.
+    fn vector_at(&self, ord: usize) -> Option<Vec<f32>> {
+        self.flat().vector_at(ord)
     }
 
     /// The raw delegate's documents (`FieldWriter.getDocsWithFieldSet()`,

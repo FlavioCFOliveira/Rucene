@@ -46,7 +46,7 @@ use crate::store::{DataAccessHint, DataInput, FileOpenHint, IndexInput, IndexOut
 use crate::util::extra::LongValues;
 use crate::util::hnsw::scorer::BorrowedBits;
 use crate::util::hnsw::RandomVectorScorer;
-use crate::util::packed::SharedDirectMonotonicReader;
+use crate::util::packed::DirectMonotonicReader;
 use crate::util::{Bits, IOUtils};
 
 // -----------------------------------------------------------------------------
@@ -1275,11 +1275,14 @@ impl FlatVectorsReader for Lucene99FlatVectorsReader {
         Ok(Box::new(Arc::clone(&self.vector_scorer)))
     }
 
+    /// Equivalent to `Lucene99FlatVectorsReader.getRandomVectorScorer(String, float[])`
+    /// (`Lucene99FlatVectorsReader.java:267-282`), which never returns `null`:
+    /// an unknown field raises `IllegalArgumentException`.
     fn get_random_vector_scorer_float(
         &self,
         field: &str,
         target: &[f32],
-    ) -> Result<Box<dyn RandomVectorScorer>> {
+    ) -> Result<Option<Box<dyn RandomVectorScorer>>> {
         let entry = self.get_field_entry(field, VectorEncoding::FLOAT32)?;
         let values = OffHeapFloatVectorValues::load(
             entry.similarity_function,
@@ -1292,13 +1295,16 @@ impl FlatVectorsReader for Lucene99FlatVectorsReader {
         )?;
         self.vector_scorer
             .get_random_vector_scorer_float(entry.similarity_function, values, target)
+            .map(Some)
     }
 
+    /// Equivalent to `Lucene99FlatVectorsReader.getRandomVectorScorer(String, byte[])`
+    /// (`Lucene99FlatVectorsReader.java:284-299`), which never returns `null`.
     fn get_random_vector_scorer_byte(
         &self,
         field: &str,
         target: &[u8],
-    ) -> Result<Box<dyn RandomVectorScorer>> {
+    ) -> Result<Option<Box<dyn RandomVectorScorer>>> {
         let entry = self.get_field_entry(field, VectorEncoding::BYTE)?;
         let values = OffHeapByteVectorValues::load(
             entry.similarity_function,
@@ -1311,6 +1317,7 @@ impl FlatVectorsReader for Lucene99FlatVectorsReader {
         )?;
         self.vector_scorer
             .get_random_vector_scorer_byte(entry.similarity_function, values, target)
+            .map(Some)
     }
 
     /// See [`KnnVectorsReader::get_merge_instance`] for this reader.
@@ -1426,7 +1433,7 @@ struct OffHeapFloatVectorValues {
     /// Equivalent to `SparseOffHeapVectorValues.ordToDoc`, the
     /// `DirectMonotonicReader` the constructor builds
     /// (`OffHeapFloatVectorValues.java:225`, `OffHeapByteVectorValues.java:229`).
-    ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    ord_to_doc: Option<Arc<DirectMonotonicReader>>,
     /// The `IndexedDISI disi` of a sparse field, which every `iterator()`
     /// call wraps (`OffHeapFloatVectorValues.java:205, 226-233, 272-274`,
     /// `OffHeapByteVectorValues.java:229-237, 258-260`); `None` when dense.
@@ -1757,7 +1764,7 @@ struct OffHeapByteVectorValues {
     /// Equivalent to `SparseOffHeapVectorValues.ordToDoc`, the
     /// `DirectMonotonicReader` the constructor builds
     /// (`OffHeapFloatVectorValues.java:225`, `OffHeapByteVectorValues.java:229`).
-    ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    ord_to_doc: Option<Arc<DirectMonotonicReader>>,
     /// The `IndexedDISI disi` of a sparse field, which every `iterator()`
     /// call wraps (`OffHeapFloatVectorValues.java:205, 226-233, 272-274`,
     /// `OffHeapByteVectorValues.java:229-237, 258-260`); `None` when dense.
@@ -2161,7 +2168,7 @@ pub fn new_dense_off_heap_byte_vector_values(
 /// 254-270`).
 pub(crate) fn sparse_accept_ords<'a>(
     size: i32,
-    ord_to_doc: Option<&Arc<SharedDirectMonotonicReader>>,
+    ord_to_doc: Option<&Arc<DirectMonotonicReader>>,
     accept_docs: Option<&'a dyn Bits>,
 ) -> Option<Box<dyn Bits + 'a>> {
     match ord_to_doc {
@@ -2819,7 +2826,9 @@ pub(crate) mod tests {
         assert_eq!(iter.next_doc()?, 2);
         assert_eq!(iter.next_doc()?, NO_MORE_DOCS);
 
-        let mut scorer = reader.get_random_vector_scorer_float("float_field", &[1.0, 2.0])?;
+        let mut scorer = reader
+            .get_random_vector_scorer_float("float_field", &[1.0, 2.0])?
+            .expect("the field has an entry");
         let score_same = scorer.score(0)?;
         let score_other = scorer.score(1)?;
         assert!(score_same > score_other);

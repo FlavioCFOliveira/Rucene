@@ -1625,6 +1625,36 @@ impl DirectMonotonicReader {
             .wrapping_add(delta))
     }
 
+    /// Returns the value at `index` exactly as Java's
+    /// `DirectMonotonicReader.get(long)` computes it, with no bounds check of
+    /// its own (`DirectMonotonicReader.java:135-140`): the block number is
+    /// `(int) (index >>> blockShift)`, and a block outside the metadata makes
+    /// `readers[block]` raise `ArrayIndexOutOfBoundsException`.
+    ///
+    /// # Errors
+    ///
+    /// `java.lang.ArrayIndexOutOfBoundsException` for a block outside the
+    /// metadata, and whatever the block reader raises for an index past its
+    /// encoded data.
+    pub fn get_java(&self, index: i64) -> Result<i64> {
+        let block = ((index as u64) >> (self.block_shift as u32)) as i32;
+        if block < 0 || block as usize >= self.readers.len() {
+            return Err(LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!(
+                    "Index {block} out of bounds for length {}",
+                    self.readers.len()
+                ),
+            ));
+        }
+        let block = block as usize;
+        let block_index = index & self.block_mask;
+        let delta = self.readers[block].get_checked(block_index)?;
+        Ok(self.mins[block]
+            .wrapping_add((self.avgs[block] * block_index as f32) as i64)
+            .wrapping_add(delta))
+    }
+
     /// Returns lower and upper bounds for the value at `index` without hitting
     /// the direct reader.
     ///

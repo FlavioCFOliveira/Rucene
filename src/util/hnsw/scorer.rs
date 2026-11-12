@@ -135,7 +135,7 @@ impl Bits for BorrowedBits<'_> {
 /// A scorer whose scoring ordinal can be changed in place.
 ///
 /// Equivalent to `org.apache.lucene.util.hnsw.UpdateableRandomVectorScorer`.
-pub trait UpdateableRandomVectorScorer: RandomVectorScorer {
+pub trait UpdateableRandomVectorScorer: RandomVectorScorer + Send {
     /// Changes the scoring ordinal to the given node.
     fn set_scoring_ordinal(&mut self, node: i32) -> Result<()>;
 }

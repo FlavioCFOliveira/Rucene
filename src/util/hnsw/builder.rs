@@ -758,9 +758,11 @@ impl HnswGraphBuilder {
                 return Ok(());
             }
             if self.hnsw.num_levels()? == cur_max_level + 1 {
+                // HnswGraphBuilder.java:373-384.
                 return Err(LuceneError::illegal_state(format!(
-                    "We're not able to promote node {} at level {} as entry node",
-                    node, node_level
+                    "We're not able to promote node {} at level {} as entry node. But the max \
+                     graph level {} has not changed while we are inserting the node.",
+                    node, node_level, cur_max_level
                 )));
             }
         }
@@ -1079,9 +1081,11 @@ impl KnnCollector for GraphBuilderKnnCollector {
 
     /// Equivalent to `HnswGraphBuilder.GraphBuilderKnnCollector.topDocs()`,
     /// which throws `IllegalArgumentException`: this collector feeds graph
-    /// construction and never produces search results.
+    /// construction and never produces search results
+    /// (`HnswGraphBuilder.java:742-745`). Java's exception has no message
+    /// (`getMessage()` is `null`); the empty message stands for it.
     fn top_docs(&mut self) -> crate::error::Result<crate::search::knn::TopDocs> {
-        todo!("PORT G-402")
+        Err(LuceneError::illegal_argument(String::new()))
     }
 
     fn get_search_strategy(&self) -> Option<&crate::search::knn::KnnSearchStrategy> {

@@ -160,19 +160,19 @@ impl Accountable for NullFSTReader {
 impl FSTReader for NullFSTReader {
     fn get_reverse_bytes_reader(&self) -> Result<Box<dyn BytesReader + '_>> {
         Err(LuceneError::unsupported_operation(
-            "FST was not constructed with get_on_heap_reader_writer()".to_string(),
+            "FST was not constructed with getOnHeapReaderWriter()".to_string(),
         ))
     }
 
     fn get_owned_reverse_bytes_reader(self: std::sync::Arc<Self>) -> Result<Box<dyn BytesReader>> {
         Err(LuceneError::unsupported_operation(
-            "FST was not constructed with get_on_heap_reader_writer()".to_string(),
+            "FST was not constructed with getOnHeapReaderWriter()".to_string(),
         ))
     }
 
     fn write_to(&self, _out: &mut dyn DataOutput) -> Result<()> {
         Err(LuceneError::unsupported_operation(
-            "FST was not constructed with get_on_heap_reader_writer()".to_string(),
+            "FST was not constructed with getOnHeapReaderWriter()".to_string(),
         ))
     }
 }
@@ -731,6 +731,12 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     ///
     /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the sink is not the on-heap
     /// one and therefore cannot be read back.
+    ///
+    /// **Divergence from Lucene 10.5.0.** `FSTCompiler.getFSTReader`
+    /// (`FSTCompiler.java:227-233`) appends `", but got " + dataOutput`, the
+    /// `toString()` of the sink. [`DataOutput`] carries no `toString()`
+    /// counterpart (unlike [`crate::store::DataInput::to_java_string`]), so
+    /// the suffix cannot be rendered and the message stops at the prefix.
     pub fn fst_reader(&self) -> Result<&dyn FSTReader> {
         match &self.data_output {
             FstOutputSink::OnHeap(output) => Ok(output),

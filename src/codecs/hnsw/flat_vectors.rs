@@ -415,6 +415,31 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
         }
     }
 
+    /// Returns the number of buffered vectors.
+    ///
+    /// Equivalent to `getVectors().size()`, which the HNSW field writer asks
+    /// of the live list (`Lucene99HnswVectorsWriter.java:765-769`). A writer
+    /// whose [`vectors`](Self::vectors) copies should override it.
+    fn vector_count(&self) -> usize
+    where
+        T: Clone,
+    {
+        self.vectors().len()
+    }
+
+    /// Returns a copy of buffered vector `ord`, or `None` past the end.
+    ///
+    /// Equivalent to `getVectors().get(ord)` on the live list, which the view
+    /// the HNSW graph builder scores through reads one vector at a time
+    /// (`FloatVectorValues.fromFloats`). A writer whose
+    /// [`vectors`](Self::vectors) copies should override it.
+    fn vector_at(&self, ord: usize) -> Option<T>
+    where
+        T: Clone,
+    {
+        self.vectors().get(ord).cloned()
+    }
+
     /// Returns the set of documents that have a value for this field.
     ///
     /// Equivalent to `FlatFieldVectorsWriter.getDocsWithFieldSet()`.
@@ -1230,19 +1255,26 @@ pub trait FlatVectorsReader: KnnVectorsReader + crate::util::Accountable {
     /// Returns the flat vector scorer for the given field.
     fn get_flat_vector_scorer(&self, field: &str) -> Result<Box<dyn FlatVectorsScorer>>;
 
-    /// Returns a random vector scorer for the given float target vector.
+    /// Returns a random vector scorer for the given float target vector, or
+    /// `None` where Java returns `null` (a field the reader holds no entry
+    /// for, `Lucene104ScalarQuantizedVectorsReader.java:195-199`).
+    ///
+    /// Equivalent to `FlatVectorsReader.getRandomVectorScorer(String, float[])`.
     fn get_random_vector_scorer_float(
         &self,
         field: &str,
         target: &[f32],
-    ) -> Result<Box<dyn RandomVectorScorer>>;
+    ) -> Result<Option<Box<dyn RandomVectorScorer>>>;
 
-    /// Returns a random vector scorer for the given byte target vector.
+    /// Returns a random vector scorer for the given byte target vector, or
+    /// `None` where Java returns `null`.
+    ///
+    /// Equivalent to `FlatVectorsReader.getRandomVectorScorer(String, byte[])`.
     fn get_random_vector_scorer_byte(
         &self,
         field: &str,
         target: &[u8],
-    ) -> Result<Box<dyn RandomVectorScorer>>;
+    ) -> Result<Option<Box<dyn RandomVectorScorer>>>;
 
     /// Returns an instance optimized for merging.
     fn get_merge_instance_flat(&self) -> Result<Box<dyn FlatVectorsReader>>;

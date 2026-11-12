@@ -153,6 +153,19 @@ pub enum InputType {
     Byte4,
 }
 
+impl InputType {
+    /// Returns the Java enum constant name (`BYTE1`, `BYTE2` or `BYTE4`).
+    ///
+    /// Equivalent to `FST.INPUT_TYPE.name()` / `toString()`.
+    pub fn name(self) -> &'static str {
+        match self {
+            InputType::Byte1 => "BYTE1",
+            InputType::Byte2 => "BYTE2",
+            InputType::Byte4 => "BYTE4",
+        }
+    }
+}
+
 /// Returns whether `bit` is set in `flags`.
 ///
 /// Equivalent to the private static `FST.flag`.
@@ -390,7 +403,66 @@ impl<T> Arc<T> {
     }
 }
 
-impl<T: fmt::Debug> fmt::Display for Arc<T> {
+/// Java `Object.toString()` form of an FST output value, as appended by
+/// `FST.Arc.toString` (`FST.java:236-273`) through string concatenation.
+///
+/// Each implementation reproduces the `toString()` of the Java type the Rust
+/// output type stands for: `Long` (decimal), `BytesRef` and `IntsRef`
+/// (bracketed hexadecimal), `CharsRef` (the characters) and `PairOutputs.Pair`
+/// (`"Pair(" + output1 + "," + output2 + ")"`, `PairOutputs.java:64-66`).
+pub trait OutputToString {
+    /// Returns the Java `toString()` text of this output.
+    fn output_to_java_string(&self) -> String;
+}
+
+impl OutputToString for i64 {
+    fn output_to_java_string(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl OutputToString for crate::util::BytesRef {
+    fn output_to_java_string(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl OutputToString for crate::util::CharsRef {
+    fn output_to_java_string(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl OutputToString for crate::util::IntsRef {
+    fn output_to_java_string(&self) -> String {
+        self.to_string()
+    }
+}
+
+/// `NoOutputs.NO_OUTPUT` (`NoOutputs.java:32-48`) is an anonymous `Object`
+/// whose `toString()` is the identity-hash form `NoOutputs$1@<hash>`. An FST
+/// built with `NoOutputs` never sets [`BIT_ARC_HAS_OUTPUT`] or
+/// [`BIT_ARC_HAS_FINAL_OUTPUT`], so `Arc.toString` never appends it; the
+/// empty string is returned only to satisfy the bound.
+impl OutputToString for () {
+    fn output_to_java_string(&self) -> String {
+        String::new()
+    }
+}
+
+impl<A: OutputToString, B: OutputToString> OutputToString for super::pair_outputs::Pair<A, B> {
+    fn output_to_java_string(&self) -> String {
+        format!(
+            "Pair({},{})",
+            self.output1.output_to_java_string(),
+            self.output2.output_to_java_string()
+        )
+    }
+}
+
+/// Equivalent to `FST.Arc.toString` (`FST.java:236-273`); outputs are
+/// appended through their Java `toString()` form ([`OutputToString`]).
+impl<T: OutputToString> fmt::Display for Arc<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, " target={}", self.target())?;
         write!(f, " label=0x{:x}", self.label())?;
@@ -407,10 +479,14 @@ impl<T: fmt::Debug> fmt::Display for Arc<T> {
             write!(f, " stop")?;
         }
         if self.flag(BIT_ARC_HAS_OUTPUT) {
-            write!(f, " output={:?}", self.output())?;
+            write!(f, " output={}", self.output().output_to_java_string())?;
         }
         if self.flag(BIT_ARC_HAS_FINAL_OUTPUT) {
-            write!(f, " nextFinalOutput={:?}", self.next_final_output())?;
+            write!(
+                f,
+                " nextFinalOutput={}",
+                self.next_final_output().output_to_java_string()
+            )?;
         }
         if self.bytes_per_arc() != 0 {
             let kind = if self.node_flags() == ARCS_FOR_DIRECT_ADDRESSING {
@@ -738,12 +814,12 @@ impl<O: Outputs> FST<O> {
             // Accepts the empty string; 1 KB blocks.
             let mut empty_bytes = get_on_heap_reader_writer(10)?;
             let num_bytes = meta_in.read_v_int()?;
-            if num_bytes < 0 {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                    format!("invalid empty output length {num_bytes}"),
-                )));
+            // `DataOutput.copyBytes` (`DataOutput.java:263-276`) loops while
+            // `left > 0`, so a negative length copies nothing (FST.java:470-471);
+            // the empty-output decode below then fails as Java's does.
+            if num_bytes > 0 {
+                empty_bytes.copy_bytes(meta_in, num_bytes as i64)?;
             }
-            empty_bytes.copy_bytes(meta_in, num_bytes as i64)?;
             empty_bytes.freeze();
 
             // De-serialize the empty-string output. NoOutputs writes zero bytes,
@@ -762,8 +838,9 @@ impl<O: Outputs> FST<O> {
             1 => InputType::Byte2,
             2 => InputType::Byte4,
             _ => {
+                // Java concatenates the signed `byte` (FST.java:485-487).
                 return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                    format!("invalid input type {t}"),
+                    format!("invalid input type {}", t as i8),
                 )));
             }
         };
@@ -1724,15 +1801,19 @@ impl<O: Outputs> Accountable for FST<O> {
 }
 
 /// Shallow size of an [`FST`], mirroring
-/// `RamUsageEstimator.shallowSizeOfInstance(FST.class)`.
-const BASE_RAM_BYTES_USED: i64 = 32;
+/// `RamUsageEstimator.shallowSizeOfInstance(FST.class)` (`FST.java:75-76`):
+/// a 12-byte object header plus the three reference fields `metadata`,
+/// `fstReader` and `outputs` (4 bytes each with compressed oops), aligned to
+/// 8 = 24 bytes, as measured on the JDK 25 oracle.
+const BASE_RAM_BYTES_USED: i64 = 24;
 
 impl<O: Outputs> fmt::Display for FST<O> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "FST(input={:?},output={}",
-            self.metadata.input_type, self.metadata.outputs
+            "FST(input={},output={}",
+            self.metadata.input_type.name(),
+            self.metadata.outputs
         )
     }
 }

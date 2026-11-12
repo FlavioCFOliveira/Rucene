@@ -18,13 +18,13 @@ use crate::codecs::codec_util::{
     write_index_header,
 };
 use crate::codecs::hnsw::flat_vectors::{
-    DefaultFlatVectorScorer, DocsWithFieldSet, FlatFieldVectorWriter, FlatVectorsFormat,
-    FlatVectorsReader, FlatVectorsScorer, FlatVectorsWriter, SharedFlatFieldVectorsWriter,
+    DefaultFlatVectorScorer, DocsWithFieldSet, FlatFieldVectorWriter, FlatFieldVectorsWriter,
+    FlatVectorsFormat, FlatVectorsReader, FlatVectorsWriter, SharedFlatFieldVectorsWriter,
 };
 use crate::codecs::hnsw::graph_provider::HnswGraphProvider;
 use crate::codecs::knn_vectors::{
-    FieldVectorWriter, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter, MergedVectorValues,
-    SorterDocMap,
+    FieldVectorWriter, KnnFieldVectorsWriter, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
+    MergedVectorValues, SorterDocMap,
 };
 use crate::codecs::lucene99::flat_vectors_format::Lucene99FlatVectorsFormat;
 use crate::codecs::postings::MergeState;
@@ -34,9 +34,8 @@ use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::vector_values::{
     ByteVectorValues, DocIndexIterator, FloatVectorValues, KnnVectorValues,
 };
-use crate::index::{
-    accept_ords_with, segment_file_name, FieldInfos, VectorEncoding, VectorSimilarityFunction,
-};
+use crate::index::{segment_file_name, FieldInfos, VectorEncoding, VectorSimilarityFunction};
+use crate::internal::hppc::IntObjectHashMap;
 use crate::search::knn::KnnCollector;
 use crate::search::{AcceptDocs, DocIdSetIterator, TaskExecutor, NO_MORE_DOCS};
 use crate::store::SharedIndexInput;
@@ -49,7 +48,7 @@ use crate::util::hnsw::{
 };
 use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
 use crate::util::quantization::{QuantizedByteVectorValues, ScalarQuantizer};
-use crate::util::{Bits, IOUtils};
+use crate::util::IOUtils;
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -410,7 +409,10 @@ struct HnswWriterState {
     merge_exec: Option<Arc<TaskExecutor>>,
     tiny_segments_threshold: i32,
     version: i32,
-    fields: Vec<FieldWriterEntry>,
+    /// Equivalent to `Lucene99HnswVectorsWriter.fields`, the
+    /// `List<FieldWriter<?>>` the writer keeps for `flush` and
+    /// `ramBytesUsed`.
+    fields: Vec<Arc<Mutex<dyn HnswFieldWriterOps>>>,
     finished: bool,
 }
 
@@ -429,26 +431,358 @@ impl fmt::Debug for Lucene99HnswVectorsWriter {
     }
 }
 
-/// One field this writer indexes: the field writer the flat writer returned
-/// for it, and the field.
+/// `RamUsageEstimator.shallowSizeOfInstance(Lucene99HnswVectorsWriter.class)`
+/// (`Lucene99HnswVectorsWriter.java:77-78`) on a 64-bit JVM with compressed
+/// oops: a 12-byte header, eight references (`segmentWriteState`, `meta`,
+/// `vectorIndex`, `flatVectorWriter`, `flatVectorsFormat`,
+/// `flatVectorsReader`, `mergeExec`, `fields`), five `int`s (`M`,
+/// `beamWidth`, `numMergeWorkers`, `tinySegmentsThreshold`, `version`) and two
+/// `boolean`s (`flatWriterClosed`, `finished`), aligned to 8: 72 bytes, as
+/// measured on the JDK 25 oracle.
+const HNSW_VECTORS_WRITER_SHALLOW_SIZE: i64 = crate::util::RamUsageEstimator::align_object_size(
+    crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+        + 8 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF
+        + 5 * 4
+        + 2,
+);
+
+/// `RamUsageEstimator.shallowSizeOfInstance(FieldWriter.class)`
+/// (`Lucene99HnswVectorsWriter.java:677-678`): a 12-byte header, five
+/// references (`fieldInfo`, `hnswGraphBuilder`, `flatFieldVectorsWriter`,
+/// `infoStream`, `scorerSupplier`) and five `int`s (`lastDocID`, `node`,
+/// `graphThreshold`, `M`, `beamWidth`), aligned to 8: 56 bytes, as measured on
+/// the JDK 25 oracle.
+const HNSW_FIELD_WRITER_SHALLOW_SIZE: i64 = crate::util::RamUsageEstimator::align_object_size(
+    crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+        + 5 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF
+        + 5 * 4,
+);
+
+/// The per-field writer of an HNSW segment: it forwards each vector to the
+/// flat field writer and inserts it into the field's graph as it arrives.
 ///
-/// Equivalent to `Lucene99HnswVectorsWriter.FieldWriter`
-/// (`Lucene99HnswVectorsWriter.java:675-814`), which keeps the
-/// `FlatFieldVectorsWriter` that `flatVectorWriter.addField` returned. Java's
-/// also builds the graph as values arrive; this port builds it in
-/// [`flush`](KnnVectorsWriter::flush), from the same vectors.
-enum FieldWriterEntry {
-    Float(SharedFlatFieldVectorsWriter<Vec<f32>>, FieldInfo),
-    Byte(SharedFlatFieldVectorsWriter<Vec<u8>>, FieldInfo),
+/// Equivalent to `Lucene99HnswVectorsWriter.FieldWriter<T>`
+/// (`Lucene99HnswVectorsWriter.java:675-814`). The graph builder is created
+/// lazily once the field holds enough vectors to be worth a graph
+/// (`tinySegmentsThreshold`), replaying the vectors buffered so far, and from
+/// then on each `addValue` adds its node; so the graph grows, and is counted
+/// in [`ram_bytes_used`](KnnFieldVectorsWriter::ram_bytes_used), while the
+/// documents are indexed, which is what sets the RAM-triggered flush points.
+struct HnswFieldWriter<T> {
+    field_info: FieldInfo,
+    /// Only created when needed.
+    hnsw_graph_builder: Option<HnswGraphBuilder>,
+    last_doc_id: i32,
+    node: i32,
+    flat_field_vectors_writer: SharedFlatFieldVectorsWriter<T>,
+    graph_threshold: i32,
+    m: i32,
+    beam_width: i32,
+    info_stream: Arc<dyn crate::util::InfoStream>,
+    /// Scores over a live view of the flat field writer's growing vector list.
+    scorer_supplier: Box<dyn crate::util::hnsw::RandomVectorScorerSupplier>,
 }
 
-impl fmt::Debug for FieldWriterEntry {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FieldWriterEntry::Float(_, info) => f.debug_tuple("Float").field(&info.name).finish(),
-            FieldWriterEntry::Byte(_, info) => f.debug_tuple("Byte").field(&info.name).finish(),
+impl<T> HnswFieldWriter<T> {
+    /// Equivalent to the `FieldWriter` constructor
+    /// (`Lucene99HnswVectorsWriter.java:725-754`), which receives the scorer
+    /// supplier built over `flatFieldVectorsWriter.asKnnVectorValues(...)` and
+    /// creates the graph builder at once when the tiny-segment optimisation is
+    /// disabled.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        scorer_supplier: Box<dyn crate::util::hnsw::RandomVectorScorerSupplier>,
+        flat_field_vectors_writer: SharedFlatFieldVectorsWriter<T>,
+        field_info: &FieldInfo,
+        m: i32,
+        beam_width: i32,
+        info_stream: Arc<dyn crate::util::InfoStream>,
+        tiny_segments_threshold: i32,
+    ) -> Result<Self> {
+        let mut writer = Self {
+            field_info: field_info.clone(),
+            hnsw_graph_builder: None,
+            last_doc_id: -1,
+            node: 0,
+            flat_field_vectors_writer,
+            graph_threshold: tiny_segments_threshold,
+            m,
+            beam_width,
+            info_stream,
+            scorer_supplier,
+        };
+        if writer.graph_threshold <= 0 {
+            // Initialize graph builder if optimization is disabled.
+            writer.initialize_graph_builder()?;
+        }
+        Ok(writer)
+    }
+
+    /// Equivalent to `FieldWriter.initializeGraphBuilder()`
+    /// (`Lucene99HnswVectorsWriter.java:756-763`): a builder over a graph of
+    /// unknown size, seeded with `HnswGraphBuilder.randSeed`.
+    fn initialize_graph_builder(&mut self) -> Result<()> {
+        if self.hnsw_graph_builder.is_some() {
+            return Ok(());
+        }
+        let mut builder = HnswGraphBuilder::create(
+            &*self.scorer_supplier,
+            self.m,
+            self.beam_width,
+            HnswGraphBuilder::rand_seed(),
+            -1,
+        )?;
+        builder.set_info_stream(Arc::clone(&self.info_stream));
+        self.hnsw_graph_builder = Some(builder);
+        Ok(())
+    }
+
+    /// Locks the flat field writer this writer forwards to.
+    fn flat(&self) -> std::sync::MutexGuard<'_, dyn FlatFieldVectorsWriter<T> + 'static> {
+        self.flat_field_vectors_writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl<T: Clone> HnswFieldWriter<T> {
+    /// Equivalent to `FieldWriter.replayBufferedVectors()`
+    /// (`Lucene99HnswVectorsWriter.java:765-769`).
+    fn replay_buffered_vectors(&mut self) -> Result<()> {
+        let count = self.flat().vector_count();
+        if let Some(builder) = self.hnsw_graph_builder.as_mut() {
+            for i in 0..count {
+                builder.add_graph_node(i as i32)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<T: Clone + Send + 'static> HnswFieldWriter<T> {
+    /// Equivalent to `FieldWriter.addValue(int, T)`
+    /// (`Lucene99HnswVectorsWriter.java:771-790`).
+    fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
+        if doc_id == self.last_doc_id {
+            return Err(LuceneError::illegal_argument(format!(
+                "VectorValuesField \"{}\" appears more than once in this document (only one \
+                 value is allowed per field)",
+                self.field_info.name
+            )));
+        }
+        self.flat().add_value(doc_id, vector_value)?;
+        // Check if we need to initialize graph builder for tiny segment
+        // optimization.
+        if self.hnsw_graph_builder.is_none()
+            && should_create_graph(self.graph_threshold, self.node + 1)
+        {
+            self.initialize_graph_builder()?;
+            self.replay_buffered_vectors()?;
+        } else if let Some(builder) = self.hnsw_graph_builder.as_mut() {
+            // Graph builder is active, add to graph.
+            builder.add_graph_node(self.node)?;
+        }
+        self.node += 1;
+        self.last_doc_id = doc_id;
+        Ok(())
+    }
+
+    /// Equivalent to `FieldWriter.ramBytesUsed()`
+    /// (`Lucene99HnswVectorsWriter.java:806-813`): the shallow size, the flat
+    /// field writer and, once it exists, the graph being built.
+    fn ram_bytes_used(&self) -> i64 {
+        let mut total = HNSW_FIELD_WRITER_SHALLOW_SIZE + self.flat().ram_bytes_used();
+        if let Some(builder) = self.hnsw_graph_builder.as_ref() {
+            total += crate::util::Accountable::ram_bytes_used(builder.get_graph());
+        }
+        total
+    }
+}
+
+/// What [`HnswWriterState`] needs from each of its field writers, whatever
+/// their element type: Java reaches `FieldWriter<?>` through its wildcard.
+trait HnswFieldWriterOps: Send {
+    /// `FieldWriter.fieldInfo`.
+    fn field_info(&self) -> &FieldInfo;
+    /// `FieldWriter.getDocsWithFieldSet()`, copied out of the flat writer's
+    /// lock.
+    fn docs_with_field_set(&self) -> DocsWithFieldSet;
+    /// `FieldWriter.getGraph()` (`Lucene99HnswVectorsWriter.java:796-804`):
+    /// the completed graph, or `None` when no graph was built or no vector
+    /// was added.
+    fn get_graph(&mut self) -> Result<Option<&OnHeapHnswGraph>>;
+    /// `FieldWriter.ramBytesUsed()`.
+    fn field_ram_bytes_used(&self) -> i64;
+}
+
+impl<T: Clone + Send + 'static> HnswFieldWriterOps for HnswFieldWriter<T> {
+    fn field_info(&self) -> &FieldInfo {
+        &self.field_info
+    }
+
+    fn docs_with_field_set(&self) -> DocsWithFieldSet {
+        self.flat().docs_with_field_set().into_owned()
+    }
+
+    fn get_graph(&mut self) -> Result<Option<&OnHeapHnswGraph>> {
+        debug_assert!(self.flat().is_finished());
+        let node = self.node;
+        match self.hnsw_graph_builder.as_mut() {
+            Some(builder) if node > 0 => Ok(Some(builder.get_completed_graph()?)),
+            // No graph.
+            _ => Ok(None),
         }
     }
+
+    fn field_ram_bytes_used(&self) -> i64 {
+        HnswFieldWriter::ram_bytes_used(self)
+    }
+}
+
+/// The handle [`KnnVectorsWriter::add_field`] returns: the same
+/// [`HnswFieldWriter`] the writer keeps in its field list, as Java returns the
+/// `FieldWriter` it adds to `fields`.
+struct HnswFieldWriterHandle<T>(Arc<Mutex<HnswFieldWriter<T>>>);
+
+impl<T: Clone + Send + 'static> KnnFieldVectorsWriter<T> for HnswFieldWriterHandle<T> {
+    fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .add_value(doc_id, vector_value)
+    }
+
+    /// Java's `FieldWriter.copyValue` throws `UnsupportedOperationException`
+    /// and is never called: the flat field writer copies the values it keeps.
+    /// The vector is already owned here, so it is returned unchanged.
+    fn copy_value(&self, vector_value: T) -> T {
+        vector_value
+    }
+
+    fn ram_bytes_used(&self) -> i64 {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .ram_bytes_used()
+    }
+}
+
+/// Java's `FloatVectorValues.fromFloats(flatFieldVectorsWriter.getVectors(),
+/// dim)` as `FlatFieldVectorsWriter.asKnnVectorValues` builds it for the HNSW
+/// field writer (`FlatFieldVectorsWriter.java:52-56`): a view over the very
+/// list the flat field writer appends to, so the graph builder scores vectors
+/// added after the view was made.
+#[derive(Clone)]
+struct LiveFloatVectorValues {
+    writer: SharedFlatFieldVectorsWriter<Vec<f32>>,
+    dimension: i32,
+}
+
+impl KnnVectorValues for LiveFloatVectorValues {
+    fn dimension(&self) -> i32 {
+        self.dimension
+    }
+
+    fn size(&self) -> i32 {
+        self.writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .vector_count() as i32
+    }
+
+    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
+        Ok(Box::new(self.clone()))
+    }
+
+    fn encoding(&self) -> VectorEncoding {
+        VectorEncoding::FLOAT32
+    }
+
+    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
+        Ok(Box::new(
+            crate::index::vector_values::DenseDocIndexIterator::new(self.size()),
+        ))
+    }
+}
+
+impl FloatVectorValues for LiveFloatVectorValues {
+    /// `vectors.get(ord)`, which raises `IndexOutOfBoundsException` outside
+    /// the list.
+    fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
+        let writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        usize::try_from(ord)
+            .ok()
+            .and_then(|ord| writer.vector_at(ord))
+            .ok_or_else(|| list_index_out_of_bounds(ord, writer.vector_count()))
+    }
+
+    /// Java's `fromFloats` returns `this` from `copy()`; the clone shares the
+    /// same live list.
+    fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
+        Ok(Box::new(self.clone()))
+    }
+}
+
+/// [`LiveFloatVectorValues`] for byte vectors: `ByteVectorValues.fromBytes`.
+#[derive(Clone)]
+struct LiveByteVectorValues {
+    writer: SharedFlatFieldVectorsWriter<Vec<u8>>,
+    dimension: i32,
+}
+
+impl KnnVectorValues for LiveByteVectorValues {
+    fn dimension(&self) -> i32 {
+        self.dimension
+    }
+
+    fn size(&self) -> i32 {
+        self.writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .vector_count() as i32
+    }
+
+    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
+        Ok(Box::new(self.clone()))
+    }
+
+    fn encoding(&self) -> VectorEncoding {
+        VectorEncoding::BYTE
+    }
+
+    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
+        Ok(Box::new(
+            crate::index::vector_values::DenseDocIndexIterator::new(self.size()),
+        ))
+    }
+}
+
+impl ByteVectorValues for LiveByteVectorValues {
+    fn vector_value(&self, ord: i32) -> Result<Vec<u8>> {
+        let writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        usize::try_from(ord)
+            .ok()
+            .and_then(|ord| writer.vector_at(ord))
+            .ok_or_else(|| list_index_out_of_bounds(ord, writer.vector_count()))
+    }
+
+    fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
+        Ok(Box::new(self.clone()))
+    }
+}
+
+/// The `IndexOutOfBoundsException` `ArrayList.get(index)` raises.
+fn list_index_out_of_bounds(index: i32, size: usize) -> LuceneError {
+    LuceneError::unchecked(
+        "java.lang.IndexOutOfBoundsException",
+        format!("Index {index} out of bounds for length {size}"),
+    )
 }
 
 impl Lucene99HnswVectorsWriter {
@@ -1105,84 +1439,78 @@ impl HnswWriterState {
 impl HnswWriterState {
     /// Equivalent to `Lucene99HnswVectorsWriter.addField(FieldInfo)`
     /// (`Lucene99HnswVectorsWriter.java:194-207`): the flat writer adds the
-    /// field and returns its writer, which this writer keeps for
-    /// [`flush`](Self::flush) and hands out. Java hands out its own
-    /// `FieldWriter`, which forwards each value to that flat field writer after
-    /// the same duplicate-document check the flat writer makes, and feeds its
-    /// graph builder; this port builds the graph at flush.
+    /// field, and a [`HnswFieldWriter`] over its field writer, scoring with
+    /// the flat writer's scorer (`FieldWriter.create`,
+    /// `Lucene99HnswVectorsWriter.java:690-723`), joins the field list and is
+    /// returned.
     fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
-        if self.finished {
-            return Err(LuceneError::illegal_state(
-                "Lucene99HnswVectorsWriter is already finished".to_string(),
-            ));
-        }
         let flat_field_vectors_writer =
             FlatVectorsWriter::add_field(self.flat_vector_writer.as_mut(), field_info)?;
-        self.fields.push(match &flat_field_vectors_writer {
+        let info_stream = Arc::clone(&self.segment_write_state.info_stream);
+        let scorer = self.flat_vector_writer.get_flat_vector_scorer();
+        Ok(match flat_field_vectors_writer {
             FlatFieldVectorWriter::Float(writer) => {
-                FieldWriterEntry::Float(Arc::clone(writer), field_info.clone())
+                let supplier = scorer.get_random_vector_scorer_supplier_float(
+                    field_info.vector_similarity_function,
+                    Box::new(LiveFloatVectorValues {
+                        writer: Arc::clone(&writer),
+                        dimension: field_info.vector_dimension,
+                    }),
+                )?;
+                let field = Arc::new(Mutex::new(HnswFieldWriter::new(
+                    supplier,
+                    writer,
+                    field_info,
+                    self.m,
+                    self.beam_width,
+                    info_stream,
+                    self.tiny_segments_threshold,
+                )?));
+                self.fields.push(field.clone());
+                FieldVectorWriter::Float(Box::new(HnswFieldWriterHandle(field)))
             }
             FlatFieldVectorWriter::Byte(writer) => {
-                FieldWriterEntry::Byte(Arc::clone(writer), field_info.clone())
+                let supplier = scorer.get_random_vector_scorer_supplier_byte(
+                    field_info.vector_similarity_function,
+                    Box::new(LiveByteVectorValues {
+                        writer: Arc::clone(&writer),
+                        dimension: field_info.vector_dimension,
+                    }),
+                )?;
+                let field = Arc::new(Mutex::new(HnswFieldWriter::new(
+                    supplier,
+                    writer,
+                    field_info,
+                    self.m,
+                    self.beam_width,
+                    info_stream,
+                    self.tiny_segments_threshold,
+                )?));
+                self.fields.push(field.clone());
+                FieldVectorWriter::Byte(Box::new(HnswFieldWriterHandle(field)))
             }
-        });
-        Ok(FieldVectorWriter::from(flat_field_vectors_writer))
+        })
     }
 
     /// Equivalent to `Lucene99HnswVectorsWriter.flush(int, Sorter.DocMap)`
     /// (`Lucene99HnswVectorsWriter.java:209-219`): the flat writer writes every
-    /// field's vectors, then each field's graph and metadata are written.
-    ///
-    /// Java's `FieldWriter` builds the graph while the values arrive, before
-    /// this flush; a quantizing flat writer then normalises cosine vectors in
-    /// place during its own flush
-    /// (`Lucene104ScalarQuantizedVectorsWriter.java:135-138`), and the graph
-    /// builder's `finish` scores nothing (`HnswGraphBuilder.java:551-557`).
-    /// The graphs are therefore built here before the flat writer flushes,
-    /// over the vectors as they were added.
+    /// field's vectors, then each field's graph — built as the values arrived
+    /// — and metadata are written.
     fn flush(&mut self, max_doc: i32, sort_map: Option<&SorterDocMap>) -> Result<()> {
-        let entries = std::mem::take(&mut self.fields);
-        let mut graphs = Vec::with_capacity(entries.len());
-        for entry in &entries {
-            graphs.push(match entry {
-                FieldWriterEntry::Float(writer, info) => {
-                    let values = BufferedFloatVectorValues::new(info.vector_dimension, writer)?;
-                    let graph = build_hnsw_graph_float(
-                        self.flat_vector_writer.get_flat_vector_scorer(),
-                        &values,
-                        info.vector_similarity_function,
-                        self.m,
-                        self.beam_width,
-                        self.tiny_segments_threshold,
-                    )?;
-                    (values.ord_to_doc().to_vec(), graph)
-                }
-                FieldWriterEntry::Byte(writer, info) => {
-                    let values = BufferedByteVectorValues::new(info.vector_dimension, writer)?;
-                    let graph = build_hnsw_graph_byte(
-                        self.flat_vector_writer.get_flat_vector_scorer(),
-                        &values,
-                        info.vector_similarity_function,
-                        self.m,
-                        self.beam_width,
-                        self.tiny_segments_threshold,
-                    )?;
-                    (values.ord_to_doc().to_vec(), graph)
-                }
-            });
-        }
-
         self.flat_vector_writer.flush(max_doc, sort_map)?;
-        for (entry, (ord_to_doc, graph)) in entries.iter().zip(graphs) {
-            let info = match entry {
-                FieldWriterEntry::Float(_, info) | FieldWriterEntry::Byte(_, info) => info,
-            };
+        for i in 0..self.fields.len() {
+            let field = Arc::clone(&self.fields[i]);
+            let mut field = field
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let info = field.field_info().clone();
+            let docs_with_field_set = field.docs_with_field_set();
+            let graph = field.get_graph()?;
             match sort_map {
-                None => self.write_field(info, ord_to_doc.len() as i32, graph.as_ref())?,
-                // A sorted segment renumbers the vector ordinals, so the graph
-                // is rebuilt under the new numbering.
+                None => self.write_field(&info, docs_with_field_set.cardinality(), graph)?,
                 Some(sort_map) => {
-                    self.write_sorting_field(info, &ord_to_doc, graph.as_ref(), sort_map)?
+                    let ord_to_doc = build_ord_to_doc(&docs_with_field_set)?;
+                    self.write_sorting_field(&info, &ord_to_doc, graph, sort_map)?
                 }
             }
         }
@@ -1241,6 +1569,7 @@ impl HnswWriterState {
     /// closed it to reopen its vectors.
     fn finish(&mut self) -> Result<()> {
         if self.finished {
+            // Lucene99HnswVectorsWriter.java:223-225.
             return Err(LuceneError::illegal_state("already finished".to_string()));
         }
         self.finished = true;
@@ -1385,36 +1714,18 @@ impl HnswWriterState {
     }
 
     /// Equivalent to `Lucene99HnswVectorsWriter.ramBytesUsed()`
-    /// (`Lucene99HnswVectorsWriter.java:241-249`), which sums a shallow size
-    /// and every field's footprint: the flat field writer the field delegates
-    /// to, which holds the buffered vectors (`Lucene99HnswVectorsWriter.java:806-813`).
-    /// As in Java, the flat writer itself is not counted.
-    ///
-    /// **Divergence:** Java's per-field total also carries the partially built
-    /// HNSW graph, because `Lucene99HnswVectorsWriter.FieldWriter.addValue`
-    /// feeds `hnswGraphBuilder.addGraphNode` as each vector arrives
-    /// (`Lucene99HnswVectorsWriter.java:766-785`). This port builds the graph
-    /// in `flush`, from the buffered vectors, so no graph exists while
-    /// documents are being indexed and there is nothing to add here; nor is
-    /// the per-field `FieldWriter` shallow size, which only Java's object
-    /// layout has. The buffered vectors — the term that grows with the data —
-    /// are accounted exactly as Java accounts them.
+    /// (`Lucene99HnswVectorsWriter.java:240-248`): the writer's shallow size
+    /// plus every field writer's footprint (shallow size, flat field writer
+    /// and the graph built so far). As in Java, the flat writer itself is not
+    /// counted, and the fields stay counted after `flush`.
     fn ram_bytes_used(&self) -> i64 {
-        let mut total = crate::util::RamUsageEstimator::align_object_size(
-            crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
-                + 10 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF,
-        );
-        for entry in &self.fields {
-            total += match entry {
-                FieldWriterEntry::Float(writer, _) => writer
-                    .lock()
-                    .map(|guard| guard.ram_bytes_used())
-                    .unwrap_or(0),
-                FieldWriterEntry::Byte(writer, _) => writer
-                    .lock()
-                    .map(|guard| guard.ram_bytes_used())
-                    .unwrap_or(0),
-            };
+        let mut total = HNSW_VECTORS_WRITER_SHALLOW_SIZE;
+        for field in &self.fields {
+            // The field tracks the delegate field usage.
+            total += field
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .field_ram_bytes_used();
         }
         total
     }
@@ -1584,63 +1895,6 @@ fn write_int_le_bytes(out: &mut dyn IndexOutput, v: i32, n: usize) -> Result<()>
     out.write_bytes(&bytes, 0, n)
 }
 
-/// Builds a flushed field's graph, scoring with the flat writer's scorer:
-/// Java's `FieldWriter.create` takes the scorer supplier from
-/// `flatVectorWriter.getFlatVectorScorer()` (`Lucene99HnswVectorsWriter.java:196-199, 738-747`),
-/// which for `lucene-codecs`' `HnswBitVectorsFormat` is `FlatBitVectorsScorer`.
-fn build_hnsw_graph_float(
-    scorer: &dyn FlatVectorsScorer,
-    values: &BufferedFloatVectorValues,
-    similarity: VectorSimilarityFunction,
-    m: i32,
-    beam_width: i32,
-    tiny_segments_threshold: i32,
-) -> Result<Option<OnHeapHnswGraph>> {
-    let count = values.size();
-    if count > 0 && should_create_graph(tiny_segments_threshold, count) {
-        let supplier =
-            scorer.get_random_vector_scorer_supplier_float(similarity, Box::new(values.clone()))?;
-        let mut builder = HnswGraphBuilder::create(
-            &*supplier,
-            m,
-            beam_width,
-            HnswGraphBuilder::rand_seed(),
-            count,
-        )?;
-        builder.build(count)?;
-        Ok(Some(builder.into_graph()?))
-    } else {
-        Ok(None)
-    }
-}
-
-/// [`build_hnsw_graph_float`] for byte vectors.
-fn build_hnsw_graph_byte(
-    scorer: &dyn FlatVectorsScorer,
-    values: &BufferedByteVectorValues,
-    similarity: VectorSimilarityFunction,
-    m: i32,
-    beam_width: i32,
-    tiny_segments_threshold: i32,
-) -> Result<Option<OnHeapHnswGraph>> {
-    let count = values.size();
-    if count > 0 && should_create_graph(tiny_segments_threshold, count) {
-        let supplier =
-            scorer.get_random_vector_scorer_supplier_byte(similarity, Box::new(values.clone()))?;
-        let mut builder = HnswGraphBuilder::create(
-            &*supplier,
-            m,
-            beam_width,
-            HnswGraphBuilder::rand_seed(),
-            count,
-        )?;
-        builder.build(count)?;
-        Ok(Some(builder.into_graph()?))
-    } else {
-        Ok(None)
-    }
-}
-
 fn should_create_graph(k: i32, num_nodes: i32) -> bool {
     if k <= 0 {
         return true;
@@ -1719,170 +1973,8 @@ fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Buffered vector values used while building the HNSW graph
-// -----------------------------------------------------------------------------
-
-#[derive(Clone)]
-struct BufferedFloatVectorValues {
-    dimension: i32,
-    vectors: Vec<Vec<f32>>,
-    /// Shared, so that the `getAcceptOrds` view can map through it.
-    ord_to_doc: Arc<Vec<i32>>,
-}
-
-impl BufferedFloatVectorValues {
-    /// Returns the document each ordinal belongs to.
-    fn ord_to_doc(&self) -> &[i32] {
-        &self.ord_to_doc
-    }
-
-    fn new(dimension: i32, writer: &SharedFlatFieldVectorsWriter<Vec<f32>>) -> Result<Self> {
-        let guard = writer.lock().map_err(|_| {
-            LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
-        })?;
-        let vectors = guard.vectors().into_owned();
-        let ord_to_doc = build_ord_to_doc(&guard.docs_with_field_set())?;
-        Ok(Self {
-            dimension,
-            vectors,
-            ord_to_doc: Arc::new(ord_to_doc),
-        })
-    }
-}
-
-impl KnnVectorValues for BufferedFloatVectorValues {
-    fn dimension(&self) -> i32 {
-        self.dimension
-    }
-
-    fn size(&self) -> i32 {
-        self.vectors.len() as i32
-    }
-
-    fn ord_to_doc(&self, ord: i32) -> i32 {
-        self.ord_to_doc[ord as usize]
-    }
-
-    /// Equivalent to the inherited `KnnVectorValues.getAcceptOrds(Bits)`,
-    /// which maps every ordinal through `ordToDoc`.
-    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
-        let ord_to_doc = Arc::clone(&self.ord_to_doc);
-        accept_ords_with(
-            self.size(),
-            move |ord| ord_to_doc[ord as usize],
-            accept_docs,
-        )
-    }
-
-    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Ok(Box::new(self.clone()))
-    }
-
-    fn encoding(&self) -> VectorEncoding {
-        VectorEncoding::FLOAT32
-    }
-
-    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Ok(Box::new(VecDocIndexIterator::new(
-            self.ord_to_doc.as_ref().clone(),
-        )))
-    }
-}
-
-impl FloatVectorValues for BufferedFloatVectorValues {
-    fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Ok(Box::new(self.clone()))
-    }
-
-    fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
-        self.vectors
-            .get(ord as usize)
-            .cloned()
-            .ok_or_else(|| LuceneError::illegal_argument(format!("ord {ord} out of range")))
-    }
-}
-
-#[derive(Clone)]
-struct BufferedByteVectorValues {
-    dimension: i32,
-    vectors: Vec<Vec<u8>>,
-    /// Shared, so that the `getAcceptOrds` view can map through it.
-    ord_to_doc: Arc<Vec<i32>>,
-}
-
-impl BufferedByteVectorValues {
-    /// Returns the document each ordinal belongs to.
-    fn ord_to_doc(&self) -> &[i32] {
-        &self.ord_to_doc
-    }
-
-    fn new(dimension: i32, writer: &SharedFlatFieldVectorsWriter<Vec<u8>>) -> Result<Self> {
-        let guard = writer.lock().map_err(|_| {
-            LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
-        })?;
-        let vectors = guard.vectors().into_owned();
-        let ord_to_doc = build_ord_to_doc(&guard.docs_with_field_set())?;
-        Ok(Self {
-            dimension,
-            vectors,
-            ord_to_doc: Arc::new(ord_to_doc),
-        })
-    }
-}
-
-impl KnnVectorValues for BufferedByteVectorValues {
-    fn dimension(&self) -> i32 {
-        self.dimension
-    }
-
-    fn size(&self) -> i32 {
-        self.vectors.len() as i32
-    }
-
-    fn ord_to_doc(&self, ord: i32) -> i32 {
-        self.ord_to_doc[ord as usize]
-    }
-
-    /// Equivalent to the inherited `KnnVectorValues.getAcceptOrds(Bits)`,
-    /// which maps every ordinal through `ordToDoc`.
-    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
-        let ord_to_doc = Arc::clone(&self.ord_to_doc);
-        accept_ords_with(
-            self.size(),
-            move |ord| ord_to_doc[ord as usize],
-            accept_docs,
-        )
-    }
-
-    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Ok(Box::new(self.clone()))
-    }
-
-    fn encoding(&self) -> VectorEncoding {
-        VectorEncoding::BYTE
-    }
-
-    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Ok(Box::new(VecDocIndexIterator::new(
-            self.ord_to_doc.as_ref().clone(),
-        )))
-    }
-}
-
-impl ByteVectorValues for BufferedByteVectorValues {
-    fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Ok(Box::new(self.clone()))
-    }
-
-    fn vector_value(&self, ord: i32) -> Result<Vec<u8>> {
-        self.vectors
-            .get(ord as usize)
-            .cloned()
-            .ok_or_else(|| LuceneError::illegal_argument(format!("ord {ord} out of range")))
-    }
-}
-
+/// The documents of a field in ordinal order: Java's ordinal-to-document map
+/// as `mapOldOrdToNewOrd` walks `DocsWithFieldSet` (`KnnVectorsWriter.java`).
 fn build_ord_to_doc(docs_with_field_set: &DocsWithFieldSet) -> Result<Vec<i32>> {
     let mut ord_to_doc = Vec::with_capacity(docs_with_field_set.cardinality() as usize);
     let mut iter = docs_with_field_set.iterator()?;
@@ -1890,57 +1982,6 @@ fn build_ord_to_doc(docs_with_field_set: &DocsWithFieldSet) -> Result<Vec<i32>> 
         ord_to_doc.push(iter.doc_id());
     }
     Ok(ord_to_doc)
-}
-
-pub(crate) struct VecDocIndexIterator {
-    docs: Vec<i32>,
-    index: i32,
-}
-
-impl VecDocIndexIterator {
-    pub(crate) fn new(docs: Vec<i32>) -> Self {
-        Self { docs, index: -1 }
-    }
-}
-
-impl DocIdSetIterator for VecDocIndexIterator {
-    fn doc_id(&self) -> i32 {
-        if self.index < 0 {
-            -1
-        } else if self.index as usize >= self.docs.len() {
-            NO_MORE_DOCS
-        } else {
-            self.docs[self.index as usize]
-        }
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        self.index += 1;
-        if self.index as usize >= self.docs.len() {
-            Ok(NO_MORE_DOCS)
-        } else {
-            Ok(self.docs[self.index as usize])
-        }
-    }
-
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        while self.index as usize + 1 < self.docs.len()
-            && self.docs[(self.index + 1) as usize] < target
-        {
-            self.index += 1;
-        }
-        self.next_doc()
-    }
-
-    fn cost(&self) -> i64 {
-        self.docs.len() as i64
-    }
-}
-
-impl DocIndexIterator for VecDocIndexIterator {
-    fn index(&self) -> i32 {
-        self.index
-    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1968,7 +2009,10 @@ impl Lucene99HnswVectorsReader {
 pub struct Lucene99HnswVectorsReader {
     flat_vectors_reader: Box<dyn FlatVectorsReader>,
     field_infos: FieldInfos,
-    fields: HashMap<i32, FieldEntry>,
+    /// Equivalent to `Lucene99HnswVectorsReader.fields`, an
+    /// `IntObjectHashMap<FieldEntry>` keyed by field number, whose
+    /// `ramBytesUsed()` the reader reports.
+    fields: IntObjectHashMap<FieldEntry>,
     vector_index: SharedIndexInput,
     version: i32,
     data_context: Box<dyn crate::store::IOContext>,
@@ -1977,7 +2021,7 @@ pub struct Lucene99HnswVectorsReader {
 impl fmt::Debug for Lucene99HnswVectorsReader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Lucene99HnswVectorsReader")
-            .field("fields", &self.fields.len())
+            .field("fields", &self.fields.size())
             .field("version", &self.version)
             .finish_non_exhaustive()
     }
@@ -1996,7 +2040,8 @@ struct FieldEntry {
     dimension: i32,
     size: i32,
     nodes_by_level: Vec<Option<Vec<i32>>>,
-    offsets_meta: DirectMonotonicMeta,
+    /// `null` in Java when the field has no node offsets at all.
+    offsets_meta: Option<DirectMonotonicMeta>,
     offsets_offset: i64,
     offsets_block_shift: i32,
     offsets_length: i64,
@@ -2039,7 +2084,7 @@ impl Lucene99HnswVectorsReader {
     fn open(
         state: &SegmentReadState<'_>,
     ) -> Result<(
-        HashMap<i32, FieldEntry>,
+        IntObjectHashMap<FieldEntry>,
         Box<dyn IndexInput>,
         i32,
         Box<dyn crate::store::IOContext>,
@@ -2116,9 +2161,14 @@ impl Lucene99HnswVectorsReader {
                 &state.segment_suffix,
             )?;
             if version_meta != version_vector_data {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                    "format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
-                ))));
+                // Lucene99HnswVectorsReader.java:176-183.
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "Format versions mismatch: meta={version_meta}, \
+                         {codec_name}={version_vector_data}"
+                    ),
+                    input.resource_description(),
+                ));
             }
             retrieve_checksum(input.as_mut())?;
             Ok(())
@@ -2216,14 +2266,15 @@ impl Lucene99HnswVectorsReader {
         })
     }
 
+    /// Equivalent to `Lucene99HnswVectorsReader.getFieldEntryOrThrow(String)`
+    /// (`Lucene99HnswVectorsReader.java:286-293`): the same
+    /// `IllegalArgumentException` for an unknown field and for a field with
+    /// no entry.
     fn get_field_entry_or_throw(&self, field: &str) -> Result<&FieldEntry> {
-        let info = self
-            .field_infos
+        self.field_infos
             .field_info(field)
-            .ok_or_else(|| LuceneError::illegal_argument(format!("field=\"{field}\" not found")))?;
-        self.fields.get(&info.number).ok_or_else(|| {
-            LuceneError::illegal_argument(format!("field=\"{field}\" has no vector values"))
-        })
+            .and_then(|info| self.fields.get(info.number))
+            .ok_or_else(|| LuceneError::illegal_argument(format!("field=\"{field}\" not found")))
     }
 
     fn get_field_entry(
@@ -2233,8 +2284,11 @@ impl Lucene99HnswVectorsReader {
     ) -> Result<&FieldEntry> {
         let entry = self.get_field_entry_or_throw(field)?;
         if entry.vector_encoding != expected_encoding {
+            // Lucene99HnswVectorsReader.java:295-307; `VectorEncoding.toString()`
+            // is the constant name, which `Debug` prints.
             return Err(LuceneError::illegal_argument(format!(
-                "field=\"{field}\" is encoded as {entry_vector_encoding:?}, expected {expected_encoding:?}",
+                "field=\"{field}\" is encoded as: {entry_vector_encoding:?} expected: \
+                 {expected_encoding:?}",
                 entry_vector_encoding = entry.vector_encoding,
             )));
         }
@@ -2457,11 +2511,30 @@ impl HnswGraphProvider for Lucene99HnswVectorsReader {
 /// Equivalent to `Lucene99HnswVectorsReader.ramBytesUsed()`
 /// (`Lucene99HnswVectorsReader.java:264-270`): the shallow size, the field
 /// entries and the flat vectors reader.
+///
+/// `SHALLOW_SIZE` is `shallowSizeOfInstance(Lucene99HnswVectorsFormat.class)`
+/// — the format's class, not the reader's (`Lucene99HnswVectorsReader.java:76-77`),
+/// an oddity of the original kept as the contract; see
+/// [`HNSW_VECTORS_READER_SHALLOW_SIZE`]. `fields.ramBytesUsed()` is the
+/// `IntObjectHashMap`'s own estimate.
 impl crate::util::Accountable for Lucene99HnswVectorsReader {
     fn ram_bytes_used(&self) -> i64 {
-        todo!("PORT G-005")
+        HNSW_VECTORS_READER_SHALLOW_SIZE
+            + self.fields.ram_bytes_used()
+            + self.flat_vectors_reader.ram_bytes_used()
     }
 }
+
+/// `RamUsageEstimator.shallowSizeOfInstance(Lucene99HnswVectorsFormat.class)`
+/// on a 64-bit JVM with compressed oops: a 12-byte header, the two references
+/// `KnnVectorsFormat.name` and `mergeExec`, and the five `int` fields
+/// `maxConn`, `beamWidth`, `numMergeWorkers`, `tinySegmentsThreshold` and
+/// `writeVersion` (the flat format is a `static` field), aligned to 8.
+const HNSW_VECTORS_READER_SHALLOW_SIZE: i64 = crate::util::RamUsageEstimator::align_object_size(
+    crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+        + 2 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF
+        + 5 * 4,
+);
 
 impl KnnVectorsReader for Lucene99HnswVectorsReader {
     /// This reader answers with itself: Java's `instanceof
@@ -2501,7 +2574,10 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
         let scorer_supplier = || {
             let scorer = self
                 .flat_vectors_reader
-                .get_random_vector_scorer_float(field, target)?;
+                .get_random_vector_scorer_float(field, target)?
+                // A `null` scorer: `scorer::ordToDoc` dereferences it
+                // (Lucene99HnswVectorsReader.java:340-342).
+                .ok_or_else(LuceneError::null_pointer)?;
             let values = self.field_values(field, VectorEncoding::FLOAT32)?;
             Ok((scorer, values))
         };
@@ -2520,7 +2596,10 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
         let scorer_supplier = || {
             let scorer = self
                 .flat_vectors_reader
-                .get_random_vector_scorer_byte(field, target)?;
+                .get_random_vector_scorer_byte(field, target)?
+                // A `null` scorer: `scorer::ordToDoc` dereferences it
+                // (Lucene99HnswVectorsReader.java:340-342).
+                .ok_or_else(LuceneError::null_pointer)?;
             let values = self.field_values(field, VectorEncoding::BYTE)?;
             Ok((scorer, values))
         };
@@ -2547,19 +2626,23 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
         ])
     }
 
+    /// Equivalent to `Lucene99HnswVectorsReader.getOffHeapByteSize(FieldInfo)`
+    /// (`Lucene99HnswVectorsReader.java:416-422`): the field entry is looked
+    /// up first, raising `IllegalArgumentException` for an unknown field, then
+    /// the flat reader's map is merged with the graph's.
     fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> Result<HashMap<String, i64>> {
-        Ok({
-            let mut map = self
-                .flat_vectors_reader
-                .get_off_heap_byte_size(field_info)?;
-            if let Ok(entry) = self.get_field_entry_or_throw(&field_info.name) {
-                map.insert(
-                    VECTOR_INDEX_EXTENSION.to_string(),
-                    entry.vector_index_length,
-                );
-            }
-            map
-        })
+        let entry = self.get_field_entry_or_throw(&field_info.name)?;
+        let flat = self
+            .flat_vectors_reader
+            .get_off_heap_byte_size(field_info)?;
+        let mut graph = HashMap::new();
+        graph.insert(
+            VECTOR_INDEX_EXTENSION.to_string(),
+            entry.vector_index_length,
+        );
+        Ok(crate::codecs::knn_vectors::merge_off_heap_byte_size_maps(
+            flat, graph,
+        ))
     }
 }
 
@@ -2599,23 +2682,24 @@ fn score_batch_exhaustive(
     Ok(())
 }
 
+/// Equivalent to `Lucene99HnswVectorsReader.readFields(ChecksumIndexInput)`
+/// (`Lucene99HnswVectorsReader.java:196-206`).
 fn read_fields(
     input: &mut dyn DataInput,
     field_infos: &FieldInfos,
-) -> Result<HashMap<i32, FieldEntry>> {
-    let mut fields = HashMap::new();
+) -> Result<IntObjectHashMap<FieldEntry>> {
+    let mut fields = IntObjectHashMap::new();
     let mut field_number = input.read_int()?;
     while field_number != -1 {
-        let info = field_infos
-            .field_info_by_number(field_number)
-            .ok_or_else(|| {
-                LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                    "invalid field number: {field_number}"
-                )))
-            })?;
+        let Some(info) = field_infos.field_info_by_number(field_number) else {
+            return Err(LuceneError::corrupt_index(
+                format!("Invalid field number: {field_number}"),
+                input.to_java_string(),
+            ));
+        };
         let entry = read_field(input, info)?;
         validate_field_entry(info, &entry)?;
-        fields.insert(info.number, entry);
+        fields.put(info.number, entry);
         field_number = input.read_int()?;
     }
     Ok(fields)
@@ -2634,11 +2718,11 @@ fn read_field(input: &mut dyn DataInput, info: &FieldInfo) -> Result<FieldEntry>
     let vector_encoding = read_vector_encoding(input.read_int()?)?;
     let similarity_function = read_similarity_function(input)?;
     if similarity_function != info.vector_similarity_function {
-        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-            format!(
-                "inconsistent vector similarity function for field=\"{}\"",
-                info.name
-            ),
+        // Lucene99HnswVectorsReader.java:251-259; the enum's `toString()` is
+        // its constant name, which `Debug` prints.
+        return Err(LuceneError::illegal_state(format!(
+            "Inconsistent vector similarity function for field=\"{}\"; {:?} != {:?}",
+            info.name, similarity_function, info.vector_similarity_function
         )));
     }
     FieldEntry::create(input, vector_encoding, similarity_function, info)
@@ -2650,8 +2734,10 @@ fn read_field(input: &mut dyn DataInput, info: &FieldInfo) -> Result<FieldEntry>
 /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader#validateFieldEntry`.
 fn validate_field_entry(info: &FieldInfo, field_entry: &FieldEntry) -> Result<()> {
     if info.vector_dimension != field_entry.dimension {
-        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-            format!("inconsistent vector dimension for field=\"{}\"", info.name),
+        // Lucene99HnswVectorsReader.java:207-218.
+        return Err(LuceneError::illegal_state(format!(
+            "Inconsistent vector dimension for field=\"{}\"; {} != {}",
+            info.name, info.vector_dimension, field_entry.dimension
         )));
     }
     Ok(())
@@ -2676,17 +2762,10 @@ impl FieldEntry {
         let size = input.read_int()?;
         let m = input.read_v_int()?;
         let num_levels = input.read_v_int()?;
-        // `numLevels` is a vint off disk. Java writes `new int[numLevels][]`,
-        // which raises `NegativeArraySizeException` for a negative count; that
-        // is catchable, whereas `vec![None; negative as usize]` asks for an
-        // allocation of about 2^64 entries and aborts the process.
+        // `new int[numLevels][]` (Lucene99HnswVectorsReader.java:483) raises
+        // `NegativeArraySizeException` for a negative count.
         if num_levels < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "field \"{}\" declares {num_levels} graph levels",
-                    field_info.name
-                ),
-            )));
+            return Err(negative_array_size(num_levels));
         }
         // Grown as the levels are read rather than sized up front: one level
         // costs at least one byte of input, so a hostile count runs out of file
@@ -2698,33 +2777,23 @@ impl FieldEntry {
         for level in 0..num_levels {
             if level > 0 {
                 let num_nodes = input.read_v_int()?;
-                if num_nodes < 0 {
-                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                        format!(
-                            "level {level} of field \"{}\" declares {num_nodes} nodes",
-                            field_info.name
-                        ),
-                    )));
-                }
                 number_of_offsets += i64::from(num_nodes);
-                // Java reads `nodesByLevel[level][0]` unconditionally and hits
-                // an `ArrayIndexOutOfBoundsException` on an empty level. That
-                // exception is catchable and a Rust panic is not, so the empty
-                // level is refused here, exactly as `OffHeapHnswGraph::seek`
-                // below refuses a level outside the graph for the same reason.
+                // `new int[numNodesOnLevel]` (Lucene99HnswVectorsReader.java:492).
+                if num_nodes < 0 {
+                    return Err(negative_array_size(num_nodes));
+                }
+                // `nodesByLevel[level][0] = input.readVInt()`: the right-hand
+                // side is read before the store into an empty array raises
+                // `ArrayIndexOutOfBoundsException` (JLS 15.26.1).
+                let first = input.read_v_int()?;
                 if num_nodes == 0 {
-                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                        format!(
-                            "level {level} of field \"{}\" declares no nodes",
-                            field_info.name
-                        ),
-                    )));
+                    return Err(array_index_out_of_bounds(0, 0));
                 }
 
                 // Again grown, not pre-sized: each node is at least one byte,
                 // so a hostile count runs out of file instead of out of memory.
                 let mut nodes: Vec<i32> = Vec::new();
-                nodes.push(input.read_v_int()?);
+                nodes.push(first);
                 for i in 1..num_nodes as usize {
                     let delta = input.read_v_int()?;
                     // Java accumulates with `int` arithmetic, which wraps.
@@ -2764,14 +2833,7 @@ impl FieldEntry {
             dimension,
             size,
             nodes_by_level,
-            offsets_meta: offsets_meta.unwrap_or(DirectMonotonicMeta {
-                block_shift: 0,
-                num_blocks: 0,
-                mins: Vec::new(),
-                avgs: Vec::new(),
-                offsets: Vec::new(),
-                bpvs: Vec::new(),
-            }),
+            offsets_meta,
             offsets_offset,
             offsets_block_shift,
             offsets_length,
@@ -2783,6 +2845,15 @@ impl FieldEntry {
 // Off-heap HNSW graph
 // -----------------------------------------------------------------------------
 
+/// The graph of one field, read from the `.vex` file on demand.
+///
+/// Equivalent to `Lucene99HnswVectorsReader.OffHeapHnswGraph`
+/// (`Lucene99HnswVectorsReader.java:529-655`). As in Java, nothing read off
+/// disk is validated here beyond what Java's own array and reader accesses
+/// check: an out-of-range level or block raises
+/// `ArrayIndexOutOfBoundsException`, a node missing from its level is sought
+/// at the offset its negative `binarySearch` result addresses, and neighbour
+/// ordinals are handed on as decoded.
 struct OffHeapHnswGraph {
     data_in: Box<dyn IndexInput>,
     nodes_by_level: Vec<Option<Vec<i32>>>,
@@ -2790,64 +2861,106 @@ struct OffHeapHnswGraph {
     entry_node: i32,
     size: i32,
     max_conn: i32,
-    /// The per-node start offsets inside the graph data, read on demand.
-    ///
-    /// Java keeps the `DirectMonotonicReader` itself
-    /// (`Lucene99HnswVectorsReader.java:459-470`) and reads one offset per
-    /// `seek`. This port used to materialise every offset into a `Vec` sized by
-    /// `numberOfOffsets` — a count summed out of the `.vem` — which turned a
-    /// corrupt level header into an allocation of arbitrary size. Reading them
-    /// the way Java does removes the allocation and the divergence together.
-    ///
-    /// `None` when the field has no offsets at all, which is the empty-graph
-    /// case Java represents with a null `offsetsMeta`.
-    offsets: Option<DirectMonotonicReader>,
+    /// Equivalent to `graphLevelNodeOffsets`, a `DirectMonotonicReader` over
+    /// a `RandomAccessInput` slice of the `.vex` file, read one offset per
+    /// [`seek`](HnswGraph::seek).
+    offsets: DirectMonotonicReader,
     graph_level_node_index_offsets: Vec<i64>,
+    /// Exactly `M * 2` entries, as Java allocates it.
     current_neighbors_buffer: Vec<i32>,
-    arc_count: usize,
-    arc_upto: usize,
+    /// Java's `int arcCount`, a vint off disk that may be negative.
+    arc_count: i32,
+    arc_upto: i32,
     version: i32,
 }
 
+/// `new NegativeArraySizeException(String.valueOf(size))`, what `new T[size]`
+/// raises for a negative size.
+fn negative_array_size(size: i32) -> LuceneError {
+    LuceneError::unchecked("java.lang.NegativeArraySizeException", size.to_string())
+}
+
+/// The `ArrayIndexOutOfBoundsException` of an array access at `index` into
+/// an array of `length` elements.
+fn array_index_out_of_bounds(index: i64, length: usize) -> LuceneError {
+    LuceneError::unchecked(
+        "java.lang.ArrayIndexOutOfBoundsException",
+        format!("Index {index} out of bounds for length {length}"),
+    )
+}
+
+/// `java.util.Arrays.binarySearch(int[], int, int, int)` over the whole
+/// array: the index of `key`, or `-(insertionPoint) - 1` when it is absent.
+fn java_binary_search(array: &[i32], key: i32) -> i32 {
+    let mut low = 0i32;
+    let mut high = array.len() as i32 - 1;
+    while low <= high {
+        let mid = ((low as u32 + high as u32) >> 1) as i32;
+        let mid_val = array[mid as usize];
+        if mid_val < key {
+            low = mid + 1;
+        } else if mid_val > key {
+            high = mid - 1;
+        } else {
+            return mid;
+        }
+    }
+    -(low + 1)
+}
+
 impl OffHeapHnswGraph {
+    /// Equivalent to the `OffHeapHnswGraph(FieldEntry, IndexInput)`
+    /// constructor (`Lucene99HnswVectorsReader.java:546-565`), step by step:
+    /// the graph slice, the entry node, the offsets reader over a lazy
+    /// `randomAccessSlice` (`DirectMonotonicReader.getInstance` dereferences
+    /// a `null` meta), the `M * 2` neighbour buffer and the per-level index
+    /// offsets, whose `[0] = 0` store fails for a graph of no levels.
     fn new(entry: &FieldEntry, vector_index: &dyn IndexInput, version: i32) -> Result<Self> {
         let data_in = vector_index.slice(
             "graph-data",
             entry.vector_index_offset,
             entry.vector_index_length,
         )?;
-        let mut graph_level_node_index_offsets = vec![0i64; entry.num_levels as usize];
-        let mut number_of_offsets = entry.size as i64;
-        for i in 1..entry.num_levels as usize {
+        let num_levels = entry.num_levels;
+        let entry_node = if num_levels > 1 {
+            match &entry.nodes_by_level[num_levels as usize - 1] {
+                Some(nodes) => nodes[0],
+                None => return Err(LuceneError::null_pointer()),
+            }
+        } else {
+            0
+        };
+        let addresses_data =
+            vector_index.random_access_slice(entry.offsets_offset, entry.offsets_length)?;
+        let offsets = match &entry.offsets_meta {
+            Some(meta) => DirectMonotonicReader::with_random_access(
+                meta.clone(),
+                crate::util::packed::shared_random_access_input(addresses_data),
+            )?,
+            None => return Err(LuceneError::null_pointer()),
+        };
+        let max_conn = entry.m;
+        let buffer_len = max_conn.wrapping_mul(2);
+        if buffer_len < 0 {
+            return Err(negative_array_size(buffer_len));
+        }
+        let current_neighbors_buffer = vec![0i32; buffer_len as usize];
+        if num_levels == 0 {
+            return Err(array_index_out_of_bounds(0, 0));
+        }
+        let mut graph_level_node_index_offsets = vec![0i64; num_levels as usize];
+        for i in 1..num_levels as usize {
+            // `nodesByLevel` is `null` for the zeroth level as its size is known.
             let node_count = entry.nodes_by_level[i - 1]
                 .as_ref()
                 .map_or(entry.size, |n| n.len() as i32);
             graph_level_node_index_offsets[i] =
                 graph_level_node_index_offsets[i - 1] + node_count as i64;
-            number_of_offsets += node_count as i64;
         }
-        let offsets = if number_of_offsets > 0 {
-            let offsets_data = read_offsets_data(vector_index, entry)?;
-            Some(DirectMonotonicReader::new(
-                entry.offsets_meta.clone(),
-                offsets_data,
-            )?)
-        } else {
-            None
-        };
-        let max_conn = entry.m;
-        let current_neighbors_buffer = vec![0i32; (max_conn * 2).max(4) as usize];
-        let entry_node = if entry.num_levels > 1 {
-            entry.nodes_by_level[entry.num_levels as usize - 1]
-                .as_ref()
-                .map_or(0, |n| n[0])
-        } else {
-            0
-        };
         Ok(Self {
             data_in,
             nodes_by_level: entry.nodes_by_level.clone(),
-            num_levels: entry.num_levels,
+            num_levels,
             entry_node,
             size: entry.size,
             max_conn,
@@ -2859,138 +2972,108 @@ impl OffHeapHnswGraph {
             version,
         })
     }
-}
 
-fn read_offsets_data(vector_index: &dyn IndexInput, entry: &FieldEntry) -> Result<Vec<u8>> {
-    if entry.offsets_length <= 0 {
-        return Ok(Vec::new());
+    /// Returns `nodesByLevel[level]`, raising what Java's array access
+    /// raises: `ArrayIndexOutOfBoundsException` for a level outside the
+    /// graph and `NullPointerException` for the zeroth level, which has no
+    /// node array.
+    fn level_nodes(&self, level: i32) -> Result<&Vec<i32>> {
+        if level < 0 || level as usize >= self.nodes_by_level.len() {
+            return Err(array_index_out_of_bounds(
+                i64::from(level),
+                self.nodes_by_level.len(),
+            ));
+        }
+        self.nodes_by_level[level as usize]
+            .as_ref()
+            .ok_or_else(LuceneError::null_pointer)
     }
-    let mut random_access =
-        vector_index.random_access_slice(entry.offsets_offset, entry.offsets_length)?;
-    let mut data = vec![0u8; entry.offsets_length as usize];
-    let len = data.len();
-    random_access.read_bytes_at(0, &mut data, 0, len)?;
-    Ok(data)
+
+    /// Stores `value` at `index` of the neighbour buffer, raising
+    /// `ArrayIndexOutOfBoundsException` past its `M * 2` entries as Java's
+    /// `currentNeighborsBuffer[i] = ...` does.
+    fn store_neighbor(&mut self, index: usize, value: i32) -> Result<()> {
+        let length = self.current_neighbors_buffer.len();
+        match self.current_neighbors_buffer.get_mut(index) {
+            Some(slot) => {
+                *slot = value;
+                Ok(())
+            }
+            None => Err(array_index_out_of_bounds(index as i64, length)),
+        }
+    }
 }
 
 impl HnswGraph for OffHeapHnswGraph {
+    /// Equivalent to `OffHeapHnswGraph.seek(int, int)`
+    /// (`Lucene99HnswVectorsReader.java:567-597`).
     fn seek(&mut self, level: i32, target: i32) -> Result<()> {
-        // `level` reaches here from the searcher, which took `num_levels` off
-        // disk; Java indexes `nodesByLevel[level]` unchecked and would raise an
-        // `ArrayIndexOutOfBoundsException`, which is catchable. A Rust panic is
-        // not the same thing, so the bound is checked.
-        if level < 0 || level as usize >= self.nodes_by_level.len() {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "level {level} is outside the {} levels of the graph",
-                    self.nodes_by_level.len()
-                ),
-            )));
-        }
         let target_index = if level == 0 {
             target
         } else {
-            let nodes = self.nodes_by_level[level as usize]
-                .as_ref()
-                .ok_or_else(|| {
-                    LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                        "missing nodes for level {level}"
-                    )))
-                })?;
-            let found = nodes.binary_search(&target);
-            debug_assert!(
-                found.is_ok(),
-                "seek level={level} target={target} not found: {}",
-                found.map_or_else(|insertion| -(insertion as i64) - 1, |idx| idx as i64)
-            );
-            // Without assertions Java goes on with the negative index and fails
-            // on the array access; the error below stands in for that.
-            match found {
-                Ok(idx) => idx as i32,
-                Err(_) => {
-                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                        format!("node {target} not found on level {level}"),
-                    )));
-                }
+            java_binary_search(self.level_nodes(level)?, target)
+        };
+        debug_assert!(
+            target_index >= 0,
+            "seek level={level} target={target} not found: {target_index}"
+        );
+        // Unsafe; no bounds checking: a negative `targetIndex` addresses
+        // whatever offset it lands on, as in Java with assertions disabled.
+        let level_offset = match self.graph_level_node_index_offsets.get(level as usize) {
+            Some(offset) if level >= 0 => *offset,
+            _ => {
+                return Err(array_index_out_of_bounds(
+                    i64::from(level),
+                    self.graph_level_node_index_offsets.len(),
+                ))
             }
         };
-        let offset_index =
-            target_index as i64 + self.graph_level_node_index_offsets[level as usize];
-        let offsets = self.offsets.as_ref().ok_or_else(|| {
-            LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                "the graph has no node offsets, so no node can be sought".to_string(),
-            ))
-        })?;
-        // `get_checked` rather than `LongValues::get`: every term of
-        // `offset_index` came off disk, and the infallible accessor answers an
-        // out-of-range index with a panic. Java's `DirectMonotonicReader.get`
-        // raises an `ArrayIndexOutOfBoundsException` or an
-        // `UncheckedIOException` here — both catchable.
-        let offset = offsets.get_checked(offset_index)?;
+        let offset = self
+            .offsets
+            .get_java(i64::from(target_index) + level_offset)?;
         self.data_in.seek(offset)?;
-        self.arc_count = self.data_in.read_v_int()? as usize;
-        // Java sizes `currentNeighborsBuffer` at exactly `M * 2` and asserts
-        // `arcCount <= currentNeighborsBuffer.length`; with assertions off it
-        // walks off the end of the array into an
-        // `ArrayIndexOutOfBoundsException`. The count is a vint off disk, so it
-        // is refused here instead. The bound is Java's `M * 2` rather than this
-        // buffer's own length, because the searcher's scratch array is the one
-        // sized `maxConn * 2` and it is the smaller of the two.
-        let max_arcs = self
-            .max_conn
-            .checked_mul(2)
-            .filter(|arcs| *arcs >= 0)
-            .map(|arcs| arcs as usize)
-            .unwrap_or(0);
+        self.arc_count = self.data_in.read_v_int()?;
         debug_assert!(
-            self.arc_count <= max_arcs,
+            self.arc_count as usize <= self.current_neighbors_buffer.len() || self.arc_count < 0,
             "too many neighbors: {}",
             self.arc_count
         );
-        if self.arc_count > max_arcs.min(self.current_neighbors_buffer.len()) {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                "node {target} on level {level} claims {} neighbours, more than the {} a graph \
-                 with maxConn {} can have",
-                self.arc_count, max_arcs, self.max_conn
-            ),
-            )));
-        }
         if self.arc_count > 0 {
+            let limit = self.arc_count as usize;
             if self.version >= VERSION_GROUPVARINT {
-                crate::util::GroupVIntUtil::read_group_vints_input(
-                    self.data_in.as_mut(),
-                    &mut self.current_neighbors_buffer,
-                    self.arc_count,
-                )?;
-            } else {
-                for i in 0..self.arc_count {
-                    self.current_neighbors_buffer[i] = self.data_in.read_v_int()?;
+                // `GroupVIntUtil.readGroupVInts(dataIn, currentNeighborsBuffer,
+                // arcCount)`: whole groups of four, then single vints; each
+                // value is stored in order, so the store past the buffer is
+                // the one that fails.
+                let mut i = 0usize;
+                while i + 4 <= limit {
+                    let mut group = [0i32; 4];
+                    crate::util::GroupVIntUtil::read_group_vint_input(
+                        self.data_in.as_mut(),
+                        &mut group,
+                        0,
+                    )?;
+                    for (k, value) in group.into_iter().enumerate() {
+                        self.store_neighbor(i + k, value)?;
+                    }
+                    i += 4;
                 }
-            }
-            // Java accumulates with plain `int` arithmetic, which wraps; the
-            // deltas come off disk, so the sum wraps here too rather than
-            // aborting a debug build on bytes Lucene decodes without
-            // complaint.
-            let mut sum = 0i32;
-            for i in 0..self.arc_count {
-                sum = sum.wrapping_add(self.current_neighbors_buffer[i]);
-                self.current_neighbors_buffer[i] = sum;
-                // This is where Java's `assert friendOrd < size` sits, one
-                // frame up in `HnswGraphSearcher.searchLevel`. With assertions
-                // off Java reaches `FixedBitSet.getAndSet(friendOrd)` and
-                // raises an `ArrayIndexOutOfBoundsException`; this refuses the
-                // same neighbour, at the boundary where it was read rather than
-                // where it is used, so no consumer of this graph can be handed
-                // an ordinal it would index an array with.
-                if sum < 0 || sum >= self.size {
-                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                        format!(
-                            "neighbour {sum} of node {target} on level {level} is outside the {} \
-                         nodes of the graph",
-                            self.size
-                        ),
-                    )));
+                while i < limit {
+                    let value = self.data_in.read_v_int()?;
+                    self.store_neighbor(i, value)?;
+                    i += 1;
+                }
+                // Java accumulates with plain `int` arithmetic, which wraps.
+                let mut sum = 0i32;
+                for slot in &mut self.current_neighbors_buffer[..limit] {
+                    sum = sum.wrapping_add(*slot);
+                    *slot = sum;
+                }
+            } else {
+                let mut sum = 0i32;
+                for i in 0..limit {
+                    sum = sum.wrapping_add(self.data_in.read_v_int()?);
+                    self.store_neighbor(i, sum)?;
                 }
             }
         }
@@ -3010,7 +3093,7 @@ impl HnswGraph for OffHeapHnswGraph {
         if self.arc_upto >= self.arc_count {
             return Ok(crate::util::hnsw::NO_MORE_DOCS);
         }
-        let n = self.current_neighbors_buffer[self.arc_upto];
+        let n = self.current_neighbors_buffer[self.arc_upto as usize];
         self.arc_upto += 1;
         Ok(n)
     }
@@ -3031,17 +3114,14 @@ impl HnswGraph for OffHeapHnswGraph {
         if level == 0 {
             Ok(Box::new(DenseNodesIterator::new(self.size)))
         } else {
-            let nodes = self.nodes_by_level[level as usize].clone().ok_or_else(|| {
-                LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                    "missing nodes for level {level}"
-                )))
-            })?;
-            Ok(Box::new(ArrayNodesIterator::new(nodes)))
+            Ok(Box::new(ArrayNodesIterator::new(
+                self.level_nodes(level)?.clone(),
+            )))
         }
     }
 
     fn neighbor_count(&self) -> i32 {
-        self.arc_count as i32
+        self.arc_count
     }
 }
 

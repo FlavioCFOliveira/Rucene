@@ -16,9 +16,7 @@ use crate::store::{DataInput, IndexInput, IndexOutput, RandomAccessInput};
 ///
 /// Equivalent to `Lucene99FlatVectorsFormat.DIRECT_MONOTONIC_BLOCK_SHIFT`.
 pub const DIRECT_MONOTONIC_BLOCK_SHIFT: i32 = 16;
-use crate::util::packed::{
-    DirectMonotonicMeta, DirectMonotonicWriter, SharedDirectMonotonicReader,
-};
+use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
 
 /// A reader that can hand out the input slice holding its data.
 ///
@@ -237,20 +235,16 @@ impl OrdToDocDISIReaderConfiguration {
     /// build it once, in their sparse constructor, and share it with every
     /// copy.
     ///
+    /// As in Java, the addresses are read off-heap: a `DirectMonotonicReader`
+    /// over a `RandomAccessInput` slice of `data_in`, shared behind a lock so
+    /// that the vector values stay `Send + Sync`.
+    ///
     /// The caller must have checked that the field is neither empty nor dense,
     /// which is Java's `assert docsWithFieldOffset > -1`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java returns a
-    /// `DirectMonotonicReader` that reads the addresses through a
-    /// `RandomAccessInput` slice of `dataIn`. A file input cannot be shared
-    /// across threads here, while vector values must be, so the addresses are
-    /// copied into memory once and the shared
-    /// [`SharedDirectMonotonicReader`] decodes them from there with the same
-    /// arithmetic.
-    ///
     /// # Errors
     ///
-    /// Returns an I/O error when the addresses cannot be sliced or read.
+    /// Returns an I/O error when the addresses cannot be sliced.
     ///
     /// Equivalent to
     /// `OrdToDocDISIReaderConfiguration.getDirectMonotonicReader(IndexInput)`
@@ -258,19 +252,13 @@ impl OrdToDocDISIReaderConfiguration {
     pub fn get_direct_monotonic_reader(
         &self,
         data_in: &dyn IndexInput,
-    ) -> Result<Arc<SharedDirectMonotonicReader>> {
+    ) -> Result<Arc<DirectMonotonicReader>> {
         debug_assert!(self.docs_with_field_offset > -1);
-        let mut addresses = Vec::new();
-        if self.addresses_length > 0 {
-            let mut addresses_data: Box<dyn RandomAccessInput> =
-                data_in.random_access_slice(self.addresses_offset, self.addresses_length)?;
-            addresses = vec![0u8; self.addresses_length as usize];
-            let len = addresses.len();
-            addresses_data.read_bytes_at(0, &mut addresses, 0, len)?;
-        }
-        Ok(Arc::new(SharedDirectMonotonicReader::new(
+        let addresses_data: Box<dyn RandomAccessInput> =
+            data_in.random_access_slice(self.addresses_offset, self.addresses_length)?;
+        Ok(Arc::new(DirectMonotonicReader::with_random_access(
             self.meta.clone(),
-            Arc::from(addresses),
+            crate::util::packed::shared_random_access_input(addresses_data),
         )?))
     }
 }

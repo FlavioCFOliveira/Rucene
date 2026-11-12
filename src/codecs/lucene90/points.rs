@@ -373,43 +373,45 @@ impl PointsWriter for Lucene90PointsWriter {
 
         let mut writer = self.bkd_writer(field_info, tree.size()?)?;
 
-        // `RandomCodec`'s override (`RandomCodec.java:83-134`) always adds the
-        // points one by one to a randomly splitting writer.
-        if let Some(make) = &self.split_override_for_field {
-            writer.set_split_override(make(field_info));
+        // The body of `try (BKDWriter writer = ...)`
+        // (`Lucene90PointsWriter.java:149-194`).
+        let result = (|| -> Result<()> {
+            // `RandomCodec`'s override (`RandomCodec.java:83-134`) always adds
+            // the points one by one to a randomly splitting writer.
+            if let Some(make) = &self.split_override_for_field {
+                writer.set_split_override(make(field_info));
+                tree.visit_doc_values(&mut AddToBkdWriter {
+                    writer: &mut writer,
+                })?;
+                let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
+                let finalizer = writer.finish(data_out.as_mut())?;
+                return self.write_finalizer(field_info.number, finalizer);
+            }
+
+            // Java tests `values instanceof MutablePointTree` and, when it
+            // holds, hands the tree straight to `BKDWriter.writeField`, which
+            // sorts and partitions the points in place rather than buffering
+            // them through `BKDWriter.add` and re-sorting them offline
+            // (`Lucene90PointsWriter.java:159-168`). `PointTree::as_mutable` is
+            // this port's `instanceof`: it answers `Some` for the indexing
+            // buffer's tree and `None` for every other tree.
+            if let Some(mutable) = tree.as_mutable() {
+                let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
+                let finalizer = writer.write_field(data_out.as_mut(), mutable)?;
+                return self.write_finalizer(field_info.number, finalizer);
+            }
+
             tree.visit_doc_values(&mut AddToBkdWriter {
                 writer: &mut writer,
             })?;
+
+            // We could have 0 points on merge since all docs with dimensional
+            // fields may be deleted.
             let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
             let finalizer = writer.finish(data_out.as_mut())?;
-            self.write_finalizer(field_info.number, finalizer)?;
-            return writer.close();
-        }
-
-        // Java tests `values instanceof MutablePointTree` and, when it holds,
-        // hands the tree straight to `BKDWriter.writeField`, which sorts and
-        // partitions the points in place rather than buffering them through
-        // `BKDWriter.add` and re-sorting them offline
-        // (`Lucene90PointsWriter.java:159-168`). `PointTree::as_mutable` is
-        // this port's `instanceof`: it answers `Some` for the indexing
-        // buffer's tree and `None` for every other tree.
-        if let Some(mutable) = tree.as_mutable() {
-            let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
-            let finalizer = writer.write_field(data_out.as_mut(), mutable)?;
-            self.write_finalizer(field_info.number, finalizer)?;
-            return writer.close();
-        }
-
-        tree.visit_doc_values(&mut AddToBkdWriter {
-            writer: &mut writer,
-        })?;
-
-        // We could have 0 points on merge since all docs with dimensional
-        // fields may be deleted.
-        let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
-        let finalizer = writer.finish(data_out.as_mut())?;
-        self.write_finalizer(field_info.number, finalizer)?;
-        writer.close()
+            self.write_finalizer(field_info.number, finalizer)
+        })();
+        close_bkd_writer(&mut writer, result)
     }
 
     /// Equivalent to `Lucene90PointsWriter.merge(MergeState)`
@@ -480,36 +482,41 @@ impl PointsWriter for Lucene90PointsWriter {
             // trying to sort all points again as if we were simply reindexing
             // them.
             let mut writer = self.bkd_writer(field_info, tot_max_size)?;
-            let mut point_values: Vec<Box<dyn PointValues>> = Vec::new();
-            let mut doc_maps: Vec<crate::index::merge::DocMap> = Vec::new();
-            for (i, reader) in merge_state.points_readers.iter().enumerate() {
-                let Some(reader) = reader else {
-                    continue;
-                };
-                // NOTE: we cannot just use the merged field number (instead of
-                // resolving to this reader's field info as we do below)
-                // because field numbers can easily be different when
-                // `addIndexes(Directory...)` copies over segments from
-                // another index.
-                let Some(reader_field_info) =
-                    merge_state.field_infos[i].field_info(&field_info.name)
-                else {
-                    continue;
-                };
-                if reader_field_info.point_dimension_count > 0 {
-                    if let Some(values) = reader.get_values(&reader_field_info.name)? {
-                        point_values.push(values);
-                        doc_maps.push(Arc::clone(&merge_state.doc_maps[i]));
+            // The body of `try (BKDWriter writer = ...)`
+            // (`Lucene90PointsWriter.java:249-291`).
+            let result = (|| -> Result<()> {
+                let mut point_values: Vec<Box<dyn PointValues>> = Vec::new();
+                let mut doc_maps: Vec<crate::index::merge::DocMap> = Vec::new();
+                for (i, reader) in merge_state.points_readers.iter().enumerate() {
+                    let Some(reader) = reader else {
+                        continue;
+                    };
+                    // NOTE: we cannot just use the merged field number (instead of
+                    // resolving to this reader's field info as we do below)
+                    // because field numbers can easily be different when
+                    // `addIndexes(Directory...)` copies over segments from
+                    // another index.
+                    let Some(reader_field_info) =
+                        merge_state.field_infos[i].field_info(&field_info.name)
+                    else {
+                        continue;
+                    };
+                    if reader_field_info.point_dimension_count > 0 {
+                        if let Some(values) = reader.get_values(&reader_field_info.name)? {
+                            point_values.push(values);
+                            doc_maps.push(Arc::clone(&merge_state.doc_maps[i]));
+                        }
                     }
                 }
-            }
-            let readers: Vec<&dyn PointValues> = point_values.iter().map(|v| v.as_ref()).collect();
-            let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
-            #[cfg(test)]
-            merge_path_probe::record(&field_info.name, merge_path_probe::BKD_MERGE);
-            let finalizer = writer.merge(data_out.as_mut(), Some(&doc_maps), &readers)?;
-            self.write_finalizer(field_info.number, finalizer)?;
-            writer.close()?;
+                let readers: Vec<&dyn PointValues> =
+                    point_values.iter().map(|v| v.as_ref()).collect();
+                let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
+                #[cfg(test)]
+                merge_path_probe::record(&field_info.name, merge_path_probe::BKD_MERGE);
+                let finalizer = writer.merge(data_out.as_mut(), Some(&doc_maps), &readers)?;
+                self.write_finalizer(field_info.number, finalizer)
+            })();
+            close_bkd_writer(&mut writer, result)?;
         }
 
         self.finish()
@@ -550,6 +557,22 @@ impl PointsWriter for Lucene90PointsWriter {
             ]
             .map(|o| o.map(|mut o| move || o.close())),
         )
+    }
+}
+
+/// Closes `writer` after the body of the `try`-with-resources that owns it
+/// ran with `result`: on success the close's own failure is raised, and on
+/// failure the close's failure is added to the body's as a suppressed
+/// exception, as Java's `try`-with-resources does.
+fn close_bkd_writer(writer: &mut BKDWriter, result: Result<()>) -> Result<()> {
+    match result {
+        Ok(()) => writer.close(),
+        Err(mut error) => {
+            if let Err(close_error) = writer.close() {
+                error.add_suppressed(close_error);
+            }
+            Err(error)
+        }
     }
 }
 
