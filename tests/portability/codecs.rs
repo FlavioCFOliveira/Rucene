@@ -6,12 +6,14 @@
 //! successfully and that the resulting directory tree contains the expected
 //! index files.
 //!
-//! Because Rucene does not yet have its own `IndexWriter`, the tests in this
-//! module validate the reference side only: they prove that the Java harness
-//! produces deterministic, well-formed index trees for every shape that the
-//! future Rucene `IndexWriter` will have to match byte-for-byte. The helper
-//! `assert_directories_equal` is kept in place for the round-trip tests that
-//! will be added once Rucene can write complete indexes.
+//! The tests in this module validate the reference side only: they prove
+//! that the Java harness produces deterministic, well-formed index trees for
+//! every document shape. Rucene's own `IndexWriter` output is checked against
+//! Lucene elsewhere: `index_interop.rs` writes the same corpus with both
+//! implementations and has each side open, check and query the other's index.
+//! A byte-for-byte comparison of whole directories is not made, because the
+//! files carry per-segment random ids; the helper `assert_directories_equal`
+//! is unused.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -223,9 +225,7 @@ fn java_harness_supports_all_document_shapes() {
 ///
 /// This is a structural portability check: it verifies that the default
 /// Lucene104Codec writes separate {@code .kdm}, {@code .kdi} and {@code .kdd}
-/// files and that they are non-empty. A byte-for-byte comparison of these
-/// files against Rucene output is deferred until Rucene has an IndexWriter
-/// wired to Lucene104Codec that can produce a matching segment.
+/// files and that they are non-empty.
 #[test]
 fn java_harness_produces_points_files() {
     let tmp = tempfile::tempdir().expect("temp dir");
@@ -360,12 +360,11 @@ fn assert_directory_structures_equal(left: &Path, right: &Path) -> Result<(), St
     Ok(())
 }
 
-/// Placeholder for the future byte-for-byte comparison.
+/// Compares two directory trees file by file, byte for byte.
 ///
-/// When Rucene's `IndexWriter` with `Lucene104Codec` can write the same
-/// document shape, this helper will compare the two directory trees file by
-/// file. It is currently kept as infrastructure and is intentionally left
-/// unused (the corresponding Rust side does not exist yet).
+/// Unused: index files carry per-segment random ids, so two independently
+/// written indexes never compare equal byte for byte (see the module
+/// documentation for where Rucene's output is checked against Lucene).
 #[allow(dead_code)]
 fn assert_directories_equal(left: &Path, right: &Path) -> Result<(), String> {
     let left_files = list_index_files(left)?;

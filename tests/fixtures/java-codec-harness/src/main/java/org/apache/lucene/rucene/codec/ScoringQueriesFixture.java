@@ -353,6 +353,14 @@ public final class ScoringQueriesFixture {
         shards[s] = new IndexSearcher(leaves.get(s).reader());
         scoreHits[s] = shards[s].search(paging, TOP_N);
         sortHits[s] = shards[s].search(paging, TOP_N, rankSort());
+        // TopDocs.merge requires every hit's shardIndex to be set (or all unset); it does not
+        // set them itself, and printMerged resolves each hit through its shard.
+        for (ScoreDoc hit : scoreHits[s].scoreDocs) {
+          hit.shardIndex = s;
+        }
+        for (ScoreDoc hit : sortHits[s].scoreDocs) {
+          hit.shardIndex = s;
+        }
       }
       printMerged("merge score", TopDocs.merge(TOP_N, scoreHits), shards);
       printMerged("merge rank", TopDocs.merge(rankSort(), TOP_N, sortHits), shards);

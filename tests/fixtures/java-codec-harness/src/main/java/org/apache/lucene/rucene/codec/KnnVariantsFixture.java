@@ -36,6 +36,8 @@ import org.apache.lucene.index.StoredFields;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.search.AcceptDocs;
+import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.ByteVectorSimilarityQuery;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.FloatVectorSimilarityQuery;
@@ -58,8 +60,8 @@ import org.apache.lucene.util.Constants;
  * Oracle of {@code tests/portability/knn_variants.rs} (rmp task #411).
  *
  * <p>The corpus is defined here and in the Rust test by the same integer formulas: three commits
- * of 800, 800 and 300 documents (the first two segments are large enough for an HNSW graph, the
- * last is not), a float vector field {@code fvec} (EUCLIDEAN) and a byte vector field {@code bvec}
+ * of 800, 800 and 300 documents (the first two segments are large enough for an HNSW graph of
+ * both vector fields, 720 float and 686 byte vectors each, the last is not), a float vector field {@code fvec} (EUCLIDEAN) and a byte vector field {@code bvec}
  * (DOT_PRODUCT), each missing from some documents, keyword fields for seeds and filters, and
  * deletions in the first and the last segment. Modes:
  *
@@ -120,7 +122,7 @@ public final class KnnVariantsFixture {
     if (i % 97 == 0) {
       d.add(new StringField("rare", "yes", Field.Store.NO));
     }
-    if (i % 5 != 4) {
+    if (i % 10 != 9) {
       d.add(new KnnFloatVectorField("fvec", fvec(i), VectorSimilarityFunction.EUCLIDEAN));
     }
     if (i % 7 != 6) {
@@ -157,6 +159,15 @@ public final class KnnVariantsFixture {
 
   /** A float target that is no document's vector. */
   static final float[] TARGET_X = {0.5f, -1.25f, 3f, 7.75f, -6f, 2.5f, 0f, -0.25f};
+
+  /** The fallback filter: {@code tag:t0 tag:t1 tag:t2}, as optional clauses. */
+  static Query tags012() {
+    BooleanQuery.Builder b = new BooleanQuery.Builder();
+    for (String t : new String[] {"t0", "t1", "t2"}) {
+      b.add(tq("tag", t), BooleanClause.Occur.SHOULD);
+    }
+    return b.build();
+  }
 
   static TermQuery tq(String field, String text) {
     return new TermQuery(new Term(field, text));
@@ -267,11 +278,13 @@ public final class KnnVariantsFixture {
 
   /**
    * The exact-search fallback queries. {@code rare:yes} matches at most 9 documents of a segment,
-   * below every segment's per-leaf top k, so the leaf short-circuits to exact search; {@code g:g7}
-   * and {@code g:g11} match 40 documents of each large segment, above its per-leaf top k (29 for k
-   * = 10), so the filtered graph search runs with a visit limit of 41 and falls back to exact
-   * search when it exceeds it. With {@code probing}, the queries are instances of {@link
-   * ProbeFloat} and {@link ProbeByte}.
+   * below every segment's per-leaf top k, so the leaf short-circuits to exact search. {@code
+   * tag:t0 tag:t1 tag:t2} matches 240 documents of each large segment: above the number of nodes
+   * the HNSW search is expected to visit for the per-leaf top k (29 for k = 10, {@code
+   * HnswGraphSearcher.expectedVisitedNodes}), so the reader searches the graph instead of scoring
+   * every accepted vector, with a visit limit of the filter cost plus one; the graph search reaches
+   * that limit and the leaf falls back to exact search. With {@code probing}, the queries are
+   * instances of {@link ProbeFloat} and {@link ProbeByte}.
    */
   static List<Object[]> fallbackQueries(boolean probing) {
     float[] ta = fvec(123);
@@ -286,17 +299,17 @@ public final class KnnVariantsFixture {
         });
     q.add(
         new Object[] {
-          "exact-fallback knn-float k=10 X filter=g:g7",
+          "exact-fallback knn-float k=10 X filter=tag:t0|t1|t2",
           probing
-              ? new ProbeFloat("fvec", TARGET_X, 10, tq("g", "g7"))
-              : new KnnFloatVectorQuery("fvec", TARGET_X, 10, tq("g", "g7"))
+              ? new ProbeFloat("fvec", TARGET_X, 10, tags012())
+              : new KnnFloatVectorQuery("fvec", TARGET_X, 10, tags012())
         });
     q.add(
         new Object[] {
-          "exact-fallback knn-byte k=10 A filter=g:g11",
+          "exact-fallback knn-byte k=10 A filter=tag:t0|t1|t2",
           probing
-              ? new ProbeByte("bvec", ba, 10, tq("g", "g11"))
-              : new KnnByteVectorQuery("bvec", ba, 10, tq("g", "g11"))
+              ? new ProbeByte("bvec", ba, 10, tags012())
+              : new KnnByteVectorQuery("bvec", ba, 10, tags012())
         });
     return q;
   }

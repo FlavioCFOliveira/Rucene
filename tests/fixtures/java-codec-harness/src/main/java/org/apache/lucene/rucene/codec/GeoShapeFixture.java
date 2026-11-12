@@ -32,6 +32,7 @@ import org.apache.lucene.document.StringField;
 import org.apache.lucene.document.XYPointField;
 import org.apache.lucene.document.XYShape;
 import org.apache.lucene.geo.Circle;
+import org.apache.lucene.geo.GeoEncodingUtils;
 import org.apache.lucene.geo.LatLonGeometry;
 import org.apache.lucene.geo.Line;
 import org.apache.lucene.geo.Point;
@@ -282,7 +283,14 @@ public final class GeoShapeFixture {
     q.add(
         new Object[] {
           "latlon geometry CONTAINS point of doc 3",
-          LatLonPoint.newGeometryQuery("loc", QueryRelation.CONTAINS, new Point(lat(3), lon(3)))
+          // A point field contains a query point only when the decoded indexed point equals it
+          // exactly (Point2D.withinPoint): the query point is document 3's quantized location.
+          LatLonPoint.newGeometryQuery(
+              "loc",
+              QueryRelation.CONTAINS,
+              new Point(
+                  GeoEncodingUtils.decodeLatitude(GeoEncodingUtils.encodeLatitude(lat(3))),
+                  GeoEncodingUtils.decodeLongitude(GeoEncodingUtils.encodeLongitude(lon(3)))))
         });
     q.add(
         new Object[] {

@@ -5,7 +5,7 @@ use std::sync::Arc as StdArc;
 
 use crate::error::{LuceneError, Result};
 use crate::util::byte_block_pool::ByteBlockPool;
-use crate::util::packed::PackedInts;
+use crate::util::packed::{PackedInts, PagedGrowableWriter};
 
 use super::byte_block_pool_reverse_bytes_reader::ByteBlockPoolReverseBytesReader;
 use super::fst::{
@@ -34,14 +34,6 @@ const PRIME: i64 = 31;
 ///
 /// * Lucene's `NodeHash` holds a reference back to the `FSTCompiler` that owns
 ///   it. Here the compiler is passed to [`NodeHash::add`] instead.
-/// * The two address tables are `PagedGrowableWriter`s in Lucene, that is,
-///   bit-packed paged arrays. This port stores them in `Vec<i64>`, although
-///   [`PagedGrowableWriter`](crate::util::packed::PagedGrowableWriter) is now
-///   ported (`util/packed/paged_mutable.rs`). This costs more
-///   memory per hash slot but cannot change a single FST byte: the tables only
-///   decide hash-slot placement, and the RAM accounting below is computed from
-///   [`PackedInts::bits_required`] rather than from the tables' real footprint,
-///   exactly as in Lucene.
 /// * The hash values themselves never reach the index either. Two equal nodes
 ///   always hash alike, so the set of de-duplicated nodes -- and therefore the
 ///   bytes written -- is the same whatever the hash function is. Lucene relies
@@ -242,14 +234,14 @@ impl<O: Outputs> NodeHash<O> {
                     // Time to fall back: the fallback table is now used
                     // read-only, to promote a node (suffix) to primary if it is
                     // encountered again.
-                    let new_size = 16.max(self.primary_table.fst_node_address.len());
+                    let new_size = 16.max(self.primary_table.fst_node_address.size());
                     let old_primary = std::mem::replace(
                         &mut self.primary_table,
-                        PagedGrowableHash::with_size(new_size),
+                        PagedGrowableHash::with_size(node_address, new_size)?,
                     );
                     self.fallback_table = Some(old_primary);
                 } else if (self.primary_table.count as f32)
-                    > self.primary_table.fst_node_address.len() as f32 * (2.0 / 3.0)
+                    > self.primary_table.fst_node_address.size() as f32 * (2.0 / 3.0)
                 {
                     // Rehash at 2/3 occupancy.
                     let NodeHash {
@@ -313,12 +305,11 @@ fn hash_uncompiled_node<O: Outputs>(outputs: &O, node: &UnCompiledNode<O::Output
     h
 }
 
-/// Block size of the copied-node arena.
+/// Page size, in values, of the two address tables: 256K values per page,
+/// the final page sized only as needed.
 ///
-/// Equivalent to `NodeHash.PagedGrowableHash.BLOCK_SIZE_BYTES`; this port lets
-/// [`ByteBlockPool`] pick its own 32 KB blocks, so the constant only documents
-/// the original value.
-const _BLOCK_SIZE_BYTES: usize = 1 << 18;
+/// Equivalent to `NodeHash.PagedGrowableHash.BLOCK_SIZE_BYTES`.
+const BLOCK_SIZE_BYTES: usize = 1 << 18;
 
 /// The open-addressing hash table backing one generation of the suffix cache.
 ///
@@ -327,10 +318,10 @@ const _BLOCK_SIZE_BYTES: usize = 1 << 18;
 /// (same Java package, which reaches the package-private inner class).
 pub struct PagedGrowableHash {
     /// FST node address, at the slot given by the masked hash of the node arcs.
-    fst_node_address: Vec<i64>,
+    fst_node_address: PagedGrowableWriter,
     /// Address inside [`PagedGrowableHash::copied_nodes`] of the node stored at
     /// the same slot as in [`PagedGrowableHash::fst_node_address`].
-    copied_node_address: Vec<i64>,
+    copied_node_address: PagedGrowableWriter,
     count: i64,
     mask: i64,
     /// Byte slices copied out of the FST for the nodes added to the hash, so
@@ -345,30 +336,62 @@ impl PagedGrowableHash {
     /// Equivalent to `new PagedGrowableHash()`.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self::with_size(16)
-    }
-
-    /// Creates a table with `size` slots, which must be a power of two.
-    ///
-    /// Equivalent to `new PagedGrowableHash(long, long)`; the `lastNodeAddress`
-    /// argument only sizes the bit-packed writer Lucene uses and has no
-    /// counterpart here.
-    fn with_size(size: usize) -> Self {
-        debug_assert!(size.is_power_of_two(), "size must be a power of two");
         Self {
-            fst_node_address: vec![0; size],
-            copied_node_address: vec![0; size],
+            fst_node_address: Self::address_table(16, 8),
+            copied_node_address: Self::address_table(16, 8),
             count: 0,
-            mask: size as i64 - 1,
+            mask: 15,
             copied_nodes: ByteBlockPool::new(StdArc::new(AtomicI64::new(0))),
         }
+    }
+
+    /// Creates a table with `size` slots, which must be a power of two, whose
+    /// node-address table starts wide enough for `last_node_address`.
+    ///
+    /// Equivalent to `new PagedGrowableHash(long, long)`.
+    ///
+    /// # Errors
+    ///
+    /// What `PackedInts.bitsRequired` raises for a negative address.
+    fn with_size(last_node_address: i64, size: i64) -> Result<Self> {
+        let this = Self {
+            fst_node_address: Self::address_table(
+                size,
+                PackedInts::bits_required(last_node_address)?,
+            ),
+            copied_node_address: Self::address_table(size, 8),
+            count: 0,
+            mask: size - 1,
+            copied_nodes: ByteBlockPool::new(StdArc::new(AtomicI64::new(0))),
+        };
+        debug_assert!(
+            (this.mask & size) == 0,
+            "size must be a power-of-2; got size={size} mask={}",
+            this.mask
+        );
+        Ok(this)
+    }
+
+    /// `new PagedGrowableWriter(size, BLOCK_SIZE_BYTES, bitsPerValue,
+    /// PackedInts.COMPACT)`.
+    fn address_table(size: i64, start_bits_per_value: i32) -> PagedGrowableWriter {
+        PagedGrowableWriter::new(
+            size,
+            BLOCK_SIZE_BYTES,
+            start_bits_per_value,
+            PackedInts::COMPACT,
+        )
+        .expect(
+            "INVARIANT: a positive power-of-two size, a power-of-two page size and a bit width \
+             in 1..=64 are valid PagedGrowableWriter arguments",
+        )
     }
 
     /// Returns the copied bytes at the provided hash slot.
     ///
     /// Equivalent to `PagedGrowableHash.getBytes`.
     pub fn bytes(&self, hash_slot: i64, length: usize) -> Vec<u8> {
-        let address = self.copied_node_address[hash_slot as usize];
+        let address = self.copied_node_address.get(hash_slot);
         debug_assert!(address - length as i64 + 1 >= 0);
         let mut buf = vec![0u8; length];
         self.copied_nodes
@@ -380,15 +403,15 @@ impl PagedGrowableHash {
     ///
     /// Equivalent to `PagedGrowableHash.getNodeAddress`.
     fn node_address(&self, hash_slot: i64) -> i64 {
-        self.fst_node_address[hash_slot as usize]
+        self.fst_node_address.get(hash_slot)
     }
 
     /// Stores a node address at the provided hash slot.
     ///
     /// Equivalent to `PagedGrowableHash.setNodeAddress`.
     fn set_node_address(&mut self, hash_slot: i64, node_address: i64) {
-        debug_assert_eq!(self.fst_node_address[hash_slot as usize], 0);
-        self.fst_node_address[hash_slot as usize] = node_address;
+        debug_assert_eq!(self.fst_node_address.get(hash_slot), 0);
+        self.fst_node_address.set(hash_slot, node_address);
         self.count += 1;
     }
 
@@ -396,11 +419,12 @@ impl PagedGrowableHash {
     ///
     /// Equivalent to `PagedGrowableHash.copyNodeBytes`.
     pub fn copy_node_bytes(&mut self, hash_slot: i64, bytes: &[u8], length: usize) -> Result<()> {
-        debug_assert_eq!(self.copied_node_address[hash_slot as usize], 0);
+        debug_assert_eq!(self.copied_node_address.get(hash_slot), 0);
         self.copied_nodes.append(&bytes[..length])?;
         // Write the offset, which points to the last byte of the node just
         // copied, since the node is later read in reverse.
-        self.copied_node_address[hash_slot as usize] = self.copied_nodes.position() - 1;
+        self.copied_node_address
+            .set(hash_slot, self.copied_nodes.position() - 1);
         Ok(())
     }
 
@@ -414,8 +438,8 @@ impl PagedGrowableHash {
         fallback_hash_slot: i64,
         node_length: usize,
     ) -> Result<()> {
-        debug_assert_eq!(self.copied_node_address[hash_slot as usize], 0);
-        let fallback_address = fallback_table.copied_node_address[fallback_hash_slot as usize];
+        debug_assert_eq!(self.copied_node_address.get(hash_slot), 0);
+        let fallback_address = fallback_table.copied_node_address.get(fallback_hash_slot);
         // fallback_address is the last offset of the node, but the bytes have
         // to be copied from the start address.
         let fallback_start_address = fallback_address - node_length as i64 + 1;
@@ -427,7 +451,8 @@ impl PagedGrowableHash {
         )?;
         // Write the offset, which points to the last byte of the node just
         // copied, since the node is later read in reverse.
-        self.copied_node_address[hash_slot as usize] = self.copied_nodes.position() - 1;
+        self.copied_node_address
+            .set(hash_slot, self.copied_nodes.position() - 1);
         Ok(())
     }
 
@@ -438,22 +463,26 @@ impl PagedGrowableHash {
         &mut self,
         fst: &FST<O>,
         scratch_arc: &mut Arc<O::Output>,
-        _last_node_address: i64,
+        last_node_address: i64,
     ) -> Result<()> {
         // Double the hash table size on each rehash.
-        let new_size = 2 * self.fst_node_address.len();
-        let mut new_copied_node_address = vec![0i64; new_size];
-        let mut new_fst_node_address = vec![0i64; new_size];
-        let new_mask = new_size as i64 - 1;
-        for idx in 0..self.fst_node_address.len() {
-            let address = self.fst_node_address[idx];
+        let new_size = 2 * self.fst_node_address.size();
+        let mut new_copied_node_address = Self::address_table(
+            new_size,
+            PackedInts::bits_required(self.copied_nodes.position())?,
+        );
+        let mut new_fst_node_address =
+            Self::address_table(new_size, PackedInts::bits_required(last_node_address)?);
+        let new_mask = new_fst_node_address.size() - 1;
+        for idx in 0..self.fst_node_address.size() {
+            let address = self.fst_node_address.get(idx);
             if address != 0 {
-                let mut hash_slot = self.hash(fst, scratch_arc, address, idx as i64)? & new_mask;
+                let mut hash_slot = self.hash(fst, scratch_arc, address, idx)? & new_mask;
                 let mut c = 0i64;
                 loop {
-                    if new_fst_node_address[hash_slot as usize] == 0 {
-                        new_fst_node_address[hash_slot as usize] = address;
-                        new_copied_node_address[hash_slot as usize] = self.copied_node_address[idx];
+                    if new_fst_node_address.get(hash_slot) == 0 {
+                        new_fst_node_address.set(hash_slot, address);
+                        new_copied_node_address.set(hash_slot, self.copied_node_address.get(idx));
                         break;
                     }
 
@@ -610,8 +639,8 @@ impl PagedGrowableHash {
         hash_slot: i64,
     ) -> ByteBlockPoolReverseBytesReader<'_> {
         // Make sure the node address and the hash slot are consistent.
-        debug_assert_eq!(self.fst_node_address[hash_slot as usize], node_address);
-        let local_address = self.copied_node_address[hash_slot as usize];
+        debug_assert_eq!(self.fst_node_address.get(hash_slot), node_address);
+        let local_address = self.copied_node_address.get(hash_slot);
         let mut reader = ByteBlockPoolReverseBytesReader::new(&self.copied_nodes);
         reader.set_pos_delta(node_address - local_address);
         reader

@@ -51,7 +51,8 @@ use rucene::document::{
     Document, LatLonGeometryValue, LatLonShape, Store, StringField, XYGeometryValue, XYShape,
 };
 use rucene::geo::{
-    Circle, Line, Point, Polygon, Rectangle, XYLine, XYPoint, XYPolygon, XYRectangle,
+    Circle, GeoEncodingUtils, Line, Point, Polygon, Rectangle, XYLine, XYPoint, XYPolygon,
+    XYRectangle,
 };
 use rucene::index::directory_reader;
 use rucene::index::index_writer::IndexWriter;
@@ -364,8 +365,19 @@ fn queries() -> Vec<(String, Arc<dyn Query>)> {
             LatLonPoint::new_geometry_query(
                 loc,
                 QueryRelation::Contains,
+                // A point field contains a query point only when the decoded
+                // indexed point equals it exactly (`Point2D.withinPoint`):
+                // the query point is document 3's quantized location.
                 vec![LatLonGeometryValue::Point(
-                    Point::new(lat(3, false), lon(3)).unwrap(),
+                    Point::new(
+                        GeoEncodingUtils::decode_latitude(
+                            GeoEncodingUtils::encode_latitude(lat(3, false)).unwrap(),
+                        ),
+                        GeoEncodingUtils::decode_longitude(
+                            GeoEncodingUtils::encode_longitude(lon(3)).unwrap(),
+                        ),
+                    )
+                    .unwrap(),
                 )],
             )
             .unwrap(),

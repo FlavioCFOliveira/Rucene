@@ -3,10 +3,11 @@
 //! The corpus is defined by the same integer formulas here and in
 //! `KnnVariantsFixture.java`: three commits of 800, 800 and 300 documents —
 //! the first two segments are large enough for Lucene to build an HNSW graph
-//! (`Lucene99HnswVectorsWriter.shouldCreateGraph`: more nodes than
-//! `ln(n) * HNSW_GRAPH_THRESHOLD`), the last is not — with a float vector
-//! field `fvec` (EUCLIDEAN, quarter-integer components) and a byte vector
-//! field `bvec` (DOT_PRODUCT), each missing from some documents, keyword
+//! for both vector fields (`Lucene99HnswVectorsWriter.shouldCreateGraph`: more
+//! nodes than `ln(n) * HNSW_GRAPH_THRESHOLD`; 720 float and 686 byte vectors
+//! per segment), the last is not — with a float vector field `fvec`
+//! (EUCLIDEAN, quarter-integer components) and a byte vector field `bvec`
+//! (DOT_PRODUCT), each missing from some documents, keyword
 //! fields for seeds and filters, and deletions in the first and the last
 //! segment. Rucene writes it under `R`, Lucene under `L`.
 //!
@@ -23,9 +24,9 @@
 //!   `RescoreTopNQuery.createFullPrecisionRescorerQuery` over a kNN query and
 //!   over a term query, and the exact-search fallbacks of
 //!   `AbstractKnnVectorQuery.getLeafResults`: a filter whose cost is below the
-//!   per-leaf top k (exact search at once) and filters whose cost exceeds it,
-//!   so the filtered graph search runs with a visit limit and falls back to
-//!   exact search. Per query: total hits value and relation; per hit: doc id,
+//!   per-leaf top k (exact search at once) and a filter whose cost exceeds the
+//!   nodes the graph search is expected to visit, so the filtered graph search
+//!   runs with a visit limit, reaches it and falls back to exact search. Per query: total hits value and relation; per hit: doc id,
 //!   score bits and id. The four reports are compared line by line.
 //! * `KnnVariantsFixture probe` reruns the fallback queries through
 //!   subclasses that record every `approximateSearch` and `exactSearch` call;
@@ -52,9 +53,10 @@ use rucene::index::index_writer_config::{IndexWriterConfig, OpenMode};
 use rucene::index::merge_scheduler::SerialMergeScheduler;
 use rucene::index::{IndexReader, StoredFields, Term, VectorSimilarityFunction};
 use rucene::search::{
-    AbstractKnnVectorQueryImpl, ByteVectorSimilarityQuery, FloatVectorSimilarityQuery,
-    IndexSearcher, KnnByteVectorQuery, KnnFloatVectorQuery, PatienceKnnVectorQuery, Query,
-    RescoreTopNQuery, SeededKnnVectorQuery, TermQuery, TotalHits, TotalHitsRelation,
+    AbstractKnnVectorQueryImpl, BooleanQueryBuilder, ByteVectorSimilarityQuery,
+    FloatVectorSimilarityQuery, IndexSearcher, KnnByteVectorQuery, KnnFloatVectorQuery, Occur,
+    PatienceKnnVectorQuery, Query, RescoreTopNQuery, SeededKnnVectorQuery, TermQuery, TotalHits,
+    TotalHitsRelation,
 };
 use rucene::store::{Directory, FSDirectory};
 use rucene::util::BytesRef;
@@ -120,7 +122,7 @@ fn doc(i: i32, perturbed: bool) -> Document {
             StringField::new("rare", "yes".to_string(), Store::NO).unwrap(),
         ));
     }
-    if i % 5 != 4 {
+    if i % 10 != 9 {
         let mut v = fvec(i);
         if perturbed && i == PERTURBED_DOC {
             v[0] += 0.25;
@@ -180,6 +182,16 @@ const TARGET_X: [f32; 8] = [0.5, -1.25, 3.0, 7.75, -6.0, 2.5, 0.0, -0.25];
 
 fn tq(field: &str, text: &str) -> Arc<dyn Query> {
     Arc::new(TermQuery::new(term(field, text)))
+}
+
+/// `KnnVariantsFixture.tags012()`: `tag:t0 tag:t1 tag:t2`, as optional
+/// clauses.
+fn tags012() -> Arc<dyn Query> {
+    let mut b = BooleanQueryBuilder::new();
+    for t in ["t0", "t1", "t2"] {
+        b.add(tq("tag", t), Occur::SHOULD).unwrap();
+    }
+    Arc::new(b.build())
 }
 
 fn knn_float(target: &[f32], k: i32, filter: Option<Arc<dyn Query>>) -> KnnFloatVectorQuery {
@@ -352,8 +364,8 @@ fn queries() -> Vec<(&'static str, Arc<dyn Query>)> {
 
 /// The fallback query names, in `KnnVariantsFixture.fallbackQueries` order.
 const FALLBACK_SHORT: &str = "exact-short knn-float k=10 A filter=rare:yes";
-const FALLBACK_FLOAT: &str = "exact-fallback knn-float k=10 X filter=g:g7";
-const FALLBACK_BYTE: &str = "exact-fallback knn-byte k=10 A filter=g:g11";
+const FALLBACK_FLOAT: &str = "exact-fallback knn-float k=10 X filter=tag:t0|t1|t2";
+const FALLBACK_BYTE: &str = "exact-fallback knn-byte k=10 A filter=tag:t0|t1|t2";
 
 /// `KnnVariantsFixture.fallbackQueries(false)`.
 fn fallback_queries() -> Vec<(&'static str, Arc<dyn Query>)> {
@@ -366,9 +378,9 @@ fn fallback_queries() -> Vec<(&'static str, Arc<dyn Query>)> {
         ),
         (
             FALLBACK_FLOAT,
-            arc(knn_float(&TARGET_X, 10, Some(tq("g", "g7")))),
+            arc(knn_float(&TARGET_X, 10, Some(tags012()))),
         ),
-        (FALLBACK_BYTE, arc(knn_byte(&ba, 10, Some(tq("g", "g11"))))),
+        (FALLBACK_BYTE, arc(knn_byte(&ba, 10, Some(tags012())))),
     ]
 }
 

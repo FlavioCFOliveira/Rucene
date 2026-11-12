@@ -631,13 +631,31 @@ fn similarity_scores_and_explanations_match_lucene() {
         similarities().len(),
         "the oracle must report every similarity"
     );
+    // Every query has hits, except the single-term queries under the Indri
+    // similarity: its scores are negative, and the top-scores term scorer's
+    // `ImpactsDISI` starts with a minimum competitive score of 0
+    // (`ImpactsDISI.java:31`, `:80-88`), so every block's maximum score is
+    // below it and no document is collected. That zero is Lucene's result
+    // and is compared like any other; the Boolean queries still score and
+    // explain Indri.
     let mut lines = oracle.lines().peekable();
+    let mut similarity = "";
     while let Some(line) = lines.next() {
-        if line.starts_with("query ") {
-            assert!(
-                lines.peek().is_some_and(|next| next.starts_with("  hit ")),
-                "the oracle query has no hits: {line}"
-            );
+        if let Some(name) = line.strip_prefix("similarity ") {
+            similarity = name;
+        } else if line.starts_with("query ") {
+            let has_hits = lines.peek().is_some_and(|next| next.starts_with("  hit "));
+            if similarity.starts_with("indri-") && line.starts_with("query term ") {
+                assert!(
+                    !has_hits && line.ends_with(" total=0 EQUAL_TO"),
+                    "the oracle term query under {similarity} must have no hits: {line}"
+                );
+            } else {
+                assert!(
+                    has_hits,
+                    "the oracle query has no hits: {similarity} {line}"
+                );
+            }
         }
     }
     assert!(

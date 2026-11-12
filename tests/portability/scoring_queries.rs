@@ -515,13 +515,23 @@ fn query_report(path: &Path) -> String {
         .collect();
     let mut score_shards = Vec::new();
     let mut sort_shards = Vec::new();
-    for shard in &shards {
-        score_shards.push(shard.search(Arc::clone(&paging), TOP_N).unwrap());
-        sort_shards.push(
-            shard
-                .search_with_sort(Arc::clone(&paging), TOP_N, &rank_sort())
-                .unwrap(),
-        );
+    for (s, shard) in shards.iter().enumerate() {
+        let mut score_top = shard.search(Arc::clone(&paging), TOP_N).unwrap();
+        let mut sort_top = shard
+            .search_with_sort(Arc::clone(&paging), TOP_N, &rank_sort())
+            .unwrap();
+        // `TopDocs.merge` requires every hit's shard index to be set (or all
+        // unset); it does not set them itself, and `print_merged` resolves
+        // each hit through its shard.
+        let s = i32::try_from(s).unwrap();
+        for hit in &mut score_top.score_docs {
+            hit.shard_index = s;
+        }
+        for hit in &mut sort_top.score_docs {
+            hit.score_doc.shard_index = s;
+        }
+        score_shards.push(score_top);
+        sort_shards.push(sort_top);
     }
     let merged = TopDocs::merge(TOP_N as usize, &score_shards).unwrap();
     print_merged(
