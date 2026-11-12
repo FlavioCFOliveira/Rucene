@@ -1225,7 +1225,7 @@ pub fn get_merged_sorted_numeric_doc_values(
         // encode the merged field as a plain numeric one.
         let mut single_valued_subs = Vec::with_capacity(subs.len());
         for sub in subs {
-            let single = sub.values.into_singleton();
+            let single = sub.values.into_singleton()?;
             debug_assert!(single.is_some());
             // Java dereferences the null `unwrapSingleton` result (an NPE) when
             // assertions are off.
@@ -1239,7 +1239,7 @@ pub fn get_merged_sorted_numeric_doc_values(
             });
         }
         let merged = merge_numeric_values(single_valued_subs, merge_state.needs_index_sort)?;
-        return Ok(Box::new(DocValues::singleton_numeric(merged)));
+        return Ok(Box::new(DocValues::singleton_numeric(merged)?));
     }
 
     Ok(Box::new(MergedSortedNumericDocValues {
@@ -1594,7 +1594,7 @@ pub fn get_merged_sorted_set_doc_values(
     if all_singletons {
         let mut single_valued_subs = Vec::with_capacity(subs.len());
         for sub in subs {
-            let single = sub.values.into_singleton();
+            let single = sub.values.into_singleton()?;
             debug_assert!(single.is_some());
             // Java dereferences the null `unwrapSingleton` result (an NPE) when
             // assertions are off.
@@ -1610,7 +1610,7 @@ pub fn get_merged_sorted_set_doc_values(
             });
         }
         let merged = merge_sorted_values(single_valued_subs, merge_state.needs_index_sort, map)?;
-        return Ok(Box::new(DocValues::singleton_sorted(merged)));
+        return Ok(Box::new(DocValues::singleton_sorted(merged)?));
     }
 
     Ok(Box::new(MergedSortedSetDocValues {

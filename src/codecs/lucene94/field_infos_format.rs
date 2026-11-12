@@ -221,6 +221,13 @@ fn read_field_info(input: &mut dyn IndexInput, format: i32) -> Result<FieldInfo>
     let dist_func_byte = input.read_byte()?;
     let vector_similarity_function = get_dist_func(input, dist_func_byte)?;
 
+    // `new FieldInfo(...)` and `checkConsistency()` sit in a `try` whose
+    // `IllegalStateException` is rethrown as `CorruptIndexException("invalid
+    // fieldinfo for field: " + name + ", fieldNumber=" + fieldNumber, input,
+    // e)` (`Lucene94FieldInfosFormat.java:215-240`); `new_full` runs
+    // `check_consistency` itself.
+    let invalid_message =
+        format!("invalid fieldinfo for field: {name}, fieldNumber={field_number}");
     FieldInfo::new_full(
         name,
         field_number,
@@ -241,6 +248,13 @@ fn read_field_info(input: &mut dyn IndexInput, format: i32) -> Result<FieldInfo>
         soft_deletes_field,
         is_parent_field,
     )
+    .map_err(|error| {
+        if matches!(error.kind, LuceneErrorKind::IllegalState { .. }) {
+            LuceneError::corrupt_index_with_cause(invalid_message, input.to_java_string(), error)
+        } else {
+            error
+        }
+    })
 }
 
 /// The vector similarity functions this format can encode, in the order it

@@ -301,11 +301,16 @@ pub trait SortedNumericDocValues: DocValuesIterator {
     /// downcast a trait object without a concrete type, so the question is
     /// asked of the implementation instead: only
     /// [`SingletonSortedNumericDocValues`] answers with its inner iterator.
-    fn into_singleton<'s>(self: Box<Self>) -> Option<Box<dyn NumericDocValues + 's>>
+    ///
+    /// # Errors
+    ///
+    /// `IllegalState` from a singleton view whose iterator was already used
+    /// (`SingletonSortedNumericDocValues.getNumericDocValues()`).
+    fn into_singleton<'s>(self: Box<Self>) -> Result<Option<Box<dyn NumericDocValues + 's>>>
     where
         Self: 's,
     {
-        None
+        Ok(None)
     }
 
     /// Returns whether this iterator is a singleton view.
@@ -376,11 +381,16 @@ pub trait SortedSetDocValues: DocValuesIterator {
     ///
     /// Equivalent to the `instanceof SingletonSortedSetDocValues` test in
     /// `DocValues.unwrapSingleton(SortedSetDocValues)`.
-    fn into_singleton<'s>(self: Box<Self>) -> Option<Box<dyn SortedDocValues + 's>>
+    ///
+    /// # Errors
+    ///
+    /// `IllegalState` from a singleton view whose iterator was already used
+    /// (`SingletonSortedSetDocValues.getSortedDocValues()`).
+    fn into_singleton<'s>(self: Box<Self>) -> Result<Option<Box<dyn SortedDocValues + 's>>>
     where
         Self: 's,
     {
-        None
+        Ok(None)
     }
 
     /// Returns whether this iterator is a singleton view.
@@ -587,32 +597,59 @@ impl DocValues {
     }
 
     /// Returns a multi-valued view over the provided [`NumericDocValues`].
+    ///
+    /// Equivalent to `DocValues.singleton(NumericDocValues)`
+    /// (`DocValues.java:197-200`).
+    ///
+    /// # Errors
+    ///
+    /// As [`SingletonSortedNumericDocValues::new`].
     pub fn singleton_numeric<'a>(
         dv: Box<dyn NumericDocValues + 'a>,
-    ) -> SingletonSortedNumericDocValues<'a> {
+    ) -> Result<SingletonSortedNumericDocValues<'a>> {
         SingletonSortedNumericDocValues::new(dv)
     }
 
     /// Returns a multi-valued view over the provided [`SortedDocValues`].
+    ///
+    /// Equivalent to `DocValues.singleton(SortedDocValues)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`SingletonSortedSetDocValues::new`].
     pub fn singleton_sorted<'a>(
         dv: Box<dyn SortedDocValues + 'a>,
-    ) -> SingletonSortedSetDocValues<'a> {
+    ) -> Result<SingletonSortedSetDocValues<'a>> {
         SingletonSortedSetDocValues::new(dv)
     }
 
     /// Returns the single-valued [`NumericDocValues`] wrapped by
     /// [`SingletonSortedNumericDocValues`], if any.
+    ///
+    /// Equivalent to `DocValues.unwrapSingleton(SortedNumericDocValues)`
+    /// (`DocValues.java:189-195`).
+    ///
+    /// # Errors
+    ///
+    /// As [`SingletonSortedNumericDocValues::get_numeric_doc_values`].
     pub fn unwrap_singleton_numeric<'a>(
         dv: Box<dyn SortedNumericDocValues + 'a>,
-    ) -> Option<Box<dyn NumericDocValues + 'a>> {
+    ) -> Result<Option<Box<dyn NumericDocValues + 'a>>> {
         dv.into_singleton()
     }
 
     /// Returns the single-valued [`SortedDocValues`] wrapped by
     /// [`SingletonSortedSetDocValues`], if any.
+    ///
+    /// Equivalent to `DocValues.unwrapSingleton(SortedSetDocValues)`
+    /// (`DocValues.java:177-183`).
+    ///
+    /// # Errors
+    ///
+    /// As [`SingletonSortedSetDocValues::get_sorted_doc_values`].
     pub fn unwrap_singleton_sorted<'a>(
         dv: Box<dyn SortedSetDocValues + 'a>,
-    ) -> Option<Box<dyn SortedDocValues + 'a>> {
+    ) -> Result<Option<Box<dyn SortedDocValues + 'a>>> {
         dv.into_singleton()
     }
 
@@ -723,7 +760,7 @@ impl DocValues {
             return Ok(dv);
         }
         match reader.get_numeric_doc_values(field)? {
-            Some(single) => Ok(Box::new(Self::singleton_numeric(single))),
+            Some(single) => Ok(Box::new(Self::singleton_numeric(single)?)),
             None => {
                 Self::check_field(
                     reader,
@@ -752,7 +789,7 @@ impl DocValues {
             return Ok(dv);
         }
         match reader.get_sorted_doc_values(field)? {
-            Some(sorted) => Ok(Box::new(Self::singleton_sorted(sorted))),
+            Some(sorted) => Ok(Box::new(Self::singleton_sorted(sorted)?)),
             None => {
                 Self::check_field(
                     reader,
@@ -1087,15 +1124,45 @@ pub struct SingletonSortedNumericDocValues<'a> {
     inner: Box<dyn NumericDocValues + 'a>,
 }
 
+/// `IllegalStateException("iterator has already been used: docID=" +
+/// in.docID())` unless `doc_id` is `-1`, the check every constructor and
+/// getter of the singleton views makes.
+fn check_unused_iterator(doc_id: i32) -> Result<()> {
+    if doc_id != -1 {
+        return Err(LuceneError::illegal_state(format!(
+            "iterator has already been used: docID={doc_id}"
+        )));
+    }
+    Ok(())
+}
+
 impl<'a> SingletonSortedNumericDocValues<'a> {
     /// Creates a multi-valued view over the provided numeric doc values.
-    pub fn new(inner: Box<dyn NumericDocValues + 'a>) -> Self {
-        Self { inner }
+    ///
+    /// Equivalent to `SingletonSortedNumericDocValues(NumericDocValues)`
+    /// (`SingletonSortedNumericDocValues.java:31-36`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalState("iterator has already been used: docID=...")` when
+    /// `inner` is already positioned.
+    pub fn new(inner: Box<dyn NumericDocValues + 'a>) -> Result<Self> {
+        check_unused_iterator(inner.doc_id())?;
+        Ok(Self { inner })
     }
 
     /// Returns the wrapped numeric doc values.
-    pub fn get_numeric_doc_values(&self) -> &dyn NumericDocValues {
-        self.inner.as_ref()
+    ///
+    /// Equivalent to `SingletonSortedNumericDocValues.getNumericDocValues()`
+    /// (`SingletonSortedNumericDocValues.java:38-44`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalState("iterator has already been used: docID=...")` once
+    /// the view was advanced.
+    pub fn get_numeric_doc_values(&self) -> Result<&dyn NumericDocValues> {
+        check_unused_iterator(self.inner.doc_id())?;
+        Ok(self.inner.as_ref())
     }
 }
 
@@ -1128,11 +1195,13 @@ impl DocValuesIterator for SingletonSortedNumericDocValues<'_> {
 }
 
 impl SortedNumericDocValues for SingletonSortedNumericDocValues<'_> {
-    fn into_singleton<'s>(self: Box<Self>) -> Option<Box<dyn NumericDocValues + 's>>
+    /// `((SingletonSortedNumericDocValues) dv).getNumericDocValues()`.
+    fn into_singleton<'s>(self: Box<Self>) -> Result<Option<Box<dyn NumericDocValues + 's>>>
     where
         Self: 's,
     {
-        Some(self.inner)
+        check_unused_iterator(self.inner.doc_id())?;
+        Ok(Some(self.inner))
     }
 
     fn is_singleton(&self) -> bool {
@@ -1158,13 +1227,31 @@ pub struct SingletonSortedSetDocValues<'a> {
 
 impl<'a> SingletonSortedSetDocValues<'a> {
     /// Creates a multi-valued view over the provided sorted doc values.
-    pub fn new(inner: Box<dyn SortedDocValues + 'a>) -> Self {
-        Self { inner, ord: -1 }
+    ///
+    /// Equivalent to `SingletonSortedSetDocValues(SortedDocValues)`
+    /// (`SingletonSortedSetDocValues.java:34-39`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalState("iterator has already been used: docID=...")` when
+    /// `inner` is already positioned.
+    pub fn new(inner: Box<dyn SortedDocValues + 'a>) -> Result<Self> {
+        check_unused_iterator(inner.doc_id())?;
+        Ok(Self { inner, ord: -1 })
     }
 
     /// Returns the wrapped sorted doc values.
-    pub fn get_sorted_doc_values(&self) -> &dyn SortedDocValues {
-        self.inner.as_ref()
+    ///
+    /// Equivalent to `SingletonSortedSetDocValues.getSortedDocValues()`
+    /// (`SingletonSortedSetDocValues.java:41-47`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalState("iterator has already been used: docID=...")` once
+    /// the view was advanced.
+    pub fn get_sorted_doc_values(&self) -> Result<&dyn SortedDocValues> {
+        check_unused_iterator(self.inner.doc_id())?;
+        Ok(self.inner.as_ref())
     }
 }
 
@@ -1210,11 +1297,13 @@ impl DocValuesIterator for SingletonSortedSetDocValues<'_> {
 }
 
 impl SortedSetDocValues for SingletonSortedSetDocValues<'_> {
-    fn into_singleton<'s>(self: Box<Self>) -> Option<Box<dyn SortedDocValues + 's>>
+    /// `((SingletonSortedSetDocValues) dv).getSortedDocValues()`.
+    fn into_singleton<'s>(self: Box<Self>) -> Result<Option<Box<dyn SortedDocValues + 's>>>
     where
         Self: 's,
     {
-        Some(self.inner)
+        check_unused_iterator(self.inner.doc_id())?;
+        Ok(Some(self.inner))
     }
 
     fn is_singleton(&self) -> bool {
@@ -3189,7 +3278,7 @@ mod tests {
     #[test]
     fn singleton_numeric_wrapper() {
         let inner = Box::new(VecNumericDocValues::new(vec![(1, 100), (3, 300)]));
-        let mut values = DocValues::singleton_numeric(inner);
+        let mut values = DocValues::singleton_numeric(inner).unwrap();
         assert_eq!(values.next_doc().unwrap(), 1);
         assert_eq!(values.doc_value_count().unwrap(), 1);
         assert_eq!(values.next_value().unwrap(), 100);
@@ -3202,7 +3291,7 @@ mod tests {
         let dict = vec![b"x".to_vec(), b"y".to_vec()];
         let ords = vec![-1, 0, 1];
         let inner = Box::new(VecSortedDocValues::new(dict, ords));
-        let mut values = DocValues::singleton_sorted(inner);
+        let mut values = DocValues::singleton_sorted(inner).unwrap();
         assert_eq!(values.next_doc().unwrap(), 1);
         assert_eq!(values.doc_value_count().unwrap(), 1);
         assert_eq!(values.next_ord().unwrap(), 0);

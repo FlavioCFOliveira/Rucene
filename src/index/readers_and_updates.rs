@@ -218,6 +218,17 @@ impl PendingDeletes {
         self.get_live_docs()
     }
 
+    /// [`get_hard_live_docs`](Self::get_hard_live_docs) as the shared object
+    /// itself, so that two calls between which no delete was applied return
+    /// the same object, as Java's copy-on-write `liveDocs` reference does.
+    pub(crate) fn get_hard_live_docs_shared(&mut self) -> Option<Arc<dyn Bits>> {
+        // Prevent modifications to the returned live docs.
+        self.writeable_live_docs = None;
+        self.live_docs
+            .as_ref()
+            .map(|bits| Arc::clone(bits.shared()))
+    }
+
     /// Returns the number of pending deletes not yet written to disk.
     pub fn num_pending_deletes(&self) -> i32 {
         self.pending_delete_count
@@ -688,6 +699,12 @@ impl PendingSoftDeletes {
     /// Equivalent to `PendingSoftDeletes.getHardLiveDocs()`.
     pub fn get_hard_live_docs(&mut self) -> Option<Box<dyn Bits>> {
         self.hard_deletes.get_live_docs()
+    }
+
+    /// [`get_hard_live_docs`](Self::get_hard_live_docs) as the shared object
+    /// itself; see `PendingDeletes::get_hard_live_docs_shared`.
+    pub(crate) fn get_hard_live_docs_shared(&mut self) -> Option<Arc<dyn Bits>> {
+        self.hard_deletes.get_hard_live_docs_shared()
     }
 
     /// Returns the total number of pending deletes (soft + hard).
@@ -1775,6 +1792,18 @@ impl ReadersAndUpdates {
         }
     }
 
+    /// [`get_hard_live_docs`](Self::get_hard_live_docs) as the shared object
+    /// itself: the same object until a delete is applied, as Java's
+    /// `ReadersAndUpdates.getHardLiveDocs()` reference is
+    /// (`IndexWriter.java:4642` compares two of them by identity).
+    pub(crate) fn get_hard_live_docs_shared(&self) -> Option<Arc<dyn Bits>> {
+        let mut state = self.state.lock().expect("state mutex poisoned");
+        match &mut state.pending_deletes {
+            PendingDeletesKind::Hard(pd) => pd.get_hard_live_docs_shared(),
+            PendingDeletesKind::Soft(pd) => pd.get_hard_live_docs_shared(),
+        }
+    }
+
     /// Discards pending changes (used after a successful merge).
     pub fn drop_changes(&self) {
         let mut state = self.state.lock().expect("state mutex poisoned");
@@ -2737,13 +2766,11 @@ impl ReadersAndUpdates {
         debug_assert!(state.pending_deletes.verify_doc_counts(&reader));
 
         let hard_live_docs = match &mut state.pending_deletes {
-            PendingDeletesKind::Hard(pd) => pd.get_hard_live_docs(),
-            PendingDeletesKind::Soft(pd) => pd.get_hard_live_docs(),
+            PendingDeletesKind::Hard(pd) => pd.get_hard_live_docs_shared(),
+            PendingDeletesKind::Soft(pd) => pd.get_hard_live_docs_shared(),
         };
-        let merge_reader = crate::index::merge_policy::MergeReader::from_segment_reader(
-            reader,
-            hard_live_docs.map(Arc::from),
-        );
+        let merge_reader =
+            crate::index::merge_policy::MergeReader::from_segment_reader(reader, hard_live_docs);
         reader_consumer(&merge_reader)?;
         Ok(merge_reader)
     }
@@ -3824,7 +3851,7 @@ mod reader_pool_accounting_tests {
         assert_eq!(pool.ram_bytes_used(), 0);
 
         let mut updates = DocValuesFieldUpdates::new(8, -1, "f", DocValuesType::NUMERIC);
-        updates.add_long(3, 7);
+        updates.add_long(3, 7).unwrap();
         updates.finish().unwrap();
         let packet_bytes = updates.ram_bytes_used();
         assert!(packet_bytes > 0);
@@ -3835,8 +3862,8 @@ mod reader_pool_accounting_tests {
         assert_eq!(pool.ram_bytes_used(), packet_bytes);
 
         let mut more = DocValuesFieldUpdates::new(8, -1, "f", DocValuesType::NUMERIC);
-        more.add_long(1, 5);
-        more.add_long(2, 6);
+        more.add_long(1, 5).unwrap();
+        more.add_long(2, 6).unwrap();
         more.finish().unwrap();
         let more_bytes = more.ram_bytes_used();
         rld_b.add_dv_update(more).unwrap();
@@ -3871,7 +3898,7 @@ mod reader_pool_accounting_tests {
         let a = make_sci_in(&dir, "_a", 8);
         let rld = pool.get(&a, true, 10).unwrap().unwrap();
         let mut updates = DocValuesFieldUpdates::new(8, 5, "f", DocValuesType::NUMERIC);
-        updates.add_long(3, 7);
+        updates.add_long(3, 7).unwrap();
         updates.finish().unwrap();
         rld.add_dv_update(updates).unwrap();
 
@@ -3950,7 +3977,7 @@ mod tests {
         rld.set_is_merging();
         let mut update =
             DocValuesFieldUpdates::new(4, 1, "f", crate::index::DocValuesType::NUMERIC);
-        update.add_long(2, 9);
+        update.add_long(2, 9).unwrap();
         update.finish().unwrap();
         rld.add_dv_update(update).unwrap();
         assert_eq!(rld.get_merging_dv_updates().get("f").map(Vec::len), Some(1));
@@ -4402,9 +4429,9 @@ mod tests {
         // Apply a soft-delete DV update for docs 1, 3, 5 (all with values).
         // The field_info must have doc_values_gen > dv_generation (= -1).
         let mut updates = DocValuesFieldUpdates::new(10, 1, "soft_field", DocValuesType::NUMERIC);
-        updates.add_long(1, 1);
-        updates.add_long(3, 1);
-        updates.add_long(5, 1);
+        updates.add_long(1, 1).unwrap();
+        updates.add_long(3, 1).unwrap();
+        updates.add_long(5, 1).unwrap();
         updates.finish().unwrap();
 
         let mut field_info = FieldInfo::new("soft_field", 0);
@@ -4569,8 +4596,8 @@ mod tests {
     #[test]
     fn doc_values_field_updates_clone_for_merge() {
         let mut updates = DocValuesFieldUpdates::new(100, 42, "field1", DocValuesType::NUMERIC);
-        updates.add_long(5, 123);
-        updates.add_long(10, 456);
+        updates.add_long(5, 123).unwrap();
+        updates.add_long(10, 456).unwrap();
         updates.finish().unwrap();
 
         let clone = updates.clone_for_merge();

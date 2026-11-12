@@ -2155,13 +2155,11 @@ impl IndexSearcher {
         let mut sum_total_term_freq: i64 = 0;
         let mut sum_doc_freq: i64 = 0;
         for leaf in &self.leaf_contexts {
-            // Terms.getTerms(LeafReader, String) answers Terms.EMPTY when the
-            // field is absent, and every statistic of Terms.EMPTY is 0.
-            if let Some(terms) = leaf.leaf_reader().terms(field)? {
-                doc_count += i64::from(terms.doc_count()?);
-                sum_total_term_freq += terms.sum_total_term_freq()?;
-                sum_doc_freq += terms.sum_doc_freq()?;
-            }
+            // `Terms.getTerms(leaf.reader(), field)`.
+            let terms = crate::index::terms::get_terms(leaf.leaf_reader().as_ref(), field)?;
+            doc_count += i64::from(terms.doc_count()?);
+            sum_total_term_freq += terms.sum_total_term_freq()?;
+            sum_doc_freq += terms.sum_doc_freq()?;
         }
         if doc_count == 0 {
             return Ok(None);

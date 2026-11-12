@@ -254,7 +254,12 @@ pub struct LiveIndexWriterConfig {
     /// `None` for a configuration built as a plain `LiveIndexWriterConfig`
     /// (whose Java `toString()` has no `writer=` line), `Some` for one built
     /// by an [`IndexWriterConfig`], whose `toString()` it reproduces.
-    index_writer: Option<OnceLock<Weak<dyn IndexWriterTrait>>>,
+    ///
+    /// The outer cell is Java's `SetOnce`, filled by
+    /// [`attach_writer`](Self::attach_writer) first thing in the writer's
+    /// constructor; the inner one receives the writer's handle once the
+    /// writer exists ([`bind_attached_writer`](Self::bind_attached_writer)).
+    index_writer: Option<OnceLock<OnceLock<Weak<dyn IndexWriterTrait>>>>,
 }
 
 impl LiveIndexWriterConfig {
@@ -346,43 +351,41 @@ impl LiveIndexWriterConfig {
         }
     }
 
-    /// Whether `setIndexWriter` would refuse this configuration: the check
-    /// `IndexWriter`'s constructor makes first thing (`IndexWriter.java:951`),
-    /// before it takes the write lock.
-    ///
-    /// # Errors
-    ///
-    /// [`LuceneErrorKind::IllegalState`] once a writer is attached.
-    pub(crate) fn check_not_attached(&self) -> Result<()> {
-        match &self.index_writer {
-            Some(slot) if slot.get().is_some() => Err(LuceneError::illegal_state(
-                "do not share IndexWriterConfig instances across IndexWriters".to_string(),
-            )),
-            _ => Ok(()),
-        }
-    }
-
-    /// Records the writer this configuration is attached to.
+    /// Attaches this configuration to the writer being constructed.
     ///
     /// Equivalent to the package-private `IndexWriterConfig.setIndexWriter`
     /// (`IndexWriterConfig.java:119-125`), which `IndexWriter`'s constructor
-    /// calls (`IndexWriter.java:951`) and which refuses a configuration that is
-    /// already attached, so one configuration cannot serve two writers. A
-    /// configuration built as a plain `LiveIndexWriterConfig` has no such field
-    /// in Java and records nothing.
+    /// calls first thing (`IndexWriter.java:951`), before it takes the write
+    /// lock, and which refuses a configuration that is already attached, so
+    /// one configuration cannot serve two writers. As in Java, the attachment
+    /// stays when the constructor fails afterwards. A configuration built as
+    /// a plain `LiveIndexWriterConfig` has no such field in Java and records
+    /// nothing.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalState`] if the configuration is already
     /// attached to a writer.
-    pub(crate) fn attach_writer(&self, writer: Weak<dyn IndexWriterTrait>) -> Result<()> {
+    pub(crate) fn attach_writer(&self) -> Result<()> {
         match &self.index_writer {
-            Some(slot) => slot.set(writer).map_err(|_| {
+            Some(slot) => slot.set(OnceLock::new()).map_err(|_| {
                 LuceneError::illegal_state(
                     "do not share IndexWriterConfig instances across IndexWriters".to_string(),
                 )
             }),
             None => Ok(()),
+        }
+    }
+
+    /// Records the handle of the writer [`attach_writer`](Self::attach_writer)
+    /// attached this configuration to, once that writer exists.
+    ///
+    /// Java's `SetOnce` receives `this` directly; a Rust writer has a handle
+    /// only once it is inside its `Arc`, at the end of its constructor.
+    pub(crate) fn bind_attached_writer(&self, writer: Weak<dyn IndexWriterTrait>) {
+        if let Some(attached) = self.index_writer.as_ref().and_then(OnceLock::get) {
+            // Set once per attachment: `attach_writer` refuses a second writer.
+            let _ = attached.set(writer);
         }
     }
 
@@ -779,8 +782,15 @@ impl fmt::Display for LiveIndexWriterConfig {
         // `writer.get()` (`IndexWriterConfig.java:499-504`); see the note on
         // `index_writer`. `IndexWriter` declares no `toString()`, so an
         // attached writer renders as `Object.toString()` does.
+        //
+        // **Divergence from Lucene 10.5.0.** Java's `SetOnce` holds the
+        // writer strongly, so a configuration whose writer's constructor
+        // failed, or whose writer is gone, still prints that writer object;
+        // this port holds a weak handle bound at the end of the constructor
+        // and prints `writer=null` in both cases, because a Rust writer that
+        // failed to construct has no object to print.
         if let Some(slot) = &self.index_writer {
-            match slot.get().and_then(Weak::upgrade) {
+            match slot.get().and_then(OnceLock::get).and_then(Weak::upgrade) {
                 Some(writer) => writeln!(
                     f,
                     "writer={}",
@@ -1801,8 +1811,9 @@ mod tests {
     fn attach_writer_prevents_reuse() {
         let live = new_config().into_live();
         let writer: Arc<dyn IndexWriterTrait> = Arc::new(DummyIndexWriter);
-        assert!(live.attach_writer(Arc::downgrade(&writer)).is_ok());
-        let error = live.attach_writer(Arc::downgrade(&writer)).unwrap_err();
+        assert!(live.attach_writer().is_ok());
+        live.bind_attached_writer(Arc::downgrade(&writer));
+        let error = live.attach_writer().unwrap_err();
         assert!(
             matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalState { message, .. }, .. }
                 if message == "do not share IndexWriterConfig instances across IndexWriters"),

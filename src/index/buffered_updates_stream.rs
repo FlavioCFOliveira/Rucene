@@ -349,6 +349,20 @@ impl BufferedUpdatesStream {
         self.bytes_used.load(Ordering::Relaxed)
     }
 
+    /// Runs `body` while holding this stream's monitor: Java's
+    /// `synchronized (bufferedUpdatesStream) { ... }`, which
+    /// `IndexWriter.tryModifyDocument` takes (`IndexWriter.java:1832-1835`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalState` when the monitor is poisoned.
+    pub(crate) fn synchronized<R>(&self, body: impl FnOnce() -> R) -> Result<R> {
+        let _monitor = self.updates.lock().map_err(|_| {
+            LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
+        })?;
+        Ok(body())
+    }
+
     /// Returns the generation the next packet will be given.
     ///
     /// Equivalent to `BufferedUpdatesStream.getNextGen`.

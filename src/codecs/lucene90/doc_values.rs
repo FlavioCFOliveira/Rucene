@@ -4645,7 +4645,7 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
                         self.max_doc,
                         single,
                         self.merging,
-                    )?)),
+                    )?))?,
                 )),
                 Some(FieldEntry::SortedSet(entry)) => Ok(Box::new(LazySortedSetDocValues::new(
                     &**self.data.read(),
@@ -6088,7 +6088,7 @@ impl DocValuesProducer for SingletonNumericProducer<'_> {
         let values: Result<Box<dyn SortedNumericDocValues>> = {
             Ok(Box::new(crate::index::DocValues::singleton_numeric(
                 crate::codecs::doc_values::non_null(self.inner.get_numeric(field)?, field)?,
-            )))
+            )?))
         };
         Ok(Some(values?))
     }
@@ -6234,7 +6234,7 @@ impl DocValuesProducer for SortedOrdinalsProducer<'_> {
                         self.inner.get_sorted(field)?,
                         field,
                     )?,
-                })),
+                }))?,
             ))
         };
         Ok(Some(values?))

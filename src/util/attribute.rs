@@ -792,6 +792,12 @@ impl AttributeSource {
         }
     }
 
+    /// Returns whether `self` and `other` share their attribute maps, the
+    /// identity a cloned source keeps with its original.
+    pub(crate) fn shares_attributes_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
     /// Returns the factory used by this source.
     ///
     /// Equivalent to `org.apache.lucene.util.AttributeSource#getAttributeFactory`.

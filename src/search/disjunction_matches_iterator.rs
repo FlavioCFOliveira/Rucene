@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::index::POSTINGS_ENUM_OFFSETS;
-use crate::index::{EmptyTerms, LeafReaderContext, PostingsEnum, Term, Terms, TermsEnum};
+use crate::index::{LeafReaderContext, PostingsEnum, Term, TermsEnum};
 use crate::search::matches::MatchesIterator;
 use crate::search::query::Query;
 use crate::search::term_matches_iterator::TermMatchesIterator;
@@ -120,12 +120,8 @@ pub fn from_terms_enum(
     field: &str,
     mut terms: Box<dyn BytesRefIterator>,
 ) -> Result<Option<Box<dyn MatchesIterator>>> {
-    // Equivalent to `Terms.getTerms(context.reader(), field)`, which answers
-    // `Terms.EMPTY` when the field is absent.
-    let t: Box<dyn Terms> = match context.leaf_reader().terms(field)? {
-        Some(t) => t,
-        None => Box::new(EmptyTerms),
-    };
+    // `Terms.getTerms(context.reader(), field)`.
+    let t = crate::index::terms::get_terms(context.leaf_reader().as_ref(), field)?;
     let mut te = t.iterator()?;
     let mut reuse: Option<Box<dyn PostingsEnum>> = None;
     while let Some(term) = terms.next()? {

@@ -1648,14 +1648,9 @@ impl CheckIndex {
             seg_info_stat.compound = info.info.get_use_compound_file();
             let num_files = info.files()?.len();
             msg(info_stream, &format!("    numFiles={num_files}"));
-            // `Sort::new()` (relevance) is how this crate spells Java's null
-            // index sort: the segment-info reader stores it for a sort of no
-            // fields, and the writer writes it back as one
-            // (`lucene99/segment_info_format.rs`, `write_segment_sort`). Java
-            // runs `testSort` only for a non-null sort (`CheckIndex.java:974-977`, `:1089-1092`).
+            // Java runs `testSort` only for a non-null sort
+            // (`CheckIndex.java:974-977`, `:1089-1092`).
             let index_sort = info.info.index_sort();
-            let index_sort =
-                index_sort.filter(|sort| !sort.fields().is_empty() && **sort != Sort::new());
             if let Some(index_sort) = index_sort {
                 msg(info_stream, &format!("    sort={index_sort}"));
             }

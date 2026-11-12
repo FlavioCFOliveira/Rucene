@@ -674,7 +674,21 @@ impl SegmentInfos {
             input.as_mut(),
             generation,
             min_supported_major_version,
-        );
+        )
+        .map_err(|error| {
+            // `catch (EOFException | NoSuchFileException | FileNotFoundException
+            // e) { throw new CorruptIndexException("Unexpected file read error
+            // while reading index.", input, e); }` (`SegmentInfos.java:298-303`).
+            if error.is_eof_or_missing_file() {
+                LuceneError::corrupt_index_with_cause(
+                    "Unexpected file read error while reading index.",
+                    crate::store::DataInput::to_java_string(input.as_ref()),
+                    error,
+                )
+            } else {
+                error
+            }
+        });
         crate::store::close_after(input.as_mut(), read)
     }
 

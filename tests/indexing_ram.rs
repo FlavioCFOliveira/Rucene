@@ -306,9 +306,11 @@ fn dv_updates(kind: &str, max_doc: i32, count: i32, stride: i32) -> String {
     for i in 0..count {
         let doc = (i64::from(i) * i64::from(stride) % i64::from(max_doc)) as i32;
         if kind == "binary" {
-            updates.add_binary(doc, &bytes(&format!("value{i}")));
+            updates
+                .add_binary(doc, &bytes(&format!("value{i}")))
+                .unwrap();
         } else {
-            updates.add_long(doc, 5 + i64::from(i) * 977);
+            updates.add_long(doc, 5 + i64::from(i) * 977).unwrap();
         }
         lines.push(format!("{i} ram={}", updates.ram_bytes_used()));
     }

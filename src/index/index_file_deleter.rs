@@ -1276,8 +1276,7 @@ mod tests {
     /// the commit info.
     fn make_segment(dir: &dyn Directory, name: &str) -> SegmentCommitInfo {
         let mut info = test_segment_info_with_codec(name, 10, codec());
-        // The shared helper defaults to `Sort::default()`, a SCORE sort the
-        // segment-info format cannot serialise; give it a writable one.
+        // The shared helper builds an unsorted segment; give it an index sort.
         info.set_index_sort(Some(
             Sort::new_fields(vec![SortField::new(
                 Some("id".to_string()),

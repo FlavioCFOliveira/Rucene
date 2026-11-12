@@ -1016,12 +1016,12 @@ impl LeafReader for ExitableFilterLeafReader {
         // [`SortedNumericDocValues::into_singleton`].
         if sorted_numeric_doc_values.is_singleton() {
             let numeric_doc_values = sorted_numeric_doc_values
-                .into_singleton()
+                .into_singleton()?
                 .expect("INVARIANT: is_singleton() reported a singleton view");
             let wrapped = self
                 .wrap_numeric_doc_values(Some(numeric_doc_values))
                 .expect("INVARIANT: wrap_numeric_doc_values keeps a present value present");
-            return Ok(Some(Box::new(DocValues::singleton_numeric(wrapped))));
+            return Ok(Some(Box::new(DocValues::singleton_numeric(wrapped)?)));
         }
         Ok(Some(Box::new(ExitableSortedNumericDocValues::new(
             sorted_numeric_doc_values,
@@ -1040,12 +1040,12 @@ impl LeafReader for ExitableFilterLeafReader {
         // `DocValues.unwrapSingleton(SortedSetDocValues)`.
         if sorted_set_doc_values.is_singleton() {
             let sorted_doc_values = sorted_set_doc_values
-                .into_singleton()
+                .into_singleton()?
                 .expect("INVARIANT: is_singleton() reported a singleton view");
             let wrapped = self
                 .wrap_sorted_doc_values(Some(sorted_doc_values))
                 .expect("INVARIANT: wrap_sorted_doc_values keeps a present value present");
-            return Ok(Some(Box::new(DocValues::singleton_sorted(wrapped))));
+            return Ok(Some(Box::new(DocValues::singleton_sorted(wrapped)?)));
         }
         Ok(Some(Box::new(ExitableSortedSetDocValues::new(
             sorted_set_doc_values,

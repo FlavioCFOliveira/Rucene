@@ -4,6 +4,7 @@
 //! contract and the approximate priority queues that `DocumentsWriter` uses to
 //! pick a thread state.
 
+use crate::error::{LuceneError, Result};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
@@ -245,18 +246,34 @@ impl<T> Default for ConcurrentApproximatePriorityQueue<T> {
 
 impl<T> ConcurrentApproximatePriorityQueue<T> {
     /// Creates a queue with the default concurrency.
+    ///
+    /// Equivalent to `ConcurrentApproximatePriorityQueue()`
+    /// (`ConcurrentApproximatePriorityQueue.java:47-49`), whose concurrency
+    /// `getConcurrency()` keeps inside the accepted range.
     pub fn new() -> Self {
-        Self::with_concurrency(default_concurrency())
+        Self::build(default_concurrency())
     }
 
     /// Creates a queue sharded `concurrency` ways.
     ///
-    /// `concurrency` is clamped into `[MIN_CONCURRENCY, MAX_CONCURRENCY]`, where
-    /// Java throws `IllegalArgumentException`: the only two callers in the crate
-    /// derive it from the core count, so a value outside the range is a
-    /// programming error rather than user input.
-    pub fn with_concurrency(concurrency: usize) -> Self {
-        let concurrency = concurrency.clamp(MIN_CONCURRENCY, MAX_CONCURRENCY);
+    /// Equivalent to `ConcurrentApproximatePriorityQueue(int)`
+    /// (`ConcurrentApproximatePriorityQueue.java:51-70`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgument("concurrency must be in [1, 256], got N")` when
+    /// `concurrency` is outside `[MIN_CONCURRENCY, MAX_CONCURRENCY]`.
+    pub fn with_concurrency(concurrency: usize) -> Result<Self> {
+        if !(MIN_CONCURRENCY..=MAX_CONCURRENCY).contains(&concurrency) {
+            return Err(LuceneError::illegal_argument(format!(
+                "concurrency must be in [{MIN_CONCURRENCY}, {MAX_CONCURRENCY}], got {concurrency}"
+            )));
+        }
+        Ok(Self::build(concurrency))
+    }
+
+    /// The body of the constructor once `concurrency` is known to be valid.
+    fn build(concurrency: usize) -> Self {
         let mut queues = Vec::with_capacity(concurrency);
         for _ in 0..concurrency {
             queues.push(Mutex::new(ApproximatePriorityQueue::new()));
@@ -404,11 +421,18 @@ impl<T: TryLockable> LockableConcurrentApproximatePriorityQueue<T> {
     }
 
     /// Creates a queue sharded `concurrency` ways.
-    pub fn with_concurrency(concurrency: usize) -> Self {
-        Self {
-            queue: ConcurrentApproximatePriorityQueue::with_concurrency(concurrency),
+    ///
+    /// Equivalent to `LockableConcurrentApproximatePriorityQueue(int)`
+    /// (`LockableConcurrentApproximatePriorityQueue.java:28-30`).
+    ///
+    /// # Errors
+    ///
+    /// As [`ConcurrentApproximatePriorityQueue::with_concurrency`].
+    pub fn with_concurrency(concurrency: usize) -> Result<Self> {
+        Ok(Self {
+            queue: ConcurrentApproximatePriorityQueue::with_concurrency(concurrency)?,
             add_and_unlock_counter: AtomicUsize::new(0),
-        }
+        })
     }
 
     /// Polls an entry whose lock could be taken, retrying while entries keep

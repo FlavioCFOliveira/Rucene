@@ -240,12 +240,7 @@ fn write_segment_info(output: &mut dyn IndexOutput, info: &SegmentInfo) -> Resul
 /// (`Lucene99SegmentInfoFormat.java:223-234`), because `SegmentInfo.getIndexSort()`
 /// returns `null` for an unsorted segment.
 ///
-/// [`SegmentInfo`] carries `None` for an unsorted segment. Until the G-027
-/// code pass removes them, some callers still pass the relevance sort for an
-/// unsorted segment, so it is also written as a zero field count (writing it
-/// as one `SCORE` field would fail: a `SCORE` sort field has no `IndexSorter`).
-/// The bytes on disk are identical to Java's for both the sorted and the
-/// unsorted case.
+/// [`SegmentInfo`] carries `None` for an unsorted segment.
 fn write_segment_sort(
     output: &mut dyn IndexOutput,
     sort: Option<&crate::search::Sort>,
@@ -254,10 +249,6 @@ fn write_segment_sort(
         output.write_v_int(0)?;
         return Ok(());
     };
-    if *sort == crate::search::Sort::new() {
-        output.write_v_int(0)?;
-        return Ok(());
-    }
     write_sort(output, sort)
 }
 

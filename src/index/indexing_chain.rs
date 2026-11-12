@@ -262,7 +262,6 @@ pub struct FieldInvertState {
     /// Equivalent to `FieldInvertState.attributeSource`
     /// (`FieldInvertState.java:47`); the attributes Java caches from it
     /// (`FieldInvertState.java:49-53`) are read through this source.
-    #[allow(dead_code)] // Read by the G-004 code pass.
     attribute_source: Option<crate::util::attribute::AttributeSource>,
 }
 
@@ -342,13 +341,41 @@ impl FieldInvertState {
     /// attributes (`None` clears them).
     ///
     /// Equivalent to `org.apache.lucene.index.FieldInvertState.setAttributeSource(AttributeSource)`
-    /// (`FieldInvertState.java:96-113`).
+    /// (`FieldInvertState.java:96-113`): when the source changes, the
+    /// position-increment, offset and term-frequency attributes are added to
+    /// it (`addAttribute`), while the term and payload attributes are only
+    /// looked up (`getAttribute`). The cached attribute fields of Java are
+    /// read through the stored source, which shares its attribute cells with
+    /// the token stream's source.
+    ///
+    /// # Errors
+    ///
+    /// What `addAttribute` raises for an interface the source's factory
+    /// cannot implement.
     pub fn set_attribute_source(
         &mut self,
         attribute_source: Option<crate::util::attribute::AttributeSource>,
-    ) {
-        let _ = attribute_source;
-        todo!("PORT G-004")
+    ) -> Result<()> {
+        // `if (this.attributeSource != attributeSource)`: identity of the
+        // source, which this port compares through its shared attribute maps.
+        let unchanged = match (&self.attribute_source, &attribute_source) {
+            (None, None) => true,
+            (Some(current), Some(new)) => current.shares_attributes_with(new),
+            _ => false,
+        };
+        if unchanged {
+            return Ok(());
+        }
+        match attribute_source {
+            None => self.attribute_source = None,
+            Some(mut source) => {
+                source.add_attribute_interface::<dyn TermFrequencyAttribute>()?;
+                source.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
+                source.add_attribute_interface::<dyn OffsetAttribute>()?;
+                self.attribute_source = Some(source);
+            }
+        }
+        Ok(())
     }
 
     /// Returns the attribute source of the token stream being inverted.
@@ -356,7 +383,16 @@ impl FieldInvertState {
     /// Equivalent to `org.apache.lucene.index.FieldInvertState.getAttributeSource()`
     /// (`FieldInvertState.java:176-179`).
     pub fn get_attribute_source(&self) -> Option<&crate::util::attribute::AttributeSource> {
-        todo!("PORT G-004")
+        self.attribute_source.as_ref()
+    }
+
+    /// The attribute source set by `invert_token_stream`, which reads every
+    /// token through it, as Java reads through the attributes
+    /// `setAttributeSource` cached.
+    fn attribute_source(&self) -> Result<&crate::util::attribute::AttributeSource> {
+        self.attribute_source.as_ref().ok_or_else(|| {
+            LuceneError::illegal_state("no attribute source set on the invert state".to_string())
+        })
     }
 
     /// Returns the index options the field is inverted with.
@@ -1569,14 +1605,8 @@ impl DefaultIndexingChain {
         &mut self,
         state: &SegmentWriteState<'_>,
     ) -> Result<Option<SorterDocMap>> {
-        let index_sort = state.segment_info.index_sort();
-        // **Divergence from Lucene 10.5.0.** `SegmentInfo.getIndexSort()`
-        // returns `null` for an unsorted segment; this port carries a `Sort`
-        // there and encodes "unsorted" as the relevance sort, which is what
-        // `Sort::default()` builds. An empty sort means the same thing.
-        if index_sort
-            .is_none_or(|sort| sort.fields().is_empty() || *sort == crate::search::Sort::default())
-        {
+        // `if (indexSort == null) return null` (`IndexingChain.java:249-252`).
+        if state.segment_info.index_sort().is_none() {
             return Ok(None);
         }
 
@@ -1595,8 +1625,9 @@ impl DefaultIndexingChain {
         doc_values_reader: &BufferedDocValuesReader,
         max_doc: i32,
     ) -> Result<Option<SorterDocMap>> {
-        let unsorted = crate::search::Sort::default();
-        let index_sort = state.segment_info.index_sort().unwrap_or(&unsorted);
+        let index_sort = state.segment_info.index_sort().ok_or_else(|| {
+            LuceneError::illegal_state("maybe_sort_segment checked the index sort".to_string())
+        })?;
         let mut parents: Option<Arc<dyn crate::util::bit_set::BitSet>> = None;
 
         if state.segment_info.get_has_blocks() {
@@ -2280,6 +2311,8 @@ impl DefaultIndexingChain {
             )));
         }
 
+        // `invertState.setAttributeSource(null)` (`IndexingChain.java:2073`).
+        per_field.invert_state.set_attribute_source(None)?;
         per_field.invert_state.position += 1;
         // Lucene 10.5.0 increments `length` twice here — once before and once
         // after `TermsHashPerField.start` — so a single-valued binary field
@@ -2549,14 +2582,19 @@ impl DefaultIndexingChain {
 
         let outcome = (|| -> Result<()> {
             stream.reset()?;
-            let layout = TokenAttributeLayout::resolve(stream.attribute_source());
+            // `invertState.setAttributeSource(stream)` (`IndexingChain.java:1911`);
+            // the tokens are then read through the attributes it caches.
+            per_field
+                .invert_state
+                .set_attribute_source(Some(stream.attribute_source().clone()))?;
+            let layout = TokenAttributeLayout::resolve(per_field.invert_state.attribute_source()?);
             // Lucene calls `termsHashPerField.start(field, first)` here, right
             // after `stream.reset()` and `invertState.setAttributeSource`
             // (`IndexingChain.java:1908-1912`).
             Self::start_vectors(term_vectors.as_deref_mut(), per_field, field, first)?;
 
             while stream.increment_token()? {
-                let token = read_token(stream.attribute_source(), &layout)?;
+                let token = read_token(per_field.invert_state.attribute_source()?, &layout)?;
                 let state = &mut per_field.invert_state;
 
                 let position_increment = token.position_increment;
@@ -2663,7 +2701,7 @@ impl DefaultIndexingChain {
 
             stream.end()?;
             let (end_position_increment, end_offset) =
-                read_stream_end(stream.attribute_source(), &layout);
+                read_stream_end(per_field.invert_state.attribute_source()?, &layout);
             per_field.invert_state.position += end_position_increment;
             per_field.invert_state.offset += end_offset;
             Ok(())
@@ -3816,14 +3854,9 @@ impl DefaultIndexingChain {
     }
 }
 
-/// Whether `index_sort` sorts the segment.
-///
-/// **Divergence from Lucene 10.5.0** (already declared on `maybe_sort_segment`):
-/// `SegmentInfo.getIndexSort()` is `null` for an unsorted segment; this port
-/// carries the relevance sort, or no field at all, there instead.
+/// Whether `index_sort` sorts the segment: Java's `indexSort != null`.
 fn is_index_sorted(index_sort: Option<&crate::search::Sort>) -> bool {
-    index_sort
-        .is_some_and(|sort| !sort.fields().is_empty() && *sort != crate::search::Sort::default())
+    index_sort.is_some()
 }
 
 /// The stored-fields consumer of the chain: Lucene's `StoredFieldsConsumer`,

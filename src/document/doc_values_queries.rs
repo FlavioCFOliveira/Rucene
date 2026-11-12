@@ -611,7 +611,7 @@ impl DocValuesScorerSource for SortedNumericRangeSource {
             doc_count_ignoring_deletes(reader, &self.field, self.lower_value, self.upper_value)?;
         if count != 0 && count != max_doc {
             let values = DocValues::get_sorted_numeric(reader, &self.field)?;
-            if let Some(singleton) = DocValues::unwrap_singleton_numeric(values) {
+            if let Some(singleton) = DocValues::unwrap_singleton_numeric(values)? {
                 if let Some(skipper) = reader.get_doc_values_skipper(&self.field)? {
                     if let Some(primary_sort_field) =
                         dense_primary_sort(reader, skipper.as_ref(), &self.field)
@@ -660,7 +660,7 @@ impl SortedNumericRangeSource {
         let skipper = reader.get_doc_values_skipper(&self.field)?;
         // A single two-phase iterator covers every density: its approximation
         // rides the skipper, so it never over-scans.
-        match DocValues::unwrap_singleton_numeric(values) {
+        match DocValues::unwrap_singleton_numeric(values)? {
             Some(singleton) => Ok(Some(ScorerIterator::TwoPhase(Box::new(
                 DocValuesRangeIterator::for_range(
                     singleton,
@@ -977,7 +977,7 @@ impl DocValuesScorerSource for SortedNumericSetSource {
         // walking the value list; the walk over a single value is the same work,
         // so the flag records which case this is rather than splitting the
         // iterator in two.
-        let singleton = values.into_singleton().is_some();
+        let singleton = values.into_singleton()?.is_some();
         let values = DocValues::get_sorted_numeric(reader, &self.field)?;
         Ok(Some(ScorerIterator::TwoPhase(Box::new(
             SortedNumericSetIterator {
@@ -1133,7 +1133,7 @@ impl DocValuesScorerSource for SortedSetRangeSource {
 
         // A single two-phase iterator covers every density: its approximation
         // rides the skipper, so it never over-scans.
-        match DocValues::unwrap_singleton_sorted(values) {
+        match DocValues::unwrap_singleton_sorted(values)? {
             Some(singleton) => Ok(Some(ScorerIterator::TwoPhase(Box::new(
                 DocValuesRangeIterator::for_ordinal_range(singleton, skipper, min_ord, max_ord),
             )))),
@@ -1162,7 +1162,7 @@ impl DocValuesScorerSource for SortedSetRangeSource {
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         if let Some(skipper) = reader.get_doc_values_skipper(&self.field)? {
             let values = DocValues::get_sorted_set(reader, &self.field)?;
-            if let Some(singleton) = DocValues::unwrap_singleton_sorted(values) {
+            if let Some(singleton) = DocValues::unwrap_singleton_sorted(values)? {
                 if let Some(primary_sort_field) =
                     dense_primary_sort(reader, skipper.as_ref(), &self.field)
                 {

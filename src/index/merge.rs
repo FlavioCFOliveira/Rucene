@@ -453,13 +453,8 @@ impl MergeState {
         intra_merge_task_executor: Option<Arc<dyn Executor>>,
         one_merge: Option<OneMerge>,
     ) -> Result<Self> {
-        // `SegmentInfo` spells "no index sort" — Java's `null` — as the
-        // relevance `Sort::new()` (or an empty sort), as `SegmentReader` reads
-        // it for its metadata.
-        let index_sort = segment_info
-            .index_sort()
-            .filter(|sort| !sort.fields().is_empty() && **sort != crate::search::Sort::new())
-            .cloned();
+        // `segmentInfo.getIndexSort()`, `null` for an unsorted segment.
+        let index_sort = segment_info.index_sort().cloned();
         // `verifyIndexSort(readers, segmentInfo)`, the constructor's first
         // statement (`MergeState.java:110`).
         let segment_sorts: Vec<Option<crate::search::Sort>> = readers

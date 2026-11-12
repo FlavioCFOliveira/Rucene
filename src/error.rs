@@ -891,6 +891,22 @@ impl LuceneError {
         })
     }
 
+    /// `new UncheckedIOException(cause)`: an [`LuceneErrorKind::Unchecked`]
+    /// `java.io.UncheckedIOException` whose message is the cause's
+    /// `Throwable.toString()`, as `UncheckedIOException(IOException)` sets it
+    /// through `RuntimeException(Throwable)`.
+    ///
+    /// `cause` is one of the variants [`is_io_exception`](Self::is_io_exception)
+    /// accepts.
+    pub fn unchecked_io_exception(cause: LuceneError) -> Self {
+        let message = cause.kind.io_exception_to_string();
+        Self::from(LuceneErrorKind::Unchecked {
+            class: "java.io.UncheckedIOException",
+            message: Some(message),
+            cause: Some(Arc::new(cause)),
+        })
+    }
+
     /// The `NullPointerException` the JVM raises when Java code dereferences
     /// `null` (or `Objects.requireNonNull` rejects it): a
     /// [`LuceneErrorKind::Unchecked`] of class `java.lang.NullPointerException`.
@@ -958,8 +974,37 @@ impl LuceneError {
         resource_description: impl AsRef<str>,
         cause: LuceneError,
     ) -> Self {
-        let _ = (message.as_ref(), resource_description.as_ref(), cause);
-        todo!("PORT G-103")
+        Self::from(LuceneErrorKind::CorruptIndex {
+            message: format!(
+                "{} (resource={})",
+                message.as_ref(),
+                resource_description.as_ref()
+            ),
+            original_message: message.as_ref().to_string(),
+            resource_description: Some(resource_description.as_ref().to_string()),
+            cause: Some(Arc::new(cause)),
+        })
+    }
+
+    /// Returns whether Java would throw `self` as an `EOFException`, a
+    /// `NoSuchFileException` or a `FileNotFoundException` (or a subclass):
+    /// what a `catch (EOFException | NoSuchFileException |
+    /// FileNotFoundException e)` clause catches.
+    ///
+    /// Those are an [`LuceneErrorKind::Io`] of kind
+    /// [`std::io::ErrorKind::UnexpectedEof`] or [`std::io::ErrorKind::NotFound`]
+    /// (the kind `NoSuchFileException` maps to), the `FileNotFoundException`
+    /// [`LuceneErrorKind::NotFound`], and its subclass
+    /// `IndexNotFoundException`.
+    pub fn is_eof_or_missing_file(&self) -> bool {
+        match &self.kind {
+            LuceneErrorKind::Io(error) => matches!(
+                error.kind(),
+                std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::NotFound
+            ),
+            LuceneErrorKind::NotFound(_) | LuceneErrorKind::IndexNotFound(_) => true,
+            _ => false,
+        }
     }
 
     /// Returns the message of a `CorruptIndex` without its resource
@@ -968,7 +1013,12 @@ impl LuceneError {
     /// Equivalent to `org.apache.lucene.index.CorruptIndexException#getOriginalMessage`
     /// (`CorruptIndexException.java:67-70`); `None` for every other error.
     pub fn original_message(&self) -> Option<&str> {
-        todo!("PORT G-007")
+        match &self.kind {
+            LuceneErrorKind::CorruptIndex {
+                original_message, ..
+            } => Some(original_message),
+            _ => None,
+        }
     }
 
     /// Creates an `IndexFormatTooOld` error from a free-form reason, for when the
@@ -1017,13 +1067,23 @@ impl LuceneError {
         })
     }
 
-    /// Returns a description of the file that was too old or too new, when
-    /// this error is an `IndexFormatTooOld` or `IndexFormatTooNew`.
+    /// Returns a description of the file that was corrupt, too old or too
+    /// new, when this error is a `CorruptIndex`, an `IndexFormatTooOld` or an
+    /// `IndexFormatTooNew`.
     ///
-    /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getResourceDescription`
+    /// Equivalent to `org.apache.lucene.index.CorruptIndexException#getResourceDescription`
+    /// (`CorruptIndexException.java:62-65`),
+    /// `org.apache.lucene.index.IndexFormatTooOldException#getResourceDescription`
     /// and `org.apache.lucene.index.IndexFormatTooNewException#getResourceDescription`.
+    /// A `CorruptIndex` whose message the caller composed itself
+    /// ([`LuceneErrorKind::corrupt_index_message`]) has no separate
+    /// description and returns `None`.
     pub fn resource_description(&self) -> Option<&str> {
         match &self.kind {
+            LuceneErrorKind::CorruptIndex {
+                resource_description,
+                ..
+            } => resource_description.as_deref(),
             LuceneErrorKind::IndexFormatTooOld {
                 resource_description,
                 ..

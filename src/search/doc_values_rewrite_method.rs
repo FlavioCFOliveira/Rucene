@@ -178,7 +178,7 @@ fn get_sorted_set(
         return Ok(dv);
     }
     if let Some(sorted) = reader.get_sorted_doc_values(field)? {
-        return Ok(Box::new(DocValues::singleton_sorted(sorted)));
+        return Ok(Box::new(DocValues::singleton_sorted(sorted)?));
     }
     Ok(Box::new(DocValues::empty_sorted_set()))
 }

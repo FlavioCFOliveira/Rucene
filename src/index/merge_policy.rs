@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::error::Result;
 use crate::index::codec_reader::CodecReader;
@@ -290,9 +290,9 @@ impl MergeCompletion {
 ///   times are fields of this merge, shared with the merge's
 ///   [`MergeRateLimiter`](crate::index::merge_scheduler::MergeRateLimiter),
 ///   which records the pauses; [`get_pause_times`](Self::get_pause_times) is
-///   `getMergeProgress().getPauseTimes()`. Nothing records the owning thread,
-///   which Java's progress uses only in assertions, so
-///   [`merge_init`](Self::merge_init) records nothing.
+///   `getMergeProgress().getPauseTimes()`. The owning thread, which Java's
+///   progress uses only in assertions, is a field of this merge too, set by
+///   [`merge_init`](Self::merge_init).
 /// * Java completes the `mergeCompleted` future with the merge's success flag.
 ///   There is no `CompletableFuture` in Rust's standard library, so the
 ///   future is a value behind a mutex and a condition variable
@@ -397,6 +397,13 @@ pub struct OneMerge {
     /// value is shared through an `Arc`, as [`aborted`](Self::is_aborted) is;
     /// read it with [`merge_start_ns`](Self::merge_start_ns).
     merge_start_ns: Arc<AtomicI64>,
+    /// The thread executing the merge.
+    ///
+    /// Equivalent to `OneMergeProgress.owner` (`MergePolicy.java:103`), set
+    /// once by [`merge_init`](Self::merge_init) and read only by assertions;
+    /// shared through an `Arc` as every field a holder sets after the policy
+    /// built the merge.
+    merge_thread: Arc<OnceLock<std::thread::ThreadId>>,
     /// The readers the writer opened over [`segments`](Self::segments).
     ///
     /// Equivalent to `OneMerge.mergeReaders`. Java replaces the list wholesale
@@ -532,6 +539,7 @@ impl OneMerge {
             error: Arc::new(Mutex::new(None)),
             info: Arc::new(Mutex::new(None)),
             merge_start_ns: Arc::new(AtomicI64::new(-1)),
+            merge_thread: Arc::new(OnceLock::new()),
             merge_readers: Arc::new(Mutex::new(Vec::new())),
             wrap_for_merge: None,
             reorder: None,
@@ -594,6 +602,7 @@ impl OneMerge {
             error: Arc::new(Mutex::new(None)),
             info: Arc::new(Mutex::new(None)),
             merge_start_ns: Arc::new(AtomicI64::new(-1)),
+            merge_thread: Arc::new(OnceLock::new()),
             merge_readers: Arc::new(Mutex::new(readers)),
             wrap_for_merge: None,
             reorder: None,
@@ -863,12 +872,13 @@ impl OneMerge {
 
     /// Marks the merge as started on the calling thread.
     ///
-    /// Equivalent to `OneMerge.mergeInit()`, which records the merge thread on
-    /// the merge's `OneMergeProgress`, where only assertions read it. This
-    /// port has no progress object (see the type's divergences), so there is
-    /// no owner to record and the call is a no-op kept for the sequence
-    /// `IndexWriter` performs.
-    pub fn merge_init(&self) {}
+    /// Equivalent to `OneMerge.mergeInit()` (`MergePolicy.java:264-266`):
+    /// `mergeProgress.setMergeThread(Thread.currentThread())`, whose `assert
+    /// this.owner == null` (`MergePolicy.java:170-173`) refuses a second call.
+    pub fn merge_init(&self) {
+        let recorded = self.merge_thread.set(std::thread::current().id());
+        debug_assert!(recorded.is_ok(), "mergeInit called twice on one merge");
+    }
 
     /// Returns when the merge started, in nanoseconds on
     /// [`now_ns`](crate::index::merge_scheduler::now_ns)'s clock, or `-1`
@@ -1941,26 +1951,27 @@ pub fn merge_policy_size<P: MergePolicy + ?Sized>(
 }
 
 /// Renders `infos` the way `MergePolicy.segString(MergeContext, Iterable)` does.
+///
+/// # Errors
+///
+/// Propagates what [`MergeContext::num_deleted_docs`] raises.
 pub fn seg_string<'a>(
     merge_context: &dyn MergeContext,
     infos: impl IntoIterator<Item = &'a SegmentCommitInfo>,
-) -> String {
-    infos
+) -> Result<String> {
+    Ok(infos
         .into_iter()
         .map(|info| {
             // `info.toString(mergeContext.numDeletedDocs(info) - info.getDelCount())`
             // (`MergePolicy.java:872-876`) is `SegmentCommitInfo.toString(int
             // pendingDelCount)`, which adds the segment's own deletion count
             // back: the segment renders with every deletion the context knows.
-            info.to_string_with_pending_del_count(
-                merge_context
-                    .num_deleted_docs(info)
-                    .unwrap_or_else(|_| info.get_del_count())
-                    - info.get_del_count(),
-            )
+            Ok(info.to_string_with_pending_del_count(
+                merge_context.num_deleted_docs(info)? - info.get_del_count(),
+            ))
         })
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect::<Result<Vec<_>>>()?
+        .join(" "))
 }
 
 /// Logs `message` to the merge context's info stream under the `"MP"` component,
@@ -3075,7 +3086,7 @@ impl TieredMergePolicy {
                     mp_message(
                         &format!(
                             "  maybe={} score={} {} tooLarge={hit_too_large} size={} MB",
-                            seg_string(merge_context, candidate_infos),
+                            seg_string(merge_context, candidate_infos)?,
                             double_to_string(score.get_score()),
                             score.get_explanation(),
                             format_fixed(bytes_this_merge as f64 / 1024. / 1024., 3),
@@ -3118,7 +3129,7 @@ impl TieredMergePolicy {
                     mp_message(
                         &format!(
                             "  add merge={} size={} MB score={} {}{}",
-                            seg_string(merge_context, merge.segments.iter()),
+                            seg_string(merge_context, merge.segments.iter())?,
                             format_fixed(best_merge_bytes as f64 / 1024. / 1024., 3),
                             format_fixed(best_score.get_score(), 3),
                             best_score.get_explanation(),
@@ -3182,7 +3193,7 @@ impl MergePolicy for TieredMergePolicy {
                         seg_string(
                             merge_context,
                             std::iter::once(segment_infos.info(seg_size_docs.index))
-                        ),
+                        )?,
                         format_fixed(seg_bytes as f64 / 1024. / 1024., 3)
                     ),
                     merge_context,
@@ -3360,7 +3371,7 @@ impl MergePolicy for TieredMergePolicy {
                 &format!(
                     "findForcedMerges maxSegmentCount={max_num_segments} infos={} \
                      segmentsToMerge={{{}}}",
-                    seg_string(merge_context, segment_infos.iter()),
+                    seg_string(merge_context, segment_infos.iter())?,
                     entries.join(", ")
                 ),
                 merge_context,
@@ -3509,7 +3520,7 @@ impl MergePolicy for TieredMergePolicy {
                     mp_message(
                         &format!(
                             "add merge={}",
-                            seg_string(merge_context, merge.segments.iter())
+                            seg_string(merge_context, merge.segments.iter())?
                         ),
                         merge_context,
                     );
@@ -3543,7 +3554,7 @@ impl MergePolicy for TieredMergePolicy {
             mp_message(
                 &format!(
                     "findForcedDeletesMerges infos={} forceMergeDeletesPctAllowed={}",
-                    seg_string(merge_context, segment_infos.iter()),
+                    seg_string(merge_context, segment_infos.iter())?,
                     double_to_string(self.force_merge_deletes_pct_allowed.get())
                 ),
                 merge_context,

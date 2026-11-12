@@ -850,8 +850,9 @@ impl StandardDirectoryReader {
         leaf_sorter: Option<Arc<dyn LeafComparator>>,
         executor: Option<&Arc<dyn crate::search::Executor>>,
     ) -> Result<Arc<dyn DirectoryReader>> {
-        let _ = (directory, infos, old_readers, leaf_sorter, executor);
-        todo!("PORT G-104")
+        // `new StandardDirectoryReader(directory, newReaders, null, infos,
+        // leafSorter, false, false)`: no writer.
+        Self::open_from_infos(directory, infos, old_readers, None, leaf_sorter, executor)
     }
 }
 

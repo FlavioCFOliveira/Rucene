@@ -133,16 +133,17 @@ impl ReaderManager {
     ///
     /// Propagates whatever opening the reader raises.
     pub fn from_writer(writer: &dyn crate::index::DirectoryReaderIndexWriter) -> Result<Self> {
-        let _ = writer;
-        todo!("PORT G-035")
+        Self::from_writer_with(writer, true, false)
     }
 
     /// Creates a manager over a near-real-time reader of `writer`.
     ///
     /// Equivalent to `org.apache.lucene.index.ReaderManager(IndexWriter,
     /// boolean, boolean)` (`ReaderManager.java:60-64`):
-    /// `DirectoryReader.open(writer, applyAllDeletes, writeAllDeletes)`,
-    /// refreshed through `DirectoryReader.openIfChanged(reader, writer, ...)`.
+    /// `current = DirectoryReader.open(writer, applyAllDeletes,
+    /// writeAllDeletes)`. As in Java, every manager refreshes through
+    /// `DirectoryReader.openIfChanged(reader)` (`ReaderManager.java:91-94`),
+    /// which reopens a near-real-time reader through its writer.
     ///
     /// # Errors
     ///
@@ -152,8 +153,12 @@ impl ReaderManager {
         apply_all_deletes: bool,
         write_all_deletes: bool,
     ) -> Result<Self> {
-        let _ = (writer, apply_all_deletes, write_all_deletes);
-        todo!("PORT G-035")
+        let reader = crate::index::directory_reader::open_with_writer_flags(
+            writer,
+            apply_all_deletes,
+            write_all_deletes,
+        )?;
+        Self::from_reader(reader)
     }
 }
 

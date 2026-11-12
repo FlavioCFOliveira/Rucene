@@ -2542,20 +2542,33 @@ impl PostingsEnum for FreqProxPostingsEnum {
         Ok(self.position)
     }
 
+    /// Equivalent to `FreqProxPostingsEnum.startOffset()`
+    /// (`FreqProxFields.java:521-526`): `IllegalStateException("offsets were
+    /// not indexed")` without offsets. [`PostingsEnum::start_offset`] is
+    /// infallible, so the unchecked exception is thrown as the crate throws
+    /// every unchecked Java exception from an infallible method
+    /// ([`throw_unchecked`](crate::store::java_nio_file::throw_unchecked)).
     fn start_offset(&self) -> i32 {
-        if self.read_offsets {
-            self.start_offset
-        } else {
-            -1
+        if !self.read_offsets {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalStateException",
+                Some("offsets were not indexed"),
+            );
         }
+        self.start_offset
     }
 
+    /// Equivalent to `FreqProxPostingsEnum.endOffset()`
+    /// (`FreqProxFields.java:528-534`); see
+    /// [`start_offset`](Self::start_offset).
     fn end_offset(&self) -> i32 {
-        if self.read_offsets {
-            self.end_offset
-        } else {
-            -1
+        if !self.read_offsets {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalStateException",
+                Some("offsets were not indexed"),
+            );
         }
+        self.end_offset
     }
 
     fn get_payload(&self) -> Result<Option<&[u8]>> {
@@ -3842,10 +3855,17 @@ mod tests {
                 if has_positions {
                     for _ in 0..freq {
                         let position = postings.next_position().expect("position");
+                        // `startOffset()` throws without offsets
+                        // (`FreqProxFields.java:521-534`).
+                        let (start_offset, end_offset) = if has_offsets {
+                            (postings.start_offset(), postings.end_offset())
+                        } else {
+                            (-1, -1)
+                        };
                         positions.push(ReadPosition {
                             position,
-                            start_offset: postings.start_offset(),
-                            end_offset: postings.end_offset(),
+                            start_offset,
+                            end_offset,
                             payload: postings.get_payload().expect("payload").map(<[u8]>::to_vec),
                         });
                     }

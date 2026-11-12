@@ -540,14 +540,10 @@ impl SegmentInfo {
     /// Lucene itself, so this port sorts. The entries are identical; only their
     /// order inside the braces differs.
     ///
-    /// Java guards the sort with `indexSort != null`. Until the G-027 code
-    /// pass removes them, some callers still pass the relevance sort
-    /// `Sort::new()` for an unsorted segment, so it is treated as `None` too.
-    /// Lucene rejects `SortField.FIELD_SCORE` as an index sort, so no segment
-    /// is sorted by that value.
+    /// Java guards the sort with `indexSort != null`.
     pub fn to_string_verbose(&self) -> String {
         let mut s = self.to_string_with_del_count(0);
-        if let Some(index_sort) = self.index_sort.as_ref().filter(|s| **s != Sort::new()) {
+        if let Some(index_sort) = self.index_sort.as_ref() {
             s.push_str(":[indexSort=");
             s.push_str(&index_sort.to_string());
             s.push(']');

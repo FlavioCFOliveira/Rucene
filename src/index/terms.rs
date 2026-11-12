@@ -723,8 +723,10 @@ impl TermState for EmptyTermState {
 /// Propagates whatever [`LeafReader::terms`](crate::index::LeafReader::terms)
 /// raises.
 pub fn get_terms(reader: &dyn crate::index::LeafReader, field: &str) -> Result<Box<dyn Terms>> {
-    let _ = (reader, field);
-    todo!("PORT G-034")
+    Ok(match reader.terms(field)? {
+        Some(terms) => terms,
+        None => Box::new(EmptyTerms),
+    })
 }
 
 /// Access to the terms of a specific field.
@@ -1331,12 +1333,8 @@ impl TermStates {
             return Ok(per_reader_term_state);
         }
         for ctx in searcher.get_leaf_contexts() {
-            // `Terms.getTerms(ctx.reader(), term.field())` answers `Terms.EMPTY`
-            // when the field is absent.
-            let terms: Box<dyn Terms> = match ctx.leaf_reader().terms(term.field())? {
-                Some(terms) => terms,
-                None => Box::new(EmptyTerms),
-            };
+            // `Terms.getTerms(ctx.reader(), term.field())`.
+            let terms = get_terms(ctx.leaf_reader().as_ref(), term.field())?;
             let mut terms_enum = terms.iterator()?;
             if terms_enum.seek_exact(term.bytes())? {
                 let ord = ctx.ord() as usize;
@@ -1643,6 +1641,9 @@ impl TermsEnum for EmptyTermsEnum {
 }
 
 /// An empty [`Terms`] instance.
+///
+/// Equivalent to the private `org.apache.lucene.index.Terms.EMPTY`
+/// (`Terms.java:228-274`), which [`get_terms`] returns for an absent field.
 #[derive(Debug, Clone, Default)]
 pub struct EmptyTerms;
 

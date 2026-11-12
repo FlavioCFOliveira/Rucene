@@ -95,10 +95,15 @@ enum Values {
 
 /// `AbstractPagedMutable.resize(long)`, which copies the array into one of
 /// `size` values.
+///
+/// `AbstractPagedMutable.resize` cannot fail for a size this buffer asks for:
+/// [`DocValuesFieldUpdates::add_internal`] refuses an entry beyond
+/// `Integer.MAX_VALUE` with Java's `IllegalStateException` first, so every
+/// requested size fits the paged arrays.
 fn resized<T: AbstractPagedMutableOps>(values: &T, size: i64) -> T {
     values
         .resize(size)
-        .expect("INVARIANT: an update buffer never exceeds Integer.MAX_VALUE entries")
+        .expect("INVARIANT: add_internal caps an update buffer at Integer.MAX_VALUE entries")
 }
 
 /// The size `AbstractPagedMutable.grow(long)` gives an array of `current`
@@ -393,48 +398,55 @@ impl DocValuesFieldUpdates {
 
     /// Adds a numeric update for `doc`.
     ///
+    /// # Errors
+    ///
+    /// `IllegalState` when this buffer is already finished or already holds
+    /// `Integer.MAX_VALUE` entries ([`add_internal`](Self::add_internal)).
+    ///
     /// # Panics
     ///
-    /// Panics if this buffer is already finished or `doc >= max_doc`.
-    pub fn add_long(&mut self, doc: i32, value: i64) {
+    /// Panics if `doc >= max_doc` (Java's `assert doc < maxDoc`).
+    pub fn add_long(&mut self, doc: i32, value: i64) -> Result<()> {
         // `SingleValueNumericDocValuesFieldUpdates.add(int, long)` neither
         // checks `finished` nor records an entry: it only sets the document's
         // bit.
         if let Some(single) = self.single_value.as_mut() {
             assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
             single.add(doc, value);
-            return;
+            return Ok(());
         }
-        assert!(!self.finished, "already finished");
-        assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
         // `NumericDocValuesFieldUpdates.add(int, long)`
         // (`NumericDocValuesFieldUpdates.java:97-100`).
-        let idx = self.add_internal(doc, HAS_VALUE_MASK) as i64;
+        let idx = self.add_internal(doc, HAS_VALUE_MASK)? as i64;
         match &mut self.values {
             Values::Numeric { values, min_value } => {
                 values.set(idx, value.wrapping_sub(*min_value))
             }
             _ => panic!("a binary update cannot take a numeric value"),
         }
+        Ok(())
     }
 
     /// Adds a binary update for `doc`.
     ///
+    /// # Errors
+    ///
+    /// `IllegalState` when this buffer is already finished or already holds
+    /// `Integer.MAX_VALUE` entries ([`add_internal`](Self::add_internal)).
+    ///
     /// # Panics
     ///
-    /// Panics if this buffer is already finished or `doc >= max_doc`.
-    pub fn add_binary(&mut self, doc: i32, value: &BytesRef) {
+    /// Panics if `doc >= max_doc` (Java's `assert doc < maxDoc`).
+    pub fn add_binary(&mut self, doc: i32, value: &BytesRef) -> Result<()> {
         // `SingleValueNumericDocValuesFieldUpdates.add(int, BytesRef)` throws
         // `UnsupportedOperationException`.
         assert!(
             self.single_value.is_none(),
             "a single-value numeric update cannot take a binary value"
         );
-        assert!(!self.finished, "already finished");
-        assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
         // `BinaryDocValuesFieldUpdates.add(int, BytesRef)`
         // (`BinaryDocValuesFieldUpdates.java:94-99`).
-        let index = self.add_internal(doc, HAS_VALUE_MASK) as i64;
+        let index = self.add_internal(doc, HAS_VALUE_MASK)? as i64;
         match &mut self.values {
             Values::Binary {
                 offsets,
@@ -447,6 +459,7 @@ impl DocValuesFieldUpdates {
             }
             _ => panic!("a numeric update cannot take a binary value"),
         }
+        Ok(())
     }
 
     /// Records an update with a value for `doc` without writing the value,
@@ -456,7 +469,11 @@ impl DocValuesFieldUpdates {
     /// (`DocValuesFieldUpdates.java:366-368`), `addInternal(doc,
     /// HAS_VALUE_MASK)`; package private in Java, `pub` for
     /// `TestDocValuesFieldUpdates`.
-    pub fn add_doc(&mut self, doc: i32) -> usize {
+    ///
+    /// # Errors
+    ///
+    /// As [`add_internal`](Self::add_internal).
+    pub fn add_doc(&mut self, doc: i32) -> Result<usize> {
         self.add_internal(doc, HAS_VALUE_MASK)
     }
 
@@ -464,33 +481,56 @@ impl DocValuesFieldUpdates {
     ///
     /// Equivalent to `DocValuesFieldUpdates.reset(int)`.
     ///
+    /// # Errors
+    ///
+    /// As [`add_internal`](Self::add_internal).
+    ///
     /// # Panics
     ///
-    /// Panics if this buffer is already finished or `doc >= max_doc`.
-    pub fn reset(&mut self, doc: i32) {
+    /// Panics if `doc >= max_doc` (Java's `assert doc < maxDoc`).
+    pub fn reset(&mut self, doc: i32) -> Result<()> {
         // `SingleValueNumericDocValuesFieldUpdates.reset(int)` marks the
         // document in both bitsets instead of recording an entry.
         if let Some(single) = self.single_value.as_mut() {
             assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
             single.reset(doc, self.max_doc);
-            return;
+            return Ok(());
         }
-        assert!(!self.finished, "already finished");
-        assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
-        self.add_internal(doc, HAS_NO_VALUE_MASK);
+        self.add_internal(doc, HAS_NO_VALUE_MASK).map(|_| ())
     }
 
     /// Equivalent to `DocValuesFieldUpdates.addInternal(int, long)`
     /// (`DocValuesFieldUpdates.java:370-388`): the structures grow only when
     /// they are full, through `grow(size + 1)`.
-    fn add_internal(&mut self, doc: i32, has_value_mask: i64) -> usize {
+    ///
+    /// # Errors
+    ///
+    /// `IllegalState("already finished")` once [`finish`](Self::finish) ran,
+    /// and `IllegalState("cannot support more than Integer.MAX_VALUE
+    /// doc/value entries")` when the buffer already holds `Integer.MAX_VALUE`
+    /// entries (`DocValuesFieldUpdates.java:371-380`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `doc >= max_doc` (Java's `assert doc < maxDoc`).
+    fn add_internal(&mut self, doc: i32, has_value_mask: i64) -> Result<usize> {
+        if self.finished {
+            return Err(LuceneError::illegal_state("already finished".to_string()));
+        }
+        assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
+        // Lucene's limit: the `Sorter` interface takes `int` indexes.
+        if self.size == i32::MAX as usize {
+            return Err(LuceneError::illegal_state(
+                "cannot support more than Integer.MAX_VALUE doc/value entries".to_string(),
+            ));
+        }
         if self.docs.size() == self.size as i64 {
             self.grow(self.size + 1);
         }
         self.docs
             .set(self.size as i64, (i64::from(doc) << SHIFT) | has_value_mask);
         self.size += 1;
-        self.size - 1
+        Ok(self.size - 1)
     }
 
     /// Makes room for at least `size` entries.
@@ -1144,9 +1184,9 @@ mod tests {
     #[test]
     fn numeric_updates_finish_and_iterate() {
         let mut updates = DocValuesFieldUpdates::new(100, 5, "count", DocValuesType::NUMERIC);
-        updates.add_long(3, 30);
-        updates.add_long(1, 10);
-        updates.add_long(3, 31); // overwrite doc 3
+        updates.add_long(3, 30).unwrap();
+        updates.add_long(1, 10).unwrap();
+        updates.add_long(3, 31).unwrap(); // overwrite doc 3
         updates.finish().unwrap();
 
         let mut it = updates.iterator();
@@ -1164,8 +1204,12 @@ mod tests {
     #[test]
     fn binary_updates_finish_and_iterate() {
         let mut updates = DocValuesFieldUpdates::new(100, 2, "label", DocValuesType::BINARY);
-        updates.add_binary(0, &BytesRef::new(b"hello".to_vec()));
-        updates.add_binary(2, &BytesRef::new(b"world".to_vec()));
+        updates
+            .add_binary(0, &BytesRef::new(b"hello".to_vec()))
+            .unwrap();
+        updates
+            .add_binary(2, &BytesRef::new(b"world".to_vec()))
+            .unwrap();
         updates.finish().unwrap();
 
         let mut it = updates.iterator();
@@ -1179,8 +1223,8 @@ mod tests {
     #[test]
     fn reset_clears_value() {
         let mut updates = DocValuesFieldUpdates::new(100, 1, "count", DocValuesType::NUMERIC);
-        updates.add_long(5, 50);
-        updates.reset(5); // reset after add — last wins
+        updates.add_long(5, 50).unwrap();
+        updates.reset(5).unwrap(); // reset after add — last wins
         updates.finish().unwrap();
 
         let mut it = updates.iterator();
@@ -1192,7 +1236,7 @@ mod tests {
     #[test]
     fn finish_twice_errors() {
         let mut updates = DocValuesFieldUpdates::new(100, 1, "f", DocValuesType::NUMERIC);
-        updates.add_long(0, 1);
+        updates.add_long(0, 1).unwrap();
         updates.finish().unwrap();
         assert!(updates.finish().is_err());
     }
@@ -1202,8 +1246,8 @@ mod tests {
         let mut updates = DocValuesFieldUpdates::new(100, 1, "f", DocValuesType::NUMERIC);
         assert!(!updates.any());
         assert_eq!(updates.size(), 0);
-        updates.add_long(0, 1);
-        updates.add_long(1, 2);
+        updates.add_long(0, 1).unwrap();
+        updates.add_long(1, 2).unwrap();
         assert!(updates.any());
         assert_eq!(updates.size(), 2);
     }
@@ -1211,13 +1255,13 @@ mod tests {
     #[test]
     fn merged_iterator_favors_largest_del_gen() {
         let mut u1 = DocValuesFieldUpdates::new(100, 1, "f", DocValuesType::NUMERIC);
-        u1.add_long(0, 100);
-        u1.add_long(2, 200);
+        u1.add_long(0, 100).unwrap();
+        u1.add_long(2, 200).unwrap();
         u1.finish().unwrap();
 
         let mut u2 = DocValuesFieldUpdates::new(100, 5, "f", DocValuesType::NUMERIC);
-        u2.add_long(0, 999); // larger delGen, should win for doc 0
-        u2.add_long(1, 111);
+        u2.add_long(0, 999).unwrap(); // larger delGen, should win for doc 0
+        u2.add_long(1, 111).unwrap();
         u2.finish().unwrap();
 
         let i1 = u1.iterator();
@@ -1249,8 +1293,8 @@ mod tests {
             .iter()
             .map(|&gen| {
                 let mut u = DocValuesFieldUpdates::new(2, gen, "f", DocValuesType::NUMERIC);
-                u.add_long(0, gen * 10);
-                u.add_long(1, gen * 10 + 1);
+                u.add_long(0, gen * 10).unwrap();
+                u.add_long(1, gen * 10 + 1).unwrap();
                 u.finish().unwrap();
                 u
             })
@@ -1285,8 +1329,8 @@ mod tests {
     #[test]
     fn merged_iterator_single_sub() {
         let mut u = DocValuesFieldUpdates::new(100, 1, "f", DocValuesType::NUMERIC);
-        u.add_long(3, 30);
-        u.add_long(7, 70);
+        u.add_long(3, 30).unwrap();
+        u.add_long(7, 70).unwrap();
         u.finish().unwrap();
 
         let mut merged = merged_iterator(vec![u.iterator()]);
@@ -1337,8 +1381,8 @@ mod tests {
     #[test]
     fn swap_moves_the_doc_entry_and_its_value_together() {
         let mut updates = DocValuesFieldUpdates::new(10, -1, "f", DocValuesType::NUMERIC);
-        updates.add_long(1, 100);
-        updates.add_long(2, 200);
+        updates.add_long(1, 100).unwrap();
+        updates.add_long(2, 200).unwrap();
         updates.swap(0, 1);
         assert_eq!(updates.docs.get(0) >> SHIFT, 2);
         assert_eq!(updates.docs.get(1) >> SHIFT, 1);
@@ -1356,7 +1400,7 @@ mod tests {
     fn sorting_in_place_keeps_the_last_update_to_a_doc() {
         let mut updates = DocValuesFieldUpdates::new(10, -1, "f", DocValuesType::NUMERIC);
         for (doc, value) in [(5, 1), (1, 2), (5, 3), (3, 4), (1, 5), (5, 6)] {
-            updates.add_long(doc, value);
+            updates.add_long(doc, value).unwrap();
         }
         updates.finish().unwrap();
         let mut it = updates.iterator();
@@ -1374,7 +1418,7 @@ mod tests {
     #[test]
     fn ram_bytes_used_is_positive() {
         let mut u = DocValuesFieldUpdates::new(100, 1, "f", DocValuesType::NUMERIC);
-        u.add_long(0, 1);
+        u.add_long(0, 1).unwrap();
         u.finish().unwrap();
         assert!(u.ram_bytes_used() > 0);
     }

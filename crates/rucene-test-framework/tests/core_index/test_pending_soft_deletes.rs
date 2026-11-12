@@ -411,9 +411,9 @@ fn single_update(
             break;
         }
         if has_value {
-            updates.add_long(doc, 1);
+            updates.add_long(doc, 1)?;
         } else {
-            updates.reset(doc);
+            updates.reset(doc)?;
         }
     }
     updates.finish()?;

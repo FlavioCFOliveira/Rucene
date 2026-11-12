@@ -27,7 +27,7 @@ use crate::codecs::postings::FieldsProducer;
 use crate::codecs::stored_fields::StoredFieldsReader;
 use crate::codecs::term_vectors::TermVectorsReader;
 use crate::codecs::DocValuesSkipper;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::codec_reader::CodecReader;
 use crate::index::index_reader::{
     add_closed_listener_to_set, java_object_to_string, CacheHelper, CacheKey, ClosedListener,
@@ -98,8 +98,17 @@ impl SegmentCoreReaders {
             .codec()
             .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
 
+        // `catch (EOFException | FileNotFoundException e)` and `catch
+        // (NoSuchFileException e)` around the whole body, the compound reader
+        // included (`SegmentCoreReaders.java:81-146`).
+        let wrap = |error: LuceneError| Self::wrap_missing_file_error(dir, error);
         let cfs_reader: Option<Box<dyn CompoundDirectory>> = if si.info.get_use_compound_file() {
-            Some(codec.compound_format().get_compound_reader(dir, &si.info)?)
+            Some(
+                codec
+                    .compound_format()
+                    .get_compound_reader(dir, &si.info)
+                    .map_err(wrap)?,
+            )
         } else {
             None
         };
@@ -206,8 +215,40 @@ impl SegmentCoreReaders {
             // failure. This mirrors Java's try/finally cleanup.
             let _ = core.dec_ref();
         }
-        result?;
+        result.map_err(wrap)?;
         Ok(core)
+    }
+
+    /// The `catch` clauses of the constructor (`SegmentCoreReaders.java:
+    /// 143-146`): an `EOFException` or `FileNotFoundException` becomes
+    /// `CorruptIndexException("Problem reading index from " + dir,
+    /// dir.toString(), e)`, a `NoSuchFileException` becomes
+    /// `CorruptIndexException("Problem reading index.", e.getFile(), e)`;
+    /// every other error passes through.
+    fn wrap_missing_file_error(dir: &dyn Directory, error: LuceneError) -> LuceneError {
+        use crate::store::java_nio_file as nio;
+        if !error.is_eof_or_missing_file() {
+            return error;
+        }
+        let no_such_file = match &error.kind {
+            LuceneErrorKind::Io(io_error) => nio::java_exception_of(io_error)
+                .filter(|exception| exception.class_name() == nio::NO_SUCH_FILE_EXCEPTION)
+                .map(|exception| exception.get_file().unwrap_or("null").to_string()),
+            _ => None,
+        };
+        match no_such_file {
+            Some(file) => {
+                LuceneError::corrupt_index_with_cause("Problem reading index.", file, error)
+            }
+            None => {
+                let dir_string = dir.directory_to_string();
+                LuceneError::corrupt_index_with_cause(
+                    format!("Problem reading index from {dir_string}"),
+                    dir_string,
+                    error,
+                )
+            }
+        }
     }
 
     /// Returns the field infos that were loaded for this core.
@@ -1235,19 +1276,13 @@ impl SegmentReader {
         let original_si = segment_info;
         let dir: &dyn Directory = &*original_si.info.directory;
 
-        // `si.info.getIndexSort()` is `null` for a segment without an index
-        // sort (`SegmentReader.java:85-90`); this port's `SegmentInfo` stands
-        // for that `null` with the relevance sort `Sort::new()`, which no index
-        // can be sorted by, so it maps back to `None` here. Handing it on
-        // made a relevance search look like a prefix of the index sort, and
-        // `TopFieldCollector` then terminated its leaves early.
+        // `si.info.getIndexSort()`, `null` for a segment without an index
+        // sort (`SegmentReader.java:85-90`).
         let index_sort = original_si.info.index_sort();
         let meta_data = LeafMetaData::new(
             created_version_major,
             original_si.info.min_version(),
-            index_sort
-                .filter(|sort| **sort != crate::search::Sort::new())
-                .cloned(),
+            index_sort.cloned(),
             original_si.info.get_has_blocks(),
         )?;
 
@@ -2138,6 +2173,12 @@ impl SharedBits {
     /// A handle onto bits that are already shared.
     pub(crate) fn from_arc(bits: Arc<dyn Bits>) -> Self {
         Self(bits)
+    }
+
+    /// The shared bits themselves: one object for every handle cloned from
+    /// this one, as Java's `liveDocs` reference is.
+    pub(crate) fn shared(&self) -> &Arc<dyn Bits> {
+        &self.0
     }
 }
 

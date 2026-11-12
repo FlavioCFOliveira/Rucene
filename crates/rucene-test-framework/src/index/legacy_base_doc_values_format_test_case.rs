@@ -4363,7 +4363,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
             let dv = || -> Result<Box<dyn SortedSetDocValues>> {
                 let sorted = npe(leaf.get_sorted_doc_values("field")?);
-                Ok(Box::new(DocValues::singleton_sorted(sorted)))
+                Ok(Box::new(DocValues::singleton_sorted(sorted)?))
             };
             self.do_test_sorted_set_enum_advance_independently(&dv)?;
 

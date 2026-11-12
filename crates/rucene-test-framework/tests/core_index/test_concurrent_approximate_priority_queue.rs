@@ -49,7 +49,7 @@ fn test_poll_from_same_thread() -> Result<()> {
             &*random(),
             MIN_CONCURRENCY as i32,
             MAX_CONCURRENCY as i32,
-        ) as usize);
+        ) as usize)?;
     pq.add(3, 3);
     pq.add(10, 10);
     pq.add(7, 7);
@@ -65,7 +65,7 @@ fn test_poll_from_different_thread() -> Result<()> {
     let pq: Arc<ConcurrentApproximatePriorityQueue<i32>> =
         Arc::new(ConcurrentApproximatePriorityQueue::with_concurrency(
             TestUtil::next_int(&*random(), MIN_CONCURRENCY as i32, MAX_CONCURRENCY as i32) as usize,
-        ));
+        )?);
     pq.add(3, 3);
     pq.add(10, 10);
     pq.add(7, 7);
@@ -87,7 +87,7 @@ fn test_current_lock_is_busy() -> Result<()> {
     let pq: Arc<ConcurrentApproximatePriorityQueue<i32>> =
         Arc::new(ConcurrentApproximatePriorityQueue::with_concurrency(
             TestUtil::next_int(&*random(), 2, MAX_CONCURRENCY as i32) as usize,
-        ));
+        )?);
     pq.add(3, 3);
     let take_lock = Arc::new(CountDownLatch::new(1));
     let release_lock = Arc::new(CountDownLatch::new(1));
