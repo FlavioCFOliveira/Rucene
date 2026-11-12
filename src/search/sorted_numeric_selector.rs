@@ -128,6 +128,13 @@ impl MinValue {
 }
 
 impl DocIdSetIterator for MinValue {
+    /// `SortedNumericSelector$MinValue` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.SortedNumericSelector$MinValue",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -194,6 +201,13 @@ impl MaxValue {
 }
 
 impl DocIdSetIterator for MaxValue {
+    /// `SortedNumericSelector$MaxValue` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.SortedNumericSelector$MaxValue",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -254,8 +268,15 @@ struct SortableDoubleView {
 }
 
 macro_rules! delegate_numeric_view {
-    ($ty:ty, $decode:expr) => {
+    ($ty:ty, $java_class:literal, $decode:expr) => {
         impl DocIdSetIterator for $ty {
+            /// The anonymous `FilterNumericDocValues` declares no `toString()`,
+            /// so `java.lang.Object.toString()` applies
+            /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+            fn java_to_string(&self) -> String {
+                crate::index::index_reader::java_object_to_string_stand_in($java_class)
+            }
+
             fn doc_id(&self) -> i32 {
                 self.inner.doc_id()
             }
@@ -301,9 +322,13 @@ macro_rules! delegate_numeric_view {
     };
 }
 
-delegate_numeric_view!(SortableFloatView, |raw: i64| i64::from(
-    NumericUtils::sortable_float_bits(raw as i32)
-));
-delegate_numeric_view!(SortableDoubleView, |raw: i64| {
-    NumericUtils::sortable_double_bits(raw)
-});
+delegate_numeric_view!(
+    SortableFloatView,
+    "org.apache.lucene.search.SortedNumericSelector$1",
+    |raw: i64| i64::from(NumericUtils::sortable_float_bits(raw as i32))
+);
+delegate_numeric_view!(
+    SortableDoubleView,
+    "org.apache.lucene.search.SortedNumericSelector$2",
+    |raw: i64| { NumericUtils::sortable_double_bits(raw) }
+);

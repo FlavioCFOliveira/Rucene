@@ -224,6 +224,13 @@ impl AllDocIdSetIterator {
 }
 
 impl DocIdSetIterator for AllDocIdSetIterator {
+    /// `DocIdSetIterator$RangeDocIdSetIterator` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.DocIdSetIterator$RangeDocIdSetIterator",
+        )
+    }
     /// Java tests the class of this iterator (`TestPointQueries.java:2219`).
     fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -292,6 +299,13 @@ impl RangeDocIdSetIterator {
 }
 
 impl DocIdSetIterator for RangeDocIdSetIterator {
+    /// `DocIdSetIterator$RangeDocIdSetIterator` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.DocIdSetIterator$RangeDocIdSetIterator",
+        )
+    }
     /// Java tests the class of this iterator (`TestPointQueries.java:2219`).
     fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -453,7 +467,11 @@ impl AcceptDocs for BitsAcceptDocs {
         let base = Box::new(AllDocIdSetIterator::new(self.max_doc)?);
         match self.predicate() {
             None => Ok(base),
-            Some(predicate) => Ok(Box::new(FilteredDocIdSetIterator::new(base, predicate))),
+            Some(predicate) => Ok(Box::new(FilteredDocIdSetIterator::new(
+                base,
+                predicate,
+                ACCEPT_DOCS_FILTERED_ITERATOR,
+            ))),
         }
     }
 
@@ -641,6 +659,10 @@ fn create_bit_set(
 // Internal helpers
 // -----------------------------------------------------------------------------
 
+/// The anonymous `FilteredDocIdSetIterator` of
+/// `AcceptDocs.getFilteredDocIdSetIterator` (`AcceptDocs.java:206-218`).
+const ACCEPT_DOCS_FILTERED_ITERATOR: &str = "org.apache.lucene.search.AcceptDocs$1";
+
 /// The `match(int)` body of a [`FilteredDocIdSetIterator`]: Java's
 /// `protected abstract boolean match(int doc) throws IOException`.
 pub(crate) type FilterPredicate = Box<dyn FnMut(i32) -> Result<bool>>;
@@ -652,13 +674,25 @@ pub(crate) type FilterPredicate = Box<dyn FnMut(i32) -> Result<bool>>;
 pub(crate) struct FilteredDocIdSetIterator {
     inner: Box<dyn DocIdSetIterator>,
     predicate: FilterPredicate,
+    /// The binary name of the anonymous Java subclass this instance stands
+    /// for: Java's class is abstract, so every instance is a subclass's.
+    java_class: &'static str,
 }
 
 impl FilteredDocIdSetIterator {
     /// Equivalent to `FilteredDocIdSetIterator(DocIdSetIterator)`, with the
-    /// subclass's `match(int)` as `predicate`.
-    pub(crate) fn new(inner: Box<dyn DocIdSetIterator>, predicate: FilterPredicate) -> Self {
-        Self { inner, predicate }
+    /// subclass's `match(int)` as `predicate` and the subclass's binary Java
+    /// name as `java_class` (what its `toString()` names).
+    pub(crate) fn new(
+        inner: Box<dyn DocIdSetIterator>,
+        predicate: FilterPredicate,
+        java_class: &'static str,
+    ) -> Self {
+        Self {
+            inner,
+            predicate,
+            java_class,
+        }
     }
 
     /// Returns the wrapped [`DocIdSetIterator`].
@@ -696,6 +730,13 @@ impl FilteredDocIdSetIterator {
 }
 
 impl DocIdSetIterator for FilteredDocIdSetIterator {
+    /// The anonymous subclass declares no `toString()`, so
+    /// `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(self.java_class)
+    }
+
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1009,7 +1050,11 @@ pub fn get_filtered_doc_id_set_iterator(
         None => iterator,
         Some(bits) => {
             let predicate: FilterPredicate = Box::new(move |doc: i32| Ok(bits.get(doc as usize)));
-            Box::new(FilteredDocIdSetIterator::new(iterator, predicate))
+            Box::new(FilteredDocIdSetIterator::new(
+                iterator,
+                predicate,
+                ACCEPT_DOCS_FILTERED_ITERATOR,
+            ))
         }
     }
 }

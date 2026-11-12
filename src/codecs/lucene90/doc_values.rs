@@ -4763,6 +4763,22 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
         let values: Result<Box<dyn SortedNumericDocValues>> = {
             match self.entries.get(&field.number) {
+                // `if (entry.numValues == entry.numDocsWithField) return
+                // DocValues.singleton(getNumeric(entry));`
+                // (`Lucene90DocValuesProducer.java:1828-1830`), so that
+                // `DocValues.unwrapSingleton` answers the numeric view.
+                Some(FieldEntry::SortedNumeric(entry))
+                    if entry.numeric.num_values == i64::from(entry.num_docs_with_field) =>
+                {
+                    Ok(Box::new(crate::index::DocValues::singleton_numeric(
+                        Box::new(LazyNumericDocValues::new(
+                            &**self.data.read(),
+                            self.max_doc,
+                            &entry.numeric,
+                            self.merging,
+                        )?),
+                    )?))
+                }
                 Some(FieldEntry::SortedNumeric(entry)) => {
                     // `Lucene90DocValuesProducer.java:1823,1843`.
                     let dense_fixed_cardinality = Self::fixed_cardinality(
@@ -6427,6 +6443,13 @@ struct SortedOrdinals {
 }
 
 impl DocIdSetIterator for SortedOrdinals {
+    /// `Lucene90DocValuesConsumer$2$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.lucene90.Lucene90DocValuesConsumer$2$1",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.values.doc_id()
     }
@@ -6529,6 +6552,13 @@ struct SortedSetOrdinals {
 }
 
 impl DocIdSetIterator for SortedSetOrdinals {
+    /// `Lucene90DocValuesConsumer$4$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.lucene90.Lucene90DocValuesConsumer$4$1",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.values.doc_id()
     }

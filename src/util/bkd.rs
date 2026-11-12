@@ -2009,6 +2009,13 @@ struct LastLeafDocIdCounter {
 }
 
 impl IntersectVisitor for LastLeafDocIdCounter {
+    /// `BKDReader$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.util.bkd.BKDReader$1",
+        )
+    }
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
         self.count += 1;
         Ok(())
@@ -3019,6 +3026,11 @@ impl BKDPointTree {
 }
 
 impl PointTree for BKDPointTree {
+    /// `BKDReader.BKDPointTree.toString()` (`BKDReader.java:995-998`):
+    /// `"nodeID=" + nodeID`, the node the cursor is on.
+    fn java_to_string(&self) -> String {
+        format!("nodeID={}", self.current().node_id)
+    }
     fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
         // Re-root at the current node: the clone's stack holds only the current
         // frame, so its `move_to_parent` stops here. Fresh input clones keep
@@ -5259,6 +5271,13 @@ impl MergeIntersectsVisitor {
 }
 
 impl IntersectVisitor for MergeIntersectsVisitor {
+    /// `BKDWriter$MergeIntersectsVisitor` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.util.bkd.BKDWriter$MergeIntersectsVisitor",
+        )
+    }
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
         // `throw new UnsupportedOperationException()` (`BKDWriter.java:381-384`).
         Err(LuceneError::unsupported_operation(String::new()))

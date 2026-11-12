@@ -752,6 +752,13 @@ struct BufferedPointValues {
 }
 
 impl PointValues for BufferedPointValues {
+    /// `PointValuesWriter$2$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.PointValuesWriter$2$1",
+        )
+    }
     fn point_tree(&self) -> Result<Box<dyn PointTree>> {
         Ok(Box::new(BufferedPointTree::new(Arc::clone(&self.buffer))))
     }
@@ -826,6 +833,13 @@ impl BufferedPointTree {
 }
 
 impl PointTree for BufferedPointTree {
+    /// `PointValuesWriter$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.PointValuesWriter$1",
+        )
+    }
     /// `MutablePointTree.clone()` is `final` and throws
     /// `new UnsupportedOperationException()` (`MutablePointTree.java:52-55`).
     fn clone_tree(&self) -> Result<Box<dyn PointTree>> {

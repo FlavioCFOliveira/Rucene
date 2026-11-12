@@ -363,6 +363,13 @@ impl BufferedNorms {
 }
 
 impl DocIdSetIterator for BufferedNorms {
+    /// `NormValuesWriter$BufferedNorms` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.NormValuesWriter$BufferedNorms",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.docs_with_field.doc_id()
     }

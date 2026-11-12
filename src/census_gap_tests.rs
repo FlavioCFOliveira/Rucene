@@ -472,13 +472,146 @@ mod oracle {
         out
     }
 
+    /// A timeout that never fires, whose `toString()` is `"N"`, as the
+    /// oracle's.
+    #[derive(Debug)]
+    struct NeverTimeout;
+
+    impl crate::index::QueryTimeout for NeverTimeout {
+        fn should_exit(&self) -> bool {
+            false
+        }
+
+        fn java_to_string(&self) -> String {
+            "N".to_string()
+        }
+    }
+
+    /// A timeout fired on demand, whose `toString()` is `"S"`, as the
+    /// oracle's.
+    #[derive(Debug, Default)]
+    struct SwitchableTimeout(std::sync::atomic::AtomicBool);
+
+    impl crate::index::QueryTimeout for SwitchableTimeout {
+        fn should_exit(&self) -> bool {
+            self.0.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn java_to_string(&self) -> String {
+            "S".to_string()
+        }
+    }
+
+    /// The oracle's `CensusGapFixture.InterruptingVisitor`: it interrupts its
+    /// own thread on its first callback.
+    #[derive(Default)]
+    struct InterruptingVisitor(std::cell::Cell<bool>);
+
+    impl InterruptingVisitor {
+        fn interrupt_once(&self) {
+            if !self.0.replace(true) {
+                crate::util::InterruptHandle::current().interrupt();
+            }
+        }
+    }
+
+    impl crate::index::point_values::IntersectVisitor for InterruptingVisitor {
+        fn java_to_string(&self) -> String {
+            crate::index::index_reader::java_object_to_string_stand_in(
+                "org.apache.lucene.rucene.codec.CensusGapFixture$InterruptingVisitor",
+            )
+        }
+
+        fn visit(&mut self, _doc_id: i32) -> crate::error::Result<()> {
+            self.interrupt_once();
+            Ok(())
+        }
+
+        fn visit_with_value(&mut self, _doc_id: i32, _packed: &[u8]) -> crate::error::Result<()> {
+            self.interrupt_once();
+            Ok(())
+        }
+
+        fn compare(
+            &self,
+            _min: &[u8],
+            _max: &[u8],
+        ) -> crate::error::Result<crate::index::point_values::Relation> {
+            self.interrupt_once();
+            Ok(crate::index::point_values::Relation::CellCrossesQuery)
+        }
+
+        fn grow(&mut self, _count: i32) -> crate::error::Result<()> {
+            self.interrupt_once();
+            Ok(())
+        }
+    }
+
+    /// `CensusGapFixture.exitableCalls(leaf).get(call)`: each call reaches one
+    /// `ExitableDirectoryReader` check.
+    fn exitable_call(leaf: &dyn crate::index::LeafReader, call: usize) -> String {
+        use crate::search::knn::TopKnnCollector;
+        match call {
+            0 => exiting_outcome(
+                leaf.get_numeric_doc_values("n")
+                    .and_then(|v| v.unwrap().next_doc()),
+            ),
+            1 => exiting_outcome(
+                leaf.get_sorted_doc_values("sd")
+                    .and_then(|v| v.unwrap().next_doc()),
+            ),
+            2 => exiting_outcome(
+                leaf.get_binary_doc_values("b")
+                    .and_then(|v| v.unwrap().next_doc()),
+            ),
+            3 => exiting_outcome(
+                leaf.get_sorted_numeric_doc_values("sn")
+                    .and_then(|v| v.unwrap().next_doc()),
+            ),
+            4 => exiting_outcome(
+                leaf.get_sorted_set_doc_values("ss")
+                    .and_then(|v| v.unwrap().next_doc()),
+            ),
+            5 => exiting_outcome(
+                leaf.terms("s")
+                    .and_then(|t| t.unwrap().iterator())
+                    .and_then(|mut e| e.next()),
+            ),
+            6 => exiting_outcome(leaf.get_point_values("p")),
+            7 => exiting_outcome(
+                leaf.get_float_vector_values("fv")
+                    .and_then(|v| v.unwrap().iterator())
+                    .and_then(|mut i| i.next_doc()),
+            ),
+            8 => exiting_outcome(
+                leaf.get_byte_vector_values("bv")
+                    .and_then(|v| v.unwrap().iterator())
+                    .and_then(|mut i| i.next_doc()),
+            ),
+            _ => {
+                let mut collector = TopKnnCollector::new(2, 100);
+                let mut accept_docs = crate::search::from_live_docs(None, 3).unwrap();
+                exiting_outcome(leaf.search_nearest_vectors(
+                    "fv",
+                    &[1.0, 1.0],
+                    &mut collector,
+                    &mut accept_docs,
+                ))
+            }
+        }
+    }
+
     /// G-028: every `ExitingReaderException` of `ExitableDirectoryReader`
     /// names the timeout and the iterated object: `". Timeout: " +
-    /// queryTimeout + ", DocValues=" + in` and so on
-    /// (`ExitableDirectoryReader.java:439-914`). The messages equal Lucene's,
-    /// class names included, up to the identity-hash digits of the objects
-    /// that declare no `toString()`; the port's digits are the stable
-    /// stand-in.
+    /// queryTimeout + ", DocValues=" + in` and so on, and, when the timeout
+    /// has not fired but the thread is interrupted, `"Interrupted while ...
+    /// DocValues=" + in` (`ExitableDirectoryReader.java:439-914`). The
+    /// messages equal Lucene's, class names included, up to the identity-hash
+    /// digits of the objects that declare no `toString()`; the port's digits
+    /// are the stable stand-in. The oracle also covers an exitable leaf over
+    /// an exitable leaf, a `SortingCodecReader` view, `ExitablePointTree`
+    /// (its timeout names the point values, its interrupt the tree's
+    /// `nodeID=` rendering) and `ExitableIntersectVisitor`.
     #[test]
     fn gap_g028_exiting_reader_messages_match_lucene() {
         use crate::document::{
@@ -487,11 +620,14 @@ mod oracle {
             SortedSetDocValuesField, Store, StringField,
         };
         use crate::index::filter_directory_reader::{
-            DirectoryReaderWrapper, ExitableDirectoryReaderWrapper,
+            DirectoryReaderWrapper, ExitableDirectoryReaderWrapper, ExitableFilterLeafReader,
         };
+        use crate::index::sorting_codec_reader::SortingCodecReader;
+        use crate::index::LeafReader;
         use crate::index::VectorSimilarityFunction::EUCLIDEAN;
-        use crate::search::knn::TopKnnCollector;
+        use crate::search::{Sort, SortField, SortFieldType};
         use crate::util::BytesRef;
+        use crate::util::InterruptHandle;
         let docs = (0..3)
             .map(|i| {
                 let mut d = Document::new();
@@ -515,70 +651,13 @@ mod oracle {
             })
             .collect();
         let index = TestIndex::new(docs);
-        let reader = ExitableDirectoryReaderWrapper::new(Arc::new(FiredTimeout))
+        let fired: Arc<dyn crate::index::QueryTimeout> = Arc::new(FiredTimeout);
+        let reader = ExitableDirectoryReaderWrapper::new(Arc::clone(&fired))
             .wrap(Arc::clone(&index.reader))
             .unwrap();
         let leaves = Arc::clone(&reader).leaves().unwrap();
         let leaf = leaves[0].leaf_reader();
-        let mut rust = vec![
-            exiting_outcome(
-                leaf.get_numeric_doc_values("n")
-                    .unwrap()
-                    .unwrap()
-                    .next_doc(),
-            ),
-            exiting_outcome(
-                leaf.get_sorted_doc_values("sd")
-                    .unwrap()
-                    .unwrap()
-                    .next_doc(),
-            ),
-            exiting_outcome(leaf.get_binary_doc_values("b").unwrap().unwrap().next_doc()),
-            exiting_outcome(
-                leaf.get_sorted_numeric_doc_values("sn")
-                    .unwrap()
-                    .unwrap()
-                    .next_doc(),
-            ),
-            exiting_outcome(
-                leaf.get_sorted_set_doc_values("ss")
-                    .unwrap()
-                    .unwrap()
-                    .next_doc(),
-            ),
-            exiting_outcome(
-                leaf.terms("s")
-                    .unwrap()
-                    .unwrap()
-                    .iterator()
-                    .and_then(|mut e| e.next()),
-            ),
-            exiting_outcome(leaf.get_point_values("p")),
-            exiting_outcome(
-                leaf.get_float_vector_values("fv")
-                    .unwrap()
-                    .unwrap()
-                    .iterator()
-                    .unwrap()
-                    .next_doc(),
-            ),
-            exiting_outcome(
-                leaf.get_byte_vector_values("bv")
-                    .unwrap()
-                    .unwrap()
-                    .iterator()
-                    .unwrap()
-                    .next_doc(),
-            ),
-        ];
-        let mut collector = TopKnnCollector::new(2, 100);
-        let mut accept_docs = crate::search::from_live_docs(None, 3).unwrap();
-        rust.push(exiting_outcome(leaf.search_nearest_vectors(
-            "fv",
-            &[1.0, 1.0],
-            &mut collector,
-            &mut accept_docs,
-        )));
+        let mut rust: Vec<String> = (0..10).map(|call| exitable_call(&*leaf, call)).collect();
         // The digits of an object without `toString()` are the stand-in's.
         let numeric = "org.apache.lucene.codecs.lucene90.Lucene90DocValuesProducer$4";
         assert!(
@@ -589,12 +668,77 @@ mod oracle {
             "{}",
             rust[0]
         );
+        let raw_leaves = Arc::clone(&index.reader).leaves().unwrap();
+        let raw_leaf = raw_leaves[0].leaf_reader();
+        // The Thread.interrupted() branch, with a timeout that never fires.
+        let calm: Arc<dyn LeafReader> = Arc::new(
+            ExitableFilterLeafReader::new(Arc::clone(&raw_leaf), Arc::new(NeverTimeout)).unwrap(),
+        );
+        for call in 0..10 {
+            InterruptHandle::current().interrupt();
+            rust.push(exitable_call(&*calm, call));
+            InterruptHandle::interrupted();
+        }
+        // An exitable leaf over an exitable leaf: the messages name the inner
+        // wrappers.
+        let nested = ExitableFilterLeafReader::new(Arc::clone(&calm), Arc::clone(&fired)).unwrap();
+        rust.extend((0..9).map(|call| exitable_call(&nested, call)));
+        // A sorted view: the messages name the SortingCodecReader values.
+        let sort = Sort::new_fields(vec![SortField::new_reverse(
+            Some("n".to_string()),
+            SortFieldType::Long,
+            true,
+        )
+        .unwrap()])
+        .unwrap();
+        let codec_reader = Arc::clone(&raw_leaf).as_codec_reader().unwrap();
+        let sorted_view: Arc<dyn LeafReader> =
+            SortingCodecReader::wrap_sort(codec_reader, sort).unwrap();
+        let sorted = ExitableFilterLeafReader::new(sorted_view, Arc::clone(&fired)).unwrap();
+        rust.extend([0, 1, 2, 3, 4, 6, 7, 8].map(|call| exitable_call(&sorted, call)));
+        // ExitablePointTree: the timeout names the point values, the
+        // interrupt the tree.
+        let switchable = Arc::new(SwitchableTimeout::default());
+        let switched = ExitableFilterLeafReader::new(
+            Arc::clone(&raw_leaf),
+            Arc::clone(&switchable) as Arc<dyn crate::index::QueryTimeout>,
+        )
+        .unwrap();
+        let tree = switched
+            .get_point_values("p")
+            .unwrap()
+            .unwrap()
+            .point_tree()
+            .unwrap();
+        switchable
+            .0
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        rust.push(exiting_outcome(tree.size()));
+        switchable
+            .0
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        InterruptHandle::current().interrupt();
+        rust.push(exiting_outcome(tree.size()));
+        InterruptHandle::interrupted();
+        // ExitableIntersectVisitor: the visitor interrupts its own thread.
+        let mut visitor = InterruptingVisitor::default();
+        rust.push(exiting_outcome(
+            calm.get_point_values("p")
+                .unwrap()
+                .unwrap()
+                .point_tree()
+                .unwrap()
+                .visit_doc_values(&mut visitor),
+        ));
+        InterruptHandle::interrupted();
         let java: Vec<String> = run_oracle(&[], &["exitable"])
             .lines()
             .map(without_identity_hashes)
             .collect();
         let rust: Vec<String> = rust.iter().map(|l| without_identity_hashes(l)).collect();
+        drop(tree);
         drop(leaves);
+        drop(raw_leaves);
         let _ = reader.close();
         assert_eq!(rust, java);
     }

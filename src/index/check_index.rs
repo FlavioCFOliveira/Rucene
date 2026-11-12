@@ -5126,6 +5126,18 @@ struct ConstantRelationIntersectVisitor {
 }
 
 impl crate::index::point_values::IntersectVisitor for ConstantRelationIntersectVisitor {
+    /// `CheckIndex.ConstantRelationIntersectVisitor` is a `record`, whose
+    /// generated `toString()` is `SimpleName[component=value]`, the
+    /// `Relation` rendered by its enum constant name.
+    fn java_to_string(&self) -> String {
+        use crate::index::point_values::Relation;
+        let relation = match self.relation {
+            Relation::CellInsideQuery => "CELL_INSIDE_QUERY",
+            Relation::CellOutsideQuery => "CELL_OUTSIDE_QUERY",
+            Relation::CellCrossesQuery => "CELL_CROSSES_QUERY",
+        };
+        format!("ConstantRelationIntersectVisitor[relation={relation}]")
+    }
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
         Err(LuceneError::unsupported_operation(String::new()))
     }
@@ -5303,6 +5315,13 @@ fn java_byte_array_to_string(bytes: &[u8]) -> String {
 }
 
 impl crate::index::point_values::IntersectVisitor for VerifyPointsVisitor {
+    /// `CheckIndex$VerifyPointsVisitor` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.CheckIndex$VerifyPointsVisitor",
+        )
+    }
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         Err(check_index_error(format!(
             "codec called IntersectVisitor.visit without a packed value for docID={doc_id}"

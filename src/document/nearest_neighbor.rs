@@ -209,6 +209,13 @@ impl<'a> NearestVisitor<'a> {
 }
 
 impl IntersectVisitor for NearestVisitor<'_> {
+    /// `NearestNeighbor$NearestVisitor` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.NearestNeighbor$NearestVisitor",
+        )
+    }
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
         // Java throws `AssertionError`: this visitor is only ever driven
         // through `visitDocValues`, which always supplies the packed value.

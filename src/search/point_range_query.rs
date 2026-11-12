@@ -406,6 +406,13 @@ struct CountingVisitor<'a> {
 }
 
 impl IntersectVisitor for CountingVisitor<'_> {
+    /// `PointRangeQuery$1$4` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.PointRangeQuery$1$4",
+        )
+    }
     /// This branch is unreachable: the visitor is only ever handed leaf values.
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         Err(LuceneError::unsupported_operation(format!(
@@ -440,6 +447,13 @@ struct MatchingVisitor<'a> {
 }
 
 impl IntersectVisitor for MatchingVisitor<'_> {
+    /// `PointRangeQuery$1$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.PointRangeQuery$1$1",
+        )
+    }
     fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
         Ok(())
@@ -493,6 +507,13 @@ struct InverseVisitor<'a> {
 }
 
 impl IntersectVisitor for InverseVisitor<'_> {
+    /// `PointRangeQuery$1$2` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.PointRangeQuery$1$2",
+        )
+    }
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         BitSet::set(self.result, doc_id as usize);
         self.cost += 1;

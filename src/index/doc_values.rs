@@ -1042,6 +1042,13 @@ impl EmptySortedNumericDocValues {
 }
 
 impl DocIdSetIterator for EmptySortedNumericDocValues {
+    /// `SingletonSortedNumericDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SingletonSortedNumericDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1096,6 +1103,13 @@ impl EmptySortedSetDocValues {
 }
 
 impl DocIdSetIterator for EmptySortedSetDocValues {
+    /// `SingletonSortedSetDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SingletonSortedSetDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1191,6 +1205,13 @@ impl<'a> SingletonSortedNumericDocValues<'a> {
 }
 
 impl DocIdSetIterator for SingletonSortedNumericDocValues<'_> {
+    /// `SingletonSortedNumericDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SingletonSortedNumericDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1280,6 +1301,13 @@ impl<'a> SingletonSortedSetDocValues<'a> {
 }
 
 impl DocIdSetIterator for SingletonSortedSetDocValues<'_> {
+    /// `SingletonSortedSetDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SingletonSortedSetDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1460,6 +1488,13 @@ impl FilterNumericDocValues {
 }
 
 impl DocIdSetIterator for FilterNumericDocValues {
+    /// `FilterNumericDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.FilterNumericDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1513,6 +1548,13 @@ impl FilterBinaryDocValues {
 }
 
 impl DocIdSetIterator for FilterBinaryDocValues {
+    /// `FilterBinaryDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.FilterBinaryDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1566,6 +1608,13 @@ impl FilterSortedDocValues {
 }
 
 impl DocIdSetIterator for FilterSortedDocValues {
+    /// `FilterSortedDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.FilterSortedDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1641,6 +1690,13 @@ impl FilterSortedNumericDocValues {
 }
 
 impl DocIdSetIterator for FilterSortedNumericDocValues {
+    /// `FilterSortedNumericDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.FilterSortedNumericDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1698,6 +1754,13 @@ impl FilterSortedSetDocValues {
 }
 
 impl DocIdSetIterator for FilterSortedSetDocValues {
+    /// `FilterSortedSetDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.FilterSortedSetDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }

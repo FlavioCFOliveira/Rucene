@@ -624,11 +624,21 @@ impl<S: DocIDMergerSub> MergedIterationState<S> {
 /// which it moves forward with the view's single merger.
 struct MergedDocIndexIterator<S: DocIDMergerSub> {
     state: Arc<std::sync::Mutex<MergedIterationState<S>>>,
+    /// The binary name of the Java class: the anonymous iterator of the float
+    /// or of the byte view.
+    java_class: &'static str,
     index: i32,
     size: i32,
 }
 
 impl<S: DocIDMergerSub> DocIdSetIterator for MergedDocIndexIterator<S> {
+    /// The anonymous `DocIndexIterator` of `MergedFloat32VectorValues.iterator()`
+    /// or `MergedByteVectorValues.iterator()` declares no `toString()`, so
+    /// `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(self.java_class)
+    }
     fn doc_id(&self) -> i32 {
         match self.state.lock() {
             Ok(state) => state.doc_id,
@@ -793,6 +803,7 @@ impl KnnVectorValues for MergedFloat32VectorValues {
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
         Ok(Box::new(MergedDocIndexIterator {
             state: Arc::clone(&self.state),
+            java_class: "org.apache.lucene.codecs.KnnVectorsWriter$MergedVectorValues$MergedFloat32VectorValues$1",
             index: -1,
             size: self.size,
         }))
@@ -949,6 +960,7 @@ impl KnnVectorValues for MergedByteVectorValues {
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
         Ok(Box::new(MergedDocIndexIterator {
             state: Arc::clone(&self.state),
+            java_class: "org.apache.lucene.codecs.KnnVectorsWriter$MergedVectorValues$MergedByteVectorValues$1",
             index: -1,
             size: self.size,
         }))
@@ -1463,6 +1475,15 @@ impl SharedDocIndexIterator {
 }
 
 impl DocIdSetIterator for SharedDocIndexIterator {
+    /// The shared iterator's `toString()`: every handle stands for the one Java
+    /// object.
+    fn java_to_string(&self) -> String {
+        match self.0.lock() {
+            Ok(iterator) => iterator.java_to_string(),
+            Err(poisoned) => poisoned.into_inner().java_to_string(),
+        }
+    }
+
     fn doc_id(&self) -> i32 {
         match self.0.lock() {
             Ok(iterator) => iterator.doc_id(),

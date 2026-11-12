@@ -1072,6 +1072,13 @@ fn dense_advance(doc: &mut i32, max_doc: i32, target: i32) -> i32 {
 }
 
 impl DocIdSetIterator for DenseConstantNormsIterator {
+    /// `Lucene90NormsProducer$2` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$2",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc
     }
@@ -1140,6 +1147,20 @@ impl DenseNormsIterator {
 }
 
 impl DocIdSetIterator for DenseNormsIterator {
+    /// The anonymous `DenseNormsIterator` subclass `Lucene90NormsProducer.getNorms`
+    /// builds for this `bytesPerNorm` (`$3` to `$6` for 1, 2, 4 and 8, in
+    /// source order, checked with `javap -c`) declares no `toString()`, so
+    /// `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(match self.bytes_per_norm {
+            1 => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$3",
+            2 => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$4",
+            4 => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$5",
+            // The producer builds this iterator for 1, 2, 4 and 8 only.
+            _ => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$6",
+        })
+    }
     fn doc_id(&self) -> i32 {
         self.doc
     }
@@ -1202,6 +1223,13 @@ impl SparseConstantNormsIterator {
 }
 
 impl DocIdSetIterator for SparseConstantNormsIterator {
+    /// `Lucene90NormsProducer$7` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$7",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.disi.doc_id()
     }
@@ -1264,6 +1292,20 @@ impl SparseNormsIterator {
 }
 
 impl DocIdSetIterator for SparseNormsIterator {
+    /// The anonymous `SparseNormsIterator` subclass `Lucene90NormsProducer.getNorms`
+    /// builds for this `bytesPerNorm` (`$8` to `$11` for 1, 2, 4 and 8, in
+    /// source order, checked with `javap -c`) declares no `toString()`, so
+    /// `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(match self.bytes_per_norm {
+            1 => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$8",
+            2 => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$9",
+            4 => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$10",
+            // The producer builds this iterator for 1, 2, 4 and 8 only.
+            _ => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$11",
+        })
+    }
     fn doc_id(&self) -> i32 {
         self.disi.doc_id()
     }

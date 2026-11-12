@@ -323,28 +323,144 @@ public final class CensusGapFixture {
             return "T";
           }
         };
+    org.apache.lucene.index.QueryTimeout never =
+        new org.apache.lucene.index.QueryTimeout() {
+          @Override
+          public boolean shouldExit() {
+            return false;
+          }
+
+          @Override
+          public String toString() {
+            return "N";
+          }
+        };
+    java.util.concurrent.atomic.AtomicBoolean fire = new java.util.concurrent.atomic.AtomicBoolean();
+    org.apache.lucene.index.QueryTimeout switchable =
+        new org.apache.lucene.index.QueryTimeout() {
+          @Override
+          public boolean shouldExit() {
+            return fire.get();
+          }
+
+          @Override
+          public String toString() {
+            return "S";
+          }
+        };
     try (org.apache.lucene.index.DirectoryReader reader =
-        new org.apache.lucene.index.ExitableDirectoryReader(
-            org.apache.lucene.index.DirectoryReader.open(dir), timeout)) {
+            new org.apache.lucene.index.ExitableDirectoryReader(
+                org.apache.lucene.index.DirectoryReader.open(dir), timeout);
+        org.apache.lucene.index.DirectoryReader raw =
+            org.apache.lucene.index.DirectoryReader.open(dir)) {
       org.apache.lucene.index.LeafReader leaf = reader.leaves().get(0).reader();
-      System.out.println(outcome(() -> leaf.getNumericDocValues("n").nextDoc()));
-      System.out.println(outcome(() -> leaf.getSortedDocValues("sd").nextDoc()));
-      System.out.println(outcome(() -> leaf.getBinaryDocValues("b").nextDoc()));
-      System.out.println(outcome(() -> leaf.getSortedNumericDocValues("sn").nextDoc()));
-      System.out.println(outcome(() -> leaf.getSortedSetDocValues("ss").nextDoc()));
-      System.out.println(outcome(() -> leaf.terms("s").iterator().next()));
-      System.out.println(outcome(() -> leaf.getPointValues("p")));
-      System.out.println(outcome(() -> leaf.getFloatVectorValues("fv").iterator().nextDoc()));
-      System.out.println(outcome(() -> leaf.getByteVectorValues("bv").iterator().nextDoc()));
+      for (ThrowingRunnable call : exitableCalls(leaf)) {
+        System.out.println(outcome(call));
+      }
+      org.apache.lucene.index.LeafReader rawLeaf = raw.leaves().get(0).reader();
+      // The Thread.interrupted() branch, with a timeout that never fires.
+      org.apache.lucene.index.LeafReader calm =
+          new org.apache.lucene.index.ExitableDirectoryReader.ExitableFilterAtomicReader(
+              rawLeaf, never);
+      for (ThrowingRunnable call : exitableCalls(calm)) {
+        Thread.currentThread().interrupt();
+        System.out.println(outcome(call));
+        Thread.interrupted();
+      }
+      // An exitable leaf over an exitable leaf: the messages name the inner wrappers.
+      org.apache.lucene.index.LeafReader nested =
+          new org.apache.lucene.index.ExitableDirectoryReader.ExitableFilterAtomicReader(
+              calm, timeout);
+      for (ThrowingRunnable call : exitableCalls(nested).subList(0, 9)) {
+        System.out.println(outcome(call));
+      }
+      // A sorted view: the messages name the SortingCodecReader values.
+      org.apache.lucene.index.LeafReader sorted =
+          new org.apache.lucene.index.ExitableDirectoryReader.ExitableFilterAtomicReader(
+              org.apache.lucene.index.SortingCodecReader.wrap(
+                  (org.apache.lucene.index.CodecReader) rawLeaf,
+                  new org.apache.lucene.search.Sort(
+                      new org.apache.lucene.search.SortField(
+                          "n", org.apache.lucene.search.SortField.Type.LONG, true))),
+              timeout);
+      java.util.List<ThrowingRunnable> sortedCalls = exitableCalls(sorted);
+      for (int i : new int[] {0, 1, 2, 3, 4, 6, 7, 8}) {
+        System.out.println(outcome(sortedCalls.get(i)));
+      }
+      // ExitablePointTree: the timeout names the point values, the interrupt the tree.
+      org.apache.lucene.index.PointValues.PointTree tree =
+          new org.apache.lucene.index.ExitableDirectoryReader.ExitableFilterAtomicReader(
+                  rawLeaf, switchable)
+              .getPointValues("p")
+              .getPointTree();
+      fire.set(true);
+      System.out.println(outcome(tree::size));
+      fire.set(false);
+      Thread.currentThread().interrupt();
+      System.out.println(outcome(tree::size));
+      Thread.interrupted();
+      // ExitableIntersectVisitor: the visitor interrupts its own thread.
       System.out.println(
           outcome(
               () ->
-                  leaf.searchNearestVectors(
-                      "fv",
-                      new float[] {1, 1},
-                      2,
-                      org.apache.lucene.search.AcceptDocs.fromLiveDocs(null, 3),
-                      100)));
+                  calm.getPointValues("p").getPointTree().visitDocValues(new InterruptingVisitor())));
+      Thread.interrupted();
+    }
+  }
+
+  /** The ten calls of {@link #exitable()}, each reaching one {@code ExitableDirectoryReader} check. */
+  static java.util.List<ThrowingRunnable> exitableCalls(org.apache.lucene.index.LeafReader leaf) {
+    return java.util.List.of(
+        () -> leaf.getNumericDocValues("n").nextDoc(),
+        () -> leaf.getSortedDocValues("sd").nextDoc(),
+        () -> leaf.getBinaryDocValues("b").nextDoc(),
+        () -> leaf.getSortedNumericDocValues("sn").nextDoc(),
+        () -> leaf.getSortedSetDocValues("ss").nextDoc(),
+        () -> leaf.terms("s").iterator().next(),
+        () -> leaf.getPointValues("p"),
+        () -> leaf.getFloatVectorValues("fv").iterator().nextDoc(),
+        () -> leaf.getByteVectorValues("bv").iterator().nextDoc(),
+        () ->
+            leaf.searchNearestVectors(
+                "fv",
+                new float[] {1, 1},
+                2,
+                org.apache.lucene.search.AcceptDocs.fromLiveDocs(null, 3),
+                100));
+  }
+
+  /** A visitor that interrupts its thread on its first callback. */
+  static final class InterruptingVisitor
+      implements org.apache.lucene.index.PointValues.IntersectVisitor {
+    private boolean interrupted;
+
+    private void interruptOnce() {
+      if (interrupted == false) {
+        interrupted = true;
+        Thread.currentThread().interrupt();
+      }
+    }
+
+    @Override
+    public void visit(int docID) {
+      interruptOnce();
+    }
+
+    @Override
+    public void visit(int docID, byte[] packedValue) {
+      interruptOnce();
+    }
+
+    @Override
+    public org.apache.lucene.index.PointValues.Relation compare(
+        byte[] minPackedValue, byte[] maxPackedValue) {
+      interruptOnce();
+      return org.apache.lucene.index.PointValues.Relation.CELL_CROSSES_QUERY;
+    }
+
+    @Override
+    public void grow(int count) {
+      interruptOnce();
     }
   }
 

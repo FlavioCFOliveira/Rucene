@@ -1220,6 +1220,13 @@ struct EstimateVisitor<'a> {
 }
 
 impl crate::index::point_values::IntersectVisitor for EstimateVisitor<'_> {
+    /// `SpatialQuery$4` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.SpatialQuery$4",
+        )
+    }
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
         // `throw new UnsupportedOperationException()` (`SpatialQuery.java:401-408`).
         Err(LuceneError::unsupported_operation(String::new()))
@@ -1255,6 +1262,13 @@ struct SparseVisitor<'a> {
 }
 
 impl crate::index::point_values::IntersectVisitor for SparseVisitor<'_> {
+    /// `SpatialQuery$5` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.SpatialQuery$5",
+        )
+    }
     fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
         Ok(())
@@ -1318,6 +1332,13 @@ struct IntersectsDenseVisitor<'a> {
 }
 
 impl crate::index::point_values::IntersectVisitor for IntersectsDenseVisitor<'_> {
+    /// `SpatialQuery$6` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.SpatialQuery$6",
+        )
+    }
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         self.result.set(doc_id as usize);
         *self.cost += 1;
@@ -1385,6 +1406,13 @@ struct DenseVisitor<'a> {
 }
 
 impl crate::index::point_values::IntersectVisitor for DenseVisitor<'_> {
+    /// `SpatialQuery$7` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.SpatialQuery$7",
+        )
+    }
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         self.result.set(doc_id as usize);
         *self.cost += 1;
@@ -1457,6 +1485,13 @@ struct ContainsDenseVisitor<'a> {
 }
 
 impl crate::index::point_values::IntersectVisitor for ContainsDenseVisitor<'_> {
+    /// `SpatialQuery$8` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.SpatialQuery$8",
+        )
+    }
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         self.excluded.set(doc_id as usize);
         Ok(())
@@ -1528,6 +1563,13 @@ struct InverseDenseVisitor<'a> {
 }
 
 impl crate::index::point_values::IntersectVisitor for InverseDenseVisitor<'_> {
+    /// `SpatialQuery$9` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.SpatialQuery$9",
+        )
+    }
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         self.result.clear(doc_id as usize);
         *self.cost -= 1;
@@ -1594,6 +1636,13 @@ struct ShallowInverseDenseVisitor<'a> {
 }
 
 impl crate::index::point_values::IntersectVisitor for ShallowInverseDenseVisitor<'_> {
+    /// `SpatialQuery$10` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.SpatialQuery$10",
+        )
+    }
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         self.result.clear(doc_id as usize);
         Ok(())
@@ -1656,6 +1705,13 @@ fn has_any_hits(
     }
 
     impl crate::index::point_values::IntersectVisitor for HasAnyHits<'_> {
+        /// `SpatialQuery$11` declares no `toString()`, so `java.lang.Object.toString()` applies
+        /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+        fn java_to_string(&self) -> String {
+            crate::index::index_reader::java_object_to_string_stand_in(
+                "org.apache.lucene.document.SpatialQuery$11",
+            )
+        }
         fn visit(&mut self, _doc_id: i32) -> Result<()> {
             self.found.set(true);
             Ok(())

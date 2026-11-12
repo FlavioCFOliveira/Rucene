@@ -310,6 +310,13 @@ impl<'a> MergePointVisitor<'a> {
 }
 
 impl IntersectVisitor for MergePointVisitor<'_> {
+    /// `PointInSetQuery$MergePointVisitor` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.PointInSetQuery$MergePointVisitor",
+        )
+    }
     fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
         Ok(())
@@ -421,6 +428,13 @@ impl<'a> SinglePointVisitor<'a> {
 }
 
 impl IntersectVisitor for SinglePointVisitor<'_> {
+    /// `PointInSetQuery$SinglePointVisitor` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.PointInSetQuery$SinglePointVisitor",
+        )
+    }
     fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
         Ok(())

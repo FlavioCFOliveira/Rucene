@@ -961,6 +961,13 @@ struct MergedNumericDocValues {
 }
 
 impl DocIdSetIterator for MergedNumericDocValues {
+    /// `DocValuesConsumer$2` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.DocValuesConsumer$2",
+        )
+    }
     merged_iterator_common!();
 
     fn next_doc(&mut self) -> Result<i32> {
@@ -1051,6 +1058,13 @@ struct MergedBinaryDocValues {
 }
 
 impl DocIdSetIterator for MergedBinaryDocValues {
+    /// `DocValuesConsumer$4` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.DocValuesConsumer$4",
+        )
+    }
     merged_iterator_common!();
 
     fn next_doc(&mut self) -> Result<i32> {
@@ -1128,6 +1142,13 @@ struct MergedSortedNumericDocValues {
 }
 
 impl DocIdSetIterator for MergedSortedNumericDocValues {
+    /// `DocValuesConsumer$6` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.DocValuesConsumer$6",
+        )
+    }
     merged_iterator_common!();
 
     fn next_doc(&mut self) -> Result<i32> {
@@ -1253,6 +1274,13 @@ struct MergedSortedDocValues {
 }
 
 impl DocIdSetIterator for MergedSortedDocValues {
+    /// `DocValuesConsumer$8` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.DocValuesConsumer$8",
+        )
+    }
     merged_iterator_common!();
 
     fn next_doc(&mut self) -> Result<i32> {
@@ -1422,6 +1450,13 @@ struct MergedSortedSetDocValues {
 }
 
 impl DocIdSetIterator for MergedSortedSetDocValues {
+    /// `DocValuesConsumer$10` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.DocValuesConsumer$10",
+        )
+    }
     merged_iterator_common!();
 
     fn next_doc(&mut self) -> Result<i32> {

@@ -265,6 +265,13 @@ fn java_math_round(value: f32) -> i32 {
 }
 
 impl DocIdSetIterator for MultiFieldNormValues {
+    /// `MultiNormsLeafSimScorer$MultiFieldNormValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.MultiNormsLeafSimScorer$MultiFieldNormValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }

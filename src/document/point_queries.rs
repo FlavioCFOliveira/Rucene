@@ -885,6 +885,13 @@ impl XYPointIntersectVisitor<'_> {
 }
 
 impl IntersectVisitor for XYPointIntersectVisitor<'_> {
+    /// `XYPointInGeometryQuery$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.XYPointInGeometryQuery$1",
+        )
+    }
     fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
         Ok(())
@@ -1303,6 +1310,13 @@ struct DistanceIntersectVisitor<'a> {
 }
 
 impl IntersectVisitor for DistanceIntersectVisitor<'_> {
+    /// `LatLonPointDistanceQuery$1$2` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.LatLonPointDistanceQuery$1$2",
+        )
+    }
     fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
         Ok(())
@@ -1360,6 +1374,13 @@ struct InverseDistanceIntersectVisitor<'a> {
 }
 
 impl IntersectVisitor for InverseDistanceIntersectVisitor<'_> {
+    /// `LatLonPointDistanceQuery$1$3` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.LatLonPointDistanceQuery$1$3",
+        )
+    }
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         self.result.clear(doc_id as usize);
         *self.cost -= 1;

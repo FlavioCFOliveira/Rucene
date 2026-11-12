@@ -590,6 +590,7 @@ fn from_accept_docs(
             score_cache.set(score * boost);
             Ok(score >= threshold)
         }),
+        "org.apache.lucene.search.AbstractVectorSimilarityQuery$VectorSimilarityScorerSupplier$2",
     );
     Ok(Some(VectorSimilarityScorerSupplier {
         iterator: Some(Box::new(iterator)),

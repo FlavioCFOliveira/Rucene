@@ -276,6 +276,18 @@ impl IntersectVisitor for DocValuesIntersectAdapter<'_> {
 /// [`move_to_sibling`](Self::move_to_sibling) and
 /// [`move_to_parent`](Self::move_to_parent).
 pub trait PointTree {
+    /// This object's `toString()`, as the `ExitableDirectoryReader` messages
+    /// render it.
+    ///
+    /// The default is `java.lang.Object.toString()`, which applies to every
+    /// Lucene class that declares no `toString()`: see
+    /// [`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in).
+    /// It names the Rust type; an implementation porting a Lucene class
+    /// overrides it with that class's binary name or its own `toString()`.
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(std::any::type_name::<Self>())
+    }
+
     /// Returns a new cursor whose root is the node this cursor is on.
     ///
     /// Equivalent to `PointTree.clone()`. It is deliberately **not**

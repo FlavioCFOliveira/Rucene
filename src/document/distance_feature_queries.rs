@@ -643,6 +643,13 @@ struct LongRangeVisitor<'a> {
 }
 
 impl IntersectVisitor for LongRangeVisitor<'_> {
+    /// `LongDistanceFeatureQuery$DistanceScorer$2` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.LongDistanceFeatureQuery$DistanceScorer$2",
+        )
+    }
     fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
         Ok(())
@@ -1082,6 +1089,13 @@ struct LatLonRangeVisitor<'a> {
 }
 
 impl IntersectVisitor for LatLonRangeVisitor<'_> {
+    /// `LatLonPointDistanceFeatureQuery$DistanceScorer$2` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.LatLonPointDistanceFeatureQuery$DistanceScorer$2",
+        )
+    }
     fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
         Ok(())

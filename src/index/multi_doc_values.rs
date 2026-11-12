@@ -559,6 +559,17 @@ impl MultiNumericDocValues {
 }
 
 impl DocIdSetIterator for MultiNumericDocValues {
+    /// The anonymous `NumericDocValues` of `MultiDocValues.getNormValues`
+    /// (`MultiDocValues$1`) or `getNumericValues` (`MultiDocValues$2`) declares
+    /// no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(if self.norms {
+            "org.apache.lucene.index.MultiDocValues$1"
+        } else {
+            "org.apache.lucene.index.MultiDocValues$2"
+        })
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -711,6 +722,13 @@ impl MultiBinaryDocValues {
 }
 
 impl DocIdSetIterator for MultiBinaryDocValues {
+    /// `MultiDocValues$3` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.MultiDocValues$3",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -856,6 +874,13 @@ impl MultiSortedNumericDocValues {
 }
 
 impl DocIdSetIterator for MultiSortedNumericDocValues {
+    /// `MultiDocValues$4` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.MultiDocValues$4",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -1045,6 +1070,13 @@ impl MultiSortedDocValues {
 }
 
 impl DocIdSetIterator for MultiSortedDocValues {
+    /// `MultiDocValues$MultiSortedDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.MultiDocValues$MultiSortedDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -1242,6 +1274,13 @@ impl MultiSortedSetDocValues {
 }
 
 impl DocIdSetIterator for MultiSortedSetDocValues {
+    /// `MultiDocValues$MultiSortedSetDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.MultiDocValues$MultiSortedSetDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }

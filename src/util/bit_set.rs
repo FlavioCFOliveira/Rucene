@@ -615,6 +615,13 @@ impl BitSetIterator {
 }
 
 impl DocIdSetIterator for BitSetIterator {
+    /// `BitSetIterator` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.util.BitSetIterator",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc
     }

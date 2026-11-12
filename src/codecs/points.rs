@@ -226,6 +226,13 @@ struct MergedPointValues {
 }
 
 impl PointValues for MergedPointValues {
+    /// `PointsWriter$1$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.PointsWriter$1$1",
+        )
+    }
     fn point_tree(&self) -> Result<Box<dyn PointTree>> {
         Ok(Box::new(MergedPointTree {
             field_name: self.field_name.clone(),
@@ -273,6 +280,13 @@ struct MergedPointTree {
 }
 
 impl PointTree for MergedPointTree {
+    /// `PointsWriter$1$1$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.PointsWriter$1$1$1",
+        )
+    }
     fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
         Err(unsupported("PointTree.clone"))
     }
@@ -349,6 +363,13 @@ struct DocMapVisitor<'a> {
 }
 
 impl IntersectVisitor for DocMapVisitor<'_> {
+    /// `PointsWriter$1$1$1$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.PointsWriter$1$1$1$1",
+        )
+    }
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
         // Should never be called during `visit_doc_values`.
         Err(LuceneError::illegal_state(String::new()))

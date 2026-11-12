@@ -810,6 +810,13 @@ impl SortingValuesIterator {
 }
 
 impl DocIdSetIterator for SortingValuesIterator {
+    /// `SortingCodecReader$SortingValuesIterator` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SortingCodecReader$SortingValuesIterator",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc
     }
@@ -2235,6 +2242,13 @@ impl SlowCompositePointValues {
 }
 
 impl PointValues for SlowCompositePointValues {
+    /// `SlowCompositeCodecReaderWrapper$SlowCompositePointsReaderWrapper$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SlowCompositeCodecReaderWrapper$SlowCompositePointsReaderWrapper$1",
+        )
+    }
     fn point_tree(&self) -> Result<Box<dyn PointTree>> {
         Ok(Box::new(self.tree()))
     }
@@ -2357,6 +2371,13 @@ impl SlowCompositePointTree {
 }
 
 impl PointTree for SlowCompositePointTree {
+    /// `SlowCompositeCodecReaderWrapper$SlowCompositePointsReaderWrapper$1$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SlowCompositeCodecReaderWrapper$SlowCompositePointsReaderWrapper$1$1",
+        )
+    }
     fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
         Ok(Box::new(self.clone()))
     }
@@ -2424,6 +2445,13 @@ struct DocBaseIntersectVisitor<'a> {
 }
 
 impl IntersectVisitor for DocBaseIntersectVisitor<'_> {
+    /// `SlowCompositeCodecReaderWrapper$SlowCompositePointsReaderWrapper$1$1$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SlowCompositeCodecReaderWrapper$SlowCompositePointsReaderWrapper$1$1$1",
+        )
+    }
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         self.visitor.visit(self.doc_start + doc_id)
     }
@@ -2627,6 +2655,13 @@ impl<T: ?Sized + KnnVectorValues> MergedDocIterator<T> {
 }
 
 impl<T: ?Sized + KnnVectorValues> DocIdSetIterator for MergedDocIterator<T> {
+    /// `SlowCompositeCodecReaderWrapper$MergedDocIterator` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SlowCompositeCodecReaderWrapper$MergedDocIterator",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc
     }
@@ -2694,6 +2729,12 @@ impl<T: ?Sized + KnnVectorValues> SharedMergedDocIterator<T> {
 }
 
 impl<T: ?Sized + KnnVectorValues> DocIdSetIterator for SharedMergedDocIterator<T> {
+    /// The shared iterator's `toString()`: every handle stands for the one Java
+    /// object.
+    fn java_to_string(&self) -> String {
+        self.lock().java_to_string()
+    }
+
     fn doc_id(&self) -> i32 {
         self.lock().doc_id()
     }
@@ -3052,6 +3093,13 @@ impl SortingNumericDocValues {
 }
 
 impl DocIdSetIterator for SortingNumericDocValues {
+    /// `NumericDocValuesWriter$SortingNumericDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.NumericDocValuesWriter$SortingNumericDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -3143,6 +3191,13 @@ impl SortingBinaryDocValues {
 }
 
 impl DocIdSetIterator for SortingBinaryDocValues {
+    /// `BinaryDocValuesWriter$SortingBinaryDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.BinaryDocValuesWriter$SortingBinaryDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -3253,6 +3308,13 @@ impl SortingSortedDocValues {
 }
 
 impl DocIdSetIterator for SortingSortedDocValues {
+    /// `SortedDocValuesWriter$SortingSortedDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SortedDocValuesWriter$SortingSortedDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -3369,6 +3431,13 @@ impl SortingSortedNumericDocValues {
 }
 
 impl DocIdSetIterator for SortingSortedNumericDocValues {
+    /// `SortedNumericDocValuesWriter$SortingSortedNumericDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SortedNumericDocValuesWriter$SortingSortedNumericDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -3487,6 +3556,13 @@ impl SortingSortedSetDocValues {
 }
 
 impl DocIdSetIterator for SortingSortedSetDocValues {
+    /// `SortedSetDocValuesWriter$SortingSortedSetDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SortedSetDocValuesWriter$SortingSortedSetDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -3967,6 +4043,13 @@ struct SortingPointValues {
 }
 
 impl PointValues for SortingPointValues {
+    /// `SortingCodecReader$SortingPointValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SortingCodecReader$SortingPointValues",
+        )
+    }
     fn point_tree(&self) -> Result<Box<dyn PointTree>> {
         Ok(Box::new(SortingPointTree {
             index_tree: self.inner.point_tree()?,
@@ -4017,6 +4100,13 @@ struct SortingPointTree {
 }
 
 impl PointTree for SortingPointTree {
+    /// `SortingCodecReader$SortingPointTree` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SortingCodecReader$SortingPointTree",
+        )
+    }
     fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
         Ok(Box::new(SortingPointTree {
             index_tree: self.index_tree.clone_tree()?,
@@ -4077,6 +4167,13 @@ struct SortingIntersectVisitor<'a> {
 }
 
 impl IntersectVisitor for SortingIntersectVisitor<'_> {
+    /// `SortingCodecReader$SortingIntersectVisitor` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SortingCodecReader$SortingIntersectVisitor",
+        )
+    }
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         self.visitor.visit(self.doc_map.old_to_new(doc_id))
     }
