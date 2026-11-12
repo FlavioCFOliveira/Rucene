@@ -573,4 +573,61 @@ mod tests {
             assert!(set.contains(Some(word)));
         }
     }
+
+    /// G-101: the `Reader` and `InputStream` forms of `WordlistLoader`
+    /// (`WordlistLoader.java`), run on `TestWordlistLoader`'s inputs through
+    /// `new StringReader(s)` and a UTF-8 stream; `BufferedReader.readLine`
+    /// ends a line at `\n`, `\r` or `\r\n`.
+    #[test]
+    fn gap_g101_reader_and_stream_forms_as_test_wordlist_loader() {
+        let check = |set: &CharArraySet| {
+            assert_eq!(set.size(), 3);
+            assert!(set.contains(Some("ONE")));
+            assert!(set.contains(Some("two")));
+            assert!(set.contains(Some("three")));
+            assert!(!set.contains(Some("four")));
+        };
+        let s = "ONE\n  two \nthree\n\n";
+        check(&get_word_set_reader(&mut crate::analysis::StringCharReader::new(s)).unwrap());
+        check(&get_word_set_stream(&mut s.as_bytes(), "UTF-8").unwrap());
+        let mut into = CharArraySet::new(4, false);
+        get_word_set_reader_into(&mut crate::analysis::StringCharReader::new(s), &mut into)
+            .unwrap();
+        check(&into);
+        check(
+            &get_word_set_reader(&mut crate::analysis::StringCharReader::new(
+                "ONE\r\n  two \rthree",
+            ))
+            .unwrap(),
+        );
+
+        let s = "ONE\n  two \nthree\n#comment";
+        let set =
+            get_word_set_reader_with_comment(&mut crate::analysis::StringCharReader::new(s), "#")
+                .unwrap();
+        check(&set);
+        assert!(!set.contains(Some("#comment")));
+        check(&get_word_set_stream_with_comment(&mut s.as_bytes(), "UTF-8", "#").unwrap());
+
+        let s = concat!(
+            "|comment\n",
+            " |comment\n",
+            "\n",
+            "  \t\n",
+            " |comment | comment\n",
+            "ONE\n",
+            "   two   \n",
+            " three   four five \n",
+            "six seven | comment\n"
+        );
+        for set in [
+            get_snowball_word_set_reader(&mut crate::analysis::StringCharReader::new(s)).unwrap(),
+            get_snowball_word_set_stream(&mut s.as_bytes(), "UTF-8").unwrap(),
+        ] {
+            assert_eq!(set.size(), 7);
+            for word in ["ONE", "two", "three", "four", "five", "six", "seven"] {
+                assert!(set.contains(Some(word)), "{word}");
+            }
+        }
+    }
 }

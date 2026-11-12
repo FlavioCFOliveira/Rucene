@@ -1857,3 +1857,65 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod census_gap_wrong_field_info_tests {
+    use super::*;
+    use crate::error::LuceneErrorKind;
+
+    /// G-109: the merged producers `DocValuesConsumer.merge*Field` hands to
+    /// `add*Field` refuse another field with `"wrong FieldInfo"` in the
+    /// sorted, sorted-numeric and sorted-set kinds
+    /// (`DocValuesConsumer.java:420, 650, 863`).
+    #[test]
+    fn gap_g109_merged_producers_wrong_field_info_message() {
+        let merged = FieldInfo::new("merged", 0);
+        let other = FieldInfo::new("other", 1);
+        let field_infos = crate::index::FieldInfos::new(vec![merged.clone()]).unwrap();
+        let merge_state = MergeState::new(
+            Vec::new(),
+            crate::codecs::tests::test_segment_info("_m", 0),
+            field_infos,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            false,
+            None,
+        );
+        let producer = MergedDocValuesProducer::new(&merged, &merge_state, None);
+        let message = |e: LuceneError| match e.kind {
+            LuceneErrorKind::IllegalArgument { message, .. } => message,
+            other => panic!("expected IllegalArgumentException, got {other:?}"),
+        };
+        assert_eq!(
+            message(producer.get_sorted(&other).err().expect("another field")),
+            "wrong FieldInfo"
+        );
+        assert_eq!(
+            message(
+                producer
+                    .get_sorted_numeric(&other)
+                    .err()
+                    .expect("another field")
+            ),
+            "wrong FieldInfo"
+        );
+        assert_eq!(
+            message(
+                producer
+                    .get_sorted_set(&other)
+                    .err()
+                    .expect("another field")
+            ),
+            "wrong FieldInfo"
+        );
+    }
+}

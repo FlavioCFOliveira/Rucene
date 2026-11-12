@@ -1515,4 +1515,42 @@ mod tests {
             LuceneError { kind: LuceneErrorKind::IllegalArgument { cause: Some(c), .. }, .. } if Arc::ptr_eq(&c, &cause)
         ));
     }
+
+    /// G-007 and G-103: `CorruptIndexException` keeps the composed message,
+    /// the original message, the resource description and the cause
+    /// (`CorruptIndexException.java:31-70`).
+    #[test]
+    fn gap_g007_g103_corrupt_index_keeps_message_parts_and_cause() {
+        let plain = LuceneError::corrupt_index("bad block", "MockInput(\"_0.tim\")");
+        assert_eq!(
+            plain.to_string(),
+            "corrupt index: bad block (resource=MockInput(\"_0.tim\"))"
+        );
+        assert_eq!(plain.original_message(), Some("bad block"));
+        assert_eq!(plain.resource_description(), Some("MockInput(\"_0.tim\")"));
+        assert!(std::error::Error::source(&plain).is_none());
+
+        let cause = LuceneError::illegal_state("inner");
+        let wrapped = LuceneError::corrupt_index_with_cause("outer", "res", cause);
+        assert_eq!(wrapped.original_message(), Some("outer"));
+        assert_eq!(wrapped.resource_description(), Some("res"));
+        match &wrapped.kind {
+            LuceneErrorKind::CorruptIndex {
+                message,
+                cause: Some(c),
+                ..
+            } => {
+                assert_eq!(message, "outer (resource=res)");
+                assert!(matches!(
+                    &c.kind,
+                    LuceneErrorKind::IllegalState { message, .. } if message == "inner"
+                ));
+            }
+            other => panic!("expected a CorruptIndex with a cause, got {other:?}"),
+        }
+        let composed = LuceneError::from(LuceneErrorKind::corrupt_index_message("whole"));
+        assert_eq!(composed.original_message(), Some("whole"));
+        assert_eq!(composed.resource_description(), None);
+        assert_eq!(LuceneError::illegal_state("x").original_message(), None);
+    }
 }

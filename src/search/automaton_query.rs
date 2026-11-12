@@ -362,3 +362,50 @@ impl MultiTermQuery for AutomatonQuery {
         Some(self.ram_bytes_used)
     }
 }
+
+#[cfg(test)]
+mod census_gap_hash_tests {
+    use super::*;
+    use crate::util::automaton::reg_exp::RegExp;
+
+    fn query(regexp: &str) -> AutomatonQuery {
+        let automaton = RegExp::new(regexp).unwrap().to_automaton().unwrap();
+        AutomatonQuery::new(Term::from_text("f", ""), automaton).unwrap()
+    }
+
+    /// G-026: `AutomatonQuery.hashCode()` folds `compiled.hashCode()`
+    /// (`AutomatonQuery.java:111-117`), which folds `runAutomaton.hashCode()`
+    /// (`CompiledAutomaton.java:509-517`): `31 * (31 * (31 + alphabetSize) +
+    /// points.length) + size` (`RunAutomaton.java:182-189`). Two automata with
+    /// the same alphabet, interval count and state count hash alike, as in
+    /// Java.
+    #[test]
+    fn gap_g026_automaton_query_hash_follows_the_run_automaton() {
+        let a = query("a[bc]");
+        let b = query("x[yz]");
+        let c = query("a[bc]d");
+        let run_hash = |q: &AutomatonQuery| {
+            let compiled = q.get_compiled();
+            let run = compiled.run_automaton.as_ref().expect("a NORMAL automaton");
+            let expected = 31i32
+                .wrapping_mul(31i32.wrapping_mul(31 + 256) + run.get_char_intervals().len() as i32)
+                .wrapping_add(run.size());
+            assert_eq!(run.hash_code(), expected);
+            run.hash_code()
+        };
+        assert_eq!(run_hash(&a), run_hash(&b));
+        assert_ne!(run_hash(&a), run_hash(&c));
+        assert_eq!(a.query_hash(), b.query_hash());
+        assert_ne!(a.query_hash(), c.query_hash());
+        assert_eq!(
+            a.query_hash(),
+            31i32
+                .wrapping_mul(
+                    31i32
+                        .wrapping_mul(multi_term_query_hash(&a))
+                        .wrapping_add(a.get_compiled().hash_code())
+                )
+                .wrapping_add(term_hash(&a.term))
+        );
+    }
+}

@@ -504,3 +504,52 @@ impl MatchesQueue {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct NoOffsets;
+
+    impl MatchesIterator for NoOffsets {
+        fn next(&mut self) -> Result<bool> {
+            Ok(false)
+        }
+        fn start_position(&self) -> i32 {
+            -1
+        }
+        fn end_position(&self) -> i32 {
+            -1
+        }
+        fn start_offset(&self) -> Result<i32> {
+            Err(LuceneError::from(crate::error::LuceneErrorKind::Io(
+                std::io::Error::other("no offsets"),
+            )))
+        }
+        fn end_offset(&self) -> Result<i32> {
+            self.start_offset()
+        }
+        fn get_sub_matches(&self) -> Result<Option<Box<dyn MatchesIterator>>> {
+            Ok(None)
+        }
+        fn get_query(&self) -> Arc<dyn Query> {
+            Arc::new(crate::search::MatchAllDocsQuery)
+        }
+    }
+
+    /// G-110: the queue's `lessThan` wraps an `IOException` from the offset
+    /// reads in `IllegalArgumentException("Failed to retrieve term offset",
+    /// e)` (`DisjunctionMatchesIterator.java:195-209`).
+    #[test]
+    fn gap_g110_less_than_wraps_offset_io_exceptions() {
+        let error = less_than(&NoOffsets, &NoOffsets).unwrap_err();
+        match &error.kind {
+            crate::error::LuceneErrorKind::IllegalArgument { message, cause, .. } => {
+                assert_eq!(message, "Failed to retrieve term offset");
+                assert!(cause.as_ref().is_some_and(|c| c.is_io_exception()));
+            }
+            other => panic!("expected IllegalArgumentException, got {other:?}"),
+        }
+    }
+}

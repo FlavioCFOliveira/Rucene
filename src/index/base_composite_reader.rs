@@ -412,6 +412,25 @@ mod tests {
             .expect("composite over stub readers")
     }
 
+    /// G-109: `BaseCompositeReader.readerBase(int)` refuses an index outside
+    /// the sub-readers with `"readerIndex must be >= 0 and <
+    /// getSequentialSubReaders().size()"` (`BaseCompositeReader.java:271-276`);
+    /// the bound is the sub-reader count, not `starts.length`.
+    #[test]
+    fn gap_g109_reader_base_message() {
+        let base = base_of(&[3, 4]);
+        assert_eq!(base.reader_base(1).unwrap(), 3);
+        let error = base.reader_base(2).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                crate::error::LuceneErrorKind::IllegalArgument { message, .. }
+                    if message == "readerIndex must be >= 0 and < getSequentialSubReaders().size()"
+            ),
+            "{error:?}"
+        );
+    }
+
     /// The document limit is `IndexWriter.getActualMaxDocs()`, read when the
     /// reader is built (`BaseCompositeReader.java:90-109`), so a limit lowered
     /// through `IndexWriter.setMaxDocs` applies — to `MultiReader` too, whose

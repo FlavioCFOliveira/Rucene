@@ -4559,6 +4559,29 @@ mod tests {
         }
     }
 
+    /// G-111: `doReset` refuses a chunk header whose documents run past the
+    /// segment: `CorruptIndexException("Corrupted: docID=" + docID + ",
+    /// docBase=" + docBase + ", chunkDocs=" + chunkDocs + ", numDocs=" +
+    /// numDocs, fieldsStream)` (`Lucene90CompressingStoredFieldsReader.java:462-476`),
+    /// with `chunkDocs = token >>> 2`.
+    #[test]
+    fn gap_g111_do_reset_rejects_a_chunk_past_num_docs() {
+        use crate::store::{DataOutput, MockIndexInput, MockIndexOutput};
+        let mut out = MockIndexOutput::new("fdt", "_0.fdt");
+        out.write_v_int(3).unwrap(); // docBase
+        out.write_v_int(4 << 2).unwrap(); // token: chunkDocs = 4
+        let mut input = MockIndexInput::new(out.into_inner(), "_0.fdt");
+        let mut state = BlockState::new();
+        let mut decompressor = BEST_SPEED_MODE.new_decompressor();
+        let error = state
+            .do_reset(4, &mut input, 5, 1024, &mut *decompressor, false)
+            .unwrap_err();
+        assert_eq!(
+            error.original_message(),
+            Some("Corrupted: docID=4, docBase=3, chunkDocs=4, numDocs=5")
+        );
+    }
+
     /// Regression test: non-monotonic chunk offsets must be reported, not
     /// turned into a wild slice index.
     ///

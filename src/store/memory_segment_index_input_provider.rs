@@ -419,3 +419,33 @@ impl MemorySegmentIndexInputProvider {
         ))
     }
 }
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+
+    /// G-428: `convertMapFailedIOException` reports a mapping that failed
+    /// for lack of memory as the plain `"Map failed"` with no cause, and keeps
+    /// any other `IOException`'s message (`MMapDirectory.java:354-394`).
+    #[test]
+    fn gap_g428_map_failed_conversion() {
+        let oom = LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
+            std::io::ErrorKind::OutOfMemory,
+            "ENOMEM",
+        )));
+        let converted =
+            MemorySegmentIndexInputProvider::convert_map_failed_error(oom, "f.bin", 1024);
+        let text = converted.to_string();
+        assert!(text.contains("Map failed: f.bin [this may be caused by lack of enough unfragmented virtual address space"), "{text}");
+        assert!(text.contains("map a chunk of 1024 bytes."), "{text}");
+        let other = LuceneError::from(LuceneErrorKind::Io(std::io::Error::other("boom")));
+        let text = MemorySegmentIndexInputProvider::convert_map_failed_error(other, "f.bin", 8)
+            .to_string();
+        assert!(text.contains("boom: f.bin [this may be caused"), "{text}");
+        let not_io = LuceneError::illegal_state("x");
+        assert!(matches!(
+            MemorySegmentIndexInputProvider::convert_map_failed_error(not_io, "f.bin", 8).kind,
+            LuceneErrorKind::IllegalState { .. }
+        ));
+    }
+}

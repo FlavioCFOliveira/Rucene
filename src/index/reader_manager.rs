@@ -593,3 +593,64 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod census_gap_writer_constructor_tests {
+    use super::*;
+    use crate::codecs::{register_codec, Lucene104Codec};
+    use crate::document::{Document, Store, StringField};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::index::Term;
+    use crate::store::ByteBuffersDirectory;
+
+    fn doc(id: &str) -> Document {
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            StringField::new("id", id.to_string(), Store::NO).unwrap(),
+        ));
+        doc
+    }
+
+    /// G-035: `ReaderManager(IndexWriter)` is `this(writer, true, false)` and
+    /// `ReaderManager(IndexWriter, boolean, boolean)` opens
+    /// `DirectoryReader.open(writer, applyAllDeletes, writeAllDeletes)`
+    /// (`ReaderManager.java:41-64`); both refresh through the writer.
+    #[test]
+    fn gap_g035_reader_manager_over_a_writer() {
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        writer.add_document(&doc("a")).unwrap();
+        writer.add_document(&doc("b")).unwrap();
+
+        let manager = ReaderManager::from_writer(&*writer).unwrap();
+        let reader = manager.acquire().unwrap();
+        assert_eq!(reader.num_docs(), 2);
+        manager.release(reader).unwrap();
+
+        writer
+            .delete_documents_by_terms(vec![Term::from_text("id", "a")])
+            .unwrap();
+        writer.add_document(&doc("c")).unwrap();
+        assert!(manager.maybe_refresh().unwrap());
+        let reader = manager.acquire().unwrap();
+        // applyAllDeletes = true: the delete of "a" is visible ("b" and "c"
+        // remain; a merge on refresh may have dropped the deleted slot).
+        assert_eq!(reader.num_docs(), 2);
+        manager.release(reader).unwrap();
+
+        // applyAllDeletes = false may leave the buffered delete unapplied, but
+        // the reader still sees every added document.
+        writer
+            .delete_documents_by_terms(vec![Term::from_text("id", "b")])
+            .unwrap();
+        let unapplied = ReaderManager::from_writer_with(&*writer, false, false).unwrap();
+        let reader = unapplied.acquire().unwrap();
+        assert!((1..=2).contains(&reader.num_docs()));
+        unapplied.release(reader).unwrap();
+        unapplied.close().unwrap();
+        manager.close().unwrap();
+        writer.close().unwrap();
+    }
+}

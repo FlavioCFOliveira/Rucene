@@ -5099,15 +5099,18 @@ impl BKDWriter {
 
 /// `BKDWriter.docsSeen`, a `FixedBitSet(maxDoc)` (`BKDWriter.java:118, 185`).
 ///
-/// Java's `FixedBitSet.set` checks the index only with an assertion: an index
-/// inside the last word but past `maxDoc` sets a ghost bit, which
-/// `cardinality()` (the segment's `docCount`) counts, and one outside the
-/// word array raises `ArrayIndexOutOfBoundsException`. The set is therefore
-/// sized to whole words, and only the word index is checked.
+/// Java's `FixedBitSet.set` checks the index only with an assertion
+/// (`FixedBitSet.java:297-302`), which a debug build reproduces: without it,
+/// an index inside the last word but past `maxDoc` sets a ghost bit, which
+/// `cardinality()` (the segment's `docCount`) counts, and one outside the word
+/// array raises `ArrayIndexOutOfBoundsException`. The set is therefore sized
+/// to whole words, and only the word index is checked.
 #[derive(Debug, Clone)]
 struct DocsSeen {
     bits: crate::util::FixedBitSet,
     num_words: i32,
+    /// `numBits` of Java's `FixedBitSet(maxDoc)`, which its assertion checks.
+    max_doc: i32,
 }
 
 impl DocsSeen {
@@ -5124,6 +5127,7 @@ impl DocsSeen {
         Ok(Self {
             bits: crate::util::FixedBitSet::new(num_words as usize * 64),
             num_words,
+            max_doc,
         })
     }
 
@@ -5132,11 +5136,18 @@ impl DocsSeen {
         Self {
             bits: crate::util::FixedBitSet::new(0),
             num_words: 0,
+            max_doc: 0,
         }
     }
 
-    /// `docsSeen.set(docID)`: `bits[docID >> 6] |= 1L << docID`.
+    /// `docsSeen.set(docID)`: `assert index >= 0 && index < numBits`, then
+    /// `bits[docID >> 6] |= 1L << docID` (`FixedBitSet.java:297-302`).
     fn set(&mut self, doc_id: i32) -> Result<()> {
+        debug_assert!(
+            doc_id >= 0 && doc_id < self.max_doc,
+            "index={doc_id}, numBits={}",
+            self.max_doc
+        );
         let word = doc_id >> 6;
         if word < 0 || word >= self.num_words {
             return Err(LuceneError::unchecked(
@@ -8405,5 +8416,447 @@ impl std::fmt::Display for OfflinePointWriter {
             "OfflinePointWriter(count={} tempFileName={})",
             self.count, self.name
         )
+    }
+}
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+    use crate::index::point_values::{IntersectVisitor, Relation};
+    use crate::store::{ByteBuffersDirectory, DataOutput, MockIndexInput, MockIndexOutput};
+
+    fn be(value: i32) -> Vec<u8> {
+        let mut packed = vec![0u8; 4];
+        BitUtil::write_be_int(&mut packed, 0, value);
+        packed
+    }
+
+    fn message(error: &LuceneError) -> String {
+        error.to_string()
+    }
+
+    /// Writes `points` (doc, value) into a one-dimension index and opens it.
+    fn reader_of(points: &[(i32, i32)], max_points_in_leaf_node: i32) -> BKDReader {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let config = BKDConfig::of(1, 1, 4, max_points_in_leaf_node).unwrap();
+        let max_doc = points.iter().map(|p| p.0 + 1).max().unwrap();
+        let mut writer =
+            BKDWriter::new_default(max_doc, dir, "bkd", config, 16.0, points.len() as i64).unwrap();
+        for (doc, value) in points {
+            writer.add(&be(*value), *doc).unwrap();
+        }
+        let mut meta = MockIndexOutput::new("meta", "meta.bin");
+        let mut index = MockIndexOutput::new("index", "index.bin");
+        let mut data = MockIndexOutput::new("data", "data.bin");
+        writer
+            .finish(&mut data)
+            .unwrap()
+            .unwrap()
+            .run(&mut meta, &mut index)
+            .unwrap();
+        writer.close().unwrap();
+        let mut meta_in = MockIndexInput::new(meta.into_inner(), "meta.bin");
+        let mut index_in = MockIndexInput::new(index.into_inner(), "index.bin");
+        let mut data_in = MockIndexInput::new(data.into_inner(), "data.bin");
+        BKDReader::new(&mut meta_in, &mut index_in, &mut data_in).unwrap()
+    }
+
+    /// Records which `IntersectVisitor` callback each doc arrives through.
+    #[derive(Default)]
+    struct Recorder {
+        relation: Option<Relation>,
+        calls: Vec<String>,
+    }
+
+    impl IntersectVisitor for Recorder {
+        fn visit(&mut self, doc_id: i32) -> Result<()> {
+            self.calls.push(format!("int:{doc_id}"));
+            Ok(())
+        }
+        fn visit_iterator(&mut self, iterator: &mut dyn DocIdSetIterator) -> Result<()> {
+            let mut docs = Vec::new();
+            loop {
+                let doc = iterator.next_doc()?;
+                if doc == crate::search::NO_MORE_DOCS {
+                    break;
+                }
+                docs.push(doc);
+            }
+            self.calls.push(format!("iterator:{docs:?}"));
+            Ok(())
+        }
+        fn visit_ints_ref(&mut self, ints_ref: &IntsRef) -> Result<()> {
+            self.calls.push(format!("ints:{:?}", ints_ref.slice()));
+            Ok(())
+        }
+        fn visit_with_value(&mut self, doc_id: i32, _packed_value: &[u8]) -> Result<()> {
+            self.calls.push(format!("value:{doc_id}"));
+            Ok(())
+        }
+        fn visit_iterator_with_value(
+            &mut self,
+            iterator: &mut dyn DocIdSetIterator,
+            packed_value: &[u8],
+        ) -> Result<()> {
+            let mut docs = Vec::new();
+            loop {
+                let doc = iterator.next_doc()?;
+                if doc == crate::search::NO_MORE_DOCS {
+                    break;
+                }
+                docs.push(doc);
+            }
+            self.calls.push(format!(
+                "run:{}:{docs:?}",
+                BitUtil::read_be_int(packed_value, 0)
+            ));
+            Ok(())
+        }
+        fn compare(&self, _min: &[u8], _max: &[u8]) -> Result<Relation> {
+            Ok(self.relation.unwrap_or(Relation::CellCrossesQuery))
+        }
+    }
+
+    /// G-417: `BKDWriter.add` has no `finished` check (`BKDWriter.java:234-268`):
+    /// adding past `totalPointCount` after `finish` raises Java's
+    /// `IllegalStateException` for the point count.
+    #[test]
+    fn gap_g417_add_after_finish_fails_on_the_point_count() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let config = BKDConfig::of(1, 1, 4, 4).unwrap();
+        let mut writer = BKDWriter::new_default(10, dir, "bkd", config, 16.0, 1).unwrap();
+        writer.add(&be(1), 0).unwrap();
+        let mut data = MockIndexOutput::new("data", "data.bin");
+        let _ = writer.finish(&mut data).unwrap();
+        let error = writer.add(&be(2), 1).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                LuceneErrorKind::IllegalState { message, .. }
+                    if message == "totalPointCount=1 was passed when we were created, but we just hit 2 values"
+            ),
+            "{error:?}"
+        );
+        writer.close().unwrap();
+    }
+
+    /// G-418: `docsSeen` is `new FixedBitSet(maxDoc)` (`BKDWriter.java:185`):
+    /// a negative `maxDoc` raises `NegativeArraySizeException` from
+    /// `bits2words`, and `docsSeen.set` checks the doc only with an assertion
+    /// (`FixedBitSet.java:297-302`).
+    #[test]
+    fn gap_g418_docs_seen_is_a_fixed_bit_set_of_max_doc() {
+        let error = DocsSeen::new(-65).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                LuceneErrorKind::Unchecked { class: "java.lang.NegativeArraySizeException", message: Some(m), .. }
+                    if m == "-1"
+            ),
+            "{error:?}"
+        );
+        let mut seen = DocsSeen::new(70).unwrap();
+        seen.set(0).unwrap();
+        seen.set(69).unwrap();
+        assert_eq!(seen.cardinality(), 2);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "index=70, numBits=70")]
+    fn gap_g418_docs_seen_set_past_max_doc_fails_the_java_assertion() {
+        let _ = DocsSeen::new(70).unwrap().set(70);
+    }
+
+    /// Without assertions, Java's `bits[docID >> 6]` sets a ghost bit inside
+    /// the last word, which `cardinality()` counts, and raises
+    /// `ArrayIndexOutOfBoundsException` past the word array.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn gap_g418_docs_seen_set_past_max_doc_as_java_without_assertions() {
+        let mut seen = DocsSeen::new(70).unwrap();
+        seen.set(127).unwrap();
+        assert_eq!(seen.cardinality(), 1);
+        let error = seen.set(128).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                LuceneErrorKind::Unchecked { class: "java.lang.ArrayIndexOutOfBoundsException", message: Some(m), .. }
+                    if m == "Index 2 out of bounds for length 2"
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// G-419: `maxPointsSortInHeap` is `(int) (maxMBSortInHeap * 1024 * 1024
+    /// / bytesPerDoc)`, which saturates at `Integer.MAX_VALUE`
+    /// (`BKDWriter.java:195`).
+    #[test]
+    fn gap_g419_max_points_sort_in_heap_saturates_as_a_java_int() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let config = BKDConfig::of(1, 1, 4, 4).unwrap();
+        let writer = BKDWriter::new_default(10, dir, "bkd", config, 1.0e12, 10).unwrap();
+        assert_eq!(writer.max_points_sort_in_heap, i32::MAX as usize);
+    }
+
+    /// G-420: `OneDimensionBKDWriter.add` compares the new value with
+    /// `leafValues` at `(leafCount - 1) * bytesPerDim`, not `* packedBytesLength`
+    /// (`BKDWriter.java:738-743`): with two data dimensions the third point is
+    /// compared with the first point's second dimension.
+    #[test]
+    fn gap_g420_one_dimension_leaf_cardinality_reads_at_bytes_per_dim() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let config = BKDConfig::of(2, 1, 4, 16).unwrap();
+        let mut writer = BKDWriter::new_default(10, dir, "bkd", config, 16.0, 3).unwrap();
+        let mut data = MockIndexOutput::new("data", "data.bin");
+        let mut one_dim = OneDimensionBKDWriter::new(&mut writer, &data).unwrap();
+        let point = |a: i32, b: i32| [be(a), be(b)].concat();
+        one_dim.add(&mut data, &point(1, 5), 0, 3).unwrap();
+        one_dim.add(&mut data, &point(1, 7), 1, 3).unwrap();
+        assert_eq!(one_dim.leaf_cardinality, 1);
+        // Java reads bytes 4..8 — point 0's second dimension, 5 — which equal
+        // the new value's first dimension, so the cardinality stays 1.
+        one_dim.add(&mut data, &point(5, 9), 2, 3).unwrap();
+        assert_eq!(one_dim.leaf_cardinality, 1);
+    }
+
+    /// G-421: `close()` closes the raw spill output and deletes it
+    /// (`BKDWriter.java:1546-1557`); nothing else closes the writer, so a
+    /// writer dropped without `close` leaves its spill file, as in Java.
+    #[test]
+    fn gap_g421_close_deletes_the_spill_file_and_drop_does_not() {
+        let config = BKDConfig::of(1, 1, 4, 4).unwrap();
+        // 64 bytes of heap hold 8 points of 8 bytes; 100 points spill.
+        let max_mb = 64.0 / (1024.0 * 1024.0);
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut writer =
+            BKDWriter::new_default(200, Arc::clone(&dir), "bkd", config.clone(), max_mb, 100)
+                .unwrap();
+        writer.add(&be(1), 0).unwrap();
+        assert_eq!(dir.list_all().unwrap().len(), 1);
+        writer.close().unwrap();
+        assert!(dir.list_all().unwrap().is_empty());
+
+        let mut dropped =
+            BKDWriter::new_default(200, Arc::clone(&dir), "bkd", config, max_mb, 100).unwrap();
+        dropped.add(&be(1), 0).unwrap();
+        drop(dropped);
+        assert_eq!(dir.list_all().unwrap().len(), 1);
+    }
+
+    /// G-109: `BKDWriter.add` refuses a value of another length with
+    /// `"packedValue should be length=" + packedBytesLength + " (got: " +
+    /// packedValue.length + ")"` (`BKDWriter.java:234-242`).
+    #[test]
+    fn gap_g109_packed_value_length_message() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let config = BKDConfig::of(1, 1, 4, 4).unwrap();
+        let mut writer = BKDWriter::new_default(10, dir, "bkd", config, 16.0, 1).unwrap();
+        let error = writer.add(&[1, 2, 3], 0).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                LuceneErrorKind::IllegalArgument { message, .. }
+                    if message == "packedValue should be length=4 (got: 3)"
+            ),
+            "{error:?}"
+        );
+        writer.close().unwrap();
+    }
+
+    /// G-422: Java's messages for `verifyParams`, a second `finish`, and
+    /// `checkMaxLeafNodeCount` (`BKDWriter.java:215-219, 939-941, 917-924`).
+    #[test]
+    fn gap_g422_writer_messages_as_java() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let config = BKDConfig::of(1, 1, 4, 4).unwrap();
+        let error =
+            match BKDWriter::new_default(10, Arc::clone(&dir), "bkd", config.clone(), 16.0, -1) {
+                Ok(_) => panic!("a negative point count must be refused"),
+                Err(e) => e,
+            };
+        assert!(
+            message(&error).contains("totalPointCount must be >=0 (got: -1)"),
+            "{error}"
+        );
+
+        let mut writer = BKDWriter::new_default(10, dir, "bkd", config.clone(), 16.0, 1).unwrap();
+        writer.add(&be(1), 0).unwrap();
+        let mut data = MockIndexOutput::new("data", "data.bin");
+        let _ = writer.finish(&mut data).unwrap();
+        let error = writer.finish(&mut data).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                LuceneErrorKind::IllegalState { message, .. } if message == "already finished"
+            ),
+            "{error:?}"
+        );
+        writer.close().unwrap();
+
+        let error = check_max_leaf_node_count(i32::MAX, &config).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                LuceneErrorKind::IllegalState { message, .. }
+                    if message == "too many nodes; increase config.maxPointsInLeafNode() (currently 4) and reindex"
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// The `.kdm` header and fields `BKDReader(meta, index, data)` reads
+    /// before the index pointers, for a one-dimension, one-leaf tree.
+    fn meta_prefix(version: i32, min: i32, max: i32) -> MockIndexOutput {
+        let mut meta = MockIndexOutput::new("meta", "meta.bin");
+        crate::codecs::codec_util::write_header(&mut meta, CODEC_NAME, version).unwrap();
+        meta.write_v_int(1).unwrap(); // numDims
+        meta.write_v_int(1).unwrap(); // numIndexDims
+        meta.write_v_int(4).unwrap(); // maxPointsInLeafNode
+        meta.write_v_int(4).unwrap(); // bytesPerDim
+        meta.write_v_int(1).unwrap(); // numLeaves
+        meta.write_bytes(&be(min), 0, 4).unwrap();
+        meta.write_bytes(&be(max), 0, 4).unwrap();
+        meta.write_v_long(3).unwrap(); // pointCount
+        meta.write_v_int(3).unwrap(); // docCount
+        meta.write_v_int(0).unwrap(); // numIndexBytes
+        meta
+    }
+
+    /// G-423: before `VERSION_META_FILE`, `minLeafBlockFP` is the first vLong
+    /// of the index section, read and rewound to `indexStartPointer`
+    /// (`BKDReader.java:113-120`).
+    #[test]
+    fn gap_g423_pre_meta_file_reader_reads_min_leaf_block_fp_from_the_index() {
+        let meta = meta_prefix(VERSION_META_FILE - 1, 1, 9);
+        let mut index = MockIndexOutput::new("index", "index.bin");
+        index.write_bytes(&[7, 7], 0, 2).unwrap();
+        index.write_v_long(42).unwrap();
+        let mut meta_in = MockIndexInput::new(meta.into_inner(), "meta.bin");
+        let mut index_in = MockIndexInput::new(index.into_inner(), "index.bin");
+        index_in.seek(2).unwrap();
+        let mut data_in = MockIndexInput::new(Vec::new(), "data.bin");
+        let reader = BKDReader::new(&mut meta_in, &mut index_in, &mut data_in).unwrap();
+        assert_eq!(reader.min_leaf_block_fp, 42);
+        assert_eq!(reader.index_start_pointer, 2);
+        assert_eq!(index_in.file_pointer().unwrap(), 2);
+    }
+
+    /// G-424: the min > max check names both packed values
+    /// (`BKDReader.java:84-100`).
+    #[test]
+    fn gap_g424_min_above_max_names_both_values() {
+        let mut meta = meta_prefix(VERSION_CURRENT, 9, 1);
+        meta.write_long(0).unwrap();
+        meta.write_long(0).unwrap();
+        let mut meta_in = MockIndexInput::new(meta.into_inner(), "meta.bin");
+        let mut index_in = MockIndexInput::new(Vec::new(), "index.bin");
+        let mut data_in = MockIndexInput::new(Vec::new(), "data.bin");
+        let error = BKDReader::new(&mut meta_in, &mut index_in, &mut data_in)
+            .err()
+            .expect("min > max is corrupt");
+        assert_eq!(
+            error.original_message(),
+            Some("minPackedValue [0 0 0 9] is > maxPackedValue [0 0 0 1] for dim=0")
+        );
+    }
+
+    /// G-425: `visitDocIDs` dispatches per doc-ID encoding
+    /// (`BKDReader.java:587-610`, `DocIdsWriter.readInts`): continuous IDs
+    /// reach `visit(DocIdSetIterator)`, others `visit(IntsRef)`.
+    #[test]
+    fn gap_g425_add_all_visits_doc_ids_by_encoding() {
+        let continuous: Vec<(i32, i32)> = (0..8).map(|i| (i, i)).collect();
+        let reader = reader_of(&continuous, 16);
+        let mut recorder = Recorder {
+            relation: Some(Relation::CellInsideQuery),
+            ..Recorder::default()
+        };
+        crate::index::point_values::intersect(&mut recorder, reader.point_tree().unwrap().as_mut())
+            .unwrap();
+        assert_eq!(
+            recorder.calls,
+            vec!["iterator:[0, 1, 2, 3, 4, 5, 6, 7]".to_string()]
+        );
+
+        let scattered: Vec<(i32, i32)> = [3, 900, 17, 40000, 5, 1000, 9, 70000]
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (*d, i as i32))
+            .collect();
+        let reader = reader_of(&scattered, 16);
+        let mut recorder = Recorder {
+            relation: Some(Relation::CellInsideQuery),
+            ..Recorder::default()
+        };
+        crate::index::point_values::intersect(&mut recorder, reader.point_tree().unwrap().as_mut())
+            .unwrap();
+        assert_eq!(recorder.calls.len(), 1);
+        assert!(
+            recorder.calls[0].starts_with("ints:"),
+            "{:?}",
+            recorder.calls
+        );
+    }
+
+    /// G-426: `visitSparseRawDocValues` calls `visitor.visit(scratchIterator,
+    /// packedValue)` once per run of equal values (`BKDReader.java:898-924`).
+    #[test]
+    fn gap_g426_sparse_leaf_visits_once_per_run() {
+        let points: Vec<(i32, i32)> = (0..12).map(|i| (i, if i < 5 { 10 } else { 20 })).collect();
+        let reader = reader_of(&points, 16);
+        let mut recorder = Recorder::default();
+        crate::index::point_values::intersect(&mut recorder, reader.point_tree().unwrap().as_mut())
+            .unwrap();
+        assert_eq!(
+            recorder.calls,
+            vec![
+                "run:10:[0, 1, 2, 3, 4]".to_string(),
+                "run:20:[5, 6, 7, 8, 9, 10, 11]".to_string()
+            ]
+        );
+    }
+
+    /// G-427: Lucene has no check of its own for a run that overshoots the
+    /// leaf: it visits the run, then throws "Sub blocks do not add up"
+    /// (`BKDReader.java:898-924`); and a common prefix longer than
+    /// `bytesPerDim` fails in `readBytes` (`BKDReader.java:983-995`), not with
+    /// an invented `CorruptIndexException`.
+    #[test]
+    fn gap_g427_corrupt_leaves_fail_where_java_fails() {
+        let config = BKDConfig::of(1, 1, 4, 16).unwrap();
+        let mut leaf = MockIndexOutput::new("leaf", "leaf.bin");
+        leaf.write_v_int(3).unwrap(); // a run of 3 in a leaf of 2
+        leaf.write_bytes(&be(10), 0, 4).unwrap();
+        let mut input = MockIndexInput::new(leaf.into_inner(), "leaf.bin");
+        let mut scratch = vec![0u8; 4];
+        let mut recorder = Recorder::default();
+        let error = visit_sparse_doc_values(
+            &mut input,
+            &config,
+            &[0],
+            &mut scratch,
+            &[4, 5, 6, 7],
+            2,
+            &mut recorder,
+        )
+        .unwrap_err();
+        assert_eq!(recorder.calls, vec!["run:10:[4, 5, 6]".to_string()]);
+        assert_eq!(
+            error.original_message(),
+            Some("Sub blocks do not add up to the expected count: 2 != 3")
+        );
+
+        let mut prefixes = MockIndexOutput::new("leaf", "leaf.bin");
+        prefixes.write_v_int(5).unwrap(); // prefix 5 > bytesPerDim 4
+        prefixes.write_bytes(&[1, 2, 3, 4, 5], 0, 5).unwrap();
+        let mut input = MockIndexInput::new(prefixes.into_inner(), "leaf.bin");
+        let mut common = vec![0i32; 1];
+        let error =
+            read_common_prefixes(&mut input, &mut common, &mut scratch, &config).unwrap_err();
+        assert!(
+            !matches!(error.kind, LuceneErrorKind::CorruptIndex { .. }),
+            "{error:?}"
+        );
     }
 }

@@ -20,4 +20,7 @@ pub mod search;
 pub mod store;
 pub mod util;
 
+#[cfg(test)]
+mod census_gap_tests;
+
 pub use error::{LuceneError, LuceneErrorKind, Result};

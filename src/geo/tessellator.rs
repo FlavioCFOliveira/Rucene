@@ -2460,3 +2460,41 @@ mod tests {
         assert_eq!(h, 1559882305004840519);
     }
 }
+
+#[cfg(test)]
+mod census_gap_monitor_tests {
+    use super::*;
+
+    struct NullMonitor;
+    impl Monitor for NullMonitor {
+        fn current_state(&mut self, _: &str, _: Option<&[Point]>, _: &[Triangle]) {}
+        fn start_split(&mut self, _: &str, _: &[Point], _: &[Point]) {}
+        fn end_split(&mut self, _: &str) {}
+    }
+
+    /// G-111: `Tessellator.notifyMonitorSplit` throws
+    /// `IllegalStateException("Invalid split provided to monitor")` for a
+    /// missing node when a monitor is attached (`Tessellator.java:1565-1572`),
+    /// and does nothing without a monitor.
+    #[test]
+    fn gap_g111_tessellator_monitor_invalid_split() {
+        let tessellation = Tessellation::new();
+        let mut monitor = NullMonitor;
+        let mut attached: Option<&mut dyn Monitor> = Some(&mut monitor);
+        let error = tessellation
+            .notify_monitor_split(0, &mut attached, None, Some(0))
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                crate::error::LuceneErrorKind::IllegalState { message, .. }
+                    if message == "Invalid split provided to monitor"
+            ),
+            "{error:?}"
+        );
+        let mut detached: Option<&mut dyn Monitor> = None;
+        assert!(tessellation
+            .notify_monitor_split(0, &mut detached, None, None)
+            .is_ok());
+    }
+}

@@ -6378,6 +6378,98 @@ mod tests {
         );
     }
 
+    /// G-004: `FieldInvertState.setAttributeSource` adds the
+    /// term-frequency, position-increment and offset attributes to the source
+    /// (`FieldInvertState.java:96-113`), `getAttributeSource` returns it
+    /// (`FieldInvertState.java:176-179`), and `Similarity.computeNorm` sees
+    /// the source of the stream that was inverted.
+    #[test]
+    fn gap_g004_field_invert_state_exposes_the_attribute_source() {
+        use crate::analysis::tokenattributes::{
+            OffsetAttribute, PositionIncrementAttribute, TermFrequencyAttribute,
+        };
+        let mut state = FieldInvertState::new(10, "f".to_string(), IndexOptions::DOCS);
+        assert!(state.get_attribute_source().is_none());
+        let source = crate::util::attribute::AttributeSource::new();
+        assert!(!source.has_attribute_interface::<dyn OffsetAttribute>());
+        state.set_attribute_source(Some(source)).unwrap();
+        let held = state.get_attribute_source().expect("the source is kept");
+        assert!(held.has_attribute_interface::<dyn TermFrequencyAttribute>());
+        assert!(held.has_attribute_interface::<dyn PositionIncrementAttribute>());
+        assert!(held.has_attribute_interface::<dyn OffsetAttribute>());
+        state.set_attribute_source(None).unwrap();
+        assert!(state.get_attribute_source().is_none());
+
+        static SEEN: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
+        #[derive(Debug)]
+        struct SourceReadingSimilarity;
+        impl Similarity for SourceReadingSimilarity {
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.search.similarities.Similarity"
+            }
+
+            fn compute_norm(&self, state: &FieldInvertState) -> Result<i64> {
+                let has_term = state
+                    .get_attribute_source()
+                    .is_some_and(|s| s.has_attribute_interface::<dyn CharTermAttribute>());
+                SEEN.lock().unwrap().push(has_term);
+                Ok(1)
+            }
+
+            fn scorer<'a>(
+                &'a self,
+                boost: f32,
+                _collection_stats: &CollectionStatistics,
+                _term_stats: &[TermStatistics],
+            ) -> Box<dyn SimScorer + 'a> {
+                struct ConstantScorer(f32);
+                impl SimScorer for ConstantScorer {
+                    fn score(&self, _freq: f32, _norm: i64) -> f32 {
+                        self.0
+                    }
+                }
+                Box::new(ConstantScorer(boost))
+            }
+        }
+
+        let live = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
+        live.set_similarity(Arc::new(SourceReadingSimilarity));
+        let config = Arc::new(live);
+        let codec = ensure_codec();
+        let tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(
+            ByteBuffersDirectory::new(),
+        )));
+        let directory: Arc<dyn Directory> = Arc::clone(&tracking) as Arc<dyn Directory>;
+        let info = SegmentInfo::new(
+            Arc::clone(&directory),
+            Version::LATEST,
+            Some(Version::LATEST),
+            "_0".to_string(),
+            -1,
+            false,
+            false,
+            codec,
+            HashMap::new(),
+            [7u8; 16],
+            HashMap::new(),
+            Default::default(),
+        )
+        .expect("segment info");
+        let mut chain = DefaultIndexingChain::new_for_segment(config, Arc::clone(&tracking), &info)
+            .expect("bind segment");
+        let mut document = Document::new();
+        document.add(scripted_norm_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS,
+            words(3),
+        ));
+        let mut field_infos = builder();
+        chain
+            .process_document(0, Some(&document), true, &mut field_infos)
+            .unwrap();
+        assert_eq!(*SEEN.lock().unwrap(), vec![true]);
+    }
+
     #[test]
     fn a_similarity_that_answers_zero_for_a_non_empty_field_is_rejected() {
         #[derive(Debug)]

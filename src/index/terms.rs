@@ -2418,3 +2418,43 @@ mod max_tests {
         assert_eq!(max_of(&[&[0x00]]), Some(vec![0x00]));
     }
 }
+
+#[cfg(test)]
+mod census_gap_get_terms_tests {
+    use super::*;
+    use crate::codecs::{register_codec, Lucene104Codec};
+    use crate::document::{Document, Store, StringField};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::store::{ByteBuffersDirectory, Directory};
+    use std::sync::Arc;
+
+    /// G-034: `Terms.getTerms(LeafReader, String)` returns the field's terms,
+    /// or `Terms.EMPTY` for an absent field (`Terms.java:35-45, 228-274`).
+    #[test]
+    fn gap_g034_get_terms_returns_empty_for_an_absent_field() {
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            StringField::new("id", "a".to_string(), Store::NO).unwrap(),
+        ));
+        writer.add_document(&doc).unwrap();
+        let reader = crate::index::directory_reader::open_with_writer(&*writer).unwrap();
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        let leaf = leaves[0].leaf_reader();
+        let present = get_terms(leaf.as_ref(), "id").unwrap();
+        assert_eq!(present.size().unwrap(), 1);
+        let absent = get_terms(leaf.as_ref(), "missing").unwrap();
+        assert_eq!(absent.size().unwrap(), 0);
+        assert_eq!(absent.doc_count().unwrap(), 0);
+        assert_eq!(absent.sum_doc_freq().unwrap(), 0);
+        assert_eq!(absent.sum_total_term_freq().unwrap(), 0);
+        assert!(!absent.has_freqs() && !absent.has_positions());
+        assert!(absent.iterator().unwrap().next().unwrap().is_none());
+        drop(leaves);
+        reader.close().unwrap();
+        writer.close().unwrap();
+    }
+}

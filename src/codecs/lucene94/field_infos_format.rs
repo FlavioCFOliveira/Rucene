@@ -600,4 +600,81 @@ mod tests {
         );
         assert_eq!(read.field_info("vector").unwrap().vector_dimension, 128);
     }
+
+    /// G-029: `new FieldInfo(...)` and `checkConsistency()` run inside the
+    /// `try` that rethrows an `IllegalStateException` as
+    /// `CorruptIndexException("invalid fieldinfo for field: ...")`
+    /// (`Lucene94FieldInfosFormat.java:215-240`). `checkConsistency` throws
+    /// only `IllegalArgumentException` (`FieldInfo.java:133-235`), so an
+    /// inconsistent entry (checksum kept valid) reaches the caller as that
+    /// unwrapped `IllegalArgumentException`, after `checkFooter` verified the
+    /// checksum, exactly as in Java.
+    #[test]
+    fn gap_g029_inconsistent_field_info_read_fails_as_java() {
+        let dir = ByteBuffersDirectory::default();
+        let format = Lucene94FieldInfosFormat::new();
+        let info = test_segment_info("_0", 10);
+        let field = FieldInfo::new_full(
+            "zz",
+            0,
+            false,
+            false,
+            false,
+            IndexOptions::DOCS,
+            DocValuesType::NONE,
+            DocValuesSkipIndexType::NONE,
+            -1,
+            crate::util::java_collections::JavaStringMap::default(),
+            0,
+            0,
+            0,
+            0,
+            VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::EUCLIDEAN,
+            false,
+            false,
+        )
+        .unwrap();
+        let infos = FieldInfos::new(vec![field]).unwrap();
+        format
+            .write(&dir, &info, "", &infos, &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        let file = "_0.fnm";
+        let mut bytes = {
+            let input = dir
+                .open_input(file, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            let len = input.length() as usize;
+            let mut buf = vec![0u8; len];
+            let mut input = input;
+            input.read_bytes(Some(&mut buf), 0, len).unwrap();
+            buf
+        };
+        // name "zz" (vInt length 2), field number 0, then the bits byte.
+        let at = bytes
+            .windows(4)
+            .position(|w| w == [2, b'z', b'z', 0])
+            .expect("the field entry")
+            + 4;
+        bytes[at] |= STORE_PAYLOADS;
+        let body = bytes.len() - 8;
+        let crc = i64::from(crc32fast::hash(&bytes[..body]));
+        bytes[body..].copy_from_slice(&crc.to_be_bytes());
+        dir.delete_file(file).unwrap();
+        {
+            let mut out = dir
+                .create_output(file, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            out.write_bytes(&bytes, 0, bytes.len()).unwrap();
+            out.close().unwrap();
+        }
+        let error = format
+            .read(&dir, &info, "", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap_err();
+        assert!(
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. }
+                if message == "indexed field 'zz' cannot have payloads without positions"),
+            "{error:?}"
+        );
+    }
 }

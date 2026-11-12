@@ -170,8 +170,13 @@ impl DataOutput for ReadWriteDataOutput {
 }
 
 impl Accountable for ReadWriteDataOutput {
+    /// Equivalent to `ReadWriteDataOutput.ramBytesUsed()`
+    /// (`ReadWriteDataOutput.java:63-65`), which is
+    /// `ByteBuffersDataOutput.ramBytesUsed()` (`ByteBuffersDataOutput.java:453-460`):
+    /// the capacity of every block plus one object reference per block.
     fn ram_bytes_used(&self) -> i64 {
-        self.blocks.len() as i64 * self.block_size as i64
+        self.blocks.len() as i64
+            * (self.block_size as i64 + crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF)
     }
 }
 

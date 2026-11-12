@@ -3023,3 +3023,25 @@ mod roaring_java_blocks_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+
+    /// G-109: `RoaringDocIdSet.Builder` refuses a range past `maxDoc` with
+    /// `"max must be <= maxDoc (" + maxDoc + "), got max=" + max`
+    /// (`RoaringDocIdSet.java:156-160`).
+    #[test]
+    fn gap_g109_roaring_builder_max_message() {
+        let mut builder = RoaringDocIdSetBuilder::new(10);
+        let error = builder.add_range(0, 11).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                crate::error::LuceneErrorKind::IllegalArgument { message, .. }
+                    if message == "max must be <= maxDoc (10), got max=11"
+            ),
+            "{error:?}"
+        );
+    }
+}

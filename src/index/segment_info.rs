@@ -1812,3 +1812,58 @@ impl Display for SegmentCommitInfo {
         f.write_str(&self.info.to_string_with_del_count(0))
     }
 }
+
+#[cfg(test)]
+mod census_gap_index_sort_tests {
+    use crate::codecs::{register_codec, Lucene104Codec};
+    use crate::document::{Document, Store, StringField};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::index::SegmentInfos;
+    use crate::search::{Sort, SortField, SortFieldType};
+    use crate::store::{ByteBuffersDirectory, Directory};
+    use std::sync::Arc;
+
+    /// G-027: an unsorted segment has `getIndexSort() == null` once written
+    /// and read back, so `IndexWriter.validateIndexSort` prints
+    /// `indexSort=null` (`IndexWriter.java:1223-1233`).
+    #[test]
+    fn gap_g027_unsorted_segment_has_no_index_sort() {
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            StringField::new("id", "a".to_string(), Store::NO).unwrap(),
+        ));
+        writer.add_document(&doc).unwrap();
+        writer.commit().unwrap();
+        writer.close().unwrap();
+
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        let info = infos.info(0);
+        assert!(info.info.index_sort().is_none());
+
+        let config = IndexWriterConfig::new();
+        config
+            .set_index_sort(
+                Sort::new_fields(vec![SortField::new(
+                    Some("foo".to_string()),
+                    SortFieldType::Long,
+                )
+                .unwrap()])
+                .unwrap(),
+            )
+            .unwrap();
+        let error = match IndexWriter::new(Arc::clone(&dir), config) {
+            Ok(_) => panic!("an index sort over an unsorted segment must be refused"),
+            Err(e) => e,
+        };
+        let text = error.to_string();
+        assert!(
+            text.contains("cannot change previous indexSort=null (from segment=_0("),
+            "{text}"
+        );
+        assert!(text.ends_with("to new indexSort=<long: \"foo\">"), "{text}");
+    }
+}

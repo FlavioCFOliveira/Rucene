@@ -3432,6 +3432,345 @@ mod tests {
         assert_eq!(format.get_max_dimensions("any"), 1024);
     }
 
+    /// G-005, G-016 and G-406: the writer's `ramBytesUsed()` is its 72-byte
+    /// shallow size plus, per field, the 56-byte `FieldWriter`, the flat field
+    /// writer and the graph `addValue` builds vector by vector once the tiny
+    /// segment threshold is crossed (`Lucene99HnswVectorsWriter.java:242-249,
+    /// 765-782, 807-813`); the reader's is its shallow size, the field map and
+    /// the flat reader (`Lucene99HnswVectorsReader.java:264-268`). Compared
+    /// with `lucene-core-10.5.0.jar` (`CensusGapFixture hnswRam`).
+    #[test]
+    fn gap_g005_g016_g406_hnsw_ram_matches_lucene() -> Result<()> {
+        use crate::util::Accountable;
+        // `shouldCreateGraph(100, n)` first holds at n = 648, where the
+        // builder is created and replays the buffered vectors.
+        let n = 1000;
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, n)?;
+        let field_info = float_field_info("vec", 0, 4)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        let seg_updates = BufferedUpdates::default();
+        let io_ctx = DefaultIOContext::default();
+        let (write_state, read_state) =
+            make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
+        let format = Lucene99HnswVectorsFormat::new();
+        let mut lines = Vec::new();
+        let mut writer = format.fields_writer(&write_state)?;
+        lines.push(format!("writer={}", writer.ram_bytes_used()));
+        let FieldVectorWriter::Float(mut field_writer) = writer.add_field(&field_info)? else {
+            panic!("expected a float field writer");
+        };
+        lines.push(format!("field={}", writer.ram_bytes_used()));
+        for i in 0..n {
+            let vector = vec![
+                (i * 37 % 101) as f32 / 7.0,
+                (i * 53 % 97) as f32 / 3.0,
+                (i % 13) as f32 * 0.5,
+                i as f32 * 0.25,
+            ];
+            field_writer.add_value(i, vector)?;
+            let added = i + 1;
+            if [1, 647, 648, 649, 800, 1000].contains(&added) {
+                lines.push(format!("added{added}={}", writer.ram_bytes_used()));
+            }
+        }
+        drop(field_writer);
+        writer.flush(n, None)?;
+        lines.push(format!("flushed={}", writer.ram_bytes_used()));
+        writer.finish()?;
+        writer.close()?;
+        let reader = format.fields_reader(&read_state)?;
+        let hnsw = reader
+            .as_any()
+            .and_then(|r| r.downcast_ref::<Lucene99HnswVectorsReader>())
+            .expect("the HNSW reader");
+        lines.push(format!("reader={}", hnsw.ram_bytes_used()));
+        let java: Vec<String> = crate::census_gap_tests::run_oracle(&[], &["hnswRam"])
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(lines, java);
+        reader.close()?;
+        Ok(())
+    }
+
+    /// G-109: an unknown vector encoding ordinal is
+    /// `CorruptIndexException("Invalid vector encoding id: " + encodingId)`
+    /// (`Lucene99HnswVectorsReader.java:239-246`).
+    #[test]
+    fn gap_g109_invalid_vector_encoding_id_message() {
+        use crate::store::{DataOutput, MockIndexInput, MockIndexOutput};
+        let mut out = MockIndexOutput::new("meta", "meta.vem");
+        out.write_int(7).unwrap();
+        let mut input = MockIndexInput::new(out.into_inner(), "meta.vem");
+        let error = read_vector_encoding_input(&mut input).unwrap_err();
+        assert_eq!(
+            error.original_message(),
+            Some("Invalid vector encoding id: 7")
+        );
+    }
+
+    /// Writes `n` deterministic four-dimensional float vectors of field `vec`.
+    fn write_vectors(
+        dir: &Arc<dyn crate::store::Directory>,
+        write_state: &OwnedSegmentWriteState,
+        field_info: &FieldInfo,
+        n: i32,
+    ) -> Result<()> {
+        let _ = dir;
+        let format = Lucene99HnswVectorsFormat::new();
+        let mut writer = format.fields_writer(write_state)?;
+        let FieldVectorWriter::Float(mut field_writer) = writer.add_field(field_info)? else {
+            panic!("expected a float field writer");
+        };
+        for i in 0..n {
+            field_writer.add_value(
+                i,
+                vec![
+                    (i * 37 % 101) as f32 / 7.0,
+                    (i * 53 % 97) as f32 / 3.0,
+                    (i % 13) as f32 * 0.5,
+                    i as f32 * 0.25,
+                ],
+            )?;
+        }
+        drop(field_writer);
+        writer.flush(n, None)?;
+        writer.finish()?;
+        writer.close()
+    }
+
+    /// G-405: `Lucene99HnswVectorsWriter.addField` has no `finished` check
+    /// (`Lucene99HnswVectorsWriter.java:105-120`): after `finish` it still
+    /// hands out a field writer, as Java's does.
+    #[test]
+    fn gap_g405_add_field_after_finish_has_no_finished_check() -> Result<()> {
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, 1)?;
+        let field_info = float_field_info("vec", 0, 4)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        let seg_updates = BufferedUpdates::default();
+        let io_ctx = DefaultIOContext::default();
+        let (write_state, _read_state) =
+            make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
+        let format = Lucene99HnswVectorsFormat::new();
+        let mut writer = format.fields_writer(&write_state)?;
+        writer.flush(1, None)?;
+        writer.finish()?;
+        assert!(writer.add_field(&field_info).is_ok());
+        writer.close()
+    }
+
+    /// G-407, G-408 and G-409: `readFields` / `readField` / `FieldEntry.create`
+    /// fail with Java's exceptions and messages
+    /// (`Lucene99HnswVectorsReader.java:195-260, 480-500`): an unknown field
+    /// number is `CorruptIndexException("Invalid field number: N")`; a
+    /// similarity or dimension that disagrees with the `FieldInfo` is
+    /// `IllegalStateException("Inconsistent ...")`; a negative level or node
+    /// count is `NegativeArraySizeException` and an empty level is
+    /// `ArrayIndexOutOfBoundsException`, with no check of the port's own.
+    #[test]
+    fn gap_g407_g408_g409_field_entry_failures_as_java() {
+        use crate::store::{DataOutput, MockIndexInput, MockIndexOutput};
+        let info = float_field_info("vec", 0, 4).unwrap();
+        let infos = FieldInfos::new(vec![info]).unwrap();
+        let read = |build: &dyn Fn(&mut MockIndexOutput)| {
+            let mut out = MockIndexOutput::new("meta", "meta.vem");
+            build(&mut out);
+            let mut input = MockIndexInput::new(out.into_inner(), "meta.vem");
+            read_fields(&mut input, &infos)
+                .err()
+                .expect("the entry is refused")
+        };
+        let unchecked = |e: &LuceneError| match &e.kind {
+            LuceneErrorKind::Unchecked { class, message, .. } => {
+                format!("{class}: {}", message.clone().unwrap_or_default())
+            }
+            other => panic!("expected an unchecked exception, got {other:?}"),
+        };
+        let state = |e: &LuceneError| match &e.kind {
+            LuceneErrorKind::IllegalState { message, .. } => message.clone(),
+            other => panic!("expected IllegalStateException, got {other:?}"),
+        };
+
+        let error = read(&|o| o.write_int(5).unwrap());
+        assert_eq!(error.original_message(), Some("Invalid field number: 5"));
+
+        let error = read(&|o| {
+            o.write_int(0).unwrap();
+            o.write_int(1).unwrap(); // FLOAT32
+            o.write_int(1).unwrap(); // DOT_PRODUCT
+        });
+        assert_eq!(
+            state(&error),
+            "Inconsistent vector similarity function for field=\"vec\"; DOT_PRODUCT != EUCLIDEAN"
+        );
+
+        let entry_head = |o: &mut MockIndexOutput, dim: i32, levels: i32| {
+            o.write_int(0).unwrap();
+            o.write_int(1).unwrap(); // FLOAT32
+            o.write_int(0).unwrap(); // EUCLIDEAN
+            o.write_v_long(0).unwrap(); // vectorIndexOffset
+            o.write_v_long(0).unwrap(); // vectorIndexLength
+            o.write_v_int(dim).unwrap();
+            o.write_int(0).unwrap(); // size
+            o.write_v_int(16).unwrap(); // M
+            o.write_v_int(levels).unwrap();
+        };
+        let error = read(&|o| {
+            entry_head(o, 8, 0);
+            o.write_int(-1).unwrap();
+        });
+        assert_eq!(
+            state(&error),
+            "Inconsistent vector dimension for field=\"vec\"; 4 != 8"
+        );
+
+        let error = read(&|o| entry_head(o, 4, -1));
+        assert_eq!(
+            unchecked(&error),
+            "java.lang.NegativeArraySizeException: -1"
+        );
+        let error = read(&|o| {
+            entry_head(o, 4, 2);
+            o.write_v_int(-3).unwrap(); // nodes on level 1
+        });
+        assert_eq!(
+            unchecked(&error),
+            "java.lang.NegativeArraySizeException: -3"
+        );
+        let error = read(&|o| {
+            entry_head(o, 4, 2);
+            o.write_v_int(0).unwrap(); // nodes on level 1
+            o.write_v_int(7).unwrap(); // nodesByLevel[1][0], read before the store
+        });
+        assert_eq!(
+            unchecked(&error),
+            "java.lang.ArrayIndexOutOfBoundsException: Index 0 out of bounds for length 0"
+        );
+    }
+
+    /// G-408 and G-412: an unknown field is `IllegalArgumentException("field=\"f\"
+    /// not found")` from `getFieldEntryOrThrow`, also for
+    /// `getOffHeapByteSize` (`Lucene99HnswVectorsReader.java:286-293, 395-405`);
+    /// a search with the other encoding names both
+    /// (`Lucene99HnswVectorsReader.java:295-307`); a `.vex` whose version
+    /// differs from the `.vem` one is `CorruptIndexException("Format versions
+    /// mismatch: ...")` (`Lucene99HnswVectorsReader.java:170-185`).
+    #[test]
+    fn gap_g408_g412_reader_messages_as_java() -> Result<()> {
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, 150)?;
+        let field_info = float_field_info("vec", 0, 4)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        let seg_updates = BufferedUpdates::default();
+        let io_ctx = DefaultIOContext::default();
+        let (write_state, read_state) =
+            make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
+        write_vectors(&dir, &write_state, &field_info, 150)?;
+        let format = Lucene99HnswVectorsFormat::new();
+        let reader = format.fields_reader(&read_state)?;
+        let message = |e: LuceneError| match e.kind {
+            LuceneErrorKind::IllegalArgument { message, .. } => message,
+            other => panic!("expected IllegalArgumentException, got {other:?}"),
+        };
+        let unknown = float_field_info("nope", 7, 4)?;
+        assert_eq!(
+            message(reader.get_off_heap_byte_size(&unknown).unwrap_err()),
+            "field=\"nope\" not found"
+        );
+        let mut collector = TopKnnCollector::new(1, i64::MAX);
+        let mut accept_docs = from_live_docs(None, 150)?;
+        assert_eq!(
+            message(
+                reader
+                    .search_byte("vec", &[1, 2, 3, 4], &mut collector, &mut accept_docs)
+                    .unwrap_err()
+            ),
+            "field=\"vec\" is encoded as: FLOAT32 expected: BYTE"
+        );
+        reader.close()?;
+
+        // Rewrite the `.vex` header with the previous version.
+        let vex = segment_file_name("test", "", "vex");
+        let mut bytes = {
+            let mut input = dir.open_input(&vex, &io_ctx)?;
+            let len = input.length() as usize;
+            let mut buf = vec![0u8; len];
+            input.read_bytes(Some(&mut buf), 0, len)?;
+            buf
+        };
+        let version_at = 4 + 1 + VECTOR_INDEX_CODEC_NAME.len();
+        bytes[version_at..version_at + 4].copy_from_slice(&(VERSION_CURRENT - 1).to_be_bytes());
+        dir.delete_file(&vex)?;
+        {
+            let mut out = dir.create_output(&vex, &io_ctx)?;
+            out.write_bytes(&bytes, 0, bytes.len())?;
+            out.close()?;
+        }
+        let error = format
+            .fields_reader(&read_state)
+            .expect_err("versions differ");
+        assert_eq!(
+            error.original_message(),
+            Some(
+                format!(
+                    "Format versions mismatch: meta={VERSION_CURRENT}, \
+                     {VECTOR_INDEX_CODEC_NAME}={}",
+                    VERSION_CURRENT - 1
+                )
+                .as_str()
+            )
+        );
+        Ok(())
+    }
+
+    /// G-410 and G-411: `OffHeapHnswGraph` reads its node offsets through a
+    /// `DirectMonotonicReader` over a `RandomAccessInput` slice and `seek`
+    /// checks nothing Java does not: a level outside the graph raises
+    /// `ArrayIndexOutOfBoundsException` (`Lucene99HnswVectorsReader.java:567-597`).
+    #[test]
+    fn gap_g410_g411_off_heap_graph_seek_as_java() -> Result<()> {
+        use crate::codecs::hnsw::graph_provider::HnswGraphProvider;
+        // Above the `shouldCreateGraph(100, n)` threshold (648), so a graph is
+        // written.
+        let n = 1000;
+        let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, n)?;
+        let field_info = float_field_info("vec", 0, 4)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        let seg_updates = BufferedUpdates::default();
+        let io_ctx = DefaultIOContext::default();
+        let (write_state, read_state) =
+            make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
+        write_vectors(&dir, &write_state, &field_info, n)?;
+        let reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+        let hnsw = reader
+            .as_any()
+            .and_then(|r| r.downcast_ref::<Lucene99HnswVectorsReader>())
+            .expect("the HNSW reader");
+        let mut graph = hnsw.get_graph("vec")?;
+        let levels = graph.num_levels()?;
+        // Every node of level 0 is reachable through the lazily read offsets.
+        let mut neighbors = 0usize;
+        for node in 0..n {
+            graph.seek(0, node)?;
+            while graph.next_neighbor()? != NO_MORE_DOCS {
+                neighbors += 1;
+            }
+        }
+        assert!(neighbors > 0);
+        let error = graph.seek(levels, 0).unwrap_err();
+        assert!(
+            matches!(&error.kind, LuceneErrorKind::Unchecked { class, message: Some(m), .. }
+                if *class == "java.lang.ArrayIndexOutOfBoundsException"
+                    && *m == format!("Index {levels} out of bounds for length {levels}")),
+            "{error:?}"
+        );
+        drop(graph);
+        reader.close()
+    }
+
     #[test]
     fn round_trip_float_vectors_and_search() -> Result<()> {
         let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;

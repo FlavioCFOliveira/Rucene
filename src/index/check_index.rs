@@ -6763,3 +6763,68 @@ mod segment_check_pool_tests {
         assert_eq!(second.last().map(String::as_str), Some(""), "{lines:?}");
     }
 }
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+
+    /// G-205: every check records any throwable — a panic carrying a Java
+    /// unchecked exception included — as its error (`catch (Throwable t)` in
+    /// `testSegment` and every `test*` method), and with `failFast` rethrows
+    /// it (`IOUtils.rethrowAlways`).
+    #[test]
+    fn gap_g205_record_throwable_records_panics() {
+        let recorded = record_throwable::<()>(false, || {
+            std::panic::panic_any(
+                "java.lang.ArrayIndexOutOfBoundsException: Index 3 out of bounds for length 2"
+                    .to_string(),
+            )
+        });
+        let error = recorded.expect_err("the panic is the check's error");
+        assert!(
+            error
+                .to_string()
+                .contains("Index 3 out of bounds for length 2"),
+            "{error}"
+        );
+        let rethrown = std::panic::catch_unwind(|| {
+            let _ = record_throwable::<()>(true, || std::panic::panic_any("boom".to_string()));
+        });
+        assert!(rethrown.is_err(), "fail-fast rethrows the throwable");
+        assert_eq!(record_throwable(false, || Ok(7)).unwrap(), 7);
+    }
+
+    /// G-208 (c): a vector field the term vectors list but whose `Terms` is
+    /// `null` is the `NullPointerException` of `terms.iterator()`
+    /// (`CheckIndex.java:4028-4029`), which `testTermVectors` records.
+    #[test]
+    fn gap_g208_null_vector_terms_is_a_null_pointer() {
+        #[derive(Debug)]
+        struct ListsButHasNoTerms;
+        impl Fields for ListsButHasNoTerms {
+            fn size(&self) -> i32 {
+                1
+            }
+            fn terms(&self, _field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
+                Ok(None)
+            }
+            fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+                Box::new(std::iter::once("f".to_string()))
+            }
+        }
+        let info = FieldInfo::new("f", 0);
+        let error =
+            cross_check_vector_field_against_postings(&ListsButHasNoTerms, None, &info, "f", 0)
+                .unwrap_err();
+        assert!(
+            matches!(
+                error.kind,
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.NullPointerException",
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+}

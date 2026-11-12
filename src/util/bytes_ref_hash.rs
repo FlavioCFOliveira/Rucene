@@ -1582,3 +1582,20 @@ mod size_of_object_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+
+    /// G-109: `BytesRefHash(ByteBlockPool, int capacity, BytesStartArray)`
+    /// refuses a capacity of 0 with `"capacity must be greater than 0"`
+    /// (`BytesRefHash.java:122-128`).
+    #[test]
+    #[should_panic(expected = "capacity must be greater than 0")]
+    fn gap_g109_bytes_ref_hash_capacity_message() {
+        let _ = BytesRefHash::with_bytes_start_array(
+            0,
+            Box::new(DirectBytesStartArray::new(16, Arc::new(AtomicI64::new(0)))),
+        );
+    }
+}

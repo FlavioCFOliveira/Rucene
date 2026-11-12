@@ -1424,3 +1424,29 @@ mod tests {
         assert!(u.ram_bytes_used() > 0);
     }
 }
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+    use crate::error::LuceneErrorKind;
+
+    /// G-110: a buffer already holding `Integer.MAX_VALUE` entries refuses
+    /// another with `IllegalStateException("cannot support more than
+    /// Integer.MAX_VALUE doc/value entries")` (`DocValuesFieldUpdates.java:376-379`),
+    /// an error rather than a panic. The count is set directly: the entries
+    /// themselves would take gigabytes.
+    #[test]
+    fn gap_g110_more_than_integer_max_value_entries_is_illegal_state() {
+        let mut updates = DocValuesFieldUpdates::new(10, 1, "f", DocValuesType::NUMERIC);
+        updates.size = i32::MAX as usize;
+        let error = updates.add_long(0, 1).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                LuceneErrorKind::IllegalState { message, .. }
+                    if message == "cannot support more than Integer.MAX_VALUE doc/value entries"
+            ),
+            "{error:?}"
+        );
+    }
+}

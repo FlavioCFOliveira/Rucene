@@ -120,6 +120,16 @@ impl AtomicEntryNode {
     }
 }
 
+/// `RamUsageEstimator.shallowSizeOfInstance(OnHeapHnswGraph.class)`, Java's
+/// `OnHeapHnswGraph.RAM_BYTES_USED` (`OnHeapHnswGraph.java:37-38`), on a 64-bit
+/// JVM with compressed oops: a 12-byte header, seven references (`entryNode`,
+/// `graph`, `levelToNodes`, `size`, `maxNodeId`, `cur`, `graphRamBytesUsed`),
+/// four `int`s (`lastFreezeSize`, `nsize`, `nsize0`, `upto`) and one
+/// `boolean` (`noGrowth`), aligned to 8. Measured against
+/// `lucene-core-10.5.0.jar`: 64. The size of this Rust struct is not the
+/// Java object's.
+const ON_HEAP_HNSW_GRAPH_SHALLOW_SIZE: i64 = 64;
+
 impl OnHeapHnswGraph {
     /// Creates an empty graph with the given `M`. `num_nodes` of `-1` means
     /// unbounded growth; a non-negative value fixes the eventual size.
@@ -134,9 +144,10 @@ impl OnHeapHnswGraph {
             .map(|_| OnceLock::new())
             .collect();
         // Shallow estimate of the statically used on-heap memory, equivalent to
-        // `OnHeapHnswGraph.RAM_BYTES_USED`, plus the outer graph array.
-        let ram_bytes_used = RamUsageEstimator::shallow_size_of_instance::<Self>()
-            + RamUsageEstimator::shallow_size_of(&graph);
+        // `OnHeapHnswGraph.RAM_BYTES_USED`, plus the outer graph array
+        // (`OnHeapHnswGraph.java:37-38, 87`).
+        let ram_bytes_used =
+            ON_HEAP_HNSW_GRAPH_SHALLOW_SIZE + RamUsageEstimator::shallow_size_of(&graph);
         Self {
             entry_node: AtomicEntryNode::new(-1, 1),
             graph,

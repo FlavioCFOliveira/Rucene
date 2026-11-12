@@ -397,6 +397,75 @@ mod tests {
         builder.into_graph()
     }
 
+    /// G-402: `GraphBuilderKnnCollector.topDocs()` throws
+    /// `IllegalArgumentException` (`HnswGraphBuilder.java:742-745`) — an
+    /// error the caller can catch, not a panic.
+    #[test]
+    fn gap_g402_graph_builder_collector_top_docs_is_illegal_argument() {
+        use crate::search::knn::KnnCollector;
+        let mut collector = super::builder::GraphBuilderKnnCollector::new(3).unwrap();
+        let error = collector.top_docs().unwrap_err();
+        assert!(error.is_illegal_argument_exception(), "{error:?}");
+    }
+
+    /// G-403: `createBitSet(k, graphSize)` builds `new SparseFixedBitSet(0)`
+    /// for an empty graph (`expectedVisitedNodes` is `Integer.MIN_VALUE`),
+    /// which throws `IllegalArgumentException("length needs to be >= 1")`
+    /// (`HnswGraphSearcher.java:68-72`, `SparseFixedBitSet.java:63-66`).
+    #[test]
+    fn gap_g403_create_bit_set_for_an_empty_graph_throws() {
+        let error = super::searcher::create_bit_set(1, 0).expect_err("an empty graph");
+        assert_eq!(
+            error.to_string(),
+            LuceneError::illegal_argument("length needs to be >= 1".to_string()).to_string()
+        );
+        // k == 0: `(int)(log(0) * 0)` is NaN cast to 0, not below `0 >> 7`, so
+        // a FixedBitSet(0) is built.
+        assert!(super::searcher::create_bit_set(0, 0).is_ok());
+    }
+
+    /// G-404: the public `searchLevel(scorer, topK, level, eps, graph)`
+    /// returns a new `GraphBuilderKnnCollector(topK)` filled by the
+    /// package-private `searchLevel` with no `acceptOrds`
+    /// (`HnswGraphSearcher.java:201-210`).
+    #[test]
+    fn gap_g404_search_level_top_k_returns_a_filled_collector() {
+        use crate::util::hnsw::neighbor::NeighborQueue;
+        let vectors = test_vectors();
+        let mut graph = build_test_graph(&vectors, 4, 20).expect("graph build failed");
+        let supplier = TestVectorScorerSupplier::new(vectors.clone());
+        let entry = graph.entry_node().unwrap();
+        let run = |graph: &mut OnHeapHnswGraph, explicit: bool| -> Vec<i32> {
+            let mut scorer = supplier.scorer().unwrap();
+            scorer.set_scoring_ordinal(0).unwrap();
+            let mut searcher = HnswGraphSearcher::new(
+                NeighborQueue::new(3, true).unwrap(),
+                Box::new(crate::util::FixedBitSet::new(vectors.len())),
+            );
+            let mut collector = if explicit {
+                let mut c = super::builder::GraphBuilderKnnCollector::new(3).unwrap();
+                searcher
+                    .search_level(&mut c, scorer.as_mut(), 0, &[entry], graph, None)
+                    .unwrap();
+                c
+            } else {
+                searcher
+                    .search_level_top_k(scorer.as_mut(), 3, 0, &[entry], graph)
+                    .unwrap()
+            };
+            assert_eq!(collector.k(), 3);
+            let mut nodes = Vec::new();
+            while collector.size() > 0 {
+                nodes.push(collector.pop_node());
+            }
+            nodes
+        };
+        let via_top_k = run(&mut graph, false);
+        assert_eq!(via_top_k.len(), 3);
+        assert_eq!(via_top_k, run(&mut graph, true));
+        assert_eq!(*via_top_k.last().unwrap(), brute_top_k(&vectors, 0, 1)[0]);
+    }
+
     #[test]
     fn build_small_graph() {
         let vectors = test_vectors();

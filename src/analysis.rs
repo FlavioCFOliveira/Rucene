@@ -2496,6 +2496,178 @@ mod tests {
         Ok(())
     }
 
+    /// G-110: `Analyzer.normalize` wraps an `IOException` from the char
+    /// filters in `IllegalStateException("Normalization threw an unexpected
+    /// exception", e)` (`Analyzer.java:229-231, 261-263`); a non-I/O failure passes
+    /// through.
+    #[test]
+    fn gap_g110_normalize_wraps_io_exceptions() {
+        #[derive(Debug)]
+        struct FailingReader(bool);
+        impl CharReader for FailingReader {
+            fn read(&mut self, _buf: &mut [u16]) -> Result<usize> {
+                if self.0 {
+                    Err(LuceneError::from(LuceneErrorKind::Io(
+                        std::io::Error::other("boom"),
+                    )))
+                } else {
+                    Err(LuceneError::illegal_argument("not I/O".to_string()))
+                }
+            }
+            fn close(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+        #[derive(Debug)]
+        struct FailingNormalization {
+            inner: WhitespaceAnalyzer,
+            io: bool,
+        }
+        impl Analyzer for FailingNormalization {
+            fn analyzer_state(&self) -> &AnalyzerState {
+                self.inner.analyzer_state()
+            }
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
+            }
+            fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+                self.inner.create_components(field_name)
+            }
+            fn init_reader_for_normalization(
+                &self,
+                _field_name: &str,
+                _reader: Box<dyn CharReader>,
+            ) -> Box<dyn CharReader> {
+                Box::new(FailingReader(self.io))
+            }
+        }
+        let analyzer = FailingNormalization {
+            inner: WhitespaceAnalyzer::new(),
+            io: true,
+        };
+        let error = analyzer.normalize("f", "x").unwrap_err();
+        match &error.kind {
+            LuceneErrorKind::IllegalState { message, cause, .. } => {
+                assert_eq!(message, "Normalization threw an unexpected exception");
+                assert!(cause.as_ref().is_some_and(|c| c.is_io_exception()));
+            }
+            other => panic!("expected IllegalStateException, got {other:?}"),
+        }
+        let analyzer = FailingNormalization {
+            inner: WhitespaceAnalyzer::new(),
+            io: false,
+        };
+        assert!(analyzer
+            .normalize("f", "x")
+            .unwrap_err()
+            .is_illegal_argument_exception());
+    }
+
+    /// G-110: `QueryBuilder.createFieldQuery(Analyzer, ...)` wraps an
+    /// `IOException` of the analysis chain in `RuntimeException("Error
+    /// analyzing query text", e)` (`QueryBuilder.java:255-259`).
+    #[test]
+    fn gap_g110_query_builder_wraps_analysis_io_exceptions() {
+        use crate::util::query_builder::{QueryBuilder, QueryBuilderOps};
+        #[derive(Debug)]
+        struct FailingReader;
+        impl CharReader for FailingReader {
+            fn read(&mut self, _buf: &mut [u16]) -> Result<usize> {
+                Err(LuceneError::from(LuceneErrorKind::Io(
+                    std::io::Error::other("boom"),
+                )))
+            }
+            fn close(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+        #[derive(Debug)]
+        struct FailingAnalyzer(WhitespaceAnalyzer);
+        impl Analyzer for FailingAnalyzer {
+            fn analyzer_state(&self) -> &AnalyzerState {
+                self.0.analyzer_state()
+            }
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
+            }
+            fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+                self.0.create_components(field_name)
+            }
+            fn init_reader(
+                &self,
+                _field_name: &str,
+                _reader: Box<dyn CharReader>,
+            ) -> Box<dyn CharReader> {
+                Box::new(FailingReader)
+            }
+        }
+        let builder = QueryBuilder::new(Some(Arc::new(FailingAnalyzer(WhitespaceAnalyzer::new()))));
+        let error = builder
+            .create_boolean_query("f", "a b")
+            .expect_err("the analysis fails");
+        match &error.kind {
+            LuceneErrorKind::Unchecked {
+                class,
+                message,
+                cause,
+            } => {
+                assert_eq!(*class, "java.lang.RuntimeException");
+                assert_eq!(message.as_deref(), Some("Error analyzing query text"));
+                assert!(cause.as_ref().is_some_and(|c| c.is_io_exception()));
+            }
+            other => panic!("expected RuntimeException, got {other:?}"),
+        }
+    }
+
+    /// G-006: `DelegatingAnalyzerWrapper` installs a `DelegatingReuseStrategy`
+    /// (`DelegatingAnalyzerWrapper.java:45-102`) that keeps the wrapper's
+    /// components in the *wrapped* analyzer's reuse strategy. With a wrapped
+    /// analyzer on `GLOBAL_REUSE_STRATEGY`, two fields delegating to it share
+    /// one set of components even though the fallback strategy is per field.
+    #[test]
+    fn gap_g006_delegating_wrapper_reuses_through_the_wrapped_strategy() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        #[derive(Debug)]
+        struct Counting {
+            inner: WhitespaceAnalyzer,
+            created: AtomicUsize,
+        }
+        impl Analyzer for Counting {
+            fn analyzer_state(&self) -> &AnalyzerState {
+                self.inner.analyzer_state()
+            }
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
+            }
+            fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+                self.created.fetch_add(1, Ordering::SeqCst);
+                self.inner.create_components(field_name)
+            }
+        }
+        #[derive(Debug)]
+        struct Logic(Arc<Counting>);
+        impl DelegatingAnalyzerWrapperLogic for Logic {
+            fn get_wrapped_analyzer(&self, _field_name: &str) -> &dyn Analyzer {
+                &*self.0
+            }
+        }
+        let wrapped = Arc::new(Counting {
+            inner: WhitespaceAnalyzer::new(),
+            created: AtomicUsize::new(0),
+        });
+        let wrapper = DelegatingAnalyzerWrapper::new(
+            Box::new(PerFieldReuseStrategy),
+            Box::new(Logic(Arc::clone(&wrapped))),
+        );
+        let first = wrapper.token_stream_from_str("a", "x y")?;
+        assert_eq!(collect_terms(Arc::clone(&first))?, vec!["x", "y"]);
+        let second = wrapper.token_stream_from_str("b", "z")?;
+        assert_eq!(collect_terms(Arc::clone(&second))?, vec!["z"]);
+        assert_eq!(wrapped.created.load(Ordering::SeqCst), 1);
+        assert!(Arc::ptr_eq(&first, &second));
+        Ok(())
+    }
+
     #[test]
     fn global_reuse_strategy_reuses_components() -> Result<()> {
         let analyzer = WhitespaceAnalyzer::new();

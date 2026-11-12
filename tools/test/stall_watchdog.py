@@ -5,8 +5,9 @@ A timeout only reacts at its deadline; this watchdog looks at every running
 test process every `--interval` seconds and classifies it from its own
 counters (`/proc/<pid>/stat`, `/proc/<pid>/task/*/stat`):
 
-* BLOCKED  -- CPU time grew by less than `--idle-cpu` seconds over the last
-  `--blocked-after` seconds and no thread is running: a deadlock or a lost
+* BLOCKED  -- CPU time of the test and its descendants (e.g. the JVM of a Java
+  oracle) grew by less than `--idle-cpu` seconds over the last
+  `--blocked-after` seconds and no thread of that process tree is running: a deadlock or a lost
   wake-up, which never progresses. The watchdog takes a full thread dump with
   gdb (`thread apply all bt`) and, with `--kill-blocked`, kills the test so the
   run goes on (the runner reports it as a failure).
@@ -62,6 +63,39 @@ def thread_states(pid):
         except (FileNotFoundError, ProcessLookupError, ValueError):
             pass
     return out
+
+
+def descendants(pid):
+    """All descendant pids (children of every thread, recursively)."""
+    out, stack = [], [pid]
+    while stack:
+        p = stack.pop()
+        try:
+            for tid in os.listdir(f"/proc/{p}/task"):
+                try:
+                    with open(f"/proc/{p}/task/{tid}/children") as f:
+                        kids = [int(k) for k in f.read().split()]
+                except OSError:
+                    kids = []
+                out.extend(kids)
+                stack.extend(kids)
+        except OSError:
+            pass
+    return out
+
+
+def tree_cpu_and_running(pid):
+    """CPU seconds and whether any thread runs, over the process and its
+    descendants: a test waiting on the JVM of a Java oracle is not blocked
+    while that JVM works (false positive observed 2026-11-12)."""
+    cpu, running = 0.0, False
+    for p in [pid] + descendants(pid):
+        try:
+            cpu += proc_cpu(p)
+            running = running or any(s == "R" for s, _ in thread_states(p).values())
+        except (FileNotFoundError, ProcessLookupError, ValueError):
+            pass
+    return cpu, running
 
 
 def name_of(pid):
@@ -141,7 +175,7 @@ def main():
                 spin_since.pop(k)
         for pid in pids:
             try:
-                cpu = proc_cpu(pid)
+                cpu, tree_running = tree_cpu_and_running(pid)
                 threads = thread_states(pid)
                 rss[pid].append(proc_rss_mib(pid))
             except (FileNotFoundError, ProcessLookupError, ValueError):
@@ -152,8 +186,7 @@ def main():
             old = [x for x in h if now - x[0] >= a.blocked_after]
             if old and "BLOCKED" not in alerted[pid]:
                 t0, c0 = old[-1]
-                running = any(s == "R" for s, _ in threads.values())
-                if cpu - c0 < a.idle_cpu and not running:
+                if cpu - c0 < a.idle_cpu and not tree_running:
                     alerted[pid].add("BLOCKED")
                     alert("BLOCKED", pid, f"cpu+{cpu - c0:.2f}s in {now - t0:.0f}s, "
                           f"{len(threads)} threads", gdb_dump(pid))

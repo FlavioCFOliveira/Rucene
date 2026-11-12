@@ -917,7 +917,7 @@ fn read_vector_similarity(ordinal: i32) -> Option<VectorSimilarityFunction> {
 ///
 /// Equivalent to `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsReader`.
 pub struct Lucene99FlatVectorsReader {
-    fields: HashMap<i32, FieldEntry>,
+    fields: crate::internal::hppc::IntObjectHashMap<FieldEntry>,
     vector_scorer: Arc<dyn FlatVectorsScorer>,
     vector_data: SharedIndexInput,
     field_infos: FieldInfos,
@@ -927,7 +927,7 @@ pub struct Lucene99FlatVectorsReader {
 impl fmt::Debug for Lucene99FlatVectorsReader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Lucene99FlatVectorsReader")
-            .field("fields", &self.fields.len())
+            .field("fields", &self.fields.size())
             .finish_non_exhaustive()
     }
 }
@@ -1011,7 +1011,9 @@ impl Lucene99FlatVectorsReader {
     ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsReader#readMetadata`.
-    fn read_metadata(state: &SegmentReadState<'_>) -> Result<(i32, HashMap<i32, FieldEntry>)> {
+    fn read_metadata(
+        state: &SegmentReadState<'_>,
+    ) -> Result<(i32, crate::internal::hppc::IntObjectHashMap<FieldEntry>)> {
         let meta_file_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
@@ -1115,7 +1117,7 @@ impl Lucene99FlatVectorsReader {
         // `Lucene99FlatVectorsReader.java:210-217`: one message for both a
         // missing field and a field without an entry.
         self.fields
-            .get(&info.number)
+            .get(info.number)
             .ok_or_else(|| LuceneError::illegal_argument(format!("field=\"{field}\" not found")))
     }
 
@@ -1260,28 +1262,14 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
 /// is 24.
 const FLAT_VECTORS_READER_SHALLOW_SIZE: i64 = 24;
 
-/// The shallow size of the reader's `FieldEntry` on the JVM, measured against
-/// `lucene-core-10.5.0.jar`: 56.
-const FLAT_VECTORS_FIELD_ENTRY_SHALLOW_SIZE: i64 = 56;
-
 /// Accounts for the field map this reader holds.
 ///
-/// Equivalent to `Lucene99FlatVectorsReader.ramBytesUsed()`, which is
-/// `SHALLOW_SIZE + fields.ramBytesUsed()`.
-///
-/// **Divergence from Lucene 10.5.0.** Java's `fields` is an
-/// `IntObjectHashMap`, whose `ramBytesUsed()` reports its *table* capacity and
-/// so steps in powers of two; this port charges the crate's
-/// [`RamUsageEstimator::size_of_map`] model instead, which is linear in the
-/// entry count. Both are estimates of the same object; neither is read back
-/// from a file, so no index bytes depend on the difference.
+/// Equivalent to `Lucene99FlatVectorsReader.ramBytesUsed()`
+/// (`Lucene99FlatVectorsReader.java:188-190`): `SHALLOW_SIZE +
+/// fields.ramBytesUsed()`, the `IntObjectHashMap`'s own estimate.
 impl crate::util::Accountable for Lucene99FlatVectorsReader {
     fn ram_bytes_used(&self) -> i64 {
-        FLAT_VECTORS_READER_SHALLOW_SIZE
-            + crate::util::RamUsageEstimator::size_of_map(
-                self.fields.len(),
-                FLAT_VECTORS_FIELD_ENTRY_SHALLOW_SIZE,
-            )
+        FLAT_VECTORS_READER_SHALLOW_SIZE + self.fields.ram_bytes_used()
     }
 }
 
@@ -1349,8 +1337,8 @@ impl FlatVectorsReader for Lucene99FlatVectorsReader {
 fn read_fields(
     input: &mut dyn DataInput,
     field_infos: &FieldInfos,
-) -> Result<HashMap<i32, FieldEntry>> {
-    let mut fields = HashMap::new();
+) -> Result<crate::internal::hppc::IntObjectHashMap<FieldEntry>> {
+    let mut fields = crate::internal::hppc::IntObjectHashMap::new();
     let mut field_number = input.read_int()?;
     while field_number != -1 {
         // `Lucene99FlatVectorsReader.java:178-181`.
@@ -1361,7 +1349,7 @@ fn read_fields(
             ));
         };
         let entry = FieldEntry::create(input, info)?;
-        fields.insert(info.number, entry);
+        fields.put(info.number, entry);
         field_number = input.read_int()?;
     }
     Ok(fields)
@@ -2955,5 +2943,63 @@ impl std::fmt::Display for Lucene99FlatVectorsFormat {
             "Lucene99FlatVectorsFormat(vectorsScorer={})",
             self.vectors_scorer
         )
+    }
+}
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+    use crate::store::{DataOutput, MockIndexInput, MockIndexOutput};
+
+    /// G-109: a `.vemf` entry whose data length is not `size * dim *
+    /// byteSize` is `IllegalStateException("Vector data length <length> not
+    /// matching size=<size> * dim=<dim> * byteSize=<byteSize> = <numBytes>")`
+    /// (`Lucene99FlatVectorsReader.java:340-353`).
+    #[test]
+    fn gap_g109_vector_data_length_message() {
+        let info = FieldInfo::new_full(
+            "vec",
+            0,
+            false,
+            false,
+            false,
+            crate::index::IndexOptions::NONE,
+            crate::index::DocValuesType::NONE,
+            crate::index::DocValuesSkipIndexType::NONE,
+            -1,
+            crate::util::java_collections::JavaStringMap::default(),
+            0,
+            0,
+            0,
+            4,
+            VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::EUCLIDEAN,
+            false,
+            false,
+        )
+        .unwrap();
+        let mut out = MockIndexOutput::new("meta", "meta.vemf");
+        out.write_int(1).unwrap(); // FLOAT32
+        out.write_int(0).unwrap(); // EUCLIDEAN
+        out.write_v_long(0).unwrap(); // vectorDataOffset
+        out.write_v_long(99).unwrap(); // vectorDataLength
+        out.write_v_int(4).unwrap(); // dimension
+        out.write_int(1).unwrap(); // size
+        out.write_long(-1).unwrap(); // docsWithFieldOffset: dense
+        out.write_long(0).unwrap(); // docsWithFieldLength
+        out.write_short(-1).unwrap(); // jumpTableEntryCount
+        out.write_byte(0xFF).unwrap(); // denseRankPower
+        let mut input = MockIndexInput::new(out.into_inner(), "meta.vemf");
+        let error = FieldEntry::create(&mut input, &info)
+            .err()
+            .expect("a wrong length");
+        assert!(
+            matches!(
+                &error.kind,
+                LuceneErrorKind::IllegalState { message, .. }
+                    if message == "Vector data length 99 not matching size=1 * dim=4 * byteSize=4 = 16"
+            ),
+            "{error:?}"
+        );
     }
 }

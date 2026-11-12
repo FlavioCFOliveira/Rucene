@@ -7518,6 +7518,41 @@ mod tests {
         );
     }
 
+    /// G-303: `FlushPolicy.init(LiveIndexWriterConfig)` replaces the
+    /// configuration (and its info stream) on every call
+    /// (`FlushPolicy.java:61-64`); a later init wins.
+    #[test]
+    fn gap_g303_flush_policy_init_replaces_the_config() {
+        let policy = FlushByRamOrCountsPolicy::default();
+        assert!(policy.index_writer_config().is_none());
+        let first = Arc::new(LiveIndexWriterConfig::new(None));
+        let second = Arc::new(LiveIndexWriterConfig::new(None));
+        policy.init(Arc::clone(&first));
+        assert!(Arc::ptr_eq(&policy.index_writer_config().unwrap(), &first));
+        policy.init(Arc::clone(&second));
+        assert!(Arc::ptr_eq(&policy.index_writer_config().unwrap(), &second));
+    }
+
+    /// G-017: `BufferedUpdatesStream.push` charges `packet.bytesUsed` and
+    /// `finished` subtracts it (`BufferedUpdatesStream.java:80, 164`), so the
+    /// stream's RAM is the frozen packets' bytes, not their operation count.
+    #[test]
+    fn gap_g017_stream_charges_packet_bytes() {
+        let mut updates = BufferedUpdates::new("_0");
+        updates.add_term(term("id", "a"), 3).unwrap();
+        updates.add_term(term("id", "b"), 3).unwrap();
+        updates.add_query(label_query("q1"), 3);
+        let packet = Arc::new(FrozenBufferedUpdates::new(updates, None));
+        let bytes = packet.ram_bytes_used();
+        assert!(bytes > 3, "bytes, not the operation count: {bytes}");
+        let stream = crate::index::buffered_updates_stream::BufferedUpdatesStream::new();
+        assert_eq!(stream.ram_bytes_used(), 0);
+        stream.push(Arc::clone(&packet)).unwrap();
+        assert_eq!(stream.ram_bytes_used(), bytes);
+        stream.finished(&packet).unwrap();
+        assert_eq!(stream.ram_bytes_used(), 0);
+    }
+
     #[test]
     fn delete_queue_freezes_the_global_buffer_once() {
         let queue = new_delete_queue();

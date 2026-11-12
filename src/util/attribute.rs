@@ -2004,3 +2004,27 @@ impl std::fmt::Display for AttributeSource {
         )
     }
 }
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+
+    /// G-109: `AttributeFactory.DefaultAttributeFactory` names the interface
+    /// it has no implementation for: `"Cannot find implementing class for: "
+    /// + attClass.getName()` (`AttributeFactory.java:83-87`); the port names
+    /// the `TypeId` (declared divergence).
+    #[test]
+    fn gap_g109_attribute_factory_unknown_interface_message() {
+        let error = DefaultAttributeFactory::new()
+            .create_attribute_instance(std::any::TypeId::of::<u8>())
+            .expect_err("no implementation for u8");
+        assert!(
+            matches!(
+                &error.kind,
+                crate::error::LuceneErrorKind::IllegalArgument { message, .. }
+                    if message.starts_with("Cannot find implementing class for: ")
+            ),
+            "{error:?}"
+        );
+    }
+}

@@ -9324,6 +9324,70 @@ mod pass_d_char_sequence_binary_value_tests {
 }
 
 #[cfg(test)]
+mod census_gap_sort_field_tests {
+    use super::*;
+    use crate::search::sort::SortFieldType;
+    use crate::search::SortedNumericSelectorType;
+
+    /// G-001..G-003: `IntField`, `FloatField` and `DoubleField.newSortField`
+    /// build a `SortedNumericSortField` of their own type
+    /// (`IntField.java:173-189`, `FloatField.java:180-196`,
+    /// `DoubleField.java:180-196`), rendered by
+    /// `SortedNumericSortField.toString()` (`SortedNumericSortField.java:241-255`).
+    #[test]
+    fn gap_g001_g003_numeric_field_sort_fields_as_java() {
+        let int = IntField::new_sort_field("i", false, SortedNumericSelectorType::MIN).unwrap();
+        assert_eq!(int.get_numeric_type(), SortFieldType::Int);
+        assert_eq!(
+            int.to_string(),
+            "<sortednumeric: \"i\"> selector=MIN type=INT"
+        );
+        let int =
+            IntField::new_sort_field_with_missing("i", true, SortedNumericSelectorType::MAX, 7)
+                .unwrap();
+        assert_eq!(
+            int.to_string(),
+            "<sortednumeric: \"i\">! missingValue=7 selector=MAX type=INT"
+        );
+        let float = FloatField::new_sort_field("f", true, SortedNumericSelectorType::MIN).unwrap();
+        assert_eq!(float.get_numeric_type(), SortFieldType::Float);
+        assert_eq!(
+            float.to_string(),
+            "<sortednumeric: \"f\">! selector=MIN type=FLOAT"
+        );
+        let float = FloatField::new_sort_field_with_missing(
+            "f",
+            false,
+            SortedNumericSelectorType::MAX,
+            1.5,
+        )
+        .unwrap();
+        assert_eq!(
+            float.to_string(),
+            "<sortednumeric: \"f\"> missingValue=1.5 selector=MAX type=FLOAT"
+        );
+        let double =
+            DoubleField::new_sort_field("d", false, SortedNumericSelectorType::MAX).unwrap();
+        assert_eq!(double.get_numeric_type(), SortFieldType::Double);
+        assert_eq!(
+            double.to_string(),
+            "<sortednumeric: \"d\"> selector=MAX type=DOUBLE"
+        );
+        let double = DoubleField::new_sort_field_with_missing(
+            "d",
+            true,
+            SortedNumericSelectorType::MIN,
+            2.0,
+        )
+        .unwrap();
+        assert_eq!(
+            double.to_string(),
+            "<sortednumeric: \"d\">! missingValue=2.0 selector=MIN type=DOUBLE"
+        );
+    }
+}
+
+#[cfg(test)]
 mod shared_mutable_field_tests {
     use super::*;
 

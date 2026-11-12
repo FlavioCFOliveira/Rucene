@@ -4516,6 +4516,43 @@ mod tests {
         }
     }
 
+    /// G-111: `FreqProxPostingsEnum.startOffset()` and `endOffset()` throw
+    /// `IllegalStateException("offsets were not indexed")` when the field has
+    /// positions but no offsets (`FreqProxFields.java:520-534`).
+    #[test]
+    fn gap_g111_freq_prox_offsets_were_not_indexed() {
+        for end in [false, true] {
+            let mut harness = Harness::new(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+            harness
+                .add_doc(0, &[Token::new("alpha", 1)])
+                .expect("doc 0");
+            let fields = harness.freeze();
+            let terms = fields.terms("body").expect("terms").expect("present");
+            let mut enumerator = terms.iterator().expect("iterator");
+            enumerator.next().expect("alpha");
+            let mut postings = enumerator
+                .postings(None, POSTINGS_ENUM_POSITIONS)
+                .expect("postings")
+                .unwrap();
+            postings.next_doc().unwrap();
+            postings.next_position().unwrap();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if end {
+                    postings.end_offset()
+                } else {
+                    postings.start_offset()
+                }
+            }));
+            let payload = result.expect_err("offsets were not indexed");
+            let text = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            assert!(text.contains("offsets were not indexed"), "{text}");
+        }
+    }
+
     /// `FreqProxTermsEnum.postings` resets and hands back the
     /// `FreqProxPostingsEnum` it is offered exactly when it reads the same
     /// postings array (`FreqProxFields.java:242-249`): a later term of the

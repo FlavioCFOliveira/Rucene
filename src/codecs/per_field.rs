@@ -2015,6 +2015,71 @@ mod tests {
         assert!(title_closed.load(std::sync::atomic::Ordering::SeqCst));
     }
 
+    /// G-111: a format seen again whose name is not among the suffixes
+    /// handed out is `IllegalStateException("no suffix for format name: " +
+    /// formatName + ", expected: " + group.suffix)`
+    /// (`PerFieldPostingsFormat.java:240-249`). A format whose name changes
+    /// between two fields reaches it.
+    #[test]
+    fn gap_g111_per_field_no_suffix_for_format_name() {
+        #[derive(Debug)]
+        struct Renaming(std::sync::atomic::AtomicUsize);
+        impl PostingsFormat for Renaming {
+            fn name(&self) -> &str {
+                if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    "First"
+                } else {
+                    "Second"
+                }
+            }
+            fn fields_consumer<'a>(
+                &self,
+                _state: &SegmentWriteState<'a>,
+            ) -> Result<Box<dyn FieldsConsumer + 'a>> {
+                Ok(Box::new(super::NoOpFieldsConsumer))
+            }
+            fn fields_producer<'a>(
+                &self,
+                _state: &SegmentReadState<'a>,
+            ) -> Result<Box<dyn FieldsProducer>> {
+                Ok(Box::new(NamedFieldsProducer("Renaming")))
+            }
+        }
+        let mut body = FieldInfo::new("body", 0);
+        body.index_options = IndexOptions::DOCS;
+        let mut title = FieldInfo::new("title", 1);
+        title.index_options = IndexOptions::DOCS;
+        let field_infos = FieldInfos::new(vec![body, title]).unwrap();
+        let renaming: Arc<dyn PostingsFormat> =
+            Arc::new(Renaming(std::sync::atomic::AtomicUsize::new(0)));
+        let format = PerFieldPostingsFormat::new(move |_field| Arc::clone(&renaming));
+        let mut state = write_state();
+        state.field_infos = Box::leak(Box::new(field_infos));
+        let mut consumer = format.fields_consumer(&state).unwrap();
+        #[derive(Debug, Default, Clone)]
+        struct TwoFields;
+        impl Fields for TwoFields {
+            fn size(&self) -> i32 {
+                2
+            }
+            fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+                Ok(None)
+            }
+            fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+                Box::new(["body".to_string(), "title".to_string()].into_iter())
+            }
+        }
+        let error = consumer.write(&TwoFields, None).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                crate::error::LuceneErrorKind::IllegalState { message, .. }
+                    if message == "no suffix for format name: Second, expected: 0"
+            ),
+            "{error:?}"
+        );
+    }
+
     #[test]
     fn per_field_postings_writer_records_two_formats() {
         let mut body = FieldInfo::new("body", 0);

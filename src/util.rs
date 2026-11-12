@@ -4607,13 +4607,21 @@ impl FixedBitSet {
 
     /// Sets the bit at `index`.
     ///
+    /// Equivalent to `FixedBitSet.set(int)` (`FixedBitSet.java:297-302`),
+    /// whose bound is an `assert`: a debug build — Java under `-ea` — stops on
+    /// an index outside `[0, numBits)`; otherwise only the word array bounds
+    /// the index, as Java's `bits[wordNum]` does.
+    ///
     /// # Panics
     ///
-    /// Panics if `index` is out of bounds.
+    /// In a debug build, if `index` is not below `length()`; always, if
+    /// `index >> 6` is past the word array (Java's
+    /// `ArrayIndexOutOfBoundsException`).
     pub fn set(&mut self, index: usize) {
-        assert!(
+        debug_assert!(
             index < self.num_bits,
-            "index={index}, numBits={}",
+            "index={}, numBits={}",
+            index as i32,
             self.num_bits
         );
         let word = index >> 6;
@@ -4623,13 +4631,17 @@ impl FixedBitSet {
 
     /// Clears the bit at `index`.
     ///
+    /// Equivalent to `FixedBitSet.clear(int)` (`FixedBitSet.java:337-342`),
+    /// whose bound is an `assert`; see [`set`](Self::set).
+    ///
     /// # Panics
     ///
-    /// Panics if `index` is out of bounds.
+    /// As [`set`](Self::set).
     pub fn clear(&mut self, index: usize) {
-        assert!(
+        debug_assert!(
             index < self.num_bits,
-            "index={index}, numBits={}",
+            "index={}, numBits={}",
+            index as i32,
             self.num_bits
         );
         let word = index >> 6;
@@ -4639,11 +4651,19 @@ impl FixedBitSet {
 
     /// Returns the value of the bit at `index`.
     ///
+    /// Equivalent to `FixedBitSet.get(int)` (`FixedBitSet.java:287-294`),
+    /// whose bound is an `assert`; see [`set`](Self::set).
+    ///
     /// # Panics
     ///
-    /// Panics if `index` is out of bounds.
+    /// As [`set`](Self::set).
     pub fn get(&self, index: usize) -> bool {
-        assert!(index < self.num_bits, "index {} out of bounds", index);
+        debug_assert!(
+            index < self.num_bits,
+            "index={}, numBits={}",
+            index as i32,
+            self.num_bits
+        );
         let word = index >> 6;
         let mask = 1u64 << (index & 0x3f);
         (self.word(word) & mask) != 0
@@ -7125,5 +7145,56 @@ mod fixed_bit_set_copy_of_tests {
             "FixedBitSet::copy_of({NUM_BITS} bits): word copy {word_copy:?}, \
              bit-by-bit copy {bit_copy:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod fixed_bit_set_assert_tests {
+    use super::FixedBitSet;
+
+    /// `FixedBitSet.get/set/clear` check the index only with an `assert`
+    /// (`FixedBitSet.java:287-342`): a debug build — Java under `-ea` — stops
+    /// with Java's assertion message.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "index=70, numBits=70")]
+    fn set_past_num_bits_fails_the_java_assertion() {
+        FixedBitSet::new(70).set(70);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "index=70, numBits=70")]
+    fn get_past_num_bits_fails_the_java_assertion() {
+        let _ = FixedBitSet::new(70).get(70);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "index=-1, numBits=70")]
+    fn clear_of_a_negative_index_fails_the_java_assertion() {
+        FixedBitSet::new(70).clear(-1i32 as usize);
+    }
+
+    /// Without the assertion only the word array bounds the index, as Java's
+    /// `bits[index >> 6]` does: a ghost bit inside the last word is set, read
+    /// and cleared.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn release_get_set_clear_reach_the_last_word() {
+        let mut bits = FixedBitSet::new(70);
+        bits.set(127);
+        assert!(bits.get(127));
+        bits.clear(127);
+        assert!(!bits.get(127));
+    }
+
+    /// Past the word array, Java raises `ArrayIndexOutOfBoundsException`;
+    /// the port fails on the same array access.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    #[should_panic(expected = "index out of bounds")]
+    fn release_set_past_the_word_array_fails_the_array_access() {
+        FixedBitSet::new(70).set(128);
     }
 }

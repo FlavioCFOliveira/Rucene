@@ -1223,3 +1223,33 @@ mod comparator_trait_tests {
         )));
     }
 }
+
+#[cfg(test)]
+mod census_gap_equality_tests {
+    use super::*;
+
+    /// G-008: `LatLonPointSortField.equals` and `hashCode` compare the
+    /// coordinates through `Double.doubleToLongBits`
+    /// (`LatLonPointSortField.java:61-82`), so `0.0` and `-0.0` differ while
+    /// equal coordinates agree.
+    #[test]
+    fn gap_g008_lat_lon_sort_field_equality_uses_double_bits() {
+        let a = LatLonPointSortField::new("p", 0.0, 10.0).unwrap();
+        let b = LatLonPointSortField::new("p", 0.0, 10.0).unwrap();
+        let negative_zero = LatLonPointSortField::new("p", -0.0, 10.0).unwrap();
+        assert!(a == b);
+        assert_eq!(a.hash_code(), b.hash_code());
+        assert!(a != negative_zero);
+        assert_ne!(a.hash_code(), negative_zero.hash_code());
+        let other_lon = LatLonPointSortField::new("p", 0.0, -0.0).unwrap();
+        let other_lon2 = LatLonPointSortField::new("p", 0.0, 0.0).unwrap();
+        assert!(other_lon != other_lon2);
+        // `Long.hashCode(doubleToLongBits(-0.0))` is `Integer.MIN_VALUE`, so
+        // the two hashes differ by exactly `31 * MIN_VALUE` in the latitude
+        // term (`LatLonPointSortField.java:66-69`).
+        assert_eq!(
+            negative_zero.hash_code().wrapping_sub(a.hash_code()),
+            i32::MIN.wrapping_mul(31)
+        );
+    }
+}

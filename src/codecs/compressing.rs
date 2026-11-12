@@ -1681,3 +1681,56 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+    use crate::store::{DataOutput, MockIndexInput, MockIndexOutput};
+
+    /// G-109: the LZ4 decompressor refuses a block that decompresses past
+    /// `originalLength` with `"Corrupted: lengths mismatch: <decompressed> >
+    /// <original>"` (`CompressionMode.java:135-138`). One LZ4 sequence of ten
+    /// literals decompresses to ten bytes.
+    #[test]
+    fn gap_g109_lz4_lengths_mismatch_message() {
+        let mut block = vec![0xA0u8];
+        block.extend_from_slice(b"abcdefghij");
+        let mut input = MockIndexInput::new(block, "block");
+        let mut bytes = BytesRef::new(Vec::new());
+        let error = FAST
+            .new_decompressor()
+            .decompress(&mut input, 5, 0, 5, &mut bytes)
+            .unwrap_err();
+        assert_eq!(
+            error.original_message(),
+            Some("Corrupted: lengths mismatch: 10 > 5")
+        );
+    }
+
+    /// G-109: a deflate block that ends before the stream does is
+    /// `CorruptIndexException("Invalid decoder state: needsInput=true,
+    /// needsDict=false")` (`CompressionMode.java:229-237`).
+    #[test]
+    fn gap_g109_deflate_invalid_decoder_state_message() {
+        let text = b"hello hello hello hello hello world world world".repeat(4);
+        let mut compressor = flate2::Compress::new(flate2::Compression::new(6), false);
+        let mut compressed = vec![0u8; 1024];
+        compressor
+            .compress(&text, &mut compressed, flate2::FlushCompress::Finish)
+            .unwrap();
+        compressed.truncate(compressor.total_out() as usize / 2);
+        let mut out = MockIndexOutput::new("block", "block");
+        out.write_v_int(compressed.len() as i32).unwrap();
+        out.write_bytes(&compressed, 0, compressed.len()).unwrap();
+        let mut input = MockIndexInput::new(out.into_inner(), "block");
+        let mut bytes = BytesRef::new(Vec::new());
+        let error = HIGH_COMPRESSION
+            .new_decompressor()
+            .decompress(&mut input, text.len(), 0, text.len(), &mut bytes)
+            .unwrap_err();
+        assert_eq!(
+            error.original_message(),
+            Some("Invalid decoder state: needsInput=true, needsDict=false")
+        );
+    }
+}
