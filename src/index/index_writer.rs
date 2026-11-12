@@ -215,6 +215,18 @@ struct WriterState {
 /// Creates and updates an index.
 ///
 /// Equivalent to `org.apache.lucene.index.IndexWriter`.
+///
+/// Like Lucene 10.5.0's `IndexWriter`, which has no `numDocs()`, this type
+/// has no `num_docs`; the document counts come from
+/// [`get_doc_stats`](Self::get_doc_stats). The same body with
+/// `writer.get_doc_stats()` compiles:
+///
+/// ```compile_fail,E0599
+/// use rucene::index::index_writer::IndexWriter;
+/// fn count(writer: &IndexWriter) {
+///     let _ = writer.num_docs();
+/// }
+/// ```
 pub struct IndexWriter {
     /// The directory the writer was opened on.
     ///
