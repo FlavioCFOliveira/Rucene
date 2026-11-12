@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
 
-use crate::error::{LuceneError, Result};
+use crate::error::Result;
 use crate::index::{IndexReaderContext, LeafReaderContext};
 use crate::search::collection_terminated_exception::{CollectionError, CollectionResult};
 use crate::search::collector::{Collector, CollectorManager, LeafCollector};
@@ -229,9 +229,7 @@ impl EarlyTerminatedCell {
                 .wait(state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        state.ok_or_else(|| {
-            LuceneError::illegal_state("early-termination decision is missing".to_string())
-        })
+        Ok(state.expect("INVARIANT: the wait loop ends once the decision is published"))
     }
 }
 

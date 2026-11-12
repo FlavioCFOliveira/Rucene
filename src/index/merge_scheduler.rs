@@ -2200,10 +2200,15 @@ impl MergeScheduler for ConcurrentMergeScheduler {
                 inner: directory,
                 rate_limiter,
             })),
-            None => Err(LuceneError::illegal_state(format!(
+            // `throw new AssertionError("wrapForMerge should be called from
+            // MergeThread. Current thread: " + mergeThread)`
+            // (`ConcurrentMergeScheduler.java:289-292`). **Divergence from
+            // Lucene 10.5.0.** `Thread.toString()` is `Thread[#id,name,
+            // priority,group]`; a Rust thread has only its name.
+            None => Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
                 "wrapForMerge should be called from MergeThread. Current thread: {}",
                 std::thread::current().name().unwrap_or("<unnamed>")
-            ))),
+            )))),
         }
     }
 

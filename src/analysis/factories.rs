@@ -577,9 +577,9 @@ impl AbstractAnalysisFactory {
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`] when the argument is missing,
-    /// and, standing in for the `NumberFormatException` (an
-    /// `IllegalArgumentException`) `Integer.parseInt` throws, with its
-    /// message `For input string: "<value>"` when it is not an `int`.
+    /// and the `NumberFormatException` (an `IllegalArgumentException`, see
+    /// [`LuceneError::is_illegal_argument_exception`]) `Integer.parseInt`
+    /// throws, `For input string: "<value>"`, when it is not an `int`.
     pub fn require_int(args: &mut HashMap<String, String>, name: &str) -> Result<i32> {
         let value = Self::require(args, name)?;
         parse_int(&value)
@@ -638,8 +638,8 @@ impl AbstractAnalysisFactory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`] when the argument is missing
-    /// or is not a float.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the argument is missing,
+    /// and what [`get_float`](Self::get_float) returns when it is not a float.
     pub fn require_float(args: &mut HashMap<String, String>, name: &str) -> Result<f32> {
         let value = Self::require(args, name)?;
         parse_float(&value)
@@ -655,9 +655,9 @@ impl AbstractAnalysisFactory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`], standing in for the
-    /// `NumberFormatException` (an `IllegalArgumentException`) Java throws,
-    /// with its message: `empty String` for a value that trims to nothing,
+    /// Returns the `NumberFormatException` (an `IllegalArgumentException`, see
+    /// [`LuceneError::is_illegal_argument_exception`]) Java throws, with its
+    /// message: `empty String` for a value that trims to nothing,
     /// `For input string: "<value>"` otherwise.
     pub fn get_float(
         args: &mut HashMap<String, String>,
@@ -690,11 +690,12 @@ impl AbstractAnalysisFactory {
     }
 }
 
-/// `Integer.parseInt(String)`, failing with the `NumberFormatException`
-/// message `For input string: "<s>"`.
+/// `Integer.parseInt(String)`, failing with its `NumberFormatException`
+/// (`For input string: "<s>"`), an `IllegalArgumentException`
+/// ([`LuceneError::is_illegal_argument_exception`]).
 fn parse_int(s: &str) -> Result<i32> {
     crate::util::extra::java_parse_int(s)
-        .ok_or_else(|| LuceneError::illegal_argument(format!("For input string: \"{s}\"")))
+        .ok_or_else(|| LuceneError::number_format_for_input_string(s, 10))
 }
 
 /// `Boolean.parseBoolean(String)`: `"true".equalsIgnoreCase(s)`. No character
@@ -738,11 +739,13 @@ fn java_equals_ignore_case(a: &str, b: &str) -> bool {
 
 /// `Float.parseFloat(String)`: see [`AbstractAnalysisFactory::get_float`].
 fn parse_float(input: &str) -> Result<f32> {
-    let not_a_float = || LuceneError::illegal_argument(format!("For input string: \"{input}\""));
+    // The `NumberFormatException` (an `IllegalArgumentException`) names the
+    // string as given, untrimmed, on the JDK 25 oracle.
+    let not_a_float = || LuceneError::number_format(format!("For input string: \"{input}\""));
     // `in = in.trim()`: the characters up to U+0020.
     let trimmed = input.trim_matches(|c: char| c <= '\u{20}');
     if trimmed.is_empty() {
-        return Err(LuceneError::illegal_argument("empty String".to_string()));
+        return Err(LuceneError::number_format("empty String"));
     }
     let (negative, rest) = match trimmed.as_bytes()[0] {
         b'-' => (true, &trimmed[1..]),
@@ -2224,13 +2227,24 @@ mod accessor_tests {
         HashMap::from([(name.to_string(), value.to_string())])
     }
 
+    /// The message of an `IllegalArgumentException`, `NumberFormatException`
+    /// (one of its subclasses) included, as `expectThrows(
+    /// IllegalArgumentException.class, ...)` accepts.
     fn message(error: LuceneError) -> String {
+        assert!(
+            error.is_illegal_argument_exception(),
+            "expected an IllegalArgumentException, got {error:?}"
+        );
         match error {
             LuceneError {
                 kind: LuceneErrorKind::IllegalArgument { message, .. },
                 ..
             } => message,
-            other => panic!("expected an IllegalArgumentException, got {other:?}"),
+            LuceneError {
+                kind: LuceneErrorKind::Unchecked { message, .. },
+                ..
+            } => message.unwrap_or_default(),
+            other => unreachable!("{other:?}"),
         }
     }
 

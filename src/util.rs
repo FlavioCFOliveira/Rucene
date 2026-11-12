@@ -401,14 +401,70 @@ impl BytesRef {
         self.slice() == other.slice()
     }
 
-    /// Decodes the active bytes as UTF-8.
+    /// Interprets the active bytes as UTF-8 and returns the string they
+    /// decode to.
+    ///
+    /// Equivalent to `BytesRef.utf8ToString()` (`BytesRef.java:137-141`):
+    /// `new char[length]` filled by `UnicodeUtil.UTF8toUTF16(bytes, offset,
+    /// length, ref)`, which assumes well-formed UTF-8 and checks nothing
+    /// beyond its `assert`s — a malformed sequence decodes to whatever its
+    /// bits give, never to U+FFFD; only a sequence running past the end of
+    /// the backing array fails, with the JVM's
+    /// `ArrayIndexOutOfBoundsException`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** A lone surrogate the decoding
+    /// produces becomes U+FFFD, since a Rust `String` cannot hold one (see
+    /// [`utf16_to_string`](crate::analysis::character_utils::utf16_to_string)).
     ///
     /// # Errors
     ///
-    /// Returns `LuceneErrorKind::IllegalArgument` if the bytes are not valid UTF-8.
+    /// `java.lang.ArrayIndexOutOfBoundsException` (`Index i out of bounds for
+    /// length L`) when a multi-byte sequence reads past the backing array.
     pub fn utf8_to_string(&self) -> Result<String, LuceneError> {
-        String::from_utf8(self.slice().to_vec())
-            .map_err(|e| LuceneError::illegal_argument(format!("invalid UTF-8: {e}")))
+        let utf8 = &self.bytes;
+        let at = |index: usize| -> Result<u32, LuceneError> {
+            utf8.get(index).map(|&b| u32::from(b)).ok_or_else(|| {
+                LuceneError::unchecked(
+                    "java.lang.ArrayIndexOutOfBoundsException",
+                    format!("Index {index} out of bounds for length {}", utf8.len()),
+                )
+            })
+        };
+        let mut out: Vec<u16> = Vec::with_capacity(self.length);
+        let mut offset = self.offset;
+        let limit = self.offset + self.length;
+        while offset < limit {
+            let b = at(offset)?;
+            offset += 1;
+            if b < 0xc0 {
+                debug_assert!(b < 0x80);
+                out.push(b as u16);
+            } else if b < 0xe0 {
+                out.push((((b & 0x1f) << 6) + (at(offset)? & 0x3f)) as u16);
+                offset += 1;
+            } else if b < 0xf0 {
+                out.push(
+                    (((b & 0xf) << 12) + ((at(offset)? & 0x3f) << 6) + (at(offset + 1)? & 0x3f))
+                        as u16,
+                );
+                offset += 2;
+            } else {
+                debug_assert!(b < 0xf8, "b = 0x{b:x}");
+                let ch = ((b & 0x7) << 18)
+                    + ((at(offset)? & 0x3f) << 12)
+                    + ((at(offset + 1)? & 0x3f) << 6)
+                    + (at(offset + 2)? & 0x3f);
+                offset += 3;
+                if ch < 0xFFFF {
+                    out.push(ch as u16);
+                } else {
+                    let ch_half = ch - 0x0010000;
+                    out.push(((ch_half >> 10) + 0xD800) as u16);
+                    out.push(((ch_half & 0x3FF) + 0xDC00) as u16);
+                }
+            }
+        }
+        Ok(crate::analysis::character_utils::utf16_to_string(&out))
     }
 
     /// Returns a hex-encoded representation such as `[6c 75 63 65 6e 65]`.

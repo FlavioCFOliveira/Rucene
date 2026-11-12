@@ -129,10 +129,9 @@ impl DisjunctionMaxBulkScorer {
     /// are supplied, which is the bare `IllegalArgumentException` Java throws.
     pub fn new(scorers: Vec<Box<dyn BulkScorer>>) -> Result<Self> {
         if scorers.len() < 2 {
-            return Err(LuceneError::illegal_argument(format!(
-                "Expected 2 or more bulk scorers, got {}",
-                scorers.len()
-            )));
+            // `throw new IllegalArgumentException()`, without a message
+            // (`DisjunctionMaxBulkScorer.java:75-77`).
+            return Err(LuceneError::illegal_argument(String::new()));
         }
         let cost = scorers
             .iter()

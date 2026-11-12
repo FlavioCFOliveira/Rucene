@@ -2699,7 +2699,8 @@ impl TieredMergePolicy {
     pub fn set_max_merged_segment_mb(&self, v: f64) -> Result<&Self> {
         if v < 0.0 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "maxMergedSegmentMB must be >= 0.0 (got {v})"
+                "maxMergedSegmentMB must be >=0 (got {})",
+                crate::util::java_fmt::double_to_string(v)
             )));
         }
         let bytes = (v * 1024.0 * 1024.0).min(i64::MAX as f64);
@@ -3836,9 +3837,9 @@ impl LogMergePolicy {
     /// Returns `IllegalArgument` when `v` is below 2.
     pub fn set_merge_factor(&self, v: i32) -> Result<&Self> {
         if v < 2 {
-            return Err(crate::error::LuceneError::illegal_argument(format!(
-                "mergeFactor cannot be less than 2 (got {v})"
-            )));
+            return Err(crate::error::LuceneError::illegal_argument(
+                "mergeFactor cannot be less than 2",
+            ));
         }
         self.merge_factor.set(v);
         Ok(self)
@@ -5298,9 +5299,9 @@ impl TemporalMergePolicy {
         segment_info: &SegmentCommitInfo,
     ) -> Result<Option<SegmentDateRange>> {
         let si = &segment_info.info;
-        let codec = si.codec().ok_or_else(|| {
-            crate::error::LuceneError::illegal_state(format!("segment {} has no codec", si.name))
-        })?;
+        let codec = si
+            .codec()
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
         let context = &*crate::store::READONCE_IO_CONTEXT;
 
         let mut compound_dir = if si.get_use_compound_file() {
@@ -5965,9 +5966,7 @@ impl SoftDeletesRetentionMergePolicy {
             .get_leaf_contexts()
             .first()
             .cloned()
-            .ok_or_else(|| {
-                crate::error::LuceneError::illegal_state("the searcher has no leaf".to_string())
-            })?;
+            .expect("INVARIANT: a searcher over a leaf reader has that leaf");
         weight.scorer(&context)
     }
 }

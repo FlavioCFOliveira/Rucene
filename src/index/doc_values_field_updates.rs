@@ -276,7 +276,9 @@ impl DocValuesFieldUpdates {
                     .expect("INVARIANT: one 1-bit value is a legal paged writer"),
                 values: BytesRefBuilder::new(),
             },
-            other => panic!("doc-values updates are numeric or binary, got {other:?}"),
+            other => unreachable!(
+                "INVARIANT: only numeric and binary updates exist (no subclass for {other:?})"
+            ),
         };
         Self::with_values(max_doc, del_gen, field, dv_type, values)
     }
@@ -411,18 +413,20 @@ impl DocValuesFieldUpdates {
         // checks `finished` nor records an entry: it only sets the document's
         // bit.
         if let Some(single) = self.single_value.as_mut() {
-            assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
+            debug_assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
             single.add(doc, value);
             return Ok(());
+        }
+        // `BinaryDocValuesFieldUpdates.add(int, long)` throws
+        // `UnsupportedOperationException` (`BinaryDocValuesFieldUpdates.java:84-86`).
+        if !matches!(self.values, Values::Numeric { .. }) {
+            return Err(LuceneError::unsupported_operation(String::new()));
         }
         // `NumericDocValuesFieldUpdates.add(int, long)`
         // (`NumericDocValuesFieldUpdates.java:97-100`).
         let idx = self.add_internal(doc, HAS_VALUE_MASK)? as i64;
-        match &mut self.values {
-            Values::Numeric { values, min_value } => {
-                values.set(idx, value.wrapping_sub(*min_value))
-            }
-            _ => panic!("a binary update cannot take a numeric value"),
+        if let Values::Numeric { values, min_value } = &mut self.values {
+            values.set(idx, value.wrapping_sub(*min_value));
         }
         Ok(())
     }
@@ -438,26 +442,24 @@ impl DocValuesFieldUpdates {
     ///
     /// Panics if `doc >= max_doc` (Java's `assert doc < maxDoc`).
     pub fn add_binary(&mut self, doc: i32, value: &BytesRef) -> Result<()> {
-        // `SingleValueNumericDocValuesFieldUpdates.add(int, BytesRef)` throws
-        // `UnsupportedOperationException`.
-        assert!(
-            self.single_value.is_none(),
-            "a single-value numeric update cannot take a binary value"
-        );
+        // `SingleValueNumericDocValuesFieldUpdates.add(int, BytesRef)` and
+        // `NumericDocValuesFieldUpdates.add(int, BytesRef)` throw
+        // `UnsupportedOperationException` (`NumericDocValuesFieldUpdates.java:87-89`).
+        if self.single_value.is_some() || !matches!(self.values, Values::Binary { .. }) {
+            return Err(LuceneError::unsupported_operation(String::new()));
+        }
         // `BinaryDocValuesFieldUpdates.add(int, BytesRef)`
         // (`BinaryDocValuesFieldUpdates.java:94-99`).
         let index = self.add_internal(doc, HAS_VALUE_MASK)? as i64;
-        match &mut self.values {
-            Values::Binary {
-                offsets,
-                lengths,
-                values,
-            } => {
-                offsets.set(index, values.length() as i64);
-                lengths.set(index, value.length as i64);
-                values.append_ref(value);
-            }
-            _ => panic!("a numeric update cannot take a binary value"),
+        if let Values::Binary {
+            offsets,
+            lengths,
+            values,
+        } = &mut self.values
+        {
+            offsets.set(index, values.length() as i64);
+            lengths.set(index, value.length as i64);
+            values.append_ref(value);
         }
         Ok(())
     }
@@ -609,9 +611,7 @@ impl DocValuesFieldUpdates {
     /// Returns `IllegalState` if called twice.
     pub fn finish(&mut self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::illegal_state(
-                "DocValuesFieldUpdates already finished".to_string(),
-            ));
+            return Err(LuceneError::illegal_state("already finished"));
         }
         self.finished = true;
         // shrink wrap
@@ -701,7 +701,11 @@ impl DocValuesFieldUpdates {
         if let Some(single) = self.single_value.as_ref() {
             return DocValuesFieldUpdatesIterator::single_value(single, self.max_doc, self.del_gen);
         }
-        assert!(self.ensure_finished().is_ok(), "call finish() first");
+        // `ensureFinished()`: `IllegalStateException("call finish first")`.
+        assert!(
+            self.finished,
+            "java.lang.IllegalStateException: call finish first"
+        );
         DocValuesFieldUpdatesIterator::new(self.size, &self.docs, &self.values, self.del_gen)
     }
 
@@ -859,30 +863,36 @@ impl<'a> DocValuesFieldUpdatesIterator<'a> {
 
     /// Returns the long value for the current document.
     ///
+    /// Java's iterators return the value last set whatever `hasValue()` says.
+    ///
     /// # Panics
     ///
-    /// Panics if this iterator is not a long iterator or the current doc has
-    /// no value.
+    /// `java.lang.UnsupportedOperationException` on a binary iterator
+    /// (`BinaryDocValuesFieldUpdates.java:68-70`).
     pub fn long_value(&self) -> i64 {
-        // The single-value iterator's `longValue()` returns the value whatever
-        // `hasValue()` says.
         if let Some((single, _)) = self.single {
             return single.value;
         }
-        assert!(self.has_value, "no value for current doc");
-        assert!(!self.current_is_binary, "not a numeric iterator");
+        assert!(
+            !self.current_is_binary,
+            "java.lang.UnsupportedOperationException"
+        );
         self.current_long
     }
 
     /// Returns the binary value for the current document.
     ///
+    /// Java's iterators return the value last set whatever `hasValue()` says.
+    ///
     /// # Panics
     ///
-    /// Panics if this iterator is not a binary iterator or the current doc has
-    /// no value.
+    /// `java.lang.UnsupportedOperationException` on a numeric iterator
+    /// (`NumericDocValuesFieldUpdates.java:216-219`).
     pub fn binary_value(&self) -> BytesRef {
-        assert!(self.has_value, "no value for current doc");
-        assert!(self.current_is_binary, "not a binary iterator");
+        assert!(
+            self.current_is_binary,
+            "java.lang.UnsupportedOperationException"
+        );
         self.current_binary.clone()
     }
 }
@@ -958,9 +968,7 @@ impl<'a> DocIdSetIterator for DocValuesFieldUpdatesIterator<'a> {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "advance not supported for DocValuesFieldUpdatesIterator".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// The packed iterator's cost is its entry count; the single-value one is
@@ -1066,9 +1074,7 @@ impl<'a> MergedIterator<'a> {
     pub fn del_gen(&self) -> Result<i64> {
         match self.subs.first() {
             Some(sub) if !self.merged => Ok(sub.it.del_gen()),
-            _ => Err(LuceneError::unsupported_operation(
-                "delGen() of a merged DocValuesFieldUpdates iterator".to_string(),
-            )),
+            _ => Err(LuceneError::unsupported_operation(String::new())),
         }
     }
 
@@ -1166,9 +1172,7 @@ impl<'a> DocIdSetIterator for MergedIterator<'a> {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "advance not supported for MergedIterator".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn cost(&self) -> i64 {

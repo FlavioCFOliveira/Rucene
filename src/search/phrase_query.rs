@@ -774,12 +774,7 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
         }
         let collection_stats = searcher
             .collection_statistics(&self.field)?
-            .ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "field {} has term statistics but no collection statistics",
-                    self.field
-                ))
-            })?;
+            .ok_or_else(LuceneError::null_pointer)?;
         Ok(Some(Arc::new(SimScorerSource::new(
             Arc::clone(&self.similarity),
             self.boost,
@@ -810,11 +805,10 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
             )));
         }
 
-        let states = self.states.get().ok_or_else(|| {
-            LuceneError::illegal_state(
-                "PhraseWeight.getStats must run before getPhraseMatcher".to_string(),
-            )
-        })?;
+        let states = self
+            .states
+            .get()
+            .expect("INVARIANT: the weight's constructor runs getStats");
 
         // Reuse a single terms enum below.
         let mut te = field_terms.iterator()?;

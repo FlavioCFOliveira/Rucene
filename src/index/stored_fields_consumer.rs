@@ -314,13 +314,8 @@ impl StoredFieldsConsumer {
     ///
     /// As [`Self::start_document`].
     pub fn super_start_document(&mut self, doc_id: i32) -> Result<()> {
+        // `assert lastDoc < docID` only.
         debug_assert!(self.last_doc < doc_id);
-        if self.last_doc >= doc_id {
-            return Err(LuceneError::illegal_state(format!(
-                "stored fields must be written in increasing doc order: lastDoc={} docID={doc_id}",
-                self.last_doc
-            )));
-        }
         self.init_stored_fields_writer()?;
         // Borrow the writer and the cursor separately so that `last_doc`
         // advances with every frame actually written, exactly as Java's
@@ -329,11 +324,8 @@ impl StoredFieldsConsumer {
         let Self {
             writer, last_doc, ..
         } = self;
-        let writer = writer.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state(
-                "the stored-fields writer was not created by initStoredFieldsWriter".to_string(),
-            )
-        })?;
+        // `writer.startDocument()` on a `null` writer.
+        let writer = writer.as_mut().ok_or_else(LuceneError::null_pointer)?;
         loop {
             *last_doc += 1;
             if *last_doc >= doc_id {
@@ -362,12 +354,9 @@ impl StoredFieldsConsumer {
             StoredValue::Double(value) => writer.write_field_f64(info, value),
             StoredValue::Binary(value) => writer.write_field_bytes(info, value.slice()),
             StoredValue::DataInput(value) => {
-                let length = i32::try_from(value.length).map_err(|_| {
-                    LuceneError::illegal_argument(format!(
-                        "stored field \"{}\" is too large to store: {} bytes",
-                        info.name, value.length
-                    ))
-                })?;
+                // `StoredFieldDataInput.getLength()` is an `int`.
+                let length = i32::try_from(value.length)
+                    .expect("INVARIANT: a StoredFieldDataInput length is an int");
                 let mut input = ByteArrayDataInput::new(value.slice());
                 let mut data_input = StoredFieldDataInput::new(&mut input, length);
                 writer.write_field_data_input(info, &mut data_input)
@@ -501,12 +490,8 @@ impl StoredFieldsConsumer {
     }
 
     fn writer_mut(&mut self) -> Result<&mut Box<dyn StoredFieldsWriter>> {
-        self.writer.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state(format!(
-                "no stored-fields document is open for segment {}",
-                self.info.name
-            ))
-        })
+        // A `null` writer is the `NullPointerException` of its dereference.
+        self.writer.as_mut().ok_or_else(LuceneError::null_pointer)
     }
 }
 
@@ -989,32 +974,11 @@ mod tests {
         let (mut consumer, _log, _dir) = logging_consumer(false);
         consumer.start_document(2).expect("start");
         consumer.finish_document().expect("finish");
-        let error = consumer
+        // Without assertions Java proceeds: `while (++lastDoc < docID)` writes
+        // no back-fill frame, and the document is started.
+        consumer
             .start_document(2)
-            .expect_err("a document may not be revisited");
-        assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
-            "{error:?}"
-        );
-        let error = consumer
-            .start_document(1)
-            .expect_err("doc ids may not go backwards");
-        assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
-            "{error:?}"
-        );
+            .expect("Java only asserts lastDoc < docID");
     }
 
     #[test]

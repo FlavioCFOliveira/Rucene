@@ -271,13 +271,13 @@ impl DocIdSetIterator for MultiFieldNormValues {
 
     fn next_doc(&mut self) -> Result<i32> {
         Err(crate::error::LuceneError::unsupported_operation(
-            "MultiFieldNormValues cannot be iterated".to_string(),
+            String::new(),
         ))
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
         Err(crate::error::LuceneError::unsupported_operation(
-            "MultiFieldNormValues cannot be advanced".to_string(),
+            String::new(),
         ))
     }
 
@@ -294,7 +294,7 @@ impl DocIdSetIterator for MultiFieldNormValues {
         _offset: i32,
     ) -> Result<()> {
         Err(crate::error::LuceneError::unsupported_operation(
-            "MultiFieldNormValues cannot be iterated".to_string(),
+            String::new(),
         ))
     }
 }

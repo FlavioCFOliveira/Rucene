@@ -491,56 +491,57 @@ impl FieldInfo {
         index_dimension_count: i32,
         num_bytes: i32,
     ) -> Result<()> {
+        // `FieldInfo.setPointDimensions` (`FieldInfo.java:432-510`), messages
+        // verbatim.
+        let name = &self.name;
         if dimension_count <= 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "point dimension count must be > 0; got {dimension_count} for field='{}'",
-                self.name
+                "point dimension count must be >= 0; got {dimension_count} for field=\"{name}\""
             )));
         }
         if index_dimension_count > MAX_INDEX_DIMENSIONS {
             return Err(LuceneError::illegal_argument(format!(
-                "point index dimension count must be <= PointValues.MAX_INDEX_DIMENSIONS (={}); got {index_dimension_count} for field='{}'",
-                MAX_INDEX_DIMENSIONS,
-                self.name
+                "point index dimension count must be < PointValues.MAX_INDEX_DIMENSIONS (= \
+                 {MAX_INDEX_DIMENSIONS}); got {index_dimension_count} for field=\"{name}\""
             )));
         }
         if index_dimension_count > dimension_count {
             return Err(LuceneError::illegal_argument(format!(
-                "point index dimension count must be <= point dimension count (={dimension_count}); got {index_dimension_count} for field='{}'",
-                self.name
+                "point index dimension count must be <= point dimension count (= \
+                 {dimension_count}); got {index_dimension_count} for field=\"{name}\""
             )));
         }
         if num_bytes <= 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "point numBytes must be > 0; got {num_bytes} for field='{}'",
-                self.name
+                "point numBytes must be >= 0; got {num_bytes} for field=\"{name}\""
             )));
         }
         if num_bytes > MAX_NUM_BYTES {
             return Err(LuceneError::illegal_argument(format!(
-                "point numBytes must be <= PointValues.MAX_NUM_BYTES (={}); got {num_bytes} for field='{}'",
-                MAX_NUM_BYTES,
-                self.name
+                "point numBytes must be <= PointValues.MAX_NUM_BYTES (= {MAX_NUM_BYTES}); got \
+                 {num_bytes} for field=\"{name}\""
             )));
         }
         if self.point_dimension_count != 0 && self.point_dimension_count != dimension_count {
             return Err(LuceneError::illegal_argument(format!(
-                "cannot change point dimension count from {} to {dimension_count} for field='{}'",
-                self.point_dimension_count, self.name
+                "cannot change point dimension count from {} to {dimension_count} for \
+                 field=\"{name}\"",
+                self.point_dimension_count
             )));
         }
         if self.point_index_dimension_count != 0
             && self.point_index_dimension_count != index_dimension_count
         {
             return Err(LuceneError::illegal_argument(format!(
-                "cannot change point index dimension count from {} to {index_dimension_count} for field='{}'",
-                self.point_index_dimension_count, self.name
+                "cannot change point index dimension count from {} to {index_dimension_count} \
+                 for field=\"{name}\"",
+                self.point_index_dimension_count
             )));
         }
         if self.point_num_bytes != 0 && self.point_num_bytes != num_bytes {
             return Err(LuceneError::illegal_argument(format!(
-                "cannot change point numBytes from {} to {num_bytes} for field='{}'",
-                self.point_num_bytes, self.name
+                "cannot change point numBytes from {} to {num_bytes} for field=\"{name}\"",
+                self.point_num_bytes
             )));
         }
 
@@ -712,7 +713,7 @@ impl FieldInfo {
 
         if self.vector_dimension < 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "vectorDimension must be >= 0; got {} (field: '{}')",
+                "vectorDimension must be >=0; got {} (field: '{}')",
                 self.vector_dimension, self.name
             )));
         }

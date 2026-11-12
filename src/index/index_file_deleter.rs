@@ -75,7 +75,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::{LuceneError, Result};
 use crate::index::index_commit::IndexCommit;
 use crate::index::index_deletion_policy::IndexDeletionPolicy;
 use crate::index::index_file_names::{
@@ -160,12 +160,11 @@ impl CommitPoint {
         segment_infos: &SegmentInfos,
     ) -> Result<Arc<Self>> {
         let user_data = segment_infos.user_data().clone();
-        let segments_file_name = segment_infos.segments_file_name().ok_or_else(|| {
-            LuceneError::illegal_state(
-                "cannot build a commit point from SegmentInfos with no segments file name"
-                    .to_string(),
-            )
-        })?;
+        // Commit points are built from committed infos, whose generation
+        // names a file.
+        let segments_file_name = segment_infos
+            .segments_file_name()
+            .expect("INVARIANT: a commit point's SegmentInfos names its segments file");
         let generation = segment_infos.generation();
         let files = segment_infos.files(true)?;
         let segment_count = segment_infos.size() as i32;
@@ -452,11 +451,20 @@ impl IndexFileDeleter {
             let name = current_segments_file
                 .as_deref()
                 .expect("checked is_some above");
+            // `catch (IOException e) { throw new CorruptIndexException("unable
+            // to read current segments_N file", currentSegmentsFile, e); }`
+            // (`IndexFileDeleter.java:188-193`).
             let sis =
                 SegmentInfos::read_commit(Arc::clone(&directory_orig), name).map_err(|e| {
-                    LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                        "unable to read current segments_N file \"{name}\": {e}"
-                    )))
+                    if e.is_io_exception() {
+                        LuceneError::corrupt_index_with_cause(
+                            "unable to read current segments_N file",
+                            name,
+                            e,
+                        )
+                    } else {
+                        e
+                    }
                 })?;
             if info_stream.is_enabled(IFD) {
                 info_stream.message(IFD, &format!("forced open of current segments file {name}"));
@@ -953,18 +961,22 @@ pub fn inflate_gens(
             // Checked before the `segments` arm: `PENDING_SEGMENTS` does not
             // start with `SEGMENTS`, but testing it first keeps the two
             // unambiguous regardless of future constant changes.
-            if let Ok(gen) =
-                SegmentInfos::generation_from_segments_file_name(&format!("{SEGMENTS}{rest}"))
-            {
-                max_segment_gen = max_segment_gen.max(gen);
+            // `catch (NumberFormatException ignore)`: a trash file, since
+            // anything starting with `pending_segments` is allowed here; any
+            // other exception propagates (`IndexFileDeleter.java:281-292`).
+            match SegmentInfos::generation_from_segments_file_name(&format!("{SEGMENTS}{rest}")) {
+                Ok(gen) => max_segment_gen = max_segment_gen.max(gen),
+                Err(error) if error.is_number_format_exception() => {}
+                Err(error) => return Err(error),
             }
-            // A trash file: anything starting with `pending_segments` is allowed
-            // here, so an unparsable tail is ignored rather than fatal.
         } else if file_name.starts_with(SEGMENTS) {
-            if let Ok(gen) = SegmentInfos::generation_from_segments_file_name(file_name) {
-                max_segment_gen = max_segment_gen.max(gen);
+            // `catch (NumberFormatException ignore)` only
+            // (`IndexFileDeleter.java:272-280`).
+            match SegmentInfos::generation_from_segments_file_name(file_name) {
+                Ok(gen) => max_segment_gen = max_segment_gen.max(gen),
+                Err(error) if error.is_number_format_exception() => {}
+                Err(error) => return Err(error),
             }
-            // Likewise trash-tolerant.
         } else {
             let segment_name = parse_segment_name(file_name);
             debug_assert!(
@@ -985,21 +997,24 @@ pub fn inflate_gens(
                 chars.next();
                 chars.as_str()
             };
-            let ordinal = i64::from_str_radix(ordinal_str, MAX_RADIX).map_err(|e| {
-                LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                    "cannot parse segment ordinal from \"{file_name}\": {e}"
-                )))
-            })?;
+            // `Long.parseLong(segmentName.substring(1), Character.MAX_RADIX)`
+            // (`IndexFileDeleter.java:304`).
+            let ordinal = crate::util::extra::java_parse_long_radix(ordinal_str, MAX_RADIX)
+                .ok_or_else(|| {
+                    LuceneError::number_format_for_input_string(ordinal_str, MAX_RADIX)
+                })?;
             max_segment_name = max_segment_name.max(ordinal);
 
             let entry = max_per_segment_gen
                 .entry(segment_name.to_string())
                 .or_insert(0);
-            if let Ok(gen) = parse_generation(file_name) {
-                *entry = (*entry).max(gen);
+            // `catch (NumberFormatException ignore)`: the codec regex is only
+            // so good (`IndexFileDeleter.java:310-316`).
+            match parse_generation(file_name) {
+                Ok(gen) => *entry = (*entry).max(gen),
+                Err(error) if error.is_number_format_exception() => {}
+                Err(error) => return Err(error),
             }
-            // Unparsable generation: the codec file-name pattern is only so
-            // good, so trash is tolerated here too.
         }
     }
 
@@ -1085,6 +1100,7 @@ mod tests {
     use crate::codecs::lucene99::Lucene99SegmentInfoFormat;
     use crate::codecs::tests::{test_segment_info_with_codec, DummyCodec};
     use crate::codecs::{register_codec, Codec, FilterCodec, SegmentInfoFormat};
+    use crate::error::LuceneErrorKind;
     use crate::index::index_deletion_policy::{
         KeepOnlyLastCommitDeletionPolicy, NoDeletionPolicy, SnapshotDeletionPolicy,
     };
@@ -1799,17 +1815,18 @@ mod tests {
             "_0_é.liv".to_string(),
         ]);
 
-        // The names carry no valid ordinal, so this reports a corrupt index.
-        // The point of the test is that it does not panic: byte-slicing the
-        // leading character used to abort the process here.
+        // The names carry no valid ordinal: `Long.parseLong(..., 36)` throws
+        // `NumberFormatException`. The point of the test is that it does not
+        // panic: byte-slicing the leading character used to abort the process
+        // here.
         let err = inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap_err();
         assert!(
             matches!(
-                err,
+                &err,
                 LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex { .. },
+                    kind: LuceneErrorKind::Unchecked { class, .. },
                     ..
-                }
+                } if *class == "java.lang.NumberFormatException"
             ),
             "got {err:?}"
         );

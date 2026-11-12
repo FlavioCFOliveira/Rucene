@@ -357,6 +357,21 @@ pub enum LuceneErrorKind {
     },
 }
 
+/// The binary name of `java.lang.NumberFormatException`, a subclass of
+/// `IllegalArgumentException`.
+pub const NUMBER_FORMAT_EXCEPTION: &str = "java.lang.NumberFormatException";
+
+/// The JDK classes carried as [`LuceneErrorKind::Unchecked`] that extend
+/// `java.lang.IllegalArgumentException`.
+const ILLEGAL_ARGUMENT_SUBCLASSES: [&str; 6] = [
+    NUMBER_FORMAT_EXCEPTION,
+    "java.util.regex.PatternSyntaxException",
+    "java.nio.charset.IllegalCharsetNameException",
+    "java.nio.charset.UnsupportedCharsetException",
+    "java.nio.file.InvalidPathException",
+    "java.security.InvalidParameterException",
+];
+
 /// The top-level error type for Rucene operations: a Java `Throwable`.
 ///
 /// [`kind`](Self::kind) is the Java exception class with its fields;
@@ -528,6 +543,43 @@ impl LuceneError {
         self.kind.is_io_exception()
     }
 
+    /// Whether the Java class this error stands for is a
+    /// `java.lang.IllegalArgumentException`: what a `catch
+    /// (IllegalArgumentException e)` clause catches.
+    /// [`LuceneErrorKind::is_illegal_argument_exception`] of its kind.
+    pub fn is_illegal_argument_exception(&self) -> bool {
+        self.kind.is_illegal_argument_exception()
+    }
+
+    /// Whether this error is a `java.lang.NumberFormatException`: what a
+    /// `catch (NumberFormatException e)` clause catches.
+    pub fn is_number_format_exception(&self) -> bool {
+        matches!(
+            &self.kind,
+            LuceneErrorKind::Unchecked { class, .. } if *class == NUMBER_FORMAT_EXCEPTION
+        )
+    }
+
+    /// `new NumberFormatException(message)`: a [`LuceneErrorKind::Unchecked`]
+    /// of class `java.lang.NumberFormatException`, which extends
+    /// `IllegalArgumentException`, so
+    /// [`is_illegal_argument_exception`](Self::is_illegal_argument_exception)
+    /// answers `true` for it.
+    pub fn number_format(message: impl Into<String>) -> Self {
+        Self::unchecked(NUMBER_FORMAT_EXCEPTION, message)
+    }
+
+    /// `NumberFormatException.forInputString(s, radix)`, which
+    /// `Integer.parseInt` and `Long.parseLong` throw: `For input string:
+    /// "<s>"`, followed by ` under radix <radix>` when the radix is not 10.
+    pub fn number_format_for_input_string(s: &str, radix: u32) -> Self {
+        Self::number_format(if radix == 10 {
+            format!("For input string: \"{s}\"")
+        } else {
+            format!("For input string: \"{s}\" under radix {radix}")
+        })
+    }
+
     /// Returns an equal error: [`LuceneErrorKind::duplicate`] of its kind,
     /// with the same suppressed exceptions.
     pub fn duplicate(&self) -> Self {
@@ -690,6 +742,25 @@ impl LuceneErrorKind {
                 | Self::LockReleaseFailed { .. }
                 | Self::MergeAborted(_)
         )
+    }
+
+    /// Whether the Java class this error stands for is a
+    /// `java.lang.IllegalArgumentException` — what a `catch
+    /// (IllegalArgumentException e)` clause catches.
+    ///
+    /// True for [`LuceneErrorKind::IllegalArgument`] and for the
+    /// [`LuceneErrorKind::Unchecked`] classes of the JDK that extend it:
+    /// `NumberFormatException`, `java.util.regex.PatternSyntaxException`,
+    /// `java.nio.charset.IllegalCharsetNameException`,
+    /// `java.nio.charset.UnsupportedCharsetException`,
+    /// `java.nio.file.InvalidPathException` and
+    /// `java.security.InvalidParameterException`.
+    pub fn is_illegal_argument_exception(&self) -> bool {
+        match self {
+            Self::IllegalArgument { .. } => true,
+            Self::Unchecked { class, .. } => ILLEGAL_ARGUMENT_SUBCLASSES.contains(class),
+            _ => false,
+        }
     }
 
     /// Returns an equal error: the same variant, message and fields, and the

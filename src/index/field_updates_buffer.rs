@@ -299,10 +299,10 @@ impl FieldUpdatesBuffer {
     /// term raises.
     pub fn add_numeric_update(&mut self, term: &Term, value: i64, doc_up_to: i32) -> Result<()> {
         debug_assert!(self.is_numeric);
+        // `numericValues` of a binary buffer is `null` (after `assert
+        // isNumeric`): `NullPointerException`.
         if !self.is_numeric {
-            return Err(LuceneError::illegal_state(
-                "cannot add a numeric update to a binary FieldUpdatesBuffer".to_string(),
-            ));
+            return Err(LuceneError::null_pointer());
         }
         self.check_not_finished()?;
         let ord = self.append(term)?;
@@ -364,10 +364,10 @@ impl FieldUpdatesBuffer {
         doc_up_to: i32,
     ) -> Result<()> {
         debug_assert!(!self.is_numeric);
+        // `byteValues` of a numeric buffer is `null` (after `assert
+        // !isNumeric`): `NullPointerException`.
         if self.is_numeric {
-            return Err(LuceneError::illegal_state(
-                "cannot add a binary update to a numeric FieldUpdatesBuffer".to_string(),
-            ));
+            return Err(LuceneError::null_pointer());
         }
         self.check_not_finished()?;
         let ord = self.append(term)?;

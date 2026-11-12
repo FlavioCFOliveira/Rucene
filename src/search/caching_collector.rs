@@ -265,10 +265,12 @@ impl<C: Collector> CachingCollector<C> {
 
         for i in 0..ords.len() {
             let ord = ords[i];
+            // `contexts.get(...)`: `IndexOutOfBoundsException`.
             let context = leaves.get(ord as usize).ok_or_else(|| {
-                LuceneError::illegal_argument(format!(
-                    "leaf ordinal {ord} was collected but is absent from the leaves given to replay"
-                ))
+                LuceneError::unchecked(
+                    "java.lang.IndexOutOfBoundsException",
+                    format!("Index {ord} out of bounds for length {}", leaves.len()),
+                )
             })?;
             let mut collector = other.get_leaf_collector(context)?;
             match self.state.scores.as_ref() {

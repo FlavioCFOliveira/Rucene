@@ -326,11 +326,11 @@ fn radix36(value: u64) -> String {
     }
 }
 
-/// Parses a base-36 string into an `i64`.
+/// `Long.parseLong(s, Character.MAX_RADIX)`, failing with its
+/// `NumberFormatException` (`IndexFileNames.java:155`).
 fn parse_radix36(s: &str) -> Result<i64> {
-    i64::from_str_radix(s, 36).map_err(|e| {
-        LuceneError::illegal_argument(format!("invalid base-36 generation '{s}': {e}"))
-    })
+    crate::util::extra::java_parse_long_radix(s, 36)
+        .ok_or_else(|| LuceneError::number_format_for_input_string(s, 36))
 }
 
 // -----------------------------------------------------------------------------

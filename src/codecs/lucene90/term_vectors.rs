@@ -976,6 +976,14 @@ impl Lucene90CompressingTermVectorsWriter {
 
         let num_distinct_fields = field_nums.len();
         debug_assert!(num_distinct_fields > 0);
+        // `fieldNums[numDistinctFields - 1]` of an empty array, after the
+        // `assert` above: `ArrayIndexOutOfBoundsException`.
+        if num_distinct_fields == 0 {
+            return Err(LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                "Index -1 out of bounds for length 0",
+            ));
+        }
         // `PackedInts.bitsRequired`, not `DirectWriter.bitsRequired`
         // (`Lucene90CompressingTermVectorsWriter.java:467`): the field numbers
         // are written with `PackedInts.Format.PACKED`, which accepts any width,
@@ -1010,7 +1018,9 @@ impl Lucene90CompressingTermVectorsWriter {
 
     fn flush_fields(&mut self, total_fields: i32, field_nums: &[i32]) -> Result<()> {
         self.scratch_buffer.reset()?;
-        let bits_per_off = DirectWriter::bits_required((field_nums.len() - 1) as i64)?;
+        // `DirectWriter.bitsRequired(fieldNums.length - 1)`, an `int`
+        // subtraction: `-1` for an empty array, which it rejects.
+        let bits_per_off = DirectWriter::bits_required(field_nums.len() as i64 - 1)?;
         let mut writer =
             DirectWriter::new(&mut self.scratch_buffer, total_fields as i64, bits_per_off)?;
         for doc in &self.pending_docs {

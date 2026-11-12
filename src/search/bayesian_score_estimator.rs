@@ -130,9 +130,10 @@ impl BayesianScoreEstimator {
         }
 
         let mut rng = JavaRandom::new(seed);
-        let sample_size = n_samples.checked_mul(tokens_per_query).ok_or_else(|| {
-            LuceneError::illegal_argument("nSamples * tokensPerQuery overflows an int".to_string())
-        })?;
+        // `Math.multiplyExact(nSamples, tokensPerQuery)`.
+        let sample_size = n_samples
+            .checked_mul(tokens_per_query)
+            .ok_or_else(LuceneError::integer_overflow)?;
         let sampled_terms = sample_vocabulary_terms(reader, field, sample_size, &mut rng)?;
         if sampled_terms.is_empty() {
             return Ok(Parameters::new(1.0, 0.0, 0.01));

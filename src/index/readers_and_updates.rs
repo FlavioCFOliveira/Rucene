@@ -319,7 +319,7 @@ impl PendingDeletes {
         let live_docs: &dyn Bits = self
             .live_docs
             .as_ref()
-            .expect("live_docs must exist when pending_delete_count > 0");
+            .expect("INVARIANT: live_docs exist when pending_delete_count > 0");
         // We have new deletes: `assert liveDocs.length() == info.info.maxDoc()`
         // (`PendingDeletes.java:179`).
         debug_assert_eq!(
@@ -331,7 +331,7 @@ impl PendingDeletes {
             .info
             .info
             .codec()
-            .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
         let live_docs_format = codec.live_docs_format();
 
         let write_result = live_docs_format.write_live_docs(
@@ -1079,9 +1079,9 @@ impl PendingSoftDeletes {
     /// Propagates whatever opening or decoding the field-infos file raises.
     pub fn read_field_infos(info: &SegmentCommitInfo) -> Result<FieldInfos> {
         let seg_info = &info.info;
-        let codec = seg_info.codec().ok_or_else(|| {
-            LuceneError::illegal_state(format!("segment {} has no codec", seg_info.name))
-        })?;
+        let codec = seg_info
+            .codec()
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
         let fis_format = codec.field_infos_format();
         let context = &*READONCE_IO_CONTEXT;
         if info.has_field_updates() {
@@ -1828,9 +1828,7 @@ impl ReadersAndUpdates {
     /// Adds a resolved doc-values update packet.
     pub fn add_dv_update(&self, update: DocValuesFieldUpdates) -> Result<()> {
         if !update.get_finished() {
-            return Err(LuceneError::illegal_argument(
-                "DocValuesFieldUpdates not finished — call finish() first".to_string(),
-            ));
+            return Err(LuceneError::illegal_argument("call finish first"));
         }
         let mut state = self
             .state
@@ -2117,7 +2115,7 @@ impl ReadersAndUpdates {
             .info
             .info
             .codec()
-            .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
 
         // Open a reader if we don't have one.  We clone the Arc so `reader`
         // does not borrow `state`, allowing later `state.info` mutations.
@@ -2600,7 +2598,9 @@ impl ReadersAndUpdates {
         let old_reader = Arc::clone(
             reader
                 .as_ref()
-                .ok_or_else(|| LuceneError::illegal_state("no reader to swap".to_string()))?,
+                // `createNewReaderWithLatestLiveDocs(reader)` dereferences
+                // the `null` reader.
+                .ok_or_else(LuceneError::null_pointer)?,
         );
         let new_reader = Self::create_new_reader_with_latest_live_docs_parts(
             info,
@@ -2863,8 +2863,8 @@ impl std::fmt::Debug for MergedDvProducer {
 
 impl MergedDvProducer {
     /// The `UnsupportedOperationException` `EmptyDocValuesProducer` throws.
-    fn unsupported(method: &str) -> LuceneError {
-        LuceneError::unsupported_operation(format!("EmptyDocValuesProducer.{method}"))
+    fn unsupported(_method: &str) -> LuceneError {
+        LuceneError::unsupported_operation(String::new())
     }
 }
 

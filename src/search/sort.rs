@@ -12,10 +12,8 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use crate::error::{LuceneError, Result};
-// Named by the rustdoc links below and by the tests.
-#[cfg(any(doc, test))]
 use crate::error::LuceneErrorKind;
+use crate::error::{LuceneError, Result};
 use crate::search::binary_sort_field::BinarySortField;
 use crate::search::comparators::numeric_comparator::NumericDocValuesSource;
 use crate::search::comparators::{
@@ -985,9 +983,11 @@ impl SortField {
                         c.set_numeric_doc_values_source(Arc::clone(&source));
                         Box::new(SharedFieldComparator::new(c))
                     }
-                    other => {
-                        return Err(LuceneError::illegal_state(format!(
-                            "Illegal numeric sort type: {other}"
+                    // `default: throw new AssertionError();`
+                    // (`SortedNumericSortField.java:364-365`).
+                    _ => {
+                        return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                            String::new(),
                         )))
                     }
                 }
@@ -1084,10 +1084,10 @@ impl SortField {
                     Some(source) => source.new_comparator(field, num_hits, pruning, self.reverse)?,
                     None => {
                         // `assert comparatorSource != null;` (`SortField.java:545`).
+                        // Without `-ea`, `comparatorSource.newComparator(...)`
+                        // dereferences `null`.
                         debug_assert!(self.comparator_source.is_some());
-                        return Err(LuceneError::illegal_state(
-                            "A CUSTOM SortField requires a FieldComparatorSource".to_string(),
-                        ));
+                        return Err(LuceneError::null_pointer());
                     }
                 },
                 SortFieldType::String => Box::new(SharedFieldComparator::new(TermOrdValComparator::new(

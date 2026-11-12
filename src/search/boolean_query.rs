@@ -6,7 +6,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use crate::error::{LuceneError, Result};
+use crate::error::Result;
 use crate::index::TermStates;
 use crate::search::boolean_clause::{BooleanClause, Occur};
 use crate::search::boolean_weight::BooleanWeight;
@@ -331,12 +331,7 @@ impl BooleanQuery {
                 .query()
                 .as_any()
                 .downcast_ref::<TermQuery>()
-                .ok_or_else(|| {
-                    LuceneError::illegal_state(
-                        "rewriteTwoClauseDisjunctionWithTermsForCount requires TermQuery clauses"
-                            .to_string(),
-                    )
-                })?;
+                .expect("INVARIANT: the caller checked every clause is a TermQuery");
             // The optimisation counts each term query several times, so a
             // cached `TermStates` avoids repeating the terms-dictionary lookup.
             let term_query: Arc<dyn Query> = if term_query.get_term_states().is_none() {

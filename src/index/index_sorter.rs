@@ -968,10 +968,11 @@ impl Sorter {
                 // (`Sorter.java:193-194`): a sparse set when the values are
                 // fewer than `maxDoc >>> 7`, a fixed one otherwise.
                 let Some(mut values) = reader.get_numeric_doc_values(parent_field)? else {
-                    return Err(LuceneError::null_pointer_with_message(format!(
-                        "the segment has blocks but no doc values for its parent field \
-                         \"{parent_field}\""
-                    )));
+                    // `it.cost()` on the `null` iterator (`BitSet.java:34`).
+                    return Err(LuceneError::null_pointer_with_message(
+                        "Cannot invoke \"org.apache.lucene.search.DocIdSetIterator.cost()\" \
+                         because \"it\" is null",
+                    ));
                 };
                 parents = Some(Arc::from(bit_set_of(values.as_mut(), max_doc)?));
             }

@@ -300,9 +300,9 @@ impl DoubleValuesSource for ScoresValuesSource {
         scores: Option<Box<dyn DoubleValues + 'a>>,
     ) -> Result<Box<dyn DoubleValues + 'a>> {
         debug_assert!(scores.is_some());
-        scores.ok_or_else(|| {
-            LuceneError::illegal_state("DoubleValuesSource.SCORES requires scores".to_string())
-        })
+        // `assert scores != null; return scores;`: the caller dereferences
+        // the `null`.
+        scores.ok_or_else(LuceneError::null_pointer)
     }
 
     fn needs_scores(&self) -> bool {

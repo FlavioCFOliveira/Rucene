@@ -157,27 +157,19 @@ impl Terms for MappedMultiTerms {
     }
 
     fn size(&self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "MappedMultiTerms.size".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn sum_total_term_freq(&self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "MappedMultiTerms.getSumTotalTermFreq".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn sum_doc_freq(&self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "MappedMultiTerms.getSumDocFreq".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn doc_count(&self) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "MappedMultiTerms.getDocCount".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn has_freqs(&self) -> bool {
@@ -224,12 +216,10 @@ impl MappedMultiTermsEnum {
         }
     }
 
-    fn unsupported(&self, what: &str) -> LuceneError {
-        LuceneError::unsupported_operation(format!(
-            "{what} is not available while merging field '{}': it would ignore deleted \
-             documents; derive it from the postings instead",
-            self.field
-        ))
+    /// `throw new UnsupportedOperationException()`
+    /// (`MappedMultiFields.java:107-114`), which has no message.
+    fn unsupported(&self, _what: &str) -> LuceneError {
+        LuceneError::unsupported_operation(String::new())
     }
 }
 
@@ -296,7 +286,7 @@ impl TermsEnum for MappedMultiTermsEnum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`] — Java's `ClassCastException` —
+    /// Returns Java's `ClassCastException`
     /// when the wrapped enum answers anything but a `MultiPostingsEnum`, and
     /// propagates whatever building or resetting the postings raises.
     fn postings(
@@ -343,10 +333,13 @@ impl TermsEnum for MappedMultiTermsEnum {
             .and_then(|any| any.downcast_mut::<MultiPostingsEnum>())
             .is_none()
         {
-            return Err(LuceneError::illegal_state(format!(
-                "{docs_and_positions_enum} cannot be cast to class \
-                 org.apache.lucene.index.MultiPostingsEnum"
-            )));
+            return Err(LuceneError::unchecked(
+                "java.lang.ClassCastException",
+                format!(
+                    "{docs_and_positions_enum} cannot be cast to class \
+                     org.apache.lucene.index.MultiPostingsEnum"
+                ),
+            ));
         }
         mapping.reset(docs_and_positions_enum)?;
         Ok(Some(mapping_docs_and_positions_enum))

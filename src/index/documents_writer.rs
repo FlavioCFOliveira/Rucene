@@ -1104,13 +1104,10 @@ impl FrozenBufferedUpdates {
     ///
     /// Equivalent to `FrozenBufferedUpdates.delGen()`.
     ///
-    /// # Panics
-    ///
-    /// Panics if the packet has not been pushed yet, which is Lucene's
-    /// `assert delGen != -1`.
+    /// Lucene only asserts `delGen != -1`: an unpushed packet answers `-1`.
     pub fn del_gen(&self) -> i64 {
         let del_gen = self.del_gen.load(Ordering::Acquire);
-        assert_ne!(del_gen, -1, "gen is not yet set; call push first");
+        debug_assert_ne!(del_gen, -1);
         del_gen
     }
 
@@ -1696,13 +1693,13 @@ impl<'a> TermDocsIterator<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`] when no term is positioned.
+    /// Java's `NullPointerException` when no term is positioned.
     pub fn docs(&mut self) -> Result<&mut dyn PostingsEnum> {
         match self.postings_enum.as_mut() {
             Some(postings) => Ok(postings.as_mut()),
-            None => Err(LuceneError::illegal_state(
-                "no term is positioned on this TermDocsIterator".to_string(),
-            )),
+            // Java hands back the `null` enum, whose use throws
+            // `NullPointerException`.
+            None => Err(LuceneError::null_pointer()),
         }
     }
 }
@@ -4889,12 +4886,11 @@ impl DwptGuard {
                     ),
                 );
             }
-            let codec = flushed_segment.segment_info.info.codec().ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "segment {} has no codec",
-                    flushed_segment.segment_info.info.name
-                ))
-            })?;
+            let codec = flushed_segment
+                .segment_info
+                .info
+                .codec()
+                .ok_or_else(crate::error::LuceneError::null_pointer)?;
             // `writeLiveDocs` names the file from `getNextDelGen()`, so it has
             // to run before `advanceDelGen`.
             codec.live_docs_format().write_live_docs(
@@ -5790,11 +5786,6 @@ impl DocumentsWriterFlushControl {
                 !inner.full_flush,
                 "called DWFC#markForFullFlush() while full flush is still running"
             );
-            if inner.full_flush {
-                return Err(LuceneError::illegal_state(
-                    "called markForFullFlush() while full flush is still running".to_string(),
-                ));
-            }
             debug_assert!(!inner.full_flush_mark_done);
             inner.full_flush = true;
             let flushing_queue = self.shared.delete_queue();

@@ -76,9 +76,11 @@ impl DisjunctionDISIApproximation {
     /// `ArrayIndexOutOfBoundsException`; every caller in Lucene supplies at
     /// least two clauses.
     pub fn new(sub_iterators: Vec<DisiWrapper>, lead_cost: i64) -> Self {
+        // `wrappers[lastIdx]` with `lastIdx == -1`
+        // (`DisjunctionDISIApproximation.java:85-86`).
         assert!(
             !sub_iterators.is_empty(),
-            "a DisjunctionDISIApproximation needs at least one clause"
+            "java.lang.ArrayIndexOutOfBoundsException: Index -1 out of bounds for length 0"
         );
 
         // Using a heap to store disjunctive clauses is great for exhaustive

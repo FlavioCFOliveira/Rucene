@@ -379,9 +379,7 @@ pub trait KnnVectorValues: Send + Sync {
     /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) unless the implementation
     /// overrides this method.
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Err(LuceneError::unsupported_operation(
-            "KnnVectorValues::iterator".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Returns an iterator for a field every document has a vector for, where
@@ -678,9 +676,7 @@ pub trait FloatVectorValues: KnnVectorValues {
     /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) unless the implementation
     /// overrides this method, or an I/O error raised while opening the scorer.
     fn scorer(&self, _target: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
-        Err(LuceneError::unsupported_operation(
-            "FloatVectorValues::scorer".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Returns a [`VectorScorer`] for `target` intended for rescoring an
@@ -867,9 +863,7 @@ pub trait ByteVectorValues: KnnVectorValues {
     /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) unless the implementation
     /// overrides this method, or an I/O error raised while opening the scorer.
     fn scorer(&self, _target: &[u8]) -> Result<Option<Box<dyn VectorScorer>>> {
-        Err(LuceneError::unsupported_operation(
-            "ByteVectorValues::scorer".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Returns a [`VectorScorer`] for `target` intended for rescoring an

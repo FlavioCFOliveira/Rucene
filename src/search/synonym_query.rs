@@ -605,11 +605,7 @@ impl SynonymWeight {
                 doc_freq,
                 total_term_freq,
             )?;
-            let collection_stats = collection_stats.ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "field {field} has term statistics but no collection statistics"
-                ))
-            })?;
+            let collection_stats = collection_stats.ok_or_else(LuceneError::null_pointer)?;
             Some(Arc::new(SimScorerSource::new(
                 Arc::clone(&similarity),
                 boost,
@@ -687,12 +683,11 @@ impl Weight for SynonymWeight {
                         norm = norms.long_value()?;
                     }
                 }
-                let sim_weight = self.state.sim_weight.as_ref().ok_or_else(|| {
-                    LuceneError::illegal_state(
-                        "a matching document requires a term to exist, and therefore a scorer"
-                            .to_string(),
-                    )
-                })?;
+                let sim_weight = self
+                    .state
+                    .sim_weight
+                    .as_ref()
+                    .ok_or_else(LuceneError::null_pointer)?;
                 let score_explanation = sim_weight.explain(&freq_explanation, norm);
                 return Ok(Explanation::matched(
                     score_explanation.value().float_value(),

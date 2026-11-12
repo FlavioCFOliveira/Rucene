@@ -297,10 +297,9 @@ impl NormsProducer for BufferedNormsProducer {
     fn get_norms(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         let values: Result<Box<dyn NumericDocValues>> = {
             if field.number != self.field_number {
-                return Err(LuceneError::illegal_argument(format!(
-                    "wrong fieldInfo: expected {} ({}), got {} ({})",
-                    self.field_name, self.field_number, field.name, field.number
-                )));
+                // `throw new IllegalArgumentException("wrong fieldInfo")`
+                // (`NormValuesWriter.java:89-91`).
+                return Err(LuceneError::illegal_argument("wrong fieldInfo"));
             }
             match &self.sorted {
                 None => Ok(Box::new(BufferedNorms::new(
@@ -377,9 +376,7 @@ impl DocIdSetIterator for BufferedNorms {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "BufferedNorms does not support advance".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn cost(&self) -> i64 {
@@ -389,9 +386,7 @@ impl DocIdSetIterator for BufferedNorms {
 
 impl DocValuesIterator for BufferedNorms {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::unsupported_operation(
-            "BufferedNorms does not support advance_exact".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 

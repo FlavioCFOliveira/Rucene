@@ -117,13 +117,15 @@ impl Builder {
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a term is not on the
     /// phrase's field, which is the `IllegalArgumentException` Java throws, and
-    /// when the term list is empty, which Java reports as an
-    /// `ArrayIndexOutOfBoundsException` while reading `terms[0].field()`.
+    /// the `ArrayIndexOutOfBoundsException` of reading `terms[0].field()` when
+    /// the first term list is empty.
     pub fn add_at(&mut self, terms: Vec<Term>, position: i32) -> Result<&mut Self> {
         if self.term_arrays.is_empty() {
+            // `field = terms[0].field()` of an empty array.
             let first = terms.first().ok_or_else(|| {
-                LuceneError::illegal_argument(
-                    "the first term array of a MultiPhraseQuery must not be empty".to_string(),
+                LuceneError::unchecked(
+                    "java.lang.ArrayIndexOutOfBoundsException",
+                    "Index 0 out of bounds for length 0",
                 )
             })?;
             self.field = Some(first.field().to_string());
@@ -342,11 +344,10 @@ impl Query for MultiPhraseQuery {
         score_mode: ScoreMode,
         boost: f32,
     ) -> Result<Arc<dyn Weight>> {
-        let field = self.field.clone().ok_or_else(|| {
-            LuceneError::illegal_state(
-                "MultiPhraseQuery has no term; call rewrite first".to_string(),
-            )
-        })?;
+        // A query without terms has a `null` field; Java builds its weight
+        // anyway, which matches nothing (`getStats` sees no term, and
+        // `reader.terms(null)` is `null`).
+        let field = self.field.clone();
         let inner = Arc::new(MultiPhraseWeightImpl {
             query: self.clone(),
             field: field.clone(),
@@ -357,7 +358,9 @@ impl Query for MultiPhraseQuery {
         });
         Ok(Arc::new(PhraseWeight::new(
             Arc::new(self.clone()),
-            field,
+            // Read only once a phrase matcher exists, which a `null` field
+            // never yields.
+            field.unwrap_or_default(),
             searcher,
             score_mode,
             inner,
@@ -400,7 +403,8 @@ impl Query for MultiPhraseQuery {
 #[derive(Debug)]
 struct MultiPhraseWeightImpl {
     query: MultiPhraseQuery,
-    field: String,
+    /// The query's field, `None` for Java's `null` (a query without terms).
+    field: Option<String>,
     score_mode: ScoreMode,
     boost: f32,
     similarity: Arc<dyn Similarity>,
@@ -443,14 +447,15 @@ impl PhraseWeightImpl for MultiPhraseWeightImpl {
             // None of the terms was found, so the similarity is not used.
             return Ok(None);
         }
+        let field = self
+            .field
+            .as_deref()
+            .expect("INVARIANT: a query with term statistics has a field");
+        // `similarity.scorer(boost, searcher.collectionStatistics(field), ...)`:
+        // a `null` statistics object is dereferenced by the similarity.
         let collection_stats = searcher
-            .collection_statistics(&self.field)?
-            .ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "field {} has term statistics but no collection statistics",
-                    self.field
-                ))
-            })?;
+            .collection_statistics(field)?
+            .ok_or_else(LuceneError::null_pointer)?;
         Ok(Some(Arc::new(SimScorerSource::new(
             Arc::clone(&self.similarity),
             self.boost,
@@ -469,23 +474,26 @@ impl PhraseWeightImpl for MultiPhraseWeightImpl {
         debug_assert!(!term_arrays.is_empty());
         let reader = context.leaf_reader();
 
-        let Some(field_terms) = reader.terms(&self.field)? else {
+        // `reader.terms(null)` answers `null`.
+        let Some(field) = self.field.as_deref() else {
+            return Ok(None);
+        };
+        let Some(field_terms) = reader.terms(field)? else {
             return Ok(None);
         };
 
         if !field_terms.has_positions() {
             return Err(LuceneError::illegal_state(format!(
                 "field \"{}\" was indexed without position data; cannot run MultiPhraseQuery (phrase={})",
-                self.field,
+                field,
                 self.query.to_query_string("")
             )));
         }
 
-        let term_states = self.term_states.get().ok_or_else(|| {
-            LuceneError::illegal_state(
-                "PhraseWeight.getStats must run before getPhraseMatcher".to_string(),
-            )
-        })?;
+        let term_states = self
+            .term_states
+            .get()
+            .expect("INVARIANT: the weight's constructor runs getStats");
 
         // Reuse a single terms enum below.
         let mut terms_enum = field_terms.iterator()?;
@@ -496,9 +504,9 @@ impl PhraseWeightImpl for MultiPhraseWeightImpl {
             let mut postings: Vec<Box<dyn PostingsEnum>> = Vec::new();
 
             for term in terms {
-                let states = term_states.get(term).ok_or_else(|| {
-                    LuceneError::illegal_state(format!("no TermStates were built for {term}"))
-                })?;
+                let states = term_states
+                    .get(term)
+                    .expect("INVARIANT: getStats built the TermStates of every term");
                 if let Some(term_state) = states.get(context)? {
                     terms_enum.seek_term_state(term.bytes(), &*term_state)?;
                     let flags = if expose_offsets {

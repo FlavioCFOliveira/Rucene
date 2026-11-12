@@ -1935,9 +1935,7 @@ impl KnnVectorValues for ExitableFloatVectorValues {
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "ExitableFloatVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// `ExitableFloatVectorValues` overrides no `getEncoding()`, so
@@ -1970,9 +1968,7 @@ impl FloatVectorValues for ExitableFloatVectorValues {
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "ExitableFloatVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Equivalent to `ExitableFloatVectorValues.scorer(float[])`.
@@ -2032,9 +2028,7 @@ impl KnnVectorValues for ExitableByteVectorValues {
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "ExitableByteVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// `ExitableByteVectorValues` overrides no `getEncoding()`, so
@@ -2067,9 +2061,7 @@ impl ByteVectorValues for ExitableByteVectorValues {
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "ExitableByteVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Equivalent to `ExitableByteVectorValues.scorer(byte[])`.
@@ -3924,8 +3916,10 @@ impl DirectoryReaderWrapper for SoftDeletesDirectoryReaderWrapper {
                 helper
                     .unwrap_or_else(|| {
                         panic!(
-                            "NullPointerException: getReaderCacheHelper() of the wrapped reader \
-                             is null while the wrapper's is not"
+                            "java.lang.NullPointerException: Cannot invoke \
+                             \"org.apache.lucene.index.IndexReader$CacheHelper.getKey()\" because \
+                             the return value of \
+                             \"org.apache.lucene.index.LeafReader.getReaderCacheHelper()\" is null"
                         )
                     })
                     .get_key()

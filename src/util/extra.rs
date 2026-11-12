@@ -1591,11 +1591,20 @@ pub fn java_parse_int(s: &str) -> Option<i32> {
 /// `NumberFormatException`: the same grammar as [`java_parse_int`], with a
 /// result that fits a `long`.
 pub fn java_parse_long(s: &str) -> Option<i64> {
-    const RADIX: i64 = 10;
+    java_parse_long_radix(s, 10)
+}
+
+/// `Long.parseLong(String, int)` for a radix in `2..=36`, or `None` where it
+/// throws `NumberFormatException`: an optional leading `+` or `-`, then at
+/// least one digit as `Character.digit` reads it in `radix`, with a result
+/// that fits a `long` (`Long.java:688-740`).
+pub fn java_parse_long_radix(s: &str, radix: u32) -> Option<i64> {
+    debug_assert!((2..=36).contains(&radix));
+    let radix_long = i64::from(radix);
     let units: Vec<u16> = s.encode_utf16().collect();
     let digit = |unit: u16| {
         char::from_u32(u32::from(unit))
-            .and_then(|c| crate::util::java_character_digit(c, RADIX as u32))
+            .and_then(|c| crate::util::java_character_digit(c, radix))
             .map(i64::from)
     };
     let first = *units.first()?;
@@ -1615,7 +1624,7 @@ pub fn java_parse_long(s: &str) -> Option<i64> {
         }
         i += 1;
     }
-    let multmin = limit / RADIX;
+    let multmin = limit / radix_long;
     let mut result = 0i64;
     while i < units.len() {
         let d = digit(units[i])?;
@@ -1623,7 +1632,7 @@ pub fn java_parse_long(s: &str) -> Option<i64> {
         if result < multmin {
             return None;
         }
-        result *= RADIX;
+        result *= radix_long;
         if result < limit + d {
             return None;
         }

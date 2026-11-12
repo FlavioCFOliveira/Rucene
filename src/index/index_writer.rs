@@ -1070,7 +1070,7 @@ impl IndexWriter {
         } else {
             // Init from either the latest commit point, or an explicit prior
             // commit point (`IndexWriter.java:1079-1118`).
-            let last_segments_file = SegmentInfos::get_last_commit_segments_file_name(&files)
+            let last_segments_file = SegmentInfos::get_last_commit_segments_file_name(&files)?
                 .ok_or_else(|| {
                     // `"no segments* file found in " + directory + ": files: "
                     // + Arrays.toString(files)` (`IndexWriter.java:1083-1086`).
@@ -1424,11 +1424,10 @@ impl IndexWriter {
         // Must clone because we don't want the incoming NRT reader to "see"
         // any changes this writer now makes.
         let mut segment_infos = reader_infos.clone();
-        let segments_file_name = segment_infos.segments_file_name().ok_or_else(|| {
-            LuceneError::illegal_state(
-                "a SegmentInfos past its first commit names its segments file".to_string(),
-            )
-        })?;
+        // `getLastGeneration() != -1` was checked above, so the name exists.
+        let segments_file_name = segment_infos
+            .segments_file_name()
+            .expect("INVARIANT: a SegmentInfos past its first commit names its segments file");
         let mut last_commit =
             match SegmentInfos::read_commit(Arc::clone(directory_orig), &segments_file_name) {
                 Ok(last_commit) => last_commit,
@@ -4601,7 +4600,7 @@ impl IndexWriter {
             .as_ref()
             .map(SegmentCommitInfo::size_in_bytes)
             .transpose()?
-            .ok_or_else(|| LuceneError::illegal_state("merge has no merged segment".to_string()))?;
+            .ok_or_else(LuceneError::null_pointer)?;
         let segment_mb = size_in_bytes as f64 / 1024. / 1024.;
         Ok(format!(
             "merge codec={codec_name} maxDoc={max_doc}{merged_fields}; {} sec{pause_info} to merge \
@@ -4691,12 +4690,9 @@ impl IndexWriter {
         let _ = created_version_major;
 
         merge.init_merge_readers(|sci| {
-            let rld = self.get_pooled_instance(sci, true)?.ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "segment {} has no pooled reader",
-                    sci.info.name
-                ))
-            })?;
+            let rld = self
+                .get_pooled_instance(sci, true)?
+                .expect("INVARIANT: getPooledInstance(info, true) creates the entry");
             rld.set_is_merging();
             let mut state = self.state()?;
             rld.get_reader_for_merge(context.as_ref(), |mr| {
@@ -4816,7 +4812,13 @@ impl IndexWriter {
                     let max_doc = reader.max_doc();
                     let doc_map = Arc::clone(&doc_map);
                     maps.push(Arc::new(move |doc_id: i32| {
-                        assert!(doc_id >= 0 && doc_id < max_doc, "doc id out of range");
+                        // `Objects.checkIndex(docID, reader.maxDoc())`
+                        // (`IndexWriter.java:5352`).
+                        assert!(
+                            doc_id >= 0 && doc_id < max_doc,
+                            "java.lang.IndexOutOfBoundsException: Index {doc_id} out of bounds for \
+                             length {max_doc}"
+                        );
                         doc_map.old_to_new(current_doc_base + doc_id)
                     }));
                     doc_base += max_doc;
@@ -4857,9 +4859,7 @@ impl IndexWriter {
         // checks against it as Java's `setSoftDelCount` does.
         let merged_info = merge
             .get_merge_info()
-            .ok_or_else(|| {
-                LuceneError::illegal_state("mergeMiddle ran before mergeInit".to_string())
-            })?
+            .expect("INVARIANT: mergeInit ran before mergeMiddle")
             .info;
         let codec = self.config.codec();
 
@@ -4878,7 +4878,7 @@ impl IndexWriter {
             .merge_state
             .segment_info
             .as_ref()
-            .expect("the merge state holds the merged segment's info")
+            .expect("INVARIANT: the merge state holds the merged segment's info")
             .max_doc()?;
         if let Some(info) = merge.info().as_mut() {
             info.info.set_max_doc(merged_max_doc)?;
@@ -4970,7 +4970,7 @@ impl IndexWriter {
             let info = merge
                 .info()
                 .as_ref()
-                .expect("merge info was set by mergeInit")
+                .expect("INVARIANT: merge info was set by mergeInit")
                 .clone();
             let locked = LockedMergeContext {
                 writer: self,
@@ -4983,7 +4983,7 @@ impl IndexWriter {
             let files_to_remove = merge
                 .info()
                 .as_ref()
-                .expect("merge info was set by mergeInit")
+                .expect("INVARIANT: merge info was set by mergeInit")
                 .files()?;
             // The compound file must be created against the original directory
             // rather than the merging one, so that it is not throttled:
@@ -5003,7 +5003,7 @@ impl IndexWriter {
             // the non-compound files Java deletes below.
             let compound = merge
                 .get_merge_info()
-                .expect("merge info was set by mergeInit")
+                .expect("INVARIANT: merge info was set by mergeInit")
                 .info;
             let outcome = {
                 let mut delete_files =
@@ -5020,7 +5020,7 @@ impl IndexWriter {
                 merge
                     .info()
                     .as_ref()
-                    .expect("merge info was set by mergeInit")
+                    .expect("INVARIANT: merge info was set by mergeInit")
                     .info
                     .set_files(compound.files_ordered()?)?;
             }
@@ -5059,7 +5059,7 @@ impl IndexWriter {
                 let files = merge
                     .info()
                     .as_ref()
-                    .expect("merge info was set by mergeInit")
+                    .expect("INVARIANT: merge info was set by mergeInit")
                     .files()?;
                 self.delete_new_files(files)?;
                 match caught {
@@ -5085,7 +5085,7 @@ impl IndexWriter {
                 let files = merge
                     .info()
                     .as_ref()
-                    .expect("merge info was set by mergeInit")
+                    .expect("INVARIANT: merge info was set by mergeInit")
                     .files()?;
                 self.delete_new_files(files)?;
                 return Ok((0, false));
@@ -5094,7 +5094,7 @@ impl IndexWriter {
             merge
                 .info()
                 .as_mut()
-                .expect("merge info was set by mergeInit")
+                .expect("INVARIANT: merge info was set by mergeInit")
                 .info
                 .set_use_compound_file(true);
         }
@@ -5104,7 +5104,7 @@ impl IndexWriter {
         // the compound file.
         let merged_info = merge
             .get_merge_info()
-            .expect("merge info was set by mergeInit");
+            .expect("INVARIANT: merge info was set by mergeInit");
         merge.set_merge_info(merged_info);
 
         // Have the codec write the SegmentInfo. This must happen after creating
@@ -5121,7 +5121,7 @@ impl IndexWriter {
                 let merge_info = merge.info();
                 let info = merge_info
                     .as_ref()
-                    .expect("merge info was set by mergeInit");
+                    .expect("INVARIANT: merge info was set by mergeInit");
                 match codec.segment_info_format().write(
                     self.directory.as_ref(),
                     &info.info,
@@ -5144,7 +5144,7 @@ impl IndexWriter {
             let size_in_bytes = merge
                 .info()
                 .as_ref()
-                .expect("merge info was set by mergeInit")
+                .expect("INVARIANT: merge info was set by mergeInit")
                 .size_in_bytes()?;
             self.info_stream.message(
                 IW,
@@ -5163,15 +5163,10 @@ impl IndexWriter {
                 let merged_info = merge
                     .info()
                     .clone()
-                    .expect("merge info was set by mergeInit");
+                    .expect("INVARIANT: merge info was set by mergeInit");
                 let rld = self
                     .get_pooled_instance(&merged_info, true)?
-                    .ok_or_else(|| {
-                        LuceneError::illegal_state(format!(
-                            "segment {} has no pooled reader",
-                            merged_info.info.name
-                        ))
-                    })?;
+                    .expect("INVARIANT: getPooledInstance(info, true) creates the entry");
                 let sr = rld.get_reader(&*crate::store::DEFAULT_IO_CONTEXT)?;
                 let warmed = merged_segment_warmer
                     .warm(&(Arc::clone(&sr) as Arc<dyn crate::index::LeafReader>));
@@ -5552,7 +5547,7 @@ impl IndexWriter {
         let merged_info = merge
             .info()
             .as_ref()
-            .ok_or_else(|| LuceneError::illegal_state("merge has no merged segment".to_string()))?
+            .expect("INVARIANT: mergeInit set the merged segment")
             .clone();
         let Some(merged_deletes_and_updates) =
             self.get_pooled_instance_with(state, &merged_info, true)?
@@ -5575,14 +5570,11 @@ impl IndexWriter {
             let max_doc = info.info.max_doc()?;
             // We hold a ref from when we opened the readers during mergeInit, so
             // the segment had better still be in the pool.
-            let rld = self
-                .get_pooled_instance_with(state, info, false)?
-                .ok_or_else(|| {
-                    LuceneError::illegal_state(format!(
-                        "seg={} is no longer pooled",
-                        info.info.name
-                    ))
-                })?;
+            let rld = self.get_pooled_instance_with(state, info, false)?;
+            // `assert rld != null : "seg=" + info.info.name`; without `-ea` the
+            // `rld.getHardLiveDocs()` below throws `NullPointerException`.
+            debug_assert!(rld.is_some(), "seg={}", info.info.name);
+            let rld = rld.ok_or_else(LuceneError::null_pointer)?;
 
             let seg_doc_map = &doc_maps[i];
 
@@ -6680,7 +6672,7 @@ fn radix_36(mut value: i64) -> String {
         value /= 36;
     }
     out.reverse();
-    String::from_utf8(out).expect("base-36 digits are ASCII")
+    String::from_utf8(out).expect("INVARIANT: base-36 digits are ASCII")
 }
 
 /// The parts of an [`IndexWriter`] its segment rendering reads.
@@ -8251,9 +8243,10 @@ impl IndexWriter {
     pub fn read_field_infos(
         si: &SegmentCommitInfo,
     ) -> Result<crate::index::field_infos::FieldInfos> {
-        let codec = si.info.codec().ok_or_else(|| {
-            LuceneError::illegal_state(format!("segment {} has no codec", si.info.name))
-        })?;
+        let codec = si
+            .info
+            .codec()
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
         let reader = codec.field_infos_format();
         let context = &*crate::store::READONCE_IO_CONTEXT;
         if si.has_field_updates() {
@@ -8750,8 +8743,9 @@ impl IndexWriter {
         context: &dyn IOContext,
     ) -> Result<SegmentCommitInfo> {
         // The same `SegmentInfo` as before, but with a new directory and name:
-        // `directoryOrig` (`IndexWriter.java:3632-3634`).
-        let new_info = SegmentInfo::new(
+        // `directoryOrig` (`IndexWriter.java:3632-3634`). Java passes
+        // `info.info.getCodec()` through as it is, `null` included.
+        let mut new_info = SegmentInfo::new_without_codec(
             Arc::clone(&self.directory_orig),
             info.info.version(),
             info.info.min_version(),
@@ -8759,14 +8753,14 @@ impl IndexWriter {
             info.info.max_doc()?,
             info.info.get_use_compound_file(),
             info.info.get_has_blocks(),
-            info.info.codec().ok_or_else(|| {
-                LuceneError::illegal_state(format!("segment {} has no codec", info.info.name))
-            })?,
             info.info.get_diagnostics().to_std(),
             info.info.id(),
             info.info.get_attributes(),
             info.info.index_sort().cloned(),
         )?;
+        if let Some(codec) = info.info.codec() {
+            new_info.set_codec(Some(codec))?;
+        }
         new_info.set_files(info.info.files_ordered()?)?;
 
         let new_info_per_commit = SegmentCommitInfo::new(
@@ -8837,9 +8831,9 @@ impl IndexWriter {
         if info_stream.is_enabled(IW) {
             info_stream.message(IW, "create compound file");
         }
-        let codec = info.codec().ok_or_else(|| {
-            LuceneError::illegal_state(format!("segment {} has no codec", info.name))
-        })?;
+        let codec = info
+            .codec()
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
         if let Err(error) = codec.compound_format().write(directory, info, context) {
             // Safe: these files must exist.
             delete_files(directory.get_created_files())?;
@@ -10189,12 +10183,7 @@ impl IndexWriter {
     ) -> Result<Arc<SegmentReader>> {
         let rld = self
             .get_pooled_instance_with(state, sci, true)?
-            .ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "segment {} has no pooled reader",
-                    sci.info.name
-                ))
-            })?;
+            .expect("INVARIANT: getPooledInstance(info, true) creates the entry");
         // `try { ... return segmentReader; } finally { release(rld); }`
         // (`IndexWriter.java:545-555`): the release runs whatever the body
         // did, and an exception it throws replaces the body's outcome.
@@ -10595,13 +10584,20 @@ impl IndexWriter {
             }
         }
 
-        let segment_counter = i64::from_str_radix(&orig_info.info.name[1..], 36).map_err(|_| {
-            LuceneError::illegal_state(format!(
-                "segment name {} is not a base-36 counter",
-                orig_info.info.name
-            ))
-        })?;
-        infos.counter = infos.counter.max(segment_counter + 1);
+        // `Long.parseLong(origInfo.info.name.substring(1),
+        // Character.MAX_RADIX)` (`IndexWriter.java:3996`).
+        let counter_digits = {
+            let mut chars = orig_info.info.name.chars();
+            if chars.next().is_none() {
+                return Err(LuceneError::from(LuceneErrorKind::StringIndexOutOfBounds(
+                    "Range [1, 0) out of bounds for length 0".to_string(),
+                )));
+            }
+            chars.as_str()
+        };
+        let segment_counter = crate::util::extra::java_parse_long_radix(counter_digits, 36)
+            .ok_or_else(|| LuceneError::number_format_for_input_string(counter_digits, 36))?;
+        infos.counter = infos.counter.max(segment_counter.wrapping_add(1));
         infos.apply_merge_changes(&orig_info, &to_commit_merged_away_segments, false)?;
         Ok(())
     }
@@ -10785,12 +10781,7 @@ impl IndexWriter {
                     self.run_point_in_time_merge_registered_hook();
                     let rld = self
                         .get_pooled_instance_with(state, sci, true)?
-                        .ok_or_else(|| {
-                            LuceneError::illegal_state(format!(
-                                "segment {} has no pooled reader",
-                                sci.info.name
-                            ))
-                        })?;
+                        .expect("INVARIANT: getPooledInstance(info, true) creates the entry");
                     // Calling set_is_merging is important since it causes the
                     // RaU to record all DV updates in a separate map in order to
                     // be applied to the merged segment after it's done.
@@ -10954,13 +10945,9 @@ impl IndexWriterTrait for IndexWriter {
 
             // Only relevant if we do merge on getReader.
             if let Some(point_in_time_merges) = nrt.on_get_reader_merges.take() {
-                let opening_segment_infos =
-                    Arc::clone(nrt.opening_segment_infos.as_ref().ok_or_else(|| {
-                        LuceneError::illegal_state(
-                            "point-in-time merges were prepared without opening segment infos"
-                                .to_string(),
-                        )
-                    })?);
+                let opening_segment_infos = Arc::clone(nrt.opening_segment_infos.as_ref().expect(
+                    "INVARIANT: point-in-time merges are prepared with opening segment infos",
+                ));
                 let merged_reader = self.finish_get_reader_merge(
                     &nrt.stop_collecting_merged_readers,
                     &nrt.merged_readers,
@@ -11014,9 +11001,10 @@ impl IndexWriterTrait for IndexWriter {
             Ok(()) => {
                 // `IOUtils.close(onGetReaderMergeResources)`.
                 crate::util::IOUtils::close([on_get_reader_merge_resources])?;
-                let reader = nrt.reader.take().ok_or_else(|| {
-                    LuceneError::illegal_state("getReader produced no reader".to_string())
-                })?;
+                let reader = nrt
+                    .reader
+                    .take()
+                    .expect("INVARIANT: a successful getReader produced its reader");
                 Ok(reader as Arc<dyn DirectoryReader>)
             }
             Err(error) => {

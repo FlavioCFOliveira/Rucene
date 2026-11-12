@@ -263,10 +263,18 @@ impl TermState for OrdTermState {
             "can not copy from {}",
             std::any::type_name_of_val(other)
         );
+        // `((OrdTermState) other).ord` (`OrdTermState.java:34`): another
+        // class is the cast's `ClassCastException`, whose JVM message names
+        // the runtime class a `dyn TermState` cannot report.
         let other = other
             .as_any()
             .downcast_ref::<OrdTermState>()
-            .expect("cannot copy from a different TermState type");
+            .unwrap_or_else(|| {
+                panic!(
+                    "java.lang.ClassCastException: cannot be cast to class \
+                     org.apache.lucene.index.OrdTermState"
+                )
+            });
         self.ord = other.ord;
     }
 
@@ -470,6 +478,14 @@ pub trait FilteredTermsEnumFilter: Send {
     /// Optionally sets the initial seek term. Filters that override
     /// [`next_seek_term`](Self::next_seek_term) do not need this.
     fn set_initial_seek_term(&mut self, _term: BytesRef) {}
+
+    /// The binary name of the Java `FilteredTermsEnum` subclass this filter
+    /// ports, `getClass().getName()`, which the enum's seek methods name in
+    /// their `UnsupportedOperationException` (`FilteredTermsEnum.java:156`).
+    /// A filter with no Lucene counterpart answers the abstract class's name.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.index.FilteredTermsEnum"
+    }
 }
 
 /// Terms iterator that wraps another [`TermsEnum`] and filters terms.
@@ -595,9 +611,10 @@ impl TermsEnum for FilteredTermsEnum {
     }
 
     fn seek_exact(&mut self, _text: &BytesRef) -> Result<bool> {
-        Err(LuceneError::illegal_state(
-            "FilteredTermsEnum does not support seeking".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(format!(
+            "{} does not support seeking",
+            self.filter.java_class_name()
+        )))
     }
 
     /// This enum does not support seeking.
@@ -609,27 +626,31 @@ impl TermsEnum for FilteredTermsEnum {
         &'a mut self,
         _text: &BytesRef,
     ) -> Result<Option<Box<dyn IOBooleanSupplier + 'a>>> {
-        Err(LuceneError::unsupported_operation(
-            "FilteredTermsEnum does not support seeking".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(format!(
+            "{} does not support seeking",
+            self.filter.java_class_name()
+        )))
     }
 
     fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
-        Err(LuceneError::illegal_state(
-            "FilteredTermsEnum does not support seeking".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(format!(
+            "{} does not support seeking",
+            self.filter.java_class_name()
+        )))
     }
 
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::illegal_state(
-            "FilteredTermsEnum does not support seeking".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(format!(
+            "{} does not support seeking",
+            self.filter.java_class_name()
+        )))
     }
 
     fn seek_term_state(&mut self, _text: &BytesRef, _state: &dyn TermState) -> Result<()> {
-        Err(LuceneError::illegal_state(
-            "FilteredTermsEnum does not support seeking".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(format!(
+            "{} does not support seeking",
+            self.filter.java_class_name()
+        )))
     }
 
     fn next(&mut self) -> Result<Option<BytesRef>> {
@@ -643,10 +664,9 @@ impl TermsEnum for FilteredTermsEnum {
                 };
                 if let Some(t) = &seek_term {
                     if let Some(ref actual) = self.actual_term {
-                        assert!(
-                            t.slice() > actual.slice(),
-                            "seek term must be greater than the current term"
-                        );
+                        // `assert actualTerm == null || t == null ||
+                        // t.compareTo(actualTerm) > 0`.
+                        debug_assert!(t.slice() > actual.slice(), "curTerm={actual} seekTerm={t}");
                     }
                 }
                 if seek_term.is_none()
@@ -706,6 +726,10 @@ impl SingleTermsEnum {
 }
 
 impl FilteredTermsEnumFilter for SingleTermsEnum {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.index.SingleTermsEnum"
+    }
+
     fn as_any(&self) -> Option<&dyn Any> {
         Some(self)
     }
@@ -725,7 +749,9 @@ struct EmptyTermState;
 
 impl TermState for EmptyTermState {
     fn copy_from(&mut self, _other: &dyn TermState) {
-        panic!("copy_from not supported by the default TermState");
+        // `throw new UnsupportedOperationException()`
+        // (`BaseTermsEnum.java:49-54`).
+        panic!("java.lang.UnsupportedOperationException");
     }
 
     fn clone_box(&self) -> Box<dyn TermState> {
@@ -1667,31 +1693,31 @@ impl TermsEnum for EmptyTermsEnum {
 
     fn seek_term_state(&mut self, _text: &BytesRef, _state: &dyn TermState) -> Result<()> {
         Err(LuceneError::illegal_state(
-            "seek_term_state should never be called on EmptyTermsEnum".to_string(),
+            "this method should never be called",
         ))
     }
 
     fn term(&self) -> Result<Option<BytesRef>> {
         Err(LuceneError::illegal_state(
-            "term should never be called on EmptyTermsEnum".to_string(),
+            "this method should never be called",
         ))
     }
 
     fn ord(&self) -> Result<i64> {
         Err(LuceneError::illegal_state(
-            "ord should never be called on EmptyTermsEnum".to_string(),
+            "this method should never be called",
         ))
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
         Err(LuceneError::illegal_state(
-            "doc_freq should never be called on EmptyTermsEnum".to_string(),
+            "this method should never be called",
         ))
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
         Err(LuceneError::illegal_state(
-            "total_term_freq should never be called on EmptyTermsEnum".to_string(),
+            "this method should never be called",
         ))
     }
 
@@ -1701,19 +1727,19 @@ impl TermsEnum for EmptyTermsEnum {
         _flags: i32,
     ) -> Result<Option<Box<dyn PostingsEnum>>> {
         Err(LuceneError::illegal_state(
-            "postings should never be called on EmptyTermsEnum".to_string(),
+            "this method should never be called",
         ))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
         Err(LuceneError::illegal_state(
-            "impacts should never be called on EmptyTermsEnum".to_string(),
+            "this method should never be called",
         ))
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
         Err(LuceneError::illegal_state(
-            "term_state should never be called on EmptyTermsEnum".to_string(),
+            "this method should never be called",
         ))
     }
 

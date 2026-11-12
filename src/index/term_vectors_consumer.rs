@@ -425,15 +425,8 @@ impl TermVectorsConsumerPerField {
             posting.last_position = 0;
         } else {
             let posting = self.base.posting_mut(slot.term_id);
-            posting.term_freq = posting.term_freq.checked_add(freq).ok_or_else(|| {
-                // Java lets this `int` overflow silently; the document would
-                // need more than `Integer.MAX_VALUE` occurrences of one term,
-                // which `FieldInvertState.length` rejects first.
-                LuceneError::illegal_argument(format!(
-                    "too many tokens for field \"{}\"",
-                    self.field_info.name
-                ))
-            })?;
+            // Java's `int` addition overflows silently.
+            posting.term_freq = posting.term_freq.wrapping_add(freq);
         }
         self.write_prox(streams, int_pool, field_state, slot.term_id, token)
     }
@@ -1007,22 +1000,14 @@ impl TermVectorsConsumer {
             last_doc_id,
             ..
         } = self;
-        let writer = writer.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state(
-                "the term-vectors writer was not created by initTermVectorsWriter".to_string(),
-            )
-        })?;
+        // `writer.startDocument(...)` on a `null` writer.
+        let writer = writer.as_mut().ok_or_else(LuceneError::null_pointer)?;
 
         Self::fill(writer.as_mut(), last_doc_id, doc_id)?;
         debug_assert!(
             *last_doc_id == doc_id,
             "lastDocID={last_doc_id} docID={doc_id}"
         );
-        if *last_doc_id != doc_id {
-            return Err(LuceneError::illegal_state(format!(
-                "term vectors must be written in increasing doc order: lastDocID={last_doc_id} docID={doc_id}"
-            )));
-        }
 
         writer.start_document(pending_fields.len() as i32)?;
         let streams = terms_hash.pool();
@@ -1331,19 +1316,10 @@ mod tests {
         consumer.start_document();
         consumer.finish_document(4, &term_pool).expect("finish");
         consumer.start_document();
-        let error = consumer
+        // Without assertions Java proceeds past `assert lastDocID == docID`.
+        consumer
             .finish_document(2, &term_pool)
-            .expect_err("doc 2 was already covered by the back-fill");
-        assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
-            "{error:?}"
-        );
+            .expect("Java only asserts lastDocID == docID");
     }
 
     #[test]

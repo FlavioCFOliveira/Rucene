@@ -175,14 +175,18 @@ impl ScorerUtil {
         num_scorers: usize,
         min_should_match: usize,
     ) -> Result<i64> {
-        let capacity = num_scorers
-            .checked_sub(min_should_match)
-            .and_then(|slack| slack.checked_add(1))
-            .ok_or_else(|| {
-                LuceneError::illegal_argument(format!(
-                    "minShouldMatch must not exceed numScorers, got minShouldMatch={min_should_match}, numScorers={num_scorers}"
-                ))
-            })?;
+        // `new PriorityQueue<>(numScorers - minShouldMatch + 1)`, an `int`
+        // expression whose negative value the queue refuses
+        // (`PriorityQueue.java:86-90`).
+        let max_size = (num_scorers as i32)
+            .wrapping_sub(min_should_match as i32)
+            .wrapping_add(1);
+        let capacity = usize::try_from(max_size).map_err(|_| {
+            LuceneError::illegal_argument(format!(
+                "maxSize must be >= 0 and < {}; got: {max_size}",
+                crate::util::ArrayUtil::MAX_ARRAY_LENGTH
+            ))
+        })?;
         let mut pq: PriorityQueue<i64, GreatestCostFirst> =
             PriorityQueue::new(capacity, GreatestCostFirst)?;
         for cost in costs {

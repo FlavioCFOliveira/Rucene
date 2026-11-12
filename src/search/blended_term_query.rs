@@ -298,8 +298,8 @@ impl BlendedTermQuery {
         contexts: Vec<Option<Arc<TermStates>>>,
         rewrite_method: Arc<dyn BlendedRewriteMethod>,
     ) -> Self {
-        assert_eq!(terms.len(), boosts.len());
-        assert_eq!(terms.len(), contexts.len());
+        debug_assert_eq!(terms.len(), boosts.len());
+        debug_assert_eq!(terms.len(), contexts.len());
 
         // The terms are sorted so that equality and hashing do not depend on
         // the order. Java uses an `InPlaceMergeSorter`, which is stable, and so

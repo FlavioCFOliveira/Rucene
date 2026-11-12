@@ -636,36 +636,26 @@ impl StandardDirectoryReader {
         }
     }
 
-    /// Releases every reader already opened in `readers`, folding any error
-    /// releasing them into `error` instead of letting it replace it.
+    /// Releases every reader already opened in `readers`, attaching any error
+    /// releasing them to `error` instead of letting it replace it.
     ///
     /// Equivalent to the private
     /// `StandardDirectoryReader.decRefWhileSuppressingException(Throwable,
     /// SegmentReader[])`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java attaches every release failure
-    /// to `error` through `Throwable.addSuppressed`, which `LuceneError` has no
-    /// counterpart for; this folds their messages into `error`'s instead, so
-    /// the original error is still the one returned, with the same
-    /// information appended rather than attached.
+    /// Every release failure is attached to `error` with
+    /// [`LuceneError::add_suppressed`], as `Throwable.addSuppressed` does
+    /// (`StandardDirectoryReader.java:365-375`).
     fn dec_ref_while_suppressing_exception(
-        error: LuceneError,
+        mut error: LuceneError,
         readers: &[Arc<SegmentReader>],
     ) -> LuceneError {
-        let mut suppressed = Vec::new();
         for reader in readers {
             if let Err(release_error) = reader.dec_ref() {
-                suppressed.push(release_error.to_string());
+                error.add_suppressed(release_error);
             }
         }
-        if suppressed.is_empty() {
-            error
-        } else {
-            LuceneError::from(LuceneErrorKind::Other(format!(
-                "{error} (suppressed while releasing readers: {})",
-                suppressed.join("; ")
-            )))
-        }
+        error
     }
 
     /// Indexes the old readers by segment name.
@@ -778,12 +768,10 @@ impl StandardDirectoryReader {
         // The live docs changed, or the old reader was an NRT one whose live
         // docs live in memory: both must be read from disk.
         let live_docs: Option<Box<dyn crate::util::Bits>> = if commit_info.has_deletions() {
-            let codec = commit_info.info.codec().ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "segment {} has no codec",
-                    commit_info.info.name
-                ))
-            })?;
+            let codec = commit_info
+                .info
+                .codec()
+                .ok_or_else(crate::error::LuceneError::null_pointer)?;
             Some(codec.live_docs_format().read_live_docs(
                 commit_info.info.directory.as_ref(),
                 commit_info,

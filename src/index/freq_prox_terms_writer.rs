@@ -337,22 +337,20 @@ impl ByteSliceReader {
 
     /// Reads a variable-length signed 32-bit integer.
     ///
+    /// Equivalent to `DataInput.readVInt()` on `ByteSliceReader`, which has no
+    /// length check: `(b & 0x7F) << shift` keeps Java's `int` shift, whose
+    /// distance is taken modulo 32.
+    ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::CorruptIndex`] if the encoding uses more than
-    /// five bytes, which cannot happen for buffers this module wrote.
+    /// None; the `Result` is kept for the callers.
     pub fn read_v_int(&mut self, pool: &ByteBlockPool) -> Result<i32> {
         let mut byte = self.read_byte(pool);
         let mut value = (byte & 0x7F) as i32;
-        let mut shift = 7;
+        let mut shift = 7u32;
         while byte & 0x80 != 0 {
-            if shift > 28 {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                    "invalid vInt in buffered postings".to_string(),
-                )));
-            }
             byte = self.read_byte(pool);
-            value |= ((byte & 0x7F) as i32) << shift;
+            value |= ((byte & 0x7F) as i32).wrapping_shl(shift);
             shift += 7;
         }
         Ok(value)
@@ -423,9 +421,8 @@ impl ByteSliceReader {
 /// caller that needs the `DataInput` shape:
 /// [`TermVectorsWriter::add_prox`](crate::codecs::term_vectors::TermVectorsWriter::add_prox).
 ///
-/// Unlike the bare reader, this one reports an over-read as
-/// [`LuceneErrorKind::CorruptIndex`] instead of panicking, so that a codec reading
-/// more than the indexer wrote fails cleanly.
+/// An over-read behaves as the bare reader's, as Java's `ByteSliceReader`
+/// does: it has no bounds check of its own beyond its `assert !eof()`.
 #[derive(Debug)]
 pub struct PooledSliceReader<'a> {
     reader: ByteSliceReader,
@@ -442,19 +439,6 @@ impl<'a> PooledSliceReader<'a> {
     pub fn eof(&self) -> bool {
         self.reader.eof()
     }
-
-    fn ensure(&self, len: usize) -> Result<()> {
-        let remaining = self.reader.remaining();
-        if (remaining as i64) < len as i64 {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "read past the end of a buffered term stream: {len} bytes requested, \
-                 {remaining} available"
-                ),
-            )));
-        }
-        Ok(())
-    }
 }
 
 impl DataInput for PooledSliceReader<'_> {
@@ -467,13 +451,11 @@ impl DataInput for PooledSliceReader<'_> {
     }
 
     fn read_byte(&mut self) -> Result<u8> {
-        self.ensure(1)?;
         Ok(self.reader.read_byte(self.pool))
     }
 
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         let b = crate::store::require_array(b)?;
-        self.ensure(len)?;
         self.reader
             .read_bytes(self.pool, &mut b[offset..offset + len]);
         Ok(())
@@ -485,9 +467,8 @@ impl DataInput for PooledSliceReader<'_> {
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let len = usize::try_from(num_bytes)
-            .map_err(|_| LuceneError::illegal_argument(format!("cannot skip {num_bytes} bytes")))?;
-        self.ensure(len)?;
+        // `numBytes >= 0` was checked above.
+        let len = usize::try_from(num_bytes).expect("INVARIANT: a non-negative skip fits usize");
         let mut scratch = [0u8; 64];
         let mut left = len;
         while left > 0 {
@@ -829,11 +810,7 @@ impl TermsHashPerField {
         bytes_hash: BytesRefHash,
         bytes_used: Arc<AtomicI64>,
     ) -> Self {
-        assert_ne!(index_options, IndexOptions::NONE);
-        assert!(
-            stream_count == 1 || stream_count == 2,
-            "a term has one or two streams, got {stream_count}"
-        );
+        debug_assert_ne!(index_options, IndexOptions::NONE);
         let mut field = Self {
             stream_count,
             field_name,
@@ -1030,7 +1007,7 @@ impl TermsHashPerField {
         term_id: i32,
         stream: usize,
     ) {
-        assert!(stream < self.stream_count);
+        debug_assert!(stream < self.stream_count);
         let slot = &self.postings[term_id as usize];
         reader.init(
             slot.byte_start + (stream * FIRST_LEVEL_SIZE) as i32,
@@ -1952,30 +1929,22 @@ impl Terms for FreqProxTerms {
     /// Throws `UnsupportedOperationException`, as Java's does: the buffers
     /// keep no per-field statistics (`FreqProxFields.java:75-78`).
     fn size(&self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "FreqProxTerms.size".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Throws `UnsupportedOperationException` (`FreqProxFields.java:80-83`).
     fn sum_total_term_freq(&self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "FreqProxTerms.getSumTotalTermFreq".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Throws `UnsupportedOperationException` (`FreqProxFields.java:85-88`).
     fn sum_doc_freq(&self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "FreqProxTerms.getSumDocFreq".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Throws `UnsupportedOperationException` (`FreqProxFields.java:90-93`).
     fn doc_count(&self) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "FreqProxTerms.getDocCount".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn has_freqs(&self) -> bool {
@@ -2015,6 +1984,9 @@ struct FreqProxTermsEnum {
     num_terms: usize,
     /// Current position, or `-1` before the first [`TermsEnum::next`].
     ord: i64,
+    /// Java's `scratch`: the bytes of the term last read from the pool,
+    /// which `term()` returns whatever the position (empty before any).
+    scratch: Vec<u8>,
     attributes: AttributeSource,
 }
 
@@ -2025,17 +1997,40 @@ impl FreqProxTermsEnum {
             field,
             num_terms,
             ord: -1,
+            scratch: Vec::new(),
             attributes: AttributeSource::new(),
         }
     }
 
-    fn current_term(&self) -> Result<&[u8]> {
-        if self.ord < 0 || self.ord as usize >= self.num_terms {
-            return Err(LuceneError::illegal_state(
-                "terms enum is not positioned on a term".to_string(),
-            ));
-        }
-        Ok(self.field.term_bytes(self.ord as usize))
+    /// `sortedTermIDs[ord]`, which the JVM bounds-checks.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `sortedTermIDs` is the
+    /// compacted hash table, as long as its capacity, whose slots past
+    /// `numTerms` hold `-1` (then `textStarts[-1]` fails); the port keeps the
+    /// `numTerms` sorted ids only, so an ord at or past `numTerms` fails here,
+    /// with this array's length in the message.
+    fn sorted_term_id(&self, ord: i64) -> Result<i32> {
+        // `(int) ord`.
+        let ord = ord as i32;
+        usize::try_from(ord)
+            .ok()
+            .and_then(|index| self.field.sorted_term_ids.get(index).copied())
+            .ok_or_else(|| {
+                LuceneError::unchecked(
+                    "java.lang.ArrayIndexOutOfBoundsException",
+                    format!(
+                        "Index {ord} out of bounds for length {}",
+                        self.field.sorted_term_ids.len()
+                    ),
+                )
+            })
+    }
+
+    /// `termsPool.fillBytesRef(scratch, textStarts[sortedTermIDs[ord]])` for
+    /// an `ord` in `[0, numTerms)`.
+    fn fill_scratch(&mut self, ord: usize) {
+        self.scratch.clear();
+        self.scratch.extend_from_slice(self.field.term_bytes(ord));
     }
 }
 
@@ -2064,7 +2059,8 @@ impl TermsEnum for FreqProxTermsEnum {
         let mut high = self.num_terms as i64 - 1;
         while high >= low {
             let mid = (low + high) >> 1;
-            match self.field.term_bytes(mid as usize).cmp(target) {
+            self.fill_scratch(mid as usize);
+            match self.scratch.as_slice().cmp(target) {
                 std::cmp::Ordering::Less => low = mid + 1,
                 std::cmp::Ordering::Greater => high = mid - 1,
                 std::cmp::Ordering::Equal => {
@@ -2078,24 +2074,26 @@ impl TermsEnum for FreqProxTermsEnum {
         if self.ord >= self.num_terms as i64 {
             Ok(SeekStatus::END)
         } else {
-            debug_assert!(self.field.term_bytes(self.ord as usize) > target);
+            self.fill_scratch(self.ord as usize);
+            debug_assert!(self.scratch.as_slice() > target);
             Ok(SeekStatus::NOT_FOUND)
         }
     }
 
+    /// Equivalent to `FreqProxTermsEnum.seekExact(long)`
+    /// (`FreqProxFields.java:180-185`): `this.ord = (int) ord`, then the
+    /// array reads, whose bounds the JVM checks.
     fn seek_ord(&mut self, ord: i64) -> Result<()> {
-        if ord < 0 || ord >= self.num_terms as i64 {
-            return Err(LuceneError::illegal_argument(format!(
-                "ord {ord} is out of range [0, {})",
-                self.num_terms
-            )));
-        }
-        self.ord = ord;
+        self.ord = i64::from(ord as i32);
+        self.sorted_term_id(self.ord)?;
+        self.fill_scratch(self.ord as usize);
         Ok(())
     }
 
+    /// `return scratch;` (`FreqProxFields.java:199-202`): the term last read,
+    /// empty before any.
     fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(BytesRef::new(self.current_term()?.to_vec())))
+        Ok(Some(BytesRef::new(self.scratch.clone())))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -2108,16 +2106,12 @@ impl TermsEnum for FreqProxTermsEnum {
     /// `UnsupportedOperationException` for the same reason — computing it would
     /// need an extra pass over the postings.
     fn doc_freq(&mut self) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "buffered postings do not record docFreq".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Always fails; see [`TermsEnum::doc_freq`] on this type.
     fn total_term_freq(&mut self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "buffered postings do not record totalTermFreq".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Equivalent to `FreqProxTermsEnum.postings(PostingsEnum, int)`
@@ -2143,13 +2137,8 @@ impl TermsEnum for FreqProxTermsEnum {
         mut reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
     ) -> Result<Option<Box<dyn PostingsEnum>>> {
-        if self.ord < 0 || self.ord as usize >= self.num_terms {
-            return Err(LuceneError::illegal_state(
-                "terms enum is not positioned on a term".to_string(),
-            ));
-        }
-        let term_id = self.field.sorted_term_ids[self.ord as usize];
-
+        // `sortedTermIDs[ord]` is read by the `reset` calls below, after the
+        // feature checks.
         if crate::index::feature_requested(flags, POSTINGS_ENUM_POSITIONS) {
             if !self.field.has_prox {
                 return Err(LuceneError::illegal_argument(
@@ -2178,13 +2167,8 @@ impl TermsEnum for FreqProxTermsEnum {
             pos_enum
                 .as_any_mut()
                 .and_then(|any| any.downcast_mut::<FreqProxPostingsEnum>())
-                .ok_or_else(|| {
-                    LuceneError::illegal_state(
-                        "INVARIANT: the enum was just checked or built as a FreqProxPostingsEnum"
-                            .to_string(),
-                    )
-                })?
-                .reset(term_id);
+                .expect("INVARIANT: the enum was just checked or built as a FreqProxPostingsEnum")
+                .reset(self.sorted_term_id(self.ord)?);
             return Ok(Some(pos_enum));
         }
 
@@ -2210,13 +2194,8 @@ impl TermsEnum for FreqProxTermsEnum {
         docs_enum
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<FreqProxDocsEnum>())
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "INVARIANT: the enum was just checked or built as a FreqProxDocsEnum"
-                        .to_string(),
-                )
-            })?
-            .reset(term_id);
+            .expect("INVARIANT: the enum was just checked or built as a FreqProxDocsEnum")
+            .reset(self.sorted_term_id(self.ord)?);
         Ok(Some(docs_enum))
     }
 
@@ -2224,9 +2203,7 @@ impl TermsEnum for FreqProxTermsEnum {
     ///
     /// Equivalent to `FreqProxTermsEnum.impacts(int)`.
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::unsupported_operation(
-            "buffered postings do not expose impacts".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn next(&mut self) -> Result<Option<BytesRef>> {
@@ -2234,9 +2211,8 @@ impl TermsEnum for FreqProxTermsEnum {
         if self.ord as usize >= self.num_terms {
             Ok(None)
         } else {
-            Ok(Some(BytesRef::new(
-                self.field.term_bytes(self.ord as usize).to_vec(),
-            )))
+            self.fill_scratch(self.ord as usize);
+            Ok(Some(BytesRef::new(self.scratch.clone())))
         }
     }
 }
@@ -2322,9 +2298,7 @@ impl DocIdSetIterator for FreqProxDocsEnum {
     ///
     /// Equivalent to `FreqProxDocsEnum.advance(int)`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "buffered postings cannot be advanced".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Returns [`i64::MAX`]: the cost is unknown without a full pass.
@@ -2487,9 +2461,7 @@ impl DocIdSetIterator for FreqProxPostingsEnum {
 
     /// Always fails; see [`DocIdSetIterator::advance`] on [`FreqProxDocsEnum`].
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "buffered postings cannot be advanced".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Returns [`i64::MAX`]; see [`DocIdSetIterator::cost`] on
@@ -2766,12 +2738,10 @@ impl FreqProxTermsWriter {
 
         apply_deletes(state, &fields, delete_terms)?;
 
-        let codec = state.segment_info.codec().ok_or_else(|| {
-            LuceneError::illegal_state(format!(
-                "segment {} has no codec; cannot write postings",
-                state.segment_info.name
-            ))
-        })?;
+        let codec = state
+            .segment_info
+            .codec()
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
         let mut consumer = codec.postings_format().fields_consumer(state)?;
         let outcome = match sort_map {
             None => consumer.write(&fields, norms),
@@ -2824,11 +2794,8 @@ impl Fields for SortingFields<'_> {
         let index_options = self
             .infos
             .field_info(field)
-            .ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "field \"{field}\" has postings but no field info"
-                ))
-            })?
+            // `infos.fieldInfo(field).getIndexOptions()` on `null`.
+            .ok_or_else(LuceneError::null_pointer)?
             .index_options;
         Ok(Some(Box::new(SortingTerms::new(
             terms,
@@ -3440,9 +3407,9 @@ impl SortingPostingsEnum {
     }
 
     fn posting_input(&mut self) -> Result<&mut ByteBuffersDataInput> {
-        self.posting_input.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("SortingPostingsEnum was not reset".to_string())
-        })
+        self.posting_input
+            .as_mut()
+            .ok_or_else(LuceneError::null_pointer)
     }
 }
 
@@ -3513,9 +3480,10 @@ impl PostingsEnum for SortingPostingsEnum {
         if !self.store_positions {
             return Ok(-1);
         }
-        let input = self.posting_input.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("SortingPostingsEnum was not reset".to_string())
-        })?;
+        let input = self
+            .posting_input
+            .as_mut()
+            .ok_or_else(LuceneError::null_pointer)?;
         let token = input.read_v_int()?;
         // `pos += token >>> 1`.
         self.pos += ((token as u32) >> 1) as i32;

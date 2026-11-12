@@ -1254,6 +1254,18 @@ pub trait Analyzer: Debug + Send + Sync {
     /// every implementor states its own.
     fn java_class_name(&self) -> &'static str;
 
+    /// Returns the analyzer's `toString()`.
+    ///
+    /// `Analyzer` declares no `toString()`, so `java.lang.Object`'s applies:
+    /// the binary class name ([`java_class_name`](Self::java_class_name)),
+    /// `@`, and the identity hash in hexadecimal, rendered by
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string),
+    /// which declares the divergence of the digits. An analyzer whose Java
+    /// class overrides `toString()` overrides this method with that text.
+    fn analyzer_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(self.java_class_name(), self)
+    }
+
     /// Creates a new [`TokenStreamComponents`] instance for `field_name`.
     ///
     /// Equivalent to `Analyzer.createComponents(String)`. An unchecked
@@ -1393,16 +1405,33 @@ pub trait Analyzer: Debug + Send + Sync {
 
     /// Normalizes `text` to the representation it would have in the index.
     ///
-    /// Equivalent to `Analyzer.normalize(String, String)`.
+    /// Equivalent to `Analyzer.normalize(String, String)`
+    /// (`Analyzer.java:213-264`), which reads no reuse state, so it works on
+    /// a closed analyzer as well.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalStateException` when the normalization token stream produces
+    /// no token or more than one, naming the analyzer's `toString()`, and
+    /// `IllegalStateException("Normalization threw an unexpected exception",
+    /// e)` around an `IOException` `e`; any other failure propagates.
     fn normalize(&self, field_name: &str, text: &str) -> Result<BytesRef> {
-        if self.analyzer_state().is_closed() {
-            return Err(LuceneError::already_closed(
-                "this Analyzer is closed".to_string(),
-            ));
-        }
+        // `catch (IOException e) { throw new IllegalStateException(
+        // "Normalization threw an unexpected exception", e); }`, around the
+        // char filters and around the token stream.
+        let wrap_io = |error: LuceneError| {
+            if error.is_io_exception() {
+                LuceneError::illegal_state_with_cause(
+                    "Normalization threw an unexpected exception",
+                    Arc::new(error),
+                )
+            } else {
+                error
+            }
+        };
 
         // Apply char filters and read the filtered text into a string.
-        let filtered_text = {
+        let filtered_text = (|| -> Result<String> {
             let mut reader = self
                 .init_reader_for_normalization(field_name, Box::new(StringCharReader::new(text)));
             let mut buffer = [0u16; 64];
@@ -1417,42 +1446,48 @@ pub trait Analyzer: Debug + Send + Sync {
             reader.close()?;
             // A Rust `String` cannot hold a lone surrogate, which becomes
             // U+FFFD (see `utf16_to_string`).
-            character_utils::utf16_to_string(&builder)
-        };
+            Ok(character_utils::utf16_to_string(&builder))
+        })()
+        .map_err(wrap_io)?;
 
-        let attribute_factory = self.attribute_factory(field_name);
-        let string_stream = Box::new(StringTokenStream::new_with_factory(
-            attribute_factory,
-            filtered_text,
-            text.encode_utf16().count() as i32,
-        )?);
-        let mut token_stream = self.normalize_token_stream(field_name, string_stream);
-        token_stream
-            .attribute_source_mut()
-            .add_attribute_interface::<dyn TermToBytesRefAttribute>()?;
+        (|| -> Result<BytesRef> {
+            let attribute_factory = self.attribute_factory(field_name);
+            let string_stream = Box::new(StringTokenStream::new_with_factory(
+                attribute_factory,
+                filtered_text,
+                text.encode_utf16().count() as i32,
+            )?);
+            let mut token_stream = self.normalize_token_stream(field_name, string_stream);
+            token_stream
+                .attribute_source_mut()
+                .add_attribute_interface::<dyn TermToBytesRefAttribute>()?;
 
-        token_stream.reset()?;
-        if !token_stream.increment_token()? {
-            return Err(LuceneError::illegal_state(format!(
-                "The normalization token stream is expected to produce exactly 1 token, but got 0 for analyzer and input \"{}\"",
-                text
-            )));
-        }
-        let term = token_stream
-            .attribute_source()
-            .get_attribute_interface::<dyn TermToBytesRefAttribute>()
-            .expect("INVARIANT: added above")
-            .get_bytes_ref();
-        let term = BytesRef::deep_copy_of(&term);
-        if token_stream.increment_token()? {
-            return Err(LuceneError::illegal_state(format!(
-                "The normalization token stream is expected to produce exactly 1 token, but got 2+ for analyzer and input \"{}\"",
-                text
-            )));
-        }
-        token_stream.end()?;
-        token_stream.close()?;
-        Ok(term)
+            token_stream.reset()?;
+            if !token_stream.increment_token()? {
+                return Err(LuceneError::illegal_state(format!(
+                    "The normalization token stream is expected to produce exactly 1 token, but got 0 for analyzer {} and input \"{}\"",
+                    self.analyzer_to_string(),
+                    text
+                )));
+            }
+            let term = token_stream
+                .attribute_source()
+                .get_attribute_interface::<dyn TermToBytesRefAttribute>()
+                .expect("INVARIANT: added above")
+                .get_bytes_ref();
+            let term = BytesRef::deep_copy_of(&term);
+            if token_stream.increment_token()? {
+                return Err(LuceneError::illegal_state(format!(
+                    "The normalization token stream is expected to produce exactly 1 token, but got 2+ for analyzer {} and input \"{}\"",
+                    self.analyzer_to_string(),
+                    text
+                )));
+            }
+            token_stream.end()?;
+            token_stream.close()?;
+            Ok(term)
+        })()
+        .map_err(wrap_io)
     }
 
     /// Closes the analyzer and releases reusable components.

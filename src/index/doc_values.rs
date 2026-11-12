@@ -264,11 +264,10 @@ pub trait SortedDocValues: DocValuesIterator {
             AutomatonType::None => Ok(Box::new(EmptyTermsEnum::new())),
             AutomatonType::All => Ok(terms),
             AutomatonType::Single => {
-                let term = automaton.term.as_ref().ok_or_else(|| {
-                    LuceneError::illegal_state(
-                        "CompiledAutomaton of type Single carries no term".to_string(),
-                    )
-                })?;
+                let term = automaton
+                    .term
+                    .as_ref()
+                    .expect("INVARIANT: a SINGLE CompiledAutomaton carries its term");
                 Ok(SingleTermsEnum::new(terms, term.clone()))
             }
             AutomatonType::Normal => AutomatonTermsEnum::new(terms, automaton.clone()),
@@ -446,11 +445,10 @@ pub trait SortedSetDocValues: DocValuesIterator {
             AutomatonType::None => Ok(Box::new(EmptyTermsEnum::new())),
             AutomatonType::All => Ok(terms),
             AutomatonType::Single => {
-                let term = automaton.term.as_ref().ok_or_else(|| {
-                    LuceneError::illegal_state(
-                        "CompiledAutomaton of type Single carries no term".to_string(),
-                    )
-                })?;
+                let term = automaton
+                    .term
+                    .as_ref()
+                    .expect("INVARIANT: a SINGLE CompiledAutomaton carries its term");
                 Ok(SingleTermsEnum::new(terms, term.clone()))
             }
             AutomatonType::Normal => AutomatonTermsEnum::new(terms, automaton.clone()),
@@ -900,10 +898,9 @@ impl DocValuesIterator for EmptyNumericDocValues {
 
 impl NumericDocValues for EmptyNumericDocValues {
     fn long_value(&self) -> Result<i64> {
+        // `assert false; return 0;` (`DocValues.java:100-103`).
         debug_assert!(false);
-        Err(LuceneError::illegal_state(
-            "long_value called on empty numeric doc values".to_string(),
-        ))
+        Ok(0)
     }
 }
 
@@ -946,10 +943,11 @@ impl DocValuesIterator for EmptyBinaryDocValues {
 
 impl BinaryDocValues for EmptyBinaryDocValues {
     fn binary_value(&self) -> Result<BytesRef> {
+        // `assert false; return null;` (`DocValues.java:61-64`): the caller's
+        // dereference of that `null` is Java's `NullPointerException`, which
+        // the port raises here because a `BytesRef` cannot be `null`.
         debug_assert!(false);
-        Err(LuceneError::illegal_state(
-            "binary_value called on empty binary doc values".to_string(),
-        ))
+        Err(LuceneError::null_pointer())
     }
 }
 
@@ -992,10 +990,9 @@ impl DocValuesIterator for EmptySortedDocValues {
 
 impl SortedDocValues for EmptySortedDocValues {
     fn ord_value(&self) -> Result<i32> {
+        // `assert false; return -1;` (`DocValues.java:141-144`).
         debug_assert!(false);
-        Err(LuceneError::illegal_state(
-            "ord_value called on empty sorted doc values".to_string(),
-        ))
+        Ok(-1)
     }
 
     fn get_value_count(&self) -> Result<i32> {
@@ -1047,9 +1044,10 @@ impl DocValuesIterator for EmptySortedNumericDocValues {
 
 impl SortedNumericDocValues for EmptySortedNumericDocValues {
     fn next_value(&mut self) -> Result<i64> {
-        Err(LuceneError::illegal_state(
-            "next_value called on empty sorted numeric doc values".to_string(),
-        ))
+        // `singleton(emptyNumeric()).nextValue()` is the empty numeric's
+        // `longValue()`: `assert false; return 0;` (`DocValues.java:100-103`).
+        debug_assert!(false);
+        Ok(0)
     }
 
     fn doc_value_count(&self) -> Result<i32> {
@@ -1747,7 +1745,9 @@ pub struct EmptyDocValuesProducer;
 impl EmptyDocValuesProducer {
     /// The `UnsupportedOperationException` every member throws.
     fn unsupported(method: &str) -> LuceneError {
-        LuceneError::unsupported_operation(format!("EmptyDocValuesProducer.{method}"))
+        // `throw new UnsupportedOperationException()`: no message.
+        let _ = method;
+        LuceneError::unsupported_operation(String::new())
     }
 }
 
@@ -1973,9 +1973,10 @@ impl OrdinalMap {
         let mut queue = PriorityQueue::new(num_subs, TermsEnumIndexComparator)?;
         for i in 0..num_subs {
             let old_index = segment_map.new_to_old(i);
-            let terms_enum = subs[old_index].take().ok_or_else(|| {
-                LuceneError::illegal_state("duplicate use of a terms enum".to_string())
-            })?;
+            // `segmentMap.newToOld` is a permutation: each enum is taken once.
+            let terms_enum = subs[old_index]
+                .take()
+                .expect("INVARIANT: segmentMap.newToOld is a permutation");
             let mut tei = TermsEnumIndex::new(terms_enum, i);
             if tei.next()?.is_some() {
                 queue.add(tei);
@@ -2461,15 +2462,11 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "docFreq not supported by SortedDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "totalTermFreq not supported by SortedDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn postings(
@@ -2477,15 +2474,11 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
     ) -> Result<Option<Box<dyn PostingsEnum>>> {
-        Err(LuceneError::unsupported_operation(
-            "postings not supported by SortedDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::unsupported_operation(
-            "impacts not supported by SortedDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn seek_term_state(&mut self, _text: &BytesRef, state: &dyn TermState) -> Result<()> {
@@ -2493,9 +2486,7 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         let state = state
             .as_any()
             .downcast_ref::<OrdTermState>()
-            .ok_or_else(|| {
-                LuceneError::illegal_argument("state must be an OrdTermState".to_string())
-            })?;
+            .ok_or_else(ord_term_state_cast_error)?;
         self.seek_ord(state.ord)
     }
 
@@ -2614,15 +2605,11 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "docFreq not supported by SortedSetDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "totalTermFreq not supported by SortedSetDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn postings(
@@ -2630,15 +2617,11 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
     ) -> Result<Option<Box<dyn PostingsEnum>>> {
-        Err(LuceneError::unsupported_operation(
-            "postings not supported by SortedSetDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::unsupported_operation(
-            "impacts not supported by SortedSetDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn seek_term_state(&mut self, _text: &BytesRef, state: &dyn TermState) -> Result<()> {
@@ -2646,9 +2629,7 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         let state = state
             .as_any()
             .downcast_ref::<OrdTermState>()
-            .ok_or_else(|| {
-                LuceneError::illegal_argument("state must be an OrdTermState".to_string())
-            })?;
+            .ok_or_else(ord_term_state_cast_error)?;
         self.seek_ord(state.ord)
     }
 
@@ -2673,6 +2654,22 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
+
+/// The `ClassCastException` of `((OrdTermState) state)` in
+/// `Sorted(Set)DocValuesTermsEnum.seekExact(BytesRef, TermState)`
+/// (`SortedDocValuesTermsEnum.java:114-117`), after its
+/// `assert state instanceof OrdTermState`.
+///
+/// **Divergence from Lucene 10.5.0.** The JVM's message names the runtime
+/// class of `state`, which a `dyn TermState` cannot report; the message names
+/// the target class only.
+fn ord_term_state_cast_error() -> LuceneError {
+    debug_assert!(false, "state must be an OrdTermState");
+    LuceneError::unchecked(
+        "java.lang.ClassCastException",
+        "cannot be cast to class org.apache.lucene.index.OrdTermState",
+    )
+}
 
 #[cfg(test)]
 mod tests {
@@ -3212,7 +3209,7 @@ mod tests {
 
     /// Java's empty doc values `longValue()` body is `assert false`
     /// (`DocValues.java:100-101`): under `-ea` (debug builds) the call fails the
-    /// assertion; this port reports an error without assertions.
+    /// assertion; without assertions it returns `0`.
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_numeric_doc_values_returns_no_docs() {
@@ -3222,12 +3219,13 @@ mod tests {
         assert_eq!(values.next_doc().unwrap(), NO_MORE_DOCS);
         assert!(!values.advance_exact(0).unwrap());
         assert_eq!(values.doc_id(), 0);
-        assert!(values.long_value().is_err());
+        assert_eq!(values.long_value().unwrap(), 0);
     }
 
     /// Java's empty doc values `binaryValue()` body is `assert false`
     /// (`DocValues.java:61-62`): under `-ea` (debug builds) the call fails the
-    /// assertion; this port reports an error without assertions.
+    /// assertion; without assertions it returns `null`, which the port
+    /// reports as the `NullPointerException` of its use.
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_binary_doc_values_returns_no_docs() {
@@ -3238,14 +3236,14 @@ mod tests {
 
     /// Java's empty doc values `ordValue()` body is `assert false`
     /// (`DocValues.java:141-142`): under `-ea` (debug builds) the call fails the
-    /// assertion; this port reports an error without assertions.
+    /// assertion; without assertions it returns `-1`.
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_sorted_doc_values_has_empty_dictionary() {
         let values = EmptySortedDocValues::new();
         assert_eq!(values.get_value_count().unwrap(), 0);
         assert_eq!(values.lookup_ord(0).unwrap().length, 0);
-        assert!(values.ord_value().is_err());
+        assert_eq!(values.ord_value().unwrap(), -1);
     }
 
     #[test]

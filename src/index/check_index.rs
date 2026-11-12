@@ -1182,12 +1182,14 @@ impl CheckIndex {
 
         let mut result = Status::default();
         let files = self.dir.list_all()?;
-        let Some(last_segments_file) = SegmentInfos::get_last_commit_segments_file_name(&files)
+        let Some(last_segments_file) = SegmentInfos::get_last_commit_segments_file_name(&files)?
         else {
-            // Java names the directory in the message; `dyn Directory` has no
-            // `Display` in this crate, so only the file listing is reported.
+            // `"no segments* file found in " + dir + ": files: " +
+            // Arrays.toString(files)` (`CheckIndex.java:592-593`).
             return Err(LuceneError::from(LuceneErrorKind::IndexNotFound(format!(
-                "no segments* file found in the directory: files: {files:?}"
+                "no segments* file found in {}: files: [{}]",
+                self.dir.directory_to_string(),
+                files.join(", ")
             ))));
         };
 
@@ -1623,15 +1625,18 @@ impl CheckIndex {
     /// leading `_` followed by a base-36 number, which is Java's
     /// `NumberFormatException`.
     fn update_max_segment_name(&self, result: &mut Status, info: &SegmentCommitInfo) -> Result<()> {
-        let digits = info.info.name.get(1..).ok_or_else(|| {
-            LuceneError::illegal_argument(format!("invalid segment name: {}", info.info.name))
-        })?;
-        let segment_name = i64::from_str_radix(digits, 36).map_err(|error| {
-            LuceneError::illegal_argument(format!(
-                "invalid segment name \"{}\": {error}",
-                info.info.name
-            ))
-        })?;
+        // `Long.parseLong(info.info.name.substring(1), Character.MAX_RADIX)`
+        // (`CheckIndex.java:915`).
+        let name = &info.info.name;
+        let mut chars = name.chars();
+        if chars.next().is_none() {
+            return Err(LuceneError::from(LuceneErrorKind::StringIndexOutOfBounds(
+                "Range [1, 0) out of bounds for length 0".to_string(),
+            )));
+        }
+        let digits = chars.as_str();
+        let segment_name = crate::util::extra::java_parse_long_radix(digits, 36)
+            .ok_or_else(|| LuceneError::number_format_for_input_string(digits, 36))?;
         if segment_name > result.max_segment_name {
             result.max_segment_name = segment_name;
         }
@@ -2055,14 +2060,11 @@ impl CheckIndex {
                     .to_string(),
             ));
         }
-        // Java dereferences `result.newSegments` unconditionally and would throw
-        // a `NullPointerException` for a status whose check returned before the
-        // commit was read; this port reports that as an illegal argument.
+        // `result.newSegments.changed()` (`CheckIndex.java:4279`): a status
+        // whose check returned before the commit was read has none, and the
+        // dereference throws `NullPointerException`.
         let Some(new_segments) = result.new_segments.as_mut() else {
-            return Err(LuceneError::illegal_argument(
-                "this status carries no segments to write; the index was never fully checked"
-                    .to_string(),
-            ));
+            return Err(LuceneError::null_pointer());
         };
         new_segments.changed();
         new_segments.commit(self.dir.as_ref())?;
@@ -3115,10 +3117,11 @@ fn check_doc_values(
             let mut b = crate::codecs::doc_values::non_null(dv_reader.get_numeric(fi)?, fi)?;
             check_bulk_fetch_numeric_doc_values(a.as_mut(), b.as_mut(), max_doc)?;
         }
+        // `case NONE: default: throw new AssertionError();`
+        // (`CheckIndex.java:3941-3943`).
         DocValuesType::NONE => {
-            return Err(LuceneError::illegal_state(format!(
-                "checkDocValues called on field {} which has no doc values",
-                fi.get_name()
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                String::new(),
             )));
         }
     }
@@ -3276,14 +3279,9 @@ fn check_terms_intersect(
     start_term: Option<&BytesRef>,
 ) -> Result<()> {
     let mut all_terms = terms.iterator()?;
-    let automaton = match Operations::determinize(automaton, DEFAULT_DETERMINIZE_WORK_LIMIT) {
-        Ok(a) => a,
-        Err(e) => {
-            return Err(LuceneError::illegal_state(format!(
-                "could not determinize the CheckIndex probe automaton: {e:?}"
-            )))
-        }
-    };
+    // `Operations.determinize` throws `TooComplexToDeterminizeException`,
+    // which propagates (`CheckIndex.java:2446`).
+    let automaton = Operations::determinize(automaton, DEFAULT_DETERMINIZE_WORK_LIMIT)?;
     let compiled_automaton = CompiledAutomaton::new(automaton.clone(), false, true, true)?;
     let run_automaton = ByteRunAutomaton::new(automaton, true)?;
     let mut filtered_terms = terms.intersect(&compiled_automaton, start_term)?;
@@ -5126,15 +5124,11 @@ struct ConstantRelationIntersectVisitor {
 
 impl crate::index::point_values::IntersectVisitor for ConstantRelationIntersectVisitor {
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "a constant-relation visitor never visits a document".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "a constant-relation visitor never visits a document".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn compare(
@@ -5881,7 +5875,7 @@ pub fn test_sort(
         .leaves()
         .into_iter()
         .next()
-        .ok_or_else(|| LuceneError::illegal_state("a leaf reader has one leaf".to_string()))?;
+        .expect("INVARIANT: a leaf reader's context has one leaf");
     // The field comparators outlive the leaf comparators they hand out only
     // through the state they share, so they are kept for the whole check.
     let mut field_comparators = Vec::with_capacity(fields.len());

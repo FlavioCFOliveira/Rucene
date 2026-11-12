@@ -50,15 +50,6 @@
 //!
 //! # Divergences from Java, and why
 //!
-//! * **A backwards document is refused at the call by the multi-valued
-//!   writers.** Java only asserts `docID >= currentDoc` in
-//!   `SortedNumericDocValuesWriter.addValue` and
-//!   `SortedSetDocValuesWriter.addValue`; with assertions off, the backwards
-//!   document is refused later, when `finishCurrentDoc` adds it to the
-//!   document set, which throws `IllegalArgumentException("Out of order doc
-//!   ids: last=..., next=...")` (`DocsWithFieldSet.java:46-50`). This port
-//!   returns the `IllegalArgument` error at the call, before the value is
-//!   buffered.
 //! * **A second flush is refused.** Java would hand the consumer the field
 //!   twice, writing two metadata entries for one field; every writer here
 //!   refuses the second call.
@@ -312,9 +303,7 @@ impl DocValuesWriter {
 /// `getSkipper` throws `UnsupportedOperationException`
 /// (`index/EmptyDocValuesProducer.java:54-57`).
 fn unsupported_skipper() -> LuceneError {
-    LuceneError::unsupported_operation(
-        "a flush-time doc-values producer does not provide a doc-values skipper".to_string(),
-    )
+    LuceneError::unsupported_operation(String::new())
 }
 
 /// Converts a [`NumericValue`](crate::document::NumericValue) the way Java's
@@ -375,15 +364,6 @@ fn appears_more_than_once(field_info: &FieldInfo) -> LuceneError {
     ))
 }
 
-/// The error the multi-valued writers report for a backwards document, where
-/// Java only asserts (see the module documentation).
-fn backwards_document(field_info: &FieldInfo, doc_id: i32, current_doc: i32) -> LuceneError {
-    LuceneError::illegal_argument(format!(
-        "DocValuesField \"{}\" values must be added in increasing document order (doc {doc_id} after {current_doc})",
-        field_info.name
-    ))
-}
-
 /// Mutable access to a writer's document set while it is still being built.
 ///
 /// The set lives in an [`Arc`] so that the producers handed out at flush can
@@ -399,20 +379,18 @@ macro_rules! producer_guard {
     ($type:ty) => {
         impl $type {
             fn check_field(&self, field: &FieldInfo) -> Result<()> {
+                // `throw new IllegalArgumentException("wrong fieldInfo")`
+                // (`NumericDocValuesWriter.java:163-165`).
                 if field.number != self.field_number {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "wrong fieldInfo: expected {} ({}), got {} ({})",
-                        self.field_name, self.field_number, field.name, field.number
-                    )));
+                    return Err(LuceneError::illegal_argument("wrong fieldInfo"));
                 }
                 Ok(())
             }
 
-            fn unsupported(&self, kind: &str) -> LuceneError {
-                LuceneError::unsupported_operation(format!(
-                    "this producer only serves the {} values of field {} ({})",
-                    kind, self.field_name, self.field_number
-                ))
+            /// `EmptyDocValuesProducer`'s `throw new
+            /// UnsupportedOperationException()`, which has no message.
+            fn unsupported(&self, _kind: &str) -> LuceneError {
+                LuceneError::unsupported_operation(String::new())
             }
         }
     };
@@ -571,8 +549,8 @@ impl NumericDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `first_doc_id` is not
-    /// strictly greater than the last document added (Java asserts it), and
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) `Out of order doc ids` when
+    /// `first_doc_id` is not past the last document added (Java asserts it), and
     /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the values have already been built or
     /// flushed.
     pub fn add_repeat_values(&mut self, first_doc_id: i32, value: i64, count: i32) -> Result<()> {
@@ -596,8 +574,8 @@ impl NumericDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `first_doc_id` is not
-    /// strictly greater than the last document added,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) `Out of order doc ids` when
+    /// `first_doc_id` is not past the last document added,
     /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the values have already been built or
     /// flushed, and whatever reading the cursor raises.
     pub fn add_dense_values(
@@ -618,15 +596,13 @@ impl NumericDocValuesWriter {
         Ok(())
     }
 
-    /// The two checks the batch paths run before buffering: the field must not
-    /// have been flushed, and the document must come after the last one (Java
-    /// asserts `firstDocID > lastDocID`).
-    fn check_appendable(&self, doc_id: i32) -> Result<()> {
+    /// The check the batch paths run before buffering: the field must not
+    /// have been flushed. Java only asserts `firstDocID > lastDocID`; an
+    /// out-of-order batch is refused by `docsWithField.addRange` after the
+    /// values were buffered (`DocsWithFieldSet.java:78-81`).
+    fn check_appendable(&self, _doc_id: i32) -> Result<()> {
         if self.flushed {
             return Err(already_flushed(&self.field_info));
-        }
-        if doc_id <= self.last_doc_id {
-            return Err(appears_more_than_once(&self.field_info));
         }
         Ok(())
     }
@@ -786,7 +762,6 @@ impl NumericDocValuesWriter {
         };
         Ok(Arc::new(BufferedNumericProducer {
             field_number: field_info.number,
-            field_name: field_info.name.clone(),
             values,
             docs_with_field,
             sorted,
@@ -815,7 +790,6 @@ impl Drop for NumericDocValuesWriter {
 #[derive(Debug, Clone)]
 struct BufferedNumericProducer {
     field_number: i32,
-    field_name: String,
     values: Arc<DeltaPackedLongValues>,
     docs_with_field: Arc<DocsWithFieldSet>,
     /// The field reordered by an index sort, when one applies.
@@ -886,9 +860,7 @@ impl DocIdSetIterator for BufferedNumeric {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "BufferedNumericDocValues does not support advance".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn cost(&self) -> i64 {
@@ -906,9 +878,7 @@ impl DocIdSetIterator for BufferedNumeric {
 
 impl DocValuesIterator for BufferedNumeric {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::unsupported_operation(
-            "BufferedNumericDocValues does not support advanceExact".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 
@@ -1251,7 +1221,6 @@ impl BinaryDocValuesWriter {
     ) -> BufferedBinaryProducer {
         BufferedBinaryProducer {
             field_number: self.field_info.number,
-            field_name: self.field_info.name.clone(),
             lengths,
             max_length: self.max_length,
             bytes_input: self
@@ -1313,7 +1282,6 @@ impl Drop for BinaryDocValuesWriter {
 #[derive(Debug, Clone)]
 struct BufferedBinaryProducer {
     field_number: i32,
-    field_name: String,
     lengths: Arc<DeltaPackedLongValues>,
     max_length: usize,
     bytes_input: PagedBytesDataInput<'static>,
@@ -1403,9 +1371,7 @@ impl DocIdSetIterator for BufferedBinary {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "BufferedBinaryDocValues does not support advance".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn cost(&self) -> i64 {
@@ -1423,9 +1389,7 @@ impl DocIdSetIterator for BufferedBinary {
 
 impl DocValuesIterator for BufferedBinary {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::unsupported_operation(
-            "BufferedBinaryDocValues does not support advanceExact".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 
@@ -2108,7 +2072,6 @@ impl SortedDocValuesWriter {
     {
         let mut producer = BufferedSortedProducer {
             field_number: field_info.number,
-            field_name: field_info.name.clone(),
             dictionary: dictionary.clone(),
             ords,
             docs_with_field,
@@ -2146,7 +2109,6 @@ impl Drop for SortedDocValuesWriter {
 #[derive(Debug)]
 struct BufferedSortedProducer<V> {
     field_number: i32,
-    field_name: String,
     dictionary: Dictionary,
     ords: Arc<V>,
     docs_with_field: Arc<DocsWithFieldSet>,
@@ -2157,7 +2119,6 @@ impl<V> Clone for BufferedSortedProducer<V> {
     fn clone(&self) -> Self {
         Self {
             field_number: self.field_number,
-            field_name: self.field_name.clone(),
             dictionary: self.dictionary.clone(),
             ords: Arc::clone(&self.ords),
             docs_with_field: Arc::clone(&self.docs_with_field),
@@ -2175,21 +2136,18 @@ impl<V: PackedLongValuesAccess + Send + Sync + 'static> BufferedSortedProducer<V
         )
     }
 
+    /// `throw new IllegalArgumentException("wrong fieldInfo")`
+    /// (`SortedDocValuesWriter.java:282-284`).
     fn check_field(&self, field: &FieldInfo) -> Result<()> {
         if field.number != self.field_number {
-            return Err(LuceneError::illegal_argument(format!(
-                "wrong fieldInfo: expected {} ({}), got {} ({})",
-                self.field_name, self.field_number, field.name, field.number
-            )));
+            return Err(LuceneError::illegal_argument("wrong fieldInfo"));
         }
         Ok(())
     }
 
-    fn unsupported(&self, kind: &str) -> LuceneError {
-        LuceneError::unsupported_operation(format!(
-            "this producer only serves the {} values of field {} ({})",
-            kind, self.field_name, self.field_number
-        ))
+    /// `EmptyDocValuesProducer`'s `throw new UnsupportedOperationException()`.
+    fn unsupported(&self, _kind: &str) -> LuceneError {
+        LuceneError::unsupported_operation(String::new())
     }
 }
 
@@ -2264,9 +2222,7 @@ impl<V: PackedLongValuesAccess> DocIdSetIterator for BufferedSorted<V> {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "BufferedSortedDocValues does not support advance".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn cost(&self) -> i64 {
@@ -2284,9 +2240,7 @@ impl<V: PackedLongValuesAccess> DocIdSetIterator for BufferedSorted<V> {
 
 impl<V: PackedLongValuesAccess> DocValuesIterator for BufferedSorted<V> {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::unsupported_operation(
-            "BufferedSortedDocValues does not support advanceExact".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 
@@ -2522,17 +2476,13 @@ impl fmt::Debug for SingletonSortedAsSortedSet {
 /// and `SortedSetDocValuesWriter.flush` (`SortedSetDocValuesWriter.java:276-288`).
 #[derive(Debug, Clone)]
 struct SingletonProducer {
-    field_number: i32,
-    field_name: String,
     single_value_producer: Arc<dyn DocValuesProducer>,
 }
 
 impl SingletonProducer {
-    fn unsupported(&self, kind: &str) -> LuceneError {
-        LuceneError::unsupported_operation(format!(
-            "this producer only serves the single-valued view of field {} ({}), not its {} values",
-            self.field_name, self.field_number, kind
-        ))
+    /// `EmptyDocValuesProducer`'s `throw new UnsupportedOperationException()`.
+    fn unsupported(&self, _kind: &str) -> LuceneError {
+        LuceneError::unsupported_operation(String::new())
     }
 }
 
@@ -2646,19 +2596,13 @@ impl SortedNumericDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `doc_id` goes backwards
-    /// (Java asserts), and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when committing the previous
+    /// document fails (`Out of order doc ids` for one that went backwards,
+    /// which Java only asserts), and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has
     /// already been built or flushed.
     pub fn add_value(&mut self, doc_id: i32, value: i64) -> Result<()> {
         debug_assert!(doc_id >= self.current_doc);
         self.check_open()?;
-        if doc_id < self.current_doc {
-            return Err(backwards_document(
-                &self.field_info,
-                doc_id,
-                self.current_doc,
-            ));
-        }
         if doc_id != self.current_doc {
             self.finish_current_doc()?;
             self.current_doc = doc_id;
@@ -2676,8 +2620,8 @@ impl SortedNumericDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `first_doc_id` is not
-    /// strictly greater than the current document (Java asserts),
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a document is out of order
+    /// (`Out of order doc ids`; Java only asserts `firstDocID > currentDoc`),
     /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been built or
     /// flushed, and whatever reading the cursor raises.
     pub fn add_dense_values(
@@ -2691,13 +2635,6 @@ impl SortedNumericDocValuesWriter {
             return Ok(());
         }
         self.check_open()?;
-        if first_doc_id <= self.current_doc {
-            return Err(backwards_document(
-                &self.field_info,
-                first_doc_id,
-                self.current_doc,
-            ));
-        }
         self.finish_current_doc()?;
 
         // Write values directly to pending — each value is one doc, single-valued.
@@ -2829,7 +2766,6 @@ impl SortedNumericDocValuesWriter {
     fn producer(&self, sorted: Option<Arc<LongValues>>) -> BufferedSortedNumericProducer {
         BufferedSortedNumericProducer {
             field_number: self.field_info.number,
-            field_name: self.field_info.name.clone(),
             values: Arc::clone(self.final_values.as_ref().expect("INVARIANT: finish() ran")),
             value_counts: self.final_values_count.clone(),
             docs_with_field: Arc::clone(&self.docs_with_field),
@@ -2871,8 +2807,6 @@ impl SortedNumericDocValuesWriter {
                 sort_map,
             )?;
             let producer = SingletonProducer {
-                field_number: self.field_info.number,
-                field_name: self.field_info.name.clone(),
                 single_value_producer,
             };
             return consumer.add_sorted_numeric_field(&self.field_info, &producer);
@@ -2907,7 +2841,6 @@ impl Drop for SortedNumericDocValuesWriter {
 #[derive(Debug, Clone)]
 struct BufferedSortedNumericProducer {
     field_number: i32,
-    field_name: String,
     values: Arc<DeltaPackedLongValues>,
     value_counts: Option<Arc<DeltaPackedLongValues>>,
     docs_with_field: Arc<DocsWithFieldSet>,
@@ -3054,9 +2987,7 @@ impl DocIdSetIterator for BufferedSortedNumeric {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "BufferedSortedNumericDocValues does not support advance".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn cost(&self) -> i64 {
@@ -3074,9 +3005,7 @@ impl DocIdSetIterator for BufferedSortedNumeric {
 
 impl DocValuesIterator for BufferedSortedNumeric {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::unsupported_operation(
-            "BufferedSortedNumericDocValues does not support advanceExact".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 
@@ -3291,8 +3220,8 @@ impl SortedSetDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `doc_id` goes backwards
-    /// (Java asserts) or the value is too long, and
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the value is too long or
+    /// committing the previous document fails (`Out of order doc ids`), and
     /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been built or
     /// flushed.
     pub fn add_value(
@@ -3303,13 +3232,6 @@ impl SortedSetDocValuesWriter {
     ) -> Result<()> {
         debug_assert!(doc_id >= self.current_doc);
         self.check_open()?;
-        if doc_id < self.current_doc {
-            return Err(backwards_document(
-                &self.field_info,
-                doc_id,
-                self.current_doc,
-            ));
-        }
         if value.len() > SORTED_MAX_LENGTH {
             return Err(LuceneError::illegal_argument(format!(
                 "DocValuesField \"{}\" is too large, must be <= {SORTED_MAX_LENGTH}",
@@ -3348,8 +3270,8 @@ impl SortedSetDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a document goes backwards
-    /// or an ordinal is out of range, [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when committing a document fails
+    /// (`Out of order doc ids`) or an ordinal is out of range, [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the
     /// field has already been built or flushed, and whatever reading the
     /// cursor raises.
     pub fn add_ordinal_tuples(
@@ -3370,13 +3292,6 @@ impl SortedSetDocValuesWriter {
             }
             let doc_id = base_doc_id + batch_doc_id;
             debug_assert!(doc_id >= self.current_doc);
-            if doc_id < self.current_doc {
-                return Err(backwards_document(
-                    &self.field_info,
-                    doc_id,
-                    self.current_doc,
-                ));
-            }
             if doc_id != self.current_doc {
                 self.finish_current_doc()?;
                 self.current_doc = doc_id;
@@ -3512,7 +3427,6 @@ impl SortedSetDocValuesWriter {
         let dictionary = self.dictionary.as_ref().expect("INVARIANT: finish() ran");
         BufferedSortedSetProducer {
             field_number: self.field_info.number,
-            field_name: self.field_info.name.clone(),
             dictionary: dictionary.clone(),
             ords: Arc::clone(self.final_ords.as_ref().expect("INVARIANT: finish() ran")),
             ord_counts: Arc::clone(
@@ -3558,8 +3472,6 @@ impl SortedSetDocValuesWriter {
         if self.final_ord_counts.is_none() {
             let single_value_producer = self.single_value_producer(None)?;
             return Ok(Arc::new(SingletonProducer {
-                field_number: self.field_info.number,
-                field_name: self.field_info.name.clone(),
                 single_value_producer,
             }));
         }
@@ -3594,8 +3506,6 @@ impl SortedSetDocValuesWriter {
         if self.final_ord_counts.is_none() {
             let single_value_producer = self.single_value_producer(sort_map)?;
             let producer = SingletonProducer {
-                field_number: self.field_info.number,
-                field_name: self.field_info.name.clone(),
                 single_value_producer,
             };
             return consumer.add_sorted_set_field(&self.field_info, &producer);
@@ -3637,7 +3547,6 @@ impl Drop for SortedSetDocValuesWriter {
 #[derive(Debug, Clone)]
 struct BufferedSortedSetProducer {
     field_number: i32,
-    field_name: String,
     dictionary: Dictionary,
     ords: Arc<PackedLongValues>,
     ord_counts: Arc<DeltaPackedLongValues>,
@@ -3726,9 +3635,7 @@ impl DocIdSetIterator for BufferedSortedSet {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "BufferedSortedSetDocValues does not support advance".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn cost(&self) -> i64 {
@@ -3746,9 +3653,7 @@ impl DocIdSetIterator for BufferedSortedSet {
 
 impl DocValuesIterator for BufferedSortedSet {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::unsupported_operation(
-            "BufferedSortedSetDocValues does not support advanceExact".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 
@@ -4744,29 +4649,22 @@ mod tests {
     )]
     fn a_sorted_numeric_writer_refuses_a_backwards_document() {
         // Java only asserts `docID >= currentDoc`; with assertions off the
-        // backwards id is refused later, when `finishCurrentDoc` adds it to the
-        // document set, which throws `IllegalArgumentException("Out of order
-        // doc ids: last=..., next=...")` (`DocsWithFieldSet.java:46-50`). This
-        // port refuses it at the call.
+        // backwards id is buffered, and refused when `finishCurrentDoc` adds it
+        // to the document set, which throws `IllegalArgumentException("Out of
+        // order doc ids: last=..., next=...")` (`DocsWithFieldSet.java:46-50`).
         let mut writer = SortedNumericDocValuesWriter::new(
             field("values", 0, DocValuesType::SORTED_NUMERIC),
             counter(),
         );
         writer.add_value(3, 1).unwrap();
         writer.add_value(3, 2).unwrap();
-        let error = writer.add_value(2, 3).unwrap_err();
+        writer.add_value(2, 3).unwrap();
+        let mut consumer = RecordingConsumer::default();
+        let error = with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap_err();
         assert!(
             matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
-                if m.contains("increasing document order") && m.contains("values")),
+                if m == "Out of order doc ids: last=3, next=2"),
             "unexpected error: {error:?}"
-        );
-        // The rejected document was not committed; the earlier document keeps
-        // its values.
-        let mut consumer = RecordingConsumer::default();
-        with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
-        assert_eq!(
-            consumer.fields[0].1,
-            Recorded::SortedNumeric(vec![(3, vec![1, 2])])
         );
     }
 
@@ -4844,21 +4742,18 @@ mod tests {
             SortedSetDocValuesWriter::new(field("tags", 0, DocValuesType::SORTED_SET), counter());
         writer.add_value(3, b"one", &mut pool).unwrap();
         writer.add_value(3, b"two", &mut pool).unwrap();
-        let error = writer.add_value(2, b"three", &mut pool).unwrap_err();
+        // With assertions off Java buffers the backwards id, and
+        // `finishCurrentDoc` refuses it when it adds it to the document set
+        // (`DocsWithFieldSet.java:46-50`).
+        writer.add_value(2, b"three", &mut pool).unwrap();
+        let mut consumer = RecordingConsumer::default();
+        let error =
+            with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap_err();
         assert!(
             matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
-                if m.contains("increasing document order")),
+                if m == "Out of order doc ids: last=3, next=2"),
             "unexpected error: {error:?}"
         );
-        // The rejected document was not committed; the earlier document keeps
-        // both of its distinct values.
-        let mut consumer = RecordingConsumer::default();
-        with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap();
-        let Recorded::SortedSet { docs_ords, .. } = &consumer.fields[0].1 else {
-            panic!("expected a sorted-set field");
-        };
-        assert_eq!(docs_ords.len(), 1);
-        assert_eq!(docs_ords[0].1.len(), 2);
     }
 
     // -----------------------------------------------------------------------

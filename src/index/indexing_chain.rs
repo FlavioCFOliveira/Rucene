@@ -386,9 +386,11 @@ impl FieldInvertState {
     /// token through it, as Java reads through the attributes
     /// `setAttributeSource` cached.
     fn attribute_source(&self) -> Result<&crate::util::attribute::AttributeSource> {
-        self.attribute_source.as_ref().ok_or_else(|| {
-            LuceneError::illegal_state("no attribute source set on the invert state".to_string())
-        })
+        // A `null` `attributeSource` throws `NullPointerException` where Java
+        // dereferences one of the attributes it caches.
+        self.attribute_source
+            .as_ref()
+            .ok_or_else(LuceneError::null_pointer)
     }
 
     /// Returns the index options the field is inverted with.
@@ -1069,7 +1071,9 @@ impl TokenAttributeLayout {
 /// One token as read from the attributes of a token stream.
 #[derive(Debug)]
 struct RawToken {
-    term: BytesRef,
+    /// `invertState.termAttribute.getBytesRef()`; `None` when the stream has
+    /// no `TermToBytesRefAttribute`, whose `getAttribute` gives `null`.
+    term: Option<BytesRef>,
     position_increment: i32,
     start_offset: i32,
     end_offset: i32,
@@ -1087,16 +1091,15 @@ struct RawToken {
 /// defaults here (increment one, offsets zero, frequency one) match the
 /// attribute defaults.
 fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result<RawToken> {
-    let term = if layout.term {
+    // `termAttribute = attributeSource.getAttribute(...)` is `null` without
+    // the attribute (`FieldInvertState.java:106`); the dereference happens in
+    // `termsHashPerField.add(invertState.termAttribute.getBytesRef(), docID)`.
+    let term = layout.term.then(|| {
         source
             .get_attribute_interface::<dyn TermToBytesRefAttribute>()
             .expect("INVARIANT: presence checked in TokenAttributeLayout::resolve")
             .get_bytes_ref()
-    } else {
-        return Err(LuceneError::illegal_argument(
-            "token stream carries no term attribute".to_string(),
-        ));
-    };
+    });
 
     let position_increment = if layout.position_increment {
         source
@@ -1621,9 +1624,10 @@ impl DefaultIndexingChain {
         doc_values_reader: &BufferedDocValuesReader,
         max_doc: i32,
     ) -> Result<Option<SorterDocMap>> {
-        let index_sort = state.segment_info.index_sort().ok_or_else(|| {
-            LuceneError::illegal_state("maybe_sort_segment checked the index sort".to_string())
-        })?;
+        let index_sort = state
+            .segment_info
+            .index_sort()
+            .expect("INVARIANT: maybe_sort_segment checked the index sort");
         let mut parents: Option<Arc<dyn crate::util::bit_set::BitSet>> = None;
 
         if state.segment_info.get_has_blocks() {
@@ -2150,20 +2154,18 @@ impl DefaultIndexingChain {
             .expect("INVARIANT: the per-field only exists when the parent field does")
             .numeric_value()
         {
+            // `parentField` is the `NumericDocValuesField` the constructor
+            // builds (`IndexingChain.java:164`).
             Some(NumericValue::Long(value)) => value,
-            other => {
-                return Err(LuceneError::illegal_state(format!(
-                    "the parent field must carry a long value, but it carries {other:?}"
-                )))
-            }
+            _ => unreachable!("INVARIANT: the parent field is a NumericDocValuesField"),
         };
+        // `(NumericDocValuesWriter) parentPf.docValuesWriter`: the parent field
+        // info is a NUMERIC doc-values field.
         match self.per_fields[parent_pf].doc_values.as_mut() {
             Some(DocValuesWriter::Numeric(writer)) => {
                 writer.add_repeat_values(base_doc_id, value, num_docs)
             }
-            _ => Err(LuceneError::illegal_state(
-                "the parent field must be a numeric doc-values field".to_string(),
-            )),
+            _ => unreachable!("INVARIANT: the parent field has a numeric doc-values writer"),
         }
     }
 
@@ -2656,25 +2658,33 @@ impl DefaultIndexingChain {
                     term_freq: token.term_freq,
                     has_term_freq_attribute: token.has_term_freq_attribute,
                 };
-                let writer_index = per_field.writer_index.ok_or_else(|| {
-                    LuceneError::illegal_state(format!(
-                        "field \"{}\" has no postings writer",
-                        field.name()
-                    ))
-                })?;
+                // `pf.termsHashPerField` is set for every field that inverts
+                // (`IndexingChain.java:1155-1168`).
+                let writer_index = per_field
+                    .writer_index
+                    .expect("INVARIANT: an inverted field has a postings writer");
                 let (pool, int_pool, writer) = terms_writer.pool_and_field(writer_index);
                 // `termsHashPerField.add(...)` — the postings and, through
                 // `nextPerField.add`, the term vectors — inside one `try`
                 // (`IndexingChain.java:2001-2027`).
-                let added = writer
-                    .add_classified(
-                        pool,
-                        int_pool,
-                        &mut per_field.invert_state,
-                        token.term.slice(),
-                        doc_id,
-                        &inverted,
-                    )
+                // `invertState.termAttribute.getBytesRef()` on a `null`
+                // attribute throws `NullPointerException` inside the `try`,
+                // whose `catch (Throwable th)` aborts.
+                let term: &[u8] = token.term.as_ref().map_or(&[], BytesRef::slice);
+                let added = token
+                    .term
+                    .as_ref()
+                    .ok_or_else(|| TermsHashAddError::Other(LuceneError::null_pointer()))
+                    .and_then(|_| {
+                        writer.add_classified(
+                            pool,
+                            int_pool,
+                            &mut per_field.invert_state,
+                            term,
+                            doc_id,
+                            &inverted,
+                        )
+                    })
                     .and_then(|text_start| {
                         Self::add_to_vectors(
                             term_vectors.as_deref_mut(),
@@ -2689,7 +2699,7 @@ impl DefaultIndexingChain {
                         info_stream,
                         aborting_error,
                         field.name(),
-                        token.term.slice(),
+                        term,
                         error,
                     ));
                 }
@@ -2763,23 +2773,21 @@ impl DefaultIndexingChain {
                 if !info.has_norms() {
                     continue;
                 }
-                let index = *self.per_field_index.get(&info.name).ok_or_else(|| {
-                    LuceneError::illegal_state(format!(
-                        "field \"{}\" has norms but was never seen by the indexing chain",
-                        info.name
-                    ))
-                })?;
+                // `getPerField(fi.name)` is `null` (after `assert perField !=
+                // null`): `perField.norms` throws `NullPointerException`.
+                let index = *self
+                    .per_field_index
+                    .get(&info.name)
+                    .ok_or_else(LuceneError::null_pointer)?;
                 debug_assert!(
                     self.per_fields[index].norms.is_some(),
                     "field={}",
                     info.name
                 );
-                let norms = self.per_fields[index].norms.as_mut().ok_or_else(|| {
-                    LuceneError::illegal_state(format!(
-                        "field \"{}\" has norms but no norms buffer",
-                        info.name
-                    ))
-                })?;
+                let norms = self.per_fields[index]
+                    .norms
+                    .as_mut()
+                    .ok_or_else(LuceneError::null_pointer)?;
                 norms.finish(max_doc);
                 norms.flush(consumer.as_mut(), sort_map)?;
             }
@@ -2847,18 +2855,22 @@ impl DefaultIndexingChain {
                         .as_ref()
                         .is_some_and(|info| info.doc_values_type != DocValuesType::NONE)
                     {
-                        return Err(LuceneError::illegal_state(format!(
+                        // `throw new AssertionError(...)` (`IndexingChain.java:465-471`).
+                        return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
                             "segment={}: field=\"{}\" has docValues but did not write them",
-                            state.segment_info.name, per_field.field_name
-                        )));
+                            state.segment_info.to_string_with_del_count(0),
+                            per_field.field_name
+                        ))));
                     }
                     continue;
                 };
                 if initialized(&per_field.field_info).doc_values_type == DocValuesType::NONE {
-                    return Err(LuceneError::illegal_state(format!(
+                    // `throw new AssertionError(...)` (`IndexingChain.java:447-454`).
+                    return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
                         "segment={}: field=\"{}\" has no docValues but wrote them",
-                        state.segment_info.name, per_field.field_name
-                    )));
+                        state.segment_info.to_string_with_del_count(0),
+                        per_field.field_name
+                    ))));
                 }
                 if consumer.is_none() {
                     // Lazy init, exactly as `writeDocValues` does.
@@ -2895,17 +2907,19 @@ impl DefaultIndexingChain {
         // declaring them without writing, is a bug in the chain.
         let wrote_values = consumer.is_some();
         if !state.field_infos.has_doc_values() {
+            // `throw new AssertionError("segment=" + state.segmentInfo + ...)`,
+            // unconditionally (`IndexingChain.java:489-499`), typo included.
             if wrote_values {
-                return Err(LuceneError::illegal_state(format!(
+                return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
                     "segment={}: fieldInfos has no docValues but wrote them",
-                    state.segment_info.name
-                )));
+                    state.segment_info.to_string_with_del_count(0)
+                ))));
             }
         } else if !wrote_values {
-            return Err(LuceneError::illegal_state(format!(
-                "segment={}: fieldInfos has docValues but did not write them",
-                state.segment_info.name
-            )));
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
+                "segment={}: fieldInfos has docValues but did not wrote them",
+                state.segment_info.to_string_with_del_count(0)
+            ))));
         }
         Ok(())
     }
@@ -3008,26 +3022,32 @@ impl DefaultIndexingChain {
         field: &dyn IndexableField,
     ) -> Result<()> {
         let name = field.name();
+        // `pf.knnFieldVectorsWriter.addValue(...)` on a `null` writer.
         let Some(writer) = per_field.knn_field_vectors_writer.as_mut() else {
-            return Err(LuceneError::illegal_state(format!(
-                "field=\"{name}\" declares vector dimensions but has no vectors writer"
-            )));
+            return Err(LuceneError::null_pointer());
         };
         match writer {
             FieldVectorWriter::Float(writer) => {
+                // `((KnnFloatVectorField) field)`: the cast's
+                // `ClassCastException`, whose JVM message names the runtime
+                // class of `field`, which a `dyn IndexableField` cannot report.
                 let Some(value) = field.float_vector_value() else {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "field=\"{name}\" is indexed with FLOAT32 vectors but carries no float vector value"
-                    )));
+                    let _ = name;
+                    return Err(LuceneError::unchecked(
+                        "java.lang.ClassCastException",
+                        "cannot be cast to class org.apache.lucene.document.KnnFloatVectorField",
+                    ));
                 };
                 let value = value.to_vec();
                 writer.add_value(doc_id, value)
             }
             FieldVectorWriter::Byte(writer) => {
+                // `((KnnByteVectorField) field)`: see the FLOAT32 arm.
                 let Some(value) = field.byte_vector_value() else {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "field=\"{name}\" is indexed with BYTE vectors but carries no byte vector value"
-                    )));
+                    return Err(LuceneError::unchecked(
+                        "java.lang.ClassCastException",
+                        "cannot be cast to class org.apache.lucene.document.KnnByteVectorField",
+                    ));
                 };
                 let value = value.to_vec();
                 writer.add_value(doc_id, value)
@@ -3762,12 +3782,8 @@ impl DefaultIndexingChain {
                 Some(FieldVectorWriter::Float(writer)) => {
                     writer.add_value(base_doc_id + batch_doc_id, vec.clone())?;
                 }
-                _ => {
-                    return Err(LuceneError::illegal_state(format!(
-                        "field=\"{name}\" is indexed with FLOAT32 vectors but has no float vectors \
-                         writer"
-                    )))
-                }
+                // `pf.knnFieldVectorsWriter` is `null`: `NullPointerException`.
+                _ => return Err(LuceneError::null_pointer()),
             }
             prev_batch_doc_id = batch_doc_id;
             consumed += 1;
@@ -3833,12 +3849,8 @@ impl DefaultIndexingChain {
                 Some(FieldVectorWriter::Byte(writer)) => {
                     writer.add_value(base_doc_id + batch_doc_id, vec.clone())?;
                 }
-                _ => {
-                    return Err(LuceneError::illegal_state(format!(
-                        "field=\"{name}\" is indexed with BYTE vectors but has no byte vectors \
-                         writer"
-                    )))
-                }
+                // `pf.knnFieldVectorsWriter` is `null`: `NullPointerException`.
+                _ => return Err(LuceneError::null_pointer()),
             }
             prev_batch_doc_id = batch_doc_id;
             consumed += 1;
@@ -7934,9 +7946,8 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
     }
 
     fn term_vectors(&self) -> Result<Box<dyn crate::index::TermVectors>> {
-        Err(LuceneError::unsupported_operation(
-            "the buffered doc-values reader has no term vectors".to_string(),
-        ))
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn num_docs(&self) -> i32 {
@@ -7948,15 +7959,13 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
     }
 
     fn stored_fields(&self) -> Result<Box<dyn crate::index::StoredFields>> {
-        Err(LuceneError::unsupported_operation(
-            "the buffered doc-values reader has no stored fields".to_string(),
-        ))
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn terms(&self, _field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
-        Err(LuceneError::unsupported_operation(
-            "the buffered doc-values reader has no terms".to_string(),
-        ))
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_numeric_doc_values(
@@ -8060,7 +8069,7 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
             None,
             false,
         )
-        .expect("the latest version is always a valid leaf metadata version")
+        .expect("INVARIANT: the latest version is always a valid leaf metadata version")
     }
 
     fn do_close(&self) -> Result<()> {

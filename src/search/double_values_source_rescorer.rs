@@ -85,9 +85,14 @@ impl<I: DoubleValuesSourceRescorerImpl> Rescorer for DoubleValuesSourceRescorer<
         hits.sort_by_key(|hit| hit.doc);
 
         let leaves = searcher.get_leaf_contexts();
+        // `leaves.getFirst()` of an empty list: `NoSuchElementException`.
         if leaves.is_empty() {
-            return Err(LuceneError::illegal_state(
-                "the provided searcher has no leaf".to_string(),
+            return Err(LuceneError::from(
+                crate::error::LuceneErrorKind::Unchecked {
+                    class: "java.util.NoSuchElementException",
+                    message: None,
+                    cause: None,
+                },
             ));
         }
         let mut curr_leaf = 0usize;

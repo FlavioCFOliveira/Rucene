@@ -435,7 +435,7 @@ impl PointValuesWriter {
             || self.field_info.point_num_bytes != byte_width
         {
             return Err(LuceneError::illegal_argument(format!(
-                "field={}: 1D dense path requires pointDimensionCount=1 and pointNumBytes={} , \
+                "field={}: 1D dense path requires pointDimensionCount=1 and pointNumBytes={}, \
                  got pointDimensionCount={} pointNumBytes={}",
                 self.field_info.name,
                 byte_width,
@@ -457,8 +457,8 @@ impl PointValuesWriter {
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalState`] when the field has already been
-    /// flushed, and [`LuceneErrorKind::IllegalArgument`] when the range does not
-    /// start after the last document written.
+    /// flushed. Java only asserts that the range starts after the last
+    /// document written.
     fn reserve_dense_range(&mut self, first_doc_id: i32, size: i32) -> Result<i64> {
         debug_assert!(
             first_doc_id > self.last_doc_id,
@@ -469,12 +469,6 @@ impl PointValuesWriter {
             return Err(LuceneError::illegal_state(format!(
                 "the point values of field \"{}\" have already been flushed",
                 self.field_info.name
-            )));
-        }
-        if first_doc_id <= self.last_doc_id {
-            return Err(LuceneError::illegal_argument(format!(
-                "field=\"{}\": firstDocID={first_doc_id} must be > lastDocID={}",
-                self.field_info.name, self.last_doc_id
             )));
         }
         let num_points = self.num_points as usize;
@@ -723,10 +717,7 @@ impl PointsReader for BufferedPointsReader {
     /// whose message Java words as "fieldName must be the same".
     fn get_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
         if field != self.field_name {
-            return Err(LuceneError::illegal_argument(format!(
-                "fieldName must be the same: asked for \"{field}\" but this reader serves \"{}\"",
-                self.field_name
-            )));
+            return Err(LuceneError::illegal_argument("fieldName must be the same"));
         }
         Ok(Some(Box::new(BufferedPointValues {
             buffer: Arc::clone(&self.buffer),

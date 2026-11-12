@@ -109,9 +109,8 @@ impl LateInteractionFloatValuesSource {
         let field_name = field_name.into();
         let query_vector = validate_query_vector(query_vector)?;
         // `Objects.requireNonNull(vectorSimilarityFunction)`.
-        let vector_similarity_function = vector_similarity_function.ok_or_else(|| {
-            LuceneError::unchecked("java.lang.NullPointerException", String::new())
-        })?;
+        let vector_similarity_function =
+            vector_similarity_function.ok_or_else(LuceneError::null_pointer)?;
         Ok(Self {
             field_name,
             query_vector,

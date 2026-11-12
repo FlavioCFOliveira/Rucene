@@ -426,6 +426,10 @@ struct SetEnumFilter {
 }
 
 impl FilteredTermsEnumFilter for SetEnumFilter {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.TermInSetQuery$SetEnum"
+    }
+
     fn accept(&mut self, term: &BytesRef) -> Result<AcceptStatus> {
         // Advance the iterator until it is `>=` the incoming term: an exact
         // match is a hit, anything else is a miss.

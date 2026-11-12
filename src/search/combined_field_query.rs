@@ -514,12 +514,7 @@ impl CombinedFieldWeightState {
                     .field_and_weights()
                     .get(term.field())
                     .cloned()
-                    .ok_or_else(|| {
-                        LuceneError::illegal_state(format!(
-                            "field {} has a term but no weight",
-                            term.field()
-                        ))
-                    })?,
+                    .ok_or_else(LuceneError::null_pointer)?,
             );
         }
         Ok(CombinedFieldInit {
@@ -616,12 +611,7 @@ impl CombinedFieldWeight {
                 .field_and_weights()
                 .get(term.field())
                 .cloned()
-                .ok_or_else(|| {
-                    LuceneError::illegal_state(format!(
-                        "field {} has a term but no weight",
-                        term.field()
-                    ))
-                })?;
+                .ok_or_else(LuceneError::null_pointer)?;
             let ts = Arc::new(TermStates::build(searcher, term, true)?);
             if ts.doc_freq()? > 0 {
                 let term_stats =

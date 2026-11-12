@@ -145,18 +145,20 @@ impl MappingMultiPostingsEnum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — Java's
-    /// `ArrayIndexOutOfBoundsException` — when `merge_state` has fewer doc maps
+    /// Returns Java's `ArrayIndexOutOfBoundsException` when `merge_state` has fewer doc maps
     /// than fields producers.
     pub fn new(field: &str, merge_state: Arc<MergeState>) -> Result<Self> {
         let count = merge_state.fields_producers.len();
         let mut all_subs = Vec::with_capacity(count);
         for i in 0..count {
             let doc_map = merge_state.doc_maps.get(i).ok_or_else(|| {
-                LuceneError::illegal_argument(format!(
-                    "Index {i} out of bounds for length {}",
-                    merge_state.doc_maps.len()
-                ))
+                LuceneError::unchecked(
+                    "java.lang.ArrayIndexOutOfBoundsException",
+                    format!(
+                        "Index {i} out of bounds for length {}",
+                        merge_state.doc_maps.len()
+                    ),
+                )
             })?;
             all_subs.push(Some(MappingPostingsSub {
                 doc_map: Arc::clone(doc_map),
@@ -188,7 +190,7 @@ impl MappingMultiPostingsEnum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) — Java's `ClassCastException` —
+    /// Returns Java's `ClassCastException`
     /// when `postings_enum` is not a [`MultiPostingsEnum`];
     /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — Java's
     /// `ArrayIndexOutOfBoundsException` — for a slice whose reader index the
@@ -201,9 +203,13 @@ impl MappingMultiPostingsEnum {
             .and_then(|any| any.downcast_mut::<MultiPostingsEnum>())
             .is_none()
         {
-            return Err(LuceneError::illegal_state(format!(
-                "{postings_enum} cannot be cast to class org.apache.lucene.index.MultiPostingsEnum"
-            )));
+            return Err(LuceneError::unchecked(
+                "java.lang.ClassCastException",
+                format!(
+                    "{postings_enum} cannot be cast to class \
+                     org.apache.lucene.index.MultiPostingsEnum"
+                ),
+            ));
         }
         // Rust-only: hand the previous term's postings back to the
         // MultiPostingsEnum they came from, where Java's aliases keep them.
@@ -237,9 +243,10 @@ impl MappingMultiPostingsEnum {
                 .ok()
                 .filter(|&index| index < num_readers)
                 .ok_or_else(|| {
-                    LuceneError::illegal_argument(format!(
-                        "Index {reader_index} out of bounds for length {num_readers}"
-                    ))
+                    LuceneError::unchecked(
+                        "java.lang.ArrayIndexOutOfBoundsException",
+                        format!("Index {reader_index} out of bounds for length {num_readers}"),
+                    )
                 })?;
             let mut sub = self.all_subs[index].take().ok_or_else(|| {
                 LuceneError::illegal_state(format!(
@@ -374,9 +381,7 @@ impl DocIdSetIterator for MappingMultiPostingsEnum {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "MappingMultiPostingsEnum does not support advance".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Equivalent to `MappingMultiPostingsEnum.cost()`: the sum over the subs

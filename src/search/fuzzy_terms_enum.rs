@@ -6,7 +6,7 @@
 use std::any::{Any, TypeId};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::error::{LuceneError, Result};
+use crate::error::Result;
 use crate::index::{ImpactsEnum, PostingsEnum, SeekStatus, Term, TermState, Terms, TermsEnum};
 use crate::search::boost_attribute::{add_boost_attribute, boost_of, set_boost};
 use crate::search::fuzzy_automaton_builder::FuzzyAutomatonBuilder;
@@ -171,23 +171,15 @@ pub fn shared_automata(
     {
         let mut aa = atts
             .get_attribute_mut::<AutomatonAttributeImpl>()
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "the AutomatonAttribute was just installed and must be present".to_string(),
-                )
-            })?;
+            .expect("INVARIANT: the AutomatonAttribute was just installed");
         aa.init(builder)?;
     }
     let aa = atts
         .get_attribute::<AutomatonAttributeImpl>()
-        .ok_or_else(|| {
-            LuceneError::illegal_state(
-                "the AutomatonAttribute was just installed and must be present".to_string(),
-            )
-        })?;
-    aa.get_automaton_set().ok_or_else(|| {
-        LuceneError::illegal_state("the AutomatonAttribute was just initialised".to_string())
-    })
+        .expect("INVARIANT: the AutomatonAttribute was just installed");
+    Ok(aa
+        .get_automaton_set()
+        .expect("INVARIANT: the AutomatonAttribute was just initialised"))
 }
 
 /// A [`TermsEnum`] enumerating all terms similar to a filter term.

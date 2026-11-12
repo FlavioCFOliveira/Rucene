@@ -96,7 +96,7 @@ impl SegmentCoreReaders {
         let codec = si
             .info
             .codec()
-            .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
 
         // `catch (EOFException | FileNotFoundException e)` and `catch
         // (NoSuchFileException e)` around the whole body, the compound reader
@@ -574,7 +574,7 @@ impl SegmentDocValues {
         let codec = si
             .info
             .codec()
-            .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
         let producer = codec.doc_values_format().fields_producer(&state)?;
         Ok(self.ref_counted(gen, producer))
     }
@@ -638,179 +638,69 @@ impl SegmentDocValues {
 /// A doc-values producer that the readers of a segment share and that its
 /// [`RefCount`] release closes.
 ///
-/// **Divergence from Lucene 10.5.0.** Java's `RefCount.release()` calls
-/// `object.close()` on the very producer every reader holds
-/// (`SegmentDocValues.java:56-58`). Rust's [`DocValuesProducer::close`] needs
-/// exclusive access, which a shared producer does not grant, so the shared
-/// producer sits in a closable slot: closing takes it out, and a reader that
-/// still calls it afterwards gets the already-closed error Java's closed
-/// inputs raise.
+/// Java's `RefCount.release()` calls `object.close()` on the very producer
+/// every reader holds (`SegmentDocValues.java:56-58`), which stays referenced
+/// afterwards; a reader that still calls it reaches the closed producer, as
+/// it does here: [`DocValuesProducer::close`] takes `&self`, so the shared
+/// producer is closed in place and kept.
 #[derive(Debug)]
 struct SharedDocValuesProducer {
-    producer: RwLock<Option<Box<dyn DocValuesProducer>>>,
+    producer: Box<dyn DocValuesProducer>,
 }
 
 impl SharedDocValuesProducer {
     fn new(producer: Box<dyn DocValuesProducer>) -> Self {
-        Self {
-            producer: RwLock::new(Some(producer)),
-        }
+        Self { producer }
     }
 
     /// Closes the producer, as `object.close()` does in the release.
     ///
     /// # Errors
     ///
-    /// Propagates the producer's close error; the producer then stays in its
-    /// slot, as Java's stays referenced.
+    /// Propagates the producer's close error.
     fn close_shared(&self) -> Result<()> {
-        let mut guard = self
-            .producer
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(producer) = guard.as_mut() {
-            producer.close()?;
-        }
-        *guard = None;
-        Ok(())
+        self.producer.close()
     }
 }
 
 impl DocValuesProducer for SharedDocValuesProducer {
     fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
-        {
-            let guard = self
-                .producer
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(producer) = guard.as_ref() {
-                producer.get_numeric(field)
-            } else {
-                Err(LuceneError::already_closed(
-                    "doc-values producer is closed".to_string(),
-                ))
-            }
-        }
+        self.producer.get_numeric(field)
     }
 
     fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
-        {
-            let guard = self
-                .producer
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(producer) = guard.as_ref() {
-                producer.get_binary(field)
-            } else {
-                Err(LuceneError::already_closed(
-                    "doc-values producer is closed".to_string(),
-                ))
-            }
-        }
+        self.producer.get_binary(field)
     }
 
     fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
-        {
-            let guard = self
-                .producer
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(producer) = guard.as_ref() {
-                producer.get_sorted(field)
-            } else {
-                Err(LuceneError::already_closed(
-                    "doc-values producer is closed".to_string(),
-                ))
-            }
-        }
+        self.producer.get_sorted(field)
     }
 
     fn get_sorted_numeric(
         &self,
         field: &FieldInfo,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
-        {
-            let guard = self
-                .producer
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(producer) = guard.as_ref() {
-                producer.get_sorted_numeric(field)
-            } else {
-                Err(LuceneError::already_closed(
-                    "doc-values producer is closed".to_string(),
-                ))
-            }
-        }
+        self.producer.get_sorted_numeric(field)
     }
 
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
-        {
-            let guard = self
-                .producer
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(producer) = guard.as_ref() {
-                producer.get_sorted_set(field)
-            } else {
-                Err(LuceneError::already_closed(
-                    "doc-values producer is closed".to_string(),
-                ))
-            }
-        }
+        self.producer.get_sorted_set(field)
     }
 
     fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        let guard = self
-            .producer
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(producer) = guard.as_ref() {
-            producer.get_skipper(field)
-        } else {
-            Err(LuceneError::already_closed(
-                "doc-values producer is closed".to_string(),
-            ))
-        }
+        self.producer.get_skipper(field)
     }
 
     fn check_integrity(&self) -> Result<()> {
-        let guard = self
-            .producer
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(producer) = guard.as_ref() {
-            producer.check_integrity()
-        } else {
-            Err(LuceneError::already_closed(
-                "doc-values producer is closed".to_string(),
-            ))
-        }
+        self.producer.check_integrity()
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        let guard = self
-            .producer
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(producer) = guard.as_ref() {
-            producer.get_merge_instance()
-        } else {
-            Err(LuceneError::already_closed(
-                "doc-values producer is closed".to_string(),
-            ))
-        }
+        self.producer.get_merge_instance()
     }
 
     fn close(&self) -> Result<()> {
-        let mut guard = self
-            .producer
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(producer) = guard.take() {
-            producer.close()?;
-        }
-        Ok(())
+        self.producer.close()
     }
 }
 
@@ -902,12 +792,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
-                .ok_or_else(|| {
-                    LuceneError::illegal_argument(format!(
-                        "no doc-values producer for field {}",
-                        field.name
-                    ))
-                })?
+                .ok_or_else(LuceneError::null_pointer)?
                 .get_numeric(field)
         }
     }
@@ -917,12 +802,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
-                .ok_or_else(|| {
-                    LuceneError::illegal_argument(format!(
-                        "no doc-values producer for field {}",
-                        field.name
-                    ))
-                })?
+                .ok_or_else(LuceneError::null_pointer)?
                 .get_binary(field)
         }
     }
@@ -932,12 +812,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
-                .ok_or_else(|| {
-                    LuceneError::illegal_argument(format!(
-                        "no doc-values producer for field {}",
-                        field.name
-                    ))
-                })?
+                .ok_or_else(LuceneError::null_pointer)?
                 .get_sorted(field)
         }
     }
@@ -950,12 +825,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
-                .ok_or_else(|| {
-                    LuceneError::illegal_argument(format!(
-                        "no doc-values producer for field {}",
-                        field.name
-                    ))
-                })?
+                .ok_or_else(LuceneError::null_pointer)?
                 .get_sorted_numeric(field)
         }
     }
@@ -965,12 +835,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
-                .ok_or_else(|| {
-                    LuceneError::illegal_argument(format!(
-                        "no doc-values producer for field {}",
-                        field.name
-                    ))
-                })?
+                .ok_or_else(LuceneError::null_pointer)?
                 .get_sorted_set(field)
         }
     }
@@ -982,12 +847,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
         debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
         self.dv_producers_by_field
             .get(&field.number)
-            .ok_or_else(|| {
-                LuceneError::illegal_argument(format!(
-                    "no doc-values producer for field {}",
-                    field.name
-                ))
-            })?
+            .ok_or_else(LuceneError::null_pointer)?
             .get_skipper(field)
     }
 
@@ -1063,9 +923,8 @@ impl LeafReader for DocValuesLeafReader {
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
-        Err(LuceneError::unsupported_operation(
-            "DocValuesLeafReader does not support term vectors".to_string(),
-        ))
+        // `throw new UnsupportedOperationException()`.
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn num_docs(&self) -> i32 {
@@ -1077,15 +936,13 @@ impl LeafReader for DocValuesLeafReader {
     }
 
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-        Err(LuceneError::unsupported_operation(
-            "DocValuesLeafReader does not support stored fields".to_string(),
-        ))
+        // `throw new UnsupportedOperationException()`.
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn do_close(&self) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "DocValuesLeafReader does not support close".to_string(),
-        ))
+        // `throw new UnsupportedOperationException()`.
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
@@ -1097,9 +954,8 @@ impl LeafReader for DocValuesLeafReader {
     }
 
     fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
-        Err(LuceneError::unsupported_operation(
-            "DocValuesLeafReader does not support terms".to_string(),
-        ))
+        // `throw new UnsupportedOperationException()`.
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_numeric_doc_values(
@@ -1217,7 +1073,9 @@ impl LeafReader for DocValuesLeafReader {
     }
 
     fn get_meta_data(&self) -> LeafMetaData {
-        LeafMetaData::new(0, None, None, false).expect("metadata is valid")
+        // `throw new UnsupportedOperationException()`
+        // (`DocValuesLeafReader.java:81-83`).
+        panic!("java.lang.UnsupportedOperationException")
     }
 }
 
@@ -1322,9 +1180,10 @@ impl SegmentReader {
                     Self::init_field_infos(&original_si_for_closure, &core_readers, context)?;
 
                 let live_docs = if original_si_for_closure.has_deletions() {
-                    let codec = original_si_for_closure.info.codec().ok_or_else(|| {
-                        LuceneError::illegal_state("segment has no codec".to_string())
-                    })?;
+                    let codec = original_si_for_closure
+                        .info
+                        .codec()
+                        .ok_or_else(crate::error::LuceneError::null_pointer)?;
                     Some(SharedBits::new(codec.live_docs_format().read_live_docs(
                         dir,
                         &original_si_for_closure,
@@ -1560,7 +1419,7 @@ impl SegmentReader {
             let codec = si
                 .info
                 .codec()
-                .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
+                .ok_or_else(crate::error::LuceneError::null_pointer)?;
             let segment_suffix = radix36(si.get_field_infos_gen());
             codec
                 .field_infos_format()
