@@ -339,11 +339,12 @@ def chainable(body: str, roadmap: str = None, nrows: int = 0) -> bool:
 
 def _bind(body: str, row: dict) -> str:
     """`body` for one row: `row.k` -> literal, `, row` dropped from WITH lists."""
-    text = _ROW_IN_WITH.sub("", body)
-    text = _ROW_REF.sub(lambda m: esc(row[m.group(1)]), text)
-    if re.search(r"\brow\b", text):
+    template = _ROW_IN_WITH.sub("", body)
+    # Checked on the template, never on the bound text: a literal value may
+    # itself contain the word "row" (observed in no_caller evidence text).
+    if re.search(r"\brow\b", _ROW_REF.sub("", template)):
         raise ValueError(f"cannot bind every use of `row` in: {body[:200]}")
-    return text
+    return _ROW_REF.sub(lambda m: esc(row[m.group(1)]), template)
 
 
 def chain(roadmap, mode, rows, body, label, cap=None):
