@@ -287,13 +287,14 @@ impl Lucene90CompoundReader {
             // We also validate length, because e.g. if you strip 16 bytes off the .cfs we otherwise
             // would not detect it:
             if handle.length() != expected_length {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                // `Lucene90CompoundReader.java:90-95`.
+                return Err(LuceneError::corrupt_index(
                     format!(
-                        "length should be {expected_length} bytes, but is {} instead (resource={})",
-                        handle.length(),
-                        handle.resource_description()
+                        "length should be {expected_length} bytes, but is {} instead",
+                        handle.length()
                     ),
-                )));
+                    handle.to_java_string(),
+                ));
             }
             Ok(())
         })();
@@ -357,12 +358,10 @@ fn read_mapping(entries_stream: &mut dyn IndexInput) -> Result<CompoundEntries> 
         let id = entries_stream.read_string()?;
         if mapping.contains_key(&id) {
             // `new CorruptIndexException("Duplicate cfs entry id=" + id + " in CFS ", entriesStream)`
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "Duplicate cfs entry id={id} in CFS  (resource={})",
-                    entries_stream.resource_description()
-                ),
-            )));
+            return Err(LuceneError::corrupt_index(
+                format!("Duplicate cfs entry id={id} in CFS "),
+                entries_stream.to_java_string(),
+            ));
         }
         let offset = entries_stream.read_long()?;
         let length = entries_stream.read_long()?;
@@ -419,9 +418,7 @@ impl Directory for Lucene90CompoundReader {
     }
 
     fn delete_file(&self, _name: &str) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "deleteFile is not supported by CompoundDirectory".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn file_length(&self, name: &str) -> Result<i64> {
@@ -440,9 +437,7 @@ impl Directory for Lucene90CompoundReader {
     }
 
     fn create_output(&self, _name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::unsupported_operation(
-            "createOutput is not supported by CompoundDirectory".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn create_temp_output(
@@ -451,15 +446,11 @@ impl Directory for Lucene90CompoundReader {
         _suffix: &str,
         _context: &dyn IOContext,
     ) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::unsupported_operation(
-            "createTempOutput is not supported by CompoundDirectory".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn sync(&self, _names: &[String]) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "sync is not supported by CompoundDirectory".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn sync_metadata(&self) -> Result<()> {
@@ -467,9 +458,7 @@ impl Directory for Lucene90CompoundReader {
     }
 
     fn rename(&self, _source: &str, _dest: &str) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "rename is not supported by CompoundDirectory".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Equivalent to `Lucene90CompoundReader.openInput(String, IOContext)`
@@ -491,9 +480,7 @@ impl Directory for Lucene90CompoundReader {
     }
 
     fn obtain_lock(&self, _name: &str) -> Result<Box<dyn Lock>> {
-        Err(LuceneError::unsupported_operation(
-            "obtainLock is not supported by CompoundDirectory".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Equivalent to `Lucene90CompoundReader.close()`: `IOUtils.close(handle)`.

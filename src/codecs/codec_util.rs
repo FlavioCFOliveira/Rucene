@@ -88,10 +88,10 @@ pub fn write_index_header(
     suffix: &str,
 ) -> Result<()> {
     if id.len() != ID_LENGTH {
+        // `CodecUtil.java:123-125`.
         return Err(LuceneError::illegal_argument(format!(
-            "invalid id length: expected {}, got {}",
-            ID_LENGTH,
-            id.len()
+            "Invalid id: {}",
+            StringHelper::id_to_string(Some(id))
         )));
     }
     write_header(out, codec, version)?;

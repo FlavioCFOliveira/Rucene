@@ -105,17 +105,13 @@ fn parse_segment_info(
     segment_name: &str,
     segment_id: &[u8],
 ) -> Result<SegmentInfo> {
+    // `Lucene99SegmentInfoFormat.java:112`: no check of the major version on
+    // read; only `write` rejects one below 7.
     let version = Version::from_bits(
         input.read_int()? as u8,
         input.read_int()? as u8,
         input.read_int()? as u8,
     )?;
-    if version.major < 7 {
-        return Err(LuceneError::illegal_argument(format!(
-            "invalid major version: should be >= 7 but got: {} segment={segment_name}",
-            version.major
-        )));
-    }
 
     let has_min_version = input.read_byte()?;
     let min_version = match has_min_version {
@@ -186,9 +182,12 @@ fn read_segment_sort(input: &mut dyn DataInput) -> Result<Option<crate::search::
 fn write_segment_info(output: &mut dyn IndexOutput, info: &SegmentInfo) -> Result<()> {
     let version = info.version();
     if version.major < 7 {
+        // `Lucene99SegmentInfoFormat.java:186-190`: `" segment=" + si`, the
+        // segment's `toString()`.
         return Err(LuceneError::illegal_argument(format!(
             "invalid major version: should be >= 7 but got: {} segment={}",
-            version.major, info.name
+            version.major,
+            info.to_string_with_del_count(0)
         )));
     }
 
@@ -223,9 +222,13 @@ fn write_segment_info(output: &mut dyn IndexOutput, info: &SegmentInfo) -> Resul
     let files = info.files_ordered()?;
     for file in files.iter() {
         if parse_segment_name(file) != info.name {
+            // `Lucene99SegmentInfoFormat.java:214-218`: `", got=" + files`, the
+            // whole set as `AbstractCollection.toString()` prints it.
+            let all: Vec<&str> = files.iter().map(String::as_str).collect();
             return Err(LuceneError::illegal_argument(format!(
-                "invalid files: expected segment={}, got={file}",
-                info.name
+                "invalid files: expected segment={}, got=[{}]",
+                info.name,
+                all.join(", ")
             )));
         }
     }

@@ -173,11 +173,12 @@ impl fmt::Debug for MergedPointsReader {
     }
 }
 
-/// What Java throws `UnsupportedOperationException` for in the merged view.
-fn unsupported(method: &str) -> LuceneError {
-    LuceneError::unsupported_operation(format!(
-        "{method} is not supported by the merged points view"
-    ))
+/// What Java throws `UnsupportedOperationException` for in the merged view:
+/// `new UnsupportedOperationException()`, with no message
+/// (`PointsWriter.java:78-212`). `_method` names the Java method, for the
+/// reader of the call site only.
+fn unsupported(_method: &str) -> LuceneError {
+    LuceneError::unsupported_operation(String::new())
 }
 
 impl PointsReader for MergedPointsReader {
@@ -441,9 +442,7 @@ impl PointsWriter for EmptyPointsWriter {
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn write_field(&mut self, _field_info: &FieldInfo, _values: &dyn PointsReader) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "EmptyPointsWriter indexes no points".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn finish(&mut self) -> Result<()> {
@@ -482,9 +481,7 @@ impl PointsFormat for EmptyPointsFormat {
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn fields_writer(&self, _state: &SegmentWriteState) -> Result<Box<dyn PointsWriter>> {
-        Err(LuceneError::unsupported_operation(
-            "PointsFormat.EMPTY has no writer".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn fields_reader(&self, _state: &SegmentReadState) -> Result<Box<dyn PointsReader>> {

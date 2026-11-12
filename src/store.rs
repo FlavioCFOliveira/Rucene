@@ -2712,20 +2712,17 @@ impl DataInput for ByteArrayDataInput<'_> {
         Ok(())
     }
 
+    /// Equivalent to `ByteArrayDataInput#skipBytes(long)`
+    /// (`ByteArrayDataInput.java:79-82`): `pos += count`, a compound
+    /// assignment that narrows `pos + count` to `int`, with no check of its
+    /// own — a negative count moves backwards, and a position past the end
+    /// fails only on the next read.
+    ///
+    /// Divergence (the position is a `usize`): a position Java would hold as a
+    /// negative `int` is kept as its two's-complement `usize`, past any
+    /// buffer, so the next read fails as Java's does.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
-        if num_bytes < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
-            )));
-        }
-        let num_bytes = num_bytes as usize;
-        if self.pos + num_bytes > self.bytes.len() {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "skip past EOF",
-            ))));
-        }
-        self.pos += num_bytes;
+        self.pos = ((self.pos as i32 as i64).wrapping_add(num_bytes) as i32) as isize as usize;
         Ok(())
     }
 

@@ -839,9 +839,11 @@ impl Lucene90CompressingTermVectorsWriter {
                 // read header
                 let base = raw_docs.read_v_int()?;
                 if base != doc_id {
-                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                    // `Lucene90CompressingTermVectorsWriter.java:852-854`.
+                    return Err(LuceneError::corrupt_index(
                         format!("invalid state: base={base}, docID={doc_id}"),
-                    )));
+                        raw_docs.to_java_string(),
+                    ));
                 }
 
                 let code = raw_docs.read_v_int()?;
@@ -855,11 +857,13 @@ impl Lucene90CompressingTermVectorsWriter {
                 doc_id += buffered_docs;
                 self.num_docs += buffered_docs;
                 if doc_id > to_doc_id {
-                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                    // `Lucene90CompressingTermVectorsWriter.java:866-873`.
+                    return Err(LuceneError::corrupt_index(
                         format!(
-                        "invalid state: base={base}, count={buffered_docs}, toDocID={to_doc_id}"
-                    ),
-                    )));
+                            "invalid state: base={base}, count={buffered_docs}, toDocID={to_doc_id}"
+                        ),
+                        raw_docs.to_java_string(),
+                    ));
                 }
 
                 // copy bytes until the next chunk boundary (or end of chunk data).
@@ -1479,10 +1483,15 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
             self.flush(true)?;
         }
         if num_docs != self.num_docs {
-            return Err(LuceneError::illegal_state(format!(
-                "Wrote {} docs, finish called with numDocs={num_docs}",
-                self.num_docs
-            )));
+            // `Lucene90CompressingTermVectorsWriter.java:722-724`: a
+            // `RuntimeException`.
+            return Err(LuceneError::unchecked(
+                "java.lang.RuntimeException",
+                format!(
+                    "Wrote {} docs, finish called with numDocs={num_docs}",
+                    self.num_docs
+                ),
+            ));
         }
         let max_pointer = self.vectors_stream.file_pointer();
         self.index_writer
@@ -1855,20 +1864,33 @@ impl Lucene90CompressingTermVectorsReader {
             let num_dirty_chunks = meta_in.read_v_long()?;
             let num_dirty_docs = meta_in.read_v_long()?;
 
+            // `Lucene90CompressingTermVectorsReader.java:196-219`.
             if num_chunks < num_dirty_chunks {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                "Cannot have more dirty chunks than chunks: numChunks={num_chunks}, numDirtyChunks={num_dirty_chunks}"
-            ))));
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "Cannot have more dirty chunks than chunks: numChunks={num_chunks}, \
+                         numDirtyChunks={num_dirty_chunks}"
+                    ),
+                    meta_in.to_java_string(),
+                ));
             }
             if (num_dirty_chunks == 0) != (num_dirty_docs == 0) {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                    "Cannot have dirty chunks without dirty docs or vice-versa".to_string(),
-                )));
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "Cannot have dirty chunks without dirty docs or vice-versa: \
+                         numDirtyChunks={num_dirty_chunks}, numDirtyDocs={num_dirty_docs}"
+                    ),
+                    meta_in.to_java_string(),
+                ));
             }
             if num_dirty_docs < num_dirty_chunks {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                "Cannot have more dirty chunks than documents within dirty chunks: numDirtyChunks={num_dirty_chunks}, numDirtyDocs={num_dirty_docs}"
-            ))));
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "Cannot have more dirty chunks than documents within dirty chunks: \
+                         numDirtyChunks={num_dirty_chunks}, numDirtyDocs={num_dirty_docs}"
+                    ),
+                    meta_in.to_java_string(),
+                ));
             }
 
             check_footer(meta_in.as_mut())?;
@@ -2082,24 +2104,16 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
         input.seek(start_pointer)?;
 
         let doc_base = input.read_v_int()?;
-        // Every one of these comes off disk, so the bounds check itself must
-        // not overflow: Java's `int` arithmetic wraps here and simply fails the
-        // comparison, while Rust would abort a debug build before it got that
-        // far.
-        let chunk_docs = i64::from(input.read_v_int()?) >> 1;
-        let chunk_end = i64::from(doc_base) + chunk_docs;
-        if i64::from(doc) < i64::from(doc_base)
-            || i64::from(doc) >= chunk_end
-            || chunk_end > i64::from(self.num_docs)
-        {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "docBase={doc_base}, chunkDocs={chunk_docs}, doc={doc}, numDocs={}",
-                    self.num_docs
-                ),
-            )));
+        // `Lucene90CompressingTermVectorsReader.java:378-383`, in Java's
+        // wrapping `int` arithmetic.
+        let chunk_docs = ((input.read_v_int()? as u32) >> 1) as i32;
+        let chunk_end = doc_base.wrapping_add(chunk_docs);
+        if doc < doc_base || doc >= chunk_end || chunk_end > self.num_docs {
+            return Err(LuceneError::corrupt_index(
+                format!("docBase={doc_base},chunkDocs={chunk_docs},doc={doc}"),
+                self.vectors_stream.to_java_string(),
+            ));
         }
-        let chunk_docs = chunk_docs as i32;
         *self.block_state.lock().unwrap() = BlockState {
             start_pointer,
             doc_base,
@@ -2248,9 +2262,11 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
                 }
             }
             _ => {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                    format!("Invalid flags mode: {flags_mode}"),
-                )))
+                // `throw new AssertionError()`
+                // (`Lucene90CompressingTermVectorsReader.java:460-461`).
+                return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                    String::new(),
+                )));
             }
         };
         let flags = |idx: i32| -> i32 {
@@ -3282,9 +3298,7 @@ impl TermsEnum for TVTermsEnum {
     }
 
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "seek_ord not supported by TVTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn seek_term_state(&mut self, _text: &BytesRef, _state: &dyn TermState) -> Result<()> {
@@ -3298,9 +3312,7 @@ impl TermsEnum for TVTermsEnum {
     }
 
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "ord not supported by TVTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn doc_freq(&mut self) -> Result<i32> {

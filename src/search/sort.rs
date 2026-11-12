@@ -12,7 +12,10 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::{LuceneError, Result};
+// Named by the rustdoc links below and by the tests.
+#[cfg(any(doc, test))]
+use crate::error::LuceneErrorKind;
 use crate::search::binary_sort_field::BinarySortField;
 use crate::search::comparators::numeric_comparator::NumericDocValuesSource;
 use crate::search::comparators::{
@@ -1608,9 +1611,11 @@ pub fn write_sort(output: &mut dyn DataOutput, sort: &Sort) -> Result<()> {
 pub fn read_sort(input: &mut dyn DataInput) -> Result<Option<Sort>> {
     let count = input.read_v_int()?;
     if count < 0 {
-        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+        // `Lucene99SegmentInfoFormat.java:146-147`.
+        return Err(LuceneError::corrupt_index(
             format!("invalid index sort field count: {count}"),
-        )));
+            input.to_java_string(),
+        ));
     }
     if count == 0 {
         return Ok(None);

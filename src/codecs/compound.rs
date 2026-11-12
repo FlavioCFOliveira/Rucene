@@ -64,9 +64,7 @@ impl Directory for EmptyCompoundDirectory {
     }
 
     fn delete_file(&self, _name: &str) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "deleteFile is not supported by CompoundDirectory".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn file_length(&self, name: &str) -> Result<i64> {
@@ -77,9 +75,7 @@ impl Directory for EmptyCompoundDirectory {
     }
 
     fn create_output(&self, _name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::unsupported_operation(
-            "createOutput is not supported by CompoundDirectory".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn create_temp_output(
@@ -88,15 +84,11 @@ impl Directory for EmptyCompoundDirectory {
         _suffix: &str,
         _context: &dyn IOContext,
     ) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::unsupported_operation(
-            "createTempOutput is not supported by CompoundDirectory".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn sync(&self, _names: &[String]) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "sync is not supported by CompoundDirectory".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn sync_metadata(&self) -> Result<()> {
@@ -104,9 +96,7 @@ impl Directory for EmptyCompoundDirectory {
     }
 
     fn rename(&self, _source: &str, _dest: &str) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "rename is not supported by CompoundDirectory".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn open_input(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
@@ -124,9 +114,7 @@ impl Directory for EmptyCompoundDirectory {
     }
 
     fn obtain_lock(&self, _name: &str) -> Result<Box<dyn Lock>> {
-        Err(LuceneError::unsupported_operation(
-            "obtainLock is not supported by CompoundDirectory".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn close(&self) -> Result<()> {

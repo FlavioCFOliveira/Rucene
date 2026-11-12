@@ -543,7 +543,9 @@ impl DocIdSetBuilder {
             // `maxDoc >>> 7` is a good value if you want to save memory; lower
             // values such as `maxDoc >>> 11` build faster at the expense of a
             // full bit set even for quite sparse data.
-            threshold: (max_doc as i64) >> 7,
+            // `this.threshold = maxDoc >>> 7` (`DocIdSetBuilder.java:187`),
+            // an unsigned shift.
+            threshold: i64::from((max_doc as u32) >> 7),
             multivalued,
             num_values_per_doc,
             buffers: Vec::new(),
@@ -598,7 +600,7 @@ impl DocIdSetBuilder {
     ///
     /// Equivalent to `DocIdSetBuilder.grow(int)`.
     pub fn grow(&mut self, num_docs: i32) -> BulkAdder<'_> {
-        let num_docs = num_docs.max(0) as i64;
+        let num_docs = i64::from(num_docs);
         if self.bit_set.is_none() {
             if self.total_allocated + num_docs <= self.threshold {
                 self.ensure_buffer_capacity(num_docs);
@@ -676,7 +678,10 @@ impl DocIdSetBuilder {
 
     /// Equivalent to `DocIdSetBuilder.addBuffer`.
     fn add_buffer(&mut self, len: i64) {
-        let buffer = Buffer::with_len(len.max(0) as usize);
+        // `new int[length]` (`DocIdSetBuilder.java:89-92`).
+        let len = usize::try_from(len)
+            .unwrap_or_else(|_| panic!("java.lang.NegativeArraySizeException: {len}"));
+        let buffer = Buffer::with_len(len);
         self.total_allocated += buffer.array.len() as i64;
         self.buffers.push(buffer);
     }
@@ -687,15 +692,31 @@ impl DocIdSetBuilder {
             .buffers
             .last_mut()
             .expect("INVARIANT: buffers is not empty here");
-        let new_len = buffer.array.len() + additional_capacity.max(0) as usize;
-        buffer.array.resize(new_len, 0);
+        // `ArrayUtil.growExact(buffer.array, buffer.array.length +
+        // additionalCapacity)` (`DocIdSetBuilder.java:275-278`, `ArrayUtil.java:319-323`):
+        // `new int[newLength]`, then `System.arraycopy` of the whole old
+        // array.
+        let old_len = buffer.array.len();
+        let new_len = old_len as i64 + additional_capacity;
+        if new_len < 0 {
+            panic!("java.lang.NegativeArraySizeException: {new_len}");
+        }
+        if (new_len as usize) < old_len {
+            panic!(
+                "java.lang.ArrayIndexOutOfBoundsException: arraycopy: last destination index \
+                 {old_len} out of bounds for int[{new_len}]"
+            );
+        }
+        buffer.array.resize(new_len as usize, 0);
         self.total_allocated += additional_capacity;
     }
 
     /// Equivalent to `DocIdSetBuilder.upgradeToBitSet`.
     fn upgrade_to_bit_set(&mut self) {
         debug_assert!(self.bit_set.is_none());
-        let mut bit_set = FixedBitSet::new(self.max_doc.max(0) as usize);
+        // `new FixedBitSet(maxDoc)` (`DocIdSetBuilder.java:280-282`).
+        let mut bit_set =
+            FixedBitSet::new_java(self.max_doc).unwrap_or_else(|error| panic!("{error}"));
         let mut counter: i64 = 0;
         for buffer in &self.buffers {
             counter += buffer.length as i64;

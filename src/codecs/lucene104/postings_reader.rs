@@ -390,11 +390,9 @@ impl PostingsReaderBase for Lucene104PostingsReader {
         )?;
         let index_block_size = terms_in.read_v_int()?;
         if index_block_size != BS_I32 {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "index-time BLOCK_SIZE ({}) != read-time BLOCK_SIZE ({BS_I32})",
-                    index_block_size
-                ),
+            // `Lucene104PostingsReader.java:186-192`: an `IllegalStateException`.
+            return Err(LuceneError::illegal_state(format!(
+                "index-time BLOCK_SIZE ({index_block_size}) != read-time BLOCK_SIZE ({BS_I32})"
             )));
         }
         Ok(())

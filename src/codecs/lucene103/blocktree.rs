@@ -245,7 +245,8 @@ impl Stats {
         } else if sub_block_count != 0 {
             self.sub_blocks_only_block_count += 1;
         } else {
-            panic!("a block must hold either terms or sub-blocks");
+            // `throw new IllegalStateException()` (`Stats.java:143-144`).
+            crate::store::java_nio_file::throw_unchecked("java.lang.IllegalStateException", None);
         }
         self.end_block_count += 1;
         let other_bytes =
@@ -650,7 +651,7 @@ impl TrieBuilder {
 
             // Phase 2: the key buffer now holds the current key.
             iter.read_body()?;
-            frontier[iter.key_len].output = iter.output.clone();
+            frontier[iter.key_len as usize].output = iter.output.clone();
         }
 
         // Freeze everything the last key left standing.
@@ -669,17 +670,19 @@ impl TrieBuilder {
     /// Returns whatever error writing a node to the index raised.
     fn freeze_from(
         key: &[u8],
-        key_len: usize,
-        to_depth: usize,
+        key_len: i32,
+        to_depth: i32,
         frontier: &mut [FrontierNode],
         start_fp: i64,
         index: &mut dyn IndexOutput,
     ) -> Result<()> {
+        // `for (int d = keyLen; d > toDepth; d--)` over Java `int`s: a
+        // negative depth indexes the arrays as Java's does, out of bounds.
         let mut d = key_len;
         while d > to_depth {
-            let fp = Self::freeze_node(&frontier[d], start_fp, index)?;
-            frontier[d - 1].add_child(i32::from(key[d - 1]), fp);
-            frontier[d].reset();
+            let fp = Self::freeze_node(&frontier[d as usize], start_fp, index)?;
+            frontier[(d - 1) as usize].add_child(i32::from(key[(d - 1) as usize]), fp);
+            frontier[d as usize].reset();
             d -= 1;
         }
         Ok(())
@@ -888,7 +891,10 @@ impl TrieBuilder {
             let output = iter.output.as_ref().ok_or_else(|| {
                 LuceneError::illegal_state("trie entry read without an output".to_string())
             })?;
-            consumer(BytesRef::new(iter.key[..iter.key_len].to_vec()), output);
+            consumer(
+                BytesRef::new(iter.key[..iter.key_len as usize].to_vec()),
+                output,
+            );
         }
         Ok(())
     }
@@ -903,14 +909,17 @@ struct EntryIterator<'a> {
     input: Option<ByteBuffersDataInput>,
     min_key_consumed: bool,
     header_read: bool,
-    /// Length of the current entry's suffix.
-    suffix_len: usize,
-    /// Length of the prefix the current entry shares with its predecessor.
-    prefix_len: usize,
-    /// The key buffer; after `read_header` it still holds the previous key.
+    /// Length of the current entry's suffix, Java's `int suffixLen`.
+    suffix_len: i32,
+    /// Length of the prefix the current entry shares with its predecessor,
+    /// Java's `int prefixLen`.
+    prefix_len: i32,
+    /// The key buffer, `new byte[Math.max(maxKeyDepth, 1)]` and never grown
+    /// (`TrieBuilder.java:198`); after `read_header` it still holds the
+    /// previous key.
     key: Vec<u8>,
-    /// Length of the key currently in the buffer.
-    key_len: usize,
+    /// Length of the key currently in the buffer, Java's `int keyLen`.
+    key_len: i32,
     /// The current entry's output.
     output: Option<Output>,
 }
@@ -957,7 +966,7 @@ impl<'a> EntryIterator<'a> {
 
         if !self.min_key_consumed {
             self.prefix_len = 0;
-            self.suffix_len = self.trie.min_key.length;
+            self.suffix_len = self.trie.min_key.length as i32;
             return Ok(());
         }
 
@@ -965,8 +974,9 @@ impl<'a> EntryIterator<'a> {
             .input
             .as_mut()
             .ok_or_else(|| LuceneError::illegal_state("no more trie entries".to_string()))?;
-        self.prefix_len = input.read_v_int()?.max(0) as usize;
-        self.suffix_len = input.read_v_int()?.max(0) as usize;
+        // `TrieBuilder.java:227-228`: read as-is, unclamped.
+        self.prefix_len = input.read_v_int()?;
+        self.suffix_len = input.read_v_int()?;
         Ok(())
     }
 
@@ -979,7 +989,7 @@ impl<'a> EntryIterator<'a> {
         self.header_read = false;
 
         if !self.min_key_consumed {
-            self.key_len = self.trie.min_key.length;
+            self.key_len = self.trie.min_key.length as i32;
             self.output = self.trie.min_output.clone();
             self.min_key_consumed = true;
             return Ok(());
@@ -989,15 +999,22 @@ impl<'a> EntryIterator<'a> {
             .input
             .as_mut()
             .ok_or_else(|| LuceneError::illegal_state("no more trie entries".to_string()))?;
-        self.key_len = self.prefix_len + self.suffix_len;
-        if self.key.len() < self.key_len {
-            self.key.resize(self.key_len, 0);
+        // `TrieBuilder.java:248-257`. `ByteBuffersDataInput.readBytes` loops
+        // `while (len > 0)` (`ByteBuffersDataInput.java:143-167`), so a
+        // suffix length that is not positive reads nothing.
+        self.key_len = self.prefix_len.wrapping_add(self.suffix_len);
+        if self.suffix_len > 0 {
+            input.read_bytes(
+                Some(&mut self.key),
+                self.prefix_len as usize,
+                self.suffix_len as usize,
+            )?;
         }
-        input.read_bytes(Some(&mut self.key), self.prefix_len, self.suffix_len)?;
         let fp = input.read_v_long()?;
         let has_terms = input.read_byte()? == 1;
-        let floor_data_len = input.read_v_int()?.max(0) as usize;
+        let floor_data_len = input.read_v_int()?;
         let floor_data = if floor_data_len > 0 {
+            let floor_data_len = floor_data_len as usize;
             let mut fd = vec![0u8; floor_data_len];
             input.read_bytes(Some(&mut fd), 0, floor_data_len)?;
             Some(BytesRef::new(fd))

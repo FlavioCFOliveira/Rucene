@@ -2079,7 +2079,8 @@ impl Lucene104ScalarQuantizedVectorsReader {
                     format!(
                         "Format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
                     ),
-                    &file_name,
+                    // `Lucene104ScalarQuantizedVectorsReader.java:385-393`: the input.
+                    input.to_java_string(),
                 ));
             }
             retrieve_checksum(input.as_mut())?;
@@ -2109,7 +2110,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
         };
         if entry.vector_encoding != VectorEncoding::FLOAT32 {
             return Err(LuceneError::illegal_argument(format!(
-                "field=\"{field}\" is encoded as {:?}, expected FLOAT32",
+                "field=\"{field}\" is encoded as: {:?} expected: FLOAT32",
                 entry.vector_encoding
             )));
         }
@@ -2841,14 +2842,15 @@ impl Lucene104HnswScalarQuantizedVectorsFormat {
 
     /// Creates the format with explicit graph parameters and encoding.
     pub fn with_params(max_conn: i32, beam_width: i32, encoding: ScalarEncoding) -> Result<Self> {
+        // `Lucene104HnswScalarQuantizedVectorsFormat.java:161-174`.
         if max_conn <= 0 || max_conn > 512 {
             return Err(LuceneError::illegal_argument(format!(
-                "maxConn must be in [1, 512], got {max_conn}"
+                "maxConn must be positive and less than or equal to 512; maxConn={max_conn}"
             )));
         }
         if beam_width <= 0 || beam_width > 3200 {
             return Err(LuceneError::illegal_argument(format!(
-                "beamWidth must be in [1, 3200], got {beam_width}"
+                "beamWidth must be positive and less than or equal to 3200; beamWidth={beam_width}"
             )));
         }
         Ok(Self {

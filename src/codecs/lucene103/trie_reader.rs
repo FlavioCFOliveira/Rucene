@@ -65,9 +65,12 @@ impl ChildSaveStrategy {
             0 => Ok(Self::ReverseArray),
             1 => Ok(Self::Array),
             2 => Ok(Self::Bits),
-            _ => Err(LuceneError::illegal_argument(format!(
-                "illegal child save strategy code: {code}"
-            ))),
+            // `STRATEGIES_BY_CODE[code]` (`TrieBuilder.java:665-667`): the
+            // array's `ArrayIndexOutOfBoundsException`.
+            _ => Err(LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!("Index {code} out of bounds for length 3"),
+            )),
         }
     }
 

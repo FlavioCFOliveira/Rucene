@@ -68,12 +68,13 @@
 //! * Java's anonymous `PointsReader.getValues` returns a `PointValues` that
 //!   throws `UnsupportedOperationException` for everything except
 //!   `getPointTree()`, because the codec calls nothing else
-//!   (`PointValuesWriter.java:287-327`); its `MutablePointTree` does the same
-//!   for `getMinPackedValue`/`getMaxPackedValue`/`visitDocIDs`/`clone`. Every
-//!   one of those values is known here, and the Rust signatures for `size`,
-//!   `doc_count`, `min_packed_value`, `max_packed_value` and `clone_tree` have
-//!   no error channel, so the only alternatives were to panic or to return a
-//!   value that is not true. This port answers all of them truthfully instead;
+//!   (`PointValuesWriter.java:287-327`). Its `MutablePointTree` throws the
+//!   same for `getMinPackedValue`/`getMaxPackedValue`/`visitDocIDs`/`clone`
+//!   (`MutablePointTree.java:52-85`), and so does this port's tree. Every
+//!   value of the `PointValues` is known here, and the Rust signatures for
+//!   `size` and `doc_count` have no error channel, so the only alternatives
+//!   were to panic or to return a value that is not true. This port answers
+//!   the `PointValues` methods truthfully instead;
 //!   the bounds are computed once, on first request, so a caller that never
 //!   asks pays nothing. No caller can observe a difference, because Java's
 //!   version would have thrown where this one answers.
@@ -834,18 +835,10 @@ impl BufferedPointTree {
 }
 
 impl PointTree for BufferedPointTree {
-    /// Java's `MutablePointTree.clone()` throws `UnsupportedOperationException`
-    /// because nothing needs it. The Rust signature has no error channel, and a
-    /// panic in a public method is a worse answer than a correct one, so this
-    /// returns an independent cursor over the same buffer, in the order this
-    /// one currently holds. Re-rooting is trivial: a mutable tree is a single
-    /// leaf that is also its own root.
+    /// `MutablePointTree.clone()` is `final` and throws
+    /// `new UnsupportedOperationException()` (`MutablePointTree.java:52-55`).
     fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
-        Ok(Box::new(Self {
-            buffer: Arc::clone(&self.buffer),
-            ords: self.ords.clone(),
-            temp: None,
-        }))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Always `false`: a mutable tree is one leaf. Java makes this `final`.
@@ -864,27 +857,22 @@ impl PointTree for BufferedPointTree {
         Ok(false)
     }
 
-    /// Java throws here; see the module documentation. The bounds are the
-    /// per-index-dimension minimum over every buffered value, computed once.
+    /// `MutablePointTree.getMinPackedValue()` throws
+    /// `new UnsupportedOperationException()` (`MutablePointTree.java:72-75`).
     fn min_packed_value(&self) -> Result<&[u8]> {
-        Ok(&self.buffer.bounds().0)
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    /// Java throws here; see the module documentation.
+    /// `MutablePointTree.getMaxPackedValue()` throws
+    /// `new UnsupportedOperationException()` (`MutablePointTree.java:77-80`).
     fn max_packed_value(&self) -> Result<&[u8]> {
-        Ok(&self.buffer.bounds().1)
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    /// Java throws here; the flush path visits values, never bare doc IDs.
-    /// Visiting them is well defined over a buffer, so this port does it in the
-    /// order the cursor currently holds — the same order
-    /// [`visit_doc_values`](PointTree::visit_doc_values) would use.
-    fn visit_doc_ids(&mut self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
-        visitor.grow(self.buffer.num_points)?;
-        for i in 0..self.buffer.num_points {
-            visitor.visit(self.buffer.doc_ids[self.slot(i)])?;
-        }
-        Ok(())
+    /// `MutablePointTree.visitDocIDs(IntersectVisitor)` throws
+    /// `new UnsupportedOperationException()` (`MutablePointTree.java:82-85`).
+    fn visit_doc_ids(&mut self, _visitor: &mut dyn IntersectVisitor) -> Result<()> {
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Visits every buffered point in the order the cursor currently holds.
@@ -1593,7 +1581,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cloned_cursor_keeps_the_order_and_is_independent() {
+    fn cloning_the_mutable_tree_is_unsupported() {
         let bytes_used = counter();
         let mut writer = writer_1d(&bytes_used);
         for doc in 0..4i32 {
@@ -1601,20 +1589,20 @@ mod tests {
                 .add_packed_value(doc, &packed(&(doc as u32).to_be_bytes()))
                 .unwrap();
         }
-        let mut tree = tree_of(&mut writer);
-        tree.as_mutable().expect("mutable").swap(0, 3);
-        let mut copy = tree.clone_tree().unwrap();
-        assert_eq!(copy.as_mutable().expect("mutable").doc_id(0), 3);
-        copy.as_mutable().expect("mutable").swap(0, 3);
-        assert_eq!(
-            tree.as_mutable().expect("mutable").doc_id(0),
-            3,
-            "the original must not follow the copy"
-        );
+        let tree = tree_of(&mut writer);
+        // `MutablePointTree.clone()` throws `UnsupportedOperationException`
+        // (`MutablePointTree.java:52-55`).
+        assert!(matches!(
+            tree.clone_tree(),
+            Err(LuceneError {
+                kind: crate::error::LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
+        ));
     }
 
     #[test]
-    fn the_bounds_span_the_index_dimensions_only() {
+    fn the_mutable_tree_bounds_are_unsupported() {
         // Two index dimensions of three, so the third must not appear in the
         // bounds: `computePackedValueBounds` works over
         // `packedIndexBytesLength`.
@@ -1624,12 +1612,14 @@ mod tests {
         writer.add_packed_value(1, &packed(&[7, 2, 1])).unwrap();
         writer.add_packed_value(2, &packed(&[3, 4, 90])).unwrap();
         let tree = tree_of(&mut writer);
-        assert_eq!(tree.min_packed_value().unwrap(), &[3, 2]);
-        assert_eq!(tree.max_packed_value().unwrap(), &[7, 9]);
+        // `MutablePointTree.getMin/MaxPackedValue()` throw
+        // `UnsupportedOperationException` (`MutablePointTree.java:72-80`).
+        assert!(tree.min_packed_value().is_err());
+        assert!(tree.max_packed_value().is_err());
     }
 
     #[test]
-    fn the_bounds_compare_unsigned() {
+    fn the_mutable_tree_bounds_are_unsupported_for_high_bytes() {
         // The high bit must not read as negative: 0x80 is above 0x7f.
         let bytes_used = counter();
         let mut writer = writer_1d(&bytes_used);
@@ -1640,21 +1630,21 @@ mod tests {
             .add_packed_value(1, &packed(&[0x80, 0, 0, 0]))
             .unwrap();
         let tree = tree_of(&mut writer);
-        assert_eq!(tree.min_packed_value().unwrap(), &[0x7f, 0, 0, 0]);
-        assert_eq!(tree.max_packed_value().unwrap(), &[0x80, 0, 0, 0]);
+        assert!(tree.min_packed_value().is_err());
+        assert!(tree.max_packed_value().is_err());
     }
 
     #[test]
-    fn the_bounds_of_an_empty_buffer_are_empty() {
+    fn the_mutable_tree_bounds_are_unsupported_when_empty() {
         let bytes_used = counter();
         let mut writer = writer_1d(&bytes_used);
         let tree = tree_of(&mut writer);
-        assert!(tree.min_packed_value().unwrap().is_empty());
-        assert!(tree.max_packed_value().unwrap().is_empty());
+        assert!(tree.min_packed_value().is_err());
+        assert!(tree.max_packed_value().is_err());
     }
 
     #[test]
-    fn visiting_doc_ids_follows_the_current_order() {
+    fn visiting_doc_ids_of_the_mutable_tree_is_unsupported() {
         let bytes_used = counter();
         let mut writer = writer_1d(&bytes_used);
         for doc in 0..4i32 {
@@ -1665,14 +1655,9 @@ mod tests {
         let mut tree = tree_of(&mut writer);
         tree.as_mutable().expect("mutable").swap(0, 3);
         let mut visitor = CollectingPointVisitor::default();
-        tree.visit_doc_ids(&mut visitor).unwrap();
-        assert_eq!(
-            visitor
-                .visited
-                .iter()
-                .map(|(doc, _)| *doc)
-                .collect::<Vec<_>>(),
-            vec![3, 1, 2, 0]
-        );
+        // `MutablePointTree.visitDocIDs` throws `UnsupportedOperationException`
+        // (`MutablePointTree.java:82-85`).
+        assert!(tree.visit_doc_ids(&mut visitor).is_err());
+        assert!(visitor.visited.is_empty());
     }
 }

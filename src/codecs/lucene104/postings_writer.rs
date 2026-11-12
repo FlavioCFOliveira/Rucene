@@ -21,7 +21,7 @@ use crate::codecs::lucene104::{
 use crate::codecs::postings::{PushPostingsWriterBase, PushPostingsWriterState};
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::term_state::{BlockTermState, CompetitiveImpactAccumulator, Impact};
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::{LuceneError, Result};
 use crate::index::{index_file_names::segment_file_name, FieldInfo, NumericDocValues};
 use crate::store::{DataOutput, IndexOutput};
 use crate::util::{BitUtil, FixedBitSet, IOUtils};
@@ -223,12 +223,7 @@ impl Lucene104PostingsWriter {
 
     /// Creates a postings writer with an explicit format version.
     pub fn with_version(state: &SegmentWriteState<'_>, version: i32) -> Result<Self> {
-        if version < 0 || version > VERSION_CURRENT {
-            return Err(LuceneError::illegal_argument(format!(
-                "Lucene104PostingsWriter version out of range: {version}"
-            )));
-        }
-
+        // `Lucene104PostingsWriter.java:145-146` takes `version` unchecked.
         let segment_info = state.segment_info;
         let id = segment_info.id();
         let suffix = &state.segment_suffix;
@@ -403,12 +398,14 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
 
         let doc_delta = doc_id - self.last_doc_id;
         if doc_id < 0 || doc_delta <= 0 {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            // `Lucene104PostingsWriter.java:268-271`.
+            return Err(LuceneError::corrupt_index(
                 format!(
-                    "docs out of order ({doc_id} <= {last_doc_id})",
+                    "docs out of order ({doc_id} <= {last_doc_id} )",
                     last_doc_id = self.last_doc_id
                 ),
-            )));
+                self.doc_out.to_java_string(),
+            ));
         }
 
         let idx = self.doc_buffer_upto as usize;
@@ -456,10 +453,20 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         start_offset: i32,
         end_offset: i32,
     ) -> Result<()> {
-        if !(0..=MAX_POSITION).contains(&position) {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!("position={position} out of range [0, {MAX_POSITION}]"),
-            )));
+        // `Lucene104PostingsWriter.java:306-317`.
+        if position > MAX_POSITION {
+            return Err(LuceneError::corrupt_index(
+                format!(
+                    "position={position} is too large (> IndexWriter.MAX_POSITION={MAX_POSITION})"
+                ),
+                self.doc_out.to_java_string(),
+            ));
+        }
+        if position < 0 {
+            return Err(LuceneError::corrupt_index(
+                format!("position={position} is < 0"),
+                self.doc_out.to_java_string(),
+            ));
         }
 
         let idx = self.pos_buffer_upto as usize;

@@ -154,12 +154,14 @@ impl Lucene104PostingsFormat {
         max_term_block_size: i32,
         version: i32,
     ) -> Result<Self> {
-        Lucene103BlockTreeTermsWriter::validate_settings(min_term_block_size, max_term_block_size)?;
+        // `Lucene104PostingsFormat.java:398-405`: the version first, then the
+        // block sizes.
         if version < VERSION_START || version > VERSION_CURRENT {
             return Err(LuceneError::illegal_argument(format!(
-                "Lucene104PostingsFormat version out of range: {version}"
+                "Version out of range: {version}"
             )));
         }
+        Lucene103BlockTreeTermsWriter::validate_settings(min_term_block_size, max_term_block_size)?;
         Ok(Self {
             version,
             min_term_block_size,

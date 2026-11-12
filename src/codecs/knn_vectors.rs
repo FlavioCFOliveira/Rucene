@@ -656,9 +656,7 @@ impl<S: DocIDMergerSub> DocIdSetIterator for MergedDocIndexIterator<S> {
     /// Java throws `UnsupportedOperationException`: a merged view only walks
     /// forward one document at a time.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "MergedVectorValues iterator does not support advance".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn cost(&self) -> i64 {
@@ -758,7 +756,7 @@ impl KnnVectorValues for MergedFloat32VectorValues {
     /// Always: Java's `ordToDoc` throws `UnsupportedOperationException`, and
     /// this method has no error channel to report it through.
     fn ord_to_doc(&self, _ord: i32) -> i32 {
-        panic!("UnsupportedOperationException: MergedFloat32VectorValues.ordToDoc")
+        panic!("java.lang.UnsupportedOperationException")
     }
 
     /// Equivalent to the inherited `KnnVectorValues.getAcceptOrds(Bits)`,
@@ -773,16 +771,14 @@ impl KnnVectorValues for MergedFloat32VectorValues {
     ) -> Option<Box<dyn crate::util::Bits + 'a>> {
         crate::index::accept_ords_with(
             self.size,
-            |_| panic!("UnsupportedOperationException: MergedFloat32VectorValues.ordToDoc"),
+            |_| panic!("java.lang.UnsupportedOperationException"),
             accept_docs,
         )
     }
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "MergedFloat32VectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn encoding(&self) -> VectorEncoding {
@@ -826,9 +822,7 @@ impl FloatVectorValues for MergedFloat32VectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "MergedFloat32VectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 
@@ -918,7 +912,7 @@ impl KnnVectorValues for MergedByteVectorValues {
     /// Always: Java's `ordToDoc` throws `UnsupportedOperationException`, and
     /// this method has no error channel to report it through.
     fn ord_to_doc(&self, _ord: i32) -> i32 {
-        panic!("UnsupportedOperationException: MergedByteVectorValues.ordToDoc")
+        panic!("java.lang.UnsupportedOperationException")
     }
 
     /// Equivalent to the inherited `KnnVectorValues.getAcceptOrds(Bits)`,
@@ -933,16 +927,14 @@ impl KnnVectorValues for MergedByteVectorValues {
     ) -> Option<Box<dyn crate::util::Bits + 'a>> {
         crate::index::accept_ords_with(
             self.size,
-            |_| panic!("UnsupportedOperationException: MergedByteVectorValues.ordToDoc"),
+            |_| panic!("java.lang.UnsupportedOperationException"),
             accept_docs,
         )
     }
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "MergedByteVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn encoding(&self) -> VectorEncoding {
@@ -986,9 +978,7 @@ impl ByteVectorValues for MergedByteVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "MergedByteVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 
@@ -1718,9 +1708,7 @@ impl KnnVectorValues for SortingFloatVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "SortingFloatVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn encoding(&self) -> VectorEncoding {
@@ -1739,9 +1727,7 @@ impl FloatVectorValues for SortingFloatVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "SortingFloatVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 
@@ -1784,9 +1770,7 @@ impl KnnVectorValues for SortingByteVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "SortingByteVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn encoding(&self) -> VectorEncoding {
@@ -1805,9 +1789,7 @@ impl ByteVectorValues for SortingByteVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "SortingByteVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 
@@ -2362,9 +2344,7 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_float_vector_values(&self, _field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
-        Err(LuceneError::unsupported_operation(
-            "EmptyKnnVectorsReader has no float vector values".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Equivalent to `KnnVectorsFormat.EMPTY`'s reader's
@@ -2374,9 +2354,7 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_byte_vector_values(&self, _field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
-        Err(LuceneError::unsupported_operation(
-            "EmptyKnnVectorsReader has no byte vector values".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn search(
@@ -2388,9 +2366,7 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
     ) -> Result<()> {
         // `KnnVectorsFormat.EMPTY`'s reader throws from both searches
         // (`codecs/KnnVectorsFormat.java:142-153`).
-        Err(LuceneError::unsupported_operation(
-            "EmptyKnnVectorsReader does not search".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn search_byte(
@@ -2402,9 +2378,7 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
     ) -> Result<()> {
         // `KnnVectorsFormat.EMPTY`'s reader throws from both searches
         // (`codecs/KnnVectorsFormat.java:142-153`).
-        Err(LuceneError::unsupported_operation(
-            "EmptyKnnVectorsReader does not search".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {

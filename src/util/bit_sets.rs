@@ -1427,20 +1427,22 @@ impl RoaringDocIdSetBuilder {
 
     /// Adds a single doc id. Doc ids must be added in strictly increasing order.
     ///
+    /// Equivalent to `RoaringDocIdSet.Builder#add(int)`
+    /// (`RoaringDocIdSet.java:115-130`), which checks only the order: like
+    /// Java, a doc id at or past `maxDoc` is not rejected here, and fails only
+    /// where Java's arrays do (the `sets` slot of a block past the last one,
+    /// or the dense buffer sized from `maxDoc`).
+    ///
     /// # Errors
     ///
-    /// Returns an error if `doc_id` is out of order or out of bounds.
+    /// Returns an error if `doc_id` is out of order, or Java's
+    /// `NegativeArraySizeException` when the dense buffer of a block past
+    /// `maxDoc` is sized negative (`RoaringDocIdSet.java:181-182`).
     pub fn add(&mut self, doc_id: usize) -> crate::error::Result<()> {
         if doc_id as i32 <= self.last_doc_id {
             return Err(crate::error::LuceneError::illegal_argument(format!(
                 "Doc ids must be added in-order, got {doc_id} which is <= lastDocID={}",
                 self.last_doc_id
-            )));
-        }
-        if doc_id >= self.max_doc {
-            return Err(crate::error::LuceneError::illegal_argument(format!(
-                "doc_id={doc_id} is >= maxDoc={}",
-                self.max_doc
             )));
         }
         let block = (doc_id >> 16) as i32;
@@ -1449,7 +1451,7 @@ impl RoaringDocIdSetBuilder {
             self.current_block = block;
             self.first_doc_id = doc_id as i32;
         }
-        self.append_doc_in_current_block(doc_id, block as usize);
+        self.append_doc_in_current_block(doc_id, block as usize)?;
         Ok(())
     }
 
@@ -1488,7 +1490,7 @@ impl RoaringDocIdSetBuilder {
                 self.current_block = block as i32;
                 self.first_doc_id = doc as i32;
             }
-            self.append_range_in_current_block(doc, block_end, block);
+            self.append_range_in_current_block(doc, block_end, block)?;
             doc = block_end;
         }
         Ok(())
@@ -1580,25 +1582,41 @@ impl RoaringDocIdSetBuilder {
         self.current_block_cardinality = 0;
     }
 
-    fn append_doc_in_current_block(&mut self, doc_id: usize, block: usize) {
+    /// `new FixedBitSet(Math.min(1 << 16, maxDoc - (block << 16)))`
+    /// (`RoaringDocIdSet.java:181-182, 208-209`), filled with the buffered
+    /// docs, computed in `int` as Java does: a block past `maxDoc` gives a
+    /// negative `numBits`, which fails as Java's `FixedBitSet(int)` does (see
+    /// [`FixedBitSet::new_java`]).
+    fn new_dense_buffer(&self, block: usize) -> crate::error::Result<FixedBitSet> {
+        let num_bits = (1i32 << 16).min((self.max_doc as i32).wrapping_sub((block as i32) << 16));
+        let mut dense = FixedBitSet::new_java(num_bits)?;
+        for &d in &self.buffer[..self.current_block_cardinality] {
+            dense.set(d as usize);
+        }
+        Ok(dense)
+    }
+
+    fn append_doc_in_current_block(
+        &mut self,
+        doc_id: usize,
+        block: usize,
+    ) -> crate::error::Result<()> {
         debug_assert!(doc_id as i64 >= i64::from(self.first_doc_id));
         let offset = doc_id - (block << 16);
         if self.current_block_cardinality < ROARING_MAX_ARRAY_LENGTH {
             self.buffer.push(offset as u16);
         } else {
             if self.dense_buffer.is_none() {
-                let num_bits = ((block + 1) * ROARING_BLOCK_SIZE).min(self.max_doc)
-                    - (block * ROARING_BLOCK_SIZE);
-                let mut dense = FixedBitSet::new(num_bits);
-                for &d in &self.buffer {
-                    dense.set(d as usize);
-                }
-                self.dense_buffer = Some(dense);
+                self.dense_buffer = Some(self.new_dense_buffer(block)?);
             }
-            self.dense_buffer.as_mut().unwrap().set(offset);
+            self.dense_buffer
+                .as_mut()
+                .expect("INVARIANT: the dense buffer was just created")
+                .set(offset);
         }
         self.last_doc_id = doc_id as i32;
         self.current_block_cardinality += 1;
+        Ok(())
     }
 
     fn append_range_in_current_block(
@@ -1606,7 +1624,7 @@ impl RoaringDocIdSetBuilder {
         from_doc: usize,
         to_doc_exclusive: usize,
         block: usize,
-    ) {
+    ) -> crate::error::Result<()> {
         debug_assert!(from_doc as i64 >= i64::from(self.first_doc_id));
         debug_assert!(from_doc < to_doc_exclusive);
         let offset = block << 16;
@@ -1617,12 +1635,7 @@ impl RoaringDocIdSetBuilder {
             }
         } else {
             if self.dense_buffer.is_none() {
-                let num_bits = ((block + 1) << 16).min(self.max_doc) - offset;
-                let mut dense = FixedBitSet::new(num_bits);
-                for &d in &self.buffer {
-                    dense.set(d as usize);
-                }
-                self.dense_buffer = Some(dense);
+                self.dense_buffer = Some(self.new_dense_buffer(block)?);
             }
             let start = from_doc - offset;
             let end = to_doc_exclusive - offset;
@@ -1632,6 +1645,7 @@ impl RoaringDocIdSetBuilder {
         }
         self.last_doc_id = (to_doc_exclusive - 1) as i32;
         self.current_block_cardinality += span;
+        Ok(())
     }
 }
 

@@ -2720,8 +2720,9 @@ pub struct BKDPointTree {
     right_most_leaf_node: i32,
     is_tree_balanced: bool,
     /// The reused leaf scratch, shared with the trees cloned from this one;
-    /// see [`LeafScratch`].
-    scratch: Arc<Mutex<LeafScratch>>,
+    /// see [`LeafScratch`] and [`Self::take_scratch`]. `None` while a leaf
+    /// visit has it out.
+    scratch: Arc<Mutex<Option<LeafScratch>>>,
 }
 
 impl BKDPointTree {
@@ -2733,7 +2734,7 @@ impl BKDPointTree {
     /// leaf-block-FP delta, matching Java).
     fn new(reader: &BKDReader) -> Result<Self> {
         let config = reader.config.clone();
-        let scratch = Arc::new(Mutex::new(LeafScratch::new(&config)));
+        let scratch = Arc::new(Mutex::new(Some(LeafScratch::new(&config))));
         let num_leaves = reader.num_leaves;
         let version = reader.version;
         let point_count = reader.point_count;
@@ -2879,6 +2880,39 @@ impl BKDPointTree {
         self.inner.seek(pos)
     }
 
+    /// Takes the shared leaf scratch out for one leaf visit, so that no lock
+    /// is held while the visitor runs.
+    ///
+    /// Java shares `scratchIterator`, `commonPrefixLengths`,
+    /// `scratchDataPackedValue` and the two bound arrays between a tree and
+    /// its clones (`BKDReader.java:233-260,342-360`) without any lock, so a
+    /// visitor that walks a clone from inside a callback runs in Java. Holding
+    /// a lock across the callbacks would deadlock that visitor here; taking the
+    /// scratch out instead keeps it working.
+    ///
+    /// Divergence (Rust aliasing rules): in Java such a re-entrant walk writes
+    /// into the very arrays the outer leaf is still reading. Safe Rust cannot
+    /// alias them, so a walk that finds the scratch already taken decodes
+    /// into a fresh [`LeafScratch`] (allocated as the constructor does) and
+    /// the outer leaf keeps its own contents. A walk that does not re-enter —
+    /// every walk Lucene itself makes — sees exactly Java's reused arrays.
+    fn take_scratch(&self) -> LeafScratch {
+        self.scratch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .unwrap_or_else(|| LeafScratch::new(&self.config))
+    }
+
+    /// Puts the leaf scratch back after a leaf visit, whatever its outcome;
+    /// see [`Self::take_scratch`].
+    fn restore_scratch(&self, scratch: LeafScratch) {
+        *self
+            .scratch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(scratch);
+    }
+
     /// Recursive bulk-accept walk: visits every doc ID below the current node.
     ///
     /// Equivalent to Java's `BKDPointTree.addAll` (`BKDReader.java:592-616`).
@@ -2912,17 +2946,16 @@ impl BKDPointTree {
             let count = self.leaf.read_v_int()?;
             // No need to call grow(), it has been called up-front. Borrow
             // `scratchIterator.docIDs` as decoding buffer.
-            let mut scratch = self
-                .scratch
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            DocIdsWriter::read_doc_ids_visitor(
+            let mut scratch = self.take_scratch();
+            let result = DocIdsWriter::read_doc_ids_visitor(
                 self.leaf.as_mut(),
                 count,
                 visitor,
                 &mut scratch.doc_ids,
                 self.version,
-            )?;
+            );
+            self.restore_scratch(scratch);
+            result?;
         } else {
             self.push_left()?;
             self.add_all(grown, visitor)?;
@@ -2945,18 +2978,17 @@ impl BKDPointTree {
                 self.current().node_id
             );
             let block_fp = self.current().leaf_block_fp;
-            let mut scratch = self
-                .scratch
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            BKDReader::visit_leaf(
+            let mut scratch = self.take_scratch();
+            let result = BKDReader::visit_leaf(
                 &mut self.leaf,
                 &self.config,
                 self.version,
                 block_fp,
                 visitor,
                 &mut scratch,
-            )?;
+            );
+            self.restore_scratch(scratch);
+            result?;
         } else {
             self.push_left()?;
             self.visit_leaves_one_by_one(visitor)?;

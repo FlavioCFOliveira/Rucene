@@ -659,9 +659,11 @@ impl Decompressor for Lz4WithPresetDictDecompressor {
 
         // The dictionary is needed by every block, so it is always read.
         if Lz4::decompress(input, dict_length, &mut self.buffer, 0)? != dict_length {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                "Illegal dict length".to_string(),
-            )));
+            // `LZ4WithPresetDictCompressionMode.java:105-107`.
+            return Err(LuceneError::corrupt_index(
+                "Illegal dict length",
+                input.to_java_string(),
+            ));
         }
 
         let mut offset_in_block = dict_length;

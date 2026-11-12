@@ -110,10 +110,27 @@ impl Lucene90PointsFormat {
     /// Maps the Lucene90 points-format version to the underlying BKD tree
     /// version used by [`crate::util::bkd::BKDWriter`].
     pub fn bkd_version(&self) -> i32 {
-        match self.version {
-            VERSION_START => BKDWriter::VERSION_META_FILE,
-            VERSION_BKD_VECTORIZED_BPV24 => BKDWriter::VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21,
-            _ => unreachable!(),
+        Self::bkd_version_of(self.version)
+            .expect("INVARIANT: with_version accepts only mapped versions")
+    }
+
+    /// `static int bkdVersion(int version)` (`Lucene90PointsFormat.java:97-99`):
+    /// `VERSION_TO_BKD_VERSION.get(version)` unboxed to `int`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `NullPointerException` the unboxing of a missing mapping
+    /// raises, with the JDK's helpful message, for an unknown `version`.
+    pub fn bkd_version_of(version: i32) -> Result<i32> {
+        match version {
+            VERSION_START => Ok(BKDWriter::VERSION_META_FILE),
+            VERSION_BKD_VECTORIZED_BPV24 => {
+                Ok(BKDWriter::VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21)
+            }
+            _ => Err(LuceneError::null_pointer_with_message(
+                "Cannot invoke \"java.lang.Integer.intValue()\" because the return value of \
+                 \"java.util.Map.get(Object)\" is null",
+            )),
         }
     }
 }
@@ -198,11 +215,9 @@ impl Lucene90PointsWriter {
         max_mb_sort_in_heap: f64,
         version: i32,
     ) -> Result<Self> {
-        if ![VERSION_START, VERSION_BKD_VECTORIZED_BPV24].contains(&version) {
-            return Err(LuceneError::illegal_argument(format!(
-                "invalid Lucene90PointsFormat version: {version}"
-            )));
-        }
+        // `Lucene90PointsWriter.java:53-60` takes `version` unchecked; an
+        // unknown one fails only when a field builds its `BKDWriter`, through
+        // `Lucene90PointsFormat.bkdVersion` (see `bkd_version_of`).
 
         let data_name = segment_file_name(
             &state.segment_info.name,
@@ -327,7 +342,7 @@ impl Lucene90PointsWriter {
             config,
             self.max_mb_sort_in_heap,
             total_point_count,
-            Lucene90PointsFormat::with_version(self.version)?.bkd_version(),
+            Lucene90PointsFormat::bkd_version_of(self.version)?,
         )
     }
 

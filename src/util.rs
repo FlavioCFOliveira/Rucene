@@ -4345,6 +4345,40 @@ impl FixedBitSet {
         }
     }
 
+    /// `new FixedBitSet(int numBits)` over Java's `int` argument
+    /// (`FixedBitSet.java:148-152`), for callers that hold the size as Java
+    /// does, unchecked: the array is `new long[bits2words(numBits)]`
+    /// (`FixedBitSet.java:88-92`), so a negative `numBits` whose word count
+    /// is negative fails with Java's `NegativeArraySizeException`, whose
+    /// message is that count.
+    ///
+    /// Divergence (the length is a `usize`): a negative `numBits` whose word
+    /// count is not negative (`-64..=-1`, and `Integer.MIN_VALUE`, which wraps)
+    /// builds, in Java, a set whose `length()` is negative. This port builds
+    /// the same words with a length of `0`, so every access fails as Java's
+    /// `index < numBits` assertion does, reporting `numBits=0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `java.lang.NegativeArraySizeException` for a negative word count.
+    pub fn new_java(num_bits: i32) -> Result<Self, LuceneError> {
+        if let Ok(num_bits) = usize::try_from(num_bits) {
+            return Ok(Self::new(num_bits));
+        }
+        let num_words = (num_bits.wrapping_sub(1) >> 6).wrapping_add(1);
+        let num_words = usize::try_from(num_words).map_err(|_| {
+            LuceneError::unchecked(
+                "java.lang.NegativeArraySizeException",
+                num_words.to_string(),
+            )
+        })?;
+        Ok(Self {
+            bits: new_words(num_words),
+            num_bits: 0,
+            num_words,
+        })
+    }
+
     /// Creates a `FixedBitSet` from an existing `u64` buffer.
     ///
     /// Equivalent to `FixedBitSet(long[], int)`.

@@ -313,9 +313,10 @@ impl StoredFieldsInts {
             16 => Self::read_ints16(input, count, values, offset)?,
             32 => Self::read_ints32(input, count, values, offset)?,
             _ => {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                    format!("Unsupported number of bits per value: {bpv}"),
-                )))
+                // `StoredFieldsInts.java:134`: an `IOException`.
+                return Err(LuceneError::from(std::io::Error::other(format!(
+                    "Unsupported number of bits per value: {bpv}"
+                ))));
             }
         }
         Ok(())
@@ -1015,9 +1016,11 @@ impl FieldsIndexWriter {
                     }
                     docs.finish()?;
                     if doc != i64::from(self.total_docs) {
-                        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                            format!("Docs don't add up (resource={docs_name})"),
-                        )));
+                        // `FieldsIndexWriter.java:136-138`.
+                        return Err(LuceneError::corrupt_index(
+                            "Docs don't add up",
+                            docs_in.to_java_string(),
+                        ));
                     }
                     Ok(())
                 })();
@@ -1058,9 +1061,11 @@ impl FieldsIndexWriter {
                         file_pointers.add(fp)?;
                     }
                     if max_pointer < fp {
-                        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                            format!("File pointers don't add up (resource={file_pointers_name})"),
-                        )));
+                        // `FieldsIndexWriter.java:161-163`.
+                        return Err(LuceneError::corrupt_index(
+                            "File pointers don't add up",
+                            file_pointers_in.to_java_string(),
+                        ));
                     }
                     file_pointers.add(max_pointer)?;
                     file_pointers.finish()?;
@@ -1588,9 +1593,11 @@ impl Lucene90CompressingStoredFieldsWriter {
                 let code = raw_docs.read_v_int()?;
                 let buffered_docs = ((code as u32) >> 2) as i32;
                 if base != doc_id {
-                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                    // `Lucene90CompressingStoredFieldsWriter.java:559-561`.
+                    return Err(LuceneError::corrupt_index(
                         format!("invalid state: base={base}, docID={doc_id}"),
-                    )));
+                        raw_docs.to_java_string(),
+                    ));
                 }
                 // write a new index entry and new header for this chunk.
                 self.index_writer
@@ -1600,11 +1607,13 @@ impl Lucene90CompressingStoredFieldsWriter {
                 doc_id += buffered_docs;
                 self.doc_base += buffered_docs;
                 if doc_id > to_doc_id {
-                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                    // `Lucene90CompressingStoredFieldsWriter.java:569-576`.
+                    return Err(LuceneError::corrupt_index(
                         format!(
-                        "invalid state: base={base}, count={buffered_docs}, toDocID={to_doc_id}"
-                    ),
-                    )));
+                            "invalid state: base={base}, count={buffered_docs}, toDocID={to_doc_id}"
+                        ),
+                        raw_docs.to_java_string(),
+                    ));
                 }
                 // copy bytes until the next chunk boundary (or end of chunk data).
                 // using the stored fields index for this isn't the most efficient, but fast
@@ -1839,10 +1848,15 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
             debug_assert!(self.buffered_docs.size() == 0);
         }
         if self.doc_base != num_docs {
-            return Err(LuceneError::illegal_state(format!(
-                "Wrote {} docs, finish called with numDocs={num_docs}",
-                self.doc_base
-            )));
+            // `Lucene90CompressingStoredFieldsWriter.java:480-482`: a
+            // `RuntimeException`.
+            return Err(LuceneError::unchecked(
+                "java.lang.RuntimeException",
+                format!(
+                    "Wrote {} docs, finish called with numDocs={num_docs}",
+                    self.doc_base
+                ),
+            ));
         }
         let max_pointer = self.fields_stream.file_pointer();
         self.index_writer
@@ -2267,9 +2281,9 @@ impl BlockState {
         merging: bool,
     ) -> Result<SerializedDocument> {
         if !self.contains(doc_id) {
-            return Err(LuceneError::illegal_argument(format!(
-                "doc_id {doc_id} is not in the current block"
-            )));
+            // `new IllegalArgumentException()`, no message
+            // (`Lucene90CompressingStoredFieldsReader.java:539-541`).
+            return Err(LuceneError::illegal_argument(String::new()));
         }
         let index = (doc_id - self.doc_base) as usize;
         // `Lucene90CompressingStoredFieldsReader.java:544-547`, in Java's order:
@@ -2479,20 +2493,33 @@ impl Lucene90CompressingStoredFieldsReader {
             let num_dirty_chunks = meta_in.read_v_long()?;
             let num_dirty_docs = meta_in.read_v_long()?;
 
+            // `Lucene90CompressingStoredFieldsReader.java:200-223`.
             if num_chunks < num_dirty_chunks {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                "Cannot have more dirty chunks than chunks: numChunks={num_chunks}, numDirtyChunks={num_dirty_chunks}"
-            ))));
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "Cannot have more dirty chunks than chunks: numChunks={num_chunks}, \
+                         numDirtyChunks={num_dirty_chunks}"
+                    ),
+                    meta_in.to_java_string(),
+                ));
             }
             if (num_dirty_chunks == 0) != (num_dirty_docs == 0) {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                    "Cannot have dirty chunks without dirty docs or vice-versa".to_string(),
-                )));
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "Cannot have dirty chunks without dirty docs or vice-versa: \
+                         numDirtyChunks={num_dirty_chunks}, numDirtyDocs={num_dirty_docs}"
+                    ),
+                    meta_in.to_java_string(),
+                ));
             }
             if num_dirty_docs < num_dirty_chunks {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                "Cannot have more dirty chunks than documents within dirty chunks: numDirtyChunks={num_dirty_chunks}, numDirtyDocs={num_dirty_docs}"
-            ))));
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "Cannot have more dirty chunks than documents within dirty chunks: \
+                         numDirtyChunks={num_dirty_chunks}, numDirtyDocs={num_dirty_docs}"
+                    ),
+                    meta_in.to_java_string(),
+                ));
             }
 
             check_footer(meta_in.as_mut())?;
@@ -2932,9 +2959,11 @@ impl Lucene90CompressingStoredFieldsReader {
             TYPE_NUMERIC_FLOAT => visitor.float_field(info, Self::read_z_float(input)?),
             TYPE_NUMERIC_LONG => visitor.long_field(info, Self::read_t_long(input)?),
             TYPE_NUMERIC_DOUBLE => visitor.double_field(info, Self::read_z_double(input)?),
-            _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!("Unknown type flag: 0x{bits:x}"),
-            ))),
+            // `throw new AssertionError("Unknown type flag: " +
+            // Integer.toHexString(bits))` (`Lucene90CompressingStoredFieldsReader.java:285, 309`).
+            _ => Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
+                "Unknown type flag: {bits:x}"
+            )))),
         }
     }
 
@@ -2960,9 +2989,11 @@ impl Lucene90CompressingStoredFieldsReader {
                 Self::read_z_double(input)?;
                 Ok(())
             }
-            _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!("Unknown type flag: 0x{bits:x}"),
-            ))),
+            // `throw new AssertionError("Unknown type flag: " +
+            // Integer.toHexString(bits))` (`Lucene90CompressingStoredFieldsReader.java:285, 309`).
+            _ => Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
+                "Unknown type flag: {bits:x}"
+            )))),
         }
     }
 
@@ -3028,9 +3059,11 @@ impl Lucene90CompressingStoredFieldsReader {
             DAY_ENCODING => l = l.wrapping_mul(DAY_MS),
             0 => {}
             _ => {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                    "Invalid TLong encoding".to_string(),
-                )))
+                // `throw new AssertionError()`
+                // (`Lucene90CompressingStoredFieldsReader.java:386-387`).
+                return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                    String::new(),
+                )));
             }
         }
         Ok(l)
@@ -3307,10 +3340,12 @@ impl StoredFieldsFormat for Lucene90StoredFieldsFormat {
                 "BEST_SPEED" => Mode::BestSpeed,
                 "BEST_COMPRESSION" => Mode::BestCompression,
                 _ => {
+                    // `Mode.valueOf(value)` (`Lucene90StoredFieldsFormat.java:135`):
+                    // `Enum.valueOf`'s `IllegalArgumentException`.
                     return Err(LuceneError::illegal_argument(format!(
-                        "unknown mode {v} for {}",
-                        Self::MODE_KEY
-                    )))
+                        "No enum constant \
+                         org.apache.lucene.codecs.lucene90.Lucene90StoredFieldsFormat.Mode.{v}"
+                    )));
                 }
             },
             None => {
@@ -3336,7 +3371,8 @@ impl StoredFieldsFormat for Lucene90StoredFieldsFormat {
         if let Some(prev) = previous {
             if prev != format!("{}", self.mode) {
                 return Err(LuceneError::illegal_state(format!(
-                    "found existing value for {} for segment: {} old={prev}, new={}",
+                    // `Lucene90StoredFieldsFormat.java:143-151`: no space before `old=`.
+                    "found existing value for {} for segment: {}old={prev}, new={}",
                     Self::MODE_KEY,
                     segment_info.name,
                     self.mode

@@ -1653,6 +1653,13 @@ fn try_zeroed(length: usize) -> Result<Vec<u8>> {
     Ok(buffer)
 }
 
+/// `throw new CorruptIndexException(message, in)`
+/// (`CorruptIndexException.java:31-34`): the message followed by the input's
+/// `toString()` as the resource description.
+fn corrupt_in<T>(message: String, input: &dyn IndexInput) -> Result<T> {
+    Err(LuceneError::corrupt_index(message, input.to_java_string()))
+}
+
 fn corrupt<T>(message: String) -> Result<T> {
     Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
         message,
@@ -2104,7 +2111,8 @@ impl Lucene90DocValuesProducer {
                 break;
             }
             let Some(info) = field_infos.field_info_checked(field_number)? else {
-                return corrupt(format!("Invalid field number: {field_number}"));
+                // `Lucene90DocValuesProducer.java:281`.
+                return corrupt_in(format!("Invalid field number: {field_number}"), meta);
             };
             let kind = meta.read_byte()?;
             if info.doc_values_skip_index_type != crate::index::DocValuesSkipIndexType::NONE {
@@ -2119,7 +2127,8 @@ impl Lucene90DocValuesProducer {
                 TYPE_SORTED => FieldEntry::Sorted(Self::read_sorted(meta)?),
                 TYPE_SORTED_SET => FieldEntry::SortedSet(Self::read_sorted_set(meta)?),
                 TYPE_SORTED_NUMERIC => FieldEntry::SortedNumeric(Self::read_sorted_numeric(meta)?),
-                _ => return corrupt(format!("invalid type: {kind}")),
+                // `Lucene90DocValuesProducer.java:298`.
+                _ => return corrupt_in(format!("invalid type: {kind}"), meta),
             };
             entries.insert(field_number, entry);
         }
@@ -2507,7 +2516,8 @@ impl Lucene90DocValuesProducer {
         let num_values = meta.read_long()?;
         let table_size = meta.read_int()?;
         if table_size > MAX_TABLE_SIZE {
-            return corrupt(format!("invalid table size: {table_size}"));
+            // `Lucene90DocValuesProducer.java:335`.
+            return corrupt_in(format!("invalid table size: {table_size}"), meta);
         }
         let table = if table_size > 0 {
             Some(
@@ -2595,7 +2605,8 @@ impl Lucene90DocValuesProducer {
                 let terms_dict = Self::read_term_dict(meta)?;
                 Ok(SortedSetEntry::Multi { ords, terms_dict })
             }
-            other => corrupt(format!("Invalid multiValued flag: {other}")),
+            // `Lucene90DocValuesProducer.java:399`.
+            other => corrupt_in(format!("Invalid multiValued flag: {other}"), meta),
         }
     }
 
@@ -6071,13 +6082,13 @@ impl DocValuesProducer for SingletonNumericProducer<'_> {
 
     fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
         let values: Result<Box<dyn BinaryDocValues>> =
-            { corrupt("a singleton numeric producer has no binary values".to_string()) };
+            { Err(LuceneError::unsupported_operation(String::new())) };
         Ok(Some(values?))
     }
 
     fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
         let values: Result<Box<dyn SortedDocValues>> =
-            { corrupt("a singleton numeric producer has no sorted values".to_string()) };
+            { Err(LuceneError::unsupported_operation(String::new())) };
         Ok(Some(values?))
     }
 
@@ -6095,16 +6106,14 @@ impl DocValuesProducer for SingletonNumericProducer<'_> {
 
     fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         let values: Result<Box<dyn SortedSetDocValues>> =
-            { corrupt("a singleton numeric producer has no sorted set values".to_string()) };
+            { Err(LuceneError::unsupported_operation(String::new())) };
         Ok(Some(values?))
     }
 
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
     /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(LuceneError::unsupported_operation(
-            "a singleton numeric producer does not provide a doc-values skipper".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -6136,19 +6145,19 @@ struct OrdinalsAsSortedNumericProducer<'a> {
 impl DocValuesProducer for OrdinalsAsSortedNumericProducer<'_> {
     fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         let values: Result<Box<dyn NumericDocValues>> =
-            { corrupt("an ordinals producer has no numeric values".to_string()) };
+            { Err(LuceneError::unsupported_operation(String::new())) };
         Ok(Some(values?))
     }
 
     fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
         let values: Result<Box<dyn BinaryDocValues>> =
-            { corrupt("an ordinals producer has no binary values".to_string()) };
+            { Err(LuceneError::unsupported_operation(String::new())) };
         Ok(Some(values?))
     }
 
     fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
         let values: Result<Box<dyn SortedDocValues>> =
-            { corrupt("an ordinals producer has no sorted values".to_string()) };
+            { Err(LuceneError::unsupported_operation(String::new())) };
         Ok(Some(values?))
     }
 
@@ -6174,9 +6183,7 @@ impl DocValuesProducer for OrdinalsAsSortedNumericProducer<'_> {
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
     /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(LuceneError::unsupported_operation(
-            "an ordinals producer does not provide a doc-values skipper".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -6215,7 +6222,7 @@ impl DocValuesProducer for SortedOrdinalsProducer<'_> {
 
     fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
         let values: Result<Box<dyn BinaryDocValues>> =
-            { corrupt("a sorted-ordinals producer has no binary values".to_string()) };
+            { Err(LuceneError::unsupported_operation(String::new())) };
         Ok(Some(values?))
     }
 
@@ -6242,16 +6249,14 @@ impl DocValuesProducer for SortedOrdinalsProducer<'_> {
 
     fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         let values: Result<Box<dyn SortedSetDocValues>> =
-            { corrupt("a sorted-ordinals producer has no sorted-set values".to_string()) };
+            { Err(LuceneError::unsupported_operation(String::new())) };
         Ok(Some(values?))
     }
 
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
     /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(LuceneError::unsupported_operation(
-            "a sorted-ordinals producer does not provide a doc-values skipper".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -6321,13 +6326,13 @@ struct MinOrdinalOfSortedSetProducer<'a> {
 impl DocValuesProducer for MinOrdinalOfSortedSetProducer<'_> {
     fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         let values: Result<Box<dyn NumericDocValues>> =
-            { corrupt("a minimum-ordinal producer has no numeric values".to_string()) };
+            { Err(LuceneError::unsupported_operation(String::new())) };
         Ok(Some(values?))
     }
 
     fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
         let values: Result<Box<dyn BinaryDocValues>> =
-            { corrupt("a minimum-ordinal producer has no binary values".to_string()) };
+            { Err(LuceneError::unsupported_operation(String::new())) };
         Ok(Some(values?))
     }
 
@@ -6346,7 +6351,7 @@ impl DocValuesProducer for MinOrdinalOfSortedSetProducer<'_> {
         _field: &FieldInfo,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
         let values: Result<Box<dyn SortedNumericDocValues>> =
-            { corrupt("a minimum-ordinal producer has no sorted-numeric values".to_string()) };
+            { Err(LuceneError::unsupported_operation(String::new())) };
         Ok(Some(values?))
     }
 
@@ -6357,9 +6362,7 @@ impl DocValuesProducer for MinOrdinalOfSortedSetProducer<'_> {
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
     /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(LuceneError::unsupported_operation(
-            "a minimum-ordinal producer does not provide a doc-values skipper".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn check_integrity(&self) -> Result<()> {

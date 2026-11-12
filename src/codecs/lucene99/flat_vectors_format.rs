@@ -659,9 +659,8 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
 
     fn finish(&mut self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::illegal_state(
-                "Lucene99FlatVectorsWriter is already finished".to_string(),
-            ));
+            // `Lucene99FlatVectorsWriter.java:159-161`.
+            return Err(LuceneError::illegal_state("already finished".to_string()));
         }
         self.finished = true;
         if let Some(meta) = self.meta.as_mut() {
@@ -719,11 +718,6 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
     /// (`Lucene99FlatVectorsWriter.java:139-144`), which adds the new
     /// `FieldWriter` to its `fields` and returns it.
     fn add_field(&mut self, field_info: &FieldInfo) -> Result<FlatFieldVectorWriter> {
-        if self.finished {
-            return Err(LuceneError::illegal_state(
-                "Lucene99FlatVectorsWriter is already finished".to_string(),
-            ));
-        }
         // `var newFieldWriter = fieldWriterFactory.apply(fieldInfo)`
         let new_field_writer = (self.field_writer_factory)(field_info)?;
         match &new_field_writer {
@@ -1057,9 +1051,13 @@ impl Lucene99FlatVectorsReader {
                 &state.segment_suffix,
             )?;
             if version_meta != version_vector_data {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                    "format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
-                ))));
+                // `Lucene99FlatVectorsReader.java:156-164`.
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "Format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
+                    ),
+                    input.to_java_string(),
+                ));
             }
             retrieve_checksum(input.as_mut())?;
             Ok(())
@@ -1099,9 +1097,11 @@ impl Lucene99FlatVectorsReader {
             .field_infos
             .field_info(field)
             .ok_or_else(|| LuceneError::illegal_argument(format!("field=\"{field}\" not found")))?;
-        self.fields.get(&info.number).ok_or_else(|| {
-            LuceneError::illegal_argument(format!("field=\"{field}\" has no vector values"))
-        })
+        // `Lucene99FlatVectorsReader.java:210-217`: one message for both a
+        // missing field and a field without an entry.
+        self.fields
+            .get(&info.number)
+            .ok_or_else(|| LuceneError::illegal_argument(format!("field=\"{field}\" not found")))
     }
 
     fn get_field_entry(
@@ -1111,8 +1111,10 @@ impl Lucene99FlatVectorsReader {
     ) -> Result<&FieldEntry> {
         let entry = self.get_field_entry_or_throw(field)?;
         if entry.vector_encoding != expected_encoding {
+            // `Lucene99FlatVectorsReader.java:219-227`.
             return Err(LuceneError::illegal_argument(format!(
-                "field=\"{field}\" is encoded as {entry_vector_encoding:?}, expected {expected_encoding:?}",
+                "field=\"{field}\" is encoded as: {entry_vector_encoding:?} expected: \
+                 {expected_encoding:?}",
                 entry_vector_encoding = entry.vector_encoding,
             )));
         }
@@ -1702,9 +1704,7 @@ impl KnnVectorValues for EmptyOffHeapFloatVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "EmptyOffHeapVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn encoding(&self) -> VectorEncoding {
@@ -1727,16 +1727,12 @@ impl KnnVectorValues for EmptyOffHeapFloatVectorValues {
 impl FloatVectorValues for EmptyOffHeapFloatVectorValues {
     /// Java's `vectorValue(int)` throws `UnsupportedOperationException`.
     fn vector_value(&self, _ord: i32) -> Result<Vec<f32>> {
-        Err(LuceneError::unsupported_operation(
-            "EmptyOffHeapVectorValues::vector_value".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "EmptyOffHeapVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Java's `scorer(float[])` returns `null`.
@@ -2050,9 +2046,7 @@ impl KnnVectorValues for EmptyOffHeapByteVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "EmptyOffHeapVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn encoding(&self) -> VectorEncoding {
@@ -2075,16 +2069,12 @@ impl KnnVectorValues for EmptyOffHeapByteVectorValues {
 impl ByteVectorValues for EmptyOffHeapByteVectorValues {
     /// Java's `vectorValue(int)` throws `UnsupportedOperationException`.
     fn vector_value(&self, _ord: i32) -> Result<Vec<u8>> {
-        Err(LuceneError::unsupported_operation(
-            "EmptyOffHeapVectorValues::vector_value".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "EmptyOffHeapVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Java's `scorer(byte[])` returns `null`.

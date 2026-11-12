@@ -465,9 +465,11 @@ impl Lucene90NormsProducer {
                 &state.segment_suffix,
             )?;
             if version != version2 {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                    format!("Format versions mismatch: meta={version}, data={version2}"),
-                )));
+                // `Lucene90NormsProducer.java:96-98`: no space after the comma.
+                return Err(LuceneError::corrupt_index(
+                    format!("Format versions mismatch: meta={version},data={version2}"),
+                    data.to_java_string(),
+                ));
             }
             // Cheap structural check of the data footer; the actual checksum is
             // verified by `check_integrity` on demand.

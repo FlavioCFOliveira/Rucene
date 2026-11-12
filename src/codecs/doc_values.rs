@@ -930,9 +930,9 @@ fn sub_field_info<'a>(
 /// from `advance` and `advanceExact`, because a merge only ever walks the
 /// merged doc-id space once, in order.
 fn merge_iterator_is_forward_only() -> LuceneError {
-    LuceneError::unsupported_operation(
-        "a merged doc-values iterator can only be advanced with next_doc".to_string(),
-    )
+    // `new UnsupportedOperationException()`, no message
+    // (`DocValuesConsumer.java:258-263` and the other merged iterators).
+    LuceneError::unsupported_operation(String::new())
 }
 
 macro_rules! merged_iterator_common {
