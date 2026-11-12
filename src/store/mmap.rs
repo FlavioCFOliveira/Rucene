@@ -173,8 +173,9 @@ impl MMapDirectory {
                 "Maximum chunk size for mmap must be >0".to_string(),
             ));
         }
-        // Java's `long maxChunkSize` cannot exceed `Long.MAX_VALUE`; a `usize`
-        // can, and its power would not be one Java can hold.
+        // **Divergence from Lucene 10.5.0.** Java's `long maxChunkSize` cannot
+        // exceed `Long.MAX_VALUE`; a `usize` can, and its power would not be
+        // one Java can hold, so such a value is refused here.
         if i64::try_from(max_chunk_size).is_err() {
             return Err(LuceneError::illegal_argument(format!(
                 "Maximum chunk size for mmap must be <= {} (a Java long)",

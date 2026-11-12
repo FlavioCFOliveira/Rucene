@@ -261,11 +261,13 @@ impl BKDRadixSelector {
             let mut reader =
                 PointReaderResource::new(points.get_reader(from as usize, (to - from) as usize)?);
             debug_assert!(common_prefix_position > dim_common_prefix);
-            if !reader.next()? {
-                return Err(LuceneError::illegal_state(
-                    "BKDRadixSelector: no points to read".to_string(),
-                ));
-            }
+            // `reader.next()`, whose result Java ignores: the range is never
+            // empty here.
+            let advanced = reader.next()?;
+            assert!(
+                advanced,
+                "INVARIANT: the radix select range [from, to) is non-empty"
+            );
             let mut point_value = reader.point_value().clone();
             {
                 let mut record = std::mem::take(&mut self.record);

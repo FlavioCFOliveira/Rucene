@@ -397,18 +397,24 @@ impl Polygon {
             ));
         }
         if lats[0] != lats[lats.len() - 1] {
-            return Err(LuceneError::illegal_argument(
+            // `Polygon.java:79-96`.
+            return Err(LuceneError::illegal_argument(format!(
                 "first and last points of the polygon must be the same (it must close itself): \
-                 lats[0]!=lats[lats.length-1]"
-                    .to_string(),
-            ));
+                 polyLats[0]={} polyLats[{}]={}",
+                crate::util::java_fmt::double_to_string(lats[0]),
+                lats.len() - 1,
+                crate::util::java_fmt::double_to_string(lats[lats.len() - 1])
+            )));
         }
         if lons[0] != lons[lons.len() - 1] {
-            return Err(LuceneError::illegal_argument(
+            // `Polygon.java:79-96`.
+            return Err(LuceneError::illegal_argument(format!(
                 "first and last points of the polygon must be the same (it must close itself): \
-                 lons[0]!=lons[lons.length-1]"
-                    .to_string(),
-            ));
+                 polyLons[0]={} polyLons[{}]={}",
+                crate::util::java_fmt::double_to_string(lons[0]),
+                lons.len() - 1,
+                crate::util::java_fmt::double_to_string(lons[lons.len() - 1])
+            )));
         }
         for i in 0..lats.len() {
             GeoUtils::check_latitude(lats[i])?;

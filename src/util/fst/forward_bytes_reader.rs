@@ -1,19 +1,16 @@
 //! Port of `org.apache.lucene.util.fst.ForwardBytesReader`.
 
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::Result;
 use crate::store::DataInput;
 
 use super::fst::BytesReader;
 
 /// Reads forwards from a single byte slice.
 ///
-/// Equivalent to the package-private `ForwardBytesReader`.
-///
-/// # Java to Rust adaptations
-///
-/// * The position is an `i64` rather than an `int`, so that a position outside
-///   the slice is reported as [`LuceneErrorKind::CorruptIndex`] instead of the
-///   `ArrayIndexOutOfBoundsException` Lucene raises.
+/// Equivalent to the package-private `ForwardBytesReader`. The position is
+/// held in an `i64` but follows Java's `int pos`: every update narrows it to
+/// an `int`, and a read outside the slice raises the JVM's
+/// `ArrayIndexOutOfBoundsException`.
 #[derive(Debug)]
 pub struct ForwardBytesReader<'a> {
     bytes: &'a [u8],
@@ -27,13 +24,6 @@ impl<'a> ForwardBytesReader<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, pos: 0 }
     }
-
-    fn out_of_bounds(&self, pos: i64) -> LuceneError {
-        LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-            "FST read position {pos} is outside the {} available bytes",
-            self.bytes.len()
-        )))
-    }
 }
 
 impl DataInput for ForwardBytesReader<'_> {
@@ -45,31 +35,32 @@ impl DataInput for ForwardBytesReader<'_> {
         )
     }
 
+    /// `return bytes[pos++]`: the position moves before the array access
+    /// fails.
     fn read_byte(&mut self) -> Result<u8> {
-        let pos = self.pos;
-        if pos < 0 || pos as u64 >= self.bytes.len() as u64 {
-            return Err(self.out_of_bounds(pos));
+        let pos = self.pos as i32;
+        self.pos = i64::from(pos.wrapping_add(1));
+        if pos < 0 || pos as usize >= self.bytes.len() {
+            return Err(crate::store::array_index_out_of_bounds(
+                i64::from(pos),
+                self.bytes.len(),
+            ));
         }
-        self.pos = pos + 1;
         Ok(self.bytes[pos as usize])
     }
 
+    /// `System.arraycopy(bytes, pos, b, offset, len)`, then `pos += len`.
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         let b = crate::store::require_array(b)?;
-        let pos = self.pos;
-        let end = pos
-            .checked_add(len as i64)
-            .ok_or_else(|| self.out_of_bounds(pos))?;
-        if pos < 0 || end as u64 > self.bytes.len() as u64 {
-            return Err(self.out_of_bounds(pos));
-        }
-        b[offset..offset + len].copy_from_slice(&self.bytes[pos as usize..end as usize]);
-        self.pos = end;
+        let pos = self.pos as i32;
+        crate::util::java_byte_arraycopy(self.bytes, pos, b, offset as i32, len as i32)?;
+        self.pos = i64::from(pos.wrapping_add(len as i32));
         Ok(())
     }
 
+    /// `pos += count`, narrowed to an `int`.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
-        self.pos += num_bytes;
+        self.pos = i64::from(self.pos.wrapping_add(num_bytes) as i32);
         Ok(())
     }
 }
@@ -79,7 +70,8 @@ impl BytesReader for ForwardBytesReader<'_> {
         self.pos
     }
 
+    /// `this.pos = (int) pos`.
     fn set_position(&mut self, pos: i64) {
-        self.pos = pos;
+        self.pos = i64::from(pos as i32);
     }
 }

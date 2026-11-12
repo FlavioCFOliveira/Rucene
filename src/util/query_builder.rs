@@ -495,8 +495,9 @@ pub trait QueryBuilderOps {
     ) -> Result<Option<Arc<dyn Query>>> {
         stream.reset()?;
         if !stream.increment_token()? {
-            return Err(LuceneError::illegal_state(
-                "the cached token stream produced no token where one was counted".to_string(),
+            // `throw new AssertionError()` (`QueryBuilder.java:377-379`).
+            return Err(LuceneError::from(
+                crate::error::LuceneErrorKind::AssertionError(String::new()),
             ));
         }
 

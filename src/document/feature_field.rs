@@ -666,10 +666,10 @@ impl FeatureTokenStream {
         let mut source = AttributeSource::new_with_factory(Arc::new(factory));
         source
             .add_attribute::<CharTermAttributeImpl>()
-            .expect("CharTermAttributeImpl is registered just above");
+            .expect("INVARIANT: CharTermAttributeImpl is registered just above");
         source
             .add_attribute::<TermFrequencyAttributeImpl>()
-            .expect("TermFrequencyAttributeImpl is registered just above");
+            .expect("INVARIANT: TermFrequencyAttributeImpl is registered just above");
         Self {
             source,
             feature_name,
@@ -689,11 +689,11 @@ impl TokenStream for FeatureTokenStream {
         let freq = self.freq;
         self.source
             .get_attribute_mut::<CharTermAttributeImpl>()
-            .expect("registered in new")
+            .expect("INVARIANT: the attribute is registered in new")
             .append_string(Some(&feature_name));
         self.source
             .get_attribute_mut::<TermFrequencyAttributeImpl>()
-            .expect("registered in new")
+            .expect("INVARIANT: the attribute is registered in new")
             .set_term_frequency(freq);
         self.used = true;
         Ok(true)

@@ -28,7 +28,7 @@
 //! [`XYPointSortField::get_comparator`].
 
 use crate::document::geo_fields::{LatLonDocValuesField, XYDocValuesField};
-use crate::error::{LuceneError, Result};
+use crate::error::Result;
 use crate::geo::encoding::{GeoEncodingUtils, GeoUtils, XYEncodingUtils};
 use crate::geo::geometry::{Rectangle, XYRectangle};
 use crate::index::{DocValues, LeafReader, LeafReaderContext, SortedNumericDocValues};
@@ -853,12 +853,12 @@ impl LatLonPointSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the sort field carries no
-    /// field name, which its constructor rules out.
+    /// What building the comparator raises; a sort field always names a
+    /// field, which its constructor guarantees.
     pub fn get_comparator(&self, num_hits: usize) -> Result<LatLonPointDistanceComparator> {
-        let field = self.get_field().ok_or_else(|| {
-            LuceneError::illegal_state("a distance sort field always names a field".to_string())
-        })?;
+        let field = self
+            .get_field()
+            .expect("INVARIANT: a distance sort field always names a field");
         Ok(LatLonPointDistanceComparator::new(
             field,
             self.latitude,
@@ -1071,12 +1071,12 @@ impl XYPointSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the sort field carries no
-    /// field name, which its constructor rules out.
+    /// What building the comparator raises; a sort field always names a
+    /// field, which its constructor guarantees.
     pub fn get_comparator(&self, num_hits: usize) -> Result<XYPointDistanceComparator> {
-        let field = self.get_field().ok_or_else(|| {
-            LuceneError::illegal_state("a distance sort field always names a field".to_string())
-        })?;
+        let field = self
+            .get_field()
+            .expect("INVARIANT: a distance sort field always names a field");
         Ok(XYPointDistanceComparator::new(
             field, self.x, self.y, num_hits,
         ))

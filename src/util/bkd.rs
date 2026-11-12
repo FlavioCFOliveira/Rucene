@@ -1106,11 +1106,6 @@ impl OfflinePointReader {
         length: usize,
         reusable_buffer: Vec<u8>,
     ) -> Result<Self> {
-        if reusable_buffer.len() < config.bytes_per_doc() as usize {
-            return Err(LuceneError::illegal_argument(
-                "reusableBuffer too small".to_string(),
-            ));
-        }
         let bytes_per_doc = i64::from(config.bytes_per_doc());
         let file_length = temp_dir.file_length(name)?;
         let footer_length = i64::from(codec_util_footer_length());
@@ -1119,6 +1114,13 @@ impl OfflinePointReader {
                 "requested slice is beyond the length of this file: start={start} \
                  length={length} bytesPerDoc={bytes_per_doc} fileLength={file_length} \
                  tempFileName={name}"
+            )));
+        }
+        // `OfflinePointReader.java:76-79`, checked after the slice.
+        if reusable_buffer.len() < config.bytes_per_doc() as usize {
+            return Err(LuceneError::illegal_argument(format!(
+                "Length of [reusableBuffer] must be bigger than {}",
+                config.bytes_per_doc()
             )));
         }
         // Best-effort checksumming (`OfflinePointReader.java:83-96`): a reader
@@ -1238,10 +1240,10 @@ impl DocIdsWriter {
     /// availability of `BPV_21`, exactly as `DocIdsWriter.writeDocIds` does in
     /// Lucene Core 10.5.0.
     pub fn write_doc_ids(out: &mut dyn IndexOutput, doc_ids: &[i32], version: i32) -> Result<()> {
+        // `int min = docIds[0]`: the JVM's `ArrayIndexOutOfBoundsException`
+        // for an empty block.
         if doc_ids.is_empty() {
-            return Err(LuceneError::illegal_argument(
-                "doc_ids must not be empty".to_string(),
-            ));
+            return Err(crate::store::array_index_out_of_bounds(0, 0));
         }
         let count = doc_ids.len();
         let mut strictly_sorted = true;
@@ -1393,7 +1395,7 @@ impl DocIdsWriter {
         for &doc in doc_ids {
             let index = (doc - offset_bits) as usize;
             let next_word_index = index >> 6;
-            assert!(current_word_index <= next_word_index);
+            debug_assert!(current_word_index <= next_word_index);
             while current_word_index < next_word_index {
                 out.write_long(current_word as i64)?;
                 current_word = 0;
@@ -1402,7 +1404,7 @@ impl DocIdsWriter {
             current_word |= 1u64 << (index & 0x3f);
         }
         out.write_long(current_word as i64)?;
-        assert_eq!(current_word_index + 1, total_word_count);
+        debug_assert_eq!(current_word_index + 1, total_word_count);
         Ok(())
     }
 
@@ -1610,6 +1612,10 @@ impl DocIdsWriter {
         // the boundary of the *writer*: no segment Lucene has written is
         // refused by it, and beyond it no word count can name an allocation
         // here.
+        // **Divergence from Lucene 10.5.0.** This and the two checks below
+        // refuse a bit-set block no Lucene writer emits; Java reads it (an
+        // `OutOfMemoryError` for a huge word count, stale scratch words or an
+        // assertion in `FixedBitSet.nextSetBit` for a short one).
         let max_words = (((count as i64) << 4) + 63 + 63) >> 6;
         if long_len < 0 || i64::from(long_len) > max_words {
             return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
@@ -2013,14 +2019,18 @@ impl IntersectVisitor for LastLeafDocIdCounter {
         Ok(())
     }
 
+    /// `throw new AssertionError()` (`BKDReader.java:172-174`).
     fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) -> Result<()> {
-        Err(LuceneError::illegal_state(
-            "BKDReader.isTreeBalanced never visits values".to_string(),
-        ))
+        Err(LuceneError::from(LuceneErrorKind::AssertionError(
+            String::new(),
+        )))
     }
 
+    /// `throw new AssertionError()` (`BKDReader.java:177-179`).
     fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Result<Relation> {
-        unreachable!("BKDReader.isTreeBalanced never compares cells")
+        Err(LuceneError::from(LuceneErrorKind::AssertionError(
+            String::new(),
+        )))
     }
 }
 
@@ -5232,9 +5242,8 @@ impl MergeIntersectsVisitor {
 
 impl IntersectVisitor for MergeIntersectsVisitor {
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "BKDWriter.MergeIntersectsVisitor needs the packed value of every doc".to_string(),
-        ))
+        // `throw new UnsupportedOperationException()` (`BKDWriter.java:381-384`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
@@ -5896,7 +5905,7 @@ fn pack_index(config: &BKDConfig, leaf_nodes: &dyn BKDTreeLeafNodes) -> Result<V
         index[upto..upto + block.len()].copy_from_slice(&block);
         upto += block.len();
     }
-    assert_eq!(upto, total_size);
+    debug_assert_eq!(upto, total_size);
     Ok(index)
 }
 

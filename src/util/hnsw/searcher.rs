@@ -462,7 +462,10 @@ impl OnHeapSearcher {
     }
 
     fn graph_next_neighbor(&mut self) -> i32 {
-        let cur = self.cur_neighbors.as_ref().expect("graph_seek not called");
+        // `cur.size()` on a `null` `cur`: the JVM's `NullPointerException`.
+        let Some(cur) = self.cur_neighbors.as_ref() else {
+            crate::store::java_nio_file::throw_unchecked("java.lang.NullPointerException", None)
+        };
         self.cur_upto += 1;
         if self.cur_upto < cur.size() {
             cur.node(self.cur_upto)

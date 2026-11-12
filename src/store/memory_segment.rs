@@ -221,7 +221,7 @@ impl RefCountedSharedArena {
     /// Equivalent to `RefCountedSharedArena(String, Runnable)`.
     pub fn new(segment_name: impl Into<String>, on_close: Box<dyn Fn() + Send + Sync>) -> Self {
         Self::with_max_permits(segment_name, on_close, DEFAULT_MAX_PERMITS)
-            .expect("DEFAULT_MAX_PERMITS is valid")
+            .expect("INVARIANT: DEFAULT_MAX_PERMITS passes validMaxPermits")
     }
 
     /// Creates an arena for `segment_name` with an explicit permit budget.
@@ -322,14 +322,12 @@ impl RefCountedSharedArena {
     /// # Errors
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation), which is Java's
-    /// `UnsupportedOperationException`.
+    /// `UnsupportedOperationException` (no message).
     ///
     /// Equivalent to
     /// `org.apache.lucene.store.RefCountedSharedArena#allocate`.
     pub fn allocate(&self, _byte_size: i64, _byte_alignment: i64) -> Result<MemorySegment> {
-        Err(LuceneError::unsupported_operation(
-            "RefCountedSharedArena::allocate".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 

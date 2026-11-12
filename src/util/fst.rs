@@ -105,6 +105,25 @@ mod reverse_bytes_reader;
 mod reverse_random_access_reader;
 mod util;
 
+/// Java's `new T[length]` for a primitive array: the JVM's
+/// `NegativeArraySizeException` (message: the length) for a negative length,
+/// and its `OutOfMemoryError` (`Java heap space`) when the allocation cannot
+/// be made.
+pub(crate) fn java_new_array<T: Default + Clone>(length: i32) -> crate::error::Result<Vec<T>> {
+    if length < 0 {
+        return Err(crate::error::LuceneError::unchecked(
+            "java.lang.NegativeArraySizeException",
+            length.to_string(),
+        ));
+    }
+    let mut array: Vec<T> = Vec::new();
+    array.try_reserve_exact(length as usize).map_err(|_| {
+        crate::error::LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space")
+    })?;
+    array.resize(length as usize, T::default());
+    Ok(array)
+}
+
 pub use bit_table_util::BitTableUtil;
 pub use byte_block_pool_reverse_bytes_reader::ByteBlockPoolReverseBytesReader;
 pub use byte_sequence_outputs::ByteSequenceOutputs;

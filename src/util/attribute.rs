@@ -900,7 +900,7 @@ impl AttributeSource {
         Ok(AtomicRef::map(rc.borrow(), |att| {
             att.as_any()
                 .downcast_ref::<A>()
-                .expect("attribute type mismatch")
+                .expect("INVARIANT: the attribute registered under a TypeId has that type")
         }))
     }
 
@@ -1020,7 +1020,7 @@ impl AttributeSource {
         Some(AtomicRef::map(rc.borrow(), |att| {
             att.as_any()
                 .downcast_ref::<A>()
-                .expect("attribute type mismatch")
+                .expect("INVARIANT: the attribute registered under a TypeId has that type")
         }))
     }
 
@@ -1088,7 +1088,7 @@ impl AttributeSource {
         Some(AtomicRefMut::map(rc.borrow_mut(), |att| {
             att.as_any_mut()
                 .downcast_mut::<A>()
-                .expect("attribute type mismatch")
+                .expect("INVARIANT: the attribute registered under a TypeId has that type")
         }))
     }
 
@@ -1423,7 +1423,7 @@ impl<T: 'static> CloseableThreadLocal<T> {
             });
             boxed
                 .downcast_ref::<Rc<RefCell<T>>>()
-                .expect("CloseableThreadLocal type mismatch")
+                .expect("INVARIANT: a CloseableThreadLocal id is bound to one value type")
                 .clone()
         })
     }

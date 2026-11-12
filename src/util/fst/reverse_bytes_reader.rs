@@ -1,6 +1,6 @@
 //! Port of `org.apache.lucene.util.fst.ReverseBytesReader`.
 
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::Result;
 use crate::store::DataInput;
 
 use super::fst::BytesReader;
@@ -10,12 +10,10 @@ use super::fst::BytesReader;
 /// Equivalent to the package-private `ReverseBytesReader`. The FST writes every
 /// node backwards, so the natural read direction is decreasing addresses.
 ///
-/// # Java to Rust adaptations
-///
-/// * The position is an `i64` rather than an `int`. Reading the byte at
-///   position `0` leaves the position at `-1`, which is legal; reading again
-///   reports [`LuceneErrorKind::CorruptIndex`] where Lucene raises an
-///   `ArrayIndexOutOfBoundsException`.
+/// The position is held in an `i64` but follows Java's `int pos`: every
+/// update narrows it to an `int`. Reading the byte at position `0` leaves the
+/// position at `-1`, which is legal; reading again raises the JVM's
+/// `ArrayIndexOutOfBoundsException`, as Lucene does.
 pub struct ReverseBytesReader<B> {
     bytes: B,
     pos: i64,
@@ -40,20 +38,18 @@ impl<B: AsRef<[u8]>> ReverseBytesReader<B> {
         Self { bytes, pos: 0 }
     }
 
-    fn out_of_bounds(&self, pos: i64) -> LuceneError {
-        LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-            "FST read position {pos} is outside the {} available bytes",
-            self.bytes.as_ref().len()
-        )))
-    }
-
+    /// `bytes[pos--]`: the position moves before the array access fails.
     fn next(&mut self) -> Result<u8> {
-        let pos = self.pos;
-        if pos < 0 || pos as u64 >= self.bytes.as_ref().len() as u64 {
-            return Err(self.out_of_bounds(pos));
+        let pos = self.pos as i32;
+        self.pos = i64::from(pos.wrapping_sub(1));
+        let bytes = self.bytes.as_ref();
+        if pos < 0 || pos as usize >= bytes.len() {
+            return Err(crate::store::array_index_out_of_bounds(
+                i64::from(pos),
+                bytes.len(),
+            ));
         }
-        self.pos = pos - 1;
-        Ok(self.bytes.as_ref()[pos as usize])
+        Ok(bytes[pos as usize])
     }
 }
 
@@ -73,13 +69,23 @@ impl<B: AsRef<[u8]>> DataInput for ReverseBytesReader<B> {
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         let b = crate::store::require_array(b)?;
         for i in 0..len {
-            b[offset + i] = self.next()?;
+            // `b[offset + i] = bytes[pos--]`: the byte is read before the
+            // store is checked (JLS 15.26.1).
+            let value = self.next()?;
+            let Some(slot) = b.get_mut(offset + i) else {
+                return Err(crate::store::array_index_out_of_bounds(
+                    (offset + i) as i64,
+                    b.len(),
+                ));
+            };
+            *slot = value;
         }
         Ok(())
     }
 
+    /// `pos -= count`, narrowed to an `int`.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
-        self.pos -= num_bytes;
+        self.pos = i64::from(self.pos.wrapping_sub(num_bytes) as i32);
         Ok(())
     }
 }
@@ -89,7 +95,8 @@ impl<B: AsRef<[u8]>> BytesReader for ReverseBytesReader<B> {
         self.pos
     }
 
+    /// `this.pos = (int) pos`.
     fn set_position(&mut self, pos: i64) {
-        self.pos = pos;
+        self.pos = i64::from(pos as i32);
     }
 }

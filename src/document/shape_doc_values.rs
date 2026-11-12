@@ -171,15 +171,10 @@ impl<'a> SliceDataInput<'a> {
     /// `ByteArrayDataInput`, whose `readByte()` is `bytes[pos++]`
     /// (`ByteArrayDataInput.java:134-137`), so the JVM's
     /// `ArrayIndexOutOfBoundsException` — `Index <pos> out of bounds for
-    /// length <length>` — carried, like every `IndexOutOfBoundsException` of
-    /// this crate, by [`LuceneErrorKind::IllegalArgument`]. It is not an
-    /// `IOException`, so no `catch (IOException e)` wraps it.
+    /// length <length>`. It is not an `IOException`, so no `catch
+    /// (IOException e)` wraps it.
     fn eof(&self) -> LuceneError {
-        LuceneError::illegal_argument(format!(
-            "Index {} out of bounds for length {}",
-            self.pos,
-            self.bytes.len()
-        ))
+        crate::store::array_index_out_of_bounds(self.pos as i32 as i64, self.bytes.len())
     }
 
     /// Reads the four variable longs of a bounding box, translating each back
@@ -232,31 +227,25 @@ impl DataInput for SliceDataInput<'_> {
 
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         let b = crate::store::require_array(b)?;
-        if self.pos + len > self.bytes.len() {
-            // `System.arraycopy(bytes, pos, b, offset, len)`
-            // (`ByteArrayDataInput.java:140-144`).
-            return Err(LuceneError::illegal_argument(format!(
-                "arraycopy: last source index {} out of bounds for byte[{}]",
-                self.pos + len,
-                self.bytes.len()
-            )));
-        }
-        b[offset..offset + len].copy_from_slice(&self.bytes[self.pos..self.pos + len]);
+        // `System.arraycopy(bytes, pos, b, offset, len)`
+        // (`ByteArrayDataInput.java:140-144`), with its checks and messages.
+        crate::util::java_byte_arraycopy(
+            self.bytes,
+            self.pos as i32,
+            b,
+            offset as i32,
+            len as i32,
+        )?;
         self.pos += len;
         Ok(())
     }
 
+    /// `ByteArrayDataInput.skipBytes(long)` (`ByteArrayDataInput.java:79-82`):
+    /// `pos += count`, narrowed to an `int`, with no check of its own; a
+    /// position past the end fails on the next read. A position Java would
+    /// hold as a negative `int` is kept as its two's-complement `usize`.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
-        let num_bytes = usize::try_from(num_bytes).map_err(|_| {
-            LuceneError::corrupt_index(
-                format!("negative skip of {num_bytes} bytes"),
-                "shape doc values",
-            )
-        })?;
-        if self.pos + num_bytes > self.bytes.len() {
-            return Err(self.eof());
-        }
-        self.pos += num_bytes;
+        self.pos = ((self.pos as i32 as i64).wrapping_add(num_bytes) as i32) as isize as usize;
         Ok(())
     }
 }
@@ -463,10 +452,11 @@ fn build_tree(
     tessellation: &[DecodedTriangle],
     encoder: ShapeCoordinateSystem,
 ) -> Result<(Vec<TreeNode>, Vec<usize>)> {
+    // An empty list reaches `createTree(triangles, 0, -1, ...)`, whose `null`
+    // root is dereferenced (`root.minY = minY`): the JVM's
+    // `NullPointerException`.
     if tessellation.is_empty() {
-        return Err(LuceneError::illegal_argument(
-            "the tessellation must not be empty".to_string(),
-        ));
+        return Err(LuceneError::null_pointer());
     }
 
     let mut nodes = Vec::with_capacity(tessellation.len());

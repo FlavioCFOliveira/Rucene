@@ -266,7 +266,7 @@ fn validate_geometry(
         for geometry in geometries {
             if matches!(geometry, LatLonGeometryValue::Line(_)) {
                 return Err(LuceneError::illegal_argument(
-                    "LatLonPointQuery does not support Within queries with line geometries"
+                    "LatLonPointQuery does not support WITHIN queries with line geometries"
                         .to_string(),
                 ));
             }
@@ -276,7 +276,7 @@ fn validate_geometry(
         for geometry in geometries {
             if !matches!(geometry, LatLonGeometryValue::Point(_)) {
                 return Err(LuceneError::illegal_argument(
-                    "LatLonPointQuery does not support Contains queries with non-points geometries"
+                    "LatLonPointQuery does not support CONTAINS queries with non-points geometries"
                         .to_string(),
                 ));
             }
@@ -476,7 +476,7 @@ impl LatLonDocValuesQuery {
             for geometry in &geometries {
                 if matches!(geometry, LatLonGeometryValue::Line(_)) {
                     return Err(LuceneError::illegal_argument(
-                        "LatLonDocValuesPointQuery does not support Within queries with line \
+                        "LatLonDocValuesPointQuery does not support WITHIN queries with line \
                          geometries"
                             .to_string(),
                     ));
@@ -487,7 +487,7 @@ impl LatLonDocValuesQuery {
             for geometry in &geometries {
                 if !matches!(geometry, LatLonGeometryValue::Point(_)) {
                     return Err(LuceneError::illegal_argument(
-                        "LatLonDocValuesPointQuery does not support Contains queries with \
+                        "LatLonDocValuesPointQuery does not support CONTAINS queries with \
                          non-points geometries"
                             .to_string(),
                     ));

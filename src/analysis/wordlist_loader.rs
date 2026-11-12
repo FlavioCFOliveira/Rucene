@@ -9,7 +9,7 @@
 #![deny(unsafe_code)]
 
 use crate::analysis::{CharArrayMap, CharArraySet, CharReader};
-use crate::error::{LuceneError, Result};
+use crate::error::Result;
 
 const INITIAL_CAPACITY: usize = 16;
 
@@ -234,28 +234,26 @@ pub fn get_lines<R: std::io::Read>(stream: R, char_set: &str) -> Result<Vec<Stri
 /// Each line holds a word and its stem separated by a single tab; the stem
 /// overrules whatever a stemming algorithm would produce for that word.
 ///
-/// Divergence: Java indexes the second field of `line.split("\t", 2)`
-/// unconditionally, so a line without a tab raises
-/// `ArrayIndexOutOfBoundsException` (`WordlistLoader.java` lines 274-283). The
-/// port reports that malformed line as an error instead, because the method
-/// already returns `Result` and a panic would give the caller no way to say
-/// which line was wrong.
+/// Java indexes the second field of `line.split("\t", 2)` unconditionally,
+/// so a line without a tab raises `ArrayIndexOutOfBoundsException`
+/// (`WordlistLoader.java` lines 276-286), as here.
 ///
 /// # Errors
 ///
-/// Returns whatever the reader returns, or
-/// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a line carries no tab.
+/// Returns whatever the reader returns, or the JVM's
+/// `ArrayIndexOutOfBoundsException` (`Index 1 out of bounds for length 1`)
+/// when a line carries no tab.
 ///
 /// Equivalent to `org.apache.lucene.analysis.WordlistLoader#getStemDict`.
 pub fn get_stem_dict(reader: &mut dyn CharReader, result: &mut CharArrayMap<String>) -> Result<()> {
     for line in get_buffered_reader(reader)? {
         let mut fields = line.splitn(2, '\t');
         let word = fields.next().unwrap_or_default();
-        let stem = fields.next().ok_or_else(|| {
-            LuceneError::illegal_argument(format!(
-                "stem dictionary line has no tab separating word and stem: {line}"
-            ))
-        })?;
+        // `wordstem[1]` of `line.split("\t", 2)`: the JVM's
+        // `ArrayIndexOutOfBoundsException` for a line without a tab.
+        let stem = fields
+            .next()
+            .ok_or_else(|| crate::store::array_index_out_of_bounds(1, 1))?;
         result.put(word, stem.to_string());
     }
     Ok(())

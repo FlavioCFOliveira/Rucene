@@ -557,9 +557,13 @@ impl PagedGrowableHash {
                     }
                 }
                 other => {
-                    return Err(LuceneError::illegal_state(format!(
-                        "unhandled scratchArc.nodeFlags() {other}"
-                    )));
+                    // `throw new AssertionError("unhandled scratchArc.nodeFlag() " +
+                    // scratchArc.nodeFlags())` (`NodeHash.java:432-433`).
+                    return Err(LuceneError::from(
+                        crate::error::LuceneErrorKind::AssertionError(format!(
+                            "unhandled scratchArc.nodeFlag() {other}"
+                        )),
+                    ));
                 }
             }
         }

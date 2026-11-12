@@ -300,8 +300,8 @@ impl HnswBuilder for HnswConcurrentMergeBuilder {
 
     fn into_completed_graph(mut self: Box<Self>) -> Result<OnHeapHnswGraph> {
         self.get_completed_graph()?;
-        Arc::try_unwrap(self.hnsw).map_err(|_| {
-            LuceneError::illegal_state("the graph is still shared with a worker".to_string())
-        })
+        Ok(Arc::try_unwrap(self.hnsw).unwrap_or_else(|_| {
+            panic!("INVARIANT: the merge workers have released the graph once it is complete")
+        }))
     }
 }

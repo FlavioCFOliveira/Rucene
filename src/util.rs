@@ -284,6 +284,20 @@ pub(crate) fn java_byte_arraycopy(
     Ok(())
 }
 
+/// Throws the `IndexOutOfBoundsException` of `Objects.checkFromIndexSize(from,
+/// size, length)` (`Range [from, from + size) out of bounds for length
+/// length`) when the range does not fit.
+fn check_from_index_size_or_throw(from: usize, size: usize, length: usize) {
+    if from > length || size > length - from {
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.IndexOutOfBoundsException",
+            Some(&format!(
+                "Range [{from}, {from} + {size}) out of bounds for length {length}"
+            )),
+        );
+    }
+}
+
 /// `ArrayUtil.copyOfSubArray(array, offset, offset + length)` for the
 /// `deepCopyOf` methods of the `*Ref` classes (`ArrayUtil.java:654-658` and
 /// its overloads): `System.arraycopy` throws `ArrayIndexOutOfBoundsException`
@@ -877,7 +891,10 @@ impl NumericUtils {
         result: &mut [u8],
         offset: usize,
     ) {
-        assert!(!big_int.is_empty(), "big_int must not be empty");
+        assert!(
+            !big_int.is_empty(),
+            "INVARIANT: BigInteger.toByteArray() is never empty"
+        );
         let mut full_big_int_bytes = vec![0u8; big_int_size];
         match big_int.len().cmp(&big_int_size) {
             Ordering::Less => {
@@ -889,12 +906,13 @@ impl NumericUtils {
                 }
             }
             Ordering::Equal => full_big_int_bytes.copy_from_slice(big_int),
-            Ordering::Greater => {
-                panic!(
+            Ordering::Greater => crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some(&format!(
                     "BigInteger: {} requires more than {big_int_size} bytes storage",
                     big_integer_to_string(big_int)
-                )
-            }
+                )),
+            ),
         }
         // Flip the sign bit so negative bigints sort before positive bigints:
         full_big_int_bytes[0] ^= 0x80;
@@ -954,7 +972,7 @@ fn big_integer_to_string(bytes: &[u8]) -> String {
         digits.push(b'-');
     }
     digits.reverse();
-    String::from_utf8(digits).expect("ASCII digits")
+    String::from_utf8(digits).expect("INVARIANT: decimal digits and '-' are ASCII")
 }
 
 // ---------------------------------------------------------------------------
@@ -2595,6 +2613,8 @@ impl IOUtils {
         mut stream: R,
         char_set: &str,
     ) -> Result<io::Cursor<String>, LuceneError> {
+        // **Divergence from Lucene 10.5.0.** Java decodes with any `Charset`;
+        // this port decodes UTF-8 only and refuses any other name.
         if !char_set.eq_ignore_ascii_case(Self::UTF_8) {
             return Err(LuceneError::unsupported_operation(format!(
                 "unsupported charset: {char_set}"
@@ -2602,10 +2622,20 @@ impl IOUtils {
         }
         let mut bytes = Vec::new();
         stream.read_to_end(&mut bytes)?;
+        // `CodingErrorAction.REPORT`: the decoder's `MalformedInputException`
+        // (`Input length = <n>`, the length of the malformed sequence).
         let text = String::from_utf8(bytes).map_err(|e| {
-            LuceneError::from(LuceneErrorKind::Other(format!(
-                "MalformedInputException: {e}"
-            )))
+            let error = e.utf8_error();
+            let length = error
+                .error_len()
+                .unwrap_or(e.as_bytes().len() - error.valid_up_to());
+            LuceneError::from(LuceneErrorKind::Io(
+                crate::store::java_nio_file::JavaIoException::new(
+                    "java.nio.charset.MalformedInputException",
+                    Some(format!("Input length = {length}")),
+                )
+                .into_io_error(),
+            ))
         })?;
         Ok(io::Cursor::new(text))
     }
@@ -4019,7 +4049,14 @@ impl Constants {
                 "NORMAL" => ReadAdvice::Normal,
                 "RANDOM" => ReadAdvice::Random,
                 "SEQUENTIAL" => ReadAdvice::Sequential,
-                other => panic!("No enum constant ReadAdvice.{other}"),
+                // `ReadAdvice.valueOf`: `Enum.valueOf`'s
+                // `IllegalArgumentException`.
+                other => crate::store::java_nio_file::throw_unchecked(
+                    "java.lang.IllegalArgumentException",
+                    Some(&format!(
+                        "No enum constant org.apache.lucene.store.ReadAdvice.{other}"
+                    )),
+                ),
             },
         }
     }
@@ -4884,9 +4921,11 @@ impl FixedBitSet {
     /// bulk-setting bits from a SIMD comparison result without per-bit
     /// extraction; the mask must carry at most `mask_len` significant bits.
     pub fn or_mask(&mut self, start_bit: usize, mask: u64, mask_len: usize) {
-        assert!(
+        // Java's `assert startBit >= 0 && startBit + maskLen <= numBits`
+        // (`FixedBitSet.java:314-315`).
+        debug_assert!(
             start_bit + mask_len <= self.num_bits,
-            "start_bit={start_bit}, mask_len={mask_len}, num_bits={}",
+            "startBit={start_bit}, maskLen={mask_len}, numBits={}",
             self.num_bits
         );
         let word_index = start_bit >> 6;
@@ -4923,14 +4962,10 @@ impl FixedBitSet {
         mut dest_from: usize,
         mut length: usize,
     ) {
-        assert!(
-            source_from + length <= source.length(),
-            "source range out of bounds"
-        );
-        assert!(
-            dest_from + length <= dest.length(),
-            "dest range out of bounds"
-        );
+        // `Objects.checkFromIndexSize(sourceFrom, length, source.length())`
+        // and the same for `dest`: `IndexOutOfBoundsException`.
+        check_from_index_size_or_throw(source_from, length, source.length());
+        check_from_index_size_or_throw(dest_from, length, dest.length());
 
         if length == 0 {
             return;
@@ -5007,14 +5042,10 @@ impl FixedBitSet {
         mut dest_from: usize,
         mut length: usize,
     ) {
-        assert!(
-            source_from + length <= source.length(),
-            "source range out of bounds"
-        );
-        assert!(
-            dest_from + length <= dest.length(),
-            "dest range out of bounds"
-        );
+        // `Objects.checkFromIndexSize(sourceFrom, length, source.length())`
+        // and the same for `dest`: `IndexOutOfBoundsException`.
+        check_from_index_size_or_throw(source_from, length, source.length());
+        check_from_index_size_or_throw(dest_from, length, dest.length());
 
         if length == 0 {
             return;

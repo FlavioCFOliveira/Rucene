@@ -21,13 +21,15 @@
 //!   in the reported offset of an error that follows an astral character. A
 //!   faithful `u16` buffer would make every string operation in the parser
 //!   surrogate-aware for no gain in what the parser accepts.
-//! * **An invalid polygon becomes a [`ParseException`].** Java's `parsePolygon`
-//!   calls the `Polygon` constructor, which throws the *unchecked*
-//!   `IllegalArgumentException` — it escapes `fromGeoJSON` past its declared
-//!   `throws ParseException`. Rust has no unchecked exceptions and
-//!   [`crate::geo::Polygon::from_geojson`] returns `Result<_, ParseException>`,
-//!   so the validation message is carried in a `ParseException` at the current
-//!   offset rather than in a second, invisible error channel.
+//! * **An invalid polygon becomes a [`ParseException`].** **Divergence from
+//!   Lucene 10.5.0.** Java's `parsePolygon` calls the `Polygon` constructor,
+//!   which throws the *unchecked* `IllegalArgumentException`, and a bad
+//!   `\uXXXX` escape reaches `Integer.parseInt(..., 16)`, which throws the
+//!   unchecked `NumberFormatException`; both escape `fromGeoJSON` past its
+//!   declared `throws ParseException`. [`crate::geo::Polygon::from_geojson`]
+//!   returns `Result<_, ParseException>`, so the message is carried in a
+//!   `ParseException` at the current offset rather than in a second error
+//!   channel.
 //!
 //! One Lucene behaviour is reproduced deliberately even though it looks like a
 //! defect: a `\uXXXX` escape appends the *decimal digits of the code point*

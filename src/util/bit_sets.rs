@@ -213,7 +213,7 @@ impl SparseFixedBitSet {
     /// Returns an approximate cardinality using the linear-counting estimator.
     pub fn approximate_cardinality(&self) -> usize {
         let total_longs = self.length.div_ceil(64);
-        assert!(total_longs >= self.non_zero_long_count);
+        debug_assert!(total_longs >= self.non_zero_long_count);
         let zero_longs = total_longs - self.non_zero_long_count;
         if zero_longs == 0 {
             return self.length;
@@ -387,12 +387,13 @@ impl SparseFixedBitSet {
     ///
     /// Panics when the range falls outside the set.
     pub fn set_range(&mut self, start_index: usize, end_index: usize) {
-        assert!(
+        // Java's assertions (`SparseFixedBitSet.java:252-254`).
+        debug_assert!(
             start_index < self.length,
             "startIndex={start_index}, length={}",
             self.length
         );
-        assert!(
+        debug_assert!(
             end_index <= self.length,
             "endIndex={end_index}, length={}",
             self.length
@@ -760,7 +761,7 @@ impl SparseFixedBitSet {
 
     fn insert_block(&mut self, i4096: usize, i64bit: u64, index: usize) {
         self.indices[i4096] = i64bit;
-        assert!(self.bits[i4096].is_none());
+        debug_assert!(self.bits[i4096].is_none());
         self.bits[i4096] = Some(vec![1u64 << (index & 0x3f)]);
         self.non_zero_long_count += 1;
     }
@@ -1525,7 +1526,7 @@ impl RoaringDocIdSetBuilder {
                 max: (self.last_doc_id & 0xffff) as u16,
             })
         } else if self.current_block_cardinality <= ROARING_MAX_ARRAY_LENGTH {
-            assert!(self.dense_buffer.is_none());
+            debug_assert!(self.dense_buffer.is_none());
             // `new ShortArrayDocIdSet(ArrayUtil.copyOfSubArray(buffer, 0,
             // currentBlockCardinality))`: docs were added in order.
             let doc_ids = self.buffer[..self.current_block_cardinality].to_vec();
@@ -1689,7 +1690,7 @@ impl RoaringDocIdSetIterator {
                 let block_base = (self.block as usize) << 16;
                 let mut sub = b.iterator(block_base)?;
                 let first = sub.next_doc()?;
-                assert_ne!(first, NO_MORE_DOCS);
+                debug_assert_ne!(first, NO_MORE_DOCS);
                 self.sub = Some(sub);
                 self.doc = (block_base as i32) | first;
                 return Ok(self.doc);
@@ -2010,15 +2011,20 @@ impl DenseLiveDocsBuilder {
         let count = self
             .deleted_count
             .unwrap_or_else(|| self.max_doc - self.live_docs.cardinality());
-        assert!(
-            count <= self.max_doc,
-            "deletedCount={count} is outside valid range [0, {}]",
-            self.max_doc
-        );
-        assert_eq!(
+        if count > self.max_doc {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some(&format!(
+                    "deletedCount={count} is outside valid range [0, {}]",
+                    self.max_doc
+                )),
+            );
+        }
+        debug_assert_eq!(
             count,
             self.max_doc - self.live_docs.cardinality(),
-            "deletedCount does not match maxDoc - liveDocs.cardinality()"
+            "deletedCount={count} does not match maxDoc - liveDocs.cardinality()={}",
+            self.max_doc - self.live_docs.cardinality()
         );
         // The private `DenseLiveDocs` constructor (`DenseLiveDocs.java:115-116`).
         debug_assert!(self.live_docs.length() >= self.max_doc);
@@ -2159,15 +2165,20 @@ impl SparseLiveDocsBuilder {
         let count = self
             .deleted_count
             .unwrap_or_else(|| self.deleted_docs.cardinality());
-        assert!(
-            count <= self.max_doc,
-            "deletedCount={count} is outside valid range [0, {}]",
-            self.max_doc
-        );
-        assert_eq!(
+        if count > self.max_doc {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some(&format!(
+                    "deletedCount={count} is outside valid range [0, {}]",
+                    self.max_doc
+                )),
+            );
+        }
+        debug_assert_eq!(
             count,
             self.deleted_docs.cardinality(),
-            "deletedCount does not match deletedDocs.cardinality()"
+            "deletedCount={count} does not match deletedDocs.cardinality()={}",
+            self.deleted_docs.cardinality()
         );
         // The private `SparseLiveDocs` constructor (`SparseLiveDocs.java:114-115`).
         debug_assert!(self.deleted_docs.length() >= self.max_doc);

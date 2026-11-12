@@ -196,10 +196,14 @@ impl<V> JavaHashMap<V> {
     /// `threshold = tableSizeFor(initialCapacity)` and allocates a table of
     /// exactly that length on the first insertion.
     pub fn with_initial_capacity(initial_capacity: i32) -> Self {
-        assert!(
-            initial_capacity >= 0,
-            "illegal initial capacity: {initial_capacity}"
-        );
+        // `HashMap(int, float)`: `IllegalArgumentException("Illegal initial
+        // capacity: " + initialCapacity)`.
+        if initial_capacity < 0 {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some(&format!("Illegal initial capacity: {initial_capacity}")),
+            );
+        }
         JavaHashMap {
             table: Vec::new(),
             size: 0,
@@ -655,10 +659,14 @@ impl<V> JavaIntHashMap<V> {
 
     /// `new HashMap<>(int initialCapacity)`.
     pub fn with_initial_capacity(initial_capacity: i32) -> Self {
-        assert!(
-            initial_capacity >= 0,
-            "illegal initial capacity: {initial_capacity}"
-        );
+        // `HashMap(int, float)`: `IllegalArgumentException("Illegal initial
+        // capacity: " + initialCapacity)`.
+        if initial_capacity < 0 {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some(&format!("Illegal initial capacity: {initial_capacity}")),
+            );
+        }
         Self {
             table: Vec::new(),
             size: 0,
@@ -1329,7 +1337,8 @@ impl<V> TreeBin<V> {
             if Some(xp) == xppl {
                 let xppr = self.node(xpp).right;
                 if self.is_red(xppr) {
-                    self.node_mut(xppr.expect("red implies present")).red = false;
+                    self.node_mut(xppr.expect("INVARIANT: a red node has a parent"))
+                        .red = false;
                     self.node_mut(xp).red = false;
                     self.node_mut(xpp).red = true;
                     x = xpp;
@@ -1353,7 +1362,8 @@ impl<V> TreeBin<V> {
                     }
                 }
             } else if self.is_red(xppl) {
-                self.node_mut(xppl.expect("red implies present")).red = false;
+                self.node_mut(xppl.expect("INVARIANT: a red node has a parent"))
+                    .red = false;
                 self.node_mut(xp).red = false;
                 self.node_mut(xpp).red = true;
                 x = xpp;
@@ -1401,7 +1411,8 @@ impl<V> TreeBin<V> {
                 let mut xpr = self.node(xp).right;
                 let mut xp_opt = Some(xp);
                 if self.is_red(xpr) {
-                    self.node_mut(xpr.expect("red implies present")).red = false;
+                    self.node_mut(xpr.expect("INVARIANT: a red node has a parent"))
+                        .red = false;
                     self.node_mut(xp).red = true;
                     root = self.rotate_left(root, xp);
                     xp_opt = self.node(xi).parent;
@@ -1446,7 +1457,8 @@ impl<V> TreeBin<V> {
                 let mut xpl = xpl;
                 let mut xp_opt = Some(xp);
                 if self.is_red(xpl) {
-                    self.node_mut(xpl.expect("red implies present")).red = false;
+                    self.node_mut(xpl.expect("INVARIANT: a red node has a parent"))
+                        .red = false;
                     self.node_mut(xp).red = true;
                     root = self.rotate_right(root, xp);
                     xp_opt = self.node(xi).parent;
@@ -2738,10 +2750,14 @@ impl<K, V> JavaObjectHashMap<K, V> {
 
     /// `new HashMap<>(int initialCapacity)`.
     pub fn with_initial_capacity(initial_capacity: i32) -> Self {
-        assert!(
-            initial_capacity >= 0,
-            "illegal initial capacity: {initial_capacity}"
-        );
+        // `HashMap(int, float)`: `IllegalArgumentException("Illegal initial
+        // capacity: " + initialCapacity)`.
+        if initial_capacity < 0 {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some(&format!("Illegal initial capacity: {initial_capacity}")),
+            );
+        }
         Self {
             table: Vec::new(),
             size: 0,

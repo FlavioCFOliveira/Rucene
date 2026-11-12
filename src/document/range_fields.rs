@@ -140,14 +140,7 @@ fn check_args<T: PartialOrd + std::fmt::Debug>(min: &[T], max: &[T], kind: &str)
             "{kind} does not support greater than {MAX_RANGE_DIMENSIONS} dimensions"
         )));
     }
-    for d in 0..min.len() {
-        if min[d] > max[d] {
-            return Err(LuceneError::illegal_argument(format!(
-                "min value ({:?}) is greater than max value ({:?})",
-                min[d], max[d]
-            )));
-        }
-    }
+    // The `min > max` check is `verifyAndEncode`'s, per dimension.
     Ok(())
 }
 
@@ -229,15 +222,15 @@ macro_rules! range_field {
             pub fn get_min(&self, dimension: usize) -> Result<$prim> {
                 let dims =
                     (IndexableFieldType::point_dimension_count(&self.field_type) / 2) as usize;
+                // `Objects.checkIndex(dimension, type.pointDimensionCount() / 2)`.
                 if dimension >= dims {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "dimension {dimension} is out of range for {dims} dimensions"
-                    )));
+                    return Err(LuceneError::unchecked(
+                        "java.lang.IndexOutOfBoundsException",
+                        format!("Index {dimension} out of bounds for length {dims}"),
+                    ));
                 }
                 let FieldData::Bytes(bytes) = &*self.fields_data.borrow() else {
-                    return Err(LuceneError::illegal_state(
-                        "range field has no packed value".to_string(),
-                    ));
+                    panic!("INVARIANT: a range field always holds its packed BytesRef");
                 };
                 Ok($decode(bytes.slice(), dimension * $bytes))
             }
@@ -246,15 +239,15 @@ macro_rules! range_field {
             pub fn get_max(&self, dimension: usize) -> Result<$prim> {
                 let dims =
                     (IndexableFieldType::point_dimension_count(&self.field_type) / 2) as usize;
+                // `Objects.checkIndex(dimension, type.pointDimensionCount() / 2)`.
                 if dimension >= dims {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "dimension {dimension} is out of range for {dims} dimensions"
-                    )));
+                    return Err(LuceneError::unchecked(
+                        "java.lang.IndexOutOfBoundsException",
+                        format!("Index {dimension} out of bounds for length {dims}"),
+                    ));
                 }
                 let FieldData::Bytes(bytes) = &*self.fields_data.borrow() else {
-                    return Err(LuceneError::illegal_state(
-                        "range field has no packed value".to_string(),
-                    ));
+                    panic!("INVARIANT: a range field always holds its packed BytesRef");
                 };
                 Ok($decode(bytes.slice(), (dims + dimension) * $bytes))
             }
@@ -311,20 +304,32 @@ macro_rules! range_field {
             ///
             /// # Errors
             ///
-            /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a minimum exceeds
-            /// its maximum, or when `bytes` is not `2 * n * BYTES` long.
+            /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a NaN bound or a
+            /// minimum that exceeds its maximum, dimension by dimension, and the
+            /// JVM's `ArrayIndexOutOfBoundsException` when `max` or `bytes` is
+            /// too short; like Java's, it checks nothing else.
             pub fn verify_and_encode(min: &[$prim], max: &[$prim], bytes: &mut [u8]) -> Result<()> {
-                check_args(min, max, $kind)?;
                 let n = min.len();
-                if bytes.len() != $bytes * 2 * n {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "encoded range must be {} bytes long, got {}",
-                        $bytes * 2 * n,
-                        bytes.len()
-                    )));
-                }
+                // `BitUtil.VH_BE_*.set(bytes, offset, ...)`: the view's
+                // `ArrayIndexOutOfBoundsException` past the array.
+                let check_room = |offset: usize, bytes: &[u8]| -> Result<()> {
+                    if offset + $bytes > bytes.len() {
+                        return Err(crate::store::array_index_out_of_bounds(
+                            offset as i64,
+                            (bytes.len() + 1).saturating_sub($bytes),
+                        ));
+                    }
+                    Ok(())
+                };
                 #[allow(clippy::redundant_closure_call)]
                 for d in 0..n {
+                    if d >= max.len() {
+                        // `max[d]`: the JVM's `ArrayIndexOutOfBoundsException`.
+                        return Err(crate::store::array_index_out_of_bounds(
+                            d as i64,
+                            max.len(),
+                        ));
+                    }
                     // Lucene rejects a NaN bound here rather than in checkArgs,
                     // because `min[d] > max[d]` is false for NaN and would let
                     // it through. IntRange and LongRange carry no such check —
@@ -342,7 +347,16 @@ macro_rules! range_field {
                             $kind
                         )));
                     }
+                    if min[d] > max[d] {
+                        return Err(LuceneError::illegal_argument(format!(
+                            "min value ({}) is greater than max value ({})",
+                            $render(min[d]),
+                            $render(max[d])
+                        )));
+                    }
+                    check_room(d * $bytes, bytes)?;
                     $encode(min[d], bytes, d * $bytes);
+                    check_room((n + d) * $bytes, bytes)?;
                     $encode(max[d], bytes, (n + d) * $bytes);
                 }
                 Ok(())
@@ -1166,9 +1180,9 @@ impl RangeQueryType {
                 }
                 Ok(PointRelation::CellCrossesQuery)
             }
-            Self::Crosses => Err(LuceneError::unsupported_operation(
-                "CROSSES cannot be decided from a cell's bounds".to_string(),
-            )),
+            // `throw new UnsupportedOperationException()`
+            // (`RangeFieldQuery.java:206-216`).
+            Self::Crosses => Err(LuceneError::unsupported_operation(String::new())),
         }
     }
 
@@ -1343,12 +1357,8 @@ impl RangeFieldQuery {
     /// Checks the constructor's arguments.
     ///
     /// Equivalent to `RangeFieldQuery.checkArgs(String, byte[], int)`.
-    fn check_args(field: &str, ranges: &[u8], num_dims: usize) -> Result<()> {
-        if field.is_empty() {
-            return Err(LuceneError::illegal_argument(
-                "field must not be null".to_string(),
-            ));
-        }
+    fn check_args(_field: &str, ranges: &[u8], num_dims: usize) -> Result<()> {
+        // `field == null` has no counterpart: a `&str` is never `null`.
         if num_dims > MAX_RANGE_DIMENSIONS {
             return Err(LuceneError::illegal_argument(format!(
                 "dimension size cannot be greater than {MAX_RANGE_DIMENSIONS}"

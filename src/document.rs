@@ -2419,7 +2419,10 @@ impl IndexableField for TextField {
             ))),
             FieldData::Reader(reader) => reader_token_stream(analyzer, &self.name, reader),
             FieldData::String(s) => string_token_stream(analyzer, &self.name, s),
-            _ => panic!("TextField must have a TokenStream, String or Reader value"),
+            // `"... got " + this` (`Field.java:501-502`).
+            _ => Err(LuceneError::illegal_argument(format!(
+                "Field must have either TokenStream, String, Reader or Number value; got {self}"
+            ))),
         }
     }
 
@@ -5489,15 +5492,12 @@ impl IndexableField for BinaryDocValuesField {
         _analyzer: Option<&dyn Analyzer>,
         _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
-        Ok(Box::new(
-            crate::analysis::BinaryTokenStream::new(
-                self.value
-                    .borrow()
-                    .clone()
-                    .unwrap_or_else(|| panic!("java.lang.NullPointerException")),
-            )
-            .unwrap(),
-        ))
+        Ok(Box::new(crate::analysis::BinaryTokenStream::new(
+            self.value
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException")),
+        )?))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -6564,6 +6564,10 @@ impl DateTools {
     ///
     /// Equivalent to `DateTools.round(Date, Resolution)`:
     /// `new Date(round(date.getTime(), resolution))`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `GregorianCalendar` takes any
+    /// `long` millisecond; the calendar arithmetic here is `chrono`'s, whose
+    /// range ends at year ±262,143, and a timestamp past it panics.
     pub fn round_date(date: Date, resolution: Resolution) -> Date {
         let millis = Self::round(date.timestamp_millis(), resolution);
         Date::from_timestamp_millis(millis).expect("a rounded date stays in range")

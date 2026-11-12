@@ -242,13 +242,13 @@ impl FastCompressionHashTable {
 
 impl Lz4HashTable for FastCompressionHashTable {
     fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()> {
-        if off
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?
-            > bytes.len()
-        {
-            return Err(LuceneError::illegal_argument(
-                "offset or length out of bounds".to_string(),
+        // `Objects.checkFromIndexSize(off, len, bytes.length)`
+        // (`LZ4.java:316`, `:412`).
+        if off > bytes.len() || len > bytes.len() - off {
+            return Err(crate::store::check_from_index_size_ioobe(
+                off as i32,
+                len as i32,
+                bytes.len(),
             ));
         }
         let end = off + len;
@@ -378,13 +378,13 @@ impl Lz4HashTable for HighCompressionHashTable {
     }
 
     fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()> {
-        if off
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?
-            > bytes.len()
-        {
-            return Err(LuceneError::illegal_argument(
-                "offset or length out of bounds".to_string(),
+        // `Objects.checkFromIndexSize(off, len, bytes.length)`
+        // (`LZ4.java:316`, `:412`).
+        if off > bytes.len() || len > bytes.len() - off {
+            return Err(crate::store::check_from_index_size_ioobe(
+                off as i32,
+                len as i32,
+                bytes.len(),
             ));
         }
         let end = off + len;
@@ -518,24 +518,22 @@ impl Lz4 {
         out: &mut dyn DataOutput,
         ht: &mut dyn Lz4HashTable,
     ) -> Result<()> {
-        if dict_off.checked_add(dict_len).ok_or_else(|| {
-            LuceneError::illegal_argument("dictOff + dictLen overflowed".to_string())
-        })? > bytes.len()
-        {
-            return Err(LuceneError::illegal_argument(
-                "dictOff or dictLen out of bounds".to_string(),
+        // `Objects.checkFromIndexSize(dictOff, dictLen, bytes.length)` and
+        // `Objects.checkFromIndexSize(dictOff + dictLen, len, bytes.length)`
+        // (`LZ4.java:527-528`).
+        if dict_off > bytes.len() || dict_len > bytes.len() - dict_off {
+            return Err(crate::store::check_from_index_size_ioobe(
+                dict_off as i32,
+                dict_len as i32,
+                bytes.len(),
             ));
         }
-        if dict_off
-            .checked_add(dict_len)
-            .and_then(|x| x.checked_add(len))
-            .ok_or_else(|| {
-                LuceneError::illegal_argument("dictOff + dictLen + len overflowed".to_string())
-            })?
-            > bytes.len()
-        {
-            return Err(LuceneError::illegal_argument(
-                "dictOff + dictLen + len out of bounds".to_string(),
+        let start = dict_off + dict_len;
+        if len > bytes.len() - start {
+            return Err(crate::store::check_from_index_size_ioobe(
+                start as i32,
+                len as i32,
+                bytes.len(),
             ));
         }
         if dict_len > LZ4_MAX_DISTANCE {
@@ -628,11 +626,6 @@ impl Lz4 {
         d_off: usize,
     ) -> Result<usize> {
         let dest_end = d_off + decompressed_len;
-        if dest_end > dest.len() {
-            return Err(LuceneError::illegal_argument(
-                "destination buffer too small".to_string(),
-            ));
-        }
         let mut d_off = d_off;
 
         loop {
@@ -649,22 +642,8 @@ impl Lz4 {
                 }
             }
             if literal_len != 0 {
-                // A corrupt stream can claim more literals than the buffer can
-                // hold. Java raises `ArrayIndexOutOfBoundsException` here; this
-                // port reports corruption rather than panicking, because the
-                // bytes come straight off disk and are not trusted. The bound
-                // is the whole buffer, not `dest_end`: decoding only a prefix
-                // of a block legitimately writes a few bytes past it, which is
-                // why callers pass a padded destination.
-                if literal_len > dest.len() - d_off {
-                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                        format!(
-                            "LZ4 literal run of {literal_len} bytes overruns the buffer \
-                         ({} bytes left)",
-                            dest.len() - d_off
-                        ),
-                    )));
-                }
+                // `compressed.readBytes(dest, dOff, literalLen)`: a run the
+                // buffer cannot hold fails with the input's own range check.
                 input.read_bytes(Some(dest), d_off, literal_len)?;
                 d_off += literal_len;
             }
@@ -694,35 +673,58 @@ impl Lz4 {
             }
             match_len += LZ4_MIN_MATCH;
 
-            // Both copies below index `d_off - match_dec`, and the match may
-            // not reach behind the start of the block.
-            if match_dec > d_off {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                    format!("LZ4 match reaches {match_dec} bytes back from offset {d_off}"),
-                )));
-            }
-            if match_len > dest.len() - d_off {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                    format!(
-                        "LZ4 match of {match_len} bytes overruns the buffer ({} bytes left)",
-                        dest.len() - d_off
-                    ),
-                )));
-            }
-
             let fast_len = (match_len + 7) & !7;
             if match_dec < match_len || d_off + fast_len > dest_end {
-                // Overlap -> naive incremental copy.
-                let mut ref_pos = d_off - match_dec;
+                // Overlap -> naive incremental copy: `dest[dOff] = dest[ref]`,
+                // whose right-hand side is read before the store is checked
+                // (JLS 15.26.1), each an `ArrayIndexOutOfBoundsException`.
+                let mut ref_pos = d_off as i64 - match_dec as i64;
                 let match_end = d_off + match_len;
                 while d_off < match_end {
-                    dest[d_off] = dest[ref_pos];
+                    if ref_pos < 0 || ref_pos as usize >= dest.len() {
+                        return Err(crate::store::array_index_out_of_bounds(ref_pos, dest.len()));
+                    }
+                    if d_off >= dest.len() {
+                        return Err(crate::store::array_index_out_of_bounds(
+                            d_off as i64,
+                            dest.len(),
+                        ));
+                    }
+                    dest[d_off] = dest[ref_pos as usize];
                     ref_pos += 1;
                     d_off += 1;
                 }
             } else {
-                // No overlap -> bulk copy.
-                let src_start = d_off - match_dec;
+                // No overlap -> `System.arraycopy(dest, dOff - matchDec, dest,
+                // dOff, fastLen)`, with its checks and messages.
+                let src_pos = d_off as i64 - match_dec as i64;
+                let aioobe = |message: String| {
+                    Err(LuceneError::unchecked(
+                        "java.lang.ArrayIndexOutOfBoundsException",
+                        message,
+                    ))
+                };
+                if src_pos < 0 {
+                    return aioobe(format!(
+                        "arraycopy: source index {src_pos} out of bounds for byte[{}]",
+                        dest.len()
+                    ));
+                }
+                if src_pos as usize + fast_len > dest.len() {
+                    return aioobe(format!(
+                        "arraycopy: last source index {} out of bounds for byte[{}]",
+                        src_pos as usize + fast_len,
+                        dest.len()
+                    ));
+                }
+                if d_off + fast_len > dest.len() {
+                    return aioobe(format!(
+                        "arraycopy: last destination index {} out of bounds for byte[{}]",
+                        d_off + fast_len,
+                        dest.len()
+                    ));
+                }
+                let src_start = src_pos as usize;
                 dest.copy_within(src_start..src_start + fast_len, d_off);
                 d_off += match_len;
             }
@@ -768,17 +770,20 @@ impl LowercaseAsciiCompression {
         if len < 8 {
             return Ok(false);
         }
-        if len > tmp.len() {
-            return Err(LuceneError::illegal_argument(
-                "tmp buffer is smaller than len".to_string(),
-            ));
-        }
+        // `in[i]` and `tmp[i]` for `i < len`: the JVM's
+        // `ArrayIndexOutOfBoundsException` where an array is shorter than
+        // `len`.
+        let aioobe =
+            |array: &[u8]| crate::store::array_index_out_of_bounds(array.len() as i64, array.len());
 
         // Count exceptions and fail compression if there are too many of them.
         let max_exceptions = len >> 5;
         let mut previous_exception_index = 0usize;
         let mut num_exceptions = 0usize;
-        for (i, &b) in input.iter().enumerate().take(len) {
+        for i in 0..len {
+            let Some(&b) = input.get(i) else {
+                return Err(aioobe(input));
+            };
             if !Self::is_compressible(b) {
                 while i - previous_exception_index > 0xFF {
                     num_exceptions += 1;
@@ -796,7 +801,15 @@ impl LowercaseAsciiCompression {
         // Move all bytes to the [0, 0x40) range (6 bits).
         let compressed_len = len - (len >> 2);
         debug_assert!(compressed_len < len);
-        for (i, &b) in input.iter().enumerate().take(len) {
+        for i in 0..len {
+            // `tmp[i] = (byte) ((b & 0x1F) | ((b & 0x40) >>> 1))` with
+            // `b = (in[i] & 0xFF) + 1`: `in[i]` is read before the store.
+            let Some(&b) = input.get(i) else {
+                return Err(aioobe(input));
+            };
+            if i >= tmp.len() {
+                return Err(aioobe(tmp));
+            }
             let b = b as usize + 1;
             tmp[i] = ((b & 0x1F) | ((b & 0x40) >> 1)) as u8;
         }
@@ -844,7 +857,8 @@ impl LowercaseAsciiCompression {
             }
             if num_exceptions != num_exceptions2 {
                 return Err(LuceneError::illegal_state(format!(
-                    "{num_exceptions} <> {num_exceptions2}"
+                    "{num_exceptions} <> {num_exceptions2} {}",
+                    crate::util::BytesRef::new(input[..len].to_vec()).to_hex_string()
                 )));
             }
         }
@@ -857,11 +871,6 @@ impl LowercaseAsciiCompression {
     ///
     /// Equivalent to `org.apache.lucene.util.compress.LowercaseAsciiCompression.decompress`.
     pub fn decompress(input: &mut dyn DataInput, out: &mut [u8], len: usize) -> Result<()> {
-        if len > out.len() {
-            return Err(LuceneError::illegal_argument(
-                "output buffer too small".to_string(),
-            ));
-        }
         let saved = len >> 2;
         let compressed_len = len - saved;
 
@@ -871,6 +880,15 @@ impl LowercaseAsciiCompression {
         // Restore the leading 2 bits of each packed byte into whole bytes.
         #[allow(clippy::needless_range_loop)]
         for i in 0..saved {
+            // The right-hand side reads only bytes below `compressedLen`, which
+            // `readBytes` filled; the store past `out` is the JVM's
+            // `ArrayIndexOutOfBoundsException`.
+            if compressed_len + i >= out.len() {
+                return Err(crate::store::array_index_out_of_bounds(
+                    (compressed_len + i) as i64,
+                    out.len(),
+                ));
+            }
             out[compressed_len + i] = ((out[i] & 0xC0) >> 2)
                 | ((out[saved + i] & 0xC0) >> 4)
                 | ((out[(saved << 1) + i] & 0xC0) >> 6);
@@ -883,11 +901,18 @@ impl LowercaseAsciiCompression {
         }
 
         // Restore exceptions.
-        let num_exceptions = input.read_v_int()? as usize;
+        // `for (int i = 0; i < numExceptions; ++i)`: none for a negative count.
+        let num_exceptions = input.read_v_int()?.max(0) as usize;
         let mut i = 0usize;
         for _ in 0..num_exceptions {
             i += input.read_byte()? as usize;
-            out[i] = input.read_byte()?;
+            // `out[i] = in.readByte()`: the byte is read before the store is
+            // checked.
+            let b = input.read_byte()?;
+            if i >= out.len() {
+                return Err(crate::store::array_index_out_of_bounds(i as i64, out.len()));
+            }
+            out[i] = b;
         }
         Ok(())
     }

@@ -196,10 +196,17 @@ impl IntArrayDocIdSet {
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the sentinel is missing,
     /// which is Java's bare `IllegalArgumentException`.
     pub fn new(docs: Vec<i32>, length: usize) -> Result<Self> {
-        if docs[length] != NO_MORE_DOCS {
-            return Err(LuceneError::illegal_argument(
-                "IntArrayDocIdSet requires docs[length] == NO_MORE_DOCS".to_string(),
+        // `if (docs[length] != NO_MORE_DOCS) throw new IllegalArgumentException()`,
+        // whose array read is the JVM's `ArrayIndexOutOfBoundsException` past
+        // the end.
+        let Some(&sentinel) = docs.get(length) else {
+            return Err(crate::store::array_index_out_of_bounds(
+                length as i64,
+                docs.len(),
             ));
+        };
+        if sentinel != NO_MORE_DOCS {
+            return Err(LuceneError::illegal_argument(String::new()));
         }
         debug_assert!(
             Self::assert_array_sorted(&docs, length),

@@ -160,15 +160,30 @@ impl OnHeapHnswGraph {
     fn level_slot(&self, level: i32, node: i32) -> Result<&NeighborArray> {
         let node_usize = node as usize;
         debug_assert!(node_usize < self.graph.len());
-        let levels = self.graph[node_usize].get().expect("graph[node] is null");
+        // `graph[node][level]`: the JVM's `ArrayIndexOutOfBoundsException` or
+        // `NullPointerException`.
+        let Some(cell) = usize::try_from(node).ok().and_then(|n| self.graph.get(n)) else {
+            return Err(crate::store::array_index_out_of_bounds(
+                i64::from(node),
+                self.graph.len(),
+            ));
+        };
+        let levels = cell.get().ok_or_else(LuceneError::null_pointer)?;
         debug_assert!(
             (level as usize) < levels.len(),
             "level={level}, node has only {} levels",
             levels.len()
         );
-        let slot = levels[level as usize].get();
+        let Some(level_cell) = usize::try_from(level).ok().and_then(|l| levels.get(l)) else {
+            return Err(crate::store::array_index_out_of_bounds(
+                i64::from(level),
+                levels.len(),
+            ));
+        };
+        let slot = level_cell.get();
         debug_assert!(slot.is_some(), "node={node}, level={level}");
-        Ok(slot.expect("graph[node][level] is null"))
+        // A `null` `NeighborArray` fails where the caller dereferences it.
+        slot.ok_or_else(LuceneError::null_pointer)
     }
 
     /// Returns the `NeighborArray` for `node` at `level`.
@@ -275,6 +290,10 @@ impl OnHeapHnswGraph {
     /// would have to grow storage the other workers may be reading — the outer
     /// array, or the node's level array — and where the level was already
     /// added, which Java would overwrite under the other workers' feet.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `addNode` grows or overwrites
+    /// in those cases; the slots here are published once to the concurrent
+    /// workers, so they are refused instead.
     pub fn add_node_shared(&self, level: i32, node: i32) -> Result<()> {
         let node_usize = node as usize;
         if node < 0 || node_usize >= self.graph.len() {
@@ -466,7 +485,8 @@ impl HnswGraph for OnHeapHnswGraph {
         let cur = self
             .cur
             .as_ref()
-            .ok_or_else(|| LuceneError::illegal_state("seek not called".to_string()))?;
+            // `cur.size()` on a `null` `cur`: the JVM's `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)?;
         self.upto += 1;
         if self.upto < cur.size() {
             Ok(cur.node(self.upto))
@@ -500,11 +520,12 @@ impl HnswGraph for OnHeapHnswGraph {
             Ok(Box::new(DenseNodesIterator::new(size)))
         } else {
             let num_levels = self.num_levels()?;
+            // `levelToNodes[level]`: the JVM's `ArrayIndexOutOfBoundsException`.
             if level < 0 || level >= num_levels {
-                return Err(LuceneError::illegal_argument(format!(
-                    "level {} out of bounds (num_levels={})",
-                    level, num_levels
-                )));
+                return Err(crate::store::array_index_out_of_bounds(
+                    i64::from(level),
+                    num_levels as usize,
+                ));
             }
             let level_to_nodes = self.build_level_to_nodes();
             Ok(Box::new(ArrayNodesIterator::new(

@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::Result;
 use crate::store::{DataInput, DataOutput};
 use crate::util::{CharsRef, RamUsageEstimator};
 
@@ -103,15 +103,11 @@ impl Outputs for CharSequenceOutputs {
         if len == 0 {
             return Ok(self.no_output());
         }
-        let len = usize::try_from(len).map_err(|_| {
-            LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                "invalid output length {len}"
-            )))
-        })?;
-        let mut chars = Vec::with_capacity(len);
-        for _ in 0..len {
+        // `new CharsRef(len)`: `new char[len]`.
+        let mut chars = super::java_new_array::<u16>(len)?;
+        for c in chars.iter_mut() {
             // Java's `(char) in.readVInt()` keeps the low 16 bits.
-            chars.push(input.read_v_int()? as u16);
+            *c = input.read_v_int()? as u16;
         }
         Ok(CharsRef::from_chars(chars))
     }

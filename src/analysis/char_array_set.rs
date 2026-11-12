@@ -297,9 +297,7 @@ impl CharArraySet {
 /// throws from `remove()`, which is the map's `EntryIterator.remove()`
 /// (`CharArrayMap.java:427-430`).
 fn unsupported_remove() -> crate::error::LuceneError {
-    crate::error::LuceneError::unsupported_operation(
-        "CharArraySet does not support removal".to_string(),
-    )
+    crate::error::LuceneError::unsupported_operation(String::new())
 }
 
 impl<'a> IntoIterator for &'a CharArraySet {

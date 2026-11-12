@@ -59,12 +59,10 @@ impl HotspotVMOptions {
     ///
     /// Equivalent to `HotspotVMOptions.get(String)`; always `None` here.
     ///
-    /// # Panics
-    ///
-    /// Panics when `name` is empty, standing in for Java's
-    /// `Objects.requireNonNull(name, "name")`.
+    /// `Objects.requireNonNull(name, "name")` has no counterpart: a `&str` is
+    /// never `null`, and an empty name is a valid, unknown option.
     pub fn get(name: &str) -> Option<String> {
-        assert!(!name.is_empty(), "name");
+        let _ = name;
         Self::warn_once();
         None
     }

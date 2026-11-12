@@ -42,12 +42,18 @@ impl ReadWriteDataOutput {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::LuceneErrorKind::IllegalArgument`] when `block_bits`
-    /// is outside `1 ..= 31`, the range `ByteBuffersDataOutput` accepts.
+    /// Returns the `IllegalArgumentException` of `new
+    /// ByteBuffersDataOutput(blockBits, blockBits, ...)` when `block_bits` is
+    /// outside `1 ..= 31`, with its messages.
     pub fn new(block_bits: i32) -> Result<Self> {
-        if !(1..=31).contains(&block_bits) {
+        if block_bits < 1 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "blockBits must be 1 .. 31; got {block_bits}"
+                "minBitsPerBlock ({block_bits}) too small, must be at least 1"
+            )));
+        }
+        if block_bits > 31 {
+            return Err(crate::error::LuceneError::illegal_argument(format!(
+                "maxBitsPerBlock ({block_bits}) too large, must not exceed 31"
             )));
         }
         let block_size = 1usize << block_bits;
@@ -217,12 +223,15 @@ impl<B: AsRef<[Vec<u8>]>> BlockReverseBytesReader<B> {
         if self.next_read == -1 {
             let index = self.next_buffer;
             self.next_buffer = index - 1;
+            // `byteBuffers.get(nextBuffer--)`: the list's
+            // `IndexOutOfBoundsException`.
             if index < 0 || index as usize >= self.blocks.as_ref().len() {
-                return Err(crate::error::LuceneError::from(
-                    crate::error::LuceneErrorKind::corrupt_index_message(format!(
-                        "FST block index {index} is outside the {} available blocks",
+                return Err(crate::error::LuceneError::unchecked(
+                    "java.lang.IndexOutOfBoundsException",
+                    format!(
+                        "Index {index} out of bounds for length {}",
                         self.blocks.as_ref().len()
-                    )),
+                    ),
                 ));
             }
             self.current = index as usize;
@@ -231,14 +240,9 @@ impl<B: AsRef<[Vec<u8>]>> BlockReverseBytesReader<B> {
         let pos = self.next_read;
         self.next_read = pos - 1;
         let block = &self.blocks.as_ref()[self.current];
+        // `current[nextRead--]`: the JVM's `ArrayIndexOutOfBoundsException`.
         if pos < 0 || pos as usize >= block.len() {
-            return Err(crate::error::LuceneError::from(
-                crate::error::LuceneErrorKind::corrupt_index_message(format!(
-                    "FST read position {pos} is outside the {} bytes of block {}",
-                    block.len(),
-                    self.current
-                )),
-            ));
+            return Err(crate::store::array_index_out_of_bounds(pos, block.len()));
         }
         Ok(block[pos as usize])
     }

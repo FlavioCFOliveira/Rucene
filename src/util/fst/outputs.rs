@@ -166,9 +166,8 @@ pub trait Outputs: Clone + Display {
     ///
     /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) unless overridden.
     fn merge(&self, _first: &Self::Output, _second: &Self::Output) -> Result<Self::Output> {
-        Err(LuceneError::unsupported_operation(
-            "this Outputs implementation does not support merge".to_string(),
-        ))
+        // `throw new UnsupportedOperationException()`.
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Returns the estimated memory usage of the provided output.

@@ -52,28 +52,21 @@ impl DirectPackedReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `bits_per_value` is
-    /// outside `[1, 64]` or `value_count` is negative.
+    /// Returns the error reading the input's file pointer raises. Like Java's
+    /// constructor (`DirectPackedReader.java:30-41`), the width and the count
+    /// are not checked.
     pub fn new(
         bits_per_value: i32,
         value_count: i32,
         input: Rc<RefCell<Box<dyn IndexInput>>>,
     ) -> Result<Self> {
-        if !(1..=64).contains(&bits_per_value) {
-            return Err(LuceneError::illegal_argument(format!(
-                "bitsPerValue must be in [1, 64], got {bits_per_value}"
-            )));
-        }
-        if value_count < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "valueCount must be non-negative, got {value_count}"
-            )));
-        }
         let start_pointer = input.borrow().file_pointer()?;
+        // `(1L << bitsPerValue) - 1`, whose shift distance is masked to six
+        // bits.
         let value_mask = if bits_per_value == 64 {
             u64::MAX
         } else {
-            (1u64 << bits_per_value) - 1
+            1u64.wrapping_shl(bits_per_value as u32).wrapping_sub(1)
         };
         Ok(Self {
             input,
@@ -146,15 +139,19 @@ impl DirectPackedReader {
                 shift_right_bits = 0;
                 value as i64
             }
-            other => {
-                return Err(LuceneError::illegal_state(format!(
-                    "bitsPerValue too large: {} (needs {other} bytes)",
-                    self.bits_per_value
-                )))
+            _ => {
+                // `throw new AssertionError("bitsPerValue too large: " +
+                // bitsPerValue)` (`DirectPackedReader.java:93-94`).
+                return Err(LuceneError::from(
+                    crate::error::LuceneErrorKind::AssertionError(format!(
+                        "bitsPerValue too large: {}",
+                        self.bits_per_value
+                    )),
+                ));
             }
         };
 
-        Ok((((raw_value as u64) >> shift_right_bits as u32) & self.value_mask) as i64)
+        Ok((((raw_value as u64).wrapping_shr(shift_right_bits as u32)) & self.value_mask) as i64)
     }
 }
 
@@ -199,31 +196,30 @@ impl DirectPacked64SingleBlockReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `bits_per_value` is
-    /// outside `[1, 32]` or `value_count` is negative.
+    /// Returns the error reading the input's file pointer raises, and Java's
+    /// `ArithmeticException` (`/ by zero`) for a zero width, from
+    /// `valuesPerBlock = 64 / bitsPerValue`
+    /// (`DirectPacked64SingleBlockReader.java:30-37`); nothing else is
+    /// checked.
     pub fn new(
         bits_per_value: i32,
         value_count: i32,
         input: Rc<RefCell<Box<dyn IndexInput>>>,
     ) -> Result<Self> {
-        if !(1..=32).contains(&bits_per_value) {
-            return Err(LuceneError::illegal_argument(format!(
-                "bitsPerValue must be in [1, 32] for the single-block format, got {bits_per_value}"
-            )));
-        }
-        if value_count < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "valueCount must be non-negative, got {value_count}"
-            )));
-        }
         let start_pointer = input.borrow().file_pointer()?;
+        if bits_per_value == 0 {
+            return Err(LuceneError::from(
+                crate::error::LuceneErrorKind::Arithmetic("/ by zero".to_string()),
+            ));
+        }
         Ok(Self {
             input,
             bits_per_value,
             value_count,
             start_pointer,
-            values_per_block: 64 / bits_per_value,
-            mask: !(u64::MAX << bits_per_value),
+            values_per_block: 64i32.wrapping_div(bits_per_value),
+            // `~(~0L << bitsPerValue)`, whose shift distance is masked.
+            mask: !u64::MAX.wrapping_shl(bits_per_value as u32),
         })
     }
 
@@ -237,15 +233,25 @@ impl DirectPacked64SingleBlockReader {
     ///
     /// Returns the I/O error raised while seeking or reading.
     pub fn get_checked(&self, index: i32) -> Result<i64> {
-        let block_offset = index / self.values_per_block;
+        // `index / valuesPerBlock`: a width past 64 leaves no value per block,
+        // Java's `ArithmeticException`.
+        if self.values_per_block == 0 {
+            return Err(LuceneError::from(
+                crate::error::LuceneErrorKind::Arithmetic("/ by zero".to_string()),
+            ));
+        }
+        let block_offset = index.wrapping_div(self.values_per_block);
         let skip = i64::from(block_offset) << 3;
 
         let mut input = self.input.borrow_mut();
-        input.seek(self.start_pointer + skip)?;
+        input.seek(self.start_pointer.wrapping_add(skip))?;
 
         let block = input.read_long()? as u64;
-        let offset_in_block = index % self.values_per_block;
-        Ok(((block >> (offset_in_block * self.bits_per_value) as u32) & self.mask) as i64)
+        let offset_in_block = index.wrapping_rem(self.values_per_block);
+        Ok(
+            (block.wrapping_shr(offset_in_block.wrapping_mul(self.bits_per_value) as u32)
+                & self.mask) as i64,
+        )
     }
 }
 

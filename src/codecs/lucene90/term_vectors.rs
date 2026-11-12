@@ -1010,7 +1010,7 @@ impl Lucene90CompressingTermVectorsWriter {
 
     fn flush_fields(&mut self, total_fields: i32, field_nums: &[i32]) -> Result<()> {
         self.scratch_buffer.reset()?;
-        let bits_per_off = DirectWriter::bits_required((field_nums.len() - 1) as i64);
+        let bits_per_off = DirectWriter::bits_required((field_nums.len() - 1) as i64)?;
         let mut writer =
             DirectWriter::new(&mut self.scratch_buffer, total_fields as i64, bits_per_off)?;
         for doc in &self.pending_docs {
@@ -1082,7 +1082,7 @@ impl Lucene90CompressingTermVectorsWriter {
                 max_num_terms |= field.num_terms;
             }
         }
-        let bits_required = DirectWriter::bits_required(max_num_terms as i64);
+        let bits_required = DirectWriter::bits_required(max_num_terms as i64)?;
         self.vectors_stream.write_v_int(bits_required)?;
 
         self.scratch_buffer.reset()?;
@@ -2209,7 +2209,7 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
         // `PackedInts.bitsRequired` rejects a negative maximum with an
         // `IllegalArgumentException`.
         PackedInts::bits_required(field_nums.len() as i64 - 1)?;
-        let bits_per_off = DirectWriter::bits_required(field_nums.len() as i64 - 1);
+        let bits_per_off = DirectWriter::bits_required(field_nums.len() as i64 - 1)?;
         let all_field_num_offs_reader = DirectReader::new(field_num_offs_bytes, bits_per_off)?;
 
         // `fieldNumOffs[i] = (int) allFieldNumOffs.get(skip + i)`.

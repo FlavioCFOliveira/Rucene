@@ -179,7 +179,7 @@ impl LongBitSet {
         let num_words = Self::bits2words(num_bits)?;
         if (num_words as usize) > stored_bits.len() {
             return Err(LuceneError::illegal_argument(format!(
-                "The given long array is too small to hold {} bits",
+                "The given long array is too small  to hold {} bits",
                 num_bits
             )));
         }
@@ -232,7 +232,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn get(&self, index: i64) -> bool {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index}, numBits={}",
             self.num_bits
@@ -248,7 +248,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn set(&mut self, index: i64) {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index} numBits={}",
             self.num_bits
@@ -264,7 +264,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn get_and_set(&mut self, index: i64) -> bool {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index}, numBits={}",
             self.num_bits
@@ -282,7 +282,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn clear(&mut self, index: i64) {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index}, numBits={}",
             self.num_bits
@@ -298,7 +298,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn get_and_clear(&mut self, index: i64) -> bool {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index}, numBits={}",
             self.num_bits
@@ -316,7 +316,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn next_set_bit(&self, index: i64) -> i64 {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index}, numBits={}",
             self.num_bits
@@ -343,7 +343,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn prev_set_bit(&self, index: i64) -> i64 {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index} numBits={}",
             self.num_bits
@@ -371,7 +371,7 @@ impl LongBitSet {
     ///
     /// Panics if `other` has more words than `self`.
     pub fn or(&mut self, other: &LongBitSet) {
-        assert!(
+        debug_assert!(
             other.num_words <= self.num_words,
             "numWords={}, other.numWords={}",
             self.num_words,
@@ -389,7 +389,7 @@ impl LongBitSet {
     ///
     /// Panics if `other` has more words than `self`.
     pub fn xor(&mut self, other: &LongBitSet) {
-        assert!(
+        debug_assert!(
             other.num_words <= self.num_words,
             "numWords={}, other.numWords={}",
             self.num_words,
@@ -445,12 +445,11 @@ impl LongBitSet {
 
     /// Flips bits in the range `[start_index, end_index)`.
     ///
-    /// # Panics
-    ///
-    /// Panics if the range is out of bounds or reversed.
+    /// The range is only asserted, as in `LongBitSet.flip(long, long)`
+    /// (`LongBitSet.java:310-312`).
     pub fn flip_range(&mut self, start_index: i64, end_index: i64) {
-        assert!(start_index >= 0 && start_index < self.num_bits);
-        assert!(end_index >= 0 && end_index <= self.num_bits);
+        debug_assert!(start_index >= 0 && start_index < self.num_bits);
+        debug_assert!(end_index >= 0 && end_index <= self.num_bits);
         if end_index <= start_index {
             return;
         }
@@ -475,7 +474,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn flip(&mut self, index: i64) {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index} numBits={}",
             self.num_bits
@@ -491,12 +490,12 @@ impl LongBitSet {
     ///
     /// Panics if the range is out of bounds or reversed.
     pub fn set_range(&mut self, start_index: i64, end_index: i64) {
-        assert!(
+        debug_assert!(
             start_index >= 0 && start_index < self.num_bits,
             "startIndex={start_index}, numBits={}",
             self.num_bits
         );
-        assert!(
+        debug_assert!(
             end_index >= 0 && end_index <= self.num_bits,
             "endIndex={end_index}, numBits={}",
             self.num_bits
@@ -525,12 +524,12 @@ impl LongBitSet {
     ///
     /// Panics if the range is out of bounds or reversed.
     pub fn clear_range(&mut self, start_index: i64, end_index: i64) {
-        assert!(
+        debug_assert!(
             start_index >= 0 && start_index < self.num_bits,
             "startIndex={start_index}, numBits={}",
             self.num_bits
         );
-        assert!(
+        debug_assert!(
             end_index >= 0 && end_index <= self.num_bits,
             "endIndex={end_index}, numBits={}",
             self.num_bits
@@ -1088,7 +1087,8 @@ impl<'a, T: JavaComparable> MergedIterator<'a, T> {
     }
 
     fn pull_top(&mut self) {
-        assert!(self.top.is_empty());
+        // `assert numTop == 0` (`MergedIterator.java:111`).
+        debug_assert!(self.top.is_empty());
         if let Some(top) = self.queue.pop() {
             let value = top.current;
             self.top.push(TopState {

@@ -136,8 +136,11 @@ impl LockStressTest {
 
         let my_id = Self::parse(&args[0], "myID")?;
         let verifier_host = &args[1];
-        let verifier_port: u16 = args[2].parse().map_err(|_| {
-            LuceneError::illegal_argument(format!("verifierPort is not a port: {}", args[2]))
+        // `Integer.parseInt(args[2])`, then `new InetSocketAddress(verifierHost,
+        // verifierPort)`, whose range check throws `IllegalArgumentException`.
+        let verifier_port = Self::parse(&args[2], "verifierPort")?;
+        let verifier_port = u16::try_from(verifier_port).map_err(|_| {
+            LuceneError::illegal_argument(format!("port out of range:{verifier_port}"))
         })?;
         let lock_factory_class_name = &args[3];
         let lock_dir_path = Path::new(&args[4]);
@@ -155,10 +158,17 @@ impl LockStressTest {
         )
     }
 
-    fn parse(value: &str, name: &str) -> Result<i64> {
-        value
-            .parse()
-            .map_err(|_| LuceneError::illegal_argument(format!("{name} is not a number: {value}")))
+    /// `Integer.parseInt(value)`, failing with its `NumberFormatException`
+    /// (`For input string: "<value>"`); `_name` names the argument.
+    fn parse(value: &str, _name: &str) -> Result<i64> {
+        crate::util::extra::java_parse_int(value)
+            .map(i64::from)
+            .ok_or_else(|| {
+                LuceneError::unchecked(
+                    "java.lang.NumberFormatException",
+                    format!("For input string: \"{value}\""),
+                )
+            })
     }
 
     /// Runs the stress loop: connects to the verification server, waits for the

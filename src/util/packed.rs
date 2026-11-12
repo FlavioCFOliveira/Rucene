@@ -211,15 +211,12 @@ impl PackedInts {
     }
 
     pub fn num_blocks(size: i64, block_size: usize) -> Result<usize> {
-        if size < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "size must be non-negative, got {size}"
-            )));
-        }
+        // `size / blockSize` with a zero block size: Java's
+        // `ArithmeticException`.
         if block_size == 0 {
-            return Err(LuceneError::illegal_argument(
-                "blockSize must be non-zero".to_string(),
-            ));
+            return Err(LuceneError::from(LuceneErrorKind::Arithmetic(
+                "/ by zero".to_string(),
+            )));
         }
         // `PackedInts.numBlocks(long, int)` (`PackedInts.java:903-909`): the
         // block count is truncated to an `int`, and the product check catches
@@ -232,7 +229,14 @@ impl PackedInts {
                 "size is too large for this block size",
             ));
         }
-        Ok(num_blocks as usize)
+        // A negative count (from a negative size) reaches the callers'
+        // `new X[numBlocks]`: the JVM's `NegativeArraySizeException`.
+        usize::try_from(num_blocks).map_err(|_| {
+            LuceneError::unchecked(
+                "java.lang.NegativeArraySizeException",
+                num_blocks.to_string(),
+            )
+        })
     }
 }
 
@@ -290,16 +294,16 @@ impl Format {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`] when `value_count` is negative.
-    /// The width is only asserted, as in Lucene's base `byteCount`.
+    /// Returns what [`Format::long_count`] raises for
+    /// [`Format::PackedSingleBlock`]. The width is only asserted, as in
+    /// Lucene's base `byteCount`.
     pub fn byte_count(&self, version: i32, value_count: i32, bits_per_value: i32) -> Result<i64> {
-        if value_count < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "valueCount must be non-negative, got {value_count}"
-            )));
-        }
         match self {
-            Format::Packed => Ok(((value_count as i64) * (bits_per_value as i64) + 7) / 8),
+            // `(long) Math.ceil((double) valueCount * bitsPerValue / 8)`
+            // (`PackedInts.java:72-75`).
+            Format::Packed => {
+                Ok((f64::from(value_count) * f64::from(bits_per_value) / 8.0).ceil() as i64)
+            }
             Format::PackedSingleBlock => {
                 debug_assert!((0..=64).contains(&bits_per_value), "{bits_per_value}");
                 // assume long-aligned
@@ -315,31 +319,27 @@ impl Format {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`] when `value_count` is negative
-    /// or `bits_per_value` is outside `[0, 64]`, and, for
-    /// [`Format::PackedSingleBlock`], when `bits_per_value` is zero.
+    /// For [`Format::PackedSingleBlock`], Java's `ArithmeticException` (`/ by
+    /// zero`) when `bits_per_value` is zero, from `64 / bitsPerValue`.
     pub fn long_count(&self, version: i32, value_count: i32, bits_per_value: i32) -> Result<i32> {
         match self {
             Format::Packed => {
                 debug_assert!((0..=64).contains(&bits_per_value), "{bits_per_value}");
                 let byte_count = self.byte_count(version, value_count, bits_per_value)?;
                 debug_assert!(byte_count < 8 * i64::from(i32::MAX));
-                Ok(((byte_count + 7) >> 3) as i32)
+                // `(int) ((byteCount + 7) >>> 3)` (`PackedInts.java:148-153`).
+                Ok(((byte_count.wrapping_add(7) as u64) >> 3) as i32)
             }
             Format::PackedSingleBlock => {
-                if value_count < 0 {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "valueCount must be non-negative, got {value_count}"
+                // `(int) Math.ceil((double) valueCount / valuesPerBlock)` with
+                // `valuesPerBlock = 64 / bitsPerValue` (`PackedInts.java:81-85`).
+                if bits_per_value == 0 {
+                    return Err(LuceneError::from(LuceneErrorKind::Arithmetic(
+                        "/ by zero".to_string(),
                     )));
                 }
-                if !(1..=64).contains(&bits_per_value) {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "bitsPerValue must be in [1, 64] for the single-block format, \
-                         got {bits_per_value}"
-                    )));
-                }
-                let values_per_block = 64 / bits_per_value;
-                Ok((value_count as u64).div_ceil(values_per_block as u64) as i32)
+                let values_per_block = 64i32.wrapping_div(bits_per_value);
+                Ok((f64::from(value_count) / f64::from(values_per_block)).ceil() as i32)
             }
         }
     }
@@ -425,11 +425,6 @@ impl<'a> DirectWriter<'a> {
         num_values: i64,
         bits_per_value: i32,
     ) -> Result<Self> {
-        if num_values < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "numValues must be non-negative, got {num_values}"
-            )));
-        }
         Self::check_bits_per_value(bits_per_value)?;
 
         let memory_budget_in_bits = 8 * PackedInts::DEFAULT_BUFFER_SIZE;
@@ -459,7 +454,7 @@ impl<'a> DirectWriter<'a> {
             .is_err()
         {
             return Err(LuceneError::illegal_argument(format!(
-                "Unsupported bitsPerValue {bits_per_value}; use bitsRequired()"
+                "Unsupported bitsPerValue {bits_per_value}. Did you use bitsRequired?"
             )));
         }
         Ok(())
@@ -478,8 +473,15 @@ impl<'a> DirectWriter<'a> {
         }
     }
 
-    pub fn bits_required(max_value: i64) -> i32 {
-        Self::round_bits(PackedInts::unsigned_bits_required(max_value))
+    /// Equivalent to `DirectWriter.bitsRequired(long)`
+    /// (`DirectWriter.java:218-220`): `roundBits(PackedInts.bitsRequired(maxValue))`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PackedInts.bitsRequired`'s `IllegalArgumentException`
+    /// (`maxValue must be non-negative (got: <n>)`) for a negative value.
+    pub fn bits_required(max_value: i64) -> Result<i32> {
+        Ok(Self::round_bits(PackedInts::bits_required(max_value)?))
     }
 
     pub fn unsigned_bits_required(max_value: i64) -> i32 {
@@ -488,13 +490,13 @@ impl<'a> DirectWriter<'a> {
 
     pub fn bytes_required(num_values: i64, bits_per_value: i32) -> Result<i64> {
         Self::check_bits_per_value(bits_per_value)?;
-        if num_values < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "numValues must be non-negative, got {num_values}"
-            )));
-        }
-        let bytes = ((num_values as i128) * (bits_per_value as i128) + 7) / 8;
-        Ok(bytes as i64 + Self::padding_bytes_needed(bits_per_value) as i64)
+        // `(numValues * bitsPerValue + Byte.SIZE - 1) / 8` in `long`
+        // arithmetic (`DirectWriter.java:254-258`).
+        let bytes = num_values
+            .wrapping_mul(i64::from(bits_per_value))
+            .wrapping_add(7)
+            / 8;
+        Ok(bytes.wrapping_add(Self::padding_bytes_needed(bits_per_value) as i64))
     }
 
     fn padding_bytes_needed(bits_per_value: i32) -> usize {
@@ -522,10 +524,13 @@ impl<'a> DirectWriter<'a> {
         );
         debug_assert!(!self.finished);
         if self.count >= self.num_values {
-            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "writing past end of stream",
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                crate::store::java_nio_file::JavaIoException::new(
+                    crate::store::java_nio_file::EOF_EXCEPTION,
+                    Some("Writing past end of stream".to_string()),
+                )
+                .into_io_error(),
+            )));
         }
 
         self.next_values[self.off] = value;
@@ -1191,28 +1196,23 @@ impl DirectMonotonicMeta {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`] when `block_shift` is outside
-    /// the writer's range or `num_values` is negative, and the I/O error raised
-    /// when the metadata stream ends early.
+    /// Returns the JVM's `NegativeArraySizeException` when the block count
+    /// truncated to an `int` is negative, and the I/O error raised when the
+    /// metadata stream ends early.
     pub fn load(input: &mut dyn DataInput, num_values: i64, block_shift: i32) -> Result<Self> {
-        if !(DirectMonotonicWriter::MIN_BLOCK_SHIFT..=DirectMonotonicWriter::MAX_BLOCK_SHIFT)
-            .contains(&block_shift)
-        {
-            return Err(LuceneError::illegal_argument(format!(
-                "blockShift must be in [{}, {}], got {block_shift}",
-                DirectMonotonicWriter::MIN_BLOCK_SHIFT,
-                DirectMonotonicWriter::MAX_BLOCK_SHIFT
-            )));
+        // `Meta(long, int)` (`DirectMonotonicReader.java:47-58`): `long`
+        // shifts whose distance is masked to six bits, a signed comparison,
+        // the count truncated to an `int`, then `new long[numBlocks]`.
+        let mut num_blocks = ((num_values as u64).wrapping_shr(block_shift as u32)) as i64;
+        if num_blocks.wrapping_shl(block_shift as u32) < num_values {
+            num_blocks = num_blocks.wrapping_add(1);
         }
-        if num_values < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "numValues must be non-negative, got {num_values}"
-            )));
-        }
-
-        let mut num_blocks = (num_values as u64) >> (block_shift as u32);
-        if (num_blocks << (block_shift as u32)) < (num_values as u64) {
-            num_blocks += 1;
+        let num_blocks = num_blocks as i32;
+        if num_blocks < 0 {
+            return Err(LuceneError::unchecked(
+                "java.lang.NegativeArraySizeException",
+                num_blocks.to_string(),
+            ));
         }
         let num_blocks = num_blocks as usize;
 
@@ -1312,21 +1312,16 @@ struct SliceRandomAccess<'a>(&'a [u8]);
 
 impl SliceRandomAccess<'_> {
     fn window(&self, pos: i64, len: usize) -> Result<&[u8]> {
-        let start = usize::try_from(pos).map_err(|_| {
-            LuceneError::illegal_argument(format!("position must be non-negative (got: {pos})"))
-        })?;
+        // A single-block `ByteBuffersDataInput` (`blockBits == 32`): a
+        // negative position is the `ArrayIndexOutOfBoundsException` of the
+        // block index `pos >> 32`, and a read past the end the
+        // `IndexOutOfBoundsException` (no message) of the block's getter.
+        let start = usize::try_from(pos)
+            .map_err(|_| crate::store::array_index_out_of_bounds(pos >> 32, 1))?;
         self.0
             .get(start..start.saturating_add(len))
             .filter(|window| window.len() == len)
-            .ok_or_else(|| {
-                LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    format!(
-                        "read of {len} bytes at pos={pos} past EOF (length={})",
-                        self.0.len()
-                    ),
-                )))
-            })
+            .ok_or_else(crate::store::index_out_of_bounds_no_message)
     }
 }
 
@@ -1419,7 +1414,7 @@ impl SharedDirectMonotonicReader {
                 DirectWriter::check_bits_per_value(i32::from(bpv))?;
             }
         }
-        let block_mask = ((1u64 << (meta.block_shift as u32)) - 1) as i64;
+        let block_mask = 1i64.wrapping_shl(meta.block_shift as u32).wrapping_sub(1);
         Ok(Self {
             block_shift: meta.block_shift,
             block_mask,
@@ -1439,20 +1434,17 @@ impl SharedDirectMonotonicReader {
     ///
     /// As [`DirectMonotonicReader::get_checked`].
     pub fn get_checked(&self, index: i64) -> Result<i64> {
-        if index < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!("negative index {index} into a monotonic block"),
-            )));
+        // `(int) (index >>> blockShift)` and `readers[block]`
+        // (`DirectMonotonicReader.java:135-140`): the JVM's
+        // `ArrayIndexOutOfBoundsException` for a block outside the metadata.
+        let block = ((index as u64).wrapping_shr(self.block_shift as u32)) as i32;
+        if block < 0 || block as usize >= self.bpvs.len() {
+            return Err(crate::store::array_index_out_of_bounds(
+                i64::from(block),
+                self.bpvs.len(),
+            ));
         }
-        let block = (index >> self.block_shift) as usize;
-        if block >= self.bpvs.len() {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "index {index} falls in block {block} of {}",
-                    self.bpvs.len()
-                ),
-            )));
-        }
+        let block = block as usize;
         let block_index = index & self.block_mask;
         let delta = if self.bpvs[block] == 0 {
             0
@@ -1564,7 +1556,7 @@ impl DirectMonotonicReader {
                         input.clone(),
                         meta.bpvs[i] as i32,
                         meta.offsets[i],
-                        1i64 << meta.block_shift,
+                        1i64.wrapping_shl(meta.block_shift as u32),
                     ),
                 ));
             } else {
@@ -1576,7 +1568,7 @@ impl DirectMonotonicReader {
             }
         }
 
-        let block_mask = ((1u64 << (meta.block_shift as u32)) - 1) as i64;
+        let block_mask = 1i64.wrapping_shl(meta.block_shift as u32).wrapping_sub(1);
 
         Ok(Self {
             block_shift: meta.block_shift,
@@ -1600,33 +1592,12 @@ impl DirectMonotonicReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::CorruptIndex`] when `index` falls outside the
-    /// blocks the metadata describes, and the I/O error when the encoded block
-    /// is shorter than the index it is asked for.
+    /// As [`DirectMonotonicReader::get_java`]: the JVM's
+    /// `ArrayIndexOutOfBoundsException` for a block outside the metadata, and
+    /// the I/O error when the encoded block is shorter than the index it is
+    /// asked for.
     pub fn get_checked(&self, index: i64) -> Result<i64> {
-        if index < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!("negative index {index} into a monotonic block"),
-            )));
-        }
-        let block = (index >> self.block_shift) as usize;
-        if block >= self.readers.len() {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "index {index} falls in block {block} of {}",
-                    self.readers.len()
-                ),
-            )));
-        }
-        let block_index = index & self.block_mask;
-        let delta = self.readers[block].get_checked(block_index)?;
-        // Java composes the value with plain `long` arithmetic
-        // (`DirectMonotonicReader.get`), which wraps; every one of the three
-        // terms comes off disk, so the sum has to wrap here too rather than
-        // abort a debug build on bytes Lucene decodes without complaint.
-        Ok(self.mins[block]
-            .wrapping_add((self.avgs[block] * block_index as f32) as i64)
-            .wrapping_add(delta))
+        self.get_java(index)
     }
 
     /// Returns the value at `index` exactly as Java's
@@ -1641,7 +1612,7 @@ impl DirectMonotonicReader {
     /// metadata, and whatever the block reader raises for an index past its
     /// encoded data.
     pub fn get_java(&self, index: i64) -> Result<i64> {
-        let block = ((index as u64) >> (self.block_shift as u32)) as i32;
+        let block = (index as u64).wrapping_shr(self.block_shift as u32) as i32;
         if block < 0 || block as usize >= self.readers.len() {
             return Err(LuceneError::unchecked(
                 "java.lang.ArrayIndexOutOfBoundsException",
@@ -1670,24 +1641,22 @@ impl DirectMonotonicReader {
     /// Returns [`LuceneErrorKind::Arithmetic`] when the block number
     /// `index >>> blockShift` does not fit an `int` — Java's
     /// `Math.toIntExact(index >>> blockShift)` (`DirectMonotonicReader.java:144`),
-    /// which a negative `index` reaches through the unsigned shift — and
-    /// [`LuceneErrorKind::CorruptIndex`] when the block falls outside the blocks
-    /// the metadata describes. Java throws `ArrayIndexOutOfBoundsException`
-    /// there, which a caller can catch; a Rust panic could not be.
+    /// which a negative `index` reaches through the unsigned shift — and the
+    /// JVM's `ArrayIndexOutOfBoundsException` of `mins[block]` when the block
+    /// falls outside the blocks the metadata describes.
     fn get_bounds(&self, index: i64) -> Result<[i64; 2]> {
         // Java's `index >>> blockShift` on a `long`, whose shift distance is
         // masked to six bits.
         let block = crate::error::to_int_exact(
             (index as u64).wrapping_shr(self.block_shift as u32) as i64,
-        )? as usize;
-        if block >= self.readers.len() {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "index {index} falls in block {block} of {}",
-                    self.readers.len()
-                ),
-            )));
+        )?;
+        if block as usize >= self.mins.len() {
+            return Err(crate::store::array_index_out_of_bounds(
+                i64::from(block),
+                self.mins.len(),
+            ));
         }
+        let block = block as usize;
         let block_index = index & self.block_mask;
         // Java composes both bounds with plain `long` arithmetic, which wraps;
         // every term comes off disk, so the sums have to wrap here too rather
@@ -1979,13 +1948,11 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
         block_size: usize,
         value_count: i64,
     ) -> Result<Self> {
+        // `BlockPackedReaderIterator(DataInput, int, int, long)`
+        // (`BlockPackedReaderIterator.java:66-74`): only the block size is
+        // checked; `reset` asserts the value count.
         PackedInts::check_block_size(block_size, MIN_BLOCK_SIZE, MAX_BLOCK_SIZE)?;
-        if value_count < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "valueCount must be non-negative, got {value_count}"
-            )));
-        }
-        PackedInts::check_version(packed_ints_version)?;
+        debug_assert!(value_count >= 0);
         Ok(Self {
             input,
             packed_ints_version,
@@ -2029,10 +1996,7 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<i64> {
         if self.ord == self.value_count {
-            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "read past end of block-packed stream",
-            ))));
+            return Err(crate::store::eof_exception());
         }
         if self.off == self.block_size {
             self.refill()?;
@@ -2058,10 +2022,7 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
         trace_block_packed(|| format!("next_batch({count})"));
         debug_assert!(count > 0);
         if self.ord == self.value_count {
-            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "read past end of block-packed stream",
-            ))));
+            return Err(crate::store::eof_exception());
         }
         if self.off == self.block_size {
             self.refill()?;
@@ -2089,10 +2050,7 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
         trace_block_packed(|| format!("skip({count})"));
         debug_assert!(count >= 0);
         if self.ord + count > self.value_count || self.ord + count < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "skip past end of block-packed stream",
-            ))));
+            return Err(crate::store::eof_exception());
         }
 
         let skip_buffer = cmp::min(count, (self.block_size - self.off) as i64);
@@ -2107,9 +2065,9 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
         while count >= self.block_size as i64 {
             let token = self.input.read_byte()? as i32;
             let bits_per_value = token >> BPV_SHIFT;
-            if !(0..=64).contains(&bits_per_value) {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                    "invalid bitsPerValue in block-packed stream".to_string(),
+            if bits_per_value > 64 {
+                return Err(LuceneError::from(LuceneErrorKind::Io(
+                    std::io::Error::other("Corrupted"),
                 )));
             }
             if (token & MIN_VALUE_EQUALS_0) == 0 {
@@ -2153,9 +2111,10 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
         let token = self.input.read_byte()? as i32;
         let min_equals_0 = (token & MIN_VALUE_EQUALS_0) != 0;
         let bits_per_value = token >> BPV_SHIFT;
-        if !(0..=64).contains(&bits_per_value) {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                "invalid bitsPerValue in block-packed stream".to_string(),
+        // `throw new IOException("Corrupted")` (`BlockPackedReaderIterator.java:168-170`).
+        if bits_per_value > 64 {
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("Corrupted"),
             )));
         }
 
@@ -2740,9 +2699,9 @@ mod tests {
         assert_eq!(PackedInts::bits_required(255).unwrap(), 8);
         assert_eq!(PackedInts::bits_required(256).unwrap(), 9);
 
-        assert_eq!(DirectWriter::bits_required(100), 8);
-        assert_eq!(DirectWriter::bits_required(256), 12);
-        assert_eq!(DirectWriter::bits_required(i64::MAX), 64);
+        assert_eq!(DirectWriter::bits_required(100).unwrap(), 8);
+        assert_eq!(DirectWriter::bits_required(256).unwrap(), 12);
+        assert_eq!(DirectWriter::bits_required(i64::MAX).unwrap(), 64);
 
         assert_eq!(PackedInts::max_value(8), 255);
         assert_eq!(PackedInts::max_value(64), i64::MAX);

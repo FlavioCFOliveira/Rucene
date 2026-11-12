@@ -709,9 +709,11 @@ impl<O: Outputs> FSTMetadata<O> {
             let empty_len = empty_output_bytes.len();
 
             empty_output_bytes.reverse();
-            meta_out.write_v_int(i32::try_from(empty_len).map_err(|_| {
-                LuceneError::illegal_state(format!("empty output too long: {empty_len}"))
-            })?)?;
+            // `metaOut.writeVInt(emptyOutputBytes.length)`: a Java array
+            // length is an `int`.
+            meta_out.write_v_int(i32::try_from(empty_len).expect(
+                "INVARIANT: ByteBuffersDataOutput.toArrayCopy yields an int-sized array",
+            ))?;
             meta_out.write_bytes(&empty_output_bytes, 0, empty_len)?;
         } else {
             meta_out.write_byte(0)?;

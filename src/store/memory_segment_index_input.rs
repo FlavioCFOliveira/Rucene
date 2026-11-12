@@ -179,11 +179,11 @@ impl MemorySegmentIndexInput {
         shared_prefetch_counter: Arc<AtomicI32>,
         layout: Layout,
     ) -> Result<Self> {
-        let first = segments.first().ok_or_else(|| {
-            LuceneError::illegal_argument(
-                "MemorySegmentIndexInput requires at least one segment".to_string(),
-            )
-        })?;
+        // `segments[0]` on an empty array: the JVM's
+        // `ArrayIndexOutOfBoundsException`.
+        let first = segments
+            .first()
+            .ok_or_else(|| crate::store::array_index_out_of_bounds(0, 0))?;
         let scope = Arc::clone(first.scope());
         let cur_segment = Some(first.clone());
         let mut input = Self {

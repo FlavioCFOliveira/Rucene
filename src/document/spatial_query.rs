@@ -1221,15 +1221,13 @@ struct EstimateVisitor<'a> {
 
 impl crate::index::point_values::IntersectVisitor for EstimateVisitor<'_> {
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "the estimate visitor never visits a document".to_string(),
-        ))
+        // `throw new UnsupportedOperationException()` (`SpatialQuery.java:401-408`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "the estimate visitor never visits a document".to_string(),
-        ))
+        // `throw new UnsupportedOperationException()` (`SpatialQuery.java:401-408`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn compare(&self, min_triangle: &[u8], max_triangle: &[u8]) -> Result<Relation> {
@@ -1952,7 +1950,7 @@ fn validate_geometries(
         for geometry in geometries {
             if matches!(geometry, LatLonGeometryValue::Line(_)) {
                 return Err(LuceneError::illegal_argument(
-                    "LatLonShapeQuery does not support Within queries with line geometries"
+                    "LatLonShapeQuery does not support WITHIN queries with line geometries"
                         .to_string(),
                 ));
             }
@@ -2898,8 +2896,9 @@ impl std::fmt::Debug for ShapeDocValuesScorerSupplier {
 
 impl crate::search::ScorerSupplier for ShapeDocValuesScorerSupplier {
     fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn crate::search::Scorer>> {
-        // Java hands every scorer the one iterator it built; a scorer supplier
-        // is asked for its scorer at most once, so the iterator moves here.
+        // **Divergence from Lucene 10.5.0.** Java hands every scorer the one
+        // iterator it built; the iterator moves into the first scorer here,
+        // so a second `get` is refused.
         let iterator = self.iterator.take().ok_or_else(|| {
             LuceneError::illegal_state(
                 "a spatial scorer supplier may be asked for its scorer only once".to_string(),
@@ -3247,8 +3246,9 @@ impl<M: SpatialMatcher> std::fmt::Debug for SpatialIteratorSupplier<M> {
 
 impl<M: SpatialMatcher> crate::search::ScorerSupplier for SpatialIteratorSupplier<M> {
     fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn crate::search::Scorer>> {
-        // Java's supplier may be asked for its scorer only once; the iterator
-        // is taken here for the same reason.
+        // **Divergence from Lucene 10.5.0.** Java hands every `get` a scorer
+        // over the one iterator it built; the iterator moves into the first
+        // scorer here, so a second `get` is refused.
         let iterator = self.iterator.take().ok_or_else(|| {
             LuceneError::illegal_state(
                 "a spatial scorer supplier may be asked for its scorer only once".to_string(),

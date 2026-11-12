@@ -420,12 +420,20 @@ impl ShapeField {
     /// Equivalent to `ShapeField.decodeTriangle`, which reverses the rotation
     /// the bit field records.
     pub fn decode_triangle(bytes: &[u8]) -> Result<DecodedTriangle> {
+        // The first read, `NumericUtils.sortableBytesToInt(t, 6 * BYTES)`
+        // through `BitUtil.VH_BE_INT`, is the view's
+        // `ArrayIndexOutOfBoundsException` (`Index 24 out of bounds for length
+        // <t.length - 3>`) when the bytes are too short; every later read
+        // lies below it.
         if bytes.len() < 7 * BYTES {
-            return Err(LuceneError::illegal_argument(format!(
-                "bytes must be at least {} long, got {}",
-                7 * BYTES,
-                bytes.len()
-            )));
+            return Err(LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!(
+                    "Index {} out of bounds for length {}",
+                    6 * BYTES,
+                    bytes.len() as i64 - (BYTES as i64 - 1)
+                ),
+            ));
         }
         let min_y = NumericUtils::sortable_bytes_to_int(bytes, 0);
         let min_x = NumericUtils::sortable_bytes_to_int(bytes, BYTES);
@@ -805,31 +813,64 @@ impl LateInteractionField {
     /// Equivalent to `LateInteractionField.decode(BytesRef)`.
     pub fn decode(payload: &BytesRef) -> Result<Vec<Vec<f32>>> {
         let bytes = payload.slice();
+        let underflow = || {
+            LuceneError::from(crate::error::LuceneErrorKind::Unchecked {
+                class: "java.nio.BufferUnderflowException",
+                message: None,
+                cause: None,
+            })
+        };
+        // `buffer.getInt()`: `BufferUnderflowException` below four bytes.
         if bytes.len() < 4 {
-            return Err(LuceneError::illegal_argument(
-                "Provided payload does not appear to have been encoded via \
-                 LateInteractionField::encode"
-                    .to_string(),
+            return Err(underflow());
+        }
+        let length = bytes.len() as i32;
+        let dimension = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        // `(payload.length - Integer.BYTES) / (tokenVectorDimension *
+        // Float.BYTES)` in `int` arithmetic: `ArithmeticException` for a zero
+        // divisor.
+        let divisor = dimension.wrapping_mul(4);
+        if divisor == 0 {
+            return Err(LuceneError::from(
+                crate::error::LuceneErrorKind::Arithmetic("/ by zero".to_string()),
             ));
         }
-        let dimension = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-        if dimension == 0 {
-            return Err(LuceneError::illegal_argument(
-                "Provided payload declares a zero dimension".to_string(),
-            ));
-        }
-        let num_vectors = (bytes.len() - 4) / (dimension * 4);
-        if num_vectors * dimension * 4 + 4 != bytes.len() {
+        let num_vectors = (length - 4).wrapping_div(divisor);
+        if num_vectors
+            .wrapping_mul(dimension)
+            .wrapping_mul(4)
+            .wrapping_add(4)
+            != length
+        {
             return Err(LuceneError::illegal_argument(format!(
                 "Provided payload does not appear to have been encoded via \
-                 LateInteractionField::encode. Payload length should be equal to 4 + numVectors * \
-                 tokenVectorDimension, got {} != 4 + {num_vectors} * {dimension}",
-                bytes.len()
+                 LateInteractionField.encode. Payload length should be equal to 4 + numVectors * \
+                 tokenVectorDimension, got {length} != 4 + {num_vectors} * {dimension}"
             )));
         }
+        // `new float[numVectors][]`, then `new float[tokenVectorDimension]`
+        // per row: the JVM's `NegativeArraySizeException`.
+        if num_vectors < 0 {
+            return Err(LuceneError::unchecked(
+                "java.lang.NegativeArraySizeException",
+                num_vectors.to_string(),
+            ));
+        }
+        if num_vectors > 0 && dimension < 0 {
+            return Err(LuceneError::unchecked(
+                "java.lang.NegativeArraySizeException",
+                dimension.to_string(),
+            ));
+        }
+        let (num_vectors, dimension) = (num_vectors as usize, dimension as usize);
         let mut value = Vec::with_capacity(num_vectors);
         let mut pos = 4;
         for _ in 0..num_vectors {
+            // `floatBuffer.get(value[i])`: `BufferUnderflowException` when the
+            // row does not fit.
+            if pos + dimension * 4 > bytes.len() {
+                return Err(underflow());
+            }
             let mut vector = Vec::with_capacity(dimension);
             for _ in 0..dimension {
                 vector.push(f32::from_le_bytes([

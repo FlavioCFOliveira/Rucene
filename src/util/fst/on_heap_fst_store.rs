@@ -1,6 +1,6 @@
 //! Port of `org.apache.lucene.util.fst.OnHeapFSTStore`.
 
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::{LuceneError, Result};
 use crate::store::{DataInput, DataOutput};
 use crate::util::Accountable;
 
@@ -33,8 +33,9 @@ impl OnHeapFSTStore {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`] when `max_block_bits` is
-    /// outside `1 ..= 30` or `num_bytes` is negative, and propagates read
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `max_block_bits` is
+    /// outside `1 ..= 30`, the JVM's `NegativeArraySizeException` of `new
+    /// byte[(int) numBytes]` for a negative `num_bytes`, and propagates read
     /// errors.
     pub fn new(max_block_bits: i32, input: &mut dyn DataInput, num_bytes: i64) -> Result<Self> {
         if !(1..=30).contains(&max_block_bits) {
@@ -42,12 +43,6 @@ impl OnHeapFSTStore {
                 "maxBlockBits should be 1 .. 30; got {max_block_bits}"
             )));
         }
-        if num_bytes < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!("invalid FST length {num_bytes}"),
-            )));
-        }
-
         if num_bytes > (1i64 << max_block_bits) {
             // The FST is big: several pages are needed.
             let mut data_output = get_on_heap_reader_writer(max_block_bits)?;
@@ -59,12 +54,9 @@ impl OnHeapFSTStore {
             })
         } else {
             // The FST fits into a single block: use the cheaper reader.
-            let len = usize::try_from(num_bytes).map_err(|_| {
-                LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                    "FST length {num_bytes} does not fit in memory"
-                )))
-            })?;
-            let mut bytes_array = vec![0u8; len];
+            // `new byte[(int) numBytes]`.
+            let mut bytes_array = super::java_new_array::<u8>(num_bytes as i32)?;
+            let len = bytes_array.len();
             input.read_bytes(Some(&mut bytes_array), 0, len)?;
             Ok(Self {
                 data_output: None,

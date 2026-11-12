@@ -72,18 +72,21 @@ const fn mask_of(bits_per_value: usize) -> u64 {
     }
 }
 
-fn too_small(what: &str, need: usize, have: usize) -> LuceneError {
-    LuceneError::illegal_argument(format!(
-        "{what} buffer is too small: {need} entries needed, {have} available"
-    ))
-}
-
-fn check_capacity(what: &str, offset: usize, needed: usize, available: usize) -> Result<()> {
-    let end = offset
-        .checked_add(needed)
-        .ok_or_else(|| LuceneError::illegal_argument(format!("{what} range overflows")))?;
-    if end > available {
-        return Err(too_small(what, end, available));
+/// The `ArrayIndexOutOfBoundsException` Java's `encode`/`decode` loops raise
+/// when they step past the end of a `blocks` or `values` array of `available`
+/// entries, starting at `offset` and touching `needed` entries.
+///
+/// **Divergence from Lucene 10.5.0.** Java fails inside the loop, after the
+/// entries before the bad index were read or written, at the first array
+/// whose end the interleaved loop reaches; this port checks both arrays up
+/// front, in a fixed order, and raises the same exception class with the
+/// first index past the array before any entry is touched.
+fn check_capacity(_what: &str, offset: usize, needed: usize, available: usize) -> Result<()> {
+    if offset > available || needed > available - offset {
+        return Err(crate::store::array_index_out_of_bounds(
+            offset.max(available) as i64,
+            available,
+        ));
     }
     Ok(())
 }
@@ -1418,19 +1421,23 @@ impl BulkOperationPackedSingleBlock {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `bits_per_value` is
-    /// outside `[1, 32]`. Lucene never constructs one outside that range, since
-    /// `Packed64SingleBlock.MAX_SUPPORTED_BITS_PER_VALUE` is 32.
+    /// Returns Java's `ArithmeticException` (`/ by zero`) for a zero width,
+    /// from `valueCount = 64 / bitsPerValue`. Lucene never constructs one
+    /// outside `[1, 32]`, since
+    /// `Packed64SingleBlock.MAX_SUPPORTED_BITS_PER_VALUE` is 32; a width
+    /// past that is an invariant violation.
     pub fn new(bits_per_value: usize) -> Result<Self> {
-        if !(1..=32).contains(&bits_per_value) {
-            return Err(LuceneError::illegal_argument(format!(
-                "bitsPerValue must be in [1, 32] for the single-block format, got {bits_per_value}"
-            )));
+        if bits_per_value == 0 {
+            return Err(LuceneError::from(
+                crate::error::LuceneErrorKind::Arithmetic("/ by zero".to_string()),
+            ));
         }
+        debug_assert!(bits_per_value <= 32, "{bits_per_value}");
         Ok(Self {
             bits_per_value,
             value_count: 64 / bits_per_value,
-            mask: (1u64 << bits_per_value) - 1,
+            // `(1L << bitsPerValue) - 1`, whose shift distance is masked.
+            mask: 1u64.wrapping_shl(bits_per_value as u32).wrapping_sub(1),
         })
     }
 
@@ -1758,34 +1765,34 @@ static PACKED_SINGLE_BLOCK_BULK_OPS: LazyLock<Vec<Option<Box<dyn BulkOperation +
 ///
 /// # Errors
 ///
-/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `bits_per_value` is outside
-/// the range the format supports. Lucene asserts the table entry is non-null
-/// and would otherwise fail with an index or null-pointer error.
+/// Returns the JVM's `ArrayIndexOutOfBoundsException` of
+/// `packedBulkOps[bitsPerValue - 1]` (or of the single-block table) when
+/// `bits_per_value` is outside the table (`BulkOperation.java:128-139`), and
+/// its `NullPointerException` for a `null` single-block entry, which Java
+/// asserts against and returns for the caller to dereference.
 pub fn bulk_operation_of(format: Format, bits_per_value: i32) -> Result<SharedBulkOperation> {
+    let index = i64::from(bits_per_value) - 1;
     match format {
         Format::Packed => {
-            if !(1..=64).contains(&bits_per_value) {
-                return Err(LuceneError::illegal_argument(format!(
-                    "bitsPerValue must be in [1, 64], got {bits_per_value}"
-                )));
+            if !(0..PACKED_BULK_OPS.len() as i64).contains(&index) {
+                return Err(crate::store::array_index_out_of_bounds(
+                    index,
+                    PACKED_BULK_OPS.len(),
+                ));
             }
-            Ok(&*PACKED_BULK_OPS[bits_per_value as usize - 1])
+            Ok(&*PACKED_BULK_OPS[index as usize])
         }
         Format::PackedSingleBlock => {
-            if !(1..=32).contains(&bits_per_value) {
-                return Err(LuceneError::illegal_argument(format!(
-                    "bitsPerValue must be in [1, 32] for the single-block format, \
-                     got {bits_per_value}"
-                )));
+            if !(0..PACKED_SINGLE_BLOCK_BULK_OPS.len() as i64).contains(&index) {
+                return Err(crate::store::array_index_out_of_bounds(
+                    index,
+                    PACKED_SINGLE_BLOCK_BULK_OPS.len(),
+                ));
             }
-            debug_assert!(PACKED_SINGLE_BLOCK_BULK_OPS[bits_per_value as usize - 1].is_some());
-            PACKED_SINGLE_BLOCK_BULK_OPS[bits_per_value as usize - 1]
+            debug_assert!(PACKED_SINGLE_BLOCK_BULK_OPS[index as usize].is_some());
+            PACKED_SINGLE_BLOCK_BULK_OPS[index as usize]
                 .as_deref()
-                .ok_or_else(|| {
-                    LuceneError::illegal_argument(format!(
-                        "the single-block format does not support {bits_per_value} bits per value"
-                    ))
-                })
+                .ok_or_else(LuceneError::null_pointer)
         }
     }
 }
