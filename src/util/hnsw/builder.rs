@@ -250,16 +250,19 @@ impl HnswGraphBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when another builder still shares
-    /// the graph, which happens only while a concurrent merge's workers are
-    /// alive.
+    /// Never; the `Result` is kept for the callers.
+    ///
+    /// # Panics
+    ///
+    /// On the invariant that no other builder shares the graph, which holds
+    /// once a concurrent merge's workers are done.
     pub fn into_graph(mut self) -> Result<OnHeapHnswGraph> {
         if !self.frozen {
             self.finish();
         }
-        Arc::try_unwrap(self.hnsw).map_err(|_| {
-            LuceneError::illegal_state("the graph is still shared with another builder".to_string())
-        })
+        Ok(Arc::try_unwrap(self.hnsw).unwrap_or_else(|_| {
+            panic!("INVARIANT: no other builder shares the graph once the merge workers are done")
+        }))
     }
 
     /// Adds `node` to the graph on `level`.
@@ -758,9 +761,11 @@ impl HnswGraphBuilder {
                 return Ok(());
             }
             if self.hnsw.num_levels()? == cur_max_level + 1 {
+                // HnswGraphBuilder.java:373-384.
                 return Err(LuceneError::illegal_state(format!(
-                    "We're not able to promote node {} at level {} as entry node",
-                    node, node_level
+                    "We're not able to promote node {} at level {} as entry node. But the max \
+                     graph level {} has not changed while we are inserting the node.",
+                    node, node_level, cur_max_level
                 )));
             }
         }
@@ -1077,13 +1082,13 @@ impl KnnCollector for GraphBuilderKnnCollector {
         }
     }
 
-    /// # Panics
-    ///
-    /// Always. Equivalent to `HnswGraphBuilder.GraphBuilderKnnCollector.topDocs()`,
+    /// Equivalent to `HnswGraphBuilder.GraphBuilderKnnCollector.topDocs()`,
     /// which throws `IllegalArgumentException`: this collector feeds graph
-    /// construction and never produces search results.
-    fn top_docs(&mut self) -> crate::search::knn::TopDocs {
-        panic!("GraphBuilderKnnCollector does not produce TopDocs")
+    /// construction and never produces search results
+    /// (`HnswGraphBuilder.java:742-745`). Java's exception has no message
+    /// (`getMessage()` is `null`); the empty message stands for it.
+    fn top_docs(&mut self) -> crate::error::Result<crate::search::knn::TopDocs> {
+        Err(LuceneError::illegal_argument(String::new()))
     }
 
     fn get_search_strategy(&self) -> Option<&crate::search::knn::KnnSearchStrategy> {

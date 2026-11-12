@@ -57,8 +57,11 @@ pub trait IndexReaderContext: Send + Sync + Debug {
 
 /// Context for an atomic leaf reader.
 ///
-/// Equivalent to `org.apache.lucene.index.LeafReaderContext`.
-#[derive(Debug)]
+/// Equivalent to `org.apache.lucene.index.LeafReaderContext`. A clone is
+/// another handle onto the same context, with the same
+/// [`id`](IndexReaderContext::id): Java shares the one immutable object, which
+/// a leaf comparator keeps in a field (`LongValuesSource.java:355`).
+#[derive(Debug, Clone)]
 pub struct LeafReaderContext {
     parent: Option<Weak<dyn IndexReaderContext>>,
     is_top_level: bool,

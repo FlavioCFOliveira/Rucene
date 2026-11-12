@@ -97,7 +97,7 @@ fn one_doc_info(
         HashMap::new(),
         id,
         HashMap::new(),
-        Sort::new(),
+        None,
     )
 }
 
@@ -234,7 +234,7 @@ fn test_info(
         diagnostics,
         StringHelper::random_id(),
         attributes,
-        index_order()?,
+        Some(index_order()?),
     )
 }
 
@@ -335,7 +335,7 @@ fn test_id_changes_on_advance() -> Result<()> {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            Sort::new(),
+            None,
         )?;
         let commit_info = SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, id)?;
         assert_equals(&id_str(&id), &id_str(&commit_info.id()));
@@ -401,7 +401,7 @@ fn test_bit_flipped_triggers_corrupt_index_exception() -> Result<()> {
                     let b =
                         i32::from(r#in.read_byte()?) + TestUtil::next_int(&*random(), 0x01, 0xff);
                     out.write_byte(b as u8)?;
-                    let remaining = r#in.length() - r#in.file_pointer();
+                    let remaining = r#in.length() - r#in.file_pointer()?;
                     out.copy_bytes(&mut *r#in, remaining)?;
                     Ok(())
                 })();

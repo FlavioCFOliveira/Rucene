@@ -48,7 +48,10 @@ pub trait FSTEnumTarget {
 ///
 /// Panics when `i == j`; every call site follows a parent/child pair.
 fn arc_pair<T>(arcs: &mut [T], i: usize, j: usize) -> (&T, &mut T) {
-    assert_ne!(i, j, "arc_pair requires two distinct arcs");
+    assert_ne!(
+        i, j,
+        "INVARIANT: arc_pair is called with a parent/child pair"
+    );
     if i < j {
         let (head, tail) = arcs.split_at_mut(j);
         (&head[i], &mut tail[0])

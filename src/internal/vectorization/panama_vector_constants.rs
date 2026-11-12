@@ -15,8 +15,8 @@ use crate::util::Constants;
 /// `PREFERRED_VECTOR_BITSIZE` is `VectorShape.preferredShape().vectorBitSize()`
 /// (overridable with the `tests.vectorsize` system property), and the three
 /// `VectorSpecies` fields are the `long`, `int` and `double` species of that
-/// shape. Stable Rust has no portable SIMD — `std::simd` is nightly-only and
-/// this crate's MSRV is 1.80 — so there is no shape to ask for and no species
+/// shape. Stable Rust has no portable SIMD — `std::simd` is nightly-only, and
+/// this crate targets stable Rust — so there is no shape to ask for and no species
 /// to name.
 ///
 /// This port therefore reports a preferred bit size of **zero**, meaning "no

@@ -9,6 +9,8 @@ Final classes as in block 3: **W** link ported now; **W=** the Java link already
 Auto (all 123): D? 41, P? 56, W? 26  
 Final: D 9, P 84, T 4, W 16, W-blocked 4, W= 6
 
+Re-verified at `225f596` (#435): 3 of the 4 W-blocked rows are now wired and reclassified **W** in place. Current: D 9, P 84, T 4, W 19, W-blocked 1, W= 6 (the cross table below is the original pass's).
+
 | auto \ final | D | P | T | W | W-blocked | W= |
 |---|---|---|---|---|---|---|
 | D? | 8 | 27 | 4 | 2 | 0 | 0 |
@@ -20,8 +22,8 @@ Final: D 9, P 84, T 4, W 16, W-blocked 4, W= 6
 | item | auto | final | action | Java evidence |
 |---|---|---|---|---|
 | `analysis::AnalyzerState::id` | D? | **D** | removed (with the `id` field and its counter) | no Lucene member: `Analyzer` holds `reuseStrategy`, `version` and `storedValue` (Analyzer.java:86-100), no identifier; no Rust caller |
-| `analysis::AnalyzerWrapper` | W? | **W-blocked** | blocked: Java's `DelegatingAnalyzerWrapper` extends it and installs a `DelegatingReuseStrategy` that reaches the wrapper's `getWrappedAnalyzer` (DelegatingAnalyzerWrapper.java:45-49, 78-103); the Rust `ReuseStrategy` receives the `AnalyzerState`, not the `Analyzer`, and a default trait method cannot pass `&Self` as `&dyn Analyzer`, so `DelegatingAnalyzerWrapper` delegates `token_stream`/`normalize` instead (same observable result) | AnalyzerWrapper.java:31; Java caller DelegatingAnalyzerWrapper (class extends AnalyzerWrapper) |
-| `analysis::AnalyzerWrapper::new` | W? | **W-blocked** | blocked: as `AnalyzerWrapper` | AnalyzerWrapper.java:55; Java caller DelegatingAnalyzerWrapper(ReuseStrategy) `super(new DelegatingReuseStrategy(...))` (DelegatingAnalyzerWrapper.java:45-49) |
+| `analysis::AnalyzerWrapper` | W? | **W** | wired: `DelegatingAnalyzerWrapper` holds an `AnalyzerWrapper` built with a `DelegatingReuseStrategy` over its logic (analysis.rs `DelegatingAnalyzerWrapper::new`), as Java's subclass `super(new DelegatingReuseStrategy(...))` | AnalyzerWrapper.java:31; Java caller DelegatingAnalyzerWrapper (class extends AnalyzerWrapper) |
+| `analysis::AnalyzerWrapper::new` | W? | **W** | wired: called by `DelegatingAnalyzerWrapper::new` with the `DelegatingReuseStrategy` | AnalyzerWrapper.java:55; Java caller DelegatingAnalyzerWrapper(ReuseStrategy) `super(new DelegatingReuseStrategy(...))` (DelegatingAnalyzerWrapper.java:45-49) |
 | `analysis::CharFilterFn` | D? | **T** | none: closure-built `CharFilter` used by lib and portability tests (`doubling_filter`, new offset test) | no Lucene member: `CharFilter` is abstract with no closure subclass |
 | `analysis::CharFilterFn::new` | D? | **T** | none: as `CharFilterFn` | as `CharFilterFn` |
 | `analysis::DelegatingAnalyzerWrapper` | P? | **P** | none | DelegatingAnalyzerWrapper.java:37 |
@@ -41,7 +43,7 @@ Final: D 9, P 84, T 4, W 16, W-blocked 4, W= 6
 | `analysis::caching_token_filter::CachingTokenFilter::is_cached` | P? | **P** | doc claim added | CachingTokenFilter.java:100 isCached |
 | `analysis::caching_token_filter::new_caching_token_filter` | D? | **D** | removed (and its re-export) | no Lucene member: duplicate of `CachingTokenFilter::new` (CachingTokenFilter.java constructor); no caller |
 | `analysis::char_array_map::CharArrayMap::contains_key` | W? | **W** | wired: `CharArraySet::contains` is `map.contains_key(cs)` (was `contains_chars`); control CN (oracle O3 contains rows) | CharArrayMap.java:103; caller CharArraySet.java:93 contains(CharSequence) |
-| `analysis::char_array_map::CharArrayMap::create_entry_set` | W? | **W-blocked** | blocked: the Rust `EntrySet` needs `&mut CharArrayMap` (for `setValue`) while `entry_set`/`Display` take `&self`, so `entry_set` stays a read-only snapshot | CharArrayMap.java:322; Java caller CharArrayMap.entrySet() (CharArrayMap.java:327-332) |
+| `analysis::char_array_map::CharArrayMap::create_entry_set` | W? | **W** | wired: `entry_set(&mut self)` returns `create_entry_set()`, as Java's `entrySet()` | CharArrayMap.java:322; Java caller CharArrayMap.entrySet() (CharArrayMap.java:327-332) |
 | `analysis::char_array_map::CharArrayMap::get` | W? | **W=** | none: the Java `get(Object)` overload dispatches to `get(char[],int,int)`, which `EntrySet::contains` calls directly as `get_chars` | CharArrayMap.java:124,129; callers get(Object), EntrySet.contains (CharArrayMap.java:485-493) |
 | `analysis::char_array_map::CharArrayMap::get_hash_code` | W? | **W** | wired: `get_slot` probes from `get_hash_code` (was `CharsRef::string_hash_code` of a fully lower-cased copy), which is now Java's: UTF-16 units when case matters, `Character.toLowerCase` per code point when not; `equals` compares UTF-16 lengths and simple-lower-cased code points; `put` lower-cases with `CharacterUtils.toLowerCase`. Test `iteration_and_lookup_follow_javas_hash_and_case_rules` (oracle O3) | CharArrayMap.java:266-279; callers getSlot (CharArrayMap.java:136-165) |
 | `analysis::char_array_map::CharArrayMap::key_set` | W? | **W=** | none: the listed caller is `keySet()` reading its own cache field; the Rust returns owned keys (declared in its doc) | CharArrayMap.java:320,345 |

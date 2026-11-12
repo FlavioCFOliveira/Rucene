@@ -120,6 +120,16 @@ impl AtomicEntryNode {
     }
 }
 
+/// `RamUsageEstimator.shallowSizeOfInstance(OnHeapHnswGraph.class)`, Java's
+/// `OnHeapHnswGraph.RAM_BYTES_USED` (`OnHeapHnswGraph.java:37-38`), on a 64-bit
+/// JVM with compressed oops: a 12-byte header, seven references (`entryNode`,
+/// `graph`, `levelToNodes`, `size`, `maxNodeId`, `cur`, `graphRamBytesUsed`),
+/// four `int`s (`lastFreezeSize`, `nsize`, `nsize0`, `upto`) and one
+/// `boolean` (`noGrowth`), aligned to 8. Measured against
+/// `lucene-core-10.5.0.jar`: 64. The size of this Rust struct is not the
+/// Java object's.
+const ON_HEAP_HNSW_GRAPH_SHALLOW_SIZE: i64 = 64;
+
 impl OnHeapHnswGraph {
     /// Creates an empty graph with the given `M`. `num_nodes` of `-1` means
     /// unbounded growth; a non-negative value fixes the eventual size.
@@ -134,9 +144,10 @@ impl OnHeapHnswGraph {
             .map(|_| OnceLock::new())
             .collect();
         // Shallow estimate of the statically used on-heap memory, equivalent to
-        // `OnHeapHnswGraph.RAM_BYTES_USED`, plus the outer graph array.
-        let ram_bytes_used = RamUsageEstimator::shallow_size_of_instance::<Self>()
-            + RamUsageEstimator::shallow_size_of(&graph);
+        // `OnHeapHnswGraph.RAM_BYTES_USED`, plus the outer graph array
+        // (`OnHeapHnswGraph.java:37-38, 87`).
+        let ram_bytes_used =
+            ON_HEAP_HNSW_GRAPH_SHALLOW_SIZE + RamUsageEstimator::shallow_size_of(&graph);
         Self {
             entry_node: AtomicEntryNode::new(-1, 1),
             graph,
@@ -160,15 +171,30 @@ impl OnHeapHnswGraph {
     fn level_slot(&self, level: i32, node: i32) -> Result<&NeighborArray> {
         let node_usize = node as usize;
         debug_assert!(node_usize < self.graph.len());
-        let levels = self.graph[node_usize].get().expect("graph[node] is null");
+        // `graph[node][level]`: the JVM's `ArrayIndexOutOfBoundsException` or
+        // `NullPointerException`.
+        let Some(cell) = usize::try_from(node).ok().and_then(|n| self.graph.get(n)) else {
+            return Err(crate::store::array_index_out_of_bounds(
+                i64::from(node),
+                self.graph.len(),
+            ));
+        };
+        let levels = cell.get().ok_or_else(LuceneError::null_pointer)?;
         debug_assert!(
             (level as usize) < levels.len(),
             "level={level}, node has only {} levels",
             levels.len()
         );
-        let slot = levels[level as usize].get();
+        let Some(level_cell) = usize::try_from(level).ok().and_then(|l| levels.get(l)) else {
+            return Err(crate::store::array_index_out_of_bounds(
+                i64::from(level),
+                levels.len(),
+            ));
+        };
+        let slot = level_cell.get();
         debug_assert!(slot.is_some(), "node={node}, level={level}");
-        Ok(slot.expect("graph[node][level] is null"))
+        // A `null` `NeighborArray` fails where the caller dereferences it.
+        slot.ok_or_else(LuceneError::null_pointer)
     }
 
     /// Returns the `NeighborArray` for `node` at `level`.
@@ -275,6 +301,10 @@ impl OnHeapHnswGraph {
     /// would have to grow storage the other workers may be reading — the outer
     /// array, or the node's level array — and where the level was already
     /// added, which Java would overwrite under the other workers' feet.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `addNode` grows or overwrites
+    /// in those cases; the slots here are published once to the concurrent
+    /// workers, so they are refused instead.
     pub fn add_node_shared(&self, level: i32, node: i32) -> Result<()> {
         let node_usize = node as usize;
         if node < 0 || node_usize >= self.graph.len() {
@@ -466,7 +496,8 @@ impl HnswGraph for OnHeapHnswGraph {
         let cur = self
             .cur
             .as_ref()
-            .ok_or_else(|| LuceneError::illegal_state("seek not called".to_string()))?;
+            // `cur.size()` on a `null` `cur`: the JVM's `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)?;
         self.upto += 1;
         if self.upto < cur.size() {
             Ok(cur.node(self.upto))
@@ -500,11 +531,12 @@ impl HnswGraph for OnHeapHnswGraph {
             Ok(Box::new(DenseNodesIterator::new(size)))
         } else {
             let num_levels = self.num_levels()?;
+            // `levelToNodes[level]`: the JVM's `ArrayIndexOutOfBoundsException`.
             if level < 0 || level >= num_levels {
-                return Err(LuceneError::illegal_argument(format!(
-                    "level {} out of bounds (num_levels={})",
-                    level, num_levels
-                )));
+                return Err(crate::store::array_index_out_of_bounds(
+                    i64::from(level),
+                    num_levels as usize,
+                ));
             }
             let level_to_nodes = self.build_level_to_nodes();
             Ok(Box::new(ArrayNodesIterator::new(

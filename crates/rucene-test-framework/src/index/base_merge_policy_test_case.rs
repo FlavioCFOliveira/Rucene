@@ -56,7 +56,6 @@ use rucene::index::merge_scheduler::{MergeScheduler, MergeSource, SerialMergeSch
 use rucene::index::segment_info::{SegmentCommitInfo, SegmentInfo};
 use rucene::index::segment_infos::SegmentInfos;
 use rucene::internal::tests_hooks::TestSecrets;
-use rucene::search::Sort;
 use rucene::store::{
     BufferedChecksumIndexInput, Directory, IOContext, IndexInput, IndexOutput, Lock,
 };
@@ -165,8 +164,8 @@ impl MergeContext for MockMergeContext {
         Ok((self.num_deletes_func)(info))
     }
 
-    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
-        (self.num_deletes_func)(info)
+    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> Result<i32> {
+        Ok((self.num_deletes_func)(info))
     }
 
     fn get_merging_segments(&self) -> HashSet<String> {
@@ -321,7 +320,7 @@ pub fn make_segment_commit_info(
         HashMap::new(),
         id,
         attributes,
-        Sort::default(),
+        None,
     )?;
     info.set_files([format!(
         "{name}_size={}.fake",
@@ -614,8 +613,8 @@ pub trait BaseMergePolicyTestCase: Send + Sync + 'static {
                     false,
                     HashMap::new(), // diagnostics
                     id,
-                    HashMap::new(),  // attributes
-                    Sort::default(), // indexSort
+                    HashMap::new(), // attributes
+                    None,           // indexSort
                 )?;
                 info.set_files(std::iter::empty::<String>())?;
                 let del_count = random.next_int_bound(1);

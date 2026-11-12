@@ -836,6 +836,19 @@ def run_macro_expansion(root: Path, package: str = None) -> str:
     machine, and a crate build there has filled swap.
     """
     target = kg_target()
+    # One expansion per (commit export, crate): `extract_rucene_kg.py --expand`
+    # and `expanded_evidence_kg.py` both need it, and the compiler run is the
+    # costliest part of both (measured 2026-11-11: 107 s and 42 s). A source
+    # root under the KG target is a `git archive` of one commit
+    # (`rucene-survey-<short>`), so its dump is cached there and reused.
+    cache = None
+    try:
+        root.resolve().relative_to(target.resolve())
+        cache = target / "expanded" / f"{root.resolve().name}--{package or 'root'}.rs"
+    except ValueError:
+        pass
+    if cache is not None and cache.is_file():
+        return cache.read_text(encoding="utf-8")
     proc = subprocess.run(
         ["cargo", "+nightly", "rustc", *(["-p", package] if package else []),
          "--lib", "--", "-Zunpretty=expanded"],
@@ -849,6 +862,11 @@ def run_macro_expansion(root: Path, package: str = None) -> str:
             "macro expansion failed (needs the nightly toolchain):\n"
             + proc.stderr[-2000:]
         )
+    if cache is not None:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache.with_suffix(".tmp")
+        tmp.write_text(proc.stdout, encoding="utf-8")
+        tmp.replace(cache)
     return proc.stdout
 
 

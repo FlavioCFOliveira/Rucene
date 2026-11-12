@@ -128,6 +128,7 @@ fn search(leaf: &Arc<dyn LeafReader>, k: i32) -> Vec<i32> {
         .expect("the search must succeed");
     collector
         .top_docs()
+        .unwrap()
         .score_docs
         .iter()
         .map(|score_doc| score_doc.doc)
@@ -197,6 +198,7 @@ fn a_caller_filter_is_honoured_by_a_knn_search() {
         .expect("the search must succeed");
     let docs: Vec<i32> = collector
         .top_docs()
+        .unwrap()
         .score_docs
         .iter()
         .map(|score_doc| score_doc.doc)
@@ -296,7 +298,7 @@ fn an_exitable_reader_aborts_a_knn_search_at_the_first_sampled_check() {
         "the search must stop at the first sampled check, as Java's exception does"
     );
     assert!(
-        collector.top_docs().score_docs.is_empty(),
+        collector.top_docs().unwrap().score_docs.is_empty(),
         "nothing may be collected once the first accept-docs check has thrown"
     );
 }
@@ -341,7 +343,7 @@ fn an_exitable_reader_aborts_a_knn_search_over_a_leaf_with_deletions() {
         "the search must stop at the first sampled check, as Java's exception does"
     );
     assert!(
-        collector.top_docs().score_docs.is_empty(),
+        collector.top_docs().unwrap().score_docs.is_empty(),
         "nothing may be collected once the first accept-docs check has thrown"
     );
 }

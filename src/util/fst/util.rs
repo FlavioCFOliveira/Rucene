@@ -1047,7 +1047,7 @@ pub fn binary_search<O: Outputs>(
         let mid = ((low as u32 + high as u32) >> 1) as i32;
         input.set_position(arc.pos_arcs_start());
         input.skip_bytes(i64::from(arc.bytes_per_arc()) * i64::from(mid) + 1)?;
-        let mid_label = fst.read_label(input.as_data_input())?;
+        let mid_label = fst.read_label(&mut *input)?;
         let cmp = mid_label - target_label;
         if cmp < 0 {
             low = mid + 1;

@@ -458,7 +458,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                         let mut l = [0i64; 4];
                         input.read_longs(Some(&mut l), 1, 3)?;
                         assert_array_equals(&[0i64, 3, i64::MAX, -3], &l);
-                        Assert::assert_equals(24, input.file_pointer());
+                        Assert::assert_equals(24, input.file_pointer()?);
                         Ok(())
                     },
                 )
@@ -488,7 +488,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                         let mut l = [0i64; 4];
                         input.read_longs(Some(&mut l), 1, 3)?;
                         assert_array_equals(&[0i64, 3, i64::MAX, -3], &l);
-                        Assert::assert_equals(25, input.file_pointer());
+                        Assert::assert_equals(25, input.file_pointer()?);
                         Ok(())
                     },
                 )
@@ -546,7 +546,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                 let mut i = [0i32; 4];
                 input.read_ints(Some(&mut i), 1, 3)?;
                 assert_array_equals(&[0, 3, i32::MAX, -3], &i);
-                Assert::assert_equals(12, input.file_pointer());
+                Assert::assert_equals(12, input.file_pointer()?);
                 Ok(())
             })
         })
@@ -572,7 +572,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                 let mut i = [0i32; 4];
                 input.read_ints(Some(&mut i), 1, 3)?;
                 assert_array_equals(&[0, 3, i32::MAX, -3], &i);
-                Assert::assert_equals(12 + i64::from(padding), input.file_pointer());
+                Assert::assert_equals(12 + i64::from(padding), input.file_pointer()?);
                 Ok(())
             })
         })
@@ -615,7 +615,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                 let mut ff = [0f32; 4];
                 input.read_floats(Some(&mut ff), 1, 3)?;
                 assert_float_array_equals(&[0.0, 3.0, f32::MAX, -3.0], &ff);
-                Assert::assert_equals(12, input.file_pointer());
+                Assert::assert_equals(12, input.file_pointer()?);
                 Ok(())
             })
         })
@@ -643,7 +643,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                     let mut ff = [0f32; 4];
                     input.read_floats(Some(&mut ff), 1, 3)?;
                     assert_float_array_equals(&[0.0, 3.0, f32::MAX, -3.0], &ff);
-                    Assert::assert_equals(12 + i64::from(padding), input.file_pointer());
+                    Assert::assert_equals(12 + i64::from(padding), input.file_pointer()?);
                     Ok(())
                 })
             },
@@ -754,7 +754,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
             for &i in &ints {
                 Assert::assert_equals(i, input.read_z_int()?);
             }
-            Assert::assert_equals(input.length(), input.file_pointer());
+            Assert::assert_equals(input.length(), input.file_pointer()?);
             input.close()
         })
     }
@@ -790,7 +790,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
             for &l in &longs {
                 Assert::assert_equals(l, input.read_z_long()?);
             }
-            Assert::assert_equals(input.length(), input.file_pointer());
+            Assert::assert_equals(input.length(), input.file_pointer()?);
             input.close()
         })
     }
@@ -815,7 +815,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
             assert_sets_equal(&[], &set2);
             let set3 = input.read_set_of_strings()?;
             assert_sets_equal(&["test3"], &set3);
-            Assert::assert_equals(input.length(), input.file_pointer());
+            Assert::assert_equals(input.length(), input.file_pointer()?);
             input.close()
         })
     }
@@ -844,7 +844,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
             assert_maps_equal(&[], &map2);
             let map3 = input.read_map_of_strings()?;
             assert_maps_equal(&[("key", "value")], &map3);
-            Assert::assert_equals(input.length(), input.file_pointer());
+            Assert::assert_equals(input.length(), input.file_pointer()?);
             input.close()
         })
     }
@@ -1579,7 +1579,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
             let mut i = 0;
             while i < num {
                 let mut slice1 = input.slice("slice1", i as i64, (num - i) as i64)?;
-                Assert::assert_equals(0, slice1.file_pointer());
+                Assert::assert_equals(0, slice1.file_pointer()?);
                 Assert::assert_equals((num - i) as i64, slice1.length());
 
                 // seek to a random spot shouldnt impact slicing.
@@ -1591,7 +1591,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                     if random().next_boolean() {
                         slice2 = slice2.clone_input()?; // clone shouldn't impact slice data
                     }
-                    Assert::assert_equals(0, slice2.file_pointer());
+                    Assert::assert_equals(0, slice2.file_pointer()?);
                     Assert::assert_equals((num - i - j) as i64, slice2.length());
                     let mut data = vec![0u8; num];
                     data[..i + j].copy_from_slice(&bytes[..i + j]);
@@ -1758,9 +1758,9 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                 })?;
                 with_input(dir.open_input("a", &*DEFAULT_IO_CONTEXT)?, |input| {
                     input.seek(100)?;
-                    Assert::assert_equals(100, input.file_pointer());
+                    Assert::assert_equals(100, input.file_pointer()?);
                     input.seek(1024)?;
-                    Assert::assert_equals(1024, input.file_pointer());
+                    Assert::assert_equals(1024, input.file_pointer()?);
                     Ok(())
                 })
             },
@@ -1780,7 +1780,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                 })?;
                 with_input(dir.open_input("a", &*DEFAULT_IO_CONTEXT)?, |input| {
                     input.seek(100)?;
-                    Assert::assert_equals(100, input.file_pointer());
+                    Assert::assert_equals(100, input.file_pointer()?);
                     expect_throws("java.io.EOFException", || input.seek(1025));
                     Ok(())
                 })
@@ -2071,7 +2071,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                             input.prefetch(i64::from(offset), prefetch_length)?;
                         }
                         input.seek(i64::from(offset))?;
-                        Assert::assert_equals(i64::from(offset), input.file_pointer());
+                        Assert::assert_equals(i64::from(offset), input.file_pointer()?);
                         let at = start_offset + offset as usize;
                         match random().next_int_bound(100) {
                             0 => Assert::assert_equals(arr[at] as i8, input.read_byte()? as i8),

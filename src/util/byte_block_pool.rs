@@ -633,9 +633,27 @@ impl ByteBlockPool {
         offset: i64,
         length: usize,
     ) -> &'a [u8] {
-        let buffer_index = i32::try_from(offset >> BYTE_BLOCK_SHIFT)
-            .expect("integer overflow: Math.toIntExact(offset >> BYTE_BLOCK_SHIFT)");
-        let buffer = &self.buffers[buffer_index as usize];
+        // `buffers[Math.toIntExact(offset >> BYTE_BLOCK_SHIFT)]`: Java's
+        // `ArithmeticException`, then the JVM's
+        // `ArrayIndexOutOfBoundsException`.
+        let Ok(buffer_index) = i32::try_from(offset >> BYTE_BLOCK_SHIFT) else {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.ArithmeticException",
+                Some("integer overflow"),
+            )
+        };
+        let Some(buffer) = usize::try_from(buffer_index)
+            .ok()
+            .and_then(|index| self.buffers.get(index))
+        else {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                Some(&format!(
+                    "Index {buffer_index} out of bounds for length {}",
+                    self.buffers.len()
+                )),
+            )
+        };
         let pos = (offset as usize) & BYTE_BLOCK_MASK;
         if pos + length <= BYTE_BLOCK_SIZE {
             // Common case: the slice lives in a single block. Reference the

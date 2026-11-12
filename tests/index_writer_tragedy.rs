@@ -681,7 +681,7 @@ fn delete_all_aborts_a_running_merge() {
         0,
         "a merge brought back the documents deleteAll dropped"
     );
-    assert_eq!(writer.num_docs().unwrap(), 0);
+    assert_eq!(writer.get_doc_stats().unwrap().num_docs, 0);
     writer.close().unwrap();
 }
 
@@ -2097,7 +2097,7 @@ impl IndexInput for CloseFailingInput {
             std::io::Error::other("injected failure closing an input"),
         )))
     }
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.inner.file_pointer()
     }
     fn length(&self) -> i64 {

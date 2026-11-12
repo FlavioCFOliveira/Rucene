@@ -60,8 +60,8 @@
 //! and it survives the port intact.
 //!
 //! The other, the `jdk.incubator.vector` Vector API, does not: Rust's portable
-//! SIMD (`std::simd`) is nightly-only and this crate targets stable Rust with
-//! an MSRV of 1.80. Every Panama kernel in Lucene is written twice — a lane
+//! SIMD (`std::simd`) is nightly-only and this crate targets stable Rust.
+//! Every Panama kernel in Lucene is written twice — a lane
 //! path, and a scalar loop that finishes the elements the lanes do not cover —
 //! and each lane path is guarded on a minimum vector width. This port sets
 //! [`PanamaVectorConstants::PREFERRED_VECTOR_BITSIZE`] to zero, which makes
@@ -100,8 +100,8 @@
 //!
 //! [`lookup`] is a faithful port and returns [`DefaultVectorizationProvider`],
 //! because Lucene's first gate is `Constants.IS_HOTSPOT_VM` and
-//! [`crate::util::jvm::HotspotVMOptions`] — itself a faithful port of Lucene's
-//! non-HotSpot fallback — reports `false` in a Rust binary. The Panama provider
+//! [`crate::util::jvm::HotspotVMOptions::is_hotspot_vm`] reports `false` in a
+//! Rust binary, as Lucene's non-HotSpot fallback does. The Panama provider
 //! is thus unreachable through `lookup` by Lucene's own logic rather than by a
 //! Rucene-specific rule; it is a complete implementation and can be constructed
 //! directly, and it becomes reachable the day that gate changes.

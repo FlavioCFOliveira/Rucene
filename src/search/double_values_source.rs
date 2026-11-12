@@ -4,13 +4,15 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::index::LeafReaderContext;
+use crate::search::comparators::double_comparator::DoubleComparator;
+use crate::search::comparators::numeric_comparator::NumericLeafState;
 use crate::search::double_values::{DoubleValues, EmptyDoubleValues};
 use crate::search::field_comparator::{
     java_double_compare, FieldComparator, SharedFieldComparator, SlotComparator, SortValue,
@@ -121,8 +123,11 @@ pub trait DoubleValuesSource: SegmentCacheable + Debug + Send + Sync {
 
     /// Source hash code.
     ///
-    /// Equivalent to the abstract `DoubleValuesSource.hashCode()`.
-    fn source_hash(&self) -> u64;
+    /// Equivalent to the abstract `DoubleValuesSource.hashCode()`: every
+    /// implementation returns its Java class's value, with the stable stand-in
+    /// of [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)
+    /// wherever Java's value is an identity hash.
+    fn source_hash(&self) -> i32;
 
     /// Renders the source.
     ///
@@ -295,9 +300,9 @@ impl DoubleValuesSource for ScoresValuesSource {
         scores: Option<Box<dyn DoubleValues + 'a>>,
     ) -> Result<Box<dyn DoubleValues + 'a>> {
         debug_assert!(scores.is_some());
-        scores.ok_or_else(|| {
-            LuceneError::illegal_state("DoubleValuesSource.SCORES requires scores".to_string())
-        })
+        // `assert scores != null; return scores;`: the caller dereferences
+        // the `null`.
+        scores.ok_or_else(LuceneError::null_pointer)
     }
 
     fn needs_scores(&self) -> bool {
@@ -318,7 +323,8 @@ impl DoubleValuesSource for ScoresValuesSource {
         other.as_any().is::<ScoresValuesSource>()
     }
 
-    fn source_hash(&self) -> u64 {
+    fn source_hash(&self) -> i32 {
+        // The `SCORES` constant's `hashCode()` is `0` (`DoubleValuesSource.java:342-344`).
         0
     }
 
@@ -400,8 +406,11 @@ impl DoubleValuesSource for ConstantValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        hash_of(&self.value.to_bits())
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(value)` (`DoubleValuesSource.java:414-416`).
+        31i32.wrapping_add(crate::util::java_collections::java_double_hash_code(
+            self.value,
+        ))
     }
 
     fn to_source_string(&self) -> String {
@@ -448,9 +457,8 @@ impl DoubleValues for FieldDoubleValues {
 }
 
 impl SegmentCacheable for FieldValuesSource {
-    /// Equivalent to `DocValues.isCacheable(ctx, field)`, whose body — "not
-    /// cacheable once the field's doc values have been updated" — is inlined
-    /// because `crate::index::DocValues` does not expose that static.
+    /// Equivalent to `DocValues.isCacheable(ctx, field)`: not cacheable once
+    /// the field's doc values have been updated.
     fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
         crate::index::doc_values::DocValues::is_cacheable(ctx, &[&self.field])
     }
@@ -489,8 +497,23 @@ impl DoubleValuesSource for FieldValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        hash_of(&(self.field.clone(), self.decoder))
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(field, decoder)` (`DoubleValuesSource.java:478-480`). The
+        // decoder is a method reference or lambda, whose hash is a JVM identity
+        // hash: the stable stand-in of `java_identity_hash_code_stand_in` names
+        // the factory that installs it.
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            crate::util::java_collections::java_string_hash_code(&self.field),
+            crate::util::java_collections::java_identity_hash_code_stand_in(match self.decoder {
+                DoubleValueDecoder::DoubleBits => {
+                    "org.apache.lucene.search.DoubleValuesSource.fromDoubleField"
+                }
+                DoubleValueDecoder::FloatBits => {
+                    "org.apache.lucene.search.DoubleValuesSource.fromFloatField"
+                }
+                _ => "org.apache.lucene.search.DoubleValuesSource.fromLongField",
+            }),
+        ])
     }
 
     fn to_source_string(&self) -> String {
@@ -560,8 +583,9 @@ impl DoubleValuesSource for QueryDoubleValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        self.query.query_hash()
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(query)` (`DoubleValuesSource.java:672-674`).
+        31i32.wrapping_add(self.query.query_hash())
     }
 
     fn to_source_string(&self) -> String {
@@ -686,8 +710,15 @@ impl DoubleValuesSource for WeightDoubleValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        Arc::as_ptr(&self.weight) as *const () as u64
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(weight)` (`DoubleValuesSource.java:771-773`); a `Weight`'s
+        // hash is a JVM identity hash, replaced by the stable stand-in of
+        // `java_identity_hash_code_stand_in`.
+        31i32.wrapping_add(
+            crate::util::java_collections::java_identity_hash_code_stand_in(
+                "org.apache.lucene.search.Weight",
+            ),
+        )
     }
 
     fn to_source_string(&self) -> String {
@@ -781,8 +812,9 @@ impl LongValuesSource for LongDoubleValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        self.inner.source_hash()
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(inner)` (`DoubleValuesSource.java:235-237`).
+        31i32.wrapping_add(self.inner.source_hash())
     }
 
     fn to_source_string(&self) -> String {
@@ -836,7 +868,8 @@ impl LongValuesSource for SortableLongDoubleValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
+    fn source_hash(&self) -> i32 {
+        // `inner.hashCode()` (`DoubleValuesSource.java:164-166`).
         self.inner.source_hash()
     }
 
@@ -852,7 +885,10 @@ impl LongValuesSource for SortableLongDoubleValuesSource {
 #[derive(Debug)]
 pub struct DoubleValuesComparatorSource {
     producer: Arc<dyn DoubleValuesSource>,
-    missing_value: f64,
+    /// Java's mutable `double missingValue`, held as its bits, which
+    /// `DoubleValuesSortField.setMissingValue` changes on the source the sort
+    /// field shares (`DoubleValuesSource.java:584-589`).
+    missing_value: std::sync::atomic::AtomicU64,
 }
 
 impl DoubleValuesComparatorSource {
@@ -863,8 +899,27 @@ impl DoubleValuesComparatorSource {
     pub fn new(producer: Arc<dyn DoubleValuesSource>, missing_value: f64) -> Self {
         Self {
             producer,
-            missing_value,
+            missing_value: std::sync::atomic::AtomicU64::new(missing_value.to_bits()),
         }
+    }
+
+    /// Replaces the missing value of every comparator built from now on.
+    ///
+    /// Equivalent to `DoubleValuesComparatorSource.setMissingValue(double)`,
+    /// which `DoubleValuesSortField.setMissingValue(Object)` calls.
+    pub fn set_missing_value(&self, missing_value: f64) {
+        self.missing_value.store(
+            missing_value.to_bits(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Returns the current missing value.
+    pub fn missing_value(&self) -> f64 {
+        f64::from_bits(
+            self.missing_value
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
     }
 
     /// `DoubleValuesSortField.rewrite(IndexSearcher)` of `field`, the sort
@@ -889,7 +944,7 @@ impl DoubleValuesComparatorSource {
         Ok(std::borrow::Cow::Owned(get_sort_field_with_missing(
             rewritten_source,
             field.reverse(),
-            self.missing_value,
+            self.missing_value(),
         )?))
     }
 }
@@ -907,20 +962,27 @@ impl FieldComparatorSource for DoubleValuesComparatorSource {
         Some(self)
     }
 
+    /// Equivalent to `DoubleValuesComparatorSource.newComparator`
+    /// (`DoubleValuesSource.java:588-612`): a `DoubleComparator` with
+    /// `Pruning.NONE` whose leaves read the producer's values through a
+    /// [`DoubleValuesHolder`], converted with `Double::doubleToLongBits`.
     fn new_comparator(
         &self,
-        _fieldname: &str,
+        fieldname: &str,
         num_hits: usize,
         _pruning: Pruning,
-        _reversed: bool,
+        reversed: bool,
     ) -> Result<Box<dyn FieldComparator>> {
         Ok(Box::new(SharedFieldComparator::new(
             DoubleValuesComparator {
+                inner: DoubleComparator::new(
+                    num_hits,
+                    fieldname,
+                    Some(self.missing_value()),
+                    reversed,
+                    Pruning::NONE,
+                ),
                 producer: Arc::clone(&self.producer),
-                missing_value: self.missing_value,
-                values: vec![0.0; num_hits],
-                bottom: 0.0,
-                top_value: 0.0,
             },
         )))
     }
@@ -952,54 +1014,38 @@ impl DoubleValues for ScoreCellDoubleValues {
 /// The comparator a [`DoubleValuesComparatorSource`] builds.
 ///
 /// Equivalent to the anonymous `DoubleComparator` subclass that
-/// `DoubleValuesComparatorSource.newComparator` returns, which reads its values
-/// from the producer rather than from the field's doc values and is built with
-/// [`Pruning::NONE`], so none of the skipping machinery applies. Reproducing it
-/// directly keeps the values as `double`s instead of round-tripping them
-/// through `Double.doubleToLongBits`, which is the exact same number.
+/// `DoubleValuesComparatorSource.newComparator` returns
+/// (`DoubleValuesSource.java:591-611`): every comparison is the
+/// [`DoubleComparator`]'s, over the doc values its leaf comparator's
+/// `getNumericDocValues` override returns —
+/// `asNumericDocValues(holder, Double::doubleToLongBits)` — and its
+/// `setScorer` override fills the holder with
+/// `producer.getValues(ctx, fromScorer(scorer))` before calling
+/// `super.setScorer(scorer)`.
+#[derive(Debug)]
 struct DoubleValuesComparator {
+    inner: DoubleComparator,
     producer: Arc<dyn DoubleValuesSource>,
-    missing_value: f64,
-    values: Vec<f64>,
-    bottom: f64,
-    top_value: f64,
 }
 
-/// The per-segment state of a [`DoubleValuesComparator`]: the producer's values
-/// for the segment, and the cell through which they read the current score.
+/// The leaf comparator of a [`DoubleValuesComparator`]: the
+/// `DoubleComparator.DoubleLeafComparator` state, the leaf's context (Java's
+/// `ctx` field), the holder, and the score cell its values read.
 struct DoubleValuesLeaf {
+    leaf: NumericLeafState,
+    ctx: LeafReaderContext,
+    holder: DoubleValuesHolder,
     score: Rc<Cell<f64>>,
-    values: Box<dyn DoubleValues>,
-}
-
-impl Debug for DoubleValuesComparator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DoubleValuesComparator")
-            .field("producer", &self.producer)
-            .field("missing_value", &self.missing_value)
-            .finish_non_exhaustive()
-    }
 }
 
 impl DoubleValuesComparator {
-    /// Equivalent to `DoubleLeafComparator.getValueForDoc(int)` over the
-    /// producer's values.
-    fn get_value_for_doc(
-        &self,
-        leaf: &mut DoubleValuesLeaf,
-        doc: i32,
-        scorer: &mut dyn Scorable,
-    ) -> Result<f64> {
+    /// Publishes the current score for the producer's values; see
+    /// [`ScoreCellDoubleValues`].
+    fn publish_score(&self, leaf: &DoubleValuesLeaf, scorer: &mut dyn Scorable) -> Result<()> {
         if self.producer.needs_scores() {
             leaf.score.set(f64::from(scorer.score()?));
         }
-        let missing_value = self.missing_value;
-        let values = &mut leaf.values;
-        if values.advance_exact(doc)? {
-            values.double_value()
-        } else {
-            Ok(missing_value)
-        }
+        Ok(())
     }
 }
 
@@ -1007,31 +1053,42 @@ impl SlotComparator for DoubleValuesComparator {
     type Leaf = DoubleValuesLeaf;
 
     fn compare(&self, slot1: i32, slot2: i32) -> i32 {
-        java_double_compare(self.values[slot1 as usize], self.values[slot2 as usize])
+        self.inner.compare(slot1, slot2)
     }
 
     fn set_top_value(&mut self, value: SortValue) {
-        if let SortValue::Double(value) = value {
-            self.top_value = value;
-        }
+        self.inner.set_top_value(value);
     }
 
     fn value(&self, slot: i32) -> SortValue {
-        SortValue::Double(self.values[slot as usize])
+        self.inner.value(slot)
     }
 
+    fn set_single_sort(&mut self) {
+        self.inner.set_single_sort();
+    }
+
+    fn disable_skipping(&mut self) {
+        self.inner.disable_skipping();
+    }
+
+    /// `getLeafComparator(context)`: a new holder, and a
+    /// `DoubleLeafComparator(context)` whose `getNumericDocValues` returns
+    /// `asNumericDocValues(holder, Double::doubleToLongBits)`.
     fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<DoubleValuesLeaf> {
-        let score = Rc::new(Cell::new(0.0));
-        let scores: Box<dyn DoubleValues> = Box::new(ScoreCellDoubleValues {
-            score: Rc::clone(&score),
-        });
-        let values = Arc::clone(&self.producer).get_values(context, Some(scores))?;
-        Ok(DoubleValuesLeaf { score, values })
+        let holder = DoubleValuesHolder::default();
+        let doc_values = Box::new(as_numeric_doc_values(holder.clone(), double_to_long_bits));
+        let leaf = self.inner.new_leaf_with_doc_values(context, doc_values)?;
+        Ok(DoubleValuesLeaf {
+            leaf,
+            ctx: context.clone(),
+            holder,
+            score: Rc::new(Cell::new(0.0)),
+        })
     }
 
-    fn set_bottom(&mut self, _leaf: &mut DoubleValuesLeaf, slot: i32) -> Result<()> {
-        self.bottom = self.values[slot as usize];
-        Ok(())
+    fn set_bottom(&mut self, leaf: &mut DoubleValuesLeaf, slot: i32) -> Result<()> {
+        self.inner.set_bottom(&mut leaf.leaf, slot)
     }
 
     fn compare_bottom(
@@ -1040,8 +1097,8 @@ impl SlotComparator for DoubleValuesComparator {
         doc: i32,
         scorer: &mut dyn Scorable,
     ) -> Result<i32> {
-        let value = self.get_value_for_doc(leaf, doc, scorer)?;
-        Ok(java_double_compare(self.bottom, value))
+        self.publish_score(leaf, scorer)?;
+        self.inner.compare_bottom(&mut leaf.leaf, doc, scorer)
     }
 
     fn compare_top(
@@ -1050,8 +1107,8 @@ impl SlotComparator for DoubleValuesComparator {
         doc: i32,
         scorer: &mut dyn Scorable,
     ) -> Result<i32> {
-        let value = self.get_value_for_doc(leaf, doc, scorer)?;
-        Ok(java_double_compare(self.top_value, value))
+        self.publish_score(leaf, scorer)?;
+        self.inner.compare_top(&mut leaf.leaf, doc, scorer)
     }
 
     fn copy(
@@ -1061,16 +1118,30 @@ impl SlotComparator for DoubleValuesComparator {
         doc: i32,
         scorer: &mut dyn Scorable,
     ) -> Result<()> {
-        self.values[slot as usize] = self.get_value_for_doc(leaf, doc, scorer)?;
-        Ok(())
+        self.publish_score(leaf, scorer)?;
+        self.inner.copy(&mut leaf.leaf, slot, doc, scorer)
     }
 
-    fn set_scorer(
+    /// `holder.values = producer.getValues(ctx, fromScorer(scorer));
+    /// super.setScorer(scorer);`
+    fn set_scorer(&mut self, leaf: &mut DoubleValuesLeaf, scorer: &mut dyn Scorable) -> Result<()> {
+        let scores: Box<dyn DoubleValues> = Box::new(ScoreCellDoubleValues {
+            score: Rc::clone(&leaf.score),
+        });
+        leaf.holder
+            .set_values(Arc::clone(&self.producer).get_values(&leaf.ctx, Some(scores))?);
+        self.inner.set_scorer(&mut leaf.leaf, scorer)
+    }
+
+    fn competitive_iterator(
         &mut self,
-        _leaf: &mut DoubleValuesLeaf,
-        _scorer: &mut dyn Scorable,
-    ) -> Result<()> {
-        Ok(())
+        leaf: &mut DoubleValuesLeaf,
+    ) -> Result<Option<Box<dyn crate::search::DocIdSetIterator>>> {
+        self.inner.competitive_iterator(&mut leaf.leaf)
+    }
+
+    fn set_hits_threshold_reached(&mut self, leaf: &mut DoubleValuesLeaf) -> Result<()> {
+        self.inner.set_hits_threshold_reached(&mut leaf.leaf)
     }
 }
 
@@ -1126,86 +1197,129 @@ pub fn from_scorer(scorer: &mut dyn Scorable) -> ScorerDoubleValues<'_> {
 /// `Double::doubleToLongBits`.
 pub type DoubleToLongFunction = fn(f64) -> i64;
 
-/// Presents a [`DoubleValues`] as a [`NumericDocValues`](crate::index::NumericDocValues).
+/// `Double.doubleToLongBits(double)`: the raw bits, every NaN collapsed to
+/// the canonical `0x7ff8000000000000L`.
+fn double_to_long_bits(value: f64) -> i64 {
+    if value.is_nan() {
+        0x7ff8_0000_0000_0000_u64 as i64
+    } else {
+        value.to_bits() as i64
+    }
+}
+
+/// The per-leaf holder a [`DoubleValuesComparatorSource`] comparator fills
+/// in `setScorer` and its doc values read through.
 ///
-/// Equivalent to the anonymous `NumericDocValues` of the private static
-/// `DoubleValuesSource.asNumericDocValues(DoubleValuesHolder,
-/// DoubleToLongFunction)`, whose iteration methods all throw: the comparator
-/// only ever positions it with `advanceExact` and reads `longValue`.
-///
-/// **Divergence from Lucene 10.5.0.** Java reads
-/// `converter.applyAsLong(in.values.doubleValue())` from `longValue()`, whose
-/// receiver this crate declares as `&self` while
-/// [`DoubleValues::double_value`] needs `&mut self`. The conversion is
-/// therefore performed inside
-/// [`advance_exact`](crate::index::DocValuesIterator::advance_exact), which
-/// does have exclusive access, and `long_value` returns what it computed — the
-/// same number, read one call earlier.
-pub struct DoubleValuesAsNumericDocValues<'a> {
-    values: Box<dyn DoubleValues + 'a>,
-    converter: DoubleToLongFunction,
-    value: i64,
+/// Equivalent to the private static `DoubleValuesSource.DoubleValuesHolder`
+/// (`DoubleValuesSource.java:569-571`), whose `values` is `null` until the
+/// first `setScorer`.
+#[derive(Clone, Default)]
+pub struct DoubleValuesHolder {
+    values: Rc<RefCell<Option<Box<dyn DoubleValues>>>>,
 }
 
-impl Debug for DoubleValuesAsNumericDocValues<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("DoubleValuesAsNumericDocValues")
-    }
-}
-
-/// Presents `values` as a [`NumericDocValues`](crate::index::NumericDocValues),
-/// converting each of them with `converter`.
-///
-/// Equivalent to the private static
-/// `DoubleValuesSource.asNumericDocValues(DoubleValuesHolder,
-/// DoubleToLongFunction)`.
-pub fn as_numeric_doc_values<'a>(
-    values: Box<dyn DoubleValues + 'a>,
-    converter: DoubleToLongFunction,
-) -> DoubleValuesAsNumericDocValues<'a> {
-    DoubleValuesAsNumericDocValues {
-        values,
-        converter,
-        value: 0,
-    }
-}
-
-impl crate::search::DocIdSetIterator for DoubleValuesAsNumericDocValues<'_> {
-    fn doc_id(&self) -> i32 {
-        unimplemented!("DoubleValuesSource.asNumericDocValues does not iterate")
+impl DoubleValuesHolder {
+    /// Replaces the held values, Java's `holder.values = ...`.
+    pub fn set_values(&self, values: Box<dyn DoubleValues>) {
+        *self.values.borrow_mut() = Some(values);
     }
 
-    fn next_doc(&mut self) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "DoubleValuesSource.asNumericDocValues does not iterate".to_string(),
-        ))
-    }
-
-    fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "DoubleValuesSource.asNumericDocValues does not iterate".to_string(),
-        ))
-    }
-
-    fn cost(&self) -> i64 {
-        unimplemented!("DoubleValuesSource.asNumericDocValues does not iterate")
-    }
-}
-
-impl crate::index::DocValuesIterator for DoubleValuesAsNumericDocValues<'_> {
-    fn advance_exact(&mut self, target: i32) -> Result<bool> {
-        if self.values.advance_exact(target)? {
-            self.value = (self.converter)(self.values.double_value()?);
-            Ok(true)
-        } else {
-            Ok(false)
+    /// Runs `f` over the held values; `null` values are the
+    /// `NullPointerException` Java's dereference throws.
+    fn with_values<T>(&self, f: impl FnOnce(&mut dyn DoubleValues) -> Result<T>) -> Result<T> {
+        match self.values.borrow_mut().as_mut() {
+            Some(values) => f(values.as_mut()),
+            None => Err(LuceneError::null_pointer()),
         }
     }
 }
 
-impl crate::index::NumericDocValues for DoubleValuesAsNumericDocValues<'_> {
+impl Debug for DoubleValuesHolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DoubleValuesHolder")
+            .field("set", &self.values.borrow().is_some())
+            .finish()
+    }
+}
+
+/// The [`NumericDocValues`](crate::index::NumericDocValues) view of a
+/// [`DoubleValuesHolder`], converting each value with `converter`.
+///
+/// Equivalent to the anonymous `NumericDocValues` of the private static
+/// `DoubleValuesSource.asNumericDocValues(DoubleValuesHolder,
+/// DoubleToLongFunction)` (`DoubleValuesSource.java:615-649`): `longValue` is
+/// `converter.applyAsLong(in.values.doubleValue())`, `advanceExact` reads the
+/// holder's current values, and the iteration methods throw
+/// `UnsupportedOperationException` with no message.
+pub struct DoubleValuesAsNumericDocValues {
+    holder: DoubleValuesHolder,
+    converter: DoubleToLongFunction,
+}
+
+impl Debug for DoubleValuesAsNumericDocValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DoubleValuesAsNumericDocValues")
+            .field("holder", &self.holder)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Presents `holder` as a [`NumericDocValues`](crate::index::NumericDocValues),
+/// converting each value with `converter`.
+///
+/// Equivalent to the private static
+/// `DoubleValuesSource.asNumericDocValues(DoubleValuesHolder,
+/// DoubleToLongFunction)`.
+pub fn as_numeric_doc_values(
+    holder: DoubleValuesHolder,
+    converter: DoubleToLongFunction,
+) -> DoubleValuesAsNumericDocValues {
+    DoubleValuesAsNumericDocValues { holder, converter }
+}
+
+impl crate::search::DocIdSetIterator for DoubleValuesAsNumericDocValues {
+    /// `DoubleValuesSource$3` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.DoubleValuesSource$3",
+        )
+    }
+    fn doc_id(&self) -> i32 {
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn cost(&self) -> i64 {
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
+    }
+}
+
+impl crate::index::DocValuesIterator for DoubleValuesAsNumericDocValues {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.holder
+            .with_values(|values| values.advance_exact(target))
+    }
+}
+
+impl crate::index::NumericDocValues for DoubleValuesAsNumericDocValues {
     fn long_value(&self) -> Result<i64> {
-        Ok(self.value)
+        let converter = self.converter;
+        self.holder
+            .with_values(|values| Ok(converter(values.double_value()?)))
     }
 }
 

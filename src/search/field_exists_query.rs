@@ -8,16 +8,12 @@ use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::index::{
-    DocIndexIterator, DocValuesSkipIndexType, DocValuesType, IndexOptions, IndexReaderContext,
-    LeafReader, LeafReaderContext, VectorEncoding,
+    DocValuesSkipIndexType, DocValuesType, IndexOptions, IndexReaderContext, LeafReader,
+    LeafReaderContext, VectorEncoding,
 };
 use crate::search::constant_score_scorer_supplier::ConstantScoreScorerSupplier;
 use crate::search::constant_score_weight::{ConstantScoreWeight, ConstantScoreWeightImpl};
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
-use crate::search::doc_values_iteration::{
-    binary_as_iterator, numeric_as_iterator, sorted_as_iterator, sorted_numeric_as_iterator,
-    sorted_set_as_iterator,
-};
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::match_all_docs_query::MatchAllDocsQuery;
 use crate::search::query::Query;
@@ -26,53 +22,6 @@ use crate::search::score_mode::ScoreMode;
 use crate::search::scorer_supplier::ScorerSupplier;
 use crate::search::two_phase_iterator::ScorerIterator;
 use crate::search::weight::Weight;
-use crate::util::FixedBitSet;
-
-/// Exposes a [`DocIndexIterator`] as a plain [`DocIdSetIterator`].
-///
-/// **Divergence from Lucene 10.5.0.** Java simply assigns a
-/// `KnnVectorValues.DocIndexIterator` to a `DocIdSetIterator` variable, because
-/// the former extends the latter. Rust before 1.86 cannot coerce
-/// `Box<dyn DocIndexIterator>` to `Box<dyn DocIdSetIterator>`, and this crate's
-/// minimum supported Rust version is 1.80, so the upcast is this delegating
-/// wrapper.
-struct VectorDocIterator {
-    inner: Box<dyn DocIndexIterator>,
-}
-
-impl std::fmt::Debug for VectorDocIterator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VectorDocIterator")
-            .field("doc", &self.inner.doc_id())
-            .finish_non_exhaustive()
-    }
-}
-
-impl DocIdSetIterator for VectorDocIterator {
-    fn doc_id(&self) -> i32 {
-        self.inner.doc_id()
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        self.inner.next_doc()
-    }
-
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        self.inner.advance(target)
-    }
-
-    fn cost(&self) -> i64 {
-        self.inner.cost()
-    }
-
-    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
-        self.inner.into_bit_set(up_to, bit_set, offset)
-    }
-
-    fn doc_id_run_end(&mut self) -> Result<i32> {
-        self.inner.doc_id_run_end()
-    }
-}
 
 /// A [`Query`] that matches documents that contain either a value for a given
 /// field, or points, norms or vectors on it.
@@ -123,15 +72,19 @@ impl FieldExistsQuery {
             DocValuesType::NONE => None,
             DocValuesType::NUMERIC => reader
                 .get_numeric_doc_values(field)?
-                .map(numeric_as_iterator),
-            DocValuesType::BINARY => reader.get_binary_doc_values(field)?.map(binary_as_iterator),
-            DocValuesType::SORTED => reader.get_sorted_doc_values(field)?.map(sorted_as_iterator),
+                .map(|v| v as Box<dyn DocIdSetIterator>),
+            DocValuesType::BINARY => reader
+                .get_binary_doc_values(field)?
+                .map(|v| v as Box<dyn DocIdSetIterator>),
+            DocValuesType::SORTED => reader
+                .get_sorted_doc_values(field)?
+                .map(|v| v as Box<dyn DocIdSetIterator>),
             DocValuesType::SORTED_NUMERIC => reader
                 .get_sorted_numeric_doc_values(field)?
-                .map(sorted_numeric_as_iterator),
+                .map(|v| v as Box<dyn DocIdSetIterator>),
             DocValuesType::SORTED_SET => reader
                 .get_sorted_set_doc_values(field)?
-                .map(sorted_set_as_iterator),
+                .map(|v| v as Box<dyn DocIdSetIterator>),
         })
     }
 
@@ -197,21 +150,17 @@ impl ConstantScoreWeightImpl for FieldExistsWeight {
             // The field indexes norms.
             reader
                 .get_norm_values(&self.field)?
-                .map(numeric_as_iterator)
+                .map(|v| v as Box<dyn DocIdSetIterator>)
         } else if field_info.get_vector_dimension() != 0 {
             // The field indexes vectors.
             match field_info.get_vector_encoding() {
                 VectorEncoding::FLOAT32 => match reader.get_float_vector_values(&self.field)? {
                     None => None,
-                    Some(values) => Some(Box::new(VectorDocIterator {
-                        inner: values.iterator()?,
-                    })),
+                    Some(values) => Some(values.iterator()? as Box<dyn DocIdSetIterator>),
                 },
                 VectorEncoding::BYTE => match reader.get_byte_vector_values(&self.field)? {
                     None => None,
-                    Some(values) => Some(Box::new(VectorDocIterator {
-                        inner: values.iterator()?,
-                    })),
+                    Some(values) => Some(values.iterator()? as Box<dyn DocIdSetIterator>),
                 },
             }
         } else if field_info.get_doc_values_type() != DocValuesType::NONE {
@@ -417,12 +366,15 @@ impl Query for FieldExistsQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.FieldExistsQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.FieldExistsQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `31 * classHash() + field.hashCode()` (`FieldExistsQuery.java`).
+        31i32.wrapping_mul(self.class_hash()).wrapping_add(
+            crate::util::java_collections::java_string_hash_code(&self.field),
+        )
     }
 }

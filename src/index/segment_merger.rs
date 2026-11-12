@@ -14,7 +14,7 @@ use crate::index::field_infos::{FieldInfosBuilder, FieldNumbers};
 use crate::index::merge::MergeState;
 use crate::index::merge_policy::OneMerge;
 use crate::index::segment_info::SegmentInfo;
-use crate::search::{Executor, Sort};
+use crate::search::Executor;
 use crate::store::{Context, Directory, IOContext};
 use crate::util::{InfoStream, Version};
 
@@ -154,14 +154,13 @@ impl SegmentMerger {
             "The min version should be set by SegmentMerger for merged segments"
         );
         segment_info.set_min_version(min_version);
-        // `SegmentMerger.java:90-95`. Java tests `getIndexSort() != null`; this
-        // crate spells the null sort `Sort::new()`, as `SegmentInfo` declares
-        // (`SegmentInfo::to_string_verbose`).
-        if merge_state.info_stream.is_enabled("SM") && *segment_info.index_sort() != Sort::new() {
-            merge_state.info_stream.message(
-                "SM",
-                &format!("index sort during merge: {}", segment_info.index_sort()),
-            );
+        // `SegmentMerger.java:90-95`: `getIndexSort() != null`.
+        if let Some(index_sort) = segment_info.index_sort() {
+            if merge_state.info_stream.is_enabled("SM") {
+                merge_state
+                    .info_stream
+                    .message("SM", &format!("index sort during merge: {index_sort}"));
+            }
         }
 
         Ok(Self {
@@ -555,6 +554,7 @@ mod tests {
     use crate::index::segment_infos::SegmentInfos;
     use crate::index::segment_reader::SegmentReader;
     use crate::index::{FieldNumbers, SegmentCommitInfo};
+    use crate::search::Sort;
     use crate::search::NO_MORE_DOCS;
     use crate::store::{ByteBuffersDirectory, DEFAULT_IO_CONTEXT};
     use crate::util::BytesRef;
@@ -614,7 +614,7 @@ mod tests {
             readers,
             target,
             context,
-            Sort::new(),
+            None,
             Arc::new(crate::util::NoOutputInfoStream),
         )
         .unwrap()
@@ -626,7 +626,7 @@ mod tests {
         readers: &[Arc<dyn CodecReader>],
         target: &Arc<dyn Directory>,
         context: Arc<dyn IOContext>,
-        index_sort: Sort,
+        index_sort: Option<Sort>,
         info_stream: Arc<dyn InfoStream>,
     ) -> Result<SegmentMerger> {
         let codec = crate::codecs::for_name("Lucene104").unwrap();
@@ -711,7 +711,7 @@ mod tests {
             &readers,
             &target,
             context,
-            Sort::new(),
+            None,
             no_output(),
         ) {
             Err(LuceneError {
@@ -735,7 +735,7 @@ mod tests {
         let merge_context = Arc::from(crate::store::merge_io_context(
             crate::store::MergeInfo::new(2, -1, false, -1),
         ));
-        assert!(merger_with(&readers, &target, merge_context, Sort::new(), no_output()).is_ok());
+        assert!(merger_with(&readers, &target, merge_context, None, no_output()).is_ok());
     }
 
     /// `MergeState`'s constructor takes Java's parameters: it stamps the
@@ -792,7 +792,7 @@ mod tests {
     fn a_sorted_merge_reports_its_index_sort() {
         let (_dir, infos) = segments_sorted_by_id(2);
         let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let messages = |index_sort: Sort| {
+        let messages = |index_sort: Option<Sort>| {
             let readers: Vec<Arc<dyn CodecReader>> = infos
                 .iter()
                 .map(|info| reader_with_min_version(info, Some(Version::LUCENE_10_5_0), 10))
@@ -813,17 +813,13 @@ mod tests {
             messages
         };
         assert_eq!(
-            messages(id_sort()),
+            messages(Some(id_sort())),
             vec![(
                 "SM".to_string(),
                 "index sort during merge: <string: \"id\">".to_string()
             )]
         );
-        assert_eq!(
-            messages(Sort::new()),
-            Vec::new(),
-            "no index sort, no message"
-        );
+        assert_eq!(messages(None), Vec::new(), "no index sort, no message");
     }
 
     /// `MergeState`'s constructor starts with `verifyIndexSort`
@@ -845,7 +841,7 @@ mod tests {
             &readers,
             &target,
             context,
-            id_sort(),
+            Some(id_sort()),
             Arc::new(crate::util::NoOutputInfoStream),
         ) {
             Err(LuceneError {

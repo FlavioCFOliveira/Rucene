@@ -87,16 +87,21 @@ impl DataOutput for SkipBuffer {
     }
 
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
-        let end = offset
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
-        if end > b.len() {
-            return Err(LuceneError::illegal_argument(format!(
-                "source buffer too small: offset={offset}, len={len}, buf.len()={}",
-                b.len()
-            )));
+        // Java's `ByteBuffersDataOutput.writeBytes` puts the bytes through
+        // `ByteBuffer.put(src, offset, length)`, whose
+        // `Objects.checkFromIndexSize` raises `IndexOutOfBoundsException` for a
+        // range the source does not hold.
+        let end = offset as u64 + len as u64;
+        if end > b.len() as u64 {
+            return Err(LuceneError::unchecked(
+                "java.lang.IndexOutOfBoundsException",
+                format!(
+                    "Range [{offset}, {offset} + {len}) out of bounds for length {}",
+                    b.len()
+                ),
+            ));
         }
-        self.bytes.extend_from_slice(&b[offset..end]);
+        self.bytes.extend_from_slice(&b[offset..offset + len]);
         Ok(())
     }
 }
@@ -486,12 +491,12 @@ impl<R: SkipDataReader> MultiLevelSkipListReader<R> {
 
         for i in (1..self.number_of_skip_levels).rev() {
             let length = self.skip_data_reader.read_level_length(base.as_mut())?;
-            self.skip_pointer[i as usize] = base.file_pointer();
+            self.skip_pointer[i as usize] = base.file_pointer()?;
             self.skip_stream[i as usize] = Some(base.clone_input()?);
-            base.seek(base.file_pointer() + length)?;
+            base.seek(base.file_pointer()? + length)?;
         }
 
-        self.skip_pointer[0] = base.file_pointer();
+        self.skip_pointer[0] = base.file_pointer()?;
         self.skip_stream[0] = Some(base);
         Ok(())
     }
@@ -515,7 +520,7 @@ impl<R: SkipDataReader> MultiLevelSkipListReader<R> {
                         > self.skip_stream[level as usize - 1]
                             .as_ref()
                             .expect("INVARIANT: level stream is set")
-                            .file_pointer()
+                            .file_pointer()?
                 {
                     self.seek_child(level - 1)?;
                 }

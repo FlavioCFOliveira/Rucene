@@ -432,10 +432,6 @@ impl AbstractKnnVectorQueryImpl for AssertingSeededKnnVectorQuery {
         self.inner.knn_base()
     }
 
-    fn as_query(&self) -> &dyn Query {
-        self
-    }
-
     fn clone_knn_query(&self) -> Arc<dyn AbstractKnnVectorQueryImpl> {
         Arc::new(self.clone())
     }
@@ -526,7 +522,7 @@ impl Query for AssertingSeededKnnVectorQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         self.inner.query_hash()
     }
 }
@@ -620,7 +616,7 @@ impl KnnCollector for AssertingKnnCollector {
         self.collector.min_competitive_similarity()
     }
 
-    fn top_docs(&mut self) -> TopDocs {
+    fn top_docs(&mut self) -> rucene::error::Result<TopDocs> {
         self.collector.top_docs()
     }
 

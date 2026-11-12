@@ -564,7 +564,8 @@ fn assert_doc_values_with_skipper(
         let mut read_docs = 0;
         for reader_context in Arc::clone(&r).leaves()? {
             let reader = reader_context.leaf_reader();
-            let info_stream = rucene::util::PrintStreamInfoStream::new(Box::new(Vec::<u8>::new()));
+            // `new PrintStream(bos, false, UTF_8)` over a `ByteArrayOutputStream`.
+            let info_stream = rucene::util::ByteArrayPrintStream::new();
             let codec_reader = Arc::clone(&reader).as_codec_reader().ok_or_else(|| {
                 LuceneError::from(LuceneErrorKind::Unchecked {
                     class: "java.lang.ClassCastException",

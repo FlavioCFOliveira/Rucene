@@ -256,14 +256,14 @@ impl PointsReader for SimpleTextPointsReader {
         let mut input = BufferedChecksumIndexInput::new(clone);
         loop {
             read_line(&mut input, &mut scratch)?;
-            if input.file_pointer() >= footer_start_pos {
+            if input.file_pointer()? >= footer_start_pos {
                 // Make sure we landed at precisely the right location:
-                if input.file_pointer() != footer_start_pos {
+                if input.file_pointer()? != footer_start_pos {
                     return Err(LuceneError::corrupt_index(
                         format!(
                             "SimpleText failure: footer does not start at expected position \
                              current={} vs expected={footer_start_pos}",
-                            input.file_pointer()
+                            input.file_pointer()?
                         ),
                         IndexInput::resource_description(&input),
                     ));

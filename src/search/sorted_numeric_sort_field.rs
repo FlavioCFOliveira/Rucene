@@ -131,10 +131,12 @@ impl SortedNumericSortField {
             SortFieldType::Long => NumericSortKind::Long,
             SortFieldType::Float => NumericSortKind::Float,
             SortFieldType::Double => NumericSortKind::Double,
-            other => {
-                return Err(LuceneError::illegal_argument(format!(
-                    "cannot sort an index by a SortedNumericSortField of type {other:?}"
-                )))
+            // `default: throw new AssertionError();`
+            // (`SortedNumericSortField.java:399-400`).
+            _ => {
+                return Err(LuceneError::from(
+                    crate::error::LuceneErrorKind::AssertionError(String::new()),
+                ))
             }
         };
         let missing = match self.sort_field.missing_value() {
@@ -146,9 +148,7 @@ impl SortedNumericSortField {
         };
         let field = self
             .get_field()
-            .ok_or_else(|| {
-                LuceneError::illegal_argument("a sort field must name a field".to_string())
-            })?
+            .expect("INVARIANT: a SortedNumericSortField has a field")
             .to_string();
         let selector = self.get_selector();
         let numeric_type = self.get_numeric_type();
@@ -262,10 +262,12 @@ impl SortedNumericSortField {
                     (SortFieldType::Double, MissingValue::Double(value)) => {
                         output.write_long(NumericUtils::double_to_sortable_long(value))?
                     }
+                    // `default: throw new AssertionError();`
+                    // (`SortedNumericSortField.java:198-205`).
                     _ => {
-                        return Err(LuceneError::illegal_argument(format!(
-                        "Cannot serialize missing value {missing} for numeric type {numeric_type}"
-                    )))
+                        return Err(LuceneError::from(
+                            crate::error::LuceneErrorKind::AssertionError(String::new()),
+                        ))
                     }
                 }
             }
@@ -284,6 +286,14 @@ impl SortedNumericSortField {
     /// propagates any I/O error.
     fn read_selector_type(input: &mut dyn DataInput) -> Result<SortedNumericSelectorType> {
         let selector_ordinal = input.read_int()?;
+        // `type >= values().length` throws; a negative ordinal reaches
+        // `values()[type]`, an `ArrayIndexOutOfBoundsException`.
+        if selector_ordinal < 0 {
+            return Err(LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!("Index {selector_ordinal} out of bounds for length 2"),
+            ));
+        }
         SortedNumericSelectorType::from_ordinal(selector_ordinal).ok_or_else(|| {
             LuceneError::illegal_argument(format!(
                 "Can't deserialize SortedNumericSortField - unknown selector type {selector_ordinal}"
@@ -315,10 +325,12 @@ impl SortedNumericSortField {
                 SortFieldType::Double => {
                     MissingValue::Double(NumericUtils::sortable_long_to_double(input.read_long()?))
                 }
-                other => {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "Cannot deserialize a missing value for numeric type {other}"
-                    )))
+                // `default -> throw new AssertionError();`
+                // (`SortedNumericSortField.java:153`).
+                _ => {
+                    return Err(LuceneError::from(
+                        crate::error::LuceneErrorKind::AssertionError(String::new()),
+                    ))
                 }
             })
         } else {

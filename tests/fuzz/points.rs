@@ -860,20 +860,27 @@ fn const_fixture() -> Fixture {
 const FIRST_LEAF_COUNT_OFFSET: usize = 50;
 
 #[test]
-fn a_corrupt_leaf_count_is_refused_on_the_whole_cell_path_too() {
-    // `BKDPointTree::addAll` is the third site that reads a leaf's point count,
-    // and it is only reached when the visitor accepts the cell whole. It used
-    // to size `scratch_doc_ids` straight from the file: a count of -1 became
-    // `usize::MAX` and `Vec::resize` aborted the process with "capacity
-    // overflow", and a count of 0x0FFFFFFF reserved a gigabyte from five
-    // corrupt bytes.
+fn a_corrupt_leaf_count_on_the_whole_cell_path_is_read_as_lucene_does() {
+    // `BKDPointTree.addAll` is the third site that reads a leaf's point count,
+    // and it is only reached when the visitor accepts the cell whole
+    // (`BKDReader.java:597-610`). It used to size `scratch_doc_ids` straight
+    // from the file: a count of -1 became `usize::MAX` and `Vec::resize`
+    // aborted the process with "capacity overflow".
     //
-    // Java reads the count into `BKDReaderDocIDSetIterator.docIDs`, a fixed
-    // `int[maxPointsInLeafNode]` reused across leaves
-    // (`BKDReader.java:1045-1046`), so no count off disk can ever size an
-    // allocation there.
+    // Java checks nothing: `DocIdsWriter.readInts(leafNodes, count, visitor,
+    // scratchIterator.docIDs)` decodes whatever encoding byte follows the
+    // count. Measured on `lucene-core-10.5.0.jar` (`Lucene90PointsReader` over
+    // these exact patched files, a visitor answering `CELL_INSIDE_QUERY`):
+    // `-1` visits the other seven leaves' 52 documents and returns normally;
+    // `0x0FFFFFFF` visits 266 doc IDs and throws `EOFException` from
+    // `readLegacyDeltaVInts` (the same over a `ByteBuffersDirectory` as here).
     let fixture = deep_fixture();
-    let (original, info, _) = build(&fixture);
+    // A fixed segment id, so the files — their checksum footers included,
+    // which the second patch reads into as doc IDs — are the same bytes on
+    // every run as the ones measured on the jar.
+    let original: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let info = segment_info(&original, fixture.max_doc, *b"rucene-oracle-id");
+    write_segment(&original, &info, &fixture);
     let valid = read_file(&original, "_0.kdd");
     assert_eq!(
         valid[FIRST_LEAF_COUNT_OFFSET], fixture.max_points_in_leaf as u8,
@@ -882,30 +889,55 @@ fn a_corrupt_leaf_count_is_refused_on_the_whole_cell_path_too() {
     );
 
     // `-1` and `0x0FFFFFFF`, both as five-byte vInts so the file keeps its
-    // length: the first is the sign trap, the second the allocation trap.
-    for (name, patch) in [
-        ("-1", [0xff, 0xff, 0xff, 0xff, 0x0f]),
-        ("0x0FFFFFFF", [0xff, 0xff, 0xff, 0xff, 0x00]),
-    ] {
-        let corrupt = patched_copy(&original, "_0.kdd", FIRST_LEAF_COUNT_OFFSET, &patch);
-        let mut visitor = CollectingInsideVisitor::default();
-        let error = intersect_field(&corrupt, &info, 0, &mut visitor)
-            .expect_err("a leaf count no leaf can hold must be refused");
-        assert!(
-            matches!(
-                error,
-                rucene::error::LuceneError {
-                    kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
-                    ..
-                }
-            ),
-            "count={name}: {error:?}"
-        );
-    }
+    // length.
+    let corrupt = patched_copy(
+        &original,
+        "_0.kdd",
+        FIRST_LEAF_COUNT_OFFSET,
+        &[0xff, 0xff, 0xff, 0xff, 0x0f],
+    );
+    let mut visitor = CollectingInsideVisitor::default();
+    intersect_field(&corrupt, &info, 0, &mut visitor).expect("Java reads a count of -1 through");
+    assert_eq!(
+        visitor.doc_ids,
+        [
+            20, 57, 25, 30, 35, 3, 40, 8, 45, 13, 50, 18, 55, 23, 28, 33, 1, 38, 6, 43, 11, 48, 16,
+            53, 21, 58, 26, 31, 36, 4, 41, 9, 46, 14, 51, 19, 56, 24, 29, 34, 2, 39, 7, 44, 12, 49,
+            17, 54, 22, 59, 27, 32
+        ],
+        "count=-1: the documents Java visits"
+    );
+
+    let corrupt = patched_copy(
+        &original,
+        "_0.kdd",
+        FIRST_LEAF_COUNT_OFFSET,
+        &[0xff, 0xff, 0xff, 0xff, 0x00],
+    );
+    let mut visitor = CollectingInsideVisitor::default();
+    let error = intersect_field(&corrupt, &info, 0, &mut visitor)
+        .expect_err("Java reads past the end of the file");
+    // `ByteBuffersDataInput.readByte` throws a bare `EOFException`
+    // (`ByteBuffersDataInput.java:102`).
+    let class = match &error.kind {
+        rucene::error::LuceneErrorKind::Io(e) => e
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<rucene::store::java_nio_file::JavaIoException>())
+            .map(|java| java.class_name().to_string()),
+        _ => None,
+    };
+    assert_eq!(
+        class.as_deref(),
+        Some("java.io.EOFException"),
+        "count=0x0FFFFFFF: {error:?}"
+    );
+    assert_eq!(visitor.doc_ids.len(), 266, "count=0x0FFFFFFF");
+    assert_eq!(visitor.doc_ids[..8], [0, 47, 47, 84, 84, 99, 99, 104]);
+    assert_eq!(visitor.doc_ids[261..], [75980, 75980, 76024, 86556, 86557]);
 }
 
 #[test]
-fn a_compressed_dimension_with_a_full_common_prefix_is_refused() {
+fn a_compressed_dimension_with_a_full_common_prefix_throws_as_lucene_does() {
     // The sorted-dimension byte of a leaf names the dimension whose first
     // non-prefix byte is run-length compressed. `BKDWriter` never names a
     // dimension whose common prefix already covers the whole dimension
@@ -930,20 +962,28 @@ fn a_compressed_dimension_with_a_full_common_prefix_is_refused() {
          sorted-dimension byte"
     );
 
+    // Java checks nothing either: measured on `lucene-core-10.5.0.jar` over
+    // these exact patched files, the first leaf hands its eight points to the
+    // visitor and `visitCompressedDocValues` then throws
+    // `ArrayIndexOutOfBoundsException: Index 8 out of bounds for length 8`
+    // (`BKDReader.java:963`).
     let corrupt = patched_copy(&original, "_0.kdd", CONST_SORTED_DIM_OFFSET, &[0]);
     let mut visitor = CollectingVisitor::default();
     let error = intersect_field(&corrupt, &info, 1, &mut visitor)
-        .expect_err("a compressed dimension with no byte left to compress must be refused");
+        .expect_err("Java throws on a compressed dimension with no byte left to compress");
     assert!(
         matches!(
-            error,
-            rucene::error::LuceneError {
-                kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+            &error.kind,
+            rucene::error::LuceneErrorKind::Unchecked {
+                class: "java.lang.ArrayIndexOutOfBoundsException",
+                message: Some(message),
                 ..
-            }
+            } if message == "Index 8 out of bounds for length 8"
         ),
         "{error:?}"
     );
+    let doc_ids: Vec<i32> = visitor.points.iter().map(|(doc, _)| *doc).collect();
+    assert_eq!(doc_ids, [0, 46, 13, 59, 26, 39, 6, 52]);
 }
 
 /// Offset of the first leaf block's sorted-dimension byte in the `const`

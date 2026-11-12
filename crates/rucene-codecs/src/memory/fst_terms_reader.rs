@@ -345,7 +345,7 @@ impl TermsReader {
         let outputs = FSTTermOutputs::new(field_info);
         let fst_metadata = FST::read_metadata(input, outputs)?;
         let off_heap_fst_store =
-            OffHeapFSTStore::new(input.clone_input()?, input.file_pointer(), &fst_metadata);
+            OffHeapFSTStore::new(input.clone_input()?, input.file_pointer()?, &fst_metadata);
         let size = off_heap_fst_store.size();
         let dict = FST::from_reader(fst_metadata, Box::new(off_heap_fst_store));
         input.skip_bytes(size)?;

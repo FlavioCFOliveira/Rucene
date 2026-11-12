@@ -332,10 +332,6 @@ impl AbstractKnnVectorQueryImpl for ThrowingKnnVectorQuery {
         self.inner.knn_base()
     }
 
-    fn as_query(&self) -> &dyn Query {
-        self
-    }
-
     fn clone_knn_query(&self) -> Arc<dyn AbstractKnnVectorQueryImpl> {
         Arc::new(self.clone())
     }
@@ -399,7 +395,7 @@ impl Query for ThrowingKnnVectorQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         self.inner.query_hash()
     }
 }
@@ -429,10 +425,6 @@ impl CappedResultsThrowingKnnVectorQuery {
 impl AbstractKnnVectorQueryImpl for CappedResultsThrowingKnnVectorQuery {
     fn knn_base(&self) -> &AbstractKnnVectorQuery {
         self.inner.knn_base()
-    }
-
-    fn as_query(&self) -> &dyn Query {
-        self
     }
 
     fn clone_knn_query(&self) -> Arc<dyn AbstractKnnVectorQueryImpl> {
@@ -498,7 +490,7 @@ impl Query for CappedResultsThrowingKnnVectorQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         self.inner.query_hash()
     }
 }

@@ -6,10 +6,8 @@
 
 use std::sync::Arc;
 
-use crate::analysis::tokenattributes::{
-    CharTermAttribute, CharTermAttributeImpl, TermFrequencyAttribute, TermFrequencyAttributeImpl,
-};
-use crate::analysis::{Analyzer, TokenStream};
+use crate::analysis::tokenattributes::{CharTermAttribute, TermFrequencyAttribute};
+use crate::analysis::{default_token_attribute_factory, Analyzer, TokenStream};
 use crate::document::{FieldType, InvertableType, NumericValue, StoredValue};
 use crate::error::{LuceneError, Result};
 use crate::index::postings_enum::{PostingsEnum, POSTINGS_ENUM_FREQS};
@@ -38,7 +36,6 @@ use crate::search::weight::Weight;
 use crate::search::DocIdSetIterator;
 use crate::search::{SortField, SortFieldKind, SortFieldType};
 use crate::util::atomic_ref_cell::AtomicRefCell;
-use crate::util::attribute::DefaultAttributeFactory;
 use crate::util::{AttributeSource, BytesRef};
 
 /// Largest frequency the encoding can carry.
@@ -649,27 +646,20 @@ struct FeatureTokenStream {
 
 impl FeatureTokenStream {
     fn new(feature_name: String, freq: i32) -> Self {
-        // Java's `TokenStream()` installs `DEFAULT_TOKEN_ATTRIBUTE_FACTORY`,
-        // which serves `CharTermAttribute` from `PackedTokenAttributeImpl` and
-        // falls back to `AttributeFactory.DEFAULT_ATTRIBUTE_FACTORY` for
-        // anything else — that fallback finds `TermFrequencyAttributeImpl` by
-        // reflection. Rust has no reflection, so the two implementations this
-        // stream needs are registered explicitly.
-        //
-        // `AttributeSource::default()` carries an empty registry, so building
-        // the source that way made every `add_attribute` below fail and the
-        // `expect` panic: a `FeatureField` could not be indexed at all. The
-        // regression is pinned by `feature_field_token_stream_carries_its_term_and_frequency`.
-        let mut factory = DefaultAttributeFactory::new();
-        factory.register_attribute_impl::<CharTermAttributeImpl>();
-        factory.register_attribute_impl::<TermFrequencyAttributeImpl>();
-        let mut source = AttributeSource::new_with_factory(Arc::new(factory));
+        // `extends TokenStream` with the no-argument constructor: the source
+        // uses `DEFAULT_TOKEN_ATTRIBUTE_FACTORY` (`TokenStream.java:81-90`),
+        // and the two attributes are added by interface
+        // (`FeatureField.java:201-202`). `CharTermAttribute` is served by
+        // `PackedTokenAttributeImpl`, which also serves
+        // `TermFrequencyAttribute` and the position-increment and offset
+        // attributes the indexing chain adds (`FieldInvertState.java:107-109`).
+        let mut source = AttributeSource::new_with_factory(default_token_attribute_factory());
         source
-            .add_attribute::<CharTermAttributeImpl>()
-            .expect("CharTermAttributeImpl is registered just above");
+            .add_attribute_interface::<dyn CharTermAttribute>()
+            .expect("INVARIANT: the default token attribute factory serves CharTermAttribute");
         source
-            .add_attribute::<TermFrequencyAttributeImpl>()
-            .expect("TermFrequencyAttributeImpl is registered just above");
+            .add_attribute_interface::<dyn TermFrequencyAttribute>()
+            .expect("INVARIANT: the default token attribute factory serves TermFrequencyAttribute");
         Self {
             source,
             feature_name,
@@ -688,12 +678,12 @@ impl TokenStream for FeatureTokenStream {
         let feature_name = self.feature_name.clone();
         let freq = self.freq;
         self.source
-            .get_attribute_mut::<CharTermAttributeImpl>()
-            .expect("registered in new")
+            .get_attribute_interface_mut::<dyn CharTermAttribute>()
+            .expect("INVARIANT: the attribute is added in new")
             .append_string(Some(&feature_name));
         self.source
-            .get_attribute_mut::<TermFrequencyAttributeImpl>()
-            .expect("registered in new")
+            .get_attribute_interface_mut::<dyn TermFrequencyAttribute>()
+            .expect("INVARIANT: the attribute is added in new")
             .set_term_frequency(freq);
         self.used = true;
         Ok(true)
@@ -1130,13 +1120,12 @@ impl DoubleValuesSource for FeatureDoubleValuesSource {
     }
 
     /// Equivalent to `FeatureDoubleValuesSource.hashCode()`.
-    fn source_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.field.hash(&mut hasher);
-        self.feature.hash(&mut hasher);
-        hasher.finish()
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(field, featureName)`.
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            crate::util::java_collections::java_string_hash_code(&self.field),
+            crate::util::java_collections::java_string_hash_code(&self.feature),
+        ])
     }
 
     /// Equivalent to `FeatureDoubleValuesSource.toString()`.
@@ -1336,17 +1325,60 @@ impl Query for FeatureQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.feature.hash(&mut hasher);
-        // `FeatureFunction` holds floats, which have no `Hash`; their bits do,
-        // and two functions that are equal have equal bits.
-        format!("{:?}", self.function).hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.FeatureQuery"
+    }
+
+    /// Equivalent to `FeatureQuery.hashCode()`: `getClass().hashCode()`,
+    /// `fieldName.hashCode()`, `featureName.hashCode()` and
+    /// `function.hashCode()`.
+    ///
+    /// `getClass().hashCode()` — not `classHash()` — is a JVM identity hash,
+    /// replaced by the stable stand-in of
+    /// [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in).
+    /// The function's Java hash (`FeatureField.java:312-517`) covers only the
+    /// function's own fields: Java applies the weight as a `BoostQuery` around
+    /// the `FeatureQuery`, so the weight this port keeps in the function does
+    /// not enter it.
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_ints, java_float_hash_code, java_identity_hash_code_stand_in,
+            java_string_hash_code,
+        };
+        let function_hash = match self.function {
+            // `getClass().hashCode()` of `LinearFunction`.
+            FeatureFunction::Linear { .. } => java_identity_hash_code_stand_in(
+                "org.apache.lucene.document.FeatureField$LinearFunction",
+            ),
+            // `Objects.hash(field, feature, pivot)`, `pivot` a `Float` (`null`
+            // while unresolved).
+            FeatureFunction::Saturation { pivot, .. } => java_arrays_hash_code_ints(&[
+                java_string_hash_code(&self.field),
+                java_string_hash_code(&self.feature),
+                java_float_hash_code(pivot),
+            ]),
+            FeatureFunction::SaturationUnresolved { .. } => java_arrays_hash_code_ints(&[
+                java_string_hash_code(&self.field),
+                java_string_hash_code(&self.feature),
+                0,
+            ]),
+            // `Float.hashCode(scalingFactor)`.
+            FeatureFunction::Logarithm { scaling_factor, .. } => {
+                java_float_hash_code(scaling_factor)
+            }
+            // `31 * Float.hashCode(pivot) + Float.hashCode(a)`.
+            FeatureFunction::SigmoidFunction { pivot, exp, .. } => 31i32
+                .wrapping_mul(java_float_hash_code(pivot))
+                .wrapping_add(java_float_hash_code(exp)),
+        };
+        let mut h = java_identity_hash_code_stand_in("org.apache.lucene.document.FeatureQuery");
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(java_string_hash_code(&self.field));
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(java_string_hash_code(&self.feature));
+        31i32.wrapping_mul(h).wrapping_add(function_hash)
     }
 
     /// Equivalent to `FeatureQuery.rewrite(IndexSearcher)`: a function that
@@ -1744,12 +1776,14 @@ mod tests {
         assert!(stream.increment_token().unwrap());
 
         let source = stream.attribute_source();
-        let term = source.get_attribute::<CharTermAttributeImpl>().unwrap();
+        let term = source
+            .get_attribute_interface::<dyn CharTermAttribute>()
+            .unwrap();
         let text: String = term.buffer()[..term.length()].iter().collect();
         assert_eq!(text, "pagerank");
         drop(term);
         let freq = source
-            .get_attribute::<TermFrequencyAttributeImpl>()
+            .get_attribute_interface::<dyn TermFrequencyAttribute>()
             .unwrap();
         assert_eq!(freq.get_term_frequency(), encode_feature_value(3.0));
         drop(freq);
@@ -1759,5 +1793,32 @@ mod tests {
         assert!(!stream.increment_token().unwrap());
         stream.end().unwrap();
         stream.close().unwrap();
+    }
+
+    #[test]
+    fn feature_field_token_stream_uses_the_default_token_attribute_factory() {
+        // Regression test. `FeatureTokenStream` used a factory that knew only
+        // `CharTermAttributeImpl` and `TermFrequencyAttributeImpl`, so the
+        // `addAttribute(PositionIncrementAttribute.class)` the indexing chain
+        // performs (`FieldInvertState.java:107-109`) failed with "Cannot find
+        // implementing class" and `IndexWriter.addDocument` rejected every
+        // `FeatureField`. Java's stream uses `DEFAULT_TOKEN_ATTRIBUTE_FACTORY`
+        // (`TokenStream.java:81-90`): one `PackedTokenAttributeImpl` serves
+        // every token attribute it implements.
+        use crate::analysis::tokenattributes::{
+            OffsetAttribute, PackedTokenAttributeImpl, PositionIncrementAttribute,
+        };
+        let field = FeatureField::new("feat", "pagerank", 3.0).unwrap();
+        let analyzer = StandardAnalyzer::new();
+        let mut stream = field.token_stream(Some(&analyzer), &mut None).unwrap();
+        let source = stream.attribute_source_mut();
+        source
+            .add_attribute_interface::<dyn PositionIncrementAttribute>()
+            .unwrap();
+        source
+            .add_attribute_interface::<dyn OffsetAttribute>()
+            .unwrap();
+        assert!(source.has_attribute::<PackedTokenAttributeImpl>());
+        assert_eq!(source.attribute_impls_iter().count(), 1);
     }
 }

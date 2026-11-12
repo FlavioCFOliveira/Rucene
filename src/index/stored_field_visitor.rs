@@ -29,7 +29,7 @@
 
 #![deny(unsafe_code)]
 
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::{LuceneError, Result};
 use crate::index::{FieldInfo, StoredFieldDataInput};
 
 /// Expert: a low-level means of accessing the stored field values in an index.
@@ -61,21 +61,32 @@ pub trait StoredFieldVisitor {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::CorruptIndex`] when the declared length is
-    /// negative, and propagates any error raised while reading.
+    /// Returns Java's `NegativeArraySizeException` when the declared length is
+    /// negative and its `OutOfMemoryError` when the heap cannot hold it, and
+    /// propagates any error raised while reading.
     fn binary_field_data_input(
         &mut self,
         field_info: &FieldInfo,
         value: &mut StoredFieldDataInput<'_>,
     ) -> Result<()> {
+        // `new byte[length]` (`StoredFieldVisitor.java:51-52`): a negative
+        // length is `NegativeArraySizeException`, one the heap cannot hold
+        // `OutOfMemoryError`.
         let length = value.length();
         if length < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "stored binary field \"{}\" declares a negative length: {length}",
-                field_info.name
-            ))));
+            return Err(LuceneError::unchecked(
+                "java.lang.NegativeArraySizeException",
+                length.to_string(),
+            ));
         }
         let length = length as usize;
+        // The probe keeps Java's `OutOfMemoryError`; the array itself is a
+        // zeroed allocation (`vec![0; n]`) whose pages stay untouched until
+        // written, as the JVM's zeroed heap arrays are, rather than a fill of
+        // every element.
+        Vec::<u8>::new()
+            .try_reserve_exact(length)
+            .map_err(|_| LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space"))?;
         let mut data = vec![0u8; length];
         value.data_input().read_bytes(Some(&mut data), 0, length)?;
         self.binary_field(field_info, &data)
@@ -185,6 +196,7 @@ pub enum StoredFieldVisitorStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::store::{ByteArrayDataInput, DataInput};
 
     /// A visitor that keeps only what it is asked for and records the calls.
@@ -332,14 +344,14 @@ mod tests {
         let mut visitor = RecordingVisitor::default();
         let error = visitor
             .binary_field_data_input(&info, &mut value)
-            .expect_err("a negative length is corrupt");
+            .expect_err("new byte[-1] throws");
         assert!(
             matches!(
-                error,
+                &error,
                 LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex(_),
+                    kind: LuceneErrorKind::Unchecked { class, message: Some(m), .. },
                     ..
-                }
+                } if *class == "java.lang.NegativeArraySizeException" && m == "-1"
             ),
             "{error:?}"
         );

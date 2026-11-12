@@ -71,11 +71,12 @@ impl StartingGun {
         let mut fired = self
             .fired
             .lock()
-            .map_err(|_| LuceneError::illegal_state("starting gun mutex poisoned".to_string()))?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while !*fired {
-            fired = self.condition.wait(fired).map_err(|_| {
-                LuceneError::illegal_state("starting gun mutex poisoned".to_string())
-            })?;
+            fired = self
+                .condition
+                .wait(fired)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         Ok(())
     }
@@ -85,7 +86,7 @@ impl StartingGun {
         let mut fired = self
             .fired
             .lock()
-            .map_err(|_| LuceneError::illegal_state("starting gun mutex poisoned".to_string()))?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *fired = true;
         self.condition.notify_all();
         Ok(())
@@ -200,8 +201,16 @@ impl LockVerifyServer {
             log::info!("Usage: LockVerifyServer bindToIp clients");
             return Ok(1);
         }
-        let clients: usize = args[1].parse().map_err(|_| {
-            LuceneError::illegal_argument(format!("clients is not a number: {}", args[1]))
+        // `Integer.parseInt(args[1])`: `NumberFormatException`; a negative
+        // count reaches `new Thread[maxClients]`, `NegativeArraySizeException`.
+        let clients = crate::util::extra::java_parse_int(&args[1]).ok_or_else(|| {
+            LuceneError::unchecked(
+                "java.lang.NumberFormatException",
+                format!("For input string: \"{}\"", args[1]),
+            )
+        })?;
+        let clients = usize::try_from(clients).map_err(|_| {
+            LuceneError::unchecked("java.lang.NegativeArraySizeException", clients.to_string())
         })?;
         Self::run(&args[0], clients, |_| {})?;
         Ok(0)
@@ -214,10 +223,14 @@ impl LockVerifyServer {
                 Ok((client, _)) => return Ok(client),
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     if Instant::now() >= deadline {
-                        return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "Timed out waiting for clients to connect.",
-                        ))));
+                        // `s.accept()` past `setSoTimeout(30000)`.
+                        return Err(LuceneError::from(LuceneErrorKind::Io(
+                            crate::store::java_nio_file::JavaIoException::new(
+                                "java.net.SocketTimeoutException",
+                                Some("Accept timed out".to_string()),
+                            )
+                            .into_io_error(),
+                        )));
                     }
                     thread::sleep(ACCEPT_POLL_INTERVAL);
                 }
@@ -278,7 +291,7 @@ impl LockVerifyServer {
             let mut holder = locked_id
                 .0
                 .lock()
-                .map_err(|_| LuceneError::illegal_state("locked id mutex poisoned".to_string()))?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let current_lock = *holder;
             if current_lock == VIOLATION {
                 return Ok(()); // another thread got an error, so we exit too

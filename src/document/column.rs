@@ -66,17 +66,20 @@ impl std::fmt::Debug for Column {
 
 impl Column {
     /// Creates the identity of a column.
+    ///
+    /// Equivalent to `Column(String, IndexableFieldType, Density)`
+    /// (`Column.java:57-61`), whose only check, `Objects.requireNonNull(name,
+    /// ...)`, has no counterpart for a `String`; an empty name is accepted.
+    ///
+    /// # Errors
+    ///
+    /// Never; the `Result` is kept for the callers.
     pub fn new(
         name: impl Into<String>,
         field_type: Arc<dyn IndexableFieldType>,
         density: Density,
     ) -> Result<Self> {
         let name = name.into();
-        if name.is_empty() {
-            return Err(LuceneError::illegal_argument(
-                "field name must not be empty".to_string(),
-            ));
-        }
         Ok(Self {
             name,
             field_type,

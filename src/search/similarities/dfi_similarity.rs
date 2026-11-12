@@ -73,6 +73,11 @@ impl DFISimilarity {
 }
 
 impl Similarity for DFISimilarity {
+    /// Java `toString()`, which this similarity overrides.
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.search.similarities.DFISimilarity"
     }

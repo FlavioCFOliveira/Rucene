@@ -215,10 +215,14 @@ impl ResourceLoader for ClasspathResourceLoader {
         };
         match self.resources.get(&key) {
             Some(bytes) => Ok(Box::new(Cursor::new(bytes.as_ref().clone()))),
-            None => Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Resource not found: {resource}"),
-            )))),
+            // `ClasspathResourceLoader.java:64-68`: a plain `IOException`.
+            None => Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other(format!(
+                    "Resource not found (if you use Java Module System, make sure to open \
+                     module and package containing resources to 'org.apache.lucene.core' \
+                     module): {resource}"
+                )),
+            ))),
         }
     }
 }
@@ -250,20 +254,21 @@ impl ResourceLoader for ModuleResourceLoader {
     fn open_resource(&self, resource: &str) -> Result<Box<dyn Read + Send>> {
         let relative = resource.trim_start_matches('/');
         let path = self.root.join(relative);
-        // Reject any attempt to escape the root, which a JVM module lookup
-        // cannot do either.
+        // A JVM module lookup cannot leave the module: a path that would is a
+        // resource that is not found, `getResourceAsStream`'s `null`, which
+        // `openResource` turns into `IOException("Resource not found: ...")`
+        // (`ModuleResourceLoader.java:39-43`).
+        let not_found = || {
+            LuceneError::from(LuceneErrorKind::Io(std::io::Error::other(format!(
+                "Resource not found: {resource}"
+            ))))
+        };
         if relative.split('/').any(|c| c == "..") {
-            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("Resource path escapes the module root: {resource}"),
-            ))));
+            return Err(not_found());
         }
         match std::fs::File::open(&path) {
             Ok(file) => Ok(Box::new(file)),
-            Err(e) => Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
-                e.kind(),
-                format!("Resource not found: {resource}"),
-            )))),
+            Err(_) => Err(not_found()),
         }
     }
 }

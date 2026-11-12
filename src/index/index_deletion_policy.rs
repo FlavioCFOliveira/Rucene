@@ -691,13 +691,12 @@ impl SnapshotDeletionPolicy {
         // See `on_init_locked` for which lock is held across this call and why.
         self.primary().on_commit(&self.wrap_commits(commits))?;
 
-        // Java does `lastCommit = commits.get(commits.size() - 1)`, which throws
-        // `IndexOutOfBoundsException` on an empty list. Rucene reports the same
-        // misuse as a recoverable error, after the primary policy has run, so
-        // the observable side effects stay identical.
+        // `lastCommit = commits.get(commits.size() - 1)`, after the primary
+        // policy has run: `IndexOutOfBoundsException` on an empty list.
         let Some(last) = commits.last() else {
-            return Err(LuceneError::illegal_argument(
-                "on_commit was called with no commits".to_string(),
+            return Err(LuceneError::unchecked(
+                "java.lang.IndexOutOfBoundsException",
+                "Index -1 out of bounds for length 0",
             ));
         };
         self.lock().last_commit = Some(Arc::clone(last));
@@ -1162,11 +1161,11 @@ impl PersistentSnapshotDeletionPolicy {
             if !file.starts_with(SNAPSHOTS_PREFIX) {
                 continue;
             }
-            let gen: i64 = file[SNAPSHOTS_PREFIX.len()..].parse().map_err(|_| {
-                LuceneError::illegal_argument(format!(
-                    "not a valid snapshots file name: {file}; expected {SNAPSHOTS_PREFIX}<generation>"
-                ))
-            })?;
+            // `Long.parseLong(file.substring(SNAPSHOTS_PREFIX.length()))`
+            // (`PersistentSnapshotDeletionPolicy.java:230`).
+            let digits = &file[SNAPSHOTS_PREFIX.len()..];
+            let gen: i64 = crate::util::extra::java_parse_long(digits)
+                .ok_or_else(|| LuceneError::number_format_for_input_string(digits, 10))?;
             if gen_loaded != -1 && gen <= gen_loaded {
                 continue;
             }
@@ -1710,14 +1709,18 @@ mod tests {
         let policy = snapshot_policy();
         policy.on_init(&[]).unwrap();
 
+        // `lastCommit = commits.get(commits.size() - 1)`
+        // (`SnapshotDeletionPolicy.java:64-67`): `ArrayList.get(-1)` throws
+        // `IndexOutOfBoundsException`.
         let err = policy.on_commit(&[]).unwrap_err();
         assert!(
             matches!(
-                err,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
+                &err.kind,
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.IndexOutOfBoundsException",
+                    message: Some(message),
                     ..
-                }
+                } if message == "Index -1 out of bounds for length 0"
             ),
             "{err}"
         );
@@ -2392,9 +2395,10 @@ mod tests {
             Arc::clone(&dir),
         )
         .unwrap_err();
+        // `Long.parseLong("oops")` (`PersistentSnapshotDeletionPolicy.java:230`).
         assert!(
-            matches!(err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
-                if m.contains("not a valid snapshots file name")),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::Unchecked { class, message: Some(m), .. }, .. }
+                if *class == "java.lang.NumberFormatException" && m == "For input string: \"oops\""),
             "{err}"
         );
     }
@@ -2557,7 +2561,7 @@ mod tests {
             )))
         }
 
-        fn file_pointer(&self) -> i64 {
+        fn file_pointer(&self) -> Result<i64> {
             self.inner.file_pointer()
         }
 

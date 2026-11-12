@@ -365,7 +365,7 @@ impl TermsWriter {
         }
         out.write_v_int(to_int_exact(self.bytes_writer.size() as i64)?)?;
         self.bytes_writer.copy_to(out.as_mut())?;
-        self.bytes_writer.reset();
+        self.bytes_writer.reset()?;
 
         // 3rd pass: write the freqs as byte[] blob
         // TODO: cutover to better intblock codec.  simple64?
@@ -381,7 +381,7 @@ impl TermsWriter {
         }
         out.write_v_int(to_int_exact(self.bytes_writer.size() as i64)?)?;
         self.bytes_writer.copy_to(out.as_mut())?;
-        self.bytes_writer.reset();
+        self.bytes_writer.reset()?;
 
         // 4th pass: write the metadata
         let mut absolute = true;
@@ -396,7 +396,7 @@ impl TermsWriter {
         }
         out.write_v_int(to_int_exact(self.bytes_writer.size() as i64)?)?;
         self.bytes_writer.copy_to(out.as_mut())?;
-        self.bytes_writer.reset();
+        self.bytes_writer.reset()?;
 
         let last = self
             .pending_terms

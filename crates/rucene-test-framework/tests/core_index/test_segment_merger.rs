@@ -13,7 +13,7 @@ use rucene::index::merge::MergeState;
 use rucene::index::segment_merger::SegmentMerger;
 use rucene::index::segment_reader::SegmentReader;
 use rucene::index::{IndexReader, LeafReader, SegmentCommitInfo, SegmentInfo};
-use rucene::search::{Sort, NO_MORE_DOCS};
+use rucene::search::NO_MORE_DOCS;
 use rucene::store::{merge_io_context, IOContext, MergeInfo};
 use rucene::util::concurrent::SameThreadExecutorService;
 use rucene::util::string_helper::StringHelper;
@@ -171,7 +171,7 @@ fn test_merge(inst: &mut TestSegmentMergerInstance) -> Result<()> {
         HashMap::new(),
         StringHelper::random_id(),
         HashMap::new(),
-        Sort::default(),
+        None,
     )?;
 
     let reader1 = Arc::clone(

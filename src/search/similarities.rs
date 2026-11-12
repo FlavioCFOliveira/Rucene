@@ -35,9 +35,8 @@
 //!   class name.
 //!
 //! Java's `Explanation`, `CollectionStatistics` and `TermStatistics` belong to
-//! `org.apache.lucene.search`, which has not been ported yet; they live under
-//! this module for now and are re-exported from [`crate::search`], which is
-//! where they will stay. See [`explanation`] for the full note.
+//! `org.apache.lucene.search`; they live under this module and are re-exported
+//! from [`crate::search`]. See [`explanation`] for the full note.
 //!
 //! # The encoded norm is a *signed* byte
 //!
@@ -136,13 +135,11 @@ pub use tfidf_similarity::{
 // Similarity
 // ---------------------------------------------------------------------------
 
-/// Defines the components of scoring, of which only the index-time
-/// normalization is ported so far.
+/// Defines the components of scoring: the index-time normalization
+/// (`computeNorm`) and the query-time scorer (`scorer`).
 ///
-/// Equivalent to `org.apache.lucene.search.similarities.Similarity`, restricted
-/// to `computeNorm(FieldInvertState)` and the `discountOverlaps` flag that
-/// governs it. See the module documentation for why the scoring half is absent
-/// and how it will be added.
+/// Equivalent to `org.apache.lucene.search.similarities.Similarity`. See the
+/// module documentation for the two halves.
 pub trait Similarity: Send + Sync + Debug {
     /// Returns the binary name of the Lucene class this similarity ports.
     ///
@@ -154,6 +151,16 @@ pub trait Similarity: Send + Sync + Debug {
     /// There is no default: Java has no instance whose class is unknown, so
     /// every implementor states its own.
     fn java_class_name(&self) -> &'static str;
+
+    /// Returns Java's `toString()` of this similarity.
+    ///
+    /// The default is the `Object.toString()` a Java similarity inherits when
+    /// it declares none: [`java_class_name`](Self::java_class_name), `@`, and
+    /// the identity in hexadecimal. Similarities whose Java class overrides
+    /// `toString()` override this with the same text.
+    fn to_java_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(self.java_class_name(), self)
+    }
 
     /// Returns `true` when overlap tokens — tokens whose position increment is
     /// zero, such as synonyms — are discounted from the document's length.
@@ -429,18 +436,14 @@ const DEFAULT_B: f32 = 0.75;
 
 /// BM25 similarity, Lucene's default.
 ///
-/// Equivalent to `org.apache.lucene.search.similarities.BM25Similarity`,
-/// restricted to what the index-time half needs: the `k1` and `b` parameters
-/// are validated and carried, and the `discountOverlaps` flag is honoured.
+/// Equivalent to `org.apache.lucene.search.similarities.BM25Similarity`.
 ///
 /// BM25 does **not** override `computeNorm` (verified against
 /// `BM25Similarity.java` at tag `releases/lucene/10.5.0`, which contains no
 /// `computeNorm` at all), so the norms it produces are exactly
 /// [`compute_default_norm`] and an index can be re-scored with a different
-/// similarity without being rebuilt. `k1` and `b` take part only in scoring and are
-/// therefore inert until the query-time half is ported; they are validated here
-/// so that a misconfigured similarity is refused when it is built rather than
-/// when it is first used to score.
+/// similarity without being rebuilt. `k1` and `b` take part only in scoring;
+/// they are validated when the similarity is built, as in Java's constructor.
 ///
 /// Introduced in Stephen E. Robertson, Steve Walker, Susan Jones, Micheline
 /// Hancock-Beaulieu, and Mike Gatford, *Okapi at TREC-3*, TREC 1994.
@@ -607,6 +610,11 @@ impl BM25Similarity {
 }
 
 impl Similarity for BM25Similarity {
+    /// Java `toString()`, which this similarity overrides.
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.search.similarities.BM25Similarity"
     }

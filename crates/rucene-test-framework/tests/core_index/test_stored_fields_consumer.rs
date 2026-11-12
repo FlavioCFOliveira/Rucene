@@ -12,7 +12,6 @@ use randomizedtesting::jdk::reflect::Class;
 use rucene::error::Result;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::{SegmentInfo, StoredFieldsConsumer, StoredFieldsConsumerOverrides};
-use rucene::search::Sort;
 use rucene::util::string_helper::StringHelper;
 use rucene::util::Version;
 use rucene_test_framework::util::LuceneTestCase;
@@ -65,7 +64,7 @@ fn test_finish() -> Result<()> {
         HashMap::new(),
         StringHelper::random_id(),
         HashMap::new(),
-        Sort::default(),
+        None,
     )?;
 
     let start_doc_counter = Arc::new(AtomicI32::new(0));

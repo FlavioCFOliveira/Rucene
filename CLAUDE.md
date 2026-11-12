@@ -54,7 +54,7 @@ Internal module organization should mirror the Lucene Core Java structure as clo
 3. **Documentation faithful to the code.** Documentation must be accurate and always reflect the actual state of the code.
 4. **Work flow.** Work always follows this order: **Specify → Implement → Test → Document.** When several tasks share one effort (see 5.3), each step covers the whole effort.
 5. **Open-source first.** For every component, identify the trustworthy open-source projects that already implement or solve it, and use them as the starting point: copy from them when possible, or study them. Whenever possible, use more than one reference project, so that the positive and negative aspects of each approach can be evaluated. Use the source code as the absolute source of truth. See section 13.
-6. **ALWAYS converge — this rule is mandatory and has no exceptions.** Every development effort **MUST** seek convergence with the other open tasks, so that work synergy is maximized. Before starting any work, find every task that touches the same files, subsystem, or tests, and join them into **one** effort. Then:
+6. **ALWAYS converge — this rule is mandatory and has no exceptions.** Every development effort **MUST** seek convergence with the other open tasks — in `rmp` or requested ad hoc by the user — so that work synergy is maximized. Before starting any work, find every task whose objectives are complementary or whose functional or technical proximity can be verified (the same files, subsystem, or tests), and join them into **one** effort. Then:
    - **write the code of all those tasks at once**, in a single pass;
    - **test the code of all those tasks at once**, in a single run;
    - **audit, commit, and document them together**, once.
@@ -76,8 +76,8 @@ Internal module organization should mirror the Lucene Core Java structure as clo
 
 ### 3.2 No unrequested work
 
-- Act strictly toward the objective of the work in progress.
-- **Never start work that was not explicitly requested.** This applies equally to new tasks, fixes, refactorings, and improvements.
+- Act in a way that is **highly** directed to the objective of the work in progress.
+- **Never voluntarily start work that was not EXPLICITLY requested.** This applies equally to new tasks, fixes, refactorings, and improvements.
 - When you identify a need outside the scope of the task in progress — including a pre-existing bug — ask the user how to proceed (see rule 1). Never start that work proactively.
 - The scope of a task is its objectives, functional and technical requirements, and acceptance criteria. Work strictly required to meet them is in scope, and is completed in the same cycle (see 3.1).
 
@@ -127,7 +127,7 @@ Use the `roadmap-manager` skill for tasks, sprints, and comments, and for every 
 
 ### 5.2 Task execution
 
-Execution follows planning. Always use `rmp` and follow this sequence:
+Execution follows planning. The execution of a task or sprint starts only when the user explicitly requests it (see 3.2). Always use `rmp` and follow this sequence:
 
 1. Check whether any open task is not yet completed, and continue it.
 2. Identify the next task, and the tasks that can share its development effort (see 5.3).
@@ -155,7 +155,7 @@ This is the default way of working for all project work, both `rmp` tasks and ad
 - **Convergence.** Always look for tasks whose objectives are complementary, or whose functional or technical proximity can be verified (use the Knowledge Graph). Turn every such convergence into synergy.
 - **Synergy between tasks.** Join converging tasks into a single development effort.
 - **Synergy within each task and each effort.** Inside a single task as well as inside a shared effort, group work of the same type: write all the code at once, then run the tests for all the changed code at once, then write all the documentation at once, instead of writing and testing small pieces one by one. When the scope is too large for one pass, split it into the largest blocks that can each be handled in one pass. Apply this principle to all work.
-- **Fewest iterations.** Reach the objectives with the fewest tasks and iterations possible.
+- **Fewest iterations.** **Reach the objectives with the fewest tasks and iterations possible.** Seeking synergies and optimizing effort is constant in every way of working on this project.
 - **Quality bar.** Aggregate tasks and work of the same type only when grouping makes delivery faster without lowering its quality. A shared effort must deliver better work than task-by-task development, never worse.
 - **Resources.** Make full use of the internal resources available (subagents, skills, local CLIs, and the Knowledge Graph), so that deliveries are faster and cost the user less.
 - **Tasks stay separate.** Grouping joins only the work effort, during development and testing. In `rmp`, each task keeps its own definition, status, acceptance criteria, and closing summary.
@@ -219,7 +219,7 @@ The KG also holds a **central role in coordinating development tasks**, so that 
 
 - Dependencies between components, and between tasks and the components they need, must be modeled so that the graph can compute what unlocks the most work.
 - **Use the graph to plan**, in the sense of rule 5.1: identify foundational tasks, tasks that unblock others, and the shortest route to a solid deliverable. The prioritization stated in 5.1 is meant to be *derived from the graph*, not asserted from memory or from reading files.
-- When the graph cannot yet answer such a question, say so plainly and treat closing that gap as work in its own right, rather than substituting an impression for an answer (see rule 7).
+- When the graph cannot yet answer such a question, say so plainly; never substitute an impression for an answer (see rule 7). When closing that gap is outside the scope of the task in progress, ask the user how to proceed (see 3.2).
 
 ---
 
@@ -257,11 +257,13 @@ Whenever a bug is fixed, create the necessary regression tests to ensure the sam
 
 ### 9.3 Test execution — logical and efficient
 
-Run only the tests that are pertinent at that moment, and recover the time that unnecessary runs used to take.
+**ALWAYS** run tests logically and efficiently: run only the tests that are pertinent at that moment, and recover the time that unnecessary runs used to take.
 
 - **Close to development:** run the tests that exercise the code the change touched — the lib tests of the changed modules and the integration, portability, and fuzz targets that cover them — once, after all the code of the effort is written (see 5.3).
 - **At integration and release moments** (closing a sprint into `develop`, cutting a release): widen the run to the full suite.
 - **No changed code, no test run.** A change to documentation alone runs no tests.
+- **Blast radius only.** The test run that validates a development, change, or fix covers only its blast radius. **Never** run tests that do not validate it.
+- **ALWAYS avoid runs that are unnecessary for the purpose of the tests.**
 - A task's "`cargo test` passes" criterion is met by the pertinent run of the moment; the full suite at sprint close confirms it.
 
 ---
@@ -270,8 +272,8 @@ Run only the tests that are pertinent at that moment, and recover the time that 
 
 ### 10.1 Subagents
 
-- **Delegate all project work.** The execution of every piece of work is delegated to the subagent specialized in the objectives that work must achieve. Always choose the most suitable subagent (global, user-defined, or project-defined).
-- **One subagent at a time.** Run **at most one** subagent alongside the main conversation. Never run more than one concurrently.
+- **Delegate all project work.** The execution of every piece of work is delegated to the subagent specialized in the objectives that work must achieve. **ALWAYS** choose the most suitable subagent (global, user-defined, or project-defined).
+- **One subagent at a time.** Run **ONLY ONE** subagent alongside the main conversation. **NEVER** run more than one concurrently.
 - **Serial, not parallel.** Use as many subagents as the objective needs, one after another.
 - **Exception.** The user may explicitly authorize more than one subagent in parallel. That authorization applies only to the task for which it was granted, covers at most the number of subagents the user authorized, and is always revoked when that task ends.
 - Use the subagents collaboratively and complementarily, each contributing its specialty, so that every task is completed with maximum confidence, effectiveness, and accuracy.

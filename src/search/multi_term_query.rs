@@ -4,9 +4,7 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::collections::hash_map::DefaultHasher;
 use std::fmt::Debug;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::Result;
@@ -127,15 +125,6 @@ pub trait MultiTermQuery: Query {
         None
     }
 
-    /// Returns this query viewed as a [`Query`].
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java gets this for free, because
-    /// `MultiTermQuery extends Query`. Rust cannot coerce a
-    /// `&dyn MultiTermQuery` into a `&dyn Query` below 1.86, and this crate's
-    /// minimum supported Rust version is 1.80, so the upcast is spelled out.
-    /// Every implementation writes `self`.
-    fn as_query(&self) -> &dyn Query;
-
     /// Returns a shared handle to a copy of this query.
     ///
     /// **Divergence from Lucene 10.5.0.** Java hands `this` to
@@ -201,15 +190,18 @@ pub fn multi_term_rewrite(
 ///
 /// Equivalent to `MultiTermQuery.hashCode()`, which mixes the class hash, the
 /// rewrite method and the field.
-pub fn multi_term_query_hash(query: &dyn MultiTermQuery) -> u64 {
-    let prime = 31u64;
-    let mut result = query.as_query().class_hash();
+pub fn multi_term_query_hash(query: &dyn MultiTermQuery) -> i32 {
+    // `MultiTermQuery.hashCode()` (`MultiTermQuery.java:337-343`).
+    let prime = 31i32;
+    let mut result = (query as &dyn Query).class_hash();
     result = prime
         .wrapping_mul(result)
         .wrapping_add(query.get_rewrite_method().method_hash());
-    let mut hasher = DefaultHasher::new();
-    query.get_field().hash(&mut hasher);
-    prime.wrapping_mul(result).wrapping_add(hasher.finish())
+    prime
+        .wrapping_mul(result)
+        .wrapping_add(crate::util::java_collections::java_string_hash_code(
+            query.get_field(),
+        ))
 }
 
 /// The equality shared by every multi-term query.
@@ -273,21 +265,14 @@ pub trait RewriteMethod: Send + Sync + Debug {
 
     /// Rewrite-method hash code, consistent with [`method_eq`](Self::method_eq).
     ///
-    /// **Divergence from Lucene 10.5.0.** Java's singletons inherit
-    /// `Object.hashCode()`, an identity hash that differs between JVM runs;
-    /// this port hashes the [`std::any::TypeId`], which is likewise stable only
-    /// within a build but at least reproducible within a process. It is only
-    /// ever mixed into [`multi_term_query_hash`], never compared across
-    /// processes.
-    fn method_hash(&self) -> u64;
-}
-
-/// Hashes a [`std::any::TypeId`], standing in for Java's identity hash of a
-/// rewrite-method singleton.
-pub(crate) fn rewrite_method_type_hash<T: ?Sized + Any>(value: &T) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    value.type_id().hash(&mut hasher);
-    hasher.finish()
+    /// Equivalent to `RewriteMethod.hashCode()`. Java's rewrite-method
+    /// singletons inherit `Object.hashCode()`, an identity hash that differs
+    /// between JVM runs; they answer the stable stand-in of
+    /// [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)
+    /// over the name of the constant that holds them. The rewrite methods that
+    /// override `hashCode()` (`TopTermsRewrite`, `DocValuesRewriteMethod`)
+    /// answer Java's value.
+    fn method_hash(&self) -> i32;
 }
 
 /// A rewrite method where documents are assigned a constant score equal to the
@@ -323,8 +308,10 @@ impl RewriteMethod for ConstantScoreBlendedRewrite {
         self
     }
 
-    fn method_hash(&self) -> u64 {
-        rewrite_method_type_hash(self)
+    fn method_hash(&self) -> i32 {
+        crate::util::java_collections::java_identity_hash_code_stand_in(
+            "org.apache.lucene.search.MultiTermQuery.CONSTANT_SCORE_BLENDED_REWRITE",
+        )
     }
 }
 
@@ -353,8 +340,10 @@ impl RewriteMethod for ConstantScoreRewrite {
         self
     }
 
-    fn method_hash(&self) -> u64 {
-        rewrite_method_type_hash(self)
+    fn method_hash(&self) -> i32 {
+        crate::util::java_collections::java_identity_hash_code_stand_in(
+            "org.apache.lucene.search.MultiTermQuery.CONSTANT_SCORE_REWRITE",
+        )
     }
 }
 
@@ -473,7 +462,7 @@ impl RewriteMethod for TopTermsScoringBooleanQueryRewrite {
         }
     }
 
-    fn method_hash(&self) -> u64 {
+    fn method_hash(&self) -> i32 {
         top_terms_rewrite_hash(self)
     }
 }
@@ -581,7 +570,7 @@ impl RewriteMethod for TopTermsBoostOnlyBooleanQueryRewrite {
         }
     }
 
-    fn method_hash(&self) -> u64 {
+    fn method_hash(&self) -> i32 {
         top_terms_rewrite_hash(self)
     }
 }
@@ -693,7 +682,7 @@ impl RewriteMethod for TopTermsBlendedFreqScoringRewrite {
         }
     }
 
-    fn method_hash(&self) -> u64 {
+    fn method_hash(&self) -> i32 {
         top_terms_rewrite_hash(self)
     }
 }

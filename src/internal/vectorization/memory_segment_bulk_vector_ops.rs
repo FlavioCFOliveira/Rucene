@@ -19,7 +19,7 @@ use crate::util::vector_util;
 /// Every method in the Java class is a `FloatVector` loop over
 /// `FLOAT_SPECIES.loopBound(elementCount)` elements followed by a scalar loop
 /// that finishes the remainder. Stable Rust has no portable SIMD (`std::simd`
-/// is nightly-only; this crate's MSRV is 1.80), so
+/// is nightly-only; this crate targets stable Rust), so
 /// [`PanamaVectorConstants::PREFERRED_VECTOR_BITSIZE`](super::PanamaVectorConstants::PREFERRED_VECTOR_BITSIZE)
 /// is zero, the loop bound is zero, and **Lucene's own scalar remainder
 /// computes the whole result**. Each method below is that remainder,
@@ -52,15 +52,15 @@ impl MemorySegmentBulkVectorOps {
     pub const SQR_INSTANCE: SqrDistance = SqrDistance;
 }
 
-/// `a * b + c`, or `fma(a, b, c)` when [`vector_util::USE_FMA`] is enabled.
+/// `a * b + c`, or `Math.fma(a, b, c)` when [`vector_util::use_fma`]
+/// (`Constants.HAS_FAST_SCALAR_FMA`) is true.
 ///
-/// Equivalent to `PanamaVectorUtilSupport.fma(float, float, float)`, which
-/// Lucene's bulk ops import statically. The crate pins the non-fused form so
-/// that scores are reproducible on every machine; see
-/// [`crate::util::vector_util`].
+/// Equivalent to `PanamaVectorUtilSupport.fma(float, float, float)`
+/// (`PanamaVectorUtilSupport.java:100-106`), which Lucene's bulk ops import
+/// statically.
 #[inline]
 fn fma(a: f32, b: f32, c: f32) -> f32 {
-    if vector_util::USE_FMA {
+    if vector_util::use_fma() {
         a.mul_add(b, c)
     } else {
         a * b + c

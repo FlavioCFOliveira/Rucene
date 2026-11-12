@@ -249,7 +249,7 @@ impl Query for DumbRegexpQuery {
         Arc::ptr_eq(&self.automaton, &that.automaton)
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         multi_term_query_hash(self)
     }
 }
@@ -277,10 +277,6 @@ impl MultiTermQuery for DumbRegexpQuery {
             Box::new(filter),
             LuceneTestCase::new_bytes_ref_str(""),
         )))
-    }
-
-    fn as_query(&self) -> &dyn Query {
-        self
     }
 
     fn to_multi_term_query_arc(&self) -> Arc<dyn MultiTermQuery> {

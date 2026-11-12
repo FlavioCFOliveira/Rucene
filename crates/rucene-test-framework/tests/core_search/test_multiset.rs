@@ -12,6 +12,7 @@ use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
 use rucene::error::Result;
 use rucene::search::multiset::Multiset;
+use rucene::util::java_collections::JavaHashCode;
 use rucene_test_framework::util::LuceneTestCase;
 
 use crate::core_support::{assert_equals, assert_equals_msg, class, random, test};
@@ -28,7 +29,7 @@ pub fn class_def() -> Arc<Class> {
 }
 
 /// `multiset.add(element)`, which always returns `true` in Java.
-fn add_returning<T: Hash + Eq>(multiset: &mut Multiset<T>, element: T) -> bool {
+fn add_returning<T: JavaHashCode + Eq>(multiset: &mut Multiset<T>, element: T) -> bool {
     multiset.add(element);
     true
 }

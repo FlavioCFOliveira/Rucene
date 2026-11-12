@@ -202,15 +202,6 @@ impl FieldUpdatesBuffer {
         self.min_numeric
     }
 
-    fn check_not_finished(&self) -> Result<()> {
-        if self.finished {
-            return Err(LuceneError::illegal_state(
-                "buffer was finished already".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
     /// Records the field, the limit and whether a value is present for the
     /// update at `ord`, growing a parallel array only when the update differs
     /// from the first one.
@@ -294,17 +285,15 @@ impl FieldUpdatesBuffer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) for a binary buffer (Java asserts
-    /// `isNumeric`) or a finished one, and propagates whatever appending the
-    /// term raises.
+    /// Returns a `NullPointerException` for a binary buffer (Java asserts
+    /// `isNumeric`), and propagates whatever appending the term raises.
     pub fn add_numeric_update(&mut self, term: &Term, value: i64, doc_up_to: i32) -> Result<()> {
         debug_assert!(self.is_numeric);
+        // `numericValues` of a binary buffer is `null` (after `assert
+        // isNumeric`): `NullPointerException`.
         if !self.is_numeric {
-            return Err(LuceneError::illegal_state(
-                "cannot add a numeric update to a binary FieldUpdatesBuffer".to_string(),
-            ));
+            return Err(LuceneError::null_pointer());
         }
-        self.check_not_finished()?;
         let ord = self.append(term)?;
         self.add(term.field(), doc_up_to, ord, true);
         self.min_numeric = self.min_numeric.min(value);
@@ -338,10 +327,9 @@ impl FieldUpdatesBuffer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) for a finished buffer, and
-    /// propagates whatever appending the term raises.
+    /// Propagates whatever appending the term raises. A finished buffer is
+    /// only asserted against, as in Java (`FieldUpdatesBuffer.java:125`).
     pub fn add_no_value(&mut self, term: &Term, doc_up_to: i32) -> Result<()> {
-        self.check_not_finished()?;
         let ord = self.append(term)?;
         self.add(term.field(), doc_up_to, ord, false);
         Ok(())
@@ -354,9 +342,9 @@ impl FieldUpdatesBuffer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) for a numeric buffer (Java asserts
-    /// `isNumeric == false`) or a finished one, and propagates whatever
-    /// appending the term or the value raises.
+    /// Returns a `NullPointerException` for a numeric buffer (Java asserts
+    /// `isNumeric == false`), and propagates whatever appending the term or
+    /// the value raises.
     pub fn add_binary_update(
         &mut self,
         term: &Term,
@@ -364,12 +352,11 @@ impl FieldUpdatesBuffer {
         doc_up_to: i32,
     ) -> Result<()> {
         debug_assert!(!self.is_numeric);
+        // `byteValues` of a numeric buffer is `null` (after `assert
+        // !isNumeric`): `NullPointerException`.
         if self.is_numeric {
-            return Err(LuceneError::illegal_state(
-                "cannot add a binary update to a numeric FieldUpdatesBuffer".to_string(),
-            ));
+            return Err(LuceneError::null_pointer());
         }
-        self.check_not_finished()?;
         let ord = self.append(term)?;
         self.byte_values
             .as_mut()
@@ -888,7 +875,15 @@ mod tests {
         assert!(buffer.iterator().is_err(), "buffer is not finished yet");
         buffer.finish().unwrap();
         assert!(buffer.finish().is_err(), "buffer was finished already");
-        assert!(buffer.add_numeric_update(&term("id", "b"), 1, 1).is_err());
+        // Adding to a finished buffer is only asserted against
+        // (`FieldUpdatesBuffer.java:125`): an assertion failure under
+        // `debug_assertions`, as under Java's `-ea`.
+        if cfg!(debug_assertions) {
+            let added = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                buffer.add_numeric_update(&term("id", "b"), 1, 1)
+            }));
+            assert!(added.is_err());
+        }
     }
 
     #[test]

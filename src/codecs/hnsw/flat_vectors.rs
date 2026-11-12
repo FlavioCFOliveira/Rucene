@@ -389,9 +389,13 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
                 for vector in vectors {
                     let vector = (vector as &dyn std::any::Any)
                         .downcast_ref::<Vec<f32>>()
+                        // Java's unchecked cast fails where a `byte[]` is
+                        // read as a `float[]`.
                         .ok_or_else(|| {
-                            LuceneError::illegal_argument(
-                                "buffered vectors are not float32 vectors".to_string(),
+                            LuceneError::unchecked(
+                                "java.lang.ClassCastException",
+                                "class [B cannot be cast to class [F ([B and [F are in module \
+                                 java.base of loader 'bootstrap')",
                             )
                         })?;
                     floats.push(vector.clone());
@@ -403,9 +407,12 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
                 for vector in vectors {
                     let vector = (vector as &dyn std::any::Any)
                         .downcast_ref::<Vec<u8>>()
+                        // As above, with a `float[]` read as a `byte[]`.
                         .ok_or_else(|| {
-                            LuceneError::illegal_argument(
-                                "buffered vectors are not byte vectors".to_string(),
+                            LuceneError::unchecked(
+                                "java.lang.ClassCastException",
+                                "class [F cannot be cast to class [B ([F and [B are in module \
+                                 java.base of loader 'bootstrap')",
                             )
                         })?;
                     bytes.push(vector.clone());
@@ -413,6 +420,31 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
                 Ok(Box::new(from_bytes(bytes, dim)))
             }
         }
+    }
+
+    /// Returns the number of buffered vectors.
+    ///
+    /// Equivalent to `getVectors().size()`, which the HNSW field writer asks
+    /// of the live list (`Lucene99HnswVectorsWriter.java:765-769`). A writer
+    /// whose [`vectors`](Self::vectors) copies should override it.
+    fn vector_count(&self) -> usize
+    where
+        T: Clone,
+    {
+        self.vectors().len()
+    }
+
+    /// Returns a copy of buffered vector `ord`, or `None` past the end.
+    ///
+    /// Equivalent to `getVectors().get(ord)` on the live list, which the view
+    /// the HNSW graph builder scores through reads one vector at a time
+    /// (`FloatVectorValues.fromFloats`). A writer whose
+    /// [`vectors`](Self::vectors) copies should override it.
+    fn vector_at(&self, ord: usize) -> Option<T>
+    where
+        T: Clone,
+    {
+        self.vectors().get(ord).cloned()
     }
 
     /// Returns the set of documents that have a value for this field.
@@ -472,9 +504,7 @@ impl From<FlatFieldVectorWriter> for FieldVectorWriter {
 impl<T: Send + 'static> KnnFieldVectorsWriter<T> for SharedFlatFieldVectorsWriter<T> {
     fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
         self.lock()
-            .map_err(|_| {
-                LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
-            })?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .add_value(doc_id, vector_value)
     }
 
@@ -1230,19 +1260,26 @@ pub trait FlatVectorsReader: KnnVectorsReader + crate::util::Accountable {
     /// Returns the flat vector scorer for the given field.
     fn get_flat_vector_scorer(&self, field: &str) -> Result<Box<dyn FlatVectorsScorer>>;
 
-    /// Returns a random vector scorer for the given float target vector.
+    /// Returns a random vector scorer for the given float target vector, or
+    /// `None` where Java returns `null` (a field the reader holds no entry
+    /// for, `Lucene104ScalarQuantizedVectorsReader.java:195-199`).
+    ///
+    /// Equivalent to `FlatVectorsReader.getRandomVectorScorer(String, float[])`.
     fn get_random_vector_scorer_float(
         &self,
         field: &str,
         target: &[f32],
-    ) -> Result<Box<dyn RandomVectorScorer>>;
+    ) -> Result<Option<Box<dyn RandomVectorScorer>>>;
 
-    /// Returns a random vector scorer for the given byte target vector.
+    /// Returns a random vector scorer for the given byte target vector, or
+    /// `None` where Java returns `null`.
+    ///
+    /// Equivalent to `FlatVectorsReader.getRandomVectorScorer(String, byte[])`.
     fn get_random_vector_scorer_byte(
         &self,
         field: &str,
         target: &[u8],
-    ) -> Result<Box<dyn RandomVectorScorer>>;
+    ) -> Result<Option<Box<dyn RandomVectorScorer>>>;
 
     /// Returns an instance optimized for merging.
     fn get_merge_instance_flat(&self) -> Result<Box<dyn FlatVectorsReader>>;

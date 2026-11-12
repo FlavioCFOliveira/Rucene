@@ -4,9 +4,7 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
@@ -417,18 +415,36 @@ impl Query for CombinedFieldQuery {
             && self.term == other.term
     }
 
-    fn query_hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        for (field, weight) in &self.field_and_weights {
-            field.hash(&mut hasher);
-            weight.weight.to_bits().hash(&mut hasher);
-        }
-        let fields_hash = hasher.finish();
-        let mut hasher = DefaultHasher::new();
-        self.term.slice().hash(&mut hasher);
+    /// `getClass().getName()` of `org.apache.lucene.search.CombinedFieldQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.CombinedFieldQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_ints, java_float_hash_code, java_string_hash_code,
+        };
+        // `CombinedFieldQuery.hashCode()`: `classHash()`,
+        // `Objects.hash(fieldAndWeights)` and `term.hashCode()`. The map's hash
+        // is `AbstractMap.hashCode()`, the sum of `key.hashCode() ^
+        // value.hashCode()`, and a `FieldAndWeight` record hashes as
+        // `31 * field.hashCode() + Float.hashCode(weight)`.
+        let map_hash = self
+            .field_and_weights
+            .iter()
+            .fold(0i32, |h, (field, weight)| {
+                let value_hash = 31i32
+                    .wrapping_mul(java_string_hash_code(&weight.field))
+                    .wrapping_add(java_float_hash_code(weight.weight));
+                h.wrapping_add(java_string_hash_code(field) ^ value_hash)
+            });
         let mut result = self.class_hash();
-        result = 31u64.wrapping_mul(result).wrapping_add(fields_hash);
-        31u64.wrapping_mul(result).wrapping_add(hasher.finish())
+        result = 31i32
+            .wrapping_mul(result)
+            .wrapping_add(java_arrays_hash_code_ints(&[map_hash]));
+        31i32
+            .wrapping_mul(result)
+            .wrapping_add(self.term.hash_code())
     }
 }
 
@@ -498,12 +514,7 @@ impl CombinedFieldWeightState {
                     .field_and_weights()
                     .get(term.field())
                     .cloned()
-                    .ok_or_else(|| {
-                        LuceneError::illegal_state(format!(
-                            "field {} has a term but no weight",
-                            term.field()
-                        ))
-                    })?,
+                    .ok_or_else(LuceneError::null_pointer)?,
             );
         }
         Ok(CombinedFieldInit {
@@ -600,12 +611,7 @@ impl CombinedFieldWeight {
                 .field_and_weights()
                 .get(term.field())
                 .cloned()
-                .ok_or_else(|| {
-                    LuceneError::illegal_state(format!(
-                        "field {} has a term but no weight",
-                        term.field()
-                    ))
-                })?;
+                .ok_or_else(LuceneError::null_pointer)?;
             let ts = Arc::new(TermStates::build(searcher, term, true)?);
             if ts.doc_freq()? > 0 {
                 let term_stats =

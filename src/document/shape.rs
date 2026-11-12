@@ -1045,11 +1045,11 @@ fn tessellation_to_triangles(
 fn decode_indexable_fields(indexable_fields: &[Triangle]) -> Result<Vec<DecodedTriangle>> {
     let mut tessellation = Vec::with_capacity(indexable_fields.len());
     for f in indexable_fields {
-        let packed = f.packed_value().ok_or_else(|| {
-            crate::error::LuceneError::illegal_argument(
-                "a shape indexable field must carry a packed triangle".to_string(),
-            )
-        })?;
+        // A field without a value: the JVM's `NullPointerException` on its
+        // `null` bytes.
+        let packed = f
+            .packed_value()
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
         debug_assert_eq!(packed.len(), 7 * BYTES);
         tessellation.push(ShapeField::decode_triangle(packed)?);
     }

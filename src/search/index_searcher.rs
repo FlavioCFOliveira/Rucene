@@ -797,7 +797,7 @@ impl IndexSearcher {
     pub fn super_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "IndexSearcher({:?}; taskExecutor={:?})",
+            "IndexSearcher({}; taskExecutor={:?})",
             self.reader, self.task_executor
         )
     }
@@ -840,18 +840,19 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`] when the context is not
-    /// top-level, which Java asserts, and propagates the slice construction
+    /// Returns [`LuceneErrorKind::AssertionError`] under `debug_assertions`
+    /// when the context is not top-level, which Java only asserts
+    /// (`IndexSearcher.java:225-226`), and propagates the slice construction
     /// error for an empty leaf.
     pub fn from_context(
         context: Arc<dyn IndexReaderContext>,
         executor: Option<Arc<dyn Executor>>,
     ) -> Result<Self> {
-        if !context.is_top_level() {
-            return Err(LuceneError::illegal_argument(format!(
-                "IndexSearcher's ReaderContext must be topLevel for reader {:?}",
+        if cfg!(debug_assertions) && !context.is_top_level() {
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
+                "IndexSearcher's ReaderContext must be topLevel for reader {}",
                 context.reader()
-            )));
+            ))));
         }
         let reader = context.reader();
         let has_executor = executor.is_some();
@@ -2155,13 +2156,11 @@ impl IndexSearcher {
         let mut sum_total_term_freq: i64 = 0;
         let mut sum_doc_freq: i64 = 0;
         for leaf in &self.leaf_contexts {
-            // Terms.getTerms(LeafReader, String) answers Terms.EMPTY when the
-            // field is absent, and every statistic of Terms.EMPTY is 0.
-            if let Some(terms) = leaf.leaf_reader().terms(field)? {
-                doc_count += i64::from(terms.doc_count()?);
-                sum_total_term_freq += terms.sum_total_term_freq()?;
-                sum_doc_freq += terms.sum_doc_freq()?;
-            }
+            // `Terms.getTerms(leaf.reader(), field)`.
+            let terms = crate::index::terms::get_terms(leaf.leaf_reader().as_ref(), field)?;
+            doc_count += i64::from(terms.doc_count()?);
+            sum_total_term_freq += terms.sum_total_term_freq()?;
+            sum_doc_freq += terms.sum_doc_freq()?;
         }
         if doc_count == 0 {
             return Ok(None);
@@ -2201,7 +2200,10 @@ mod sorted_search_dispatch_tests {
 
     impl Recording {
         fn record(&self, call: String) {
-            self.calls.lock().unwrap().push(call);
+            self.calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(call);
         }
     }
 
@@ -2288,7 +2290,10 @@ mod sorted_search_dispatch_tests {
             .search_after_with_sort_and_scores(None, query(), 6, &sort, false)
             .unwrap();
         assert_eq!(
-            *recording.calls.lock().unwrap(),
+            *recording
+                .calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             [
                 "search(3)",
                 "searchAfter(false, 3, false)",
@@ -2321,7 +2326,10 @@ mod shard_search_dispatch_tests {
 
     impl Recording {
         fn record(&self, call: String) {
-            self.calls.lock().unwrap().push(call);
+            self.calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(call);
         }
     }
 
@@ -2393,7 +2401,10 @@ mod shard_search_dispatch_tests {
         assert_eq!((stats.doc_freq(), stats.total_term_freq()), (6, 15));
         assert!(searcher.collection_statistics("body").unwrap().is_none());
         assert_eq!(
-            *recording.calls.lock().unwrap(),
+            *recording
+                .calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             [
                 "search(3)",
                 "searchAfter(false, 3)",

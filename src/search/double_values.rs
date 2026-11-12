@@ -122,9 +122,7 @@ impl DoubleValues for EmptyDoubleValues {
     /// Equivalent to the constant's `doubleValue()`, which throws
     /// `UnsupportedOperationException`.
     fn double_value(&mut self) -> Result<f64> {
-        Err(LuceneError::unsupported_operation(
-            "DoubleValues.EMPTY has no values".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn advance_exact(&mut self, _doc: i32) -> Result<bool> {

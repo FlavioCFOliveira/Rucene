@@ -17,7 +17,7 @@ use rucene::index::index_writer_config::OpenMode;
 use rucene::index::postings_enum::POSTINGS_ENUM_POSITIONS;
 use rucene::index::segment_merger::SegmentMerger;
 use rucene::index::{IndexOptions, LeafReader, SegmentCommitInfo, SegmentInfo};
-use rucene::search::{Sort, NO_MORE_DOCS};
+use rucene::search::NO_MORE_DOCS;
 use rucene::store::java_nio_file::{Files, Path};
 use rucene::store::{merge_io_context, IOContext, MergeInfo, TrackingDirectoryWrapper};
 use rucene::util::concurrent::SameThreadExecutorService;
@@ -239,7 +239,7 @@ fn merge(
         HashMap::new(),
         StringHelper::random_id(),
         HashMap::new(),
-        Sort::default(),
+        None,
     )?;
 
     let mut merger = SegmentMerger::new(

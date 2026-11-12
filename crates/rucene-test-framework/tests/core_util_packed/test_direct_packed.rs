@@ -34,7 +34,7 @@ pub fn class_def() -> Arc<Class> {
 fn test_simple() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let bits_per_value = DirectWriter::bits_required(2);
+    let bits_per_value = DirectWriter::bits_required(2)?;
     let mut output = d.create_output("foo", &*DEFAULT_IO_CONTEXT)?;
     {
         let mut writer = DirectWriter::new(output.as_mut(), 5, bits_per_value)?;
@@ -66,7 +66,7 @@ fn test_simple() -> Result<()> {
 fn test_not_enough_values() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let bits_per_value = DirectWriter::bits_required(2);
+    let bits_per_value = DirectWriter::bits_required(2)?;
     let mut output = d.create_output("foo", &*DEFAULT_IO_CONTEXT)?;
     {
         let mut writer = DirectWriter::new(output.as_mut(), 5, bits_per_value)?;
@@ -133,7 +133,7 @@ fn do_test_bpv(directory: &Arc<dyn Directory>, bpv: i32, offset: i64, merge: boo
         let bits_required = if bpv == 64 {
             64
         } else {
-            DirectWriter::bits_required(1i64 << (bpv - 1))
+            DirectWriter::bits_required(1i64 << (bpv - 1))?
         };
         let name = format!("bpv{bpv}_{i}");
         let mut output = directory.create_output(&name, &*DEFAULT_IO_CONTEXT)?;

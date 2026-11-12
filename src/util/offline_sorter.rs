@@ -20,16 +20,9 @@
 //!   `Runtime.maxMemory()`, `totalMemory()` and `freeMemory()`. A Rust process
 //!   has no managed heap to interrogate, so this port returns the same floor
 //!   Java's heuristic is built around, `MIN_BUFFER_SIZE_MB` megabytes.
-//! * **Created-file tracking.** Java wraps the directory in a
-//!   `TrackingDirectoryWrapper` so that a failure can delete the partial
-//!   output. Rucene's `TrackingDirectoryWrapper` takes ownership of a
-//!   `Box<dyn Directory>`, which a shared `Arc<dyn Directory>` cannot provide,
-//!   so the created names are tracked in the sorter itself — which is all the
-//!   wrapper does.
 
 #![deny(unsafe_code)]
 
-use std::collections::HashSet;
 use std::fmt::{self, Display, Formatter};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
@@ -37,7 +30,7 @@ use std::time::Instant;
 use crate::codecs::codec_util;
 use crate::error::{LuceneError, Result};
 use crate::search::Executor;
-use crate::store::{ChecksumIndexInput, Directory, IndexOutput};
+use crate::store::{ChecksumIndexInput, Directory, IndexOutput, TrackingDirectoryWrapper};
 use crate::util::bytes_ref_array::{
     BytesRefArray, BytesRefIterator, FixedLengthBytesRefArray, SortableBytesRefArray,
 };
@@ -319,7 +312,7 @@ impl BytesRefIterator for ByteSequencesReader {
             ReaderBody::Base { input, end } => (input, *end),
             ReaderBody::Override(overriding) => return overriding.next(),
         };
-        if input.file_pointer() >= end {
+        if input.file_pointer()? >= end {
             return Ok(None);
         }
         let length = input.read_short()? as usize;
@@ -604,9 +597,10 @@ struct Shared {
     partitions_in_ram: Semaphore,
     hooks: Arc<dyn OfflineSorterHooks>,
     sort_info: Mutex<SortInfo>,
-    /// Files created during the current `sort`, so that a failure can remove
-    /// them. Stands in for `TrackingDirectoryWrapper.getCreatedFiles()`.
-    created_files: Mutex<HashSet<String>>,
+    /// The `TrackingDirectoryWrapper trackingDir` the current `sort` creates
+    /// around `dir` (`OfflineSorter.java:291`) and hands its tasks, so that a
+    /// failure can delete every file it created.
+    tracking_dir: Mutex<Arc<TrackingDirectoryWrapper>>,
 }
 
 impl Shared {
@@ -616,21 +610,30 @@ impl Shared {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn created_files(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
-        self.created_files
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    /// The tracking directory of the current `sort`.
+    fn tracking_dir(&self) -> Arc<TrackingDirectoryWrapper> {
+        Arc::clone(
+            &self
+                .tracking_dir
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    }
+
+    /// `new TrackingDirectoryWrapper(dir)`.
+    fn new_tracking_dir(dir: &Arc<dyn Directory>) -> Arc<TrackingDirectoryWrapper> {
+        Arc::new(TrackingDirectoryWrapper::new(Box::new(
+            crate::index::documents_writer::SharedDirectory(Arc::clone(dir)),
+        )))
     }
 
     /// `trackingDir.createTempOutput(prefix, "sort", IOContext.DEFAULT)`.
     fn create_tracked_temp_output(&self) -> Result<Box<dyn IndexOutput>> {
-        let out = self.dir.create_temp_output(
+        self.tracking_dir().create_temp_output(
             &self.temp_file_name_prefix,
             "sort",
             &*crate::store::DEFAULT_IO_CONTEXT,
-        )?;
-        self.created_files().insert(out.name().to_string());
-        Ok(out)
+        )
     }
 
     /// `getReader(dir.openChecksumInput(name), name)`.
@@ -802,10 +805,22 @@ impl Shared {
         for segment in &segments_to_merge {
             to_delete.push(segment.get_partition()?.file_name);
         }
-        // `IOUtils.deleteFiles(dir, toDelete)` on the tracking directory.
+        // `IOUtils.deleteFiles(dir, toDelete)` on the tracking directory
+        // (`OfflineSorter.java:757`, `IOUtils.java:247-262`): every non-null
+        // name is attempted, the first failure is thrown with the later ones
+        // suppressed into it.
+        let tracking_dir = self.tracking_dir();
+        let mut th: Option<LuceneError> = None;
         for name in to_delete.into_iter().flatten() {
-            self.dir.delete_file(&name)?;
-            self.created_files().remove(&name);
+            if let Err(t) = tracking_dir.delete_file(&name) {
+                match th.as_mut() {
+                    None => th = Some(t),
+                    Some(first) => first.add_suppressed(t),
+                }
+            }
+        }
+        if let Some(th) = th {
+            return Err(th);
         }
 
         Ok(Partition::on_disk(new_segment_name, total_count))
@@ -992,6 +1007,7 @@ impl OfflineSorter {
                 i16::MAX
             )));
         }
+        let tracking_dir = Shared::new_tracking_dir(&dir);
         Ok(Self {
             value_length,
             ram_buffer_size,
@@ -1004,7 +1020,7 @@ impl OfflineSorter {
                 partitions_in_ram,
                 hooks,
                 sort_info: Mutex::new(SortInfo::new(ram_buffer_size.bytes)),
-                created_files: Mutex::new(HashSet::new()),
+                tracking_dir: Mutex::new(tracking_dir),
             }),
         })
     }
@@ -1043,17 +1059,27 @@ impl OfflineSorter {
     /// first.
     pub fn sort(&mut self, input_file_name: &str) -> Result<String> {
         *self.shared.sort_info() = SortInfo::new(self.ram_buffer_size.bytes);
-        self.shared.created_files().clear();
+        // `TrackingDirectoryWrapper trackingDir = new
+        // TrackingDirectoryWrapper(dir)` (`OfflineSorter.java:291`).
+        *self
+            .shared
+            .tracking_dir
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Shared::new_tracking_dir(&self.shared.dir);
         let start = Instant::now();
 
         let outcome = self.sort_inner(input_file_name, start);
         if outcome.is_err() {
             // `IOUtils.deleteFilesIgnoringExceptions(trackingDir,
             // trackingDir.getCreatedFiles())`.
-            let files: Vec<String> = self.shared.created_files().iter().cloned().collect();
-            for name in files {
-                let _ = self.shared.dir.delete_file(&name);
-            }
+            let tracking_dir = self.shared.tracking_dir();
+            let files: Vec<String> = tracking_dir
+                .get_created_files_ordered()
+                .iter()
+                .cloned()
+                .collect();
+            crate::util::IOUtils::delete_files_ignoring_exceptions_in(tracking_dir.as_ref(), files);
         }
         outcome
     }
@@ -1126,7 +1152,7 @@ impl OfflineSorter {
             // We should be explicitly removing all intermediate files ourselves
             // unless there is an exception:
             debug_assert!({
-                let created = self.shared.created_files();
+                let created = self.shared.tracking_dir().get_created_files();
                 created.len() == 1 && created.contains(&result)
             });
 

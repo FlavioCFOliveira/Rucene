@@ -65,18 +65,20 @@ impl KnnCollector for OrdinalTranslatedKnnCollector<'_> {
         self.collector.min_competitive_similarity()
     }
 
-    fn top_docs(&mut self) -> TopDocs {
-        let td = self.collector.top_docs();
-        let relation = if self.early_terminated() {
-            TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO
-        } else {
-            TotalHitsRelation::EQUAL_TO
-        };
-        TopDocs {
-            total_hits: TotalHits::new(self.visited_count(), relation)
-                .expect("INVARIANT: a visited count is never negative"),
-            score_docs: td.score_docs,
-        }
+    fn top_docs(&mut self) -> crate::error::Result<TopDocs> {
+        Ok({
+            let td = self.collector.top_docs()?;
+            let relation = if self.early_terminated() {
+                TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO
+            } else {
+                TotalHitsRelation::EQUAL_TO
+            };
+            TopDocs {
+                total_hits: TotalHits::new(self.visited_count(), relation)
+                    .expect("INVARIANT: a visited count is never negative"),
+                score_docs: td.score_docs,
+            }
+        })
     }
 
     fn get_search_strategy(&self) -> Option<&KnnSearchStrategy> {

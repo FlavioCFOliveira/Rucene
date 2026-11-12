@@ -60,6 +60,23 @@ pub struct DocValuesLongHashSet {
 }
 
 impl DocValuesLongHashSet {
+    /// Java's `DocValuesLongHashSet.hashCode()`: `Objects.hash(size, minValue,
+    /// maxValue, mask, hasMissingValue, Arrays.hashCode(table))`.
+    pub fn java_hash_code(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_ints, java_arrays_hash_code_longs, java_boolean_hash_code,
+            java_long_hash_code,
+        };
+        java_arrays_hash_code_ints(&[
+            self.size as i32,
+            java_long_hash_code(self.min_value),
+            java_long_hash_code(self.max_value),
+            self.mask as i32,
+            java_boolean_hash_code(self.has_missing_value),
+            java_arrays_hash_code_longs(&self.table),
+        ])
+    }
+
     /// Builds the set from `values`, which must be sorted ascending.
     ///
     /// Equivalent to the `DocValuesLongHashSet(long[])` constructor, which
@@ -611,7 +628,7 @@ impl DocValuesScorerSource for SortedNumericRangeSource {
             doc_count_ignoring_deletes(reader, &self.field, self.lower_value, self.upper_value)?;
         if count != 0 && count != max_doc {
             let values = DocValues::get_sorted_numeric(reader, &self.field)?;
-            if let Some(singleton) = DocValues::unwrap_singleton_numeric(values) {
+            if let Some(singleton) = DocValues::unwrap_singleton_numeric(values)? {
                 if let Some(skipper) = reader.get_doc_values_skipper(&self.field)? {
                     if let Some(primary_sort_field) =
                         dense_primary_sort(reader, skipper.as_ref(), &self.field)
@@ -660,7 +677,7 @@ impl SortedNumericRangeSource {
         let skipper = reader.get_doc_values_skipper(&self.field)?;
         // A single two-phase iterator covers every density: its approximation
         // rides the skipper, so it never over-scans.
-        match DocValues::unwrap_singleton_numeric(values) {
+        match DocValues::unwrap_singleton_numeric(values)? {
             Some(singleton) => Ok(Some(ScorerIterator::TwoPhase(Box::new(
                 DocValuesRangeIterator::for_range(
                     singleton,
@@ -876,15 +893,21 @@ impl Query for SortedNumericDocValuesRangeQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.lower_value.hash(&mut hasher);
-        self.upper_value.hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.SortedNumericDocValuesRangeQuery"
+    }
+
+    /// Equivalent to `Objects.hash(classHash(), field, lowerValue, upperValue)`.
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_ints, java_long_hash_code, java_string_hash_code,
+        };
+        java_arrays_hash_code_ints(&[
+            self.class_hash(),
+            java_string_hash_code(&self.field),
+            java_long_hash_code(self.lower_value),
+            java_long_hash_code(self.upper_value),
+        ])
     }
 
     fn create_weight(
@@ -977,7 +1000,7 @@ impl DocValuesScorerSource for SortedNumericSetSource {
         // walking the value list; the walk over a single value is the same work,
         // so the flag records which case this is rather than splitting the
         // iterator in two.
-        let singleton = values.into_singleton().is_some();
+        let singleton = values.into_singleton()?.is_some();
         let values = DocValues::get_sorted_numeric(reader, &self.field)?;
         Ok(Some(ScorerIterator::TwoPhase(Box::new(
             SortedNumericSetIterator {
@@ -1023,14 +1046,17 @@ impl Query for SortedNumericDocValuesSetQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.values.hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.SortedNumericDocValuesSetQuery"
+    }
+
+    /// Equivalent to `Objects.hash(classHash(), field, numbers)`.
+    fn query_hash(&self) -> i32 {
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            self.class_hash(),
+            crate::util::java_collections::java_string_hash_code(&self.field),
+            self.values.java_hash_code(),
+        ])
     }
 
     fn create_weight(
@@ -1133,7 +1159,7 @@ impl DocValuesScorerSource for SortedSetRangeSource {
 
         // A single two-phase iterator covers every density: its approximation
         // rides the skipper, so it never over-scans.
-        match DocValues::unwrap_singleton_sorted(values) {
+        match DocValues::unwrap_singleton_sorted(values)? {
             Some(singleton) => Ok(Some(ScorerIterator::TwoPhase(Box::new(
                 DocValuesRangeIterator::for_ordinal_range(singleton, skipper, min_ord, max_ord),
             )))),
@@ -1162,7 +1188,7 @@ impl DocValuesScorerSource for SortedSetRangeSource {
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         if let Some(skipper) = reader.get_doc_values_skipper(&self.field)? {
             let values = DocValues::get_sorted_set(reader, &self.field)?;
-            if let Some(singleton) = DocValues::unwrap_singleton_sorted(values) {
+            if let Some(singleton) = DocValues::unwrap_singleton_sorted(values)? {
                 if let Some(primary_sort_field) =
                     dense_primary_sort(reader, skipper.as_ref(), &self.field)
                 {
@@ -1263,23 +1289,24 @@ impl Query for SortedSetDocValuesRangeQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.lower_value
-            .as_ref()
-            .map(|v| v.slice().to_vec())
-            .hash(&mut hasher);
-        self.upper_value
-            .as_ref()
-            .map(|v| v.slice().to_vec())
-            .hash(&mut hasher);
-        self.lower_inclusive.hash(&mut hasher);
-        self.upper_inclusive.hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.SortedSetDocValuesRangeQuery"
+    }
+
+    /// Equivalent to `Objects.hash(classHash(), field, lowerValue, upperValue,
+    /// lowerInclusive, upperInclusive)`; a `null` bound hashes as `0`.
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_ints, java_boolean_hash_code, java_string_hash_code,
+        };
+        java_arrays_hash_code_ints(&[
+            self.class_hash(),
+            java_string_hash_code(&self.field),
+            self.lower_value.as_ref().map_or(0, BytesRef::hash_code),
+            self.upper_value.as_ref().map_or(0, BytesRef::hash_code),
+            java_boolean_hash_code(self.lower_inclusive),
+            java_boolean_hash_code(self.upper_inclusive),
+        ])
     }
 
     fn rewrite(&self, _searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {

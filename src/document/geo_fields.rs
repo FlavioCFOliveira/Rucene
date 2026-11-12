@@ -1766,6 +1766,11 @@ impl DimensionFormatter for InetAddressPointFormatter {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    /// The anonymous subclass `org.apache.lucene.document.InetAddressPoint$1`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.InetAddressPoint$1"
+    }
 }
 
 impl PointFormatter for InetAddressPointFormatter {
@@ -1779,6 +1784,11 @@ impl PointFormatter for InetAddressPointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// The anonymous subclass `org.apache.lucene.document.InetAddressPoint$3`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.InetAddressPoint$3"
     }
 }
 
@@ -2198,6 +2208,11 @@ impl DimensionFormatter for LatLonPointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// The anonymous subclass `org.apache.lucene.document.LatLonPoint$1`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.LatLonPoint$1"
     }
 }
 

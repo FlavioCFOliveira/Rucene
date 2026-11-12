@@ -259,9 +259,9 @@ impl MemorySegmentIndexInputProvider {
             return Ok(Arc::new(SharedArena::new()));
         };
 
-        let mut map = arenas.lock().map_err(|_| {
-            LuceneError::illegal_state("shared arena map mutex poisoned".to_string())
-        })?;
+        let mut map = arenas
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // `computeIfAbsent`.
         let arena = match map.get(key) {
@@ -308,7 +308,10 @@ impl MemorySegmentIndexInputProvider {
         let owned_key = key.to_string();
         let on_close = Box::new(move || {
             if let Some(map) = weak.upgrade() {
-                if let Ok(mut guard) = map.lock() {
+                {
+                    let mut guard = map
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     guard.remove(&owned_key);
                 }
             }
@@ -361,12 +364,38 @@ impl MemorySegmentIndexInputProvider {
     /// Rewrites a mapping failure with the diagnostic advice Lucene attaches.
     ///
     /// Equivalent to
-    /// `MMapDirectory.MMapIndexInputProvider.convertMapFailedIOException(IOException, String, long)`.
+    /// `MMapDirectory.MMapIndexInputProvider.convertMapFailedIOException(IOException, String, long)`
+    /// (`MMapDirectory.java:354-394`), reached from the `catch (IOException ioe)`
+    /// around `fc.map(...)` (`MemorySegmentIndexInputProvider.java:125-129`):
+    /// an error that is not an `IOException` passes through unchanged.
+    ///
+    /// When the mapping failed for lack of memory the JDK throws
+    /// `new IOException("Map failed", oome)` (the native `mmap` reports
+    /// `ENOMEM` as `OutOfMemoryError`); Lucene then reports the plain message
+    /// `"Map failed"` and drops the cause. Here `ENOMEM` is the
+    /// [`std::io::ErrorKind::OutOfMemory`] kind of the mapping error. Every
+    /// other `IOException` keeps its `getMessage()` and its `getCause()`.
     fn convert_map_failed_error(
         error: LuceneError,
         resource_description: &str,
         buf_size: i64,
     ) -> LuceneError {
+        if !error.is_io_exception() {
+            return error;
+        }
+        let (original_message, original_cause) = match error.kind() {
+            LuceneErrorKind::Io(io_error) if io_error.kind() == std::io::ErrorKind::OutOfMemory => {
+                // Nested OOM confuses users, because it's "incorrect": print a
+                // plain message.
+                ("Map failed".to_string(), None)
+            }
+            LuceneErrorKind::Io(io_error) => (
+                crate::store::java_nio_file::java_message_of(io_error)
+                    .unwrap_or_else(|| "null".to_string()),
+                crate::store::java_nio_file::java_cause_of(io_error).map(LuceneError::duplicate),
+            ),
+            _ => (error.to_string(), None),
+        };
         let more_info = if usize::BITS < 64 {
             "MMapDirectory should only be used on 64bit platforms, because the address space on 32bit operating systems is too small. "
         } else if cfg!(target_os = "windows") {
@@ -376,11 +405,47 @@ impl MemorySegmentIndexInputProvider {
         } else {
             "Please review 'ulimit -v', 'ulimit -m' (both should return 'unlimited'). "
         };
-        LuceneError::from(LuceneErrorKind::Io(std::io::Error::other(format!(
-            "{error}: {resource_description} [this may be caused by lack of enough unfragmented \
-             virtual address space or too restrictive virtual memory limits enforced by the \
-             operating system, preventing us to map a chunk of {buf_size} bytes. {more_info}More \
-             information: https://blog.thetaphi.de/2012/07/use-lucenes-mmapdirectory-on-64bit.html]"
-        ))))
+        LuceneError::from(LuceneErrorKind::Io(
+            crate::store::java_nio_file::io_exception_with_cause(
+                format!(
+                    "{original_message}: {resource_description} [this may be caused by lack of \
+                     enough unfragmented virtual address space or too restrictive virtual memory \
+                     limits enforced by the operating system, preventing us to map a chunk of \
+                     {buf_size} bytes. {more_info}More information: \
+                     https://blog.thetaphi.de/2012/07/use-lucenes-mmapdirectory-on-64bit.html]"
+                ),
+                original_cause,
+            ),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+
+    /// G-428: `convertMapFailedIOException` reports a mapping that failed
+    /// for lack of memory as the plain `"Map failed"` with no cause, and keeps
+    /// any other `IOException`'s message (`MMapDirectory.java:354-394`).
+    #[test]
+    fn gap_g428_map_failed_conversion() {
+        let oom = LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
+            std::io::ErrorKind::OutOfMemory,
+            "ENOMEM",
+        )));
+        let converted =
+            MemorySegmentIndexInputProvider::convert_map_failed_error(oom, "f.bin", 1024);
+        let text = converted.to_string();
+        assert!(text.contains("Map failed: f.bin [this may be caused by lack of enough unfragmented virtual address space"), "{text}");
+        assert!(text.contains("map a chunk of 1024 bytes."), "{text}");
+        let other = LuceneError::from(LuceneErrorKind::Io(std::io::Error::other("boom")));
+        let text = MemorySegmentIndexInputProvider::convert_map_failed_error(other, "f.bin", 8)
+            .to_string();
+        assert!(text.contains("boom: f.bin [this may be caused"), "{text}");
+        let not_io = LuceneError::illegal_state("x");
+        assert!(matches!(
+            MemorySegmentIndexInputProvider::convert_map_failed_error(not_io, "f.bin", 8).kind,
+            LuceneErrorKind::IllegalState { .. }
+        ));
     }
 }

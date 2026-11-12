@@ -205,18 +205,10 @@ impl UsageTrackingQueryCachingPolicy {
     }
 }
 
-/// Narrows a query hash to the `int` the ring buffer tracks.
-///
-/// **Divergence from Lucene 10.5.0.** Java's `Query.hashCode()` is an `int`;
-/// this port's [`Query::query_hash`] is a `u64`, because Rust's hashers produce
-/// one. The buffer tracks 32-bit keys, so the hash is folded the way Java folds
-/// a `long` into an `int` in `Long.hashCode`. A fold can only ever create a
-/// collision, which the class already documents as acceptable: "this may cause
-/// rare false positives, but at worst this just means we cache a query that was
-/// not in fact used enough".
+/// The `int` the ring buffer tracks: `query.hashCode()`
+/// (`UsageTrackingQueryCachingPolicy.java`).
 fn query_hash_code(query: &dyn Query) -> i32 {
-    let hash = query.query_hash();
-    ((hash ^ (hash >> 32)) as u32) as i32
+    query.query_hash()
 }
 
 impl QueryCachingPolicy for UsageTrackingQueryCachingPolicy {

@@ -2419,7 +2419,10 @@ impl IndexableField for TextField {
             ))),
             FieldData::Reader(reader) => reader_token_stream(analyzer, &self.name, reader),
             FieldData::String(s) => string_token_stream(analyzer, &self.name, s),
-            _ => panic!("TextField must have a TokenStream, String or Reader value"),
+            // `"... got " + this` (`Field.java:501-502`).
+            _ => Err(LuceneError::illegal_argument(format!(
+                "Field must have either TokenStream, String, Reader or Number value; got {self}"
+            ))),
         }
     }
 
@@ -2568,6 +2571,35 @@ impl StoredField {
     /// Expert: creates a stored field with a custom field type.
     pub fn new_with_field_type(name: &str, value: String, field_type: FieldType) -> Result<Self> {
         Ok(Self(Field::new(name, value, field_type)?))
+    }
+
+    /// Creates a stored field with only a name and a field type; the value is
+    /// set later.
+    ///
+    /// Equivalent to the protected `StoredField(String, FieldType)`
+    /// (`StoredField.java:46-48`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the `Field` constructor raises.
+    pub fn new_type_only(name: &str, field_type: FieldType) -> Result<Self> {
+        Ok(Self(Field::new_with_type(name, field_type)?))
+    }
+
+    /// Creates a stored field with a binary value and an explicit field type.
+    ///
+    /// Equivalent to `StoredField(String, BytesRef, FieldType)`
+    /// (`StoredField.java:61-63`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the `Field` constructor raises.
+    pub fn new_bytes_with_field_type(
+        name: &str,
+        bytes: BytesRef,
+        field_type: FieldType,
+    ) -> Result<Self> {
+        Ok(Self(Field::new_with_bytes(name, bytes, field_type)?))
     }
 }
 
@@ -3143,6 +3175,18 @@ pub fn pack_binary_point(point: &[BytesRef]) -> Result<BytesRef> {
             "point must not be 0 dimensions".to_string(),
         ));
     }
+    if point.len() == 1 {
+        // `return new BytesRef(point[0])` (`BinaryPoint.java:93-95`): a single
+        // dimension is not checked here, even for a zero length.
+        return Ok(BytesRef::new(point[0].slice().to_vec()));
+    }
+    // `point must not have 0-length values` (`BinaryPoint.java:101-104`),
+    // checked on the first dimension only.
+    if point[0].length == 0 {
+        return Err(LuceneError::illegal_argument(
+            "point must not have 0-length values".to_string(),
+        ));
+    }
     let bytes_per_dim = point[0].length;
     let mut packed = Vec::with_capacity(bytes_per_dim * point.len());
     for dim in point {
@@ -3706,21 +3750,11 @@ impl IndexableField for LongPoint {
 /// Returns the `f32` adjacent to `value` in the direction of positive infinity.
 ///
 /// Reproduces `java.lang.Math.nextUp(float)`, which
-/// [`FloatPoint::next_up`] delegates to. Rust's `f32::next_up` was stabilised
-/// in 1.86, above this crate's minimum supported version of 1.80, so the
-/// bit-level walk Java performs is written out here.
+/// [`FloatPoint::next_up`] delegates to: [`f32::next_up`] is the same IEEE
+/// 754 `nextUp` (NaN and positive infinity unchanged, `-0.0` stepping to the
+/// smallest positive subnormal).
 fn java_math_next_up_f32(value: f32) -> f32 {
-    if value.is_nan() || value == f32::INFINITY {
-        return value;
-    }
-    // Adding `0.0` turns `-0.0` into `+0.0`, which is what makes the branch
-    // below step away from zero rather than towards it.
-    let value = value + 0.0;
-    if value >= 0.0 {
-        f32::from_bits(value.to_bits().wrapping_add(1))
-    } else {
-        f32::from_bits(value.to_bits().wrapping_sub(1))
-    }
+    value.next_up()
 }
 
 /// Returns the `f32` adjacent to `value` in the direction of negative infinity.
@@ -3728,17 +3762,7 @@ fn java_math_next_up_f32(value: f32) -> f32 {
 /// Reproduces `java.lang.Math.nextDown(float)`, which
 /// [`FloatPoint::next_down`] delegates to.
 fn java_math_next_down_f32(value: f32) -> f32 {
-    if value.is_nan() || value == f32::NEG_INFINITY {
-        return value;
-    }
-    if value == 0.0 {
-        return -f32::from_bits(1);
-    }
-    if value > 0.0 {
-        f32::from_bits(value.to_bits().wrapping_sub(1))
-    } else {
-        f32::from_bits(value.to_bits().wrapping_add(1))
-    }
+    value.next_down()
 }
 
 /// Returns the `f64` adjacent to `value` in the direction of positive infinity.
@@ -3746,15 +3770,7 @@ fn java_math_next_down_f32(value: f32) -> f32 {
 /// Reproduces `java.lang.Math.nextUp(double)`, which
 /// [`DoublePoint::next_up`] delegates to.
 fn java_math_next_up_f64(value: f64) -> f64 {
-    if value.is_nan() || value == f64::INFINITY {
-        return value;
-    }
-    let value = value + 0.0;
-    if value >= 0.0 {
-        f64::from_bits(value.to_bits().wrapping_add(1))
-    } else {
-        f64::from_bits(value.to_bits().wrapping_sub(1))
-    }
+    value.next_up()
 }
 
 /// Returns the `f64` adjacent to `value` in the direction of negative infinity.
@@ -3762,17 +3778,7 @@ fn java_math_next_up_f64(value: f64) -> f64 {
 /// Reproduces `java.lang.Math.nextDown(double)`, which
 /// [`DoublePoint::next_down`] delegates to.
 fn java_math_next_down_f64(value: f64) -> f64 {
-    if value.is_nan() || value == f64::NEG_INFINITY {
-        return value;
-    }
-    if value == 0.0 {
-        return -f64::from_bits(1);
-    }
-    if value > 0.0 {
-        f64::from_bits(value.to_bits().wrapping_sub(1))
-    } else {
-        f64::from_bits(value.to_bits().wrapping_add(1))
-    }
+    value.next_down()
 }
 
 /// An indexed `f32` point field.
@@ -4382,6 +4388,12 @@ impl BinaryPoint {
         }
         let bytes_per_dim = point[0].length;
         for dim in point {
+            // `point must not have 0-length values` (`BinaryPoint.java:63-65`).
+            if dim.length == 0 {
+                return Err(LuceneError::illegal_argument(
+                    "point must not have 0-length values".to_string(),
+                ));
+            }
             if dim.length != bytes_per_dim {
                 return Err(LuceneError::illegal_argument(
                     "all dimensions must have same bytes length".to_string(),
@@ -4399,8 +4411,10 @@ impl BinaryPoint {
 
     /// Creates a new BinaryPoint.
     pub fn new(name: &str, point: &[BytesRef]) -> Result<Self> {
-        let field_type = Self::field_type_for_point(point)?;
+        // `super(name, pack(point), getType(point))` (`BinaryPoint.java:129-131`):
+        // Java evaluates `pack` before `getType`.
         let packed = pack_binary_point(point)?;
+        let field_type = Self::field_type_for_point(point)?;
         Ok(Self {
             name: name.to_string(),
             field_type,
@@ -4417,9 +4431,13 @@ impl BinaryPoint {
     ) -> Result<Self> {
         let expected = field_type.point_dimension_count() * field_type.point_num_bytes();
         if packed_point.length as i32 != expected {
-            return Err(LuceneError::illegal_argument(
-                "packedPoint length does not match field type dimensions".to_string(),
-            ));
+            // `BinaryPoint.java:136-144`.
+            return Err(LuceneError::illegal_argument(format!(
+                "packedPoint is length={} but type.pointDimensionCount()={} and type.pointNumBytes()={}",
+                packed_point.length,
+                field_type.point_dimension_count(),
+                field_type.point_num_bytes()
+            )));
         }
         Ok(Self {
             name: name.to_string(),
@@ -5474,15 +5492,12 @@ impl IndexableField for BinaryDocValuesField {
         _analyzer: Option<&dyn Analyzer>,
         _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
-        Ok(Box::new(
-            crate::analysis::BinaryTokenStream::new(
-                self.value
-                    .borrow()
-                    .clone()
-                    .unwrap_or_else(|| panic!("java.lang.NullPointerException")),
-            )
-            .unwrap(),
-        ))
+        Ok(Box::new(crate::analysis::BinaryTokenStream::new(
+            self.value
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException")),
+        )?))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -5719,6 +5734,54 @@ impl IntField {
             IntPoint::new_set_query(field, values)?,
             SortedNumericDocValuesField::new_slow_set_query(field, &points),
         )))
+    }
+
+    /// Creates a sort over this field's int values.
+    ///
+    /// Equivalent to `org.apache.lucene.document.IntField.newSortField(String,
+    /// boolean, SortedNumericSelector.Type)` (`IntField.java:173-176`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`SortedNumericSortField::with_missing_value`](crate::search::SortedNumericSortField)
+    /// raises.
+    pub fn new_sort_field(
+        field: &str,
+        reverse: bool,
+        selector: crate::search::SortedNumericSelectorType,
+    ) -> Result<crate::search::SortedNumericSortField> {
+        crate::search::SortedNumericSortField::with_missing_value(
+            field,
+            crate::search::sort::SortFieldType::Int,
+            reverse,
+            selector,
+            None,
+        )
+    }
+
+    /// Creates a sort over this field's int values, with an explicit missing
+    /// value.
+    ///
+    /// Equivalent to `org.apache.lucene.document.IntField.newSortField(String,
+    /// boolean, SortedNumericSelector.Type, int)` (`IntField.java:186-189`).
+    ///
+    /// # Errors
+    ///
+    /// As [`new_sort_field`](Self::new_sort_field).
+    pub fn new_sort_field_with_missing(
+        field: &str,
+        reverse: bool,
+        selector: crate::search::SortedNumericSelectorType,
+        missing_value: i32,
+    ) -> Result<crate::search::SortedNumericSortField> {
+        crate::search::SortedNumericSortField::with_missing_value(
+            field,
+            crate::search::sort::SortFieldType::Int,
+            reverse,
+            selector,
+            Some(crate::search::sort::MissingValue::Int(missing_value)),
+        )
     }
 }
 
@@ -6125,6 +6188,54 @@ impl FloatField {
             SortedNumericDocValuesField::new_slow_set_query(field, &points),
         )))
     }
+
+    /// Creates a sort over this field's float values.
+    ///
+    /// Equivalent to `org.apache.lucene.document.FloatField.newSortField(String,
+    /// boolean, SortedNumericSelector.Type)` (`FloatField.java:180-183`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`SortedNumericSortField::with_missing_value`](crate::search::SortedNumericSortField)
+    /// raises.
+    pub fn new_sort_field(
+        field: &str,
+        reverse: bool,
+        selector: crate::search::SortedNumericSelectorType,
+    ) -> Result<crate::search::SortedNumericSortField> {
+        crate::search::SortedNumericSortField::with_missing_value(
+            field,
+            crate::search::sort::SortFieldType::Float,
+            reverse,
+            selector,
+            None,
+        )
+    }
+
+    /// Creates a sort over this field's float values, with an explicit missing
+    /// value.
+    ///
+    /// Equivalent to `org.apache.lucene.document.FloatField.newSortField(String,
+    /// boolean, SortedNumericSelector.Type, float)` (`FloatField.java:193-196`).
+    ///
+    /// # Errors
+    ///
+    /// As [`new_sort_field`](Self::new_sort_field).
+    pub fn new_sort_field_with_missing(
+        field: &str,
+        reverse: bool,
+        selector: crate::search::SortedNumericSelectorType,
+        missing_value: f32,
+    ) -> Result<crate::search::SortedNumericSortField> {
+        crate::search::SortedNumericSortField::with_missing_value(
+            field,
+            crate::search::sort::SortFieldType::Float,
+            reverse,
+            selector,
+            Some(crate::search::sort::MissingValue::Float(missing_value)),
+        )
+    }
 }
 
 impl IndexableField for FloatField {
@@ -6289,6 +6400,54 @@ impl DoubleField {
             SortedNumericDocValuesField::new_slow_set_query(field, &points),
         )))
     }
+
+    /// Creates a sort over this field's double values.
+    ///
+    /// Equivalent to `org.apache.lucene.document.DoubleField.newSortField(String,
+    /// boolean, SortedNumericSelector.Type)` (`DoubleField.java:180-183`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`SortedNumericSortField::with_missing_value`](crate::search::SortedNumericSortField)
+    /// raises.
+    pub fn new_sort_field(
+        field: &str,
+        reverse: bool,
+        selector: crate::search::SortedNumericSelectorType,
+    ) -> Result<crate::search::SortedNumericSortField> {
+        crate::search::SortedNumericSortField::with_missing_value(
+            field,
+            crate::search::sort::SortFieldType::Double,
+            reverse,
+            selector,
+            None,
+        )
+    }
+
+    /// Creates a sort over this field's double values, with an explicit missing
+    /// value.
+    ///
+    /// Equivalent to `org.apache.lucene.document.DoubleField.newSortField(String,
+    /// boolean, SortedNumericSelector.Type, double)` (`DoubleField.java:193-196`).
+    ///
+    /// # Errors
+    ///
+    /// As [`new_sort_field`](Self::new_sort_field).
+    pub fn new_sort_field_with_missing(
+        field: &str,
+        reverse: bool,
+        selector: crate::search::SortedNumericSelectorType,
+        missing_value: f64,
+    ) -> Result<crate::search::SortedNumericSortField> {
+        crate::search::SortedNumericSortField::with_missing_value(
+            field,
+            crate::search::sort::SortFieldType::Double,
+            reverse,
+            selector,
+            Some(crate::search::sort::MissingValue::Double(missing_value)),
+        )
+    }
 }
 
 impl IndexableField for DoubleField {
@@ -6405,6 +6564,10 @@ impl DateTools {
     ///
     /// Equivalent to `DateTools.round(Date, Resolution)`:
     /// `new Date(round(date.getTime(), resolution))`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `GregorianCalendar` takes any
+    /// `long` millisecond; the calendar arithmetic here is `chrono`'s, whose
+    /// range ends at year ±262,143, and a timestamp past it panics.
     pub fn round_date(date: Date, resolution: Resolution) -> Date {
         let millis = Self::round(date.timestamp_millis(), resolution);
         Date::from_timestamp_millis(millis).expect("a rounded date stays in range")
@@ -8692,18 +8855,20 @@ mod tests {
             "the DATA_INPUT variant carries the bytes the cursor produced"
         );
         // The cursor is drained, exactly like Java's `StoredFieldDataInput`; a
-        // second read runs off the end and surfaces as an I/O error, which the
-        // indexing chain treats as an aborting failure rather than silently
-        // storing nothing.
+        // second read runs off the end of the `ByteArrayDataInput`, whose
+        // `System.arraycopy(bytes, pos, b, offset, len)`
+        // (`ByteArrayDataInput.java:141-144`) throws
+        // `ArrayIndexOutOfBoundsException`.
         let error = IndexableField::stored_value(&field)
             .expect_err("the cursor is single-use, as it is in Lucene");
         assert!(
             matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::Io(_),
+                &error.kind,
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.ArrayIndexOutOfBoundsException",
+                    message: Some(message),
                     ..
-                }
+                } if message == "arraycopy: last source index 6 out of bounds for byte[3]"
             ),
             "{error:?}"
         );
@@ -8945,6 +9110,11 @@ impl crate::search::DimensionFormatter for IntPointFormatter {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    /// The anonymous subclass `org.apache.lucene.document.IntPoint$1`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.IntPoint$1"
+    }
 }
 
 impl crate::search::PointFormatter for IntPointFormatter {
@@ -8955,6 +9125,11 @@ impl crate::search::PointFormatter for IntPointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// The anonymous subclass `org.apache.lucene.document.IntPoint$3`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.IntPoint$3"
     }
 }
 
@@ -8970,6 +9145,11 @@ impl crate::search::DimensionFormatter for LongPointFormatter {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    /// The anonymous subclass `org.apache.lucene.document.LongPoint$1`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.LongPoint$1"
+    }
 }
 
 impl crate::search::PointFormatter for LongPointFormatter {
@@ -8980,6 +9160,11 @@ impl crate::search::PointFormatter for LongPointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// The anonymous subclass `org.apache.lucene.document.LongPoint$3`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.LongPoint$3"
     }
 }
 
@@ -8996,6 +9181,11 @@ impl crate::search::DimensionFormatter for FloatPointFormatter {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    /// The anonymous subclass `org.apache.lucene.document.FloatPoint$1`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.FloatPoint$1"
+    }
 }
 
 impl crate::search::PointFormatter for FloatPointFormatter {
@@ -9007,6 +9197,11 @@ impl crate::search::PointFormatter for FloatPointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// The anonymous subclass `org.apache.lucene.document.FloatPoint$3`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.FloatPoint$3"
     }
 }
 
@@ -9023,6 +9218,11 @@ impl crate::search::DimensionFormatter for DoublePointFormatter {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    /// The anonymous subclass `org.apache.lucene.document.DoublePoint$1`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.DoublePoint$1"
+    }
 }
 
 impl crate::search::PointFormatter for DoublePointFormatter {
@@ -9034,6 +9234,11 @@ impl crate::search::PointFormatter for DoublePointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// The anonymous subclass `org.apache.lucene.document.DoublePoint$3`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.DoublePoint$3"
     }
 }
 
@@ -9076,6 +9281,11 @@ impl crate::search::PointFormatter for BinaryPointSetFormatter {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    /// The anonymous subclass `org.apache.lucene.document.BinaryPoint$3`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.BinaryPoint$3"
+    }
 }
 
 impl crate::search::DimensionFormatter for BinaryPointFormatter {
@@ -9085,6 +9295,11 @@ impl crate::search::DimensionFormatter for BinaryPointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// The anonymous subclass `org.apache.lucene.document.BinaryPoint$1`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.BinaryPoint$1"
     }
 }
 
@@ -9105,6 +9320,70 @@ mod pass_d_char_sequence_binary_value_tests {
         let keyword = KeywordField::new("f", "abcd".to_string(), Store::NO).unwrap();
         let bytes = keyword.binary_value().unwrap();
         assert_eq!((bytes.bytes.len(), bytes.slice()), (12, &b"abcd"[..]));
+    }
+}
+
+#[cfg(test)]
+mod census_gap_sort_field_tests {
+    use super::*;
+    use crate::search::sort::SortFieldType;
+    use crate::search::SortedNumericSelectorType;
+
+    /// G-001..G-003: `IntField`, `FloatField` and `DoubleField.newSortField`
+    /// build a `SortedNumericSortField` of their own type
+    /// (`IntField.java:173-189`, `FloatField.java:180-196`,
+    /// `DoubleField.java:180-196`), rendered by
+    /// `SortedNumericSortField.toString()` (`SortedNumericSortField.java:241-255`).
+    #[test]
+    fn gap_g001_g003_numeric_field_sort_fields_as_java() {
+        let int = IntField::new_sort_field("i", false, SortedNumericSelectorType::MIN).unwrap();
+        assert_eq!(int.get_numeric_type(), SortFieldType::Int);
+        assert_eq!(
+            int.to_string(),
+            "<sortednumeric: \"i\"> selector=MIN type=INT"
+        );
+        let int =
+            IntField::new_sort_field_with_missing("i", true, SortedNumericSelectorType::MAX, 7)
+                .unwrap();
+        assert_eq!(
+            int.to_string(),
+            "<sortednumeric: \"i\">! missingValue=7 selector=MAX type=INT"
+        );
+        let float = FloatField::new_sort_field("f", true, SortedNumericSelectorType::MIN).unwrap();
+        assert_eq!(float.get_numeric_type(), SortFieldType::Float);
+        assert_eq!(
+            float.to_string(),
+            "<sortednumeric: \"f\">! selector=MIN type=FLOAT"
+        );
+        let float = FloatField::new_sort_field_with_missing(
+            "f",
+            false,
+            SortedNumericSelectorType::MAX,
+            1.5,
+        )
+        .unwrap();
+        assert_eq!(
+            float.to_string(),
+            "<sortednumeric: \"f\"> missingValue=1.5 selector=MAX type=FLOAT"
+        );
+        let double =
+            DoubleField::new_sort_field("d", false, SortedNumericSelectorType::MAX).unwrap();
+        assert_eq!(double.get_numeric_type(), SortFieldType::Double);
+        assert_eq!(
+            double.to_string(),
+            "<sortednumeric: \"d\"> selector=MAX type=DOUBLE"
+        );
+        let double = DoubleField::new_sort_field_with_missing(
+            "d",
+            true,
+            SortedNumericSelectorType::MIN,
+            2.0,
+        )
+        .unwrap();
+        assert_eq!(
+            double.to_string(),
+            "<sortednumeric: \"d\">! missingValue=2.0 selector=MIN type=DOUBLE"
+        );
     }
 }
 

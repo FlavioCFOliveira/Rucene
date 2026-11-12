@@ -968,10 +968,11 @@ impl Sorter {
                 // (`Sorter.java:193-194`): a sparse set when the values are
                 // fewer than `maxDoc >>> 7`, a fixed one otherwise.
                 let Some(mut values) = reader.get_numeric_doc_values(parent_field)? else {
-                    return Err(LuceneError::null_pointer_with_message(format!(
-                        "the segment has blocks but no doc values for its parent field \
-                         \"{parent_field}\""
-                    )));
+                    // `it.cost()` on the `null` iterator (`BitSet.java:34`).
+                    return Err(LuceneError::null_pointer_with_message(
+                        "Cannot invoke \"org.apache.lucene.search.DocIdSetIterator.cost()\" \
+                         because \"it\" is null",
+                    ));
                 };
                 parents = Some(Arc::from(bit_set_of(values.as_mut(), max_doc)?));
             }
@@ -1450,7 +1451,7 @@ static SORT_FIELD_PROVIDERS: std::sync::LazyLock<
 pub fn sort_field_provider_for_name(name: &str) -> Result<Arc<dyn SortFieldProvider>> {
     SORT_FIELD_PROVIDERS
         .read()
-        .expect("INVARIANT: the sort-field provider lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .lookup(name)
 }
 
@@ -1461,7 +1462,7 @@ pub fn sort_field_provider_for_name(name: &str) -> Result<Arc<dyn SortFieldProvi
 pub fn available_sort_field_providers() -> Vec<String> {
     SORT_FIELD_PROVIDERS
         .read()
-        .expect("INVARIANT: the sort-field provider lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .available_services()
         .into_iter()
         .map(str::to_string)
@@ -1483,7 +1484,7 @@ pub fn reload_sort_field_providers(
 ) -> Result<()> {
     SORT_FIELD_PROVIDERS
         .write()
-        .expect("INVARIANT: the sort-field provider lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .reload(classloader)
 }
 

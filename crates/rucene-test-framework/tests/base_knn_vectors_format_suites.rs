@@ -892,7 +892,7 @@ fn simple_off_heap_size(vector: &[f32]) -> Result<Option<(HashMap<String, i64>, 
             let field_info = field_infos.field_info("f").unwrap_or_else(|| {
                 Throwable::new("java.lang.NullPointerException", "fieldInfo(\"f\")").throw()
             });
-            let off_heap = field_reader.get_off_heap_byte_size(field_info);
+            let off_heap = field_reader.get_off_heap_byte_size(field_info)?;
             result = Some((off_heap, field_info.vector_dimension));
         }
         reader.close()?;

@@ -55,7 +55,6 @@ use rucene::index::{
     VectorSimilarityFunction,
 };
 use rucene::internal::tests_hooks::{FieldInfosBuilder, TestSecrets};
-use rucene::search::Sort;
 use rucene::store::{Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::java_collections::JavaStringMap;
 use rucene::util::string_helper::StringHelper;
@@ -226,7 +225,7 @@ pub fn new_segment_info(dir: Arc<dyn Directory>, name: &str) -> SegmentInfo {
         HashMap::new(),
         StringHelper::random_id(),
         HashMap::new(),
-        Sort::default(),
+        None,
     )
     .unwrap_or_else(|e| rethrow(e))
 }

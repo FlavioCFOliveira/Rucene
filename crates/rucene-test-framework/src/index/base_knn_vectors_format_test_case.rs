@@ -624,7 +624,7 @@ fn ram_estimate_state(dir: Arc<dyn Directory>) -> Result<OwnedSegmentWriteState>
         HashMap::new(),
         StringHelper::random_id(),
         HashMap::new(),
-        Sort::default(),
+        None,
     )?;
     Ok(OwnedSegmentWriteState::new(
         Arc::new(NoOutputInfoStream),
@@ -3169,7 +3169,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 .expect("the field has a reader"),
             None => &*vectors_reader,
         };
-        let off_heap = knn_vectors_reader.get_off_heap_byte_size(&field_info);
+        let off_heap = knn_vectors_reader.get_off_heap_byte_size(&field_info)?;
         let total_byte_size: i64 = off_heap.values().sum();
         let is_simple_text = knn_vectors_reader.as_any().is_some_and(|a| {
             a.is::<rucene_codecs::simpletext::knn_vectors_reader::SimpleTextKnnVectorsReader>()

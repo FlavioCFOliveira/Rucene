@@ -104,8 +104,10 @@ pub trait NumericDocValues: DocValuesIterator {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneErrorKind::IllegalArgument` if `size` is negative or if the
-    /// provided slices are too short for the requested offsets and size.
+    /// Returns the I/O error of a read, and the JVM's
+    /// `ArrayIndexOutOfBoundsException` where Java's `docs[di]` or
+    /// `values[vi]` runs outside its array. A negative `size` reads nothing,
+    /// as Java's loop does.
     fn long_values(
         &mut self,
         size: i32,
@@ -115,35 +117,33 @@ pub trait NumericDocValues: DocValuesIterator {
         values_offset: i32,
         default_value: i64,
     ) -> Result<()> {
-        if size < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "size must be >= 0, got {size}"
-            )));
-        }
-        let size = size as usize;
-        if docs.len() < docs_offset as usize + size {
-            return Err(LuceneError::illegal_argument(
-                "docs buffer too small for requested size/offset".to_string(),
-            ));
-        }
-        if values.len() < values_offset as usize + size {
-            return Err(LuceneError::illegal_argument(
-                "values buffer too small for requested size/offset".to_string(),
-            ));
-        }
-        for (di, &doc) in docs
-            .iter()
-            .enumerate()
-            .skip(docs_offset as usize)
-            .take(size)
-        {
-            let vi = values_offset as usize + (di - docs_offset as usize);
+        let aioobe = |index: i32, length: usize| {
+            LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!("Index {index} out of bounds for length {length}"),
+            )
+        };
+        // `for (int di = docsOffset, vi = valuesOffset, end = docsOffset + size;
+        // di < end; di++, vi++)`: `int` arithmetic, which wraps.
+        let end = docs_offset.wrapping_add(size);
+        let (mut di, mut vi) = (docs_offset, values_offset);
+        while di < end {
+            let doc = usize::try_from(di)
+                .ok()
+                .and_then(|i| docs.get(i).copied())
+                .ok_or_else(|| aioobe(di, docs.len()))?;
             let value = if self.advance_exact(doc)? {
                 self.long_value()?
             } else {
                 default_value
             };
-            values[vi] = value;
+            let length = values.len();
+            *usize::try_from(vi)
+                .ok()
+                .and_then(|i| values.get_mut(i))
+                .ok_or_else(|| aioobe(vi, length))? = value;
+            di += 1;
+            vi = vi.wrapping_add(1);
         }
         Ok(())
     }
@@ -264,11 +264,10 @@ pub trait SortedDocValues: DocValuesIterator {
             AutomatonType::None => Ok(Box::new(EmptyTermsEnum::new())),
             AutomatonType::All => Ok(terms),
             AutomatonType::Single => {
-                let term = automaton.term.as_ref().ok_or_else(|| {
-                    LuceneError::illegal_state(
-                        "CompiledAutomaton of type Single carries no term".to_string(),
-                    )
-                })?;
+                let term = automaton
+                    .term
+                    .as_ref()
+                    .expect("INVARIANT: a SINGLE CompiledAutomaton carries its term");
                 Ok(SingleTermsEnum::new(terms, term.clone()))
             }
             AutomatonType::Normal => AutomatonTermsEnum::new(terms, automaton.clone()),
@@ -301,11 +300,16 @@ pub trait SortedNumericDocValues: DocValuesIterator {
     /// downcast a trait object without a concrete type, so the question is
     /// asked of the implementation instead: only
     /// [`SingletonSortedNumericDocValues`] answers with its inner iterator.
-    fn into_singleton<'s>(self: Box<Self>) -> Option<Box<dyn NumericDocValues + 's>>
+    ///
+    /// # Errors
+    ///
+    /// `IllegalState` from a singleton view whose iterator was already used
+    /// (`SingletonSortedNumericDocValues.getNumericDocValues()`).
+    fn into_singleton<'s>(self: Box<Self>) -> Result<Option<Box<dyn NumericDocValues + 's>>>
     where
         Self: 's,
     {
-        None
+        Ok(None)
     }
 
     /// Returns whether this iterator is a singleton view.
@@ -376,11 +380,16 @@ pub trait SortedSetDocValues: DocValuesIterator {
     ///
     /// Equivalent to the `instanceof SingletonSortedSetDocValues` test in
     /// `DocValues.unwrapSingleton(SortedSetDocValues)`.
-    fn into_singleton<'s>(self: Box<Self>) -> Option<Box<dyn SortedDocValues + 's>>
+    ///
+    /// # Errors
+    ///
+    /// `IllegalState` from a singleton view whose iterator was already used
+    /// (`SingletonSortedSetDocValues.getSortedDocValues()`).
+    fn into_singleton<'s>(self: Box<Self>) -> Result<Option<Box<dyn SortedDocValues + 's>>>
     where
         Self: 's,
     {
-        None
+        Ok(None)
     }
 
     /// Returns whether this iterator is a singleton view.
@@ -436,11 +445,10 @@ pub trait SortedSetDocValues: DocValuesIterator {
             AutomatonType::None => Ok(Box::new(EmptyTermsEnum::new())),
             AutomatonType::All => Ok(terms),
             AutomatonType::Single => {
-                let term = automaton.term.as_ref().ok_or_else(|| {
-                    LuceneError::illegal_state(
-                        "CompiledAutomaton of type Single carries no term".to_string(),
-                    )
-                })?;
+                let term = automaton
+                    .term
+                    .as_ref()
+                    .expect("INVARIANT: a SINGLE CompiledAutomaton carries its term");
                 Ok(SingleTermsEnum::new(terms, term.clone()))
             }
             AutomatonType::Normal => AutomatonTermsEnum::new(terms, automaton.clone()),
@@ -587,32 +595,59 @@ impl DocValues {
     }
 
     /// Returns a multi-valued view over the provided [`NumericDocValues`].
+    ///
+    /// Equivalent to `DocValues.singleton(NumericDocValues)`
+    /// (`DocValues.java:197-200`).
+    ///
+    /// # Errors
+    ///
+    /// As [`SingletonSortedNumericDocValues::new`].
     pub fn singleton_numeric<'a>(
         dv: Box<dyn NumericDocValues + 'a>,
-    ) -> SingletonSortedNumericDocValues<'a> {
+    ) -> Result<SingletonSortedNumericDocValues<'a>> {
         SingletonSortedNumericDocValues::new(dv)
     }
 
     /// Returns a multi-valued view over the provided [`SortedDocValues`].
+    ///
+    /// Equivalent to `DocValues.singleton(SortedDocValues)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`SingletonSortedSetDocValues::new`].
     pub fn singleton_sorted<'a>(
         dv: Box<dyn SortedDocValues + 'a>,
-    ) -> SingletonSortedSetDocValues<'a> {
+    ) -> Result<SingletonSortedSetDocValues<'a>> {
         SingletonSortedSetDocValues::new(dv)
     }
 
     /// Returns the single-valued [`NumericDocValues`] wrapped by
     /// [`SingletonSortedNumericDocValues`], if any.
+    ///
+    /// Equivalent to `DocValues.unwrapSingleton(SortedNumericDocValues)`
+    /// (`DocValues.java:189-195`).
+    ///
+    /// # Errors
+    ///
+    /// As [`SingletonSortedNumericDocValues::get_numeric_doc_values`].
     pub fn unwrap_singleton_numeric<'a>(
         dv: Box<dyn SortedNumericDocValues + 'a>,
-    ) -> Option<Box<dyn NumericDocValues + 'a>> {
+    ) -> Result<Option<Box<dyn NumericDocValues + 'a>>> {
         dv.into_singleton()
     }
 
     /// Returns the single-valued [`SortedDocValues`] wrapped by
     /// [`SingletonSortedSetDocValues`], if any.
+    ///
+    /// Equivalent to `DocValues.unwrapSingleton(SortedSetDocValues)`
+    /// (`DocValues.java:177-183`).
+    ///
+    /// # Errors
+    ///
+    /// As [`SingletonSortedSetDocValues::get_sorted_doc_values`].
     pub fn unwrap_singleton_sorted<'a>(
         dv: Box<dyn SortedSetDocValues + 'a>,
-    ) -> Option<Box<dyn SortedDocValues + 'a>> {
+    ) -> Result<Option<Box<dyn SortedDocValues + 'a>>> {
         dv.into_singleton()
     }
 
@@ -723,7 +758,7 @@ impl DocValues {
             return Ok(dv);
         }
         match reader.get_numeric_doc_values(field)? {
-            Some(single) => Ok(Box::new(Self::singleton_numeric(single))),
+            Some(single) => Ok(Box::new(Self::singleton_numeric(single)?)),
             None => {
                 Self::check_field(
                     reader,
@@ -752,7 +787,7 @@ impl DocValues {
             return Ok(dv);
         }
         match reader.get_sorted_doc_values(field)? {
-            Some(sorted) => Ok(Box::new(Self::singleton_sorted(sorted))),
+            Some(sorted) => Ok(Box::new(Self::singleton_sorted(sorted)?)),
             None => {
                 Self::check_field(
                     reader,
@@ -838,6 +873,13 @@ impl EmptyNumericDocValues {
 }
 
 impl DocIdSetIterator for EmptyNumericDocValues {
+    /// `DocValues.emptyNumeric()` returns an anonymous class (`DocValues$2`) that declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.DocValues$2",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -863,10 +905,9 @@ impl DocValuesIterator for EmptyNumericDocValues {
 
 impl NumericDocValues for EmptyNumericDocValues {
     fn long_value(&self) -> Result<i64> {
+        // `assert false; return 0;` (`DocValues.java:100-103`).
         debug_assert!(false);
-        Err(LuceneError::illegal_state(
-            "long_value called on empty numeric doc values".to_string(),
-        ))
+        Ok(0)
     }
 }
 
@@ -884,6 +925,13 @@ impl EmptyBinaryDocValues {
 }
 
 impl DocIdSetIterator for EmptyBinaryDocValues {
+    /// `DocValues.emptyBinary()` returns an anonymous class (`DocValues$1`) that declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.DocValues$1",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -909,10 +957,11 @@ impl DocValuesIterator for EmptyBinaryDocValues {
 
 impl BinaryDocValues for EmptyBinaryDocValues {
     fn binary_value(&self) -> Result<BytesRef> {
+        // `assert false; return null;` (`DocValues.java:61-64`): the caller's
+        // dereference of that `null` is Java's `NullPointerException`, which
+        // the port raises here because a `BytesRef` cannot be `null`.
         debug_assert!(false);
-        Err(LuceneError::illegal_state(
-            "binary_value called on empty binary doc values".to_string(),
-        ))
+        Err(LuceneError::null_pointer())
     }
 }
 
@@ -930,6 +979,13 @@ impl EmptySortedDocValues {
 }
 
 impl DocIdSetIterator for EmptySortedDocValues {
+    /// `DocValues.emptySorted()` returns an anonymous class (`DocValues$3`) that declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.DocValues$3",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -955,10 +1011,9 @@ impl DocValuesIterator for EmptySortedDocValues {
 
 impl SortedDocValues for EmptySortedDocValues {
     fn ord_value(&self) -> Result<i32> {
+        // `assert false; return -1;` (`DocValues.java:141-144`).
         debug_assert!(false);
-        Err(LuceneError::illegal_state(
-            "ord_value called on empty sorted doc values".to_string(),
-        ))
+        Ok(-1)
     }
 
     fn get_value_count(&self) -> Result<i32> {
@@ -970,8 +1025,10 @@ impl SortedDocValues for EmptySortedDocValues {
     }
 }
 
-/// A no-op sorted-numeric doc-values iterator that returns zero values for
-/// every document.
+/// A no-op sorted-numeric doc-values iterator that matches no document.
+///
+/// Equivalent to `DocValues.emptySortedNumeric()`, which is
+/// `singleton(emptyNumeric())`: its `docValueCount()` answers `1`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct EmptySortedNumericDocValues {
     inner: EmptyDocValuesIterator,
@@ -985,6 +1042,13 @@ impl EmptySortedNumericDocValues {
 }
 
 impl DocIdSetIterator for EmptySortedNumericDocValues {
+    /// `SingletonSortedNumericDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SingletonSortedNumericDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1010,13 +1074,17 @@ impl DocValuesIterator for EmptySortedNumericDocValues {
 
 impl SortedNumericDocValues for EmptySortedNumericDocValues {
     fn next_value(&mut self) -> Result<i64> {
-        Err(LuceneError::illegal_state(
-            "next_value called on empty sorted numeric doc values".to_string(),
-        ))
+        // `singleton(emptyNumeric()).nextValue()` is the empty numeric's
+        // `longValue()`: `assert false; return 0;` (`DocValues.java:100-103`).
+        debug_assert!(false);
+        Ok(0)
     }
 
     fn doc_value_count(&self) -> Result<i32> {
-        Ok(0)
+        // `emptySortedNumeric()` is `singleton(emptyNumeric())`
+        // (`DocValues.java:159-161`), whose `docValueCount()` is always `1`
+        // (`SingletonSortedNumericDocValues.java:86-89`).
+        Ok(1)
     }
 }
 
@@ -1035,6 +1103,13 @@ impl EmptySortedSetDocValues {
 }
 
 impl DocIdSetIterator for EmptySortedSetDocValues {
+    /// `SingletonSortedSetDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SingletonSortedSetDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1087,19 +1162,56 @@ pub struct SingletonSortedNumericDocValues<'a> {
     inner: Box<dyn NumericDocValues + 'a>,
 }
 
+/// `IllegalStateException("iterator has already been used: docID=" +
+/// in.docID())` unless `doc_id` is `-1`, the check every constructor and
+/// getter of the singleton views makes.
+fn check_unused_iterator(doc_id: i32) -> Result<()> {
+    if doc_id != -1 {
+        return Err(LuceneError::illegal_state(format!(
+            "iterator has already been used: docID={doc_id}"
+        )));
+    }
+    Ok(())
+}
+
 impl<'a> SingletonSortedNumericDocValues<'a> {
     /// Creates a multi-valued view over the provided numeric doc values.
-    pub fn new(inner: Box<dyn NumericDocValues + 'a>) -> Self {
-        Self { inner }
+    ///
+    /// Equivalent to `SingletonSortedNumericDocValues(NumericDocValues)`
+    /// (`SingletonSortedNumericDocValues.java:31-36`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalState("iterator has already been used: docID=...")` when
+    /// `inner` is already positioned.
+    pub fn new(inner: Box<dyn NumericDocValues + 'a>) -> Result<Self> {
+        check_unused_iterator(inner.doc_id())?;
+        Ok(Self { inner })
     }
 
     /// Returns the wrapped numeric doc values.
-    pub fn get_numeric_doc_values(&self) -> &dyn NumericDocValues {
-        self.inner.as_ref()
+    ///
+    /// Equivalent to `SingletonSortedNumericDocValues.getNumericDocValues()`
+    /// (`SingletonSortedNumericDocValues.java:38-44`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalState("iterator has already been used: docID=...")` once
+    /// the view was advanced.
+    pub fn get_numeric_doc_values(&self) -> Result<&dyn NumericDocValues> {
+        check_unused_iterator(self.inner.doc_id())?;
+        Ok(self.inner.as_ref())
     }
 }
 
 impl DocIdSetIterator for SingletonSortedNumericDocValues<'_> {
+    /// `SingletonSortedNumericDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SingletonSortedNumericDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1128,11 +1240,13 @@ impl DocValuesIterator for SingletonSortedNumericDocValues<'_> {
 }
 
 impl SortedNumericDocValues for SingletonSortedNumericDocValues<'_> {
-    fn into_singleton<'s>(self: Box<Self>) -> Option<Box<dyn NumericDocValues + 's>>
+    /// `((SingletonSortedNumericDocValues) dv).getNumericDocValues()`.
+    fn into_singleton<'s>(self: Box<Self>) -> Result<Option<Box<dyn NumericDocValues + 's>>>
     where
         Self: 's,
     {
-        Some(self.inner)
+        check_unused_iterator(self.inner.doc_id())?;
+        Ok(Some(self.inner))
     }
 
     fn is_singleton(&self) -> bool {
@@ -1158,17 +1272,42 @@ pub struct SingletonSortedSetDocValues<'a> {
 
 impl<'a> SingletonSortedSetDocValues<'a> {
     /// Creates a multi-valued view over the provided sorted doc values.
-    pub fn new(inner: Box<dyn SortedDocValues + 'a>) -> Self {
-        Self { inner, ord: -1 }
+    ///
+    /// Equivalent to `SingletonSortedSetDocValues(SortedDocValues)`
+    /// (`SingletonSortedSetDocValues.java:34-39`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalState("iterator has already been used: docID=...")` when
+    /// `inner` is already positioned.
+    pub fn new(inner: Box<dyn SortedDocValues + 'a>) -> Result<Self> {
+        check_unused_iterator(inner.doc_id())?;
+        Ok(Self { inner, ord: -1 })
     }
 
     /// Returns the wrapped sorted doc values.
-    pub fn get_sorted_doc_values(&self) -> &dyn SortedDocValues {
-        self.inner.as_ref()
+    ///
+    /// Equivalent to `SingletonSortedSetDocValues.getSortedDocValues()`
+    /// (`SingletonSortedSetDocValues.java:41-47`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalState("iterator has already been used: docID=...")` once
+    /// the view was advanced.
+    pub fn get_sorted_doc_values(&self) -> Result<&dyn SortedDocValues> {
+        check_unused_iterator(self.inner.doc_id())?;
+        Ok(self.inner.as_ref())
     }
 }
 
 impl DocIdSetIterator for SingletonSortedSetDocValues<'_> {
+    /// `SingletonSortedSetDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SingletonSortedSetDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1210,11 +1349,13 @@ impl DocValuesIterator for SingletonSortedSetDocValues<'_> {
 }
 
 impl SortedSetDocValues for SingletonSortedSetDocValues<'_> {
-    fn into_singleton<'s>(self: Box<Self>) -> Option<Box<dyn SortedDocValues + 's>>
+    /// `((SingletonSortedSetDocValues) dv).getSortedDocValues()`.
+    fn into_singleton<'s>(self: Box<Self>) -> Result<Option<Box<dyn SortedDocValues + 's>>>
     where
         Self: 's,
     {
-        Some(self.inner)
+        check_unused_iterator(self.inner.doc_id())?;
+        Ok(Some(self.inner))
     }
 
     fn is_singleton(&self) -> bool {
@@ -1261,6 +1402,11 @@ impl SortedSetDocValues for SingletonSortedSetDocValues<'_> {
 /// `dyn Trait` is expected. This mirrors Java's polymorphic references and
 /// avoids manual unboxing at every call site.
 impl<T: DocIdSetIterator + ?Sized> DocIdSetIterator for Box<T> {
+    /// The boxed iterator's `toString()`: a Java reference has no box.
+    fn java_to_string(&self) -> String {
+        (**self).java_to_string()
+    }
+
     /// Forwarded: `TwoPhaseIterator.unwrap` tests the boxed iterator itself
     /// (`ConstantScoreBulkScorer.java:54-56` among its callers).
     fn wraps_two_phase_iterator(&self) -> bool {
@@ -1342,6 +1488,13 @@ impl FilterNumericDocValues {
 }
 
 impl DocIdSetIterator for FilterNumericDocValues {
+    /// `FilterNumericDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.FilterNumericDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1395,6 +1548,13 @@ impl FilterBinaryDocValues {
 }
 
 impl DocIdSetIterator for FilterBinaryDocValues {
+    /// `FilterBinaryDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.FilterBinaryDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1448,6 +1608,13 @@ impl FilterSortedDocValues {
 }
 
 impl DocIdSetIterator for FilterSortedDocValues {
+    /// `FilterSortedDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.FilterSortedDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1523,6 +1690,13 @@ impl FilterSortedNumericDocValues {
 }
 
 impl DocIdSetIterator for FilterSortedNumericDocValues {
+    /// `FilterSortedNumericDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.FilterSortedNumericDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1580,6 +1754,13 @@ impl FilterSortedSetDocValues {
 }
 
 impl DocIdSetIterator for FilterSortedSetDocValues {
+    /// `FilterSortedSetDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.FilterSortedSetDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1658,7 +1839,9 @@ pub struct EmptyDocValuesProducer;
 impl EmptyDocValuesProducer {
     /// The `UnsupportedOperationException` every member throws.
     fn unsupported(method: &str) -> LuceneError {
-        LuceneError::unsupported_operation(format!("EmptyDocValuesProducer.{method}"))
+        // `throw new UnsupportedOperationException()`: no message.
+        let _ = method;
+        LuceneError::unsupported_operation(String::new())
     }
 }
 
@@ -1884,9 +2067,10 @@ impl OrdinalMap {
         let mut queue = PriorityQueue::new(num_subs, TermsEnumIndexComparator)?;
         for i in 0..num_subs {
             let old_index = segment_map.new_to_old(i);
-            let terms_enum = subs[old_index].take().ok_or_else(|| {
-                LuceneError::illegal_state("duplicate use of a terms enum".to_string())
-            })?;
+            // `segmentMap.newToOld` is a permutation: each enum is taken once.
+            let terms_enum = subs[old_index]
+                .take()
+                .expect("INVARIANT: segmentMap.newToOld is a permutation");
             let mut tei = TermsEnumIndex::new(terms_enum, i);
             if tei.next()?.is_some() {
                 queue.add(tei);
@@ -2350,15 +2534,12 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
     }
 
     fn seek_ord(&mut self, ord: i64) -> Result<()> {
-        let value_count = self.values.get_value_count()? as i64;
-        debug_assert!(ord >= 0 && ord < value_count);
-        if ord < 0 || ord >= value_count {
-            return Err(LuceneError::illegal_argument(format!(
-                "ord {ord} out of range [0, {value_count})"
-            )));
-        }
-        self.current_ord = ord;
-        let term = self.values.lookup_ord(ord as i32)?;
+        // `assert ord >= 0 && ord < values.getValueCount(); currentOrd = (int) ord;`
+        // (`SortedDocValuesTermsEnum.java:67-71`): no check without assertions.
+        debug_assert!(ord >= 0 && ord < i64::from(self.values.get_value_count()?));
+        let ord = ord as i32;
+        self.current_ord = i64::from(ord);
+        let term = self.values.lookup_ord(ord)?;
         self.scratch.copy_ref(&term);
         Ok(())
     }
@@ -2372,15 +2553,11 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "docFreq not supported by SortedDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "totalTermFreq not supported by SortedDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn postings(
@@ -2388,15 +2565,11 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
     ) -> Result<Option<Box<dyn PostingsEnum>>> {
-        Err(LuceneError::unsupported_operation(
-            "postings not supported by SortedDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::unsupported_operation(
-            "impacts not supported by SortedDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn seek_term_state(&mut self, _text: &BytesRef, state: &dyn TermState) -> Result<()> {
@@ -2404,9 +2577,7 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         let state = state
             .as_any()
             .downcast_ref::<OrdTermState>()
-            .ok_or_else(|| {
-                LuceneError::illegal_argument("state must be an OrdTermState".to_string())
-            })?;
+            .ok_or_else(ord_term_state_cast_error)?;
         self.seek_ord(state.ord)
     }
 
@@ -2503,15 +2674,12 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
     }
 
     fn seek_ord(&mut self, ord: i64) -> Result<()> {
-        let value_count = self.values.get_value_count()?;
-        debug_assert!(ord >= 0 && ord < value_count);
-        if ord < 0 || ord >= value_count {
-            return Err(LuceneError::illegal_argument(format!(
-                "ord {ord} out of range [0, {value_count})"
-            )));
-        }
-        self.current_ord = ord;
-        let term = self.values.lookup_ord(ord)?;
+        // `assert ord >= 0 && ord < values.getValueCount(); currentOrd = (int) ord;`
+        // (`SortedSetDocValuesTermsEnum.java:67-71`): no check without
+        // assertions, and the ordinal is narrowed to `int`.
+        debug_assert!(ord >= 0 && ord < self.values.get_value_count()?);
+        self.current_ord = i64::from(ord as i32);
+        let term = self.values.lookup_ord(self.current_ord)?;
         self.scratch.copy_ref(&term);
         Ok(())
     }
@@ -2525,15 +2693,11 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "docFreq not supported by SortedSetDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "totalTermFreq not supported by SortedSetDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn postings(
@@ -2541,15 +2705,11 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
     ) -> Result<Option<Box<dyn PostingsEnum>>> {
-        Err(LuceneError::unsupported_operation(
-            "postings not supported by SortedSetDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::unsupported_operation(
-            "impacts not supported by SortedSetDocValuesTermsEnum".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn seek_term_state(&mut self, _text: &BytesRef, state: &dyn TermState) -> Result<()> {
@@ -2557,9 +2717,7 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         let state = state
             .as_any()
             .downcast_ref::<OrdTermState>()
-            .ok_or_else(|| {
-                LuceneError::illegal_argument("state must be an OrdTermState".to_string())
-            })?;
+            .ok_or_else(ord_term_state_cast_error)?;
         self.seek_ord(state.ord)
     }
 
@@ -2584,6 +2742,22 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
+
+/// The `ClassCastException` of `((OrdTermState) state)` in
+/// `Sorted(Set)DocValuesTermsEnum.seekExact(BytesRef, TermState)`
+/// (`SortedDocValuesTermsEnum.java:114-117`), after its
+/// `assert state instanceof OrdTermState`.
+///
+/// **Divergence from Lucene 10.5.0.** The JVM's message names the runtime
+/// class of `state`, which a `dyn TermState` cannot report; the message names
+/// the target class only.
+fn ord_term_state_cast_error() -> LuceneError {
+    debug_assert!(false, "state must be an OrdTermState");
+    LuceneError::unchecked(
+        "java.lang.ClassCastException",
+        "cannot be cast to class org.apache.lucene.index.OrdTermState",
+    )
+}
 
 #[cfg(test)]
 mod tests {
@@ -3123,7 +3297,7 @@ mod tests {
 
     /// Java's empty doc values `longValue()` body is `assert false`
     /// (`DocValues.java:100-101`): under `-ea` (debug builds) the call fails the
-    /// assertion; this port reports an error without assertions.
+    /// assertion; without assertions it returns `0`.
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_numeric_doc_values_returns_no_docs() {
@@ -3133,12 +3307,13 @@ mod tests {
         assert_eq!(values.next_doc().unwrap(), NO_MORE_DOCS);
         assert!(!values.advance_exact(0).unwrap());
         assert_eq!(values.doc_id(), 0);
-        assert!(values.long_value().is_err());
+        assert_eq!(values.long_value().unwrap(), 0);
     }
 
     /// Java's empty doc values `binaryValue()` body is `assert false`
     /// (`DocValues.java:61-62`): under `-ea` (debug builds) the call fails the
-    /// assertion; this port reports an error without assertions.
+    /// assertion; without assertions it returns `null`, which the port
+    /// reports as the `NullPointerException` of its use.
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_binary_doc_values_returns_no_docs() {
@@ -3149,20 +3324,21 @@ mod tests {
 
     /// Java's empty doc values `ordValue()` body is `assert false`
     /// (`DocValues.java:141-142`): under `-ea` (debug builds) the call fails the
-    /// assertion; this port reports an error without assertions.
+    /// assertion; without assertions it returns `-1`.
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_sorted_doc_values_has_empty_dictionary() {
         let values = EmptySortedDocValues::new();
         assert_eq!(values.get_value_count().unwrap(), 0);
         assert_eq!(values.lookup_ord(0).unwrap().length, 0);
-        assert!(values.ord_value().is_err());
+        assert_eq!(values.ord_value().unwrap(), -1);
     }
 
     #[test]
-    fn empty_sorted_numeric_doc_values_has_zero_values() {
+    fn empty_sorted_numeric_doc_values_counts_one_value() {
+        // `singleton(emptyNumeric()).docValueCount()` is `1`.
         let values = EmptySortedNumericDocValues::new();
-        assert_eq!(values.doc_value_count().unwrap(), 0);
+        assert_eq!(values.doc_value_count().unwrap(), 1);
     }
 
     #[test]
@@ -3189,7 +3365,7 @@ mod tests {
     #[test]
     fn singleton_numeric_wrapper() {
         let inner = Box::new(VecNumericDocValues::new(vec![(1, 100), (3, 300)]));
-        let mut values = DocValues::singleton_numeric(inner);
+        let mut values = DocValues::singleton_numeric(inner).unwrap();
         assert_eq!(values.next_doc().unwrap(), 1);
         assert_eq!(values.doc_value_count().unwrap(), 1);
         assert_eq!(values.next_value().unwrap(), 100);
@@ -3202,7 +3378,7 @@ mod tests {
         let dict = vec![b"x".to_vec(), b"y".to_vec()];
         let ords = vec![-1, 0, 1];
         let inner = Box::new(VecSortedDocValues::new(dict, ords));
-        let mut values = DocValues::singleton_sorted(inner);
+        let mut values = DocValues::singleton_sorted(inner).unwrap();
         assert_eq!(values.next_doc().unwrap(), 1);
         assert_eq!(values.doc_value_count().unwrap(), 1);
         assert_eq!(values.next_ord().unwrap(), 0);

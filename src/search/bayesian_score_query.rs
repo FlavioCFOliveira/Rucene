@@ -89,17 +89,20 @@ impl BayesianScoreQuery {
     pub fn new(query: Arc<dyn Query>, alpha: f32, beta: f32, base_rate: f32) -> Result<Self> {
         if !alpha.is_finite() || alpha <= 0.0 {
             return Err(LuceneError::illegal_argument(format!(
-                "alpha must be a positive finite value, got {alpha}"
+                "alpha must be a positive finite value, got {}",
+                crate::util::java_fmt::float_to_string(alpha)
             )));
         }
         if !beta.is_finite() {
             return Err(LuceneError::illegal_argument(format!(
-                "beta must be a finite value, got {beta}"
+                "beta must be a finite value, got {}",
+                crate::util::java_fmt::float_to_string(beta)
             )));
         }
         if base_rate < 0.0 || base_rate >= 1.0 {
             return Err(LuceneError::illegal_argument(format!(
-                "baseRate must be in [0, 1), got {base_rate}"
+                "baseRate must be in [0, 1), got {}",
+                crate::util::java_fmt::float_to_string(base_rate)
             )));
         }
         let logit_base_rate = if base_rate > 0.0 {
@@ -232,16 +235,25 @@ impl Query for BayesianScoreQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.query.query_hash().hash(&mut hasher);
-        self.alpha.to_bits().hash(&mut hasher);
-        self.beta.to_bits().hash(&mut hasher);
-        self.base_rate.to_bits().hash(&mut hasher);
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.BayesianScoreQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.BayesianScoreQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::java_float_hash_code;
+        // `BayesianScoreQuery.hashCode()`: a `31 * h` chain over `classHash()`,
+        // `query.hashCode()` and `Float.floatToIntBits` of the three floats.
+        let mut h = self.class_hash();
+        h = h.wrapping_mul(31).wrapping_add(self.query.query_hash());
+        h = h
+            .wrapping_mul(31)
+            .wrapping_add(java_float_hash_code(self.alpha));
+        h = h
+            .wrapping_mul(31)
+            .wrapping_add(java_float_hash_code(self.beta));
+        h.wrapping_mul(31)
+            .wrapping_add(java_float_hash_code(self.base_rate))
     }
 }
 

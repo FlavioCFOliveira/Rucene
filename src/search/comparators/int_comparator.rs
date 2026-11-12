@@ -69,6 +69,7 @@ impl IntComparator {
                 pruning,
                 4, // `Integer.BYTES`
                 Self::sortable_bytes_to_long,
+                "org.apache.lucene.search.comparators.IntComparator",
             ),
             values: vec![0; num_hits],
             top_value: 0,

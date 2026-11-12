@@ -61,7 +61,6 @@ pub mod doc_id_set;
 pub mod doc_id_set_bulk_iterator;
 pub mod doc_id_set_iterator;
 pub mod doc_id_stream;
-pub(crate) mod doc_values_iteration;
 pub mod doc_values_range_iterator;
 pub mod doc_values_rewrite_method;
 pub mod double_values;
@@ -394,8 +393,7 @@ pub use long_values_source::{
     ConstantLongValuesSource, LongValuesComparatorSource, LongValuesSource,
 };
 pub use lru_query_cache::{
-    min_segment_size_predicate, CacheAndCount, LRUQueryCache, LRUQueryCacheOverrides,
-    LeavesToCache, HASHTABLE_RAM_BYTES_PER_ENTRY, LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY,
+    min_segment_size_predicate, CacheAndCount, LRUQueryCache, LRUQueryCacheOverrides, LeavesToCache,
 };
 pub use match_all_docs_query::MatchAllDocsQuery;
 pub use match_no_docs_query::MatchNoDocsQuery;

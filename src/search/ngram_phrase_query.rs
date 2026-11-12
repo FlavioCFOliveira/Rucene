@@ -124,11 +124,17 @@ impl Query for NGramPhraseQuery {
         self.n == other.n && self.phrase_query.query_eq(&other.phrase_query)
     }
 
-    fn query_hash(&self) -> u64 {
+    /// `getClass().getName()` of `org.apache.lucene.search.NGramPhraseQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.NGramPhraseQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `NGramPhraseQuery.hashCode()`.
         let mut h = self.class_hash();
         h = h
             .wrapping_mul(31)
             .wrapping_add(self.phrase_query.query_hash());
-        h.wrapping_mul(31).wrapping_add(self.n as u64)
+        h.wrapping_mul(31).wrapping_add(self.n)
     }
 }

@@ -155,9 +155,11 @@ impl GraphTokenFilter {
     fn new_token(&mut self) -> Result<usize> {
         let (state, pos_inc, pos_length) = {
             let source = self.input.attribute_source();
-            let state = source.capture_state().ok_or_else(|| {
-                LuceneError::illegal_state("token stream has no attributes to capture".to_string())
-            })?;
+            // `cloneAttributes()` never fails; the filter's own attributes
+            // are always present.
+            let state = source
+                .capture_state()
+                .expect("INVARIANT: a GraphTokenFilter source holds its own attributes");
             // `Token(AttributeSource)` (`GraphTokenFilter.java:247-251`): the
             // position length is 1 when the stream has no
             // `PositionLengthAttribute`.

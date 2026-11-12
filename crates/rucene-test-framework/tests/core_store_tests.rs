@@ -370,15 +370,15 @@ impl TestBufferedIndexInput {
         // add an arbitrary offset at the beginning of the array
         let offset = size % 10; // arbitrary
         self.buffer = rucene::util::ArrayUtil::grow(&self.buffer, (offset + size) as usize);
-        Assert::assert_equals(pos as i64, input.file_pointer());
-        let left = TEST_FILE_LENGTH - input.file_pointer();
+        Assert::assert_equals(pos as i64, input.file_pointer()?);
+        let left = TEST_FILE_LENGTH - input.file_pointer()?;
         if left <= 0 {
             return Ok(());
         } else if left < size as i64 {
             size = left as i32;
         }
         input.read_bytes(Some(&mut self.buffer), offset as usize, size as usize)?;
-        Assert::assert_equals((pos + size) as i64, input.file_pointer());
+        Assert::assert_equals((pos + size) as i64, input.file_pointer()?);
         for i in 0..size {
             Assert::assert_equals_msg(
                 Some(&format!("pos={i} filepos={}", pos + i)),
@@ -653,8 +653,8 @@ impl IndexInput for MyBufferedIndexInput {
         Ok(())
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.pos
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.pos)
     }
 
     fn length(&self) -> i64 {
@@ -1026,7 +1026,8 @@ fn bb_output_test_reuse() -> Result<()> {
         })),
         // `reuser::reuse`
         Some(Arc::new(move |block| {
-            reuse.lock().unwrap_or_else(|e| e.into_inner()).reuse(block)
+            reuse.lock().unwrap_or_else(|e| e.into_inner()).reuse(block);
+            Ok(())
         })),
     )?;
 
@@ -1038,7 +1039,7 @@ fn bb_output_test_reuse() -> Result<()> {
 
     // Use the same sequence over reused instance.
     let expected_allocation_count = allocations.load(Ordering::SeqCst);
-    o.reset();
+    o.reset()?;
     add_random_data(&mut o, &JdkRandom::new(gen_seed), add_count, None)?;
 
     Assert::assert_equals(
@@ -1208,7 +1209,7 @@ fn bb_output_test_ram_bytes_used() -> Result<()> {
     Assert::assert_equals(out.ram_bytes_used(), compute_ram_bytes_used(&out));
 
     // Back to zero after a clear
-    out.reset();
+    out.reset()?;
     Assert::assert_equals(0i64, out.ram_bytes_used());
 
     // And back to non-empty
@@ -1921,7 +1922,7 @@ impl DataInput for InterceptingChecksumIndexInput {
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let skip_to = self.file_pointer() + num_bytes;
+        let skip_to = self.file_pointer()? + num_bytes;
         ChecksumIndexInput::seek(self, skip_to)
     }
 }
@@ -1931,7 +1932,7 @@ impl IndexInput for InterceptingChecksumIndexInput {
         self.main.close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.main.file_pointer()
     }
 

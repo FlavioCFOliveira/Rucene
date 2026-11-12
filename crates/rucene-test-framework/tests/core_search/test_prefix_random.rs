@@ -158,7 +158,7 @@ impl Query for DumbPrefixQuery {
         self.prefix == that.prefix
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         multi_term_query_hash(self)
     }
 }
@@ -185,10 +185,6 @@ impl MultiTermQuery for DumbPrefixQuery {
             }),
             BytesRef::from_char_sequence(""),
         )))
-    }
-
-    fn as_query(&self) -> &dyn Query {
-        self
     }
 
     fn to_multi_term_query_arc(&self) -> Arc<dyn MultiTermQuery> {

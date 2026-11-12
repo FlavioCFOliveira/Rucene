@@ -132,6 +132,12 @@ impl CorruptingIndexOutput {
 }
 
 impl DataOutput for CorruptingIndexOutput {
+    /// `IndexOutput.toString()`: the resource description
+    /// (`IndexOutput.java:83-86`).
+    fn to_java_string(&self) -> String {
+        self.resource_description().to_string()
+    }
+
     /// `FilterIndexOutput.writeByte`: `out.writeByte(b)`.
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.out.write_byte(b)

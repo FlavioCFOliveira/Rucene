@@ -32,7 +32,7 @@ use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rucene::analysis::tokenattributes::{
     CharTermAttribute, OffsetAttribute, PackedTokenAttributeImpl, PayloadAttribute,
@@ -62,7 +62,7 @@ use rucene::search::{
     SortValue, TermQuery, TopFieldCollectorManager, TotalHits, TotalHitsRelation, NO_MORE_DOCS,
 };
 use rucene::store::{Directory, FSDirectory};
-use rucene::util::{AttributeSource, BytesRef, InfoStream};
+use rucene::util::{AttributeSource, ByteArrayPrintStream, BytesRef, PrintStream};
 
 // ---------------------------------------------------------------------------
 // Corpus: the formulas of IndexInteropFixture
@@ -849,29 +849,6 @@ impl TokenStream for ScriptedTokenStream {
 // Rucene CheckIndex
 // ---------------------------------------------------------------------------
 
-/// Collects the messages `CheckIndex` logs, for the failure report.
-#[derive(Default)]
-struct CollectingInfoStream(Mutex<Vec<String>>);
-
-impl InfoStream for CollectingInfoStream {
-    fn java_class_name(&self) -> &'static str {
-        "org.apache.lucene.util.PrintStreamInfoStream"
-    }
-
-    fn message(&self, component: &str, message: &str) {
-        self.0
-            .lock()
-            .unwrap()
-            .push(format!("{component}: {message}"));
-    }
-
-    fn is_enabled(&self, _component: &str) -> bool {
-        true
-    }
-
-    fn close(&self) {}
-}
-
 /// What a `CheckIndex` run reported, from either side.
 #[derive(Debug, Default)]
 struct CheckOutcome {
@@ -898,7 +875,9 @@ impl CheckOutcome {
 fn rucene_check(path: &Path) -> CheckOutcome {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(path).unwrap());
-    let log = Arc::new(CollectingInfoStream::default());
+    // `CheckIndex` reports to a `PrintStream`; Java's side of this test gives it
+    // one over a byte buffer.
+    let log = Arc::new(ByteArrayPrintStream::new());
     let mut checker = match CheckIndex::new(dir) {
         Ok(checker) => checker,
         Err(e) => {
@@ -909,10 +888,10 @@ fn rucene_check(path: &Path) -> CheckOutcome {
         }
     };
     checker.set_level(Level::MAX_VALUE).unwrap();
-    checker.set_info_stream_verbose(Some(log.clone() as Arc<dyn InfoStream>), true);
+    checker.set_info_stream_verbose(Some(log.clone() as Arc<dyn PrintStream>), true);
     let result = checker.check_index();
     let _ = checker.close();
-    let messages = log.0.lock().unwrap().join("\n");
+    let messages = log.to_string_utf8();
     match result {
         Ok(status) => {
             let mut report = format!(

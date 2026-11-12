@@ -4,11 +4,8 @@
 //! This module provides the top-level reader used to open a point-in-time view
 //! of an index stored in a `Directory`. It loads the current `SegmentInfos`,
 //! creates one `SegmentReader` per segment, supports reopen via `open_if_changed`,
-//! and exposes the commit points present in the directory.
-//!
-//! The `SegmentReader` placeholder used here is the minimal stub defined in
-//! `segment_reader.rs`; task 93 will replace it with the full Lucene-compatible
-//! implementation.
+//! and exposes the commit points present in the directory. The per-segment
+//! readers are the [`SegmentReader`]s of `segment_reader.rs`.
 
 #![deny(unsafe_code)]
 
@@ -69,7 +66,7 @@ pub trait IndexWriter: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Propagates a poisoned writer state.
+    /// Propagates what reading the writer's state raises.
     fn segment_infos(&self) -> Result<SegmentInfos>;
 
     /// Returns the directory the writer is indexing into.
@@ -636,36 +633,26 @@ impl StandardDirectoryReader {
         }
     }
 
-    /// Releases every reader already opened in `readers`, folding any error
-    /// releasing them into `error` instead of letting it replace it.
+    /// Releases every reader already opened in `readers`, attaching any error
+    /// releasing them to `error` instead of letting it replace it.
     ///
     /// Equivalent to the private
     /// `StandardDirectoryReader.decRefWhileSuppressingException(Throwable,
     /// SegmentReader[])`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java attaches every release failure
-    /// to `error` through `Throwable.addSuppressed`, which `LuceneError` has no
-    /// counterpart for; this folds their messages into `error`'s instead, so
-    /// the original error is still the one returned, with the same
-    /// information appended rather than attached.
+    /// Every release failure is attached to `error` with
+    /// [`LuceneError::add_suppressed`], as `Throwable.addSuppressed` does
+    /// (`StandardDirectoryReader.java:365-375`).
     fn dec_ref_while_suppressing_exception(
-        error: LuceneError,
+        mut error: LuceneError,
         readers: &[Arc<SegmentReader>],
     ) -> LuceneError {
-        let mut suppressed = Vec::new();
         for reader in readers {
             if let Err(release_error) = reader.dec_ref() {
-                suppressed.push(release_error.to_string());
+                error.add_suppressed(release_error);
             }
         }
-        if suppressed.is_empty() {
-            error
-        } else {
-            LuceneError::from(LuceneErrorKind::Other(format!(
-                "{error} (suppressed while releasing readers: {})",
-                suppressed.join("; ")
-            )))
-        }
+        error
     }
 
     /// Indexes the old readers by segment name.
@@ -778,12 +765,10 @@ impl StandardDirectoryReader {
         // The live docs changed, or the old reader was an NRT one whose live
         // docs live in memory: both must be read from disk.
         let live_docs: Option<Box<dyn crate::util::Bits>> = if commit_info.has_deletions() {
-            let codec = commit_info.info.codec().ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "segment {} has no codec",
-                    commit_info.info.name
-                ))
-            })?;
+            let codec = commit_info
+                .info
+                .codec()
+                .ok_or_else(crate::error::LuceneError::null_pointer)?;
             Some(codec.live_docs_format().read_live_docs(
                 commit_info.info.directory.as_ref(),
                 commit_info,
@@ -831,6 +816,28 @@ impl StandardDirectoryReader {
     /// commit (`ReaderPool.java:87-111`).
     pub(crate) fn segment_readers(&self) -> &[Arc<SegmentReader>] {
         &self.segment_readers
+    }
+
+    /// Opens a reader over `infos`, reusing the segment readers of
+    /// `old_readers` whose segments are unchanged.
+    ///
+    /// Equivalent to the public `org.apache.lucene.index.StandardDirectoryReader.open(Directory,
+    /// SegmentInfos, List<? extends LeafReader>, Comparator<LeafReader>,
+    /// ExecutorService)` (`StandardDirectoryReader.java:175-185`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the segment readers raises.
+    pub fn open_with_segment_infos(
+        directory: Arc<dyn Directory>,
+        infos: SegmentInfos,
+        old_readers: Option<&[Arc<SegmentReader>]>,
+        leaf_sorter: Option<Arc<dyn LeafComparator>>,
+        executor: Option<&Arc<dyn crate::search::Executor>>,
+    ) -> Result<Arc<dyn DirectoryReader>> {
+        // `new StandardDirectoryReader(directory, newReaders, null, infos,
+        // leafSorter, false, false)`: no writer.
+        Self::open_from_infos(directory, infos, old_readers, None, leaf_sorter, executor)
     }
 }
 
@@ -1102,9 +1109,10 @@ impl CompositeTermVectors {
         body: impl FnOnce(&mut dyn TermVectors, i32) -> Result<T>,
     ) -> Result<T> {
         let index = self.reader_index(doc_id)?;
-        let mut cache = self.sub_vectors.lock().map_err(|_| {
-            LuceneError::illegal_state("term vectors lock was poisoned".to_string())
-        })?;
+        let mut cache = self
+            .sub_vectors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cache[index].is_none() {
             cache[index] = Some(LeafReader::term_vectors(self.sub_readers[index].as_ref())?);
         }
@@ -1158,9 +1166,10 @@ impl CompositeStoredFields {
         body: impl FnOnce(&mut dyn StoredFields, i32) -> Result<T>,
     ) -> Result<T> {
         let index = self.reader_index(doc_id)?;
-        let mut cache = self.sub_fields.lock().map_err(|_| {
-            LuceneError::illegal_state("stored fields lock was poisoned".to_string())
-        })?;
+        let mut cache = self
+            .sub_fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cache[index].is_none() {
             cache[index] = Some(LeafReader::stored_fields(self.sub_readers[index].as_ref())?);
         }
@@ -1610,9 +1619,10 @@ impl DirectoryReaderCacheHelper {
     }
 
     fn notify_closed_listeners(&self) -> Result<()> {
-        let guard = self.listeners.lock().map_err(|_| {
-            LuceneError::illegal_state("reader closed listeners lock poisoned".to_string())
-        })?;
+        let guard = self
+            .listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // `IOUtils.applyToAll(readerClosedListeners, l -> l.onClose(cacheHelper.getKey()))`
         // (`StandardDirectoryReader.java:670-674`): every listener runs; the
         // first error is returned with the later ones suppressed into it.
@@ -2299,14 +2309,14 @@ mod tests {
         max_doc: i32,
     ) -> crate::index::SegmentInfo {
         let mut info = test_segment_info_with_codec(name, max_doc, test_codec());
-        info.set_index_sort(
+        info.set_index_sort(Some(
             Sort::new_fields(vec![SortField::new(
                 Some("id".to_string()),
                 SortFieldType::String,
             )
             .unwrap()])
             .unwrap(),
-        );
+        ));
         info.set_files(HashSet::from([
             crate::index::index_file_names::segment_file_name(
                 name,

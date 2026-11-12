@@ -37,7 +37,7 @@ use crate::codecs::points::{
 use crate::codecs::postings::MergeState;
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::{LuceneError, Result};
 use crate::index::{segment_file_name, FieldInfos};
 use crate::store::SharedIndexInput;
 use crate::store::{DataInput, Directory, IndexInput, IndexOutput};
@@ -99,7 +99,7 @@ impl Lucene90PointsFormat {
     pub fn with_version(version: i32) -> Result<Self> {
         if ![VERSION_START, VERSION_BKD_VECTORIZED_BPV24].contains(&version) {
             return Err(LuceneError::illegal_argument(format!(
-                "invalid Lucene90PointsFormat version: {version}"
+                "Invalid version: {version}"
             )));
         }
         Ok(Self { version })
@@ -110,10 +110,27 @@ impl Lucene90PointsFormat {
     /// Maps the Lucene90 points-format version to the underlying BKD tree
     /// version used by [`crate::util::bkd::BKDWriter`].
     pub fn bkd_version(&self) -> i32 {
-        match self.version {
-            VERSION_START => BKDWriter::VERSION_META_FILE,
-            VERSION_BKD_VECTORIZED_BPV24 => BKDWriter::VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21,
-            _ => unreachable!(),
+        Self::bkd_version_of(self.version)
+            .expect("INVARIANT: with_version accepts only mapped versions")
+    }
+
+    /// `static int bkdVersion(int version)` (`Lucene90PointsFormat.java:97-99`):
+    /// `VERSION_TO_BKD_VERSION.get(version)` unboxed to `int`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `NullPointerException` the unboxing of a missing mapping
+    /// raises, with the JDK's helpful message, for an unknown `version`.
+    pub fn bkd_version_of(version: i32) -> Result<i32> {
+        match version {
+            VERSION_START => Ok(BKDWriter::VERSION_META_FILE),
+            VERSION_BKD_VECTORIZED_BPV24 => {
+                Ok(BKDWriter::VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21)
+            }
+            _ => Err(LuceneError::null_pointer_with_message(
+                "Cannot invoke \"java.lang.Integer.intValue()\" because the return value of \
+                 \"java.util.Map.get(Object)\" is null",
+            )),
         }
     }
 }
@@ -198,11 +215,9 @@ impl Lucene90PointsWriter {
         max_mb_sort_in_heap: f64,
         version: i32,
     ) -> Result<Self> {
-        if ![VERSION_START, VERSION_BKD_VECTORIZED_BPV24].contains(&version) {
-            return Err(LuceneError::illegal_argument(format!(
-                "invalid Lucene90PointsFormat version: {version}"
-            )));
-        }
+        // `Lucene90PointsWriter.java:53-60` takes `version` unchecked; an
+        // unknown one fails only when a field builds its `BKDWriter`, through
+        // `Lucene90PointsFormat.bkdVersion` (see `bkd_version_of`).
 
         let data_name = segment_file_name(
             &state.segment_info.name,
@@ -327,7 +342,7 @@ impl Lucene90PointsWriter {
             config,
             self.max_mb_sort_in_heap,
             total_point_count,
-            Lucene90PointsFormat::with_version(self.version)?.bkd_version(),
+            Lucene90PointsFormat::bkd_version_of(self.version)?,
         )
     }
 
@@ -373,43 +388,45 @@ impl PointsWriter for Lucene90PointsWriter {
 
         let mut writer = self.bkd_writer(field_info, tree.size()?)?;
 
-        // `RandomCodec`'s override (`RandomCodec.java:83-134`) always adds the
-        // points one by one to a randomly splitting writer.
-        if let Some(make) = &self.split_override_for_field {
-            writer.set_split_override(make(field_info));
+        // The body of `try (BKDWriter writer = ...)`
+        // (`Lucene90PointsWriter.java:149-194`).
+        let result = (|| -> Result<()> {
+            // `RandomCodec`'s override (`RandomCodec.java:83-134`) always adds
+            // the points one by one to a randomly splitting writer.
+            if let Some(make) = &self.split_override_for_field {
+                writer.set_split_override(make(field_info));
+                tree.visit_doc_values(&mut AddToBkdWriter {
+                    writer: &mut writer,
+                })?;
+                let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
+                let finalizer = writer.finish(data_out.as_mut())?;
+                return self.write_finalizer(field_info.number, finalizer);
+            }
+
+            // Java tests `values instanceof MutablePointTree` and, when it
+            // holds, hands the tree straight to `BKDWriter.writeField`, which
+            // sorts and partitions the points in place rather than buffering
+            // them through `BKDWriter.add` and re-sorting them offline
+            // (`Lucene90PointsWriter.java:159-168`). `PointTree::as_mutable` is
+            // this port's `instanceof`: it answers `Some` for the indexing
+            // buffer's tree and `None` for every other tree.
+            if let Some(mutable) = tree.as_mutable() {
+                let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
+                let finalizer = writer.write_field(data_out.as_mut(), mutable)?;
+                return self.write_finalizer(field_info.number, finalizer);
+            }
+
             tree.visit_doc_values(&mut AddToBkdWriter {
                 writer: &mut writer,
             })?;
+
+            // We could have 0 points on merge since all docs with dimensional
+            // fields may be deleted.
             let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
             let finalizer = writer.finish(data_out.as_mut())?;
-            self.write_finalizer(field_info.number, finalizer)?;
-            return writer.close();
-        }
-
-        // Java tests `values instanceof MutablePointTree` and, when it holds,
-        // hands the tree straight to `BKDWriter.writeField`, which sorts and
-        // partitions the points in place rather than buffering them through
-        // `BKDWriter.add` and re-sorting them offline
-        // (`Lucene90PointsWriter.java:159-168`). `PointTree::as_mutable` is
-        // this port's `instanceof`: it answers `Some` for the indexing
-        // buffer's tree and `None` for every other tree.
-        if let Some(mutable) = tree.as_mutable() {
-            let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
-            let finalizer = writer.write_field(data_out.as_mut(), mutable)?;
-            self.write_finalizer(field_info.number, finalizer)?;
-            return writer.close();
-        }
-
-        tree.visit_doc_values(&mut AddToBkdWriter {
-            writer: &mut writer,
-        })?;
-
-        // We could have 0 points on merge since all docs with dimensional
-        // fields may be deleted.
-        let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
-        let finalizer = writer.finish(data_out.as_mut())?;
-        self.write_finalizer(field_info.number, finalizer)?;
-        writer.close()
+            self.write_finalizer(field_info.number, finalizer)
+        })();
+        close_bkd_writer(&mut writer, result)
     }
 
     /// Equivalent to `Lucene90PointsWriter.merge(MergeState)`
@@ -480,36 +497,41 @@ impl PointsWriter for Lucene90PointsWriter {
             // trying to sort all points again as if we were simply reindexing
             // them.
             let mut writer = self.bkd_writer(field_info, tot_max_size)?;
-            let mut point_values: Vec<Box<dyn PointValues>> = Vec::new();
-            let mut doc_maps: Vec<crate::index::merge::DocMap> = Vec::new();
-            for (i, reader) in merge_state.points_readers.iter().enumerate() {
-                let Some(reader) = reader else {
-                    continue;
-                };
-                // NOTE: we cannot just use the merged field number (instead of
-                // resolving to this reader's field info as we do below)
-                // because field numbers can easily be different when
-                // `addIndexes(Directory...)` copies over segments from
-                // another index.
-                let Some(reader_field_info) =
-                    merge_state.field_infos[i].field_info(&field_info.name)
-                else {
-                    continue;
-                };
-                if reader_field_info.point_dimension_count > 0 {
-                    if let Some(values) = reader.get_values(&reader_field_info.name)? {
-                        point_values.push(values);
-                        doc_maps.push(Arc::clone(&merge_state.doc_maps[i]));
+            // The body of `try (BKDWriter writer = ...)`
+            // (`Lucene90PointsWriter.java:249-291`).
+            let result = (|| -> Result<()> {
+                let mut point_values: Vec<Box<dyn PointValues>> = Vec::new();
+                let mut doc_maps: Vec<crate::index::merge::DocMap> = Vec::new();
+                for (i, reader) in merge_state.points_readers.iter().enumerate() {
+                    let Some(reader) = reader else {
+                        continue;
+                    };
+                    // NOTE: we cannot just use the merged field number (instead of
+                    // resolving to this reader's field info as we do below)
+                    // because field numbers can easily be different when
+                    // `addIndexes(Directory...)` copies over segments from
+                    // another index.
+                    let Some(reader_field_info) =
+                        merge_state.field_infos[i].field_info(&field_info.name)
+                    else {
+                        continue;
+                    };
+                    if reader_field_info.point_dimension_count > 0 {
+                        if let Some(values) = reader.get_values(&reader_field_info.name)? {
+                            point_values.push(values);
+                            doc_maps.push(Arc::clone(&merge_state.doc_maps[i]));
+                        }
                     }
                 }
-            }
-            let readers: Vec<&dyn PointValues> = point_values.iter().map(|v| v.as_ref()).collect();
-            let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
-            #[cfg(test)]
-            merge_path_probe::record(&field_info.name, merge_path_probe::BKD_MERGE);
-            let finalizer = writer.merge(data_out.as_mut(), Some(&doc_maps), &readers)?;
-            self.write_finalizer(field_info.number, finalizer)?;
-            writer.close()?;
+                let readers: Vec<&dyn PointValues> =
+                    point_values.iter().map(|v| v.as_ref()).collect();
+                let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
+                #[cfg(test)]
+                merge_path_probe::record(&field_info.name, merge_path_probe::BKD_MERGE);
+                let finalizer = writer.merge(data_out.as_mut(), Some(&doc_maps), &readers)?;
+                self.write_finalizer(field_info.number, finalizer)
+            })();
+            close_bkd_writer(&mut writer, result)?;
         }
 
         self.finish()
@@ -550,6 +572,22 @@ impl PointsWriter for Lucene90PointsWriter {
             ]
             .map(|o| o.map(|mut o| move || o.close())),
         )
+    }
+}
+
+/// Closes `writer` after the body of the `try`-with-resources that owns it
+/// ran with `result`: on success the close's own failure is raised, and on
+/// failure the close's failure is added to the body's as a suppressed
+/// exception, as Java's `try`-with-resources does.
+fn close_bkd_writer(writer: &mut BKDWriter, result: Result<()>) -> Result<()> {
+    match result {
+        Ok(()) => writer.close(),
+        Err(mut error) => {
+            if let Err(close_error) = writer.close() {
+                error.add_suppressed(close_error);
+            }
+            Err(error)
+        }
     }
 }
 
@@ -604,14 +642,17 @@ pub(crate) mod merge_path_probe {
     static PATHS: Mutex<Vec<(String, &'static str)>> = Mutex::new(Vec::new());
 
     pub(crate) fn record(field: &str, path: &'static str) {
-        PATHS.lock().unwrap().push((field.to_string(), path));
+        PATHS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((field.to_string(), path));
     }
 
     /// The paths recorded for `field`, in order.
     pub(crate) fn paths_of(field: &str) -> Vec<&'static str> {
         PATHS
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter(|(name, _)| name == field)
             .map(|&(_, path)| path)
@@ -752,9 +793,11 @@ impl Lucene90PointsReader {
                     break;
                 }
                 if field_number < 0 {
-                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                        "illegal field number in points meta file: {field_number}"
-                    ))));
+                    // `Lucene90PointsReader.java:104-106`.
+                    return Err(LuceneError::corrupt_index(
+                        format!("Illegal field number: {field_number}"),
+                        meta_in.to_java_string(),
+                    ));
                 }
                 let reader = BKDReader::new(meta_in.as_mut(), index_in.as_mut(), data_in.as_mut())?;
                 readers.insert(field_number, BkdPointValues::new(reader));
@@ -878,20 +921,41 @@ impl BkdPointValues {
 }
 
 impl PointValues for BkdPointValues {
+    /// The `BKDReader` this wraps (`Lucene90PointsReader.getValues` returns it) declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.util.bkd.BKDReader",
+        )
+    }
     fn point_tree(&self) -> Result<Box<dyn crate::index::point_values::PointTree>> {
-        self.reader.lock().unwrap().point_tree()
+        self.reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .point_tree()
     }
 
     fn size(&self) -> Result<i64> {
-        Ok(self.reader.lock().unwrap().point_count())
+        Ok(self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .point_count())
     }
 
     fn doc_count(&self) -> Result<i32> {
-        Ok(self.reader.lock().unwrap().doc_count())
+        Ok(self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .doc_count())
     }
 
     fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if reader.point_count() == 0 {
             Ok(None)
         } else {
@@ -900,7 +964,10 @@ impl PointValues for BkdPointValues {
     }
 
     fn max_packed_value(&self) -> Result<Option<Vec<u8>>> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if reader.point_count() == 0 {
             Ok(None)
         } else {
@@ -909,15 +976,27 @@ impl PointValues for BkdPointValues {
     }
 
     fn num_dimensions(&self) -> Result<i32> {
-        Ok(self.reader.lock().unwrap().num_dims())
+        Ok(self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .num_dims())
     }
 
     fn num_index_dimensions(&self) -> Result<i32> {
-        Ok(self.reader.lock().unwrap().num_index_dims())
+        Ok(self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .num_index_dims())
     }
 
     fn bytes_per_dimension(&self) -> Result<i32> {
-        Ok(self.reader.lock().unwrap().bytes_per_dim())
+        Ok(self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bytes_per_dim())
     }
 }
 
@@ -931,6 +1010,13 @@ struct AddToBkdWriter<'a> {
 }
 
 impl IntersectVisitor for AddToBkdWriter<'_> {
+    /// `Lucene90PointsWriter$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.lucene90.Lucene90PointsWriter$1",
+        )
+    }
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
         Err(LuceneError::illegal_state(String::new()))
     }
@@ -950,6 +1036,7 @@ impl IntersectVisitor for AddToBkdWriter<'_> {
 
 #[cfg(test)]
 mod tests {
+    use crate::error::LuceneErrorKind;
     use std::collections::HashMap;
 
     use super::*;
@@ -1090,7 +1177,7 @@ mod tests {
                 self.bytes_per_dim,
                 vec![self.points.clone()],
             )?;
-            Ok(values.point_tree()?)
+            values.point_tree()
         }
 
         fn size(&self) -> Result<i64> {
@@ -1765,7 +1852,7 @@ mod tests {
                 matches!(
                     err,
                     LuceneError {
-                        kind: LuceneErrorKind::CorruptIndex(_),
+                        kind: LuceneErrorKind::CorruptIndex { .. },
                         ..
                     }
                 ),

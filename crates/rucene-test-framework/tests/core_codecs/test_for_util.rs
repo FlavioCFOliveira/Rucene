@@ -65,7 +65,7 @@ fn test_encode_decode() -> Result<()> {
         let mut for_util = ForUtil::new();
         for i in 0..iterations {
             let bits_per_value = pdu.input.read_byte()? as i8 as i32;
-            let current_file_pointer = pdu.input.file_pointer();
+            let current_file_pointer = pdu.input.file_pointer()?;
             let mut restored = [0i32; FOR_BLOCK_SIZE];
             for_util.decode(bits_per_value, &mut pdu, &mut restored)?;
             let mut ints = [0i32; FOR_BLOCK_SIZE];
@@ -77,10 +77,10 @@ fn test_encode_decode() -> Result<()> {
             );
             assert_equals(
                 &(num_bytes(bits_per_value) as i64),
-                &(pdu.input.file_pointer() - current_file_pointer),
+                &(pdu.input.file_pointer()? - current_file_pointer),
             );
         }
-        assert_equals(&end_pointer, &pdu.input.file_pointer());
+        assert_equals(&end_pointer, &pdu.input.file_pointer()?);
         r#in.close()?;
     }
     d.close()

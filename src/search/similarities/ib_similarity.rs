@@ -99,6 +99,11 @@ impl IBSimilarity {
 }
 
 impl Similarity for IBSimilarity {
+    /// Java `toString()`, which this similarity overrides.
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.search.similarities.IBSimilarity"
     }

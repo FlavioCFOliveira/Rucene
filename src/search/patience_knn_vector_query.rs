@@ -189,10 +189,6 @@ impl AbstractKnnVectorQueryImpl for PatienceKnnVectorQuery {
         &self.base
     }
 
-    fn as_query(&self) -> &dyn Query {
-        self
-    }
-
     fn clone_knn_query(&self) -> Arc<dyn AbstractKnnVectorQueryImpl> {
         Arc::new(self.clone())
     }
@@ -249,7 +245,7 @@ impl Query for PatienceKnnVectorQuery {
             "PatienceKnnVectorQuery{{saturationThreshold={}, patience={}, delegate={}}}",
             self.saturation_threshold,
             self.patience,
-            crate::search::query_to_string(self.delegate.as_query())
+            crate::search::query_to_string(&*self.delegate as &dyn Query)
         )
     }
 
@@ -303,21 +299,26 @@ impl Query for PatienceKnnVectorQuery {
                 self.base.base_eq(&other.base)
                     && self.saturation_threshold == other.saturation_threshold
                     && self.patience == other.patience
-                    && self.delegate.query_eq(other.delegate.as_query())
+                    && self.delegate.query_eq(&*other.delegate as &dyn Query)
             }
             None => false,
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.base.base_hash().hash(&mut hasher);
-        self.saturation_threshold.to_bits().hash(&mut hasher);
-        self.patience.hash(&mut hasher);
-        self.delegate.query_hash().hash(&mut hasher);
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.PatienceKnnVectorQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.PatienceKnnVectorQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `Objects.hash(super.hashCode(), saturationThreshold, patience,
+        // delegate)`.
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            self.base.base_hash(),
+            crate::util::java_collections::java_double_hash_code(self.saturation_threshold),
+            self.patience,
+            self.delegate.query_hash(),
+        ])
     }
 }
 

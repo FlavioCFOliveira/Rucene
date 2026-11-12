@@ -1291,7 +1291,7 @@ impl Query for CountingQuery {
                 .is_some_and(|o| self.delegate.query_eq(&*o.delegate))
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         self.delegate.query_hash()
     }
 }

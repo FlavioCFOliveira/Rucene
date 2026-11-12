@@ -14,7 +14,6 @@ use crate::index::{
 };
 use crate::search::comparators::updateable_doc_id_set_iterator::UpdateableDocIdSetIterator;
 use crate::search::doc_id_set_iterator::{all, DocIdSetIterator, NO_MORE_DOCS};
-use crate::search::doc_values_iteration::numeric_as_iterator;
 use crate::search::field_comparator::java_long_compare;
 use crate::search::pruning::Pruning;
 use crate::search::scorable::Scorable;
@@ -194,6 +193,9 @@ pub struct NumericComparator {
     /// [`IntComparator::sortable_bytes_to_long`](crate::search::comparators::IntComparator::sortable_bytes_to_long)
     /// — and the call lands on exactly that code.
     sortable_bytes_to_long: fn(&[u8]) -> i64,
+    /// The binary name of the concrete comparator class, for the
+    /// `Object.toString()` of `NumericComparator.this` in messages.
+    java_class_name: &'static str,
     top_value_set: bool,
     single_sort: bool,
     /// `protected boolean hitsThresholdReached`, visible to the package's
@@ -233,6 +235,7 @@ impl NumericComparator {
         pruning: Pruning,
         bytes_count: i32,
         sortable_bytes_to_long: fn(&[u8]) -> i64,
+        java_class_name: &'static str,
     ) -> Self {
         Self {
             missing_value_as_long: 0,
@@ -240,6 +243,7 @@ impl NumericComparator {
             reverse,
             bytes_count,
             sortable_bytes_to_long,
+            java_class_name,
             top_value_set: false,
             single_sort: false,
             hits_threshold_reached: false,
@@ -342,9 +346,31 @@ impl NumericComparator {
         context: &LeafReaderContext,
         top_as_comparable_long: i64,
     ) -> Result<NumericLeafState> {
+        let doc_values = self.open_doc_values(context.leaf_reader().as_ref())?;
+        self.new_leaf_with_doc_values(context, top_as_comparable_long, doc_values)
+    }
+
+    /// Builds the per-segment state over `doc_values`, the doc values a
+    /// subclass's `getNumericDocValues(LeafReaderContext, String)` override
+    /// returns for `context` — for example `asNumericDocValues(holder)` in
+    /// `LongValuesSource.LongValuesComparatorSource`
+    /// (`LongValuesSource.java:357-362`).
+    ///
+    /// Equivalent to the `NumericLeafComparator(LeafReaderContext)`
+    /// constructor (`NumericComparator.java:117-153`) with that override in
+    /// place.
+    ///
+    /// # Errors
+    ///
+    /// As [`new_leaf`](Self::new_leaf), for building the competitive iterator.
+    pub fn new_leaf_with_doc_values(
+        &self,
+        context: &LeafReaderContext,
+        top_as_comparable_long: i64,
+        doc_values: Box<dyn NumericDocValues>,
+    ) -> Result<NumericLeafState> {
         let reader = context.leaf_reader();
         let max_doc = reader.max_doc();
-        let doc_values = self.open_doc_values(reader.as_ref())?;
         let competitive =
             self.build_competitive_disi_builder(&reader, max_doc, top_as_comparable_long)?;
         Ok(NumericLeafState {
@@ -390,10 +416,14 @@ impl NumericComparator {
                 }
                 Some(info) if info.get_point_num_bytes() != self.bytes_count => {
                     return Err(LuceneError::illegal_argument(format!(
-                        "Field {} is indexed with {} bytes per dimension, but {:?} expected {}",
+                        "Field {} is indexed with {} bytes per dimension, but {} expected {}",
                         self.field,
                         info.get_point_num_bytes(),
-                        self,
+                        // `NumericComparator.this`: `Object.toString()`.
+                        crate::index::index_reader::java_object_to_string(
+                            self.java_class_name,
+                            self
+                        ),
                         self.bytes_count
                     )));
                 }
@@ -828,7 +858,7 @@ impl NumericComparator {
                         builder
                             .common
                             .competitive_iterator
-                            .update(numeric_as_iterator(doc_values));
+                            .update(doc_values as Box<dyn DocIdSetIterator>);
                         *iterator_cost = i64::from(doc_count);
                     }
                     return Ok(());
@@ -904,6 +934,13 @@ impl CompetitiveVisitor<'_> {
 }
 
 impl IntersectVisitor for CompetitiveVisitor<'_> {
+    /// `NumericComparator$PointsCompetitiveDISIBuilder$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.comparators.NumericComparator$PointsCompetitiveDISIBuilder$1",
+        )
+    }
     fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
         Ok(())
@@ -1091,6 +1128,7 @@ mod scorer_cost_tests {
                 Pruning::GREATER_THAN_OR_EQUAL_TO,
                 8,
                 LongComparator::sortable_bytes_to_long,
+                "org.apache.lucene.search.comparators.LongComparator",
             )
         };
 

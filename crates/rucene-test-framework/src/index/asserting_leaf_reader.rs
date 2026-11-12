@@ -280,7 +280,7 @@ impl Terms for AssertingTerms {
     }
 
     /// `FilterTerms.getStats()`: `in.getStats()`.
-    fn stats(&self) -> Result<String> {
+    fn stats(&self) -> Result<Box<dyn rucene::index::terms::StatsObject>> {
         self.r#in.stats()
     }
 }
@@ -1487,12 +1487,12 @@ impl AssertingSortedNumericDocValues {
         max_doc: i32,
     ) -> Result<Box<dyn SortedNumericDocValues>> {
         if r#in.is_singleton() {
-            if let Some(single_doc_values) = DocValues::unwrap_singleton_numeric(r#in) {
+            if let Some(single_doc_values) = DocValues::unwrap_singleton_numeric(r#in)? {
                 let asserting_doc_values =
                     AssertingNumericDocValues::new(single_doc_values, max_doc)?;
                 return Ok(Box::new(DocValues::singleton_numeric(Box::new(
                     asserting_doc_values,
-                ))));
+                ))?));
             }
             return Err(LuceneError::illegal_state(
                 "a singleton sorted-numeric doc values gave up no single-valued view".to_string(),
@@ -1618,12 +1618,12 @@ impl AssertingSortedSetDocValues {
         max_doc: i32,
     ) -> Result<Box<dyn SortedSetDocValues>> {
         if r#in.is_singleton() {
-            if let Some(single_doc_values) = DocValues::unwrap_singleton_sorted(r#in) {
+            if let Some(single_doc_values) = DocValues::unwrap_singleton_sorted(r#in)? {
                 let asserting_doc_values =
                     AssertingSortedDocValues::new(single_doc_values, max_doc)?;
                 return Ok(Box::new(DocValues::singleton_sorted(Box::new(
                     asserting_doc_values,
-                ))));
+                ))?));
             }
             return Err(LuceneError::illegal_state(
                 "a singleton sorted-set doc values gave up no single-valued view".to_string(),

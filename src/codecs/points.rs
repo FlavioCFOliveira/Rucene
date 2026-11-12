@@ -173,11 +173,12 @@ impl fmt::Debug for MergedPointsReader {
     }
 }
 
-/// What Java throws `UnsupportedOperationException` for in the merged view.
-fn unsupported(method: &str) -> LuceneError {
-    LuceneError::unsupported_operation(format!(
-        "{method} is not supported by the merged points view"
-    ))
+/// What Java throws `UnsupportedOperationException` for in the merged view:
+/// `new UnsupportedOperationException()`, with no message
+/// (`PointsWriter.java:78-212`). `_method` names the Java method, for the
+/// reader of the call site only.
+fn unsupported(_method: &str) -> LuceneError {
+    LuceneError::unsupported_operation(String::new())
 }
 
 impl PointsReader for MergedPointsReader {
@@ -225,6 +226,13 @@ struct MergedPointValues {
 }
 
 impl PointValues for MergedPointValues {
+    /// `PointsWriter$1$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.PointsWriter$1$1",
+        )
+    }
     fn point_tree(&self) -> Result<Box<dyn PointTree>> {
         Ok(Box::new(MergedPointTree {
             field_name: self.field_name.clone(),
@@ -272,6 +280,13 @@ struct MergedPointTree {
 }
 
 impl PointTree for MergedPointTree {
+    /// `PointsWriter$1$1$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.PointsWriter$1$1$1",
+        )
+    }
     fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
         Err(unsupported("PointTree.clone"))
     }
@@ -348,6 +363,13 @@ struct DocMapVisitor<'a> {
 }
 
 impl IntersectVisitor for DocMapVisitor<'_> {
+    /// `PointsWriter$1$1$1$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.PointsWriter$1$1$1$1",
+        )
+    }
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
         // Should never be called during `visit_doc_values`.
         Err(LuceneError::illegal_state(String::new()))
@@ -441,9 +463,7 @@ impl PointsWriter for EmptyPointsWriter {
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn write_field(&mut self, _field_info: &FieldInfo, _values: &dyn PointsReader) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "EmptyPointsWriter indexes no points".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn finish(&mut self) -> Result<()> {
@@ -482,9 +502,7 @@ impl PointsFormat for EmptyPointsFormat {
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn fields_writer(&self, _state: &SegmentWriteState) -> Result<Box<dyn PointsWriter>> {
-        Err(LuceneError::unsupported_operation(
-            "PointsFormat.EMPTY has no writer".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn fields_reader(&self, _state: &SegmentReadState) -> Result<Box<dyn PointsReader>> {

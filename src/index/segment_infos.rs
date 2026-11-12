@@ -183,10 +183,9 @@ impl SegmentInfos {
     /// not record `min_version` for an index created on or after Lucene 7.
     pub fn add(&mut self, si: SegmentCommitInfo) -> Result<()> {
         if self.index_created_version_major >= 7 && si.info.min_version().is_none() {
-            return Err(LuceneError::illegal_argument(format!(
-                "All segments must record the minVersion for indices created on or after Lucene 7: {:?}",
-                si.info
-            )));
+            return Err(LuceneError::illegal_argument(
+                "All segments must record the minVersion for indices created on or after Lucene 7",
+            ));
         }
         self.segments.push(si);
         Ok(())
@@ -571,33 +570,46 @@ impl SegmentInfos {
     /// Returns the generation of the most recent commit in the provided file
     /// list.
     ///
-    /// Equivalent to `SegmentInfos.getLastCommitGeneration(String[])`.
-    pub fn get_last_commit_generation(files: &[String]) -> i64 {
+    /// Equivalent to `SegmentInfos.getLastCommitGeneration(String[])`
+    /// (`SegmentInfos.java:192-206`).
+    ///
+    /// # Errors
+    ///
+    /// The `NumberFormatException` of a `segments*` name whose generation
+    /// does not parse, which Java does not catch here.
+    pub fn get_last_commit_generation(files: &[String]) -> Result<i64> {
         let mut max_gen = -1i64;
         for file in files {
             if file.starts_with(SEGMENTS) && !file.starts_with(OLD_SEGMENTS_GEN) {
-                if let Ok(gen) = Self::generation_from_segments_file_name(file) {
-                    if gen > max_gen {
-                        max_gen = gen;
-                    }
+                let gen = Self::generation_from_segments_file_name(file)?;
+                if gen > max_gen {
+                    max_gen = gen;
                 }
             }
         }
-        max_gen
+        Ok(max_gen)
     }
 
     /// Returns the generation of the most recent commit in the directory.
     ///
     /// Equivalent to `SegmentInfos.getLastCommitGeneration(Directory)`.
     pub fn get_last_commit_generation_dir(directory: &dyn Directory) -> Result<i64> {
-        Ok(Self::get_last_commit_generation(&directory.list_all()?))
+        Self::get_last_commit_generation(&directory.list_all()?)
     }
 
     /// Returns the filename of the most recent commit in the provided file list.
     ///
     /// Equivalent to `SegmentInfos.getLastCommitSegmentsFileName(String[])`.
-    pub fn get_last_commit_segments_file_name(files: &[String]) -> Option<String> {
-        file_name_from_generation(SEGMENTS, "", Self::get_last_commit_generation(files))
+    ///
+    /// # Errors
+    ///
+    /// As [`get_last_commit_generation`](Self::get_last_commit_generation).
+    pub fn get_last_commit_segments_file_name(files: &[String]) -> Result<Option<String>> {
+        Ok(file_name_from_generation(
+            SEGMENTS,
+            "",
+            Self::get_last_commit_generation(files)?,
+        ))
     }
 
     /// Returns the filename of the most recent commit in the directory.
@@ -606,9 +618,7 @@ impl SegmentInfos {
     pub fn get_last_commit_segments_file_name_dir(
         directory: &dyn Directory,
     ) -> Result<Option<String>> {
-        Ok(Self::get_last_commit_segments_file_name(
-            &directory.list_all()?,
-        ))
+        Self::get_last_commit_segments_file_name(&directory.list_all()?)
     }
 
     /// Parses the generation from a `segments_N` filename.
@@ -623,13 +633,15 @@ impl SegmentInfos {
         if file_name == SEGMENTS {
             return Ok(0);
         }
-        if file_name.starts_with(SEGMENTS) {
-            let gen_str = &file_name[1 + SEGMENTS.len()..];
-            i64::from_str_radix(gen_str, 36).map_err(|e| {
-                LuceneError::illegal_argument(format!(
-                    "fileName \"{file_name}\" does not contain a valid generation: {e}"
-                ))
-            })
+        if let Some(after_prefix) = file_name.strip_prefix(SEGMENTS) {
+            // `Long.parseLong(fileName.substring(1 + SEGMENTS.length()),
+            // Character.MAX_RADIX)` (`SegmentInfos.java:251-252`).
+            // `fileName` is longer than `SEGMENTS`, so one character follows it.
+            let mut rest = after_prefix.chars();
+            rest.next();
+            let gen_str = rest.as_str();
+            crate::util::extra::java_parse_long_radix(gen_str, 36)
+                .ok_or_else(|| LuceneError::number_format_for_input_string(gen_str, 36))
         } else {
             Err(LuceneError::illegal_argument(format!(
                 "fileName \"{file_name}\" is not a segments file"
@@ -674,7 +686,21 @@ impl SegmentInfos {
             input.as_mut(),
             generation,
             min_supported_major_version,
-        );
+        )
+        .map_err(|error| {
+            // `catch (EOFException | NoSuchFileException | FileNotFoundException
+            // e) { throw new CorruptIndexException("Unexpected file read error
+            // while reading index.", input, e); }` (`SegmentInfos.java:298-303`).
+            if error.is_eof_or_missing_file() {
+                LuceneError::corrupt_index_with_cause(
+                    "Unexpected file read error while reading index.",
+                    crate::store::DataInput::to_java_string(input.as_ref()),
+                    error,
+                )
+            } else {
+                error
+            }
+        });
         crate::store::close_after(input.as_mut(), read)
     }
 
@@ -709,9 +735,9 @@ impl SegmentInfos {
             codec_util::check_index_header_suffix(input, &radix_36(generation as u64))?;
 
             let lucene_version = Version::from_bits(
-                input.read_v_int()? as u8,
-                input.read_v_int()? as u8,
-                input.read_v_int()? as u8,
+                input.read_v_int()?,
+                input.read_v_int()?,
+                input.read_v_int()?,
             )?;
             let index_created_version = input.read_v_int()?;
             if (lucene_version.major as i32) > index_created_version {
@@ -789,9 +815,9 @@ impl SegmentInfos {
 
         if num_segments > 0 {
             infos.min_segment_lucene_version = Some(Version::from_bits(
-                input.read_v_int()? as u8,
-                input.read_v_int()? as u8,
-                input.read_v_int()? as u8,
+                input.read_v_int()?,
+                input.read_v_int()?,
+                input.read_v_int()?,
             )?);
         }
 
@@ -1005,7 +1031,10 @@ impl SegmentInfos {
     /// argument is a `PrintStream`; see the note on [`INFO_STREAM`] for why this
     /// port takes an [`InfoStream`] instead. Pass `None` for Java's `null`.
     pub fn set_info_stream(info_stream: Option<Arc<dyn InfoStream>>) {
-        if let Ok(mut guard) = INFO_STREAM.write() {
+        {
+            let mut guard = INFO_STREAM
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *guard = info_stream;
         }
     }
@@ -1014,7 +1043,10 @@ impl SegmentInfos {
     ///
     /// Equivalent to `org.apache.lucene.index.SegmentInfos#getInfoStream`.
     pub fn get_info_stream() -> Option<Arc<dyn InfoStream>> {
-        INFO_STREAM.read().ok().and_then(|guard| guard.clone())
+        INFO_STREAM
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Prints `message` to the installed info stream.
@@ -1111,7 +1143,7 @@ impl SegmentInfos {
                 // Directory listing changed between calls; retry.
                 continue;
             }
-            let gen = Self::get_last_commit_generation(&files);
+            let gen = Self::get_last_commit_generation(&files)?;
 
             if Self::get_info_stream().is_some() {
                 Self::message(&format!("directory listing gen={gen}"));
@@ -1131,12 +1163,8 @@ impl SegmentInfos {
 
             if gen > last_gen {
                 last_gen = gen;
-                let segment_file_name =
-                    file_name_from_generation(SEGMENTS, "", gen).ok_or_else(|| {
-                        LuceneError::illegal_state(format!(
-                            "could not build segments file name for generation {gen}"
-                        ))
-                    })?;
+                let segment_file_name = file_name_from_generation(SEGMENTS, "", gen)
+                    .expect("INVARIANT: a generation past -1 names a file");
                 match do_body(&segment_file_name) {
                     Ok(t) => {
                         if Self::get_info_stream().is_some() {
@@ -1196,11 +1224,7 @@ impl SegmentInfos {
     fn write(&mut self, directory: &dyn Directory) -> Result<()> {
         let next_generation = self.next_pending_generation();
         let segment_file_name = file_name_from_generation(PENDING_SEGMENTS, "", next_generation)
-            .ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "could not build pending segments file name for generation {next_generation}"
-                ))
-            })?;
+            .expect("INVARIANT: a generation past -1 names a file");
 
         // Always advance the generation on write.
         self.generation = next_generation;
@@ -1283,26 +1307,26 @@ impl SegmentInfos {
             let si = &si_per_commit.info;
             if self.index_created_version_major >= 7 && si.min_version().is_none() {
                 return Err(LuceneError::illegal_state(format!(
-                    "Segments must record minVersion if they have been created on or after Lucene 7: {si:?}"
+                    "Segments must record minVersion if they have been created on or after Lucene 7: {}",
+                    si.to_string_with_del_count(0)
                 )));
             }
 
             out.write_string(&si.name)?;
             let segment_id = si.id();
             if segment_id.len() != ID_LENGTH {
+                // `SegmentInfos.java:649-653`: no space before `id=`.
                 return Err(LuceneError::illegal_state(format!(
-                    "cannot write segment: invalid id segment={} id={:?}",
-                    si.name, segment_id
+                    "cannot write segment: invalid id segment={}id={}",
+                    si.name,
+                    StringHelper::id_to_string(Some(&segment_id))
                 )));
             }
             out.write_bytes(&segment_id, 0, segment_id.len())?;
+            // `si.getCodec().getName()` on a `null` codec.
             let codec_name = si
                 .codec()
-                .ok_or_else(|| {
-                    LuceneError::illegal_state(format!(
-                        "cannot write segment: codec not set for {si:?}"
-                    ))
-                })?
+                .ok_or_else(LuceneError::null_pointer)?
                 .name()
                 .to_string();
             out.write_string(&codec_name)?;
@@ -1360,19 +1384,10 @@ impl SegmentInfos {
             ));
         }
 
-        let src =
-            file_name_from_generation(PENDING_SEGMENTS, "", self.generation).ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "could not build pending segments file name for generation {}",
-                    self.generation
-                ))
-            })?;
-        let dest = file_name_from_generation(SEGMENTS, "", self.generation).ok_or_else(|| {
-            LuceneError::illegal_state(format!(
-                "could not build segments file name for generation {}",
-                self.generation
-            ))
-        })?;
+        let src = file_name_from_generation(PENDING_SEGMENTS, "", self.generation)
+            .expect("INVARIANT: a generation past -1 names a file");
+        let dest = file_name_from_generation(SEGMENTS, "", self.generation)
+            .expect("INVARIANT: a generation past -1 names a file");
 
         let mut success_rename_and_sync = false;
         let result: Result<()> = (|| {
@@ -1752,9 +1767,9 @@ mod tests {
             "segments_5".to_string(),
             "pending_segments_6".to_string(),
         ];
-        assert_eq!(SegmentInfos::get_last_commit_generation(&files), 5);
+        assert_eq!(SegmentInfos::get_last_commit_generation(&files).unwrap(), 5);
         assert_eq!(
-            SegmentInfos::get_last_commit_segments_file_name(&files),
+            SegmentInfos::get_last_commit_segments_file_name(&files).unwrap(),
             Some("segments_5".to_string())
         );
     }
@@ -1782,14 +1797,14 @@ mod tests {
     fn round_trip_single_segment() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let mut info = test_segment_info_with_codec("_0", 42, test_codec());
-        info.set_index_sort(
+        info.set_index_sort(Some(
             Sort::new_fields(vec![SortField::new(
                 Some("id".to_string()),
                 SortFieldType::String,
             )
             .unwrap()])
             .unwrap(),
-        );
+        ));
         info.set_diagnostics(std::collections::HashMap::from([(
             "source".to_string(),
             "test".to_string(),

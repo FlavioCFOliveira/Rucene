@@ -63,30 +63,6 @@ impl std::fmt::Debug for BlockMaxConjunctionBulkScorer {
     }
 }
 
-/// Applies a clause as required, re-borrowing the iterator and the scorable of
-/// the same scorer in turn.
-///
-/// Equivalent to `ScorerUtil.applyRequiredClause(DocAndScoreAccBuffer,
-/// DocIdSetIterator, Scorable)`, which Java can call with two aliases of the
-/// same clause.
-fn apply_required_clause(buffer: &mut DocAndScoreAccBuffer, scorer: &mut dyn Scorer) -> Result<()> {
-    let mut intersection_size = 0;
-    let mut cur_doc = scorer.iterator().doc_id();
-    for i in 0..buffer.size {
-        let target_doc = buffer.docs[i];
-        if cur_doc < target_doc {
-            cur_doc = scorer.iterator().advance(target_doc)?;
-        }
-        if cur_doc == target_doc {
-            buffer.docs[intersection_size] = target_doc;
-            buffer.scores[intersection_size] = buffer.scores[i] + f64::from(scorer.score()?);
-            intersection_size += 1;
-        }
-    }
-    buffer.size = intersection_size;
-    Ok(())
-}
-
 impl BlockMaxConjunctionBulkScorer {
     /// Builds a block-max conjunction bulk scorer.
     ///
@@ -260,7 +236,7 @@ impl BlockMaxConjunctionBulkScorer {
                         sum_of_other_clause,
                         self.scorable.min_competitive_score(),
                         num_scorers,
-                    );
+                    )?;
                 }
 
                 let Self {
@@ -268,7 +244,9 @@ impl BlockMaxConjunctionBulkScorer {
                     doc_and_score_acc_buffer,
                     ..
                 } = self;
-                apply_required_clause(doc_and_score_acc_buffer, &mut *scorers[i])?;
+                // `ScorerUtil.applyRequiredClause(docAndScoreAccBuffer,
+                // iterators[i], scorables[i])` (`BlockMaxConjunctionBulkScorer.java:190`).
+                ScorerUtil::apply_required_clause(doc_and_score_acc_buffer, &mut *scorers[i])?;
             }
 
             for i in 0..self.doc_and_score_acc_buffer.size {

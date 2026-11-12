@@ -233,9 +233,9 @@ pub fn check_seeks_and_skips(is: &mut dyn IndexInput, random: &dyn Random) -> Re
             assert_equals(&start_byte1, &start_byte2);
             assert_equals(&end_byte1, &end_byte2);
             // +1 since we read the byte we seek/skip to
-            assert_equals(&(curr + skip_delta + 1), &is.file_pointer());
+            assert_equals(&(curr + skip_delta + 1), &is.file_pointer()?);
 
-            curr = is.file_pointer();
+            curr = is.file_pointer()?;
         }
     }
     Ok(())
@@ -285,11 +285,11 @@ fn test_no_read_on_skip_bytes(inst: &IndexInputInstance) -> Result<()> {
     let max_seek_pos = len - 1;
     let mut is = (inst.get_index_input)(len);
 
-    while is.file_pointer() < max_seek_pos {
-        let seek_pos = TestUtil::next_long(&*random(), is.file_pointer(), max_seek_pos);
-        let skip_delta = seek_pos - is.file_pointer();
+    while is.file_pointer()? < max_seek_pos {
+        let seek_pos = TestUtil::next_long(&*random(), is.file_pointer()?, max_seek_pos);
+        let skip_delta = seek_pos - is.file_pointer()?;
         is.skip_bytes(skip_delta)?;
-        assert_equals(&seek_pos, &is.file_pointer());
+        assert_equals(&seek_pos, &is.file_pointer()?);
     }
     Ok(())
 }
@@ -352,8 +352,8 @@ impl IndexInput for InterceptingIndexInput {
         Ok(())
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.pos
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.pos)
     }
 
     fn length(&self) -> i64 {

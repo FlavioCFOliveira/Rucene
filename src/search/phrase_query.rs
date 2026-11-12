@@ -5,8 +5,6 @@
 
 use std::any::Any;
 use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
@@ -695,18 +693,23 @@ impl Query for PhraseQuery {
         self.slop == other.slop && self.terms == other.terms && self.positions == other.positions
     }
 
-    fn query_hash(&self) -> u64 {
+    /// `getClass().getName()` of `org.apache.lucene.search.PhraseQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.PhraseQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::java_arrays_hash_code_ints;
+        // `PhraseQuery.hashCode()`: `classHash()`, `slop`,
+        // `Arrays.hashCode(terms)` and `Arrays.hashCode(positions)`.
         let mut h = self.class_hash();
-        h = h.wrapping_mul(31).wrapping_add(self.slop as u64);
-        let mut hasher = DefaultHasher::new();
-        for term in &self.terms {
-            term.field().hash(&mut hasher);
-            term.bytes().slice().hash(&mut hasher);
-        }
-        h = h.wrapping_mul(31).wrapping_add(hasher.finish());
-        let mut hasher = DefaultHasher::new();
-        self.positions.hash(&mut hasher);
-        h.wrapping_mul(31).wrapping_add(hasher.finish())
+        h = h.wrapping_mul(31).wrapping_add(self.slop);
+        let terms: Vec<i32> = self.terms.iter().map(Term::hash_code).collect();
+        h = h
+            .wrapping_mul(31)
+            .wrapping_add(java_arrays_hash_code_ints(&terms));
+        h.wrapping_mul(31)
+            .wrapping_add(java_arrays_hash_code_ints(&self.positions))
     }
 }
 
@@ -771,12 +774,7 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
         }
         let collection_stats = searcher
             .collection_statistics(&self.field)?
-            .ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "field {} has term statistics but no collection statistics",
-                    self.field
-                ))
-            })?;
+            .ok_or_else(LuceneError::null_pointer)?;
         Ok(Some(Arc::new(SimScorerSource::new(
             Arc::clone(&self.similarity),
             self.boost,
@@ -807,11 +805,10 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
             )));
         }
 
-        let states = self.states.get().ok_or_else(|| {
-            LuceneError::illegal_state(
-                "PhraseWeight.getStats must run before getPhraseMatcher".to_string(),
-            )
-        })?;
+        let states = self
+            .states
+            .get()
+            .expect("INVARIANT: the weight's constructor runs getStats");
 
         // Reuse a single terms enum below.
         let mut te = field_terms.iterator()?;

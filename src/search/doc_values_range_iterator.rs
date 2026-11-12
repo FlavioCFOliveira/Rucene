@@ -11,10 +11,6 @@ use crate::index::{
     SortedSetDocValues, TermsEnum,
 };
 use crate::search::doc_id_set_iterator::{empty, DocIdSetIterator, EmptyDocIdSetIterator};
-use crate::search::doc_values_iteration::{
-    NumericDocValuesIterator, SortedDocValuesIterator, SortedNumericDocValuesIterator,
-    SortedSetDocValuesIterator,
-};
 use crate::search::skip_block_range_iterator::{Match, SkipBlockRangeIterator};
 use crate::search::two_phase_iterator::TwoPhaseIterator;
 use crate::util::{FixedBitSet, LongBitSet};
@@ -24,10 +20,10 @@ use crate::util::{FixedBitSet, LongBitSet};
 /// Equivalent to the `disi` field of `DocValuesRangeIterator`'s subclasses,
 /// which in Java is the very doc-values instance the predicate reads.
 enum RangeValues {
-    Numeric(NumericDocValuesIterator),
-    SortedNumeric(SortedNumericDocValuesIterator),
-    Sorted(SortedDocValuesIterator),
-    SortedSet(SortedSetDocValuesIterator),
+    Numeric(Box<dyn NumericDocValues>),
+    SortedNumeric(Box<dyn SortedNumericDocValues>),
+    Sorted(Box<dyn SortedDocValues>),
+    SortedSet(Box<dyn SortedSetDocValues>),
     /// The approximation of `EmptyRangeIterator`.
     Empty(EmptyDocIdSetIterator),
 }
@@ -36,10 +32,10 @@ impl RangeValues {
     /// Returns the values as the [`DocIdSetIterator`] Java treats them as.
     fn as_iterator(&mut self) -> &mut dyn DocIdSetIterator {
         match self {
-            RangeValues::Numeric(values) => values,
-            RangeValues::SortedNumeric(values) => values,
-            RangeValues::Sorted(values) => values,
-            RangeValues::SortedSet(values) => values,
+            RangeValues::Numeric(values) => &mut **values,
+            RangeValues::SortedNumeric(values) => &mut **values,
+            RangeValues::Sorted(values) => &mut **values,
+            RangeValues::SortedSet(values) => &mut **values,
             RangeValues::Empty(values) => values,
         }
     }
@@ -47,10 +43,10 @@ impl RangeValues {
     /// The shared-borrow sibling of [`as_iterator`](Self::as_iterator).
     fn as_iterator_ref(&self) -> &dyn DocIdSetIterator {
         match self {
-            RangeValues::Numeric(values) => values,
-            RangeValues::SortedNumeric(values) => values,
-            RangeValues::Sorted(values) => values,
-            RangeValues::SortedSet(values) => values,
+            RangeValues::Numeric(values) => &**values,
+            RangeValues::SortedNumeric(values) => &**values,
+            RangeValues::Sorted(values) => &**values,
+            RangeValues::SortedSet(values) => &**values,
             RangeValues::Empty(values) => values,
         }
     }
@@ -201,7 +197,7 @@ impl DocValuesRangeIterator {
         let predicate = RangePredicate::NumericRange { min, max };
         match skipper {
             None => Self {
-                values: RangeValues::Numeric(NumericDocValuesIterator::new(values)),
+                values: RangeValues::Numeric(values),
                 block_iterator: None,
                 predicate,
                 match_cost: 2.0,
@@ -209,7 +205,7 @@ impl DocValuesRangeIterator {
                 bulk_bounds: (min, max),
             },
             Some(skipper) => Self {
-                values: RangeValues::Numeric(NumericDocValuesIterator::new(values)),
+                values: RangeValues::Numeric(values),
                 block_iterator: Some(SkipBlockRangeIterator::new(skipper, min, max)),
                 predicate,
                 match_cost: 2.0,
@@ -233,7 +229,7 @@ impl DocValuesRangeIterator {
         let predicate = RangePredicate::SortedNumericRange { min, max };
         match skipper {
             None => Self {
-                values: RangeValues::SortedNumeric(SortedNumericDocValuesIterator::new(values)),
+                values: RangeValues::SortedNumeric(values),
                 block_iterator: None,
                 predicate,
                 match_cost: 5.0,
@@ -241,7 +237,7 @@ impl DocValuesRangeIterator {
                 bulk_bounds: (min, max),
             },
             Some(skipper) => Self {
-                values: RangeValues::SortedNumeric(SortedNumericDocValuesIterator::new(values)),
+                values: RangeValues::SortedNumeric(values),
                 block_iterator: Some(SkipBlockRangeIterator::new(skipper, min, max)),
                 predicate,
                 // Java passes a match cost of 2 to the bulk sorted-numeric
@@ -265,7 +261,7 @@ impl DocValuesRangeIterator {
     ) -> Self {
         let predicate = RangePredicate::OrdinalRange { min, max };
         Self {
-            values: RangeValues::Sorted(SortedDocValuesIterator::new(values)),
+            values: RangeValues::Sorted(values),
             block_iterator: skipper.map(|skipper| SkipBlockRangeIterator::new(skipper, min, max)),
             predicate,
             match_cost: 2.0,
@@ -287,7 +283,7 @@ impl DocValuesRangeIterator {
     ) -> Self {
         let predicate = RangePredicate::SortedSetOrdinalRange { min, max };
         Self {
-            values: RangeValues::SortedSet(SortedSetDocValuesIterator::new(values)),
+            values: RangeValues::SortedSet(values),
             block_iterator: skipper.map(|skipper| SkipBlockRangeIterator::new(skipper, min, max)),
             predicate,
             match_cost: 5.0,
@@ -340,7 +336,7 @@ impl DocValuesRangeIterator {
             ords: Arc::clone(&ordinal_set.ords),
         };
         Ok(Self {
-            values: RangeValues::Sorted(SortedDocValuesIterator::new(values)),
+            values: RangeValues::Sorted(values),
             block_iterator: skipper.map(|skipper| {
                 SkipBlockRangeIterator::new(skipper, ordinal_set.min, ordinal_set.max)
             }),
@@ -430,7 +426,7 @@ impl DocValuesRangeIterator {
             ords: Arc::clone(&ordinal_set.ords),
         };
         Self {
-            values: RangeValues::SortedSet(SortedSetDocValuesIterator::new(values)),
+            values: RangeValues::SortedSet(values),
             block_iterator: skipper.map(|skipper| {
                 SkipBlockRangeIterator::new(skipper, ordinal_set.min, ordinal_set.max)
             }),
@@ -475,7 +471,7 @@ impl DocValuesRangeIterator {
                 let RangeValues::Numeric(values) = &mut self.values else {
                     return Ok(false);
                 };
-                let v = values.values().long_value()?;
+                let v = values.long_value()?;
                 Ok(v >= min && v <= max)
             }
             RangePredicate::SortedNumericRange { min, max } => {
@@ -483,7 +479,7 @@ impl DocValuesRangeIterator {
                 let RangeValues::SortedNumeric(values) = &mut self.values else {
                     return Ok(false);
                 };
-                let values = values.values();
+                let values = &mut **values;
                 let count = values.doc_value_count()?;
                 for _ in 0..count {
                     let v = values.next_value()?;
@@ -498,7 +494,7 @@ impl DocValuesRangeIterator {
                 let RangeValues::Sorted(values) = &mut self.values else {
                     return Ok(false);
                 };
-                let ord = i64::from(values.values().ord_value()?);
+                let ord = i64::from(values.ord_value()?);
                 Ok(ord >= min && ord <= max)
             }
             RangePredicate::SortedSetOrdinalRange { min, max } => {
@@ -506,7 +502,7 @@ impl DocValuesRangeIterator {
                 let RangeValues::SortedSet(values) = &mut self.values else {
                     return Ok(false);
                 };
-                let values = values.values();
+                let values = &mut **values;
                 let count = values.doc_value_count()?;
                 for _ in 0..count {
                     let v = values.next_ord()?;
@@ -521,7 +517,7 @@ impl DocValuesRangeIterator {
                 let RangeValues::Sorted(values) = &mut self.values else {
                     return Ok(false);
                 };
-                let ord = i64::from(values.values().ord_value()?);
+                let ord = i64::from(values.ord_value()?);
                 Ok(ords.get(ord))
             }
             RangePredicate::SortedSetOrdinalSet { min, max, ords } => {
@@ -530,7 +526,7 @@ impl DocValuesRangeIterator {
                 let RangeValues::SortedSet(values) = &mut self.values else {
                     return Ok(false);
                 };
-                let values = values.values();
+                let values = &mut **values;
                 let count = values.doc_value_count()?;
                 for _ in 0..count {
                     let v = values.next_ord()?;
@@ -565,15 +561,11 @@ impl DocValuesRangeIterator {
                 // `block_start`. The starting point is adjusted to keep
                 // `range_into_bit_set`'s `advance_exact` calls forward-only.
                 let from = block_start.max(values.doc_id());
-                values
-                    .values()
-                    .range_into_bit_set(from, block_end, min_value, max_value, bit_set, offset)
+                values.range_into_bit_set(from, block_end, min_value, max_value, bit_set, offset)
             }
             RangeValues::SortedNumeric(values) => {
                 let from = block_start.max(values.doc_id());
-                values
-                    .values()
-                    .range_into_bit_set(from, block_end, min_value, max_value, bit_set, offset)
+                values.range_into_bit_set(from, block_end, min_value, max_value, bit_set, offset)
             }
             _ => {
                 // Equivalent to `BulkOrdinalRangeIterator.intoMaybeBlock`.

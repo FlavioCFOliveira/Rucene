@@ -47,20 +47,20 @@ fn test_merge_iterator() -> Result<()> {
     let mut updates3 = numeric(2, "test", 6);
     let mut updates4 = numeric(2, "test", 6);
 
-    updates1.add_long(0, 1);
-    updates1.add_long(4, 0);
-    updates1.add_long(1, 4);
-    updates1.add_long(2, 5);
-    updates1.add_long(4, 9);
+    updates1.add_long(0, 1)?;
+    updates1.add_long(4, 0)?;
+    updates1.add_long(1, 4)?;
+    updates1.add_long(2, 5)?;
+    updates1.add_long(4, 9)?;
     Assert::assert_true(updates1.any());
 
-    updates2.add_long(0, 18);
-    updates2.add_long(1, 7);
-    updates2.add_long(2, 19);
-    updates2.add_long(5, 24);
+    updates2.add_long(0, 18)?;
+    updates2.add_long(1, 7)?;
+    updates2.add_long(2, 19)?;
+    updates2.add_long(5, 24)?;
     Assert::assert_true(updates2.any());
 
-    updates3.add_long(2, 42);
+    updates3.add_long(2, 42)?;
     Assert::assert_true(updates3.any());
     Assert::assert_false(updates4.any());
     updates1.finish()?;
@@ -86,8 +86,8 @@ fn test_merge_iterator() -> Result<()> {
 /// Port of `TestDocValuesFieldUpdates.testUpdateAndResetSameDoc`.
 fn test_update_and_reset_same_doc() -> Result<()> {
     let mut updates = numeric(0, "test", 2);
-    updates.add_long(0, 1);
-    updates.reset(0);
+    updates.add_long(0, 1)?;
+    updates.reset(0)?;
     updates.finish()?;
     let mut iterator = updates.iterator();
     assert_equals(&0, &iterator.next_doc()?);
@@ -99,9 +99,9 @@ fn test_update_and_reset_same_doc() -> Result<()> {
 /// Port of `TestDocValuesFieldUpdates.testUpdateAndResetUpdateSameDoc`.
 fn test_update_and_reset_update_same_doc() -> Result<()> {
     let mut updates = numeric(0, "test", 3);
-    updates.add_long(0, 1);
-    updates.add_doc(0);
-    updates.add_long(0, 2);
+    updates.add_long(0, 1)?;
+    updates.add_doc(0)?;
+    updates.add_long(0, 2)?;
     updates.finish()?;
     let mut iterator = updates.iterator();
     assert_equals(&0, &iterator.next_doc()?);
@@ -123,8 +123,8 @@ fn test_updates_and_reset_random() -> Result<()> {
             Some(random().next_int_bound(100))
         };
         match values[i] {
-            None => updates.reset(i as i32),
-            Some(v) => updates.add_long(i as i32, i64::from(v)),
+            None => updates.reset(i as i32)?,
+            Some(v) => updates.add_long(i as i32, i64::from(v))?,
         }
     }
     for _ in 0..num_updates {
@@ -135,8 +135,8 @@ fn test_updates_and_reset_random() -> Result<()> {
             Some(random().next_int_bound(100))
         };
         match values[doc_id] {
-            None => updates.reset(doc_id as i32),
-            Some(v) => updates.add_long(doc_id as i32, i64::from(v)),
+            None => updates.reset(doc_id as i32)?,
+            Some(v) => updates.add_long(doc_id as i32, i64::from(v))?,
         }
     }
 
@@ -178,11 +178,11 @@ fn test_shared_value_updates() -> Result<()> {
         if random().next_boolean() {
             values[i] = Some(true);
             any = true;
-            update.add_long(i as i32, value);
+            update.add_long(i as i32, value)?;
         } else if random().next_boolean() && !no_reset {
             values[i] = None;
             any = true;
-            update.reset(i as i32);
+            update.reset(i as i32)?;
         } else {
             values[i] = Some(false);
         }
@@ -193,11 +193,11 @@ fn test_shared_value_updates() -> Result<()> {
                 match values[i] {
                     None => {
                         values[i] = Some(true);
-                        update.add_long(i as i32, value);
+                        update.add_long(i as i32, value)?;
                     }
                     Some(true) => {
                         values[i] = None;
-                        update.reset(i as i32);
+                        update.reset(i as i32)?;
                     }
                     Some(false) => {}
                 }

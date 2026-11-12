@@ -2,8 +2,6 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::BTreeSet;
-
 use crate::index::Term;
 use crate::search::boolean_clause::Occur;
 use crate::search::query::Query;
@@ -134,22 +132,22 @@ impl QueryVisitor for EmptyQueryVisitor {
 /// A [`QueryVisitor`] that collects every term that may match a query.
 ///
 /// Equivalent to the visitor returned by
-/// `QueryVisitor.termCollector(Set<Term>)`.
-///
-/// **Divergence from Lucene 10.5.0.** Java collects into a `java.util.Set`,
-/// usually a `HashSet`. [`Term`] implements `Ord` but not `Hash` in this port,
-/// so the collector uses a [`BTreeSet`]. The set of collected terms is the
-/// same; only the iteration order differs, and Java's was unspecified.
+/// `QueryVisitor.termCollector(Set<Term>)`, which adds every consumed term to
+/// the caller's `Set` (`QueryVisitor.java:79-86`). As in Java the set is the
+/// caller's choice: any collection that can be extended with terms. Lucene's
+/// callers pass a `java.util.HashSet`, whose iteration order
+/// [`JavaObjectHashSet`](crate::util::java_collections::JavaObjectHashSet)
+/// reproduces over [`Term::hash_code`].
 #[derive(Debug)]
-pub struct TermCollectorVisitor<'a> {
-    term_set: &'a mut BTreeSet<Term>,
+pub struct TermCollectorVisitor<'a, S: Extend<Term>> {
+    term_set: &'a mut S,
 }
 
-impl<'a> TermCollectorVisitor<'a> {
+impl<'a, S: Extend<Term>> TermCollectorVisitor<'a, S> {
     /// Builds a visitor that adds every collected term to `term_set`.
     ///
     /// Equivalent to `QueryVisitor.termCollector(Set<Term>)`.
-    pub fn new(term_set: &'a mut BTreeSet<Term>) -> Self {
+    pub fn new(term_set: &'a mut S) -> Self {
         Self { term_set }
     }
 }
@@ -157,11 +155,11 @@ impl<'a> TermCollectorVisitor<'a> {
 /// Returns a visitor that adds every collected term to `term_set`.
 ///
 /// Equivalent to the static `QueryVisitor.termCollector(Set<Term>)`.
-pub fn term_collector(term_set: &mut BTreeSet<Term>) -> TermCollectorVisitor<'_> {
+pub fn term_collector<S: Extend<Term>>(term_set: &mut S) -> TermCollectorVisitor<'_, S> {
     TermCollectorVisitor::new(term_set)
 }
 
-impl QueryVisitor for TermCollectorVisitor<'_> {
+impl<S: Extend<Term>> QueryVisitor for TermCollectorVisitor<'_, S> {
     fn consume_terms(&mut self, _query: &dyn Query, terms: &[Term]) {
         self.term_set.extend(terms.iter().cloned());
     }

@@ -180,7 +180,7 @@ fn posting_decoding_util_test_duel_split_ints() -> Result<()> {
                 c_index as usize,
                 c_mask,
             )?;
-            let expected_end_fp = default_util.input().file_pointer();
+            let expected_end_fp = default_util.input().file_pointer()?;
             optimized_util.input_mut().seek(start_fp)?;
             optimized_util.split_ints(
                 count as usize,
@@ -192,7 +192,7 @@ fn posting_decoding_util_test_duel_split_ints() -> Result<()> {
                 c_index as usize,
                 c_mask,
             )?;
-            Assert::assert_equals(expected_end_fp, optimized_util.input().file_pointer());
+            Assert::assert_equals(expected_end_fp, optimized_util.input().file_pointer()?);
             assert_array_equals(&expected_b, &actual_b);
             assert_array_equals(&expected_c, &actual_c);
         }

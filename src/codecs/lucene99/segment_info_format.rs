@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::codecs::codec_util;
 use crate::codecs::segment_info::SegmentInfoFormat;
 use crate::codecs::stub::SegmentInfo;
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::{LuceneError, Result};
 use crate::index::index_file_names::{
     parse_segment_name, segment_file_name, SEGMENT_INFO_EXTENSION,
 };
@@ -105,38 +105,33 @@ fn parse_segment_info(
     segment_name: &str,
     segment_id: &[u8],
 ) -> Result<SegmentInfo> {
-    let version = Version::from_bits(
-        input.read_int()? as u8,
-        input.read_int()? as u8,
-        input.read_int()? as u8,
-    )?;
-    if version.major < 7 {
-        return Err(LuceneError::illegal_argument(format!(
-            "invalid major version: should be >= 7 but got: {} segment={segment_name}",
-            version.major
-        )));
-    }
+    // `Lucene99SegmentInfoFormat.java:112`: no check of the major version on
+    // read; only `write` rejects one below 7.
+    let version = Version::from_bits(input.read_int()?, input.read_int()?, input.read_int()?)?;
 
     let has_min_version = input.read_byte()?;
     let min_version = match has_min_version {
         0 => None,
         1 => Some(Version::from_bits(
-            input.read_int()? as u8,
-            input.read_int()? as u8,
-            input.read_int()? as u8,
+            input.read_int()?,
+            input.read_int()?,
+            input.read_int()?,
         )?),
         _ => {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "illegal boolean value {has_min_version}"
-            ))))
+            // `Lucene99SegmentInfoFormat.java:122-123`.
+            return Err(LuceneError::corrupt_index(
+                format!("Illegal boolean value {}", has_min_version as i8),
+                input.to_java_string(),
+            ));
         }
     };
 
     let doc_count = input.read_int()?;
     if doc_count < 0 {
-        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid docCount: {doc_count}"
-        ))));
+        return Err(LuceneError::corrupt_index(
+            format!("invalid docCount: {doc_count}"),
+            input.to_java_string(),
+        ));
     }
 
     let is_compound_file = input.read_byte()? == SegmentInfo::YES as u8;
@@ -149,7 +144,7 @@ fn parse_segment_info(
 
     let id: [u8; 16] = segment_id
         .try_into()
-        .map_err(|_| LuceneError::illegal_argument("segment id must be 16 bytes".to_string()))?;
+        .expect("INVARIANT: the index header check matched the segment id against 16 bytes");
 
     let info = SegmentInfo::new_without_codec(
         directory,
@@ -162,7 +157,7 @@ fn parse_segment_info(
         diagnostics.to_std(),
         id,
         attributes.to_std(),
-        index_sort.unwrap_or_default(),
+        index_sort,
     )?;
     info.set_files(files)?;
     Ok(info)
@@ -183,9 +178,12 @@ fn read_segment_sort(input: &mut dyn DataInput) -> Result<Option<crate::search::
 fn write_segment_info(output: &mut dyn IndexOutput, info: &SegmentInfo) -> Result<()> {
     let version = info.version();
     if version.major < 7 {
+        // `Lucene99SegmentInfoFormat.java:186-190`: `" segment=" + si`, the
+        // segment's `toString()`.
         return Err(LuceneError::illegal_argument(format!(
             "invalid major version: should be >= 7 but got: {} segment={}",
-            version.major, info.name
+            version.major,
+            info.to_string_with_del_count(0)
         )));
     }
 
@@ -220,9 +218,13 @@ fn write_segment_info(output: &mut dyn IndexOutput, info: &SegmentInfo) -> Resul
     let files = info.files_ordered()?;
     for file in files.iter() {
         if parse_segment_name(file) != info.name {
+            // `Lucene99SegmentInfoFormat.java:214-218`: `", got=" + files`, the
+            // whole set as `AbstractCollection.toString()` prints it.
+            let all: Vec<&str> = files.iter().map(String::as_str).collect();
             return Err(LuceneError::illegal_argument(format!(
-                "invalid files: expected segment={}, got={file}",
-                info.name
+                "invalid files: expected segment={}, got=[{}]",
+                info.name,
+                all.join(", ")
             )));
         }
     }
@@ -240,20 +242,15 @@ fn write_segment_info(output: &mut dyn IndexOutput, info: &SegmentInfo) -> Resul
 /// (`Lucene99SegmentInfoFormat.java:223-234`), because `SegmentInfo.getIndexSort()`
 /// returns `null` for an unsorted segment.
 ///
-/// **Divergence from Lucene 10.5.0.** This port's [`SegmentInfo`] carries a
-/// [`Sort`](crate::search::Sort) rather than an `Option`, and encodes "unsorted"
-/// as the relevance sort — the same convention
-/// `IndexingChain::maybe_sort_segment` reads. The relevance sort therefore has
-/// to be mapped back to a zero field count here, exactly as `read_segment_sort`
-/// maps a zero field count to it. Writing it as one `SCORE` field instead would
-/// both fail (a `SCORE` sort field has no `IndexSorter`, so Java refuses to
-/// serialize it too) and produce a `.si` Lucene could not read. The bytes on
-/// disk are identical to Java's for both the sorted and the unsorted case.
-fn write_segment_sort(output: &mut dyn IndexOutput, sort: &crate::search::Sort) -> Result<()> {
-    if *sort == crate::search::Sort::new() {
+/// [`SegmentInfo`] carries `None` for an unsorted segment.
+fn write_segment_sort(
+    output: &mut dyn IndexOutput,
+    sort: Option<&crate::search::Sort>,
+) -> Result<()> {
+    let Some(sort) = sort else {
         output.write_v_int(0)?;
         return Ok(());
-    }
+    };
     write_sort(output, sort)
 }
 
@@ -261,6 +258,7 @@ fn write_segment_sort(output: &mut dyn IndexOutput, sort: &crate::search::Sort) 
 mod tests {
     use super::*;
     use crate::codecs::tests::test_segment_info;
+    use crate::error::LuceneErrorKind;
     use crate::search::{Sort, SortField, SortFieldType};
     use crate::store::ByteBuffersDirectory;
     use std::collections::HashSet;
@@ -284,7 +282,7 @@ mod tests {
             std::collections::HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             std::collections::HashMap::new(),
-            Sort::default(),
+            None,
         )
         .unwrap();
         let error = Lucene99SegmentInfoFormat::new()
@@ -310,14 +308,14 @@ mod tests {
         info.set_files(HashSet::from(["_0.fnm".to_string(), "_0.fdt".to_string()]))
             .unwrap();
         info.set_use_compound_file(true);
-        info.set_index_sort(
+        info.set_index_sort(Some(
             Sort::new_fields(vec![SortField::new(
                 Some("id".to_string()),
                 SortFieldType::String,
             )
             .unwrap()])
             .unwrap(),
-        );
+        ));
 
         format
             .write(dir.as_ref(), &info, &*crate::store::DEFAULT_IO_CONTEXT)
@@ -346,6 +344,6 @@ mod tests {
         assert_eq!(read_files, info_files);
 
         assert_eq!(read.get_diagnostics(), info.get_diagnostics());
-        assert_eq!(*read.index_sort(), *info.index_sort());
+        assert_eq!(read.index_sort(), info.index_sort());
     }
 }

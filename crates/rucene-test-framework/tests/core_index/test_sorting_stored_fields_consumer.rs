@@ -18,7 +18,6 @@ use rucene::index::index_sorter::SorterDocMap;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::sorting_consumers::SortingStoredFieldsConsumer;
 use rucene::index::{FieldInfos, SegmentInfo};
-use rucene::search::Sort;
 use rucene::store::{
     flush_io_context, BufferedChecksumIndexInput, DataInput, Directory, FilterIndexInput,
     FlushInfo, IOContext, IndexInput, IndexOutput, Lock, RandomAccessInput, READONCE_IO_CONTEXT,
@@ -139,7 +138,7 @@ impl IndexInput for SeekCountingInput {
     fn close(&mut self) -> Result<()> {
         self.inner.close()
     }
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.inner.file_pointer()
     }
     fn length(&self) -> i64 {
@@ -202,7 +201,7 @@ fn test_flush_with_no_stored_fields_skips_per_document_seeks() -> Result<()> {
         HashMap::new(),
         StringHelper::random_id(),
         HashMap::new(),
-        Sort::default(),
+        None,
     )?;
 
     let num_seeks = Arc::new(AtomicI32::new(0));

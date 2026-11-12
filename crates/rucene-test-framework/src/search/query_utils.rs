@@ -116,8 +116,9 @@ impl Query for WhackyQuery {
     }
 
     /// `System.identityHashCode(this)`.
-    fn query_hash(&self) -> u64 {
-        self as *const Self as usize as u64
+    fn query_hash(&self) -> i32 {
+        let address = self as *const Self as usize as u64;
+        (address ^ (address >> 32)) as i32
     }
 }
 

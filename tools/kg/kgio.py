@@ -135,6 +135,20 @@ def _failure(roadmap: str, query: str, label: str, code: int, error: str) -> str
     return "\n".join(lines)
 
 
+# `KG_TRACE=<file>` appends one tab-separated line per statement -- the caller
+# script, its label, the seconds the statement took, its exit code and its
+# length -- so a slow sync is attributed from measurement, not guessed.
+_TRACE = os.environ.get("KG_TRACE")
+_SCRIPT = Path(sys.argv[0]).name if sys.argv and sys.argv[0] else "?"
+
+
+def _trace(label: str, query: str, seconds: float, code: int) -> None:
+    if not _TRACE:
+        return
+    with open(_TRACE, "a", encoding="utf-8") as f:
+        f.write(f"{_SCRIPT}\t{label}\t{seconds:.4f}\t{code}\t{len(query)}\n")
+
+
 def client(roadmap: str, query: str, label: str = "statement", attempts: int = 6) -> str:
     """Run one statement on the roadmap's graph server; return stdout (JSON).
 
@@ -151,10 +165,12 @@ def client(roadmap: str, query: str, label: str = "statement", attempts: int = 6
     delay = 1.0
     attempt = 1
     while True:
+        started = time.monotonic()
         result = subprocess.run(
             ["rmp", "graph", "client", "-r", roadmap],
             input=query, text=True, capture_output=True, check=False,
         )
+        _trace(label, query, time.monotonic() - started, result.returncode)
         if result.returncode == 0:
             return result.stdout
         error = error_line(result.stderr)
@@ -206,27 +222,70 @@ def format_counters(counters: dict) -> str:
     return ", ".join(f"{k}={v}" for k, v in sorted(counters.items())) or "no change"
 
 
-def unwind(roadmap, mode, rows, body, label, batch=300):
-    """`UNWIND [<rows>] AS row <body>`, in batches.
+# Bulk statements. Measured on rmp 1.21.0 (2026-11-11): inside `UNWIND` the
+# planner serves an identity lookup by one labelled scan hash-joined with the
+# rows, never by the hash index, so a statement costs a fixed ~140 ms (36,550
+# `RustFn`) whatever its row count: 300 rows took 0.14 s and 6,000 rows 0.31 s.
+# The fewest statements is therefore the fastest sync. A statement is capped by
+# rows and by bytes (the server refuses one over 1 MiB, exit 6); when one still
+# exceeds the 5-second budget -- a `MERGE` that misses scans its label per row
+# -- the engine has written nothing, so the chunk is halved and re-sent.
+BULK_ROWS = 5000
+BULK_BYTES = 512 * 1024
 
-    Returns the engine's write counters summed over the batches. The line it
-    prints gives the rows *sent* and what the engine reports it changed: the
-    row count is the input, never a result.
+
+def serialize(row: dict) -> str:
+    """A row as a Cypher map literal."""
+    return "{" + ", ".join(f"{k}:{esc(v)}" for k, v in row.items()) + "}"
+
+
+def unwind_maps(roadmap, mode, maps, body, label, cap=None):
+    """`UNWIND [<maps>] AS row <body>` over pre-serialised map literals, in bulk.
+
+    `cap` keeps a caller's small row limit (a statement known to scan per row);
+    otherwise a chunk holds up to `BULK_ROWS` rows and `BULK_BYTES` bytes. A
+    chunk that exceeds the statement budget is halved and re-sent, and the
+    smaller size is kept for the rest of the call. Returns the summed counters.
     """
     total = {}
-    if not rows:
-        print(f"  {label}: 0 rows sent", file=sys.stderr)
-        return total
-    for i in range(0, len(rows), batch):
-        chunk = rows[i : i + batch]
-        maps = ", ".join(
-            "{" + ", ".join(f"{k}:{esc(v)}" for k, v in r.items()) + "}"
-            for r in chunk
-        )
-        out = client(roadmap, f"UNWIND [{maps}] AS row\n{body}",
-                     label=f"{label} ({mode}, rows {i + 1}-{i + len(chunk)})")
+    rows_cap = cap if cap is not None and cap > 0 else BULK_ROWS
+    i, n = 0, len(maps)
+    while i < n:
+        j, size = i, 0
+        while j < n and j - i < rows_cap and (j == i or size + len(maps[j]) + 2 <= BULK_BYTES):
+            size += len(maps[j]) + 2
+            j += 1
+        statement = f"UNWIND [{', '.join(maps[i:j])}] AS row\n{body}"
+        try:
+            out = client(roadmap, statement, label=f"{label} ({mode}, rows {i + 1}-{j})")
+        except SystemExit as e:
+            if _BUDGET in str(e) and j - i > 1:
+                rows_cap = max(1, (j - i) // 2)
+                print(f"  {label}: budget exceeded at {j - i} rows, halving to "
+                      f"{rows_cap}", file=sys.stderr)
+                continue
+            raise
         for k, v in counters_of(out).items():
             total[k] = total.get(k, 0) + v
+        i = j
+    return total
+
+
+def unwind(roadmap, mode, rows, body, label, batch=None):
+    """`UNWIND [<rows>] AS row <body>`, in bulk (`unwind_maps`).
+
+    `batch` is honoured only at or below `PER_ROW_SCAN_BATCH`, the cap of a
+    statement that scans per row; any larger value was sized for the old cost
+    model and is replaced by the bulk limits. Returns the engine's write
+    counters summed over the chunks. The line it prints gives the rows *sent*
+    and what the engine reports it changed: the row count is the input, never
+    a result.
+    """
+    if not rows:
+        print(f"  {label}: 0 rows sent", file=sys.stderr)
+        return {}
+    cap = batch if batch is not None and batch <= PER_ROW_SCAN_BATCH else None
+    total = unwind_maps(roadmap, mode, [serialize(r) for r in rows], body, label, cap)
     print(f"  {label}: {len(rows)} rows sent; {format_counters(total)}", file=sys.stderr)
     return total
 
@@ -257,7 +316,7 @@ def route_items(rows, index):
     return out
 
 
-def unwind_items(roadmap, mode, rows, body, label, index, batch=300):
+def unwind_items(roadmap, mode, rows, body, label, index, batch=None):
     """`unwind` for a body that binds the Rust item as `ITEM_PATTERN`.
 
     Each row is sent once per label its `(name, file)` carries in `index`

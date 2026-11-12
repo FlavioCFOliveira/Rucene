@@ -134,7 +134,7 @@ fn format_identity<T: ?Sized>(format: &Arc<T>) -> usize {
     Arc::as_ptr(format) as *const () as usize
 }
 
-fn get_suffix(format_name: &str, suffix: i32) -> String {
+fn get_suffix(format_name: &str, suffix: impl std::fmt::Display) -> String {
     format!("{}_{}", format_name, suffix)
 }
 
@@ -221,7 +221,17 @@ impl<'a> FieldsWriter<'a> {
             let identity = format_identity(&format);
 
             let group = match groups.entry(identity) {
-                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    // we've already seen this format, so just grab its suffix
+                    // (`PerFieldPostingsFormat.java:243-248`)
+                    if !suffixes.contains_key(&format_name) {
+                        return Err(LuceneError::illegal_state(format!(
+                            "no suffix for format name: {format_name}, expected: {}",
+                            entry.get().suffix
+                        )));
+                    }
+                    entry.into_mut()
+                }
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     // First time we are seeing this format; create a new instance
                     let suffix = suffixes.get(&format_name).copied().unwrap_or(0);
@@ -439,13 +449,7 @@ impl FieldsReader {
                     // `PostingsFormat.forName(formatName)`: the loader's
                     // `IllegalArgumentException` for an unknown name.
                     let format = postings_lookup(&format_name)?;
-                    let suffix_num = suffix.parse::<i32>().map_err(|_| {
-                        LuceneError::illegal_state(format!(
-                            "invalid postings suffix for field \"{}\": {suffix}",
-                            fi.name
-                        ))
-                    })?;
-                    let segment_suffix = get_suffix(&format_name, suffix_num);
+                    let segment_suffix = get_suffix(&format_name, &suffix);
                     if !formats.contains_key(&segment_suffix) {
                         let state = read_state.with_new_suffix(segment_suffix.clone());
                         formats.insert(segment_suffix.clone(), format.fields_producer(&state)?);
@@ -493,10 +497,8 @@ impl Fields for FieldsReader {
         };
         self.formats
             .get(suffix)
-            .ok_or_else(|| {
-                LuceneError::illegal_state(format!("missing producer for suffix {suffix}"))
-            })
-            .and_then(|p| p.terms(field))
+            .expect("INVARIANT: every field maps to the suffix of an opened format")
+            .terms(field)
     }
 
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
@@ -932,15 +934,9 @@ impl DvFieldsReader {
                     // `DocValuesFormat.forName(formatName)`: the loader's
                     // `IllegalArgumentException` for an unknown name.
                     let format = doc_values_lookup(&format_name)?;
-                    let suffix_num = suffix.parse::<i32>().map_err(|_| {
-                        LuceneError::illegal_state(format!(
-                            "invalid doc-values suffix for field \"{}\": {suffix}",
-                            fi.name
-                        ))
-                    })?;
                     let segment_suffix = get_full_segment_suffix(
                         &read_state.segment_suffix,
-                        &get_suffix(&format_name, suffix_num),
+                        &get_suffix(&format_name, &suffix),
                     );
                     if !formats.contains_key(&segment_suffix) {
                         let state = read_state.with_new_suffix(segment_suffix.clone());
@@ -965,15 +961,17 @@ impl DvFieldsReader {
     }
 
     fn producer_for(&self, field: &FieldInfo) -> Result<&(dyn DocValuesProducer + '_)> {
-        let suffix = self.fields.get(&field.number).ok_or_else(|| {
-            LuceneError::illegal_argument(format!(
-                "field \"{}\" has no doc-values producer",
-                field.name
-            ))
-        })?;
-        self.formats.get(suffix).map(|b| b.as_ref()).ok_or_else(|| {
-            LuceneError::illegal_state(format!("missing doc-values producer for suffix {suffix}"))
-        })
+        // Every caller has checked `fields.get(field.number) != null` first,
+        // as Java's `producer == null ? null : ...` does.
+        let suffix = self
+            .fields
+            .get(&field.number)
+            .expect("INVARIANT: the caller checked that a producer serves the field");
+        Ok(self
+            .formats
+            .get(suffix)
+            .map(|b| b.as_ref())
+            .expect("INVARIANT: every field maps to the suffix of an opened format"))
     }
 }
 
@@ -1415,15 +1413,9 @@ impl KnnFieldsReader {
                     // `KnnVectorsFormat.forName(formatName)`: the loader's
                     // `IllegalArgumentException` for an unknown name.
                     let format = knn_vectors_lookup(&format_name)?;
-                    let suffix_num = suffix.parse::<i32>().map_err(|_| {
-                        LuceneError::illegal_state(format!(
-                            "invalid KNN-vectors suffix for field \"{}\": {suffix}",
-                            fi.name
-                        ))
-                    })?;
                     let segment_suffix = get_full_segment_suffix(
                         &read_state.segment_suffix,
-                        &get_suffix(&format_name, suffix_num),
+                        &get_suffix(&format_name, &suffix),
                     );
                     if !formats.contains_key(&segment_suffix) {
                         let state = read_state.with_new_suffix(segment_suffix.clone());
@@ -1451,18 +1443,6 @@ impl KnnFieldsReader {
             fields,
             field_names,
             names,
-        })
-    }
-
-    fn reader_for(&self, field: &FieldInfo) -> Result<&(dyn KnnVectorsReader + '_)> {
-        let suffix = self.fields.get(field.number).ok_or_else(|| {
-            LuceneError::illegal_argument(format!(
-                "field \"{}\" has no KNN-vectors reader",
-                field.name
-            ))
-        })?;
-        self.formats.get(suffix).map(|b| b.as_ref()).ok_or_else(|| {
-            LuceneError::illegal_state(format!("missing KNN-vectors reader for suffix {suffix}"))
         })
     }
 }
@@ -1602,11 +1582,10 @@ impl KnnVectorsReader for KnnFieldsReader {
             let Some(suffix) = self.fields.get(number) else {
                 continue;
             };
-            let reader = self.formats.get(suffix).ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "missing KNN-vectors reader for suffix {suffix}"
-                ))
-            })?;
+            let reader = self
+                .formats
+                .get(suffix)
+                .expect("INVARIANT: every field maps to the suffix of an opened format");
             formats.insert(name.clone(), reader.get_merge_instance()?);
             fields.put(number, name.clone());
             field_names.insert(name.clone(), name.clone());
@@ -1626,10 +1605,17 @@ impl KnnVectorsReader for KnnFieldsReader {
         Ok(())
     }
 
-    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
-        self.reader_for(field_info)
-            .map(|r| r.get_off_heap_byte_size(field_info))
-            .unwrap_or_default()
+    /// Equivalent to `PerFieldKnnVectorsFormat.FieldsReader.getOffHeapByteSize`
+    /// (`PerFieldKnnVectorsFormat.java:329-332`): the field's reader answers,
+    /// and a field without one is the `NullPointerException` of
+    /// dereferencing `fields.get(fieldInfo.number)`.
+    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> Result<HashMap<String, i64>> {
+        let reader = self
+            .fields
+            .get(field_info.number)
+            .and_then(|suffix| self.formats.get(suffix))
+            .ok_or_else(LuceneError::null_pointer)?;
+        reader.get_off_heap_byte_size(field_info)
     }
 
     /// Equivalent to `PerFieldKnnVectorsFormat.FieldsReader.close()`
@@ -2027,6 +2013,71 @@ mod tests {
         assert!(format!("{error:?}").contains("Format close"), "{error:?}");
         assert!(body_closed.load(std::sync::atomic::Ordering::SeqCst));
         assert!(title_closed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// G-111: a format seen again whose name is not among the suffixes
+    /// handed out is `IllegalStateException("no suffix for format name: " +
+    /// formatName + ", expected: " + group.suffix)`
+    /// (`PerFieldPostingsFormat.java:240-249`). A format whose name changes
+    /// between two fields reaches it.
+    #[test]
+    fn gap_g111_per_field_no_suffix_for_format_name() {
+        #[derive(Debug)]
+        struct Renaming(std::sync::atomic::AtomicUsize);
+        impl PostingsFormat for Renaming {
+            fn name(&self) -> &str {
+                if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    "First"
+                } else {
+                    "Second"
+                }
+            }
+            fn fields_consumer<'a>(
+                &self,
+                _state: &SegmentWriteState<'a>,
+            ) -> Result<Box<dyn FieldsConsumer + 'a>> {
+                Ok(Box::new(super::NoOpFieldsConsumer))
+            }
+            fn fields_producer<'a>(
+                &self,
+                _state: &SegmentReadState<'a>,
+            ) -> Result<Box<dyn FieldsProducer>> {
+                Ok(Box::new(NamedFieldsProducer("Renaming")))
+            }
+        }
+        let mut body = FieldInfo::new("body", 0);
+        body.index_options = IndexOptions::DOCS;
+        let mut title = FieldInfo::new("title", 1);
+        title.index_options = IndexOptions::DOCS;
+        let field_infos = FieldInfos::new(vec![body, title]).unwrap();
+        let renaming: Arc<dyn PostingsFormat> =
+            Arc::new(Renaming(std::sync::atomic::AtomicUsize::new(0)));
+        let format = PerFieldPostingsFormat::new(move |_field| Arc::clone(&renaming));
+        let mut state = write_state();
+        state.field_infos = Box::leak(Box::new(field_infos));
+        let mut consumer = format.fields_consumer(&state).unwrap();
+        #[derive(Debug, Default, Clone)]
+        struct TwoFields;
+        impl Fields for TwoFields {
+            fn size(&self) -> i32 {
+                2
+            }
+            fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+                Ok(None)
+            }
+            fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+                Box::new(["body".to_string(), "title".to_string()].into_iter())
+            }
+        }
+        let error = consumer.write(&TwoFields, None).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                crate::error::LuceneErrorKind::IllegalState { message, .. }
+                    if message == "no suffix for format name: Second, expected: 0"
+            ),
+            "{error:?}"
+        );
     }
 
     #[test]

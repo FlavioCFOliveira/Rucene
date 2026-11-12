@@ -1305,7 +1305,7 @@ impl TestUtil {
             None => SlowCodecReaderWrapper::wrap(Arc::clone(&reader))?,
         };
         let cr = &*codec_reader;
-        let stream = Some(&info_stream as &dyn rucene::util::InfoStream);
+        let stream = Some(&info_stream as &dyn rucene::util::PrintStream);
         check_index::test_live_docs(cr, stream, true)?;
         check_index::test_field_infos(cr, stream, true)?;
         check_index::test_field_norms(cr, stream, true)?;
@@ -2279,27 +2279,14 @@ fn matches_codec_file_pattern(file: &str) -> bool {
     rest.starts_with('.') || (rest.starts_with('_') && rest[1..].contains('.'))
 }
 
-/// A `PrintStream` over a byte buffer, as `CheckIndex`'s info stream: each
-/// message is one line.
 /// A `java.io.PrintStream` over a `ByteArrayOutputStream`, as `CheckIndex`
-/// reports to it: each message is one line of the buffer.
+/// reports to it: `print` appends the text, `println` the text and a line
+/// separator, to the shared buffer.
 pub struct PrintStreamLines(pub Arc<Mutex<Vec<u8>>>);
 
-impl rucene::util::InfoStream for PrintStreamLines {
-    fn message(&self, _component: &str, message: &str) {
+impl rucene::util::PrintStream for PrintStreamLines {
+    fn print(&self, s: &str) {
         let mut buffer = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        buffer.extend_from_slice(message.as_bytes());
-        buffer.push(b'\n');
-    }
-
-    fn is_enabled(&self, _component: &str) -> bool {
-        true
-    }
-
-    fn close(&self) {}
-
-    /// The class Java's `CheckIndex` reports to: a `java.io.PrintStream`.
-    fn java_class_name(&self) -> &'static str {
-        "java.io.PrintStream"
+        buffer.extend_from_slice(s.as_bytes());
     }
 }

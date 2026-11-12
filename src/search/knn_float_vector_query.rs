@@ -146,10 +146,6 @@ impl AbstractKnnVectorQueryImpl for KnnFloatVectorQuery {
         &self.base
     }
 
-    fn as_query(&self) -> &dyn Query {
-        self
-    }
-
     fn clone_knn_query(&self) -> Arc<dyn AbstractKnnVectorQueryImpl> {
         Arc::new(self.clone())
     }
@@ -181,7 +177,7 @@ impl AbstractKnnVectorQueryImpl for KnnFloatVectorQuery {
             knn_collector.as_mut(),
             accept_docs,
         )?;
-        Ok(knn_collector.top_docs())
+        knn_collector.top_docs()
     }
 
     fn create_vector_scorer(
@@ -237,14 +233,15 @@ impl Query for KnnFloatVectorQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.base.base_hash().hash(&mut hasher);
-        for value in &self.target {
-            value.to_bits().hash(&mut hasher);
-        }
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.KnnFloatVectorQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.KnnFloatVectorQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `31 * super.hashCode() + Arrays.hashCode(target)`.
+        31i32.wrapping_mul(self.base.base_hash()).wrapping_add(
+            crate::util::java_collections::java_arrays_hash_code_floats(&self.target),
+        )
     }
 }

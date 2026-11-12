@@ -200,7 +200,7 @@ fn test_constant_slope() -> Result<()> {
         for (i, &expected) in actual_values.iter().enumerate() {
             assert_equals(&expected, &values.get(i as i64));
         }
-        assert_equals(&0, &data_in.file_pointer());
+        assert_equals(&0, &data_in.file_pointer()?);
         data_in.close()?;
         meta_in.close()?;
     }
@@ -227,7 +227,7 @@ fn test_zero_values_small_blob_shift() -> Result<()> {
         let mut meta_in = d.open_input("meta", &*READONCE_IO_CONTEXT)?;
         let mut data_in = d.open_input("data", &*DEFAULT_IO_CONTEXT)?;
         let meta = DirectMonotonicMeta::load(meta_in.as_mut(), num_values as i64, block_shift)?;
-        assert_equals(&meta_in.length(), &meta_in.file_pointer());
+        assert_equals(&meta_in.length(), &meta_in.file_pointer()?);
         // read meta again and assert singleton Meta#SINGLE_ZERO_BLOCK instance is read every time
         meta_in.seek(0)?;
         // assertSame(meta, loadMeta(…)): see `assert_same_meta`.
@@ -237,7 +237,7 @@ fn test_zero_values_small_blob_shift() -> Result<()> {
         for i in 0..num_values as i64 {
             assert_equals(&0, &values.get(i));
         }
-        assert_equals(&0, &data_in.file_pointer());
+        assert_equals(&0, &data_in.file_pointer()?);
         data_in.close()?;
         meta_in.close()?;
     }

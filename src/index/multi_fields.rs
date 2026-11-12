@@ -711,7 +711,7 @@ impl Terms for Arc<MultiTerms> {
         (**self).max()
     }
 
-    fn stats(&self) -> Result<String> {
+    fn stats(&self) -> Result<Box<dyn crate::index::terms::StatsObject>> {
         (**self).stats()
     }
 }
@@ -1275,9 +1275,7 @@ impl TermsEnum for MultiTermsEnum {
     /// Equivalent to `MultiTermsEnum.seekExact(long)`, which throws
     /// `UnsupportedOperationException`.
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "MultiTermsEnum does not support seekOrd".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Equivalent to `MultiTermsEnum.term()`, which answers the `current`
@@ -1294,9 +1292,7 @@ impl TermsEnum for MultiTermsEnum {
     /// Equivalent to `MultiTermsEnum.ord()`, which throws
     /// `UnsupportedOperationException`.
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "MultiTermsEnum does not support ord".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Equivalent to `MultiTermsEnum.docFreq()` (`MultiTermsEnum.java:295-302`):

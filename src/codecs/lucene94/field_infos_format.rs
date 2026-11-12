@@ -167,9 +167,11 @@ fn read_field_info(input: &mut dyn IndexInput, format: i32) -> Result<FieldInfo>
     let name = input.read_string()?;
     let field_number = input.read_v_int()?;
     if field_number < 0 {
-        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid field number for field: {name}, fieldNumber={field_number}"
-        ))));
+        // `Lucene94FieldInfosFormat.java:156-159`.
+        return Err(LuceneError::corrupt_index(
+            format!("invalid field number for field: {name}, fieldNumber={field_number}"),
+            input.to_java_string(),
+        ));
     }
 
     let bits = input.read_byte()?;
@@ -183,26 +185,53 @@ fn read_field_info(input: &mut dyn IndexInput, format: i32) -> Result<FieldInfo>
         false
     };
 
+    // `Lucene94FieldInfosFormat.java:167-182`: `Integer.toBinaryString(bits)`
+    // of the signed `byte`, unpadded, 32 digits when negative.
+    let binary = format!("{:b}", bits as i8 as i32);
     if (bits & 0xC0) != 0 {
-        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "unused bits are set \"{bits:08b}\""
-        ))));
+        return Err(LuceneError::corrupt_index(
+            format!("unused bits are set \"{binary}\""),
+            input.to_java_string(),
+        ));
     }
     if format < FORMAT_PARENT_FIELD && (bits & 0xF0) != 0 {
-        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "parent field bit is set but shouldn't \"{bits:08b}\""
-        ))));
+        return Err(LuceneError::corrupt_index(
+            format!("parent field bit is set but shouldn't \"{binary}\""),
+            input.to_java_string(),
+        ));
     }
     if format < FORMAT_DOCVALUE_SKIPPER && (bits & DOCVALUES_SKIPPER) != 0 {
-        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "doc values skipper bit is set but shouldn't \"{bits:08b}\""
-        ))));
+        return Err(LuceneError::corrupt_index(
+            format!("doc values skipper bit is set but shouldn't \"{binary}\""),
+            input.to_java_string(),
+        ));
     }
 
-    let index_options = index_options_from_byte(input.read_byte()?)?;
-    let doc_values_type = doc_values_type_from_byte(input.read_byte()?)?;
+    // `getIndexOptions`, `getDocValuesType`, `getDocValuesSkipIndexType` and
+    // `getVectorEncoding` (`Lucene94FieldInfosFormat.java:290-323, 388-408`)
+    // print the signed `byte` and name `input`.
+    let b = input.read_byte()?;
+    let index_options = index_options_from_byte(b).ok_or_else(|| {
+        LuceneError::corrupt_index(
+            format!("invalid IndexOptions byte: {}", b as i8),
+            input.to_java_string(),
+        )
+    })?;
+    let b = input.read_byte()?;
+    let doc_values_type = doc_values_type_from_byte(b).ok_or_else(|| {
+        LuceneError::corrupt_index(
+            format!("invalid docvalues byte: {}", b as i8),
+            input.to_java_string(),
+        )
+    })?;
     let doc_values_skip_index = if format >= FORMAT_DOCVALUE_SKIPPER {
-        doc_values_skip_index_type_from_byte(input.read_byte()?)?
+        let b = input.read_byte()?;
+        doc_values_skip_index_type_from_byte(b).ok_or_else(|| {
+            LuceneError::corrupt_index(
+                format!("invalid docvaluesskipindex byte: {}", b as i8),
+                input.to_java_string(),
+            )
+        })?
     } else {
         DocValuesSkipIndexType::NONE
     };
@@ -217,10 +246,23 @@ fn read_field_info(input: &mut dyn IndexInput, format: i32) -> Result<FieldInfo>
     };
 
     let vector_dimension = input.read_v_int()?;
-    let vector_encoding = vector_encoding_from_byte(input.read_byte()?)?;
+    let b = input.read_byte()?;
+    let vector_encoding = vector_encoding_from_byte(b).ok_or_else(|| {
+        LuceneError::corrupt_index(
+            format!("invalid vector encoding: {}", b as i8),
+            input.to_java_string(),
+        )
+    })?;
     let dist_func_byte = input.read_byte()?;
     let vector_similarity_function = get_dist_func(input, dist_func_byte)?;
 
+    // `new FieldInfo(...)` and `checkConsistency()` sit in a `try` whose
+    // `IllegalStateException` is rethrown as `CorruptIndexException("invalid
+    // fieldinfo for field: " + name + ", fieldNumber=" + fieldNumber, input,
+    // e)` (`Lucene94FieldInfosFormat.java:215-240`); `new_full` runs
+    // `check_consistency` itself.
+    let invalid_message =
+        format!("invalid fieldinfo for field: {name}, fieldNumber={field_number}");
     FieldInfo::new_full(
         name,
         field_number,
@@ -241,6 +283,13 @@ fn read_field_info(input: &mut dyn IndexInput, format: i32) -> Result<FieldInfo>
         soft_deletes_field,
         is_parent_field,
     )
+    .map_err(|error| {
+        if matches!(error.kind, LuceneErrorKind::IllegalState { .. }) {
+            LuceneError::corrupt_index_with_cause(invalid_message, input.to_java_string(), error)
+        } else {
+            error
+        }
+    })
 }
 
 /// The vector similarity functions this format can encode, in the order it
@@ -333,7 +382,10 @@ fn dist_ord_to_func(i: u8) -> Result<VectorSimilarityFunction> {
     SIMILARITY_FUNCTIONS
         .get(i as usize)
         .copied()
-        .ok_or_else(|| LuceneError::illegal_argument(format!("invalid distance function: {i}")))
+        // `Lucene94FieldInfosFormat.java:347-352`: the signed `byte`.
+        .ok_or_else(|| {
+            LuceneError::illegal_argument(format!("invalid distance function: {}", i as i8))
+        })
 }
 
 /// Returns the ordinal that encodes `func`.
@@ -368,59 +420,52 @@ fn dist_func_to_ord(func: VectorSimilarityFunction) -> Result<u8> {
 /// Equivalent to
 /// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#getDistFunc`.
 fn get_dist_func(input: &dyn IndexInput, b: u8) -> Result<VectorSimilarityFunction> {
-    dist_ord_to_func(b).map_err(|_| {
-        LuceneError::corrupt_index(
+    dist_ord_to_func(b).map_err(|e| {
+        LuceneError::corrupt_index_with_cause(
             format!("invalid distance function: {}", b as i8),
-            input.resource_description(),
+            input.to_java_string(),
+            e,
         )
     })
 }
 
-fn index_options_from_byte(b: u8) -> Result<IndexOptions> {
+fn index_options_from_byte(b: u8) -> Option<IndexOptions> {
     match b {
-        0 => Ok(IndexOptions::NONE),
-        1 => Ok(IndexOptions::DOCS),
-        2 => Ok(IndexOptions::DOCS_AND_FREQS),
-        3 => Ok(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS),
-        4 => Ok(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS),
-        5 => Ok(IndexOptions::DOCS_AND_CUSTOM_FREQS),
-        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid IndexOptions byte: {b}"
-        )))),
+        0 => Some(IndexOptions::NONE),
+        1 => Some(IndexOptions::DOCS),
+        2 => Some(IndexOptions::DOCS_AND_FREQS),
+        3 => Some(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS),
+        4 => Some(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS),
+        5 => Some(IndexOptions::DOCS_AND_CUSTOM_FREQS),
+        _ => None,
     }
 }
 
-fn doc_values_type_from_byte(b: u8) -> Result<DocValuesType> {
+fn doc_values_type_from_byte(b: u8) -> Option<DocValuesType> {
     match b {
-        0 => Ok(DocValuesType::NONE),
-        1 => Ok(DocValuesType::NUMERIC),
-        2 => Ok(DocValuesType::BINARY),
-        3 => Ok(DocValuesType::SORTED),
-        4 => Ok(DocValuesType::SORTED_SET),
-        5 => Ok(DocValuesType::SORTED_NUMERIC),
-        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid docvalues byte: {b}"
-        )))),
+        0 => Some(DocValuesType::NONE),
+        1 => Some(DocValuesType::NUMERIC),
+        2 => Some(DocValuesType::BINARY),
+        3 => Some(DocValuesType::SORTED),
+        4 => Some(DocValuesType::SORTED_SET),
+        5 => Some(DocValuesType::SORTED_NUMERIC),
+        _ => None,
     }
 }
 
-fn doc_values_skip_index_type_from_byte(b: u8) -> Result<DocValuesSkipIndexType> {
+fn doc_values_skip_index_type_from_byte(b: u8) -> Option<DocValuesSkipIndexType> {
     match b {
-        0 => Ok(DocValuesSkipIndexType::NONE),
-        1 => Ok(DocValuesSkipIndexType::RANGE),
-        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid docvaluesskipindex byte: {b}"
-        )))),
+        0 => Some(DocValuesSkipIndexType::NONE),
+        1 => Some(DocValuesSkipIndexType::RANGE),
+        _ => None,
     }
 }
 
-fn vector_encoding_from_byte(b: u8) -> Result<VectorEncoding> {
+fn vector_encoding_from_byte(b: u8) -> Option<VectorEncoding> {
     match b {
-        0 => Ok(VectorEncoding::BYTE),
-        1 => Ok(VectorEncoding::FLOAT32),
-        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid vector encoding: {b}"
-        )))),
+        0 => Some(VectorEncoding::BYTE),
+        1 => Some(VectorEncoding::FLOAT32),
+        _ => None,
     }
 }
 
@@ -554,5 +599,82 @@ mod tests {
             Some("bar".to_string())
         );
         assert_eq!(read.field_info("vector").unwrap().vector_dimension, 128);
+    }
+
+    /// G-029: `new FieldInfo(...)` and `checkConsistency()` run inside the
+    /// `try` that rethrows an `IllegalStateException` as
+    /// `CorruptIndexException("invalid fieldinfo for field: ...")`
+    /// (`Lucene94FieldInfosFormat.java:215-240`). `checkConsistency` throws
+    /// only `IllegalArgumentException` (`FieldInfo.java:133-235`), so an
+    /// inconsistent entry (checksum kept valid) reaches the caller as that
+    /// unwrapped `IllegalArgumentException`, after `checkFooter` verified the
+    /// checksum, exactly as in Java.
+    #[test]
+    fn gap_g029_inconsistent_field_info_read_fails_as_java() {
+        let dir = ByteBuffersDirectory::default();
+        let format = Lucene94FieldInfosFormat::new();
+        let info = test_segment_info("_0", 10);
+        let field = FieldInfo::new_full(
+            "zz",
+            0,
+            false,
+            false,
+            false,
+            IndexOptions::DOCS,
+            DocValuesType::NONE,
+            DocValuesSkipIndexType::NONE,
+            -1,
+            crate::util::java_collections::JavaStringMap::default(),
+            0,
+            0,
+            0,
+            0,
+            VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::EUCLIDEAN,
+            false,
+            false,
+        )
+        .unwrap();
+        let infos = FieldInfos::new(vec![field]).unwrap();
+        format
+            .write(&dir, &info, "", &infos, &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        let file = "_0.fnm";
+        let mut bytes = {
+            let input = dir
+                .open_input(file, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            let len = input.length() as usize;
+            let mut buf = vec![0u8; len];
+            let mut input = input;
+            input.read_bytes(Some(&mut buf), 0, len).unwrap();
+            buf
+        };
+        // name "zz" (vInt length 2), field number 0, then the bits byte.
+        let at = bytes
+            .windows(4)
+            .position(|w| w == [2, b'z', b'z', 0])
+            .expect("the field entry")
+            + 4;
+        bytes[at] |= STORE_PAYLOADS;
+        let body = bytes.len() - 8;
+        let crc = i64::from(crc32fast::hash(&bytes[..body]));
+        bytes[body..].copy_from_slice(&crc.to_be_bytes());
+        dir.delete_file(file).unwrap();
+        {
+            let mut out = dir
+                .create_output(file, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            out.write_bytes(&bytes, 0, bytes.len()).unwrap();
+            out.close().unwrap();
+        }
+        let error = format
+            .read(&dir, &info, "", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap_err();
+        assert!(
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. }
+                if message == "indexed field 'zz' cannot have payloads without positions"),
+            "{error:?}"
+        );
     }
 }

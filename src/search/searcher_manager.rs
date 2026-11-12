@@ -268,7 +268,7 @@ pub fn get_searcher(
     if !Arc::ptr_eq(searcher.get_index_reader(), &index_reader) {
         reader.dec_ref()?;
         return Err(LuceneError::illegal_state(format!(
-            "SearcherFactory must wrap exactly the provided reader (got {:?} but expected {:?})",
+            "SearcherFactory must wrap exactly the provided reader (got {} but expected {})",
             searcher.get_index_reader(),
             index_reader
         )));

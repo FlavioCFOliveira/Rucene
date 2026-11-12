@@ -56,7 +56,16 @@ import org.apache.lucene.util.Version;
  *       exec:java -Dexec.mainClass=org.apache.lucene.rucene.codec.VectorSimilarityFixture \
  *       -Dexec.args="/tmp/ignored FLOAT"
  * </pre>
- * where CASE is FLOAT or BYTE.
+ * where CASE is FLOAT, BYTE or KERNELS.
+ *
+ * <p>{@code KERNELS} prints the remaining public {@link VectorUtil} methods over fixed inputs:
+ * the int4 dot products and square distances (unpacked, single-packed and both-packed), {@code
+ * int4BitDotProduct}, {@code int4DibitDotProduct}, {@code uint8DotProduct}, {@code
+ * uint8SquareDistance}, {@code xorBitCount}, {@code minMaxScalarQuantize}, {@code
+ * recalculateOffset}, {@code findNextGEQ}, {@code filterByScore}, {@code l2normalize}, {@code
+ * isUnitVector}, both {@code isZeroVector}, {@code add}, {@code checkFinite}, {@code
+ * scaleMaxInnerProductScore}, {@code normalizeToUnitInterval} and {@code
+ * normalizeDistanceToUnitInterval}.
  */
 public final class VectorSimilarityFixture {
 
@@ -73,7 +82,7 @@ public final class VectorSimilarityFixture {
   public static void main(String[] args) {
     if (args.length != 2) {
       System.err.println("Usage: VectorSimilarityFixture <output-dir> <case>");
-      System.err.println("Cases: FLOAT, BYTE");
+      System.err.println("Cases: FLOAT, BYTE, KERNELS");
       System.exit(1);
     }
     String testCase = args[1];
@@ -90,6 +99,7 @@ public final class VectorSimilarityFixture {
     switch (testCase) {
       case "FLOAT" -> emitFloatCases();
       case "BYTE" -> emitByteCases();
+      case "KERNELS" -> emitKernelCases();
       default -> {
         System.err.println("unknown case: " + testCase);
         System.exit(1);
@@ -225,6 +235,394 @@ public final class VectorSimilarityFixture {
     java.util.Arrays.fill(positives, (byte) 127);
     pairs.add(new byte[][] {positives, positives.clone()});
     return pairs;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Remaining VectorUtil kernels
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Lengths around every SIMD width (4, 8, 16, 32 and 64 lanes) and their non-multiples, up to a
+   * length whose tails are all non-empty.
+   */
+  private static final int[] KERNEL_LENGTHS = {
+    1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 257, 1031
+  };
+
+  private static void emitKernelCases() {
+    for (int dim : KERNEL_LENGTHS) {
+      emitInt4Cases(dim);
+      emitBitCases(dim);
+      emitUint8Cases(dim);
+      emitQuantizeCases(dim);
+      emitFloatHelperCases(dim);
+    }
+    emitFindNextGeqCases();
+    emitFilterByScoreCases();
+    emitScalarCases();
+  }
+
+  /** Four uint4 vector pairs: unrelated, both at 15, both at 0, and alternating 0/15 mirrored. */
+  private static List<byte[][]> int4Pairs(int dim) {
+    List<byte[][]> pairs = new ArrayList<>();
+    pairs.add(new byte[][] {nibbles(dim, 0x14F40001L), nibbles(dim, 0x14F40002L)});
+    byte[] fifteen = new byte[dim];
+    java.util.Arrays.fill(fifteen, (byte) 15);
+    pairs.add(new byte[][] {fifteen, fifteen.clone()});
+    pairs.add(new byte[][] {new byte[dim], nibbles(dim, 0x14F40003L)});
+    byte[] alternating = new byte[dim];
+    byte[] mirrored = new byte[dim];
+    for (int i = 0; i < dim; i++) {
+      alternating[i] = (byte) (i % 2 == 0 ? 15 : 0);
+      mirrored[i] = (byte) (i % 2 == 0 ? 0 : 15);
+    }
+    pairs.add(new byte[][] {alternating, mirrored});
+    return pairs;
+  }
+
+  /** {@code packed[i] = (raw[i] << 4) | raw[packed.length + i]}, the packing VectorUtil assumes. */
+  private static byte[] pack(byte[] raw) {
+    byte[] packed = new byte[(raw.length + 1) >> 1];
+    for (int i = 0; i < packed.length; i++) {
+      packed[i] = (byte) ((raw[i] << 4) | raw[packed.length + i]);
+    }
+    return packed;
+  }
+
+  private static void emitInt4Cases(int dim) {
+    List<byte[][]> pairs = int4Pairs(dim);
+    for (int id = 0; id < pairs.size(); id++) {
+      byte[] a = pairs.get(id)[0];
+      byte[] b = pairs.get(id)[1];
+      StringBuilder line = new StringBuilder();
+      line.append("int4 dim=").append(dim).append(" id=").append(id);
+      line.append(" a=").append(encodeBytes(a)).append(" b=").append(encodeBytes(b));
+      line.append(" dotProduct=").append(VectorUtil.int4DotProduct(a, b));
+      line.append(" squareDistance=").append(VectorUtil.int4SquareDistance(a, b));
+      // The single-packed forms read unpacked[i + packed.length], which needs an even length.
+      if (dim % 2 == 0) {
+        byte[] pa = pack(a);
+        byte[] pb = pack(b);
+        line.append(" pa=").append(encodeBytes(pa)).append(" pb=").append(encodeBytes(pb));
+        line.append(" singlePackedDot=").append(VectorUtil.int4DotProductSinglePacked(a, pb));
+        line.append(" bothPackedDot=").append(VectorUtil.int4DotProductBothPacked(pa, pb));
+        line.append(" singlePackedSquare=")
+            .append(VectorUtil.int4SquareDistanceSinglePacked(a, pb));
+        line.append(" bothPackedSquare=").append(VectorUtil.int4SquareDistanceBothPacked(pa, pb));
+      }
+      System.out.println(line);
+    }
+  }
+
+  private static void emitBitCases(int dim) {
+    // int4BitDotProduct: a 4-stripe query against a binary document of dim bytes.
+    byte[][] bitDocs = {randomBytes(dim, 0xB1700001L), filled(dim, (byte) -1), new byte[dim]};
+    for (int id = 0; id < bitDocs.length; id++) {
+      byte[] d = bitDocs[id];
+      byte[] q = id == 1 ? filled(4 * dim, (byte) -1) : randomBytes(4 * dim, 0xB1700002L + id);
+      System.out.println(
+          "bit dim="
+              + dim
+              + " id="
+              + id
+              + " q="
+              + encodeBytes(q)
+              + " d="
+              + encodeBytes(d)
+              + " int4BitDotProduct="
+              + VectorUtil.int4BitDotProduct(q, d));
+    }
+    // int4DibitDotProduct: a 4-stripe query against a 2-stripe document of 2 * dim bytes.
+    byte[][] dibitDocs = {
+      randomBytes(2 * dim, 0xD1B10001L), filled(2 * dim, (byte) -1), new byte[2 * dim]
+    };
+    for (int id = 0; id < dibitDocs.length; id++) {
+      byte[] d = dibitDocs[id];
+      byte[] q = id == 1 ? filled(4 * dim, (byte) -1) : randomBytes(4 * dim, 0xD1B10002L + id);
+      System.out.println(
+          "dibit dim="
+              + dim
+              + " id="
+              + id
+              + " q="
+              + encodeBytes(q)
+              + " d="
+              + encodeBytes(d)
+              + " int4DibitDotProduct="
+              + VectorUtil.int4DibitDotProduct(q, d));
+    }
+  }
+
+  private static void emitUint8Cases(int dim) {
+    List<byte[][]> pairs = new ArrayList<>();
+    pairs.add(new byte[][] {randomBytes(dim, 0x0D180001L), randomBytes(dim, 0x0D180002L)});
+    pairs.add(new byte[][] {filled(dim, (byte) 255), filled(dim, (byte) 255)});
+    pairs.add(new byte[][] {filled(dim, (byte) 255), new byte[dim]});
+    byte[] alternating = new byte[dim];
+    byte[] mirrored = new byte[dim];
+    for (int i = 0; i < dim; i++) {
+      alternating[i] = (byte) (i % 2 == 0 ? 255 : 0);
+      mirrored[i] = (byte) (i % 2 == 0 ? 0 : 255);
+    }
+    pairs.add(new byte[][] {alternating, mirrored});
+    pairs.add(new byte[][] {filled(dim, (byte) 127), filled(dim, (byte) -128)});
+    for (int id = 0; id < pairs.size(); id++) {
+      byte[] a = pairs.get(id)[0];
+      byte[] b = pairs.get(id)[1];
+      System.out.println(
+          "u8 dim="
+              + dim
+              + " id="
+              + id
+              + " a="
+              + encodeBytes(a)
+              + " b="
+              + encodeBytes(b)
+              + " uint8DotProduct="
+              + VectorUtil.uint8DotProduct(a, b)
+              + " uint8SquareDistance="
+              + VectorUtil.uint8SquareDistance(a, b)
+              + " xorBitCount="
+              + VectorUtil.xorBitCount(a, b));
+    }
+  }
+
+  private static void emitQuantizeCases(int dim) {
+    // {minQuantile, maxQuantile, levels} of the quantization, then of the recalculation.
+    float[][] settings = {
+      {-0.8f, 0.9f, 127f, -0.6f, 0.95f, 127f}, {-1f, 1f, 15f, -0.5f, 0.5f, 15f}
+    };
+    float[] vector = randomFloats(dim, 0x5CA10001L);
+    for (int id = 0; id < settings.length; id++) {
+      float[] s = settings[id];
+      float minQ = s[0];
+      float maxQ = s[1];
+      float scale = s[2] / (maxQ - minQ);
+      float alpha = (maxQ - minQ) / s[2];
+      byte[] dest = new byte[dim];
+      float offset = VectorUtil.minMaxScalarQuantize(vector, dest, scale, alpha, minQ, maxQ);
+      float rMinQ = s[3];
+      float rMaxQ = s[4];
+      float rScale = s[5] / (rMaxQ - rMinQ);
+      float rAlpha = (rMaxQ - rMinQ) / s[5];
+      float recalculated =
+          VectorUtil.recalculateOffset(dest, alpha, minQ, rScale, rAlpha, rMinQ, rMaxQ);
+      System.out.println(
+          "quant dim="
+              + dim
+              + " id="
+              + id
+              + " v="
+              + encodeFloats(vector)
+              + " scale="
+              + bits(scale)
+              + " alpha="
+              + bits(alpha)
+              + " min="
+              + bits(minQ)
+              + " max="
+              + bits(maxQ)
+              + " dest="
+              + encodeBytes(dest)
+              + " offset="
+              + bits(offset)
+              + " rscale="
+              + bits(rScale)
+              + " ralpha="
+              + bits(rAlpha)
+              + " rmin="
+              + bits(rMinQ)
+              + " rmax="
+              + bits(rMaxQ)
+              + " roffset="
+              + bits(recalculated));
+    }
+  }
+
+  private static void emitFloatHelperCases(int dim) {
+    float[][] vectors = {
+      randomFloats(dim, 0xF1E10001L),
+      new float[dim],
+      VectorUtil.l2normalize(randomFloats(dim, 0xF1E10002L), false),
+      filled(dim, -0.0f)
+    };
+    for (int id = 0; id < vectors.length; id++) {
+      float[] v = vectors[id];
+      float[] normalized = VectorUtil.l2normalize(v.clone(), false);
+      float[] u = randomFloats(dim, 0xF1E10003L + id);
+      float[] sum = u.clone();
+      VectorUtil.add(sum, v);
+      byte[] asBytes = new byte[dim];
+      for (int i = 0; i < dim; i++) {
+        asBytes[i] = (byte) (id == 1 ? 0 : (i * 31 + id) % 3);
+      }
+      System.out.println(
+          "floats dim="
+              + dim
+              + " id="
+              + id
+              + " v="
+              + encodeFloats(v)
+              + " l2="
+              + encodeFloats(normalized)
+              + " unit="
+              + VectorUtil.isUnitVector(v)
+              + " zero="
+              + VectorUtil.isZeroVector(v)
+              + " u="
+              + encodeFloats(u)
+              + " sum="
+              + encodeFloats(sum)
+              + " bytes="
+              + encodeBytes(asBytes)
+              + " zeroBytes="
+              + VectorUtil.isZeroVector(asBytes));
+    }
+    float[][] checked = {
+      randomFloats(dim, 0xF1E10010L),
+      withValue(randomFloats(dim, 0xF1E10011L), dim / 2, Float.NaN),
+      withValue(randomFloats(dim, 0xF1E10012L), dim - 1, Float.POSITIVE_INFINITY),
+      withValue(randomFloats(dim, 0xF1E10013L), 0, Float.NEGATIVE_INFINITY)
+    };
+    for (int id = 0; id < checked.length; id++) {
+      String result;
+      try {
+        VectorUtil.checkFinite(checked[id]);
+        result = "ok";
+      } catch (IllegalArgumentException e) {
+        result = "error message=" + e.getMessage();
+      }
+      System.out.println(
+          "finite dim=" + dim + " id=" + id + " v=" + encodeFloats(checked[id]) + " " + result);
+    }
+  }
+
+  private static void emitFindNextGeqCases() {
+    int[] buffer = new int[128];
+    for (int i = 0; i < buffer.length; i++) {
+      // Sorted, with every value twice.
+      buffer[i] = (i / 2) * 3;
+    }
+    StringBuilder values = new StringBuilder();
+    for (int i = 0; i < buffer.length; i++) {
+      values.append(i == 0 ? "" : ",").append(buffer[i]);
+    }
+    System.out.println("geqbuf values=" + values);
+    int[] targets = {-5, 0, 1, 2, 3, 50, 51, 52, 100, 188, 189, 190, 1000};
+    int[][] ranges = {{0, 128}, {0, 1}, {5, 128}, {17, 64}, {64, 65}, {100, 128}, {128, 128}};
+    for (int[] range : ranges) {
+      for (int target : targets) {
+        System.out.println(
+            "geq target="
+                + target
+                + " from="
+                + range[0]
+                + " to="
+                + range[1]
+                + " result="
+                + VectorUtil.findNextGEQ(buffer, target, range[0], range[1]));
+      }
+    }
+  }
+
+  private static void emitFilterByScoreCases() {
+    int[] lengths = {0, 1, 7, 8, 9, 64, 129};
+    double[] thresholds = {Double.NEGATIVE_INFINITY, -0.5, 0.0, 0.25, 0.5, 0.999, 2.0};
+    for (int length : lengths) {
+      for (int t = 0; t < thresholds.length; t++) {
+        int[] docs = new int[length];
+        double[] scores = new double[length];
+        long[] state = {0xF117E000L + length};
+        for (int i = 0; i < length; i++) {
+          docs[i] = i * 7 + 3;
+          scores[i] = (next(state) >>> 11) * 0x1.0p-53 * 2.0 - 0.5;
+        }
+        if (length > 2) {
+          scores[1] = thresholds[t];
+        }
+        int upTo = length - (length > 8 ? 3 : 0);
+        String in = joinDocs(docs) + " scores=" + joinScores(scores);
+        int count = VectorUtil.filterByScore(docs, scores, thresholds[t], upTo);
+        System.out.println(
+            "filter length="
+                + length
+                + " t="
+                + t
+                + " docs="
+                + in
+                + " min="
+                + String.format("%016x", Double.doubleToRawLongBits(thresholds[t]))
+                + " upTo="
+                + upTo
+                + " count="
+                + count
+                + " outDocs="
+                + joinDocs(docs)
+                + " outScores="
+                + joinScores(scores));
+      }
+    }
+  }
+
+  private static void emitScalarCases() {
+    float[] values = {
+      -1e30f, -100f, -3f, -1f, -0.5f, -0.0f, 0f, 1e-30f, 0.25f, 0.5f, 1f, 7.5f, 1e30f,
+      Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY
+    };
+    for (float x : values) {
+      System.out.println(
+          "scalar x="
+              + bits(x)
+              + " scaleMaxInnerProductScore="
+              + bits(VectorUtil.scaleMaxInnerProductScore(x))
+              + " normalizeToUnitInterval="
+              + bits(VectorUtil.normalizeToUnitInterval(x))
+              + " normalizeDistanceToUnitInterval="
+              + bits(VectorUtil.normalizeDistanceToUnitInterval(x)));
+    }
+  }
+
+  private static byte[] nibbles(int dim, long seed) {
+    long[] state = {seed};
+    byte[] values = new byte[dim];
+    for (int i = 0; i < dim; i++) {
+      values[i] = (byte) ((next(state) >>> 40) & 0x0F);
+    }
+    return values;
+  }
+
+  private static byte[] filled(int dim, byte value) {
+    byte[] values = new byte[dim];
+    java.util.Arrays.fill(values, value);
+    return values;
+  }
+
+  private static float[] filled(int dim, float value) {
+    float[] values = new float[dim];
+    java.util.Arrays.fill(values, value);
+    return values;
+  }
+
+  private static float[] withValue(float[] v, int index, float value) {
+    v[index] = value;
+    return v;
+  }
+
+  private static String joinDocs(int[] docs) {
+    StringBuilder sb = new StringBuilder("[");
+    for (int i = 0; i < docs.length; i++) {
+      sb.append(i == 0 ? "" : ",").append(docs[i]);
+    }
+    return sb.append(']').toString();
+  }
+
+  private static String joinScores(double[] scores) {
+    StringBuilder sb = new StringBuilder("[");
+    for (int i = 0; i < scores.length; i++) {
+      sb.append(i == 0 ? "" : ",")
+          .append(String.format("%016x", Double.doubleToRawLongBits(scores[i])));
+    }
+    return sb.append(']').toString();
   }
 
   // ---------------------------------------------------------------------------

@@ -141,7 +141,7 @@ pub fn check_footer(input: &mut dyn ChecksumIndexInput) -> Result<()> {
             input.resource_description(),
         ));
     }
-    if input.length() != input.file_pointer() {
+    if input.length() != input.file_pointer()? {
         return Err(LuceneError::corrupt_index(
             "Unexpected stuff at the end of file, please be careful with your text editor!",
             input.resource_description(),
@@ -331,7 +331,7 @@ pub(crate) fn java_message(e: &LuceneError) -> String {
             ..
         }
         | LuceneError {
-            kind: LuceneErrorKind::CorruptIndex(m),
+            kind: LuceneErrorKind::CorruptIndex { message: m, .. },
             ..
         } => m.clone(),
         LuceneError {

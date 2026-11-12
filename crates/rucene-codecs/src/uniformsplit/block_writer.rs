@@ -370,9 +370,9 @@ impl<'o, L: WriterLine> BlockWriter<'o, L> {
             }
         }
 
-        self.block_lines_write_buffer.reset();
-        self.term_states_write_buffer.reset();
-        self.block_write_buffer.reset();
+        self.block_lines_write_buffer.reset()?;
+        self.term_states_write_buffer.reset()?;
+        self.block_write_buffer.reset()?;
 
         self.term_state_serializer.reset_base_start_fp();
 

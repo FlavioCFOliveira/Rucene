@@ -838,7 +838,7 @@ impl Terms for NextCountingTerms {
         self.inner.has_payloads()
     }
 
-    fn stats(&self) -> Result<String> {
+    fn stats(&self) -> Result<Box<dyn rucene::index::terms::StatsObject>> {
         self.inner.stats()
     }
 }

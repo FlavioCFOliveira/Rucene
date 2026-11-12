@@ -2,14 +2,11 @@
 //!
 //! # Relationship with [`crate::search::knn::TopDocs`]
 //!
-//! The kNN module carries a placeholder `TopDocs` — an empty struct — so that
-//! [`KnnCollector`](crate::search::knn::KnnCollector) could be ported before
-//! the search package existed. This module is the real
-//! `org.apache.lucene.search.TopDocs`, and it is the one
+//! [`crate::search::knn::TopDocs`] is a re-export of this type, so
+//! [`KnnCollector`](crate::search::knn::KnnCollector),
 //! [`TopDocsCollector`](crate::search::TopDocsCollector) and
-//! [`IndexSearcher`](crate::search::IndexSearcher) return. The placeholder
-//! should eventually be replaced by this type; doing so touches the kNN
-//! readers and the HNSW collectors and is left for the task that owns them.
+//! [`IndexSearcher`](crate::search::IndexSearcher) all return the same
+//! `org.apache.lucene.search.TopDocs`.
 //!
 //! # Overloads
 //!
@@ -309,9 +306,9 @@ impl TopDocs {
             let mut hit_upto = 0usize;
             while hit_upto < num_iter_on_hits {
                 debug_assert!(queue.size() > 0);
-                let mut shard_ref = *queue.top().ok_or_else(|| {
-                    LuceneError::illegal_state("merge queue is empty".to_string())
-                })?;
+                let mut shard_ref = *queue
+                    .top()
+                    .expect("INVARIANT: the merge queue holds a hit per iteration");
                 let hit = shard_hits[shard_ref.shard_index].score_docs[shard_ref.hit_index];
                 shard_ref.hit_index += 1;
 
@@ -459,9 +456,9 @@ impl TopDocs {
             let mut hit_upto = 0usize;
             while hit_upto < num_iter_on_hits {
                 debug_assert!(queue.size() > 0);
-                let mut shard_ref = *queue.top().ok_or_else(|| {
-                    LuceneError::illegal_state("merge queue is empty".to_string())
-                })?;
+                let mut shard_ref = *queue
+                    .top()
+                    .expect("INVARIANT: the merge queue holds a hit per iteration");
                 let hit = shard_hits[shard_ref.shard_index].score_docs[shard_ref.hit_index].clone();
                 shard_ref.hit_index += 1;
 
@@ -546,10 +543,11 @@ impl TopDocs {
             // docs, so the total hit count is the max total hit count.
             total_hit_count = total_hit_count.max(top_doc.total_hits.value());
             for (i, score_doc) in top_doc.score_docs.iter().enumerate() {
-                let rank = i as i64 + 1;
-                let denominator = i64::from(k).checked_add(rank).ok_or_else(|| {
-                    LuceneError::illegal_argument("k + rank overflows".to_string())
-                })?;
+                // `Math.addExact(k, rank)`, `int` arithmetic.
+                let rank = (i as i32).wrapping_add(1);
+                let denominator = k
+                    .checked_add(rank)
+                    .ok_or_else(LuceneError::integer_overflow)?;
                 let rrf_score_contribution = 1f64 / denominator as f64;
                 let key = ShardIndexAndDoc {
                     shard_index: score_doc.shard_index,

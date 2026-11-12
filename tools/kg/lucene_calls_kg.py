@@ -49,7 +49,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from kgio import client, counters_of, esc, kg_target, read  # noqa: E402
+from kgio import client, counters_of, esc, kg_target, read, serialize, unwind_maps  # noqa: E402
 
 EVIDENCE = "bytecode"
 DEFAULT_JAR = Path.home() / ".m2/repository/org/apache/lucene/lucene-core/10.5.0/lucene-core-10.5.0.jar"
@@ -571,16 +571,13 @@ def _delete_all(roadmap, rel):
     print(f"  retired {rel}: {total}", file=sys.stderr)
 
 
-def _unwind_create(roadmap, rows, head, label, batch=300):
-    created = 0
-    for i in range(0, len(rows), batch):
-        chunk = rows[i:i + batch]
-        maps = ", ".join("{" + ", ".join(f"{k}:{esc(v)}" for k, v in r.items()) + "}" for r in chunk)
-        c = counters_of(client(roadmap, f"UNWIND [{maps}] AS row {head}", label=label))
-        if c.get("nodesCreated"):
-            raise SystemExit(f"{label} created nodes: {c}")
-        created += c.get("relationshipsCreated", 0)
-    return created
+def _unwind_create(roadmap, rows, head, label, batch=None):
+    """In bulk (`kgio.unwind_maps`); a statement that created a node is a defect."""
+    c = unwind_maps(roadmap, "create", [serialize(r) for r in rows], head, label,
+                    batch if batch is not None and batch <= 20 else None)
+    if c.get("nodesCreated"):
+        raise SystemExit(f"{label} created nodes: {c}")
+    return c.get("relationshipsCreated", 0)
 
 
 def top_level_visibility(classes):

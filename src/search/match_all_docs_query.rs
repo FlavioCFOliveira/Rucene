@@ -105,7 +105,12 @@ impl Query for MatchAllDocsQuery {
         self.same_class_as(other)
     }
 
-    fn query_hash(&self) -> u64 {
+    /// `getClass().getName()` of `org.apache.lucene.search.MatchAllDocsQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.MatchAllDocsQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
         self.class_hash()
     }
 }

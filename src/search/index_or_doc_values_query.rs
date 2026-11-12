@@ -248,13 +248,17 @@ impl Query for IndexOrDocValuesQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.index_query.query_hash().hash(&mut hasher);
-        self.dv_query.query_hash().hash(&mut hasher);
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.IndexOrDocValuesQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.IndexOrDocValuesQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `IndexOrDocValuesQuery.hashCode()`.
+        let mut h = self.class_hash();
+        h = h
+            .wrapping_mul(31)
+            .wrapping_add(self.index_query.query_hash());
+        h.wrapping_mul(31).wrapping_add(self.dv_query.query_hash())
     }
 }

@@ -45,6 +45,11 @@
    "where": "src/index/documents_writer.rs:273,851",
    "why": "the nested map and its byte accounting are fields and methods of the port of `BufferedUpdates`; the traversal order of `forEachOrdered` is declared preserved."
   },
+  "org.apache.lucene.index.CheckIndex$CheckIndexException": {
+   "host": "LuceneErrorKind::CheckIndex",
+   "where": "src/error.rs:147",
+   "why": "the crate's exceptions are variants of one error enum; the variant's doc declares the equivalence, carries the message and the optional cause (`getCause()` via `source`), and `src/index/check_index.rs:60-80` builds it as Java's two constructors do. An enum variant is not a claim site `port_evidence_kg.py` reads."
+  },
   "org.apache.lucene.index.ConcurrentMergeScheduler$MergeThread": {
    "host": "MergeThreadState",
    "where": "src/index/merge_scheduler.rs:242-248",

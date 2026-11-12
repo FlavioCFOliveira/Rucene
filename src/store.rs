@@ -106,6 +106,88 @@ pub fn require_array<T>(array: Option<&mut [T]>) -> Result<&mut [T]> {
     array.ok_or_else(LuceneError::null_pointer)
 }
 
+/// `in.readBytes(b, offset, len)` with Java's `int` arguments: the plain
+/// [`DataInput::read_bytes`] when both are non-negative, else the input's
+/// [`DataInput::read_bytes_out_of_range`].
+///
+/// # Errors
+///
+/// What the input raises.
+pub fn read_bytes_java(
+    input: &mut (impl DataInput + ?Sized),
+    b: &mut [u8],
+    offset: i32,
+    len: i32,
+) -> Result<()> {
+    if offset >= 0 && len >= 0 {
+        input.read_bytes(Some(b), offset as usize, len as usize)
+    } else {
+        input.read_bytes_out_of_range(b, offset, len)
+    }
+}
+
+/// The `IndexOutOfBoundsException` of `Objects.checkFromIndexSize(offset,
+/// len, length)`: `Range [offset, offset + len) out of bounds for length
+/// length`.
+pub(crate) fn check_from_index_size_ioobe(offset: i32, len: i32, length: usize) -> LuceneError {
+    LuceneError::from(LuceneErrorKind::Unchecked {
+        class: "java.lang.IndexOutOfBoundsException",
+        message: Some(format!(
+            "Range [{offset}, {offset} + {len}) out of bounds for length {length}"
+        )),
+        cause: None,
+    })
+}
+
+/// `new EOFException()`: Java's end-of-file exception with a `null` message.
+pub(crate) fn eof_exception() -> LuceneError {
+    LuceneError::from(LuceneErrorKind::Io(
+        crate::store::java_nio_file::JavaIoException::new(
+            crate::store::java_nio_file::EOF_EXCEPTION,
+            None,
+        )
+        .into_io_error(),
+    ))
+}
+
+/// The JVM's `IndexOutOfBoundsException` with a `null` message, which the
+/// absolute `ByteBuffer` getters (`get(int)`, `getShort(int)`, ...) throw for
+/// an index past the limit.
+pub(crate) fn index_out_of_bounds_no_message() -> LuceneError {
+    LuceneError::from(LuceneErrorKind::Unchecked {
+        class: "java.lang.IndexOutOfBoundsException",
+        message: None,
+        cause: None,
+    })
+}
+
+/// The JVM's `ArrayIndexOutOfBoundsException` for `array[index]` on an array
+/// of `length` elements: `Index <index> out of bounds for length <length>`.
+pub(crate) fn array_index_out_of_bounds(index: i64, length: usize) -> LuceneError {
+    LuceneError::unchecked(
+        "java.lang.ArrayIndexOutOfBoundsException",
+        format!("Index {index} out of bounds for length {length}"),
+    )
+}
+
+/// Copies `src` into `dst[offset..]`, with the destination check of the bulk
+/// `ByteBuffer.get(..., byte[] dst, int offset, int length)` and of
+/// `InputStream.read(byte[], int, int)`: `Objects.checkFromIndexSize(offset,
+/// length, dst.length)`, an `IndexOutOfBoundsException` when the range does
+/// not fit.
+pub(crate) fn copy_into_checked(dst: &mut [u8], offset: usize, src: &[u8]) -> Result<()> {
+    let len = src.len();
+    if offset > dst.len() || len > dst.len() - offset {
+        return Err(check_from_index_size_ioobe(
+            offset as i32,
+            len as i32,
+            dst.len(),
+        ));
+    }
+    dst[offset..offset + len].copy_from_slice(src);
+    Ok(())
+}
+
 /// Abstract base trait for reading Lucene's low-level data types.
 ///
 /// Equivalent to `org.apache.lucene.store.DataInput`. Implementations are not
@@ -149,6 +231,26 @@ pub trait DataInput {
         _use_buffer: bool,
     ) -> Result<()> {
         self.read_bytes(b, offset, len)
+    }
+
+    /// `readBytes(b, offset, len)` with an `offset` or a `len` that a `usize`
+    /// cannot carry: Java's `int` parameters accept negative ones, which a
+    /// corrupt file can produce (`BKDReader` reads `bytesPerDim - prefix`
+    /// bytes after a `prefix` it read unchecked, `BKDReader.java:942-993`).
+    /// [`read_bytes_java`] calls it for exactly those arguments.
+    ///
+    /// What happens is the input's own: the default is what
+    /// `BufferedIndexInput` and `ByteBuffersDataInput` do — a negative `len`
+    /// reads nothing (both guard their copy with `len > 0`), and a negative
+    /// `offset` with a positive `len` fails the destination range check of
+    /// `ByteBuffer.get` with `IndexOutOfBoundsException("Range [offset,
+    /// offset + len) out of bounds for length n")`. An input of another
+    /// behaviour, or one that delegates its reads, overrides it.
+    fn read_bytes_out_of_range(&mut self, b: &mut [u8], offset: i32, len: i32) -> Result<()> {
+        if len <= 0 {
+            return Ok(());
+        }
+        Err(check_from_index_size_ioobe(offset, len, b.len()))
     }
 
     /// Skips `num_bytes` bytes.
@@ -269,30 +371,30 @@ pub trait DataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::CorruptIndex`] when the length is negative: Java
-    /// reaches `new byte[length]` with it and throws
-    /// `NegativeArraySizeException` (`DataInput.java:230-234`), which is a
-    /// failure, not a value, so this port reports one too.
+    /// Returns Java's `NegativeArraySizeException` (message: the length) when
+    /// the length is negative, and its `OutOfMemoryError` (`Java heap space`)
+    /// when the heap cannot reserve the length: Java reaches
+    /// `new byte[length]` with it (`DataInput.java:230-234`).
     ///
     /// Otherwise propagates the end of file the underlying input raises when
-    /// the length is longer than what is left to read. Java allocates the
-    /// whole length up front, so it fails the same way for a length that fits
-    /// in memory but not in the file, and throws `OutOfMemoryError` for one
-    /// that does not fit at all. This port never allocates more than the input
-    /// actually delivers, so it reports the end of file in both cases. The
-    /// chunk below is an I/O buffer, not a bound on what is accepted: no
-    /// length Java could read is refused here.
+    /// the length is longer than what is left to read. The whole length is
+    /// reserved up front as Java allocates it; the bytes are then filled in
+    /// chunks, so pages the input never delivers are never touched.
     fn read_string(&mut self) -> Result<String> {
-        /// How much is allocated before any of it has been read.
+        /// How much is filled per read.
         const CHUNK: usize = 16 * 1024;
         let length = self.read_v_int()?;
         if length < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "invalid string length: {length}"
-            ))));
+            return Err(LuceneError::unchecked(
+                "java.lang.NegativeArraySizeException",
+                length.to_string(),
+            ));
         }
         let mut remaining = length as usize;
         let mut bytes: Vec<u8> = Vec::new();
+        bytes
+            .try_reserve_exact(remaining)
+            .map_err(|_| LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space"))?;
         while remaining > 0 {
             let take = remaining.min(CHUNK);
             let filled = bytes.len();
@@ -397,6 +499,39 @@ pub trait DataInput {
 pub trait DataOutput {
     /// Writes a single byte.
     fn write_byte(&mut self, b: u8) -> Result<()>;
+
+    /// Java's `toString()` of this output, which a message quotes — for
+    /// example `FSTCompiler.getFSTReader`'s `", but got " + dataOutput`
+    /// (`FSTCompiler.java:231-232`).
+    ///
+    /// The default is the `Object.toString()` every Java object inherits:
+    /// [`java_class_name`](Self::java_class_name), `@`, and the identity hash
+    /// in hexadecimal. Every [`IndexOutput`] overrides it with its resource
+    /// description, as `IndexOutput.toString()` does
+    /// (`IndexOutput.java:83-86`), and [`ByteBuffersDataOutput`] with its own
+    /// `toString()`.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** It stands for the
+    /// `toString()` every Java object has; a Rust trait object has none, so
+    /// the trait carries it. Rust has no identity hash: the address of the
+    /// value stands in for it, the crate's convention for
+    /// `System.identityHashCode`, so the digits differ from a JVM's exactly as
+    /// two JVM runs differ from each other.
+    fn to_java_string(&self) -> String {
+        format!(
+            "{}@{}",
+            self.java_class_name(),
+            crate::util::java_fmt::to_hex_string(self as *const Self as *const () as usize as i32)
+        )
+    }
+
+    /// Java's `getClass().getName()` of this output, which the default
+    /// [`to_java_string`](Self::to_java_string) prints. The default is the
+    /// Rust type name; the ports of Lucene's `DataOutput` classes return the
+    /// Java binary name.
+    fn java_class_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
 
     /// Writes `b[offset..offset + len]`.
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()>;
@@ -631,12 +766,9 @@ pub trait DataOutput {
     /// Returns `LuceneErrorKind::IllegalArgument` when `num_bytes` is negative, and
     /// propagates whatever reading or writing raises.
     fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
+        // `assert numBytes >= 0 : "numBytes=" + numBytes`; a negative count
+        // copies nothing, as Java's loop does.
         debug_assert!(num_bytes >= 0, "numBytes={}", num_bytes);
-        if num_bytes < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
-            )));
-        }
         let mut buffer = vec![0u8; COPY_BUFFER_SIZE];
         while num_bytes > 0 {
             let to_copy = (num_bytes as usize).min(COPY_BUFFER_SIZE);
@@ -697,7 +829,16 @@ pub trait IndexInput: DataInput + Send + Sync {
 
     /// Returns the current position in this file, where the next read will
     /// occur.
-    fn file_pointer(&self) -> i64;
+    ///
+    /// Equivalent to `org.apache.lucene.store.IndexInput.getFilePointer()`.
+    ///
+    /// # Errors
+    ///
+    /// An implementation that checks it is open, as
+    /// `MemorySegmentIndexInput.getFilePointer()` does through `ensureOpen()`
+    /// (`MemorySegmentIndexInput.java:330-333`, `:770-773`), returns
+    /// `AlreadyClosed` on a closed input.
+    fn file_pointer(&self) -> Result<i64>;
 
     /// Returns the total number of bytes in this file.
     fn length(&self) -> i64;
@@ -904,7 +1045,7 @@ impl IndexInput for RandomAccessInputAdapter {
         self.input.close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.input.file_pointer()
     }
 
@@ -1060,6 +1201,10 @@ impl DataInput for FilterIndexInput {
         self.inner.read_bytes(b, offset, len)
     }
 
+    fn read_bytes_out_of_range(&mut self, b: &mut [u8], offset: i32, len: i32) -> Result<()> {
+        self.inner.read_bytes_out_of_range(b, offset, len)
+    }
+
     // `readBytes(byte[], int, int, boolean)` is not overridden: `DataInput`'s
     // routes it through this class's `readBytes`.
 
@@ -1071,7 +1216,7 @@ impl DataInput for FilterIndexInput {
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let skip_to = IndexInput::file_pointer(self) + num_bytes;
+        let skip_to = IndexInput::file_pointer(self)? + num_bytes;
         IndexInput::seek(self, skip_to)
     }
 }
@@ -1081,7 +1226,7 @@ impl IndexInput for FilterIndexInput {
         self.inner.close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.inner.file_pointer()
     }
 
@@ -1208,11 +1353,11 @@ impl BufferedIndexInput {
     /// does.
     pub(crate) fn clone_buffered(&self) -> Result<Self> {
         let mut source_clone = self.source.clone_input()?;
-        source_clone.seek(self.file_pointer())?;
+        source_clone.seek(self.file_pointer()?)?;
         Ok(Self {
             source: source_clone,
             buffer: vec![0u8; self.buffer_size],
-            buffer_start: self.file_pointer(),
+            buffer_start: self.file_pointer()?,
             buffer_position: 0,
             buffer_limit: 0,
             buffer_size: self.buffer_size,
@@ -1301,10 +1446,11 @@ impl BufferedIndexInput {
     ///
     /// Equivalent to the protected abstract
     /// `org.apache.lucene.store.BufferedIndexInput#seekInternal(long)`. Java
-    /// calls it only when `refill()` allocates its buffer lazily, because a
-    /// subclass owns its own read position; this port shares the delegate's
-    /// position with the absolute random-access reads, so `refill()` calls it
-    /// before every read, which is what the port already did.
+    /// calls it from `seek(long)` for a position outside the buffer, and from
+    /// `refill()` only when it allocates its buffer lazily, because a subclass
+    /// owns its own read position; this port shares the delegate's position
+    /// with the absolute random-access reads, so `refill()` calls it before
+    /// every read, which is what the port already did.
     ///
     /// # Errors
     ///
@@ -1399,17 +1545,22 @@ impl DataInput for BufferedIndexInput {
         let available = self.remaining_in_buffer();
         if len <= available {
             if len > 0 {
-                b[offset..offset + len].copy_from_slice(
+                copy_into_checked(
+                    b,
+                    offset,
                     &self.buffer[self.buffer_position..self.buffer_position + len],
-                );
+                )?;
                 self.buffer_position += len;
             }
         } else {
             let mut offset = offset;
             let mut len = len;
             if available > 0 {
-                b[offset..offset + available]
-                    .copy_from_slice(&self.buffer[self.buffer_position..self.buffer_limit]);
+                copy_into_checked(
+                    b,
+                    offset,
+                    &self.buffer[self.buffer_position..self.buffer_limit],
+                )?;
                 offset += available;
                 len -= available;
                 self.buffer_position = self.buffer_limit;
@@ -1418,28 +1569,40 @@ impl DataInput for BufferedIndexInput {
                 self.refill()?;
                 let remaining = self.remaining_in_buffer();
                 if remaining < len {
-                    b[offset..offset + remaining].copy_from_slice(
+                    copy_into_checked(
+                        b,
+                        offset,
                         &self.buffer[self.buffer_position..self.buffer_position + remaining],
-                    );
+                    )?;
                     return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "read past EOF",
                     ))));
                 } else {
-                    b[offset..offset + len].copy_from_slice(
+                    copy_into_checked(
+                        b,
+                        offset,
                         &self.buffer[self.buffer_position..self.buffer_position + len],
-                    );
+                    )?;
                     self.buffer_position += len;
                 }
             } else {
-                let after = self.file_pointer() + len as i64;
+                let after = self.file_pointer()? + len as i64;
                 if after > self.source.length() {
                     return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "read past EOF",
                     ))));
                 }
-                self.source.seek(self.file_pointer())?;
+                // `ByteBuffer.wrap(b, offset, len)`: the destination range check.
+                if offset > b.len() || len > b.len() - offset {
+                    return Err(check_from_index_size_ioobe(
+                        offset as i32,
+                        len as i32,
+                        b.len(),
+                    ));
+                }
+                self.source.seek(self.file_pointer()?)?;
                 self.source.read_bytes(Some(b), offset, len)?;
                 self.buffer_start = after;
                 self.buffer_position = 0;
@@ -1452,10 +1615,10 @@ impl DataInput for BufferedIndexInput {
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
+                "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let target = self.file_pointer() + num_bytes;
+        let target = self.file_pointer()? + num_bytes;
         self.seek(target)
     }
 
@@ -1597,26 +1760,22 @@ impl IndexInput for BufferedIndexInput {
         self.source.close()
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.buffer_start + self.buffer_position as i64
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.buffer_start + self.buffer_position as i64)
     }
 
     fn length(&self) -> i64 {
         self.source.length()
     }
 
+    /// Equivalent to `BufferedIndexInput.seek(long)`
+    /// (`BufferedIndexInput.java:326-334`): no check of its own, but a
+    /// position outside the buffer reaches `seekInternal(pos)`, whose check is
+    /// the subclass's — `NIOFSIndexInput` throws `EOFException` past the end
+    /// (`NIOFSDirectory.java:207-213`); here, the delegate's [`seek`].
+    ///
+    /// [`seek`]: IndexInput::seek
     fn seek(&mut self, pos: i64) -> Result<()> {
-        if pos < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "position must be non-negative (got: {pos})"
-            )));
-        }
-        if pos > self.source.length() {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "seek past EOF",
-            ))));
-        }
         let end = self.buffer_start + self.buffer_limit as i64;
         if pos >= self.buffer_start && pos < end {
             self.buffer_position = (pos - self.buffer_start) as usize;
@@ -1624,6 +1783,7 @@ impl IndexInput for BufferedIndexInput {
             self.buffer_start = pos;
             self.buffer_position = 0;
             self.buffer_limit = 0;
+            self.seek_internal(pos)?;
         }
         Ok(())
     }
@@ -1677,19 +1837,14 @@ impl RandomAccessInput for BufferedIndexInput {
         offset: usize,
         len: usize,
     ) -> Result<()> {
-        let dst_end = offset
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
-        if dst_end > bytes.len() {
-            return Err(LuceneError::illegal_argument(format!(
-                "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
-                bytes.len()
-            )));
-        }
+        // `BufferedIndexInput.readBytes(long, byte[], int, int)`
+        // (`BufferedIndexInput.java:251-269`): each `buffer.get(index, bytes,
+        // offset, len)` checks the destination range after the buffer was
+        // filled, an `IndexOutOfBoundsException` when it does not fit.
         if len <= self.buffer_size {
             if len > 0 {
                 let index = self.resolve_position_in_buffer(pos, len)?;
-                bytes[offset..offset + len].copy_from_slice(&self.buffer[index..index + len]);
+                copy_into_checked(bytes, offset, &self.buffer[index..index + len])?;
             }
         } else {
             let mut pos = pos;
@@ -1697,14 +1852,13 @@ impl RandomAccessInput for BufferedIndexInput {
             let mut len = len;
             while len > self.buffer_size {
                 let index = self.resolve_position_in_buffer(pos, self.buffer_size)?;
-                bytes[offset..offset + self.buffer_size]
-                    .copy_from_slice(&self.buffer[index..index + self.buffer_size]);
+                copy_into_checked(bytes, offset, &self.buffer[index..index + self.buffer_size])?;
                 len -= self.buffer_size;
                 offset += self.buffer_size;
                 pos += self.buffer_size as i64;
             }
             let index = self.resolve_position_in_buffer(pos, len)?;
-            bytes[offset..offset + len].copy_from_slice(&self.buffer[index..index + len]);
+            copy_into_checked(bytes, offset, &self.buffer[index..index + len])?;
         }
         Ok(())
     }
@@ -1873,17 +2027,22 @@ impl DataInput for SlicedIndexInput {
         let available = self.remaining_in_buffer();
         if len <= available {
             if len > 0 {
-                b[offset..offset + len].copy_from_slice(
+                copy_into_checked(
+                    b,
+                    offset,
                     &self.buffer[self.buffer_position..self.buffer_position + len],
-                );
+                )?;
                 self.buffer_position += len;
             }
         } else {
             let mut offset = offset;
             let mut len = len;
             if available > 0 {
-                b[offset..offset + available]
-                    .copy_from_slice(&self.buffer[self.buffer_position..self.buffer_limit]);
+                copy_into_checked(
+                    b,
+                    offset,
+                    &self.buffer[self.buffer_position..self.buffer_limit],
+                )?;
                 offset += available;
                 len -= available;
                 self.buffer_position = self.buffer_limit;
@@ -1892,28 +2051,40 @@ impl DataInput for SlicedIndexInput {
                 self.refill()?;
                 let remaining = self.remaining_in_buffer();
                 if remaining < len {
-                    b[offset..offset + remaining].copy_from_slice(
+                    copy_into_checked(
+                        b,
+                        offset,
                         &self.buffer[self.buffer_position..self.buffer_position + remaining],
-                    );
+                    )?;
                     return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "read past EOF",
                     ))));
                 } else {
-                    b[offset..offset + len].copy_from_slice(
+                    copy_into_checked(
+                        b,
+                        offset,
                         &self.buffer[self.buffer_position..self.buffer_position + len],
-                    );
+                    )?;
                     self.buffer_position += len;
                 }
             } else {
-                let after = self.file_pointer() + len as i64;
+                let after = self.file_pointer()? + len as i64;
                 if after > self.length {
                     return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "read past EOF",
                     ))));
                 }
-                self.base.seek(self.file_offset + self.file_pointer())?;
+                // `ByteBuffer.wrap(b, offset, len)`: the destination range check.
+                if offset > b.len() || len > b.len() - offset {
+                    return Err(check_from_index_size_ioobe(
+                        offset as i32,
+                        len as i32,
+                        b.len(),
+                    ));
+                }
+                self.base.seek(self.file_offset + self.file_pointer()?)?;
                 self.base.read_bytes(Some(b), offset, len)?;
                 self.buffer_start = after;
                 self.buffer_position = 0;
@@ -1926,10 +2097,10 @@ impl DataInput for SlicedIndexInput {
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
+                "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let target = self.file_pointer() + num_bytes;
+        let target = self.file_pointer()? + num_bytes;
         self.seek(target)
     }
 
@@ -1977,26 +2148,19 @@ impl IndexInput for SlicedIndexInput {
         self.base.close()
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.buffer_start + self.buffer_position as i64
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.buffer_start + self.buffer_position as i64)
     }
 
     fn length(&self) -> i64 {
         self.length
     }
 
+    /// Equivalent to `BufferedIndexInput.seek(long)`
+    /// (`BufferedIndexInput.java:326-337`), which `SlicedIndexInput` inherits:
+    /// no check of its own, so a negative position or one past the end fails
+    /// on the next read.
     fn seek(&mut self, pos: i64) -> Result<()> {
-        if pos < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "position must be non-negative (got: {pos})"
-            )));
-        }
-        if pos > self.length {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "seek past EOF",
-            ))));
-        }
         let end = self.buffer_start + self.buffer_limit as i64;
         if pos >= self.buffer_start && pos < end {
             self.buffer_position = (pos - self.buffer_start) as usize;
@@ -2025,13 +2189,13 @@ impl IndexInput for SlicedIndexInput {
 
     fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
         let mut base_clone = self.base.clone_input()?;
-        base_clone.seek(self.file_offset + self.file_pointer())?;
+        base_clone.seek(self.file_offset + self.file_pointer()?)?;
         Ok(Box::new(Self {
             base: base_clone,
             file_offset: self.file_offset,
             length: self.length,
             buffer: vec![0u8; self.buffer_size],
-            buffer_start: self.file_pointer(),
+            buffer_start: self.file_pointer()?,
             buffer_position: 0,
             buffer_limit: 0,
             buffer_size: self.buffer_size,
@@ -2067,19 +2231,14 @@ impl RandomAccessInput for SlicedIndexInput {
         offset: usize,
         len: usize,
     ) -> Result<()> {
-        let dst_end = offset
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
-        if dst_end > bytes.len() {
-            return Err(LuceneError::illegal_argument(format!(
-                "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
-                bytes.len()
-            )));
-        }
+        // `BufferedIndexInput.readBytes(long, byte[], int, int)`
+        // (`BufferedIndexInput.java:251-269`): each `buffer.get(index, bytes,
+        // offset, len)` checks the destination range after the buffer was
+        // filled, an `IndexOutOfBoundsException` when it does not fit.
         if len <= self.buffer_size {
             if len > 0 {
                 let index = self.resolve_position_in_buffer(pos, len)?;
-                bytes[offset..offset + len].copy_from_slice(&self.buffer[index..index + len]);
+                copy_into_checked(bytes, offset, &self.buffer[index..index + len])?;
             }
         } else {
             let mut pos = pos;
@@ -2087,14 +2246,13 @@ impl RandomAccessInput for SlicedIndexInput {
             let mut len = len;
             while len > self.buffer_size {
                 let index = self.resolve_position_in_buffer(pos, self.buffer_size)?;
-                bytes[offset..offset + self.buffer_size]
-                    .copy_from_slice(&self.buffer[index..index + self.buffer_size]);
+                copy_into_checked(bytes, offset, &self.buffer[index..index + self.buffer_size])?;
                 len -= self.buffer_size;
                 offset += self.buffer_size;
                 pos += self.buffer_size as i64;
             }
             let index = self.resolve_position_in_buffer(pos, len)?;
-            bytes[offset..offset + len].copy_from_slice(&self.buffer[index..index + len]);
+            copy_into_checked(bytes, offset, &self.buffer[index..index + len])?;
         }
         Ok(())
     }
@@ -2285,6 +2443,12 @@ impl FilterIndexOutput {
 }
 
 impl DataOutput for FilterIndexOutput {
+    /// `IndexOutput.toString()`: the resource description
+    /// (`IndexOutput.java:83-86`).
+    fn to_java_string(&self) -> String {
+        self.resource_description().to_string()
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.inner.write_byte(b)
     }
@@ -2517,22 +2681,23 @@ impl<'a> ByteArrayDataInput<'a> {
         self.pos == self.limit
     }
 
-    /// Reads a little-endian value of `WIDTH` bytes, advancing the position
-    /// only when the whole width was available.
+    /// Reads a little-endian value of `WIDTH` bytes through Java's
+    /// `BitUtil.VH_LE_*` byte-array view, advancing the position only when the
+    /// whole width was available.
+    ///
+    /// The view checks `Preconditions.checkIndex(pos, bytes.length - (WIDTH -
+    /// 1))`, an `ArrayIndexOutOfBoundsException` (`Index <pos> out of bounds
+    /// for length <bytes.length - WIDTH + 1>`) when the value does not fit.
     fn read_le<const WIDTH: usize>(&mut self) -> Result<[u8; WIDTH]> {
         let end = self
             .pos
             .checked_add(WIDTH)
             .filter(|end| *end <= self.bytes.len())
             .ok_or_else(|| {
-                LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    format!(
-                        "unexpected EOF reading {WIDTH} bytes at pos {} (buffer {})",
-                        self.pos,
-                        self.bytes.len()
-                    ),
-                )))
+                array_index_out_of_bounds(
+                    self.pos as i32 as i64,
+                    self.bytes.len().saturating_sub(WIDTH - 1),
+                )
             })?;
         let mut value = [0u8; WIDTH];
         value.copy_from_slice(&self.bytes[self.pos..end]);
@@ -2550,58 +2715,66 @@ impl DataInput for ByteArrayDataInput<'_> {
         )
     }
 
+    /// Equivalent to `ByteArrayDataInput#readByte` (`return bytes[pos++]`):
+    /// an `ArrayIndexOutOfBoundsException` past the end of the backing array.
     fn read_byte(&mut self) -> Result<u8> {
         if self.pos >= self.bytes.len() {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "unexpected EOF reading byte",
-            ))));
+            return Err(array_index_out_of_bounds(
+                self.pos as i32 as i64,
+                self.bytes.len(),
+            ));
         }
         let b = self.bytes[self.pos];
         self.pos += 1;
         Ok(b)
     }
 
+    /// `System.arraycopy(bytes, pos, b, offset, len)`
+    /// (`ByteArrayDataInput.java:141-144`): `ArrayIndexOutOfBoundsException`
+    /// for a negative length or destination index.
+    fn read_bytes_out_of_range(&mut self, b: &mut [u8], offset: i32, len: i32) -> Result<()> {
+        let message = if offset < 0 {
+            format!(
+                "arraycopy: destination index {offset} out of bounds for byte[{}]",
+                b.len()
+            )
+        } else {
+            format!("arraycopy: length {len} is negative")
+        };
+        Err(LuceneError::from(LuceneErrorKind::Unchecked {
+            class: "java.lang.ArrayIndexOutOfBoundsException",
+            message: Some(message),
+            cause: None,
+        }))
+    }
+
+    /// Equivalent to `ByteArrayDataInput#readBytes(byte[], int, int)`
+    /// (`ByteArrayDataInput.java:141-144`): `System.arraycopy(bytes, pos, b,
+    /// offset, len)`, with its checks and messages, then `pos += len`.
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         let b = crate::store::require_array(b)?;
-        let end = offset
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
-        if end > b.len() {
-            return Err(LuceneError::illegal_argument(format!(
-                "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
-                b.len()
-            )));
-        }
-        if self.pos + len > self.bytes.len() {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!(
-                    "unexpected EOF reading {len} bytes at pos {} (buffer {})",
-                    self.pos,
-                    self.bytes.len()
-                ),
-            ))));
-        }
-        b[offset..end].copy_from_slice(&self.bytes[self.pos..self.pos + len]);
+        crate::util::java_byte_arraycopy(
+            self.bytes,
+            self.pos as i32,
+            b,
+            offset as i32,
+            len as i32,
+        )?;
         self.pos += len;
         Ok(())
     }
 
+    /// Equivalent to `ByteArrayDataInput#skipBytes(long)`
+    /// (`ByteArrayDataInput.java:79-82`): `pos += count`, a compound
+    /// assignment that narrows `pos + count` to `int`, with no check of its
+    /// own — a negative count moves backwards, and a position past the end
+    /// fails only on the next read.
+    ///
+    /// Divergence (the position is a `usize`): a position Java would hold as a
+    /// negative `int` is kept as its two's-complement `usize`, past any
+    /// buffer, so the next read fails as Java's does.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
-        if num_bytes < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
-            )));
-        }
-        let num_bytes = num_bytes as usize;
-        if self.pos + num_bytes > self.bytes.len() {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "skip past EOF",
-            ))));
-        }
-        self.pos += num_bytes;
+        self.pos = ((self.pos as i32 as i64).wrapping_add(num_bytes) as i32) as isize as usize;
         Ok(())
     }
 
@@ -2835,6 +3008,10 @@ impl<'a> ByteArrayDataOutput<'a> {
 }
 
 impl DataOutput for ByteArrayDataOutput<'_> {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.store.ByteArrayDataOutput"
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         debug_assert!(
             self.pos < self.limit,
@@ -2943,34 +3120,48 @@ impl<R: Read> DataInput for InputStreamDataInput<R> {
         )
     }
 
+    /// Equivalent to `InputStreamDataInput.readByte()`
+    /// (`InputStreamDataInput.java:32-37`): `is.read()`, whose own failure
+    /// propagates, and `new EOFException()` at the end of the stream.
     fn read_byte(&mut self) -> Result<u8> {
         let mut buf = [0u8; 1];
-        self.input.read_exact(&mut buf).map_err(|e| {
-            LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!("read past EOF: {e}"),
-            )))
-        })?;
-        Ok(buf[0])
+        loop {
+            match self.input.read(&mut buf) {
+                Ok(0) => return Err(eof_exception()),
+                Ok(_) => return Ok(buf[0]),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(LuceneError::from(e)),
+            }
+        }
     }
 
+    /// Equivalent to `InputStreamDataInput.readBytes(byte[], int, int)`
+    /// (`InputStreamDataInput.java:39-50`): `is.read(b, offset, len)` while
+    /// `len > 0`, whose `Objects.checkFromIndexSize` range check throws
+    /// `IndexOutOfBoundsException`, and `new EOFException()` when the stream
+    /// ends first.
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         let b = crate::store::require_array(b)?;
-        let end = offset
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
-        if end > b.len() {
-            return Err(LuceneError::illegal_argument(format!(
-                "destination buffer too small: offset={offset}, len={len}, buf.len={}",
-                b.len()
-            )));
+        let mut offset = offset;
+        let mut len = len;
+        while len > 0 {
+            if offset > b.len() || len > b.len() - offset {
+                return Err(check_from_index_size_ioobe(
+                    offset as i32,
+                    len as i32,
+                    b.len(),
+                ));
+            }
+            match self.input.read(&mut b[offset..offset + len]) {
+                Ok(0) => return Err(eof_exception()),
+                Ok(cnt) => {
+                    len -= cnt;
+                    offset += cnt;
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(LuceneError::from(e)),
+            }
         }
-        self.input.read_exact(&mut b[offset..end]).map_err(|e| {
-            LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!("read past EOF: {e}"),
-            )))
-        })?;
         Ok(())
     }
 
@@ -3054,22 +3245,28 @@ impl<W: Write> OutputStreamDataOutput<W> {
 }
 
 impl<W: Write> DataOutput for OutputStreamDataOutput<W> {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.store.OutputStreamDataOutput"
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.output.write_all(&[b]).map_err(LuceneError::from)
     }
 
+    /// Equivalent to `OutputStreamDataOutput.writeBytes(byte[], int, int)`
+    /// (`OutputStreamDataOutput.java:36-39`): `os.write(b, offset, length)`,
+    /// whose `Objects.checkFromIndexSize` range check throws
+    /// `IndexOutOfBoundsException`.
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
-        let end = offset
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
-        if end > b.len() {
-            return Err(LuceneError::illegal_argument(format!(
-                "source buffer too small: offset={offset}, len={len}, buf.len={}",
-                b.len()
-            )));
+        if offset > b.len() || len > b.len() - offset {
+            return Err(check_from_index_size_ioobe(
+                offset as i32,
+                len as i32,
+                b.len(),
+            ));
         }
         self.output
-            .write_all(&b[offset..end])
+            .write_all(&b[offset..offset + len])
             .map_err(LuceneError::from)
     }
 }
@@ -3164,13 +3361,22 @@ impl DataInput for MockIndexInput {
         Ok(())
     }
 
+    /// An `IndexInput` that does not override `skipBytes` runs
+    /// `IndexInput.skipBytes` (`IndexInput.java:86-92`): a seek on this input,
+    /// which refuses a position past the end.
+    ///
+    /// Routing the skip through the [`ByteArrayDataInput`] view instead would
+    /// take its unchecked `pos += count` and leave `pos` past `data`, which the
+    /// next [`Self::view`] cannot window.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         self.ensure_open()?;
-        let mut view = self.view();
-        view.skip_bytes(num_bytes)?;
-        let pos = view.position();
-        self.pos = pos;
-        Ok(())
+        if num_bytes < 0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "numBytes must be >= 0, got {num_bytes}"
+            )));
+        }
+        let skip_to = self.pos as i64 + num_bytes;
+        IndexInput::seek(self, skip_to)
     }
 }
 
@@ -3180,8 +3386,8 @@ impl IndexInput for MockIndexInput {
         Ok(())
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.pos as i64
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.pos as i64)
     }
 
     fn length(&self) -> i64 {
@@ -3298,6 +3504,12 @@ impl MockIndexOutput {
 }
 
 impl DataOutput for MockIndexOutput {
+    /// `IndexOutput.toString()`: the resource description
+    /// (`IndexOutput.java:83-86`).
+    fn to_java_string(&self) -> String {
+        self.resource_description().to_string()
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.ensure_open()?;
         self.data.write_byte(b)
@@ -3387,6 +3599,22 @@ pub trait FileOpenHint: AsAny + std::fmt::Debug + Send + Sync {
     /// This is used to enforce that a context contains at most one hint of
     /// each type, matching `DefaultIOContext`'s validation in Lucene 10.5.0.
     fn same_type(&self, other: &dyn FileOpenHint) -> bool;
+
+    /// The hint's Java class name, Java's `getClass().getName()`.
+    ///
+    /// The default is the Rust type name; the hints of this crate return the
+    /// Lucene class name.
+    fn java_class_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
+    /// The hint's Java `toString()`: the enum constant's name for every
+    /// Lucene hint.
+    ///
+    /// The default is the `Debug` rendering.
+    fn java_to_string(&self) -> String {
+        format!("{self:?}")
+    }
 }
 
 /// Implements [`FileOpenHint`] for a hint type whose identity, for the
@@ -3397,10 +3625,19 @@ pub trait FileOpenHint: AsAny + std::fmt::Debug + Send + Sync {
 /// is an `enum`, all constants of one hint enum share a class and therefore
 /// count as the same type.
 macro_rules! impl_file_open_hint {
-    ($name:ident) => {
+    ($name:ident, $class:literal, |$v:ident| $to_string:expr) => {
         impl FileOpenHint for $name {
             fn same_type(&self, other: &dyn FileOpenHint) -> bool {
                 other.as_any().downcast_ref::<$name>().is_some()
+            }
+
+            fn java_class_name(&self) -> &'static str {
+                $class
+            }
+
+            fn java_to_string(&self) -> String {
+                let $v = self;
+                String::from($to_string)
             }
         }
     };
@@ -3425,7 +3662,14 @@ pub enum DataAccessHint {
     Sequential,
 }
 
-impl_file_open_hint!(DataAccessHint);
+impl_file_open_hint!(
+    DataAccessHint,
+    "org.apache.lucene.store.DataAccessHint",
+    |h| match h {
+        DataAccessHint::Random => "RANDOM",
+        DataAccessHint::Sequential => "SEQUENTIAL",
+    }
+);
 
 /// Port of `org.apache.lucene.store.ReadOnceHint`.
 ///
@@ -3435,7 +3679,9 @@ impl_file_open_hint!(DataAccessHint);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ReadOnceHint;
 
-impl_file_open_hint!(ReadOnceHint);
+impl_file_open_hint!(ReadOnceHint, "org.apache.lucene.store.ReadOnceHint", |_h| {
+    "INSTANCE"
+});
 
 impl ReadOnceHint {
     /// Returns the singleton instance.
@@ -3452,7 +3698,9 @@ impl ReadOnceHint {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PreloadHint;
 
-impl_file_open_hint!(PreloadHint);
+impl_file_open_hint!(PreloadHint, "org.apache.lucene.store.PreloadHint", |_h| {
+    "INSTANCE"
+});
 
 impl PreloadHint {
     /// Returns the singleton instance.
@@ -3483,7 +3731,14 @@ pub enum FileTypeHint {
     Data,
 }
 
-impl_file_open_hint!(FileTypeHint);
+impl_file_open_hint!(
+    FileTypeHint,
+    "org.apache.lucene.store.FileTypeHint",
+    |h| match h {
+        FileTypeHint::Index => "INDEX",
+        FileTypeHint::Data => "DATA",
+    }
+);
 
 /// Hint on the type of data stored in the file.
 ///
@@ -3503,7 +3758,14 @@ pub enum FileDataHint {
     KnnVectors,
 }
 
-impl_file_open_hint!(FileDataHint);
+impl_file_open_hint!(
+    FileDataHint,
+    "org.apache.lucene.store.FileDataHint",
+    |h| match h {
+        FileDataHint::Postings => "POSTINGS",
+        FileDataHint::KnnVectors => "KNN_VECTORS",
+    }
+);
 
 /// Metadata associated with a merge [`Context`].
 ///
@@ -3628,14 +3890,21 @@ impl DefaultIOContext {
     /// Returns [`LuceneErrorKind::IllegalArgument`] if more than one hint of the
     /// same concrete type is supplied.
     pub fn new(hints: Vec<Arc<dyn FileOpenHint>>) -> Result<Self> {
+        // `DefaultIOContext.java:30-37`: the hints grouped by class, and the
+        // message renders the offending `Map.Entry<Class, List<FileOpenHint>>`
+        // as `class <name>=[<hint>, <hint>]`.
         for i in 0..hints.len() {
-            for j in (i + 1)..hints.len() {
-                if hints[i].same_type(hints[j].as_ref()) {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "multiple hints of type {:?} specified",
-                        hints[i]
-                    )));
-                }
+            if (i + 1..hints.len()).any(|j| hints[i].same_type(hints[j].as_ref())) {
+                let group: Vec<String> = hints[i..]
+                    .iter()
+                    .filter(|h| hints[i].same_type(h.as_ref()))
+                    .map(|h| h.java_to_string())
+                    .collect();
+                return Err(LuceneError::illegal_argument(format!(
+                    "Multiple hints of type class {}=[{}] specified",
+                    hints[i].java_class_name(),
+                    group.join(", ")
+                )));
             }
         }
         Ok(Self { hints })
@@ -3664,10 +3933,14 @@ impl IOContext for DefaultIOContext {
         &self.hints
     }
 
+    /// Equivalent to `DefaultIOContext.withHints(FileOpenHint...)`, which is
+    /// `new DefaultIOContext(hints)`: hints with two of one type throw the
+    /// constructor's `IllegalArgumentException`.
     fn with_hints(&self, hints: &[Arc<dyn FileOpenHint>]) -> Box<dyn IOContext> {
-        // Unwrap is safe: validation can only fail if hints contain duplicates,
-        // which would already have failed for the source context.
-        Box::new(Self::with_hints_slice(hints).expect("duplicate hints in with_hints"))
+        Box::new(
+            Self::with_hints_slice(hints)
+                .unwrap_or_else(|e| crate::util::IOUtils::rethrow_always(e)),
+        )
     }
 }
 
@@ -3686,7 +3959,7 @@ pub static READONCE_IO_CONTEXT: std::sync::LazyLock<DefaultIOContext> =
             Arc::new(DataAccessHint::Sequential),
             Arc::new(ReadOnceHint::instance()),
         ])
-        .expect("READONCE hints are unique")
+        .expect("INVARIANT: the READONCE hints are of two distinct types")
     });
 
 /// Returns an [`IOContext`] for merging with the supplied metadata.
@@ -4024,7 +4297,7 @@ impl LockFactory for SingleInstanceLockFactory {
         let mut locks = self
             .locks
             .lock()
-            .expect("single-instance locks mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !locks.insert(lock_name.to_string()) {
             // `"lock instance already obtained: (dir=" + dir + ", lockName=" +
             // lockName + ")"` (`SingleInstanceLockFactory.java:41-42`): `dir`
@@ -4091,7 +4364,7 @@ impl Lock for SingleInstanceLock {
         let removed = self
             .locks
             .lock()
-            .expect("single-instance locks mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.lock_name);
         self.closed.store(true, Ordering::SeqCst);
         if !removed {
@@ -4115,7 +4388,7 @@ impl Lock for SingleInstanceLock {
         let locks = self
             .locks
             .lock()
-            .expect("single-instance locks mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !locks.contains(&self.lock_name) {
             return Err(LuceneError::already_closed(format!(
                 "Lock instance was invalidated from map: {self}"
@@ -4167,7 +4440,7 @@ impl NativeFSLockFactory {
     fn clear_lock_held(path: &str) -> Result<()> {
         let removed = NATIVE_HELD_LOCKS
             .lock()
-            .expect("native held locks mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(path);
         if !removed {
             return Err(LuceneError::already_closed(format!(
@@ -4229,7 +4502,7 @@ impl FSLockFactory for NativeFSLockFactory {
         let real_path_str = real_path.to_string();
         let added = NATIVE_HELD_LOCKS
             .lock()
-            .expect("native held locks mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(real_path_str.clone());
         if !added {
             return Err(LuceneError::lock_obtain_failed(format!(
@@ -4578,7 +4851,10 @@ impl Lock for NativeFSLock {
     /// replaces any failure to release. "we don't validate, as unlike
     /// SimpleFSLockFactory, we can't break others locks".
     fn close(&self) -> Result<()> {
-        let mut channel = self.channel.lock().expect("native lock mutex poisoned");
+        let mut channel = self
+            .channel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.closed.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -4610,7 +4886,7 @@ impl Lock for NativeFSLock {
         // crazy didn't remove us).
         let held = NATIVE_HELD_LOCKS
             .lock()
-            .expect("native held locks mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !held.contains(&self.path_str) {
             return Err(LuceneError::already_closed(format!(
                 "Lock path unexpectedly cleared from map: {self}"
@@ -4628,7 +4904,10 @@ impl Lock for NativeFSLock {
         // Try to validate the underlying file descriptor: `channel.size()`
         // throws if something is wrong.
         let size = {
-            let channel = self.channel.lock().expect("native lock mutex poisoned");
+            let channel = self
+                .channel
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match channel.as_ref() {
                 Some(channel) => channel.size(),
                 None => Err(nio::closed_channel_exception()),
@@ -5063,7 +5342,7 @@ pub trait ChecksumIndexInput: IndexInput {
     /// file pointer by reading the skipped bytes through the per-instance skip
     /// buffer, so the digest remains correct.
     fn seek(&mut self, pos: i64) -> Result<()> {
-        let cur = self.file_pointer();
+        let cur = self.file_pointer()?;
         if pos < cur {
             return Err(LuceneError::illegal_state(format!(
                 "{} cannot seek backwards (pos={pos}, file_pointer={cur})",
@@ -5167,6 +5446,22 @@ impl DataInput for BufferedChecksumIndexInput {
         Ok(())
     }
 
+    /// `main.readBytes(b, offset, len)`, then `digest.update(b, offset, len)`,
+    /// whose `CRC32.update` range check throws
+    /// `ArrayIndexOutOfBoundsException("Range [offset, offset + len) out of
+    /// bounds for length n")` (`BufferedChecksumIndexInput.java:45-48`).
+    fn read_bytes_out_of_range(&mut self, b: &mut [u8], offset: i32, len: i32) -> Result<()> {
+        self.main.read_bytes_out_of_range(b, offset, len)?;
+        Err(LuceneError::from(LuceneErrorKind::Unchecked {
+            class: "java.lang.ArrayIndexOutOfBoundsException",
+            message: Some(format!(
+                "Range [{offset}, {offset} + {len}) out of bounds for length {}",
+                b.len()
+            )),
+            cause: None,
+        }))
+    }
+
     /// Equivalent to `BufferedChecksumIndexInput.readShort()`
     /// (`BufferedChecksumIndexInput.java:50-54`): reads through the wrapped
     /// input's own `readShort` and checksums the value with
@@ -5204,10 +5499,10 @@ impl DataInput for BufferedChecksumIndexInput {
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
+                "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let target = self.file_pointer() + num_bytes;
+        let target = self.file_pointer()? + num_bytes;
         ChecksumIndexInput::seek(self, target)
     }
 }
@@ -5217,7 +5512,7 @@ impl IndexInput for BufferedChecksumIndexInput {
         self.main.close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.main.file_pointer()
     }
 
@@ -5235,15 +5530,15 @@ impl IndexInput for BufferedChecksumIndexInput {
         _offset: i64,
         _length: i64,
     ) -> Result<Box<dyn IndexInput>> {
-        Err(LuceneError::illegal_state(
-            "BufferedChecksumIndexInput does not support slicing".to_string(),
-        ))
+        // `throw new UnsupportedOperationException()`
+        // (`BufferedChecksumIndexInput.java:101-104`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
-        Err(LuceneError::illegal_state(
-            "BufferedChecksumIndexInput does not support cloning".to_string(),
-        ))
+        // `throw new UnsupportedOperationException()`
+        // (`BufferedChecksumIndexInput.java:96-99`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn resource_description(&self) -> &str {
@@ -5432,7 +5727,7 @@ pub trait Directory: Send + Sync {
         })();
         if !success {
             // IOUtils.deleteFilesIgnoringExceptions(this, dest)
-            let _ = self.delete_file(dest);
+            crate::util::IOUtils::delete_files_ignoring_exceptions_in(self, [dest]);
         }
         result
     }
@@ -5576,7 +5871,10 @@ fn radix_36(value: u64) -> String {
         let mut v = value;
         while v > 0 {
             let digit = (v % 36) as u32;
-            chars.push(std::char::from_digit(digit, 36).expect("radix 36 digits are always valid"));
+            chars.push(
+                std::char::from_digit(digit, 36)
+                    .expect("INVARIANT: a digit below 36 is a radix-36 digit"),
+            );
             v /= 36;
         }
         chars.reverse();
@@ -5959,7 +6257,10 @@ impl RateLimiter for SimpleRateLimiter {
 
         // Sync'd to read + write lastNS:
         let target_ns = {
-            let mut last = self.last_ns.lock().expect("last_ns mutex poisoned");
+            let mut last = self
+                .last_ns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             // Time we should sleep until; this is purely instantaneous rate
             // (just adds seconds onto the last time we had paused to).
             let target = last.wrapping_add((1_000_000_000f64 * seconds_to_pause) as i64);
@@ -6045,7 +6346,7 @@ impl TrackingDirectoryWrapper {
         let files = self
             .created_files
             .lock()
-            .expect("created_files mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         files.to_std()
     }
 
@@ -6058,7 +6359,7 @@ impl TrackingDirectoryWrapper {
         let files = self
             .created_files
             .lock()
-            .expect("created_files mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         JavaHashSet::from_collection(files.clone())
     }
 
@@ -6067,7 +6368,7 @@ impl TrackingDirectoryWrapper {
         let mut files = self
             .created_files
             .lock()
-            .expect("created_files mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         files.clear();
     }
 }
@@ -6082,7 +6383,7 @@ impl Directory for TrackingDirectoryWrapper {
         let mut files = self
             .created_files
             .lock()
-            .expect("created_files mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         files.remove(name);
         Ok(())
     }
@@ -6096,7 +6397,7 @@ impl Directory for TrackingDirectoryWrapper {
         let mut files = self
             .created_files
             .lock()
-            .expect("created_files mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         files.insert(name.to_string());
         Ok(out)
     }
@@ -6112,7 +6413,7 @@ impl Directory for TrackingDirectoryWrapper {
         let mut files = self
             .created_files
             .lock()
-            .expect("created_files mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         files.insert(name);
         Ok(out)
     }
@@ -6130,7 +6431,7 @@ impl Directory for TrackingDirectoryWrapper {
         let mut files = self
             .created_files
             .lock()
-            .expect("created_files mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // `createdFileNames.add(dest)` before `remove(source)`.
         files.insert(dest.to_string());
         files.remove(source);
@@ -6842,9 +7143,7 @@ impl Directory for NRTCachingDirectory {
                 crate::util::IOUtils::close_while_handling_exception([
                     out.map(|mut out| move || out.close())
                 ])?;
-                for name in to_delete.iter() {
-                    let _ = first.delete_file(name);
-                }
+                crate::util::IOUtils::delete_files_ignoring_exceptions_in(first, to_delete.iter());
                 Err(error)
             }
         }
@@ -7096,33 +7395,82 @@ impl ByteBuffersDataInput {
 
     /// Repositions the input.
     ///
+    /// Equivalent to `ByteBuffersDataInput.seek(long)`
+    /// (`ByteBuffersDataInput.java:389-395`): a position past the end leaves
+    /// the input at its end and throws `new EOFException()`.
+    ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if `position` exceeds
-    /// the stream length.
+    /// Returns Java's `EOFException` (no message) if `position` exceeds the
+    /// stream length.
     pub fn seek(&mut self, position: usize) -> Result<()> {
         if position > self.length {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!("seek past EOF: position={position}, length={}", self.length),
-            ))));
+            self.pos = self.length;
+            return Err(eof_exception());
         }
         self.pos = position;
         Ok(())
+    }
+
+    /// The JVM failure of `blocks[blockIndex(absPos)].get(blockOffset(absPos))`
+    /// for an absolute position outside the stream
+    /// (`ByteBuffersDataInput.java:256-259`): `Math.toIntExact`'s
+    /// `ArithmeticException` (`integer overflow`), the
+    /// `ArrayIndexOutOfBoundsException` of a block index outside `blocks`, or
+    /// the `IndexOutOfBoundsException` (no message) of an offset past the
+    /// block's limit. Java's `blockBits` is `32` for a single block.
+    fn java_absolute_read_failure(&self, abs_pos: i64) -> LuceneError {
+        let bits = if self.blocks.len() == 1 {
+            32
+        } else {
+            self.block_bits as u32
+        };
+        let Ok(index) = i32::try_from(abs_pos >> bits) else {
+            return LuceneError::from(LuceneErrorKind::Arithmetic("integer overflow".to_string()));
+        };
+        if index < 0 || index as usize >= self.blocks.len() {
+            array_index_out_of_bounds(i64::from(index), self.blocks.len())
+        } else {
+            index_out_of_bounds_no_message()
+        }
+    }
+
+    /// The JVM failure of Java's `readShort(long)`, `readInt(long)` or
+    /// `readLong(long)` of `width` bytes at `pos` when they are not all in the
+    /// stream (`ByteBuffersDataInput.java:288-337`): the block getter when
+    /// `blockOffset + width <= blockMask` (never for a single block, whose
+    /// mask is `~0`), else `readByte` byte by byte, which fails on the first
+    /// byte outside the stream.
+    fn java_multi_byte_read_failure(&self, pos: i64, width: i64) -> LuceneError {
+        let abs_pos = self.offset as i64 + pos;
+        let fast = self.blocks.len() != 1
+            && i64::from((abs_pos as i32) & self.block_mask as i32) + width
+                <= self.block_mask as i64;
+        if fast {
+            self.java_absolute_read_failure(abs_pos)
+        } else {
+            let first_missing = pos.max(self.length as i64);
+            self.java_absolute_read_failure(self.offset as i64 + first_missing)
+        }
+    }
+
+    /// Java's `readByte(long)` (and the other absolute reads) at a negative
+    /// position: the `ArrayIndexOutOfBoundsException` (or `ArithmeticException`)
+    /// of the block index of `offset + pos`.
+    pub(crate) fn java_negative_position_failure(&self, pos: i64) -> LuceneError {
+        self.java_absolute_read_failure((self.offset as i64).wrapping_add(pos))
     }
 
     /// Reads a single byte at the given absolute position without advancing.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if `pos` is out of
-    /// bounds.
+    /// Returns the JVM failure of Java's `readByte(long)`
+    /// (`ByteBuffersDataInput.java:256-259`) if `pos` is out of bounds: an
+    /// `ArrayIndexOutOfBoundsException` or an `IndexOutOfBoundsException`.
     pub fn read_byte_at(&self, pos: usize) -> Result<u8> {
         if pos >= self.length {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!("readByte pos={pos} past EOF (length={})", self.length),
-            ))));
+            return Err(self.java_absolute_read_failure(self.offset as i64 + pos as i64));
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
@@ -7134,14 +7482,11 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if the read would
+    /// Returns the JVM failure of Java's `readShort(long)` if the read would
     /// extend past the stream length.
     pub fn read_short_at(&self, pos: usize) -> Result<i16> {
         if pos + 2 > self.length {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!("readShort pos={pos} past EOF (length={})", self.length),
-            ))));
+            return Err(self.java_multi_byte_read_failure(pos as i64, 2));
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
@@ -7160,14 +7505,11 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if the read would
+    /// Returns the JVM failure of Java's `readInt(long)` if the read would
     /// extend past the stream length.
     pub fn read_int_at(&self, pos: usize) -> Result<i32> {
         if pos + 4 > self.length {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!("readInt pos={pos} past EOF (length={})", self.length),
-            ))));
+            return Err(self.java_multi_byte_read_failure(pos as i64, 4));
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
@@ -7188,14 +7530,11 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if the read would
+    /// Returns the JVM failure of Java's `readLong(long)` if the read would
     /// extend past the stream length.
     pub fn read_long_at(&self, pos: usize) -> Result<i64> {
         if pos + 8 > self.length {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!("readLong pos={pos} past EOF (length={})", self.length),
-            ))));
+            return Err(self.java_multi_byte_read_failure(pos as i64, 8));
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
@@ -7212,11 +7551,17 @@ impl ByteBuffersDataInput {
     /// Reads `len` bytes into `bytes[offset..]` starting at the given absolute
     /// position without advancing the stream position.
     ///
+    /// Equivalent to `ByteBuffersDataInput.readBytes(long, byte[], int, int)`
+    /// (`ByteBuffersDataInput.java:262-285`): block by block, `new
+    /// EOFException()` when no byte is left, and each `block.get(blockPosition,
+    /// bytes, offset, chunk)` checks the destination range, an
+    /// `IndexOutOfBoundsException` after the earlier chunks were copied.
+    ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`] if the destination slice is too
-    /// small, or [`LuceneErrorKind::Io`] with `UnexpectedEof` if the read would
-    /// extend past the stream length.
+    /// Returns Java's `EOFException` (no message) if the read would extend
+    /// past the stream, or its `IndexOutOfBoundsException` if the destination
+    /// range does not fit in `bytes`.
     pub fn read_bytes_at(
         &self,
         pos: usize,
@@ -7224,33 +7569,23 @@ impl ByteBuffersDataInput {
         offset: usize,
         len: usize,
     ) -> Result<()> {
-        let dst_end = offset
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
-        if dst_end > bytes.len() {
-            return Err(LuceneError::illegal_argument(format!(
-                "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
-                bytes.len()
-            )));
-        }
-        if pos + len > self.length {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!(
-                    "readBytes pos={pos} len={len} past EOF (length={})",
-                    self.length
-                ),
-            ))));
-        }
         let mut src_pos = pos;
         let mut dst_pos = offset;
         let mut remaining = len;
         while remaining > 0 {
+            // `blocks[blockIndex(absPos)]` past the last block, or a chunk of
+            // zero bytes, is the end of the stream.
+            if src_pos >= self.length {
+                return Err(eof_exception());
+            }
             let idx = self.block_index(src_pos);
             let off = self.block_offset(src_pos);
             let available = self.blocks[idx].len() - off;
             let chunk = remaining.min(available);
-            bytes[dst_pos..dst_pos + chunk].copy_from_slice(&self.blocks[idx][off..off + chunk]);
+            if chunk == 0 {
+                return Err(eof_exception());
+            }
+            copy_into_checked(bytes, dst_pos, &self.blocks[idx][off..off + chunk])?;
             src_pos += chunk;
             dst_pos += chunk;
             remaining -= chunk;
@@ -7264,14 +7599,8 @@ impl ByteBuffersDataInput {
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`] if the slice is out of bounds.
     pub fn slice(&self, offset: usize, length: usize) -> Result<Self> {
-        let end = offset.checked_add(length).ok_or_else(|| {
-            LuceneError::illegal_argument("offset + length overflowed".to_string())
-        })?;
-        if end > self.length {
-            return Err(LuceneError::illegal_argument(format!(
-                "slice(offset={offset}, length={length}) out of bounds, input length={}",
-                self.length
-            )));
+        if offset > self.length || length > self.length - offset {
+            return Err(self.slice_out_of_bounds(offset as i64, length as i64));
         }
         // Java hands the view list straight to the constructor, which keeps
         // the blocks and remembers where inside the first one the slice starts
@@ -7283,6 +7612,16 @@ impl ByteBuffersDataInput {
             data.extend_from_slice(view);
         }
         Self::new(vec![data])
+    }
+
+    /// The `IllegalArgumentException` of `ByteBuffersDataInput.slice(long,
+    /// long)` (`ByteBuffersDataInput.java:406-416`) for a range outside the
+    /// stream: `slice(offset=<offset>, length=<length>) is out of bounds:
+    /// <this>`.
+    pub(crate) fn slice_out_of_bounds(&self, offset: i64, length: i64) -> LuceneError {
+        LuceneError::illegal_argument(format!(
+            "slice(offset={offset}, length={length}) is out of bounds: {self}"
+        ))
     }
 
     /// Returns the size, in bytes, of every block but possibly the last.
@@ -7383,12 +7722,12 @@ impl DataInput for ByteBuffersDataInput {
         self.to_string()
     }
 
+    /// Equivalent to `ByteBuffersDataInput.readByte()`
+    /// (`ByteBuffersDataInput.java:93-106`): `new EOFException()` at the end
+    /// of the stream.
     fn read_byte(&mut self) -> Result<u8> {
         if self.pos >= self.length {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "unexpected EOF reading byte",
-            ))));
+            return Err(eof_exception());
         }
         let idx = self.block_index(self.pos);
         let off = self.block_offset(self.pos);
@@ -7397,63 +7736,46 @@ impl DataInput for ByteBuffersDataInput {
         Ok(b)
     }
 
+    /// Equivalent to `ByteBuffersDataInput.readBytes(byte[], int, int)`
+    /// (`ByteBuffersDataInput.java:141-166`): block by block, `new
+    /// EOFException()` when no byte is left, the position advanced by each
+    /// chunk before `block.get(arr, off, chunk)` checks the destination range
+    /// (an `IndexOutOfBoundsException`).
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         let b = crate::store::require_array(b)?;
-        let dst_end = offset
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
-        if dst_end > b.len() {
-            return Err(LuceneError::illegal_argument(format!(
-                "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
-                b.len()
-            )));
-        }
         let mut dst_pos = offset;
         let mut remaining = len;
         while remaining > 0 {
             if self.pos >= self.length {
-                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    format!(
-                        "unexpected EOF reading {len} bytes at pos {} (length {})",
-                        self.pos, self.length
-                    ),
-                ))));
+                return Err(eof_exception());
             }
             let idx = self.block_index(self.pos);
             let off = self.block_offset(self.pos);
             let available = self.blocks[idx].len() - off;
-            if available == 0 {
-                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "unexpected EOF reading bytes",
-                ))));
-            }
             let chunk = remaining.min(available);
-            b[dst_pos..dst_pos + chunk].copy_from_slice(&self.blocks[idx][off..off + chunk]);
+            if chunk == 0 {
+                return Err(eof_exception());
+            }
+            // "Update pos early on for EOF detection, then try to get buffer
+            // content."
             self.pos += chunk;
+            copy_into_checked(b, dst_pos, &self.blocks[idx][off..off + chunk])?;
             dst_pos += chunk;
             remaining -= chunk;
         }
         Ok(())
     }
 
+    /// Equivalent to `ByteBuffersDataInput.skipBytes(long)`
+    /// (`ByteBuffersDataInput.java:397-404`): `seek(position() + numBytes)`.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
+                "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let num_bytes = num_bytes as usize;
-        let target = self.pos + num_bytes;
-        if target > self.length {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "skip past EOF",
-            ))));
-        }
-        self.pos = target;
-        Ok(())
+        let target = self.pos.saturating_add(num_bytes as usize);
+        self.seek(target)
     }
 
     fn read_short(&mut self) -> Result<i16> {
@@ -7682,13 +8004,14 @@ fn ensure_assumptions(buffers: &[Vec<u8>]) -> Result<()> {
     let block_page = determine_block_page(buffers);
     if !is_power_of_two(block_page) {
         return Err(LuceneError::illegal_argument(format!(
-            "The first buffer must have a power-of-two length: {block_page}"
+            "The first buffer must have power-of-two position() + remaining(): 0x{block_page:x}"
         )));
     }
     for (i, buffer) in buffers.iter().enumerate().skip(1) {
         if i != buffers.len() - 1 && buffer.len() != block_page {
             return Err(LuceneError::illegal_argument(format!(
-                "Intermediate buffers must share an identical power-of-two block size: {block_page}"
+                "Intermediate buffers must share an identical remaining() power-of-two block \
+                 size: 0x{block_page:x}"
             )));
         }
     }
@@ -7708,21 +8031,30 @@ pub type BlockAllocator = Arc<dyn Fn(usize) -> Vec<u8> + Send + Sync>;
 ///
 /// Equivalent to the `Consumer<ByteBuffer> blockReuse` argument of
 /// `ByteBuffersDataOutput(int, int, IntFunction<ByteBuffer>,
-/// Consumer<ByteBuffer>)` (`ByteBuffersDataOutput.java:149-153`).
-pub type BlockReuse = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
+/// Consumer<ByteBuffer>)` (`ByteBuffersDataOutput.java:149-153`). It returns a
+/// `Result` because a Java consumer may throw, as `NO_REUSE` does.
+pub type BlockReuse = Arc<dyn Fn(Vec<u8>) -> Result<()> + Send + Sync>;
 
 /// `ByteBuffersDataOutput.NO_REUSE` (`ByteBuffersDataOutput.java:45-48`): "A
 /// singleton instance of \"no-reuse\" buffer strategy." Every call answers
 /// the same instance, which [`ByteBuffersDataOutput::with_allocator`]
 /// recognises by identity.
 ///
-/// **Divergence from Lucene 10.5.0 (pre-existing).** Java's consumer throws
-/// `RuntimeException("reset() is not allowed on this buffer.")`; an output
-/// built with this strategy drops its blocks on `reset()` instead, as the
-/// port's default outputs do.
+/// Invoking the strategy raises
+/// `RuntimeException("reset() is not allowed on this buffer.")`, as Java's
+/// consumer throws. [`ByteBuffersDataOutput::reset`] never invokes it: Java's
+/// `reset()` skips the consumer when it is `NO_REUSE` and drops the blocks
+/// (`ByteBuffersDataOutput.java:469-476`), as does `rewriteToBlockSize`
+/// (`ByteBuffersDataOutput.java:524`).
 pub fn no_reuse() -> BlockReuse {
-    static NO_REUSE: std::sync::LazyLock<BlockReuse> =
-        std::sync::LazyLock::new(|| Arc::new(|_block: Vec<u8>| {}));
+    static NO_REUSE: std::sync::LazyLock<BlockReuse> = std::sync::LazyLock::new(|| {
+        Arc::new(|_block: Vec<u8>| {
+            Err(LuceneError::unchecked(
+                "java.lang.RuntimeException",
+                "reset() is not allowed on this buffer.",
+            ))
+        })
+    });
     Arc::clone(&NO_REUSE)
 }
 
@@ -7862,7 +8194,7 @@ impl ByteBuffersDataOutput {
             DEFAULT_MAX_BITS_PER_BLOCK,
             false,
         )
-        .expect("default bits are within limits")
+        .expect("INVARIANT: the default block bits are within the allowed range")
     }
 
     /// Creates a new output, suitable for writing around `expected_size` bytes.
@@ -7871,7 +8203,7 @@ impl ByteBuffersDataOutput {
     pub fn with_expected_size(expected_size: usize) -> Self {
         let block_bits = compute_block_size_bits_for(expected_size);
         Self::with_config(block_bits, DEFAULT_MAX_BITS_PER_BLOCK, false)
-            .expect("computed bits are within limits")
+            .expect("INVARIANT: computeBlockSizeBitsFor stays within the allowed range")
     }
 
     /// Expert: creates a new output with custom parameters.
@@ -7897,7 +8229,8 @@ impl ByteBuffersDataOutput {
                     reuser
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .reuse(block)
+                        .reuse(block);
+                    Ok(())
                 })),
             )
         } else {
@@ -7984,7 +8317,7 @@ impl ByteBuffersDataOutput {
     /// Returns a resettable instance backed by an internal recycler.
     pub fn new_resettable_instance() -> Self {
         Self::with_config(DEFAULT_MIN_BITS_PER_BLOCK, DEFAULT_MAX_BITS_PER_BLOCK, true)
-            .expect("default bits are within limits")
+            .expect("INVARIANT: the default block bits are within the allowed range")
     }
 
     /// Returns the number of bytes written so far.
@@ -8126,18 +8459,26 @@ impl ByteBuffersDataOutput {
     /// `blocks`, here `completed` and an allocated `current`) goes to the
     /// recycler, `ramBytesUsed` drops to zero and `currentBlock` becomes
     /// `EMPTY`. The block size (`blockBits`) is kept.
-    pub fn reset(&mut self) {
+    ///
+    /// # Errors
+    ///
+    /// Whatever a custom block reuse strategy raises. [`no_reuse`] is never
+    /// invoked here: Java's `if (blockReuse != NO_REUSE)` drops the blocks
+    /// instead (`ByteBuffersDataOutput.java:470-473`), so this output, like
+    /// Java's default one, resets without error.
+    pub fn reset(&mut self) -> Result<()> {
         let current = std::mem::take(&mut self.current);
         if let Some(reuse) = &self.block_reuse {
             for block in self.completed.drain(..) {
-                reuse(block);
+                reuse(block)?;
             }
             if current.capacity() > 0 {
-                reuse(current);
+                reuse(current)?;
             }
         } else {
             self.completed.clear();
         }
+        Ok(())
     }
 
     fn allocate(&mut self, size: usize) -> Vec<u8> {
@@ -8147,7 +8488,7 @@ impl ByteBuffersDataOutput {
         }
     }
 
-    fn append_block(&mut self) {
+    fn append_block(&mut self) -> Result<()> {
         if !self.current.is_empty() {
             let full = std::mem::take(&mut self.current);
             self.completed.push(full);
@@ -8156,9 +8497,9 @@ impl ByteBuffersDataOutput {
         if self.completed.len() >= MAX_BLOCKS_BEFORE_BLOCK_EXPANSION
             && self.block_bits < self.max_bits
         {
-            self.rewrite_to_block_size(self.block_bits + 1);
+            self.rewrite_to_block_size(self.block_bits + 1)?;
             if self.current.capacity() > self.current.len() {
-                return;
+                return Ok(());
             }
             if !self.current.is_empty() && self.current.len() == self.current.capacity() {
                 let full = std::mem::take(&mut self.current);
@@ -8169,36 +8510,37 @@ impl ByteBuffersDataOutput {
         let required_size = 1usize << self.block_bits;
         self.current = self.allocate(required_size);
         debug_assert!(self.current.capacity() == required_size);
+        Ok(())
     }
 
-    fn rewrite_to_block_size(&mut self, target_bits: usize) {
+    /// Equivalent to `ByteBuffersDataOutput.rewriteToBlockSize(int)`
+    /// (`ByteBuffersDataOutput.java:512-533`): every block is polled in order,
+    /// copied to an output of the target block size and then handed to the
+    /// reuse callback, whose failure propagates with the remaining blocks
+    /// still held and the block size unchanged, as in Java.
+    fn rewrite_to_block_size(&mut self, target_bits: usize) -> Result<()> {
         debug_assert!(target_bits <= self.max_bits);
         // `new ByteBuffersDataOutput(targetBlockBits, targetBlockBits,
         // blockAllocate, NO_REUSE)`.
         let mut cloned =
-            Self::with_allocator_opt(target_bits, target_bits, self.block_allocate.clone(), None)
-                .expect("target bits valid");
-        for block in &self.completed {
-            cloned.write_bytes(block, 0, block.len()).unwrap();
-        }
+            Self::with_allocator_opt(target_bits, target_bits, self.block_allocate.clone(), None)?;
+        // Java's `blocks` deque ends with the current block.
         if !self.current.is_empty() {
-            cloned
-                .write_bytes(&self.current, 0, self.current.len())
-                .unwrap();
+            let current = std::mem::take(&mut self.current);
+            self.completed.push(current);
         }
-        if let Some(reuse) = &self.block_reuse {
-            for block in self.completed.drain(..) {
-                reuse(block);
+        while !self.completed.is_empty() {
+            let block = self.completed.remove(0);
+            cloned.write_bytes(&block, 0, block.len())?;
+            if let Some(reuse) = &self.block_reuse {
+                reuse(block)?;
             }
-            reuse(std::mem::take(&mut self.current));
-        } else {
-            self.completed.clear();
-            self.current.clear();
         }
         debug_assert!(self.completed.is_empty());
         self.block_bits = target_bits;
         self.completed = cloned.completed;
         self.current = cloned.current;
+        Ok(())
     }
 
     /// Writes a long string in chunks.
@@ -8251,32 +8593,40 @@ impl Default for ByteBuffersDataOutput {
 }
 
 impl DataOutput for ByteBuffersDataOutput {
+    /// `ByteBuffersDataOutput.toString()` (`ByteBuffersDataOutput.java:360-364`),
+    /// the [`Display`](std::fmt::Display) rendering.
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         if self.current.len() == self.current.capacity() {
-            self.append_block();
+            self.append_block()?;
         }
         self.current.push(b);
         Ok(())
     }
 
+    /// Equivalent to `ByteBuffersDataOutput.writeBytes(byte[], int, int)`
+    /// (`ByteBuffersDataOutput.java:241-252`): block by block, each
+    /// `currentBlock.put(src, offset, chunk)` checking the source range (an
+    /// `IndexOutOfBoundsException` after the earlier chunks were written).
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
-        let end = offset
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
-        if end > b.len() {
-            return Err(LuceneError::illegal_argument(format!(
-                "source buffer too small: offset={offset}, len={len}, buf.len()={}",
-                b.len()
-            )));
-        }
         let mut src_pos = offset;
         let mut remaining = len;
         while remaining > 0 {
             if self.current.len() == self.current.capacity() {
-                self.append_block();
+                self.append_block()?;
             }
             let space = self.current.capacity() - self.current.len();
             let chunk = remaining.min(space);
+            if src_pos > b.len() || chunk > b.len() - src_pos {
+                return Err(check_from_index_size_ioobe(
+                    src_pos as i32,
+                    chunk as i32,
+                    b.len(),
+                ));
+            }
             self.current.extend_from_slice(&b[src_pos..src_pos + chunk]);
             src_pos += chunk;
             remaining -= chunk;
@@ -8342,15 +8692,12 @@ impl DataOutput for ByteBuffersDataOutput {
     }
 
     fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
+        // `assert numBytes >= 0 : "numBytes=" + numBytes`; a negative count
+        // copies nothing, as Java's loop does.
         debug_assert!(num_bytes >= 0, "numBytes={}", num_bytes);
-        if num_bytes < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
-            )));
-        }
         while num_bytes > 0 {
             if self.current.len() == self.current.capacity() {
-                self.append_block();
+                self.append_block()?;
             }
             let space = self.current.capacity() - self.current.len();
             let chunk = (num_bytes as usize).min(space);
@@ -8455,7 +8802,7 @@ impl FileEntry {
                 let mut content = entry_for_close
                     .content
                     .lock()
-                    .expect("content mutex poisoned");
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 *content = input;
                 entry_for_close
                     .cached_length
@@ -8476,7 +8823,10 @@ impl FileEntry {
     }
 
     fn open_input(&self) -> Result<Box<dyn IndexInput>> {
-        let content = self.content.lock().expect("content mutex poisoned");
+        let content = self
+            .content
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let input = content.as_ref().ok_or_else(|| {
             // `new AccessDeniedException("Can't open a file still open for
             // writing: " + fileName)` (`ByteBuffersDirectory.java:244`).
@@ -8530,7 +8880,10 @@ impl ByteBuffersDirectory {
     /// Returns `true` if the named file exists in this directory.
     pub fn file_exists(&self, name: &str) -> Result<bool> {
         self.ensure_open()?;
-        let files = self.files.lock().expect("files mutex poisoned");
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(files.contains_key(name))
     }
 
@@ -8550,7 +8903,10 @@ impl Default for ByteBuffersDirectory {
 impl Directory for ByteBuffersDirectory {
     fn list_all(&self) -> Result<Vec<String>> {
         self.ensure_open()?;
-        let files = self.files.lock().expect("files mutex poisoned");
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut names: Vec<String> = files.keys().cloned().collect();
         names.sort();
         Ok(names)
@@ -8558,7 +8914,10 @@ impl Directory for ByteBuffersDirectory {
 
     fn delete_file(&self, name: &str) -> Result<()> {
         self.ensure_open()?;
-        let mut files = self.files.lock().expect("files mutex poisoned");
+        let mut files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if files.remove(name).is_none() {
             // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:134`).
             return Err(LuceneError::from(LuceneErrorKind::Io(
@@ -8570,7 +8929,10 @@ impl Directory for ByteBuffersDirectory {
 
     fn file_length(&self, name: &str) -> Result<i64> {
         self.ensure_open()?;
-        let files = self.files.lock().expect("files mutex poisoned");
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:143`).
         let entry = files.get(name).ok_or_else(|| {
             LuceneError::from(LuceneErrorKind::Io(nio::no_such_file_exception(name)))
@@ -8582,7 +8944,10 @@ impl Directory for ByteBuffersDirectory {
         self.ensure_open()?;
         let entry = Arc::new(FileEntry::new(name.to_string()));
         {
-            let mut files = self.files.lock().expect("files mutex poisoned");
+            let mut files = self
+                .files
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if files.contains_key(name) {
                 // `new FileAlreadyExistsException("File already exists: " +
                 // name)` (`ByteBuffersDirectory.java:159`).
@@ -8610,7 +8975,10 @@ impl Directory for ByteBuffersDirectory {
             let counter = self.temp_counter.fetch_add(1, Ordering::SeqCst);
             let name = Self::get_temp_file_name(prefix, suffix, counter);
             let entry = Arc::new(FileEntry::new(name.clone()));
-            let mut files = self.files.lock().expect("files mutex poisoned");
+            let mut files = self
+                .files
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if files.insert(name.clone(), Arc::clone(&entry)).is_none() {
                 return Ok(Box::new(FileEntry::create_output(
                     entry,
@@ -8633,7 +9001,10 @@ impl Directory for ByteBuffersDirectory {
 
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
         self.ensure_open()?;
-        let mut files = self.files.lock().expect("files mutex poisoned");
+        let mut files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // `new NoSuchFileException(source)` and `new
         // FileAlreadyExistsException(dest)` (`ByteBuffersDirectory.java:183-186`).
         let source_entry = files.get(source).cloned().ok_or_else(|| {
@@ -8655,7 +9026,10 @@ impl Directory for ByteBuffersDirectory {
 
     fn open_input(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
         self.ensure_open()?;
-        let files = self.files.lock().expect("files mutex poisoned");
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:209`).
         let entry = files.get(name).ok_or_else(|| {
             LuceneError::from(LuceneErrorKind::Io(nio::no_such_file_exception(name)))
@@ -8674,7 +9048,10 @@ impl Directory for ByteBuffersDirectory {
     /// files.clear();`.
     fn close(&self) -> Result<()> {
         self.base.set_open(false);
-        self.files.lock().expect("files mutex poisoned").clear();
+        self.files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         Ok(())
     }
 
@@ -8785,12 +9162,18 @@ impl ByteBuffersIndexInput {
 
     fn input(&self) -> Result<&ByteBuffersDataInput> {
         self.ensure_open()?;
-        Ok(self.input.as_ref().expect("ensure_open validated input"))
+        Ok(self
+            .input
+            .as_ref()
+            .expect("INVARIANT: ensure_open checked the input is present"))
     }
 
     fn input_mut(&mut self) -> Result<&mut ByteBuffersDataInput> {
         self.ensure_open()?;
-        Ok(self.input.as_mut().expect("ensure_open validated input"))
+        Ok(self
+            .input
+            .as_mut()
+            .expect("INVARIANT: ensure_open checked the input is present"))
     }
 }
 
@@ -8886,22 +9269,28 @@ impl IndexInput for ByteBuffersIndexInput {
         Ok(())
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.input.as_ref().map_or(0, |i| i.position() as i64)
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.input.as_ref().map_or(0, |i| i.position() as i64))
     }
 
     fn length(&self) -> i64 {
         self.input.as_ref().map_or(0, |i| i.length() as i64)
     }
 
+    /// Equivalent to `ByteBuffersIndexInput.seek(long)`: `ensureOpen()`, then
+    /// `in.seek(pos)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `ByteBuffersDataInput`
+    /// stores a negative position and the next read fails with the
+    /// `ArrayIndexOutOfBoundsException` of its block index; this port's
+    /// position is a `usize`, which cannot hold it, so that same exception is
+    /// raised here, at the seek.
     fn seek(&mut self, pos: i64) -> Result<()> {
+        let input = self.input_mut()?;
         if pos < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "position must be non-negative (got: {pos})"
-            )));
+            return Err(input.java_negative_position_failure(pos));
         }
-        let pos = pos as usize;
-        self.input_mut()?.seek(pos)
+        input.seek(pos as usize)
     }
 
     fn slice(
@@ -8910,13 +9299,12 @@ impl IndexInput for ByteBuffersIndexInput {
         offset: i64,
         length: i64,
     ) -> Result<Box<dyn IndexInput>> {
-        self.ensure_open()?;
-        if offset < 0 || length < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "slice offset ({offset}) and length ({length}) must be non-negative"
-            )));
+        let input = self.input()?;
+        // `in.slice(offset, length)`: `(length | offset) < 0` is the same
+        // out-of-bounds `IllegalArgumentException` as a range past the end.
+        if (length | offset) < 0 {
+            return Err(input.slice_out_of_bounds(offset, length));
         }
-        let input = self.input.as_ref().expect("ensure_open validated input");
         let sliced = input.slice(offset as usize, length as usize)?;
         let desc = format!(
             "(sliced) offset={}, length={} {} [slice={}]",
@@ -8926,14 +9314,13 @@ impl IndexInput for ByteBuffersIndexInput {
     }
 
     fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
-        self.ensure_open()?;
-        let input = self.input.as_ref().expect("ensure_open validated input");
+        let input = self.input()?;
         let cloned_input = input.slice(0, input.length())?;
         let mut cloned = ByteBuffersIndexInput::new(
             cloned_input,
             format!("(clone of) {}", self.resource_description),
         );
-        cloned.seek(self.file_pointer())?;
+        cloned.seek(self.file_pointer()?)?;
         Ok(Box::new(cloned))
     }
 
@@ -8942,13 +9329,12 @@ impl IndexInput for ByteBuffersIndexInput {
     }
 
     fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
-        self.ensure_open()?;
-        if offset < 0 || length < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "slice offset ({offset}) and length ({length}) must be non-negative"
-            )));
+        let input = self.input()?;
+        // `in.slice(offset, length)`: `(length | offset) < 0` is the same
+        // out-of-bounds `IllegalArgumentException` as a range past the end.
+        if (length | offset) < 0 {
+            return Err(input.slice_out_of_bounds(offset, length));
         }
-        let input = self.input.as_ref().expect("ensure_open validated input");
         let sliced = input.slice(offset as usize, length as usize)?;
         let desc = format!(
             "(sliced) offset={}, length={} {} [slice={}]",
@@ -8960,12 +9346,11 @@ impl IndexInput for ByteBuffersIndexInput {
 
 impl RandomAccessInput for ByteBuffersIndexInput {
     fn read_byte_at(&mut self, pos: i64) -> Result<u8> {
+        let input = self.input()?;
         if pos < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "position must be non-negative (got: {pos})"
-            )));
+            return Err(input.java_negative_position_failure(pos));
         }
-        self.input()?.read_byte_at(pos as usize)
+        input.read_byte_at(pos as usize)
     }
 
     fn read_bytes_at(
@@ -8975,40 +9360,35 @@ impl RandomAccessInput for ByteBuffersIndexInput {
         offset: usize,
         len: usize,
     ) -> Result<()> {
-        if pos < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "position must be non-negative (got: {pos})"
-            )));
+        let input = self.input()?;
+        if pos < 0 && len > 0 {
+            return Err(input.java_negative_position_failure(pos));
         }
-        self.input()?
-            .read_bytes_at(pos as usize, bytes, offset, len)
+        input.read_bytes_at(pos as usize, bytes, offset, len)
     }
 
     fn read_short_at(&mut self, pos: i64) -> Result<i16> {
+        let input = self.input()?;
         if pos < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "position must be non-negative (got: {pos})"
-            )));
+            return Err(input.java_negative_position_failure(pos));
         }
-        self.input()?.read_short_at(pos as usize)
+        input.read_short_at(pos as usize)
     }
 
     fn read_int_at(&mut self, pos: i64) -> Result<i32> {
+        let input = self.input()?;
         if pos < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "position must be non-negative (got: {pos})"
-            )));
+            return Err(input.java_negative_position_failure(pos));
         }
-        self.input()?.read_int_at(pos as usize)
+        input.read_int_at(pos as usize)
     }
 
     fn read_long_at(&mut self, pos: i64) -> Result<i64> {
+        let input = self.input()?;
         if pos < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "position must be non-negative (got: {pos})"
-            )));
+            return Err(input.java_negative_position_failure(pos));
         }
-        self.input()?.read_long_at(pos as usize)
+        input.read_long_at(pos as usize)
     }
 }
 
@@ -9089,7 +9469,7 @@ impl ByteBuffersIndexOutput {
         Ok(self
             .delegate
             .as_ref()
-            .expect("ensure_open validated delegate"))
+            .expect("INVARIANT: ensure_open checked the delegate is present"))
     }
 
     fn delegate_mut(&mut self) -> Result<&mut ByteBuffersDataOutput> {
@@ -9097,7 +9477,7 @@ impl ByteBuffersIndexOutput {
         Ok(self
             .delegate
             .as_mut()
-            .expect("ensure_open validated delegate"))
+            .expect("INVARIANT: ensure_open checked the delegate is present"))
     }
 
     /// Returns a contiguous copy of the bytes written so far.
@@ -9107,6 +9487,12 @@ impl ByteBuffersIndexOutput {
 }
 
 impl DataOutput for ByteBuffersIndexOutput {
+    /// `IndexOutput.toString()`: the resource description
+    /// (`IndexOutput.java:83-86`).
+    fn to_java_string(&self) -> String {
+        self.resource_description().to_string()
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.delegate_mut()?.write_byte(b)
     }
@@ -9333,6 +9719,12 @@ impl<W: Write + Send + Sync> OutputStreamIndexOutput<W> {
 }
 
 impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
+    /// `IndexOutput.toString()`: the resource description
+    /// (`IndexOutput.java:83-86`).
+    fn to_java_string(&self) -> String {
+        self.resource_description().to_string()
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.crc.update(b);
         self.out.write_all(&[b]).map_err(LuceneError::from)?;
@@ -9340,16 +9732,27 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
         Ok(())
     }
 
+    /// Equivalent to `OutputStreamIndexOutput.writeBytes(byte[], int, int)`:
+    /// `os.write(b, offset, length)` through the `CheckedOutputStream` over a
+    /// `BufferedOutputStream`, whose `System.arraycopy` into its buffer throws
+    /// `ArrayIndexOutOfBoundsException` for a source range that does not fit
+    /// (a length at least the buffer size goes to the underlying stream,
+    /// whose range check throws `IndexOutOfBoundsException`).
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
-        let end = offset
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
-        if end > b.len() {
-            return Err(LuceneError::illegal_argument(format!(
-                "source buffer too small: offset={offset}, len={len}, buf.len={}",
-                b.len()
-            )));
+        if offset > b.len() || len > b.len() - offset {
+            if len >= self.out.capacity() {
+                return Err(index_out_of_bounds_no_message());
+            }
+            return Err(LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!(
+                    "arraycopy: last source index {} out of bounds for byte[{}]",
+                    offset as u64 + len as u64,
+                    b.len()
+                ),
+            ));
         }
+        let end = offset + len;
         self.crc.update_bytes(b, offset, len)?;
         self.out
             .write_all(&b[offset..end])
@@ -9490,6 +9893,12 @@ impl FSIndexOutput {
 }
 
 impl DataOutput for FSIndexOutput {
+    /// `IndexOutput.toString()`: the resource description
+    /// (`IndexOutput.java:83-86`).
+    fn to_java_string(&self) -> String {
+        self.resource_description().to_string()
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.0.write_byte(b)
     }
@@ -9760,14 +10169,14 @@ impl FSDirectory {
     fn is_pending(&self, name: &str) -> bool {
         self.pending_deletes
             .lock()
-            .expect("pending deletes mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(name)
     }
 
     fn remove_pending(&self, name: &str) -> bool {
         self.pending_deletes
             .lock()
-            .expect("pending deletes mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(name)
     }
 
@@ -9828,7 +10237,7 @@ impl FSDirectory {
             Err(_) => {
                 self.pending_deletes
                     .lock()
-                    .expect("pending deletes mutex poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert(name.to_string());
                 Ok(())
             }
@@ -9845,7 +10254,7 @@ impl FSDirectory {
             let pending = self
                 .pending_deletes
                 .lock()
-                .expect("pending deletes mutex poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if pending.is_empty() {
                 return Ok(());
             }
@@ -9865,7 +10274,7 @@ impl FSDirectory {
             let pending = self
                 .pending_deletes
                 .lock()
-                .expect("pending deletes mutex poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if pending.is_empty() {
                 false
             } else {
@@ -9894,7 +10303,7 @@ impl Directory for FSDirectory {
         let pending = self
             .pending_deletes
             .lock()
-            .expect("pending deletes mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         Self::list_all_skipping(&self.directory, Some(&pending))
     }
@@ -10058,7 +10467,7 @@ impl Directory for FSDirectory {
         let pending = self
             .pending_deletes
             .lock()
-            .expect("pending deletes mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(pending.clone())
     }
 
@@ -10162,7 +10571,7 @@ impl DataInput for FileIndexInput {
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
+                "numBytes must be >= 0, got {num_bytes}"
             )));
         }
         let target = self.pos as i64 + num_bytes;
@@ -10183,8 +10592,8 @@ impl IndexInput for FileIndexInput {
         Ok(())
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.pos as i64
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.pos as i64)
     }
 
     fn length(&self) -> i64 {
@@ -10468,7 +10877,9 @@ struct RawNioFsIndexInput {
     /// Equivalent to `NIOFSIndexInput.off`: the start offset in the file,
     /// non-zero for a slice. `pos` is relative to it.
     off: u64,
-    pos: u64,
+    /// Java's `long` file pointer: a negative seek is stored as is, and fails
+    /// at the channel read.
+    pos: i64,
     /// Equivalent to `NIOFSIndexInput.end - off`.
     len: i64,
     resource_description: String,
@@ -10496,31 +10907,31 @@ impl RawNioFsIndexInput {
     /// `NIOFSIndexInput.readInternal` does.
     fn read_internal(&mut self, buf: &mut [u8]) -> Result<()> {
         // `if (pos + b.remaining() > end) throw new EOFException("read past EOF: " + this)`
-        if self.pos as i64 + buf.len() as i64 > self.len {
+        if self.pos.wrapping_add(buf.len() as i64) > self.len {
             return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("read past EOF: {}", self.resource_description),
             ))));
         }
-        read_channel_at(&*self.channel, buf, self.off + self.pos).map_err(|e| {
-            if nio::java_class_of(&e) == nio::CLOSED_CHANNEL_EXCEPTION {
-                LuceneError::already_closed(format!(
-                    "Already closed: {}",
-                    self.resource_description
-                ))
-            } else if e.kind() == io::ErrorKind::UnexpectedEof {
-                LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    format!("read past EOF: {}", self.resource_description),
-                )))
-            } else {
-                LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                    e.kind(),
-                    format!("{}: {e}", self.resource_description),
-                )))
-            }
-        })?;
-        self.pos += buf.len() as u64;
+        read_channel_at(&*self.channel, buf, self.off.wrapping_add(self.pos as u64)).map_err(
+            |e| {
+                if nio::java_class_of(&e) == nio::CLOSED_CHANNEL_EXCEPTION {
+                    LuceneError::already_closed(format!(
+                        "Already closed: {}",
+                        self.resource_description
+                    ))
+                } else if e.kind() == io::ErrorKind::UnexpectedEof {
+                    LuceneError::from(LuceneErrorKind::Io(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        format!("read past EOF: {}", self.resource_description),
+                    )))
+                } else {
+                    // Java propagates the channel's own `IOException`.
+                    LuceneError::from(e)
+                }
+            },
+        )?;
+        self.pos += buf.len() as i64;
         Ok(())
     }
 }
@@ -10537,35 +10948,30 @@ impl DataInput for RawNioFsIndexInput {
         Ok(buf[0])
     }
 
+    /// `readInternal(ByteBuffer.wrap(b, offset, len))`: `ByteBuffer.wrap`'s
+    /// `Objects.checkFromIndexSize` range check throws
+    /// `IndexOutOfBoundsException`.
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         let b = crate::store::require_array(b)?;
-        let end = offset
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
-        if end > b.len() {
-            return Err(LuceneError::illegal_argument(format!(
-                "destination buffer too small: offset={offset}, len={len}, buf.len={}",
-                b.len()
-            )));
+        if offset > b.len() || len > b.len() - offset {
+            return Err(check_from_index_size_ioobe(
+                offset as i32,
+                len as i32,
+                b.len(),
+            ));
         }
-        self.read_internal(&mut b[offset..end])
+        self.read_internal(&mut b[offset..offset + len])
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
+                "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let target = self.pos as i64 + num_bytes;
-        if target > self.len {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "skip past EOF",
-            ))));
-        }
-        self.pos = target as u64;
-        Ok(())
+        // `IndexInput.skipBytes` (`IndexInput.java:86-92`): a seek.
+        let target = self.pos.wrapping_add(num_bytes);
+        IndexInput::seek(self, target)
     }
 }
 
@@ -10578,27 +10984,32 @@ impl IndexInput for RawNioFsIndexInput {
         Ok(())
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.pos as i64
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.pos)
     }
 
     fn length(&self) -> i64 {
         self.len
     }
 
+    /// Equivalent to `NIOFSIndexInput.seekInternal(long)`
+    /// (`NIOFSDirectory.java:207-213`): only a position past the end throws,
+    /// `EOFException("read past EOF: pos=<pos> vs length=<length>: <this>")`;
+    /// a negative one fails at the channel read.
     fn seek(&mut self, pos: i64) -> Result<()> {
-        if pos < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "position must be non-negative (got: {pos})"
+        if pos > self.len {
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                crate::store::java_nio_file::JavaIoException::new(
+                    crate::store::java_nio_file::EOF_EXCEPTION,
+                    Some(format!(
+                        "read past EOF: pos={pos} vs length={}: {}",
+                        self.len, self.resource_description
+                    )),
+                )
+                .into_io_error(),
             )));
         }
-        if pos > self.len {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "seek past EOF",
-            ))));
-        }
-        self.pos = pos as u64;
+        self.pos = pos;
         Ok(())
     }
 
@@ -10608,9 +11019,12 @@ impl IndexInput for RawNioFsIndexInput {
         offset: i64,
         length: i64,
     ) -> Result<Box<dyn IndexInput>> {
-        if offset < 0 || length < 0 || length > self.len - offset {
+        // `NIOFSIndexInput.slice` (`NIOFSDirectory.java:141-154`).
+        if (length | offset) < 0 || length > self.len - offset {
             return Err(LuceneError::illegal_argument(format!(
-                "slice({slice_description}) out of bounds"
+                "slice() {slice_description} out of bounds: offset={offset},length={length},\
+                 fileLength={}: {}",
+                self.len, self.resource_description
             )));
         }
         Ok(Box::new(RawNioFsIndexInput::new(
@@ -10772,7 +11186,7 @@ impl IndexInput for NIOFSIndexInput {
         self.inner.close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.inner.file_pointer()
     }
 
@@ -11313,7 +11727,11 @@ mod tests {
         let mut input = ByteArrayDataInput::new(&input_src);
         assert!(input.read_v_int().is_err());
         assert!(input.read_string().is_err());
-        assert!(input.skip_bytes(10).is_err());
+        // `ByteArrayDataInput.skipBytes` is `pos += count` with no check
+        // (`ByteArrayDataInput.java:79-82`): the skip succeeds and the next
+        // read past the buffer fails.
+        input.skip_bytes(10).unwrap();
+        assert!(input.read_byte().is_err());
     }
 
     #[test]
@@ -11768,7 +12186,7 @@ mod tests {
         out.write_int(0x9ABCDEF0u32 as i32).unwrap();
         assert_eq!(out.size(), 8);
 
-        out.reset();
+        out.reset().unwrap();
         assert_eq!(out.size(), 0);
 
         out.write_byte(0x42).unwrap();
@@ -11784,7 +12202,7 @@ mod tests {
         }
         assert!(out.size() >= 2048);
 
-        out.reset();
+        out.reset().unwrap();
         assert_eq!(out.size(), 0);
 
         // Re-writing should reuse buffers without issue.
@@ -11860,15 +12278,15 @@ mod tests {
         let mut input = input_from_output(out, "round-trip");
         assert_eq!(input.resource_description(), "round-trip");
         assert_eq!(input.length(), 15);
-        assert_eq!(input.file_pointer(), 0);
+        assert_eq!(input.file_pointer().unwrap(), 0);
 
         assert_eq!(input.read_int().unwrap(), 0xDEAD_BEEFu32 as i32);
-        assert_eq!(input.file_pointer(), 4);
+        assert_eq!(input.file_pointer().unwrap(), 4);
 
         input.seek(4).unwrap();
         assert_eq!(input.read_string().unwrap(), "Rucene");
         assert_eq!(input.read_v_long().unwrap(), 123456789);
-        assert_eq!(input.file_pointer(), input.length());
+        assert_eq!(input.file_pointer().unwrap(), input.length());
     }
 
     #[test]
@@ -11903,12 +12321,12 @@ mod tests {
         let mut slice = input.slice("middle", 4, 8).unwrap();
         assert_eq!(slice.resource_description(), "slice-source [slice=middle]");
         assert_eq!(slice.length(), 8);
-        assert_eq!(slice.file_pointer(), 0);
+        assert_eq!(slice.file_pointer().unwrap(), 0);
         assert_eq!(slice.read_int().unwrap(), 0x1122_3344u32 as i32);
         assert_eq!(slice.read_int().unwrap(), 0x5566_7788u32 as i32);
 
         // Original input is untouched.
-        assert_eq!(input.file_pointer(), 0);
+        assert_eq!(input.file_pointer().unwrap(), 0);
         assert_eq!(input.length(), 12);
 
         // Out-of-bounds slice is rejected.
@@ -11926,13 +12344,13 @@ mod tests {
         let mut clone = input.clone_input().unwrap();
 
         // Both start at the same position.
-        assert_eq!(clone.file_pointer(), input.file_pointer());
+        assert_eq!(clone.file_pointer().unwrap(), input.file_pointer().unwrap());
         assert_eq!(clone.read_int().unwrap(), input.read_int().unwrap());
 
         // Advancing the original does not affect the clone.
         input.read_int().unwrap();
-        assert_eq!(input.file_pointer(), 8);
-        assert_eq!(clone.file_pointer(), 4);
+        assert_eq!(input.file_pointer().unwrap(), 8);
+        assert_eq!(clone.file_pointer().unwrap(), 4);
         assert_eq!(clone.read_int().unwrap(), 0x0506_0708u32 as i32);
     }
 
@@ -12035,12 +12453,12 @@ mod tests {
 
         assert_eq!(input.resource_description(), "buffered-basic");
         assert_eq!(input.length(), 1024);
-        assert_eq!(input.file_pointer(), 0);
+        assert_eq!(input.file_pointer().unwrap(), 0);
 
         for i in 0i32..=255 {
             assert_eq!(input.read_int().unwrap(), i);
         }
-        assert_eq!(input.file_pointer(), input.length());
+        assert_eq!(input.file_pointer().unwrap(), input.length());
     }
 
     #[test]
@@ -12078,6 +12496,9 @@ mod tests {
         input.seek(0).unwrap();
         assert_eq!(input.read_int().unwrap(), 0);
 
+        // `BufferedIndexInput.seek` hands a position outside the buffer to
+        // `seekInternal` (`BufferedIndexInput.java:326-334`): the source's
+        // seek, which refuses both.
         assert!(input.seek(-1).is_err());
         assert!(input.seek(input.length() + 1).is_err());
     }
@@ -12097,14 +12518,14 @@ mod tests {
             "buffered-slice-source [slice=middle]"
         );
         assert_eq!(slice.length(), 512);
-        assert_eq!(slice.file_pointer(), 0);
+        assert_eq!(slice.file_pointer().unwrap(), 0);
 
         // Slice starts at int 64.
         assert_eq!(slice.read_int().unwrap(), 64);
-        assert_eq!(slice.file_pointer(), 4);
+        assert_eq!(slice.file_pointer().unwrap(), 4);
 
         // Original is untouched.
-        assert_eq!(input.file_pointer(), 0);
+        assert_eq!(input.file_pointer().unwrap(), 0);
 
         assert!(input.slice("bad", 0, 2000).is_err());
     }
@@ -12146,7 +12567,7 @@ mod tests {
         assert_eq!(ra.read_int_at(60).unwrap(), 47);
 
         // Original is untouched.
-        assert_eq!(input.file_pointer(), 0);
+        assert_eq!(input.file_pointer().unwrap(), 0);
     }
 
     #[test]
@@ -12184,14 +12605,14 @@ mod tests {
 
         input.read_int().unwrap(); // position 4
         let mut clone = input.clone_input().unwrap();
-        assert_eq!(clone.file_pointer(), 4);
+        assert_eq!(clone.file_pointer().unwrap(), 4);
 
         input.read_int().unwrap(); // position 8
-        assert_eq!(input.file_pointer(), 8);
-        assert_eq!(clone.file_pointer(), 4);
+        assert_eq!(input.file_pointer().unwrap(), 8);
+        assert_eq!(clone.file_pointer().unwrap(), 4);
 
         assert_eq!(clone.read_int().unwrap(), 1);
-        assert_eq!(clone.file_pointer(), 8);
+        assert_eq!(clone.file_pointer().unwrap(), 8);
     }
 
     #[test]
@@ -12230,7 +12651,7 @@ mod tests {
         assert_eq!(slice.read_int().unwrap(), 64);
         slice.seek(256).unwrap();
         assert_eq!(slice.read_int().unwrap(), 128);
-        assert_eq!(slice.file_pointer(), 260);
+        assert_eq!(slice.file_pointer().unwrap(), 260);
 
         // Random access within slice.
         assert_eq!(slice.read_int_at(128).unwrap(), 96);
@@ -12400,7 +12821,7 @@ mod tests {
                 self.closes.fetch_add(1, Ordering::SeqCst);
                 self.inner.close()
             }
-            fn file_pointer(&self) -> i64 {
+            fn file_pointer(&self) -> Result<i64> {
                 self.inner.file_pointer()
             }
             fn length(&self) -> i64 {
@@ -12606,7 +13027,7 @@ mod tests {
             fn close(&mut self) -> Result<()> {
                 self.0.close()
             }
-            fn file_pointer(&self) -> i64 {
+            fn file_pointer(&self) -> Result<i64> {
                 self.0.file_pointer()
             }
             fn length(&self) -> i64 {
@@ -14129,7 +14550,7 @@ mod tests {
 
         // Seek forward far enough to require multiple skip-buffer iterations.
         IndexInput::seek(&mut input, 3000).unwrap();
-        assert_eq!(input.file_pointer(), 3000);
+        assert_eq!(input.file_pointer().unwrap(), 3000);
 
         // Read the rest.
         let remaining = payload.len() - 3000;
@@ -14181,7 +14602,7 @@ mod tests {
         assert!(matches!(
             err,
             LuceneError {
-                kind: LuceneErrorKind::IllegalState { .. },
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
                 ..
             }
         ));
@@ -14201,7 +14622,7 @@ mod tests {
         assert!(matches!(
             err,
             LuceneError {
-                kind: LuceneErrorKind::IllegalState { .. },
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
                 ..
             }
         ));
@@ -14229,7 +14650,7 @@ mod tests {
         assert_eq!(input.read_int().unwrap(), 0xDEAD_BEEFu32 as i32);
         assert_eq!(input.read_string().unwrap(), "Rucene");
         assert_eq!(input.read_v_long().unwrap(), 123_456_789);
-        assert_eq!(input.file_pointer(), input.length());
+        assert_eq!(input.file_pointer().unwrap(), input.length());
     }
 
     /// Exercises file listing, existence, length, rename, and delete.
@@ -14324,14 +14745,14 @@ mod tests {
         assert_eq!(slice.length(), 8);
         assert_eq!(slice.read_int().unwrap(), 0x0506_0708u32 as i32);
         assert_eq!(slice.read_int().unwrap(), 0x090A_0B0Cu32 as i32);
-        assert_eq!(input.file_pointer(), 0);
+        assert_eq!(input.file_pointer().unwrap(), 0);
 
         // Clone is independent of the original.
         let mut clone = input.clone_input().unwrap();
         input.seek(8).unwrap();
-        assert_eq!(clone.file_pointer(), 0);
+        assert_eq!(clone.file_pointer().unwrap(), 0);
         assert_eq!(clone.read_int().unwrap(), 0x0102_0304u32 as i32);
-        assert_eq!(input.file_pointer(), 8);
+        assert_eq!(input.file_pointer().unwrap(), 8);
 
         // Random-access view over the last 8 bytes.
         let mut random = input.random_access_slice(4, 8).unwrap();
@@ -14586,7 +15007,7 @@ mod tests {
         let inner = MockIndexInput::new(data, "inner");
         let mut filter = FilterIndexInput::new("filter", Box::new(inner));
 
-        assert_eq!(filter.file_pointer(), 0);
+        assert_eq!(filter.file_pointer().unwrap(), 0);
         assert_eq!(filter.length(), 8);
         assert_eq!(filter.read_int().unwrap(), 0x0403_0201_i32);
         filter.seek(0).unwrap();
@@ -15293,11 +15714,12 @@ mod tests {
                 .expect_err("a negative length is not a string");
             assert!(
                 matches!(
-                    error,
-                    LuceneError {
-                        kind: LuceneErrorKind::CorruptIndex(_),
+                    &error.kind,
+                    LuceneErrorKind::Unchecked {
+                        class: "java.lang.NegativeArraySizeException",
+                        message: Some(message),
                         ..
-                    }
+                    } if *message == length.to_string()
                 ),
                 "length={length}: {error:?}"
             );
@@ -15688,7 +16110,10 @@ mod tests {
         assert!(input.read_byte().is_err());
         let mut spill = [0u8; 1];
         assert!(input.read_bytes(Some(&mut spill), 0, 1).is_err());
-        assert!(input.skip_bytes(1).is_err());
+        // `skipBytes` checks nothing (`ByteArrayDataInput.java:79-82`); the
+        // read after it fails.
+        input.skip_bytes(1).unwrap();
+        assert!(input.read_byte().is_err());
     }
 
     /// The little-endian overrides must decode exactly what the byte-at-a-time

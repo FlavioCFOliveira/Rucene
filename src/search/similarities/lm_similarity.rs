@@ -355,6 +355,11 @@ impl Default for LMDirichletSimilarity {
 }
 
 impl Similarity for LMDirichletSimilarity {
+    /// Java `toString()`, which this similarity overrides.
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.search.similarities.LMDirichletSimilarity"
     }
@@ -593,6 +598,11 @@ impl LMJelinekMercerSimilarity {
 }
 
 impl Similarity for LMJelinekMercerSimilarity {
+    /// Java `toString()`, which this similarity overrides.
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.search.similarities.LMJelinekMercerSimilarity"
     }
@@ -860,6 +870,11 @@ impl Default for IndriDirichletSimilarity {
 }
 
 impl Similarity for IndriDirichletSimilarity {
+    /// Java `toString()`, which this similarity overrides.
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.search.similarities.IndriDirichletSimilarity"
     }

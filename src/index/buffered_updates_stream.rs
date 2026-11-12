@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::error::{LuceneError, Result};
+use crate::error::Result;
 use crate::index::documents_writer::FrozenBufferedUpdates;
 use crate::index::index_writer::IndexWriter;
 use crate::index::segment_info::SegmentCommitInfo;
@@ -144,7 +144,11 @@ struct FinishedSegments {
 impl FinishedSegments {
     fn clear(&self) {
         self.completed_del_gen.store(0, Ordering::Release);
-        if let Ok(mut guard) = self.finished_del_gens.lock() {
+        {
+            let mut guard = self
+                .finished_del_gens
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard.clear();
         }
     }
@@ -161,18 +165,20 @@ impl FinishedSegments {
         if del_gen <= self.completed_del_gen.load(Ordering::Acquire) {
             return false;
         }
-        match self.finished_del_gens.lock() {
-            Ok(guard) => !guard.contains(&del_gen),
-            Err(_) => true,
-        }
+        !self
+            .finished_del_gens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&del_gen)
     }
 
     /// Records that `del_gen` finished, advancing the completed watermark over
     /// every consecutive generation that has also finished.
     fn finished_segment(&self, del_gen: i64) {
-        let Ok(mut guard) = self.finished_del_gens.lock() else {
-            return;
-        };
+        let mut guard = self
+            .finished_del_gens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.insert(del_gen);
         loop {
             let next = self.completed_del_gen.load(Ordering::Acquire) + 1;
@@ -240,27 +246,25 @@ impl BufferedUpdatesStream {
         }
     }
 
-    /// Returns the RAM a single packet accounts for.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java reads `packet.bytesUsed`, which
-    /// `FrozenBufferedUpdates` computes when it freezes the packet's
-    /// `PrefixCodedTerms` and query array. `BufferedUpdates` in this port does
-    /// not track its own RAM yet, so the weight is counted from the operations
-    /// the packet carries — which is what `any()` and `ram_bytes_used()` are
-    /// actually used for here. Both `push` and
-    /// [`check_delete_stats`](Self::check_delete_stats) go through this one
-    /// function, so the running total and the check always agree.
+    /// Returns the RAM a single packet accounts for: `packet.bytesUsed`, the
+    /// bytes `FrozenBufferedUpdates` charged when it froze the packet's
+    /// `PrefixCodedTerms`, query array and field updates
+    /// (`FrozenBufferedUpdates.java:108-111`), which `push` adds
+    /// (`BufferedUpdatesStream.java:80`), `finishedSegment` subtracts
+    /// (`BufferedUpdatesStream.java:164`) and `checkDeleteStats` sums
+    /// (`BufferedUpdatesStream.java:297-301`).
     fn packet_bytes_used(packet: &FrozenBufferedUpdates) -> i64 {
-        (packet.updates().terms_size() + packet.updates().queries_size()) as i64
+        crate::util::Accountable::ram_bytes_used(packet)
     }
 
     /// Appends `packet` to the stream and returns the generation it was given.
     ///
     /// Equivalent to `BufferedUpdatesStream.push`.
     pub fn push(&self, packet: Arc<FrozenBufferedUpdates>) -> Result<i64> {
-        let mut guard = self.updates.lock().map_err(|_| {
-            LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
-        })?;
+        let mut guard = self
+            .updates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // The insert operation must be atomic: letting threads increment the
         // generation and push afterwards risks packets landing out of order,
         // which would apply deletes to the wrong segments.
@@ -317,7 +321,10 @@ impl BufferedUpdatesStream {
     ///
     /// Equivalent to `BufferedUpdatesStream.getPendingUpdatesCount`.
     pub fn get_pending_updates_count(&self) -> usize {
-        self.updates.lock().map(|guard| guard.len()).unwrap_or(0)
+        self.updates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Drops every packet and resets the generation counter.
@@ -325,9 +332,10 @@ impl BufferedUpdatesStream {
     /// Equivalent to `BufferedUpdatesStream.clear`, which only `IndexWriter`'s
     /// rollback calls.
     pub fn clear(&self) -> Result<()> {
-        let mut guard = self.updates.lock().map_err(|_| {
-            LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
-        })?;
+        let mut guard = self
+            .updates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.clear();
         self.next_gen.store(1, Ordering::Release);
         self.bytes_used.store(0, Ordering::Release);
@@ -347,6 +355,21 @@ impl BufferedUpdatesStream {
     /// Equivalent to `BufferedUpdatesStream.ramBytesUsed`.
     pub fn ram_bytes_used(&self) -> i64 {
         self.bytes_used.load(Ordering::Relaxed)
+    }
+
+    /// Runs `body` while holding this stream's monitor: Java's
+    /// `synchronized (bufferedUpdatesStream) { ... }`, which
+    /// `IndexWriter.tryModifyDocument` takes (`IndexWriter.java:1832-1835`).
+    ///
+    /// # Errors
+    ///
+    /// None: a Java monitor is never poisoned, so neither is this one.
+    pub(crate) fn synchronized<R>(&self, body: impl FnOnce() -> R) -> Result<R> {
+        let _monitor = self
+            .updates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(body())
     }
 
     /// Returns the generation the next packet will be given.
@@ -377,14 +400,15 @@ impl BufferedUpdatesStream {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the stream's lock is
-    /// poisoned.
+    /// None: Java has no lock poisoning, so a poisoned lock continues with the
+    /// state it guards.
     pub fn finished(&self, packet: &Arc<FrozenBufferedUpdates>) -> Result<()> {
         debug_assert!(!packet.is_applied(), "packet={packet}");
         {
-            let mut guard = self.updates.lock().map_err(|_| {
-                LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
-            })?;
+            let mut guard = self
+                .updates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard.retain(|held| !Arc::ptr_eq(held, packet));
             self.bytes_used
                 .fetch_sub(Self::packet_bytes_used(packet), Ordering::Relaxed);
@@ -414,9 +438,10 @@ impl BufferedUpdatesStream {
     /// Propagates whatever resolving a packet raises.
     pub fn wait_apply_all(&self, writer: &IndexWriter) -> Result<()> {
         let wait_for = {
-            let guard = self.updates.lock().map_err(|_| {
-                LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
-            })?;
+            let guard = self
+                .updates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard.clone()
         };
         self.wait_apply(wait_for, writer)
@@ -444,9 +469,10 @@ impl BufferedUpdatesStream {
         }
 
         let wait_for: Vec<Arc<FrozenBufferedUpdates>> = {
-            let guard = self.updates.lock().map_err(|_| {
-                LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())
-            })?;
+            let guard = self
+                .updates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard
                 .iter()
                 .filter(|packet| packet.del_gen() <= max_del_gen)

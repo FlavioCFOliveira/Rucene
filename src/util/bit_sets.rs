@@ -213,7 +213,7 @@ impl SparseFixedBitSet {
     /// Returns an approximate cardinality using the linear-counting estimator.
     pub fn approximate_cardinality(&self) -> usize {
         let total_longs = self.length.div_ceil(64);
-        assert!(total_longs >= self.non_zero_long_count);
+        debug_assert!(total_longs >= self.non_zero_long_count);
         let zero_longs = total_longs - self.non_zero_long_count;
         if zero_longs == 0 {
             return self.length;
@@ -387,12 +387,13 @@ impl SparseFixedBitSet {
     ///
     /// Panics when the range falls outside the set.
     pub fn set_range(&mut self, start_index: usize, end_index: usize) {
-        assert!(
+        // Java's assertions (`SparseFixedBitSet.java:252-254`).
+        debug_assert!(
             start_index < self.length,
             "startIndex={start_index}, length={}",
             self.length
         );
-        assert!(
+        debug_assert!(
             end_index <= self.length,
             "endIndex={end_index}, length={}",
             self.length
@@ -760,7 +761,7 @@ impl SparseFixedBitSet {
 
     fn insert_block(&mut self, i4096: usize, i64bit: u64, index: usize) {
         self.indices[i4096] = i64bit;
-        assert!(self.bits[i4096].is_none());
+        debug_assert!(self.bits[i4096].is_none());
         self.bits[i4096] = Some(vec![1u64 << (index & 0x3f)]);
         self.non_zero_long_count += 1;
     }
@@ -1427,20 +1428,22 @@ impl RoaringDocIdSetBuilder {
 
     /// Adds a single doc id. Doc ids must be added in strictly increasing order.
     ///
+    /// Equivalent to `RoaringDocIdSet.Builder#add(int)`
+    /// (`RoaringDocIdSet.java:115-130`), which checks only the order: like
+    /// Java, a doc id at or past `maxDoc` is not rejected here, and fails only
+    /// where Java's arrays do (the `sets` slot of a block past the last one,
+    /// or the dense buffer sized from `maxDoc`).
+    ///
     /// # Errors
     ///
-    /// Returns an error if `doc_id` is out of order or out of bounds.
+    /// Returns an error if `doc_id` is out of order, or Java's
+    /// `NegativeArraySizeException` when the dense buffer of a block past
+    /// `maxDoc` is sized negative (`RoaringDocIdSet.java:181-182`).
     pub fn add(&mut self, doc_id: usize) -> crate::error::Result<()> {
         if doc_id as i32 <= self.last_doc_id {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "doc ids must be added in-order, got {doc_id} which is <= lastDocId={}",
+                "Doc ids must be added in-order, got {doc_id} which is <= lastDocID={}",
                 self.last_doc_id
-            )));
-        }
-        if doc_id >= self.max_doc {
-            return Err(crate::error::LuceneError::illegal_argument(format!(
-                "doc_id={doc_id} is >= maxDoc={}",
-                self.max_doc
             )));
         }
         let block = (doc_id >> 16) as i32;
@@ -1449,7 +1452,7 @@ impl RoaringDocIdSetBuilder {
             self.current_block = block;
             self.first_doc_id = doc_id as i32;
         }
-        self.append_doc_in_current_block(doc_id, block as usize);
+        self.append_doc_in_current_block(doc_id, block as usize)?;
         Ok(())
     }
 
@@ -1469,13 +1472,13 @@ impl RoaringDocIdSetBuilder {
         }
         if min as i32 <= self.last_doc_id {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "doc ids must be added in-order, got range starting at {min} which is <= lastDocId={}",
+                "Doc ids must be added in-order, got range starting at {min} which is <= lastDocID={}",
                 self.last_doc_id
             )));
         }
         if max > self.max_doc {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "max={max} exceeds maxDoc={}",
+                "max must be <= maxDoc ({}), got max={max}",
                 self.max_doc
             )));
         }
@@ -1488,7 +1491,7 @@ impl RoaringDocIdSetBuilder {
                 self.current_block = block as i32;
                 self.first_doc_id = doc as i32;
             }
-            self.append_range_in_current_block(doc, block_end, block);
+            self.append_range_in_current_block(doc, block_end, block)?;
             doc = block_end;
         }
         Ok(())
@@ -1523,7 +1526,7 @@ impl RoaringDocIdSetBuilder {
                 max: (self.last_doc_id & 0xffff) as u16,
             })
         } else if self.current_block_cardinality <= ROARING_MAX_ARRAY_LENGTH {
-            assert!(self.dense_buffer.is_none());
+            debug_assert!(self.dense_buffer.is_none());
             // `new ShortArrayDocIdSet(ArrayUtil.copyOfSubArray(buffer, 0,
             // currentBlockCardinality))`: docs were added in order.
             let doc_ids = self.buffer[..self.current_block_cardinality].to_vec();
@@ -1580,25 +1583,41 @@ impl RoaringDocIdSetBuilder {
         self.current_block_cardinality = 0;
     }
 
-    fn append_doc_in_current_block(&mut self, doc_id: usize, block: usize) {
+    /// `new FixedBitSet(Math.min(1 << 16, maxDoc - (block << 16)))`
+    /// (`RoaringDocIdSet.java:181-182, 208-209`), filled with the buffered
+    /// docs, computed in `int` as Java does: a block past `maxDoc` gives a
+    /// negative `numBits`, which fails as Java's `FixedBitSet(int)` does (see
+    /// [`FixedBitSet::new_java`]).
+    fn new_dense_buffer(&self, block: usize) -> crate::error::Result<FixedBitSet> {
+        let num_bits = (1i32 << 16).min((self.max_doc as i32).wrapping_sub((block as i32) << 16));
+        let mut dense = FixedBitSet::new_java(num_bits)?;
+        for &d in &self.buffer[..self.current_block_cardinality] {
+            dense.set(d as usize);
+        }
+        Ok(dense)
+    }
+
+    fn append_doc_in_current_block(
+        &mut self,
+        doc_id: usize,
+        block: usize,
+    ) -> crate::error::Result<()> {
         debug_assert!(doc_id as i64 >= i64::from(self.first_doc_id));
         let offset = doc_id - (block << 16);
         if self.current_block_cardinality < ROARING_MAX_ARRAY_LENGTH {
             self.buffer.push(offset as u16);
         } else {
             if self.dense_buffer.is_none() {
-                let num_bits = ((block + 1) * ROARING_BLOCK_SIZE).min(self.max_doc)
-                    - (block * ROARING_BLOCK_SIZE);
-                let mut dense = FixedBitSet::new(num_bits);
-                for &d in &self.buffer {
-                    dense.set(d as usize);
-                }
-                self.dense_buffer = Some(dense);
+                self.dense_buffer = Some(self.new_dense_buffer(block)?);
             }
-            self.dense_buffer.as_mut().unwrap().set(offset);
+            self.dense_buffer
+                .as_mut()
+                .expect("INVARIANT: the dense buffer was just created")
+                .set(offset);
         }
         self.last_doc_id = doc_id as i32;
         self.current_block_cardinality += 1;
+        Ok(())
     }
 
     fn append_range_in_current_block(
@@ -1606,7 +1625,7 @@ impl RoaringDocIdSetBuilder {
         from_doc: usize,
         to_doc_exclusive: usize,
         block: usize,
-    ) {
+    ) -> crate::error::Result<()> {
         debug_assert!(from_doc as i64 >= i64::from(self.first_doc_id));
         debug_assert!(from_doc < to_doc_exclusive);
         let offset = block << 16;
@@ -1617,12 +1636,7 @@ impl RoaringDocIdSetBuilder {
             }
         } else {
             if self.dense_buffer.is_none() {
-                let num_bits = ((block + 1) << 16).min(self.max_doc) - offset;
-                let mut dense = FixedBitSet::new(num_bits);
-                for &d in &self.buffer {
-                    dense.set(d as usize);
-                }
-                self.dense_buffer = Some(dense);
+                self.dense_buffer = Some(self.new_dense_buffer(block)?);
             }
             let start = from_doc - offset;
             let end = to_doc_exclusive - offset;
@@ -1632,6 +1646,7 @@ impl RoaringDocIdSetBuilder {
         }
         self.last_doc_id = (to_doc_exclusive - 1) as i32;
         self.current_block_cardinality += span;
+        Ok(())
     }
 }
 
@@ -1675,7 +1690,7 @@ impl RoaringDocIdSetIterator {
                 let block_base = (self.block as usize) << 16;
                 let mut sub = b.iterator(block_base)?;
                 let first = sub.next_doc()?;
-                assert_ne!(first, NO_MORE_DOCS);
+                debug_assert_ne!(first, NO_MORE_DOCS);
                 self.sub = Some(sub);
                 self.doc = (block_base as i32) | first;
                 return Ok(self.doc);
@@ -1996,15 +2011,20 @@ impl DenseLiveDocsBuilder {
         let count = self
             .deleted_count
             .unwrap_or_else(|| self.max_doc - self.live_docs.cardinality());
-        assert!(
-            count <= self.max_doc,
-            "deletedCount={count} is outside valid range [0, {}]",
-            self.max_doc
-        );
-        assert_eq!(
+        if count > self.max_doc {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some(&format!(
+                    "deletedCount={count} is outside valid range [0, {}]",
+                    self.max_doc
+                )),
+            );
+        }
+        debug_assert_eq!(
             count,
             self.max_doc - self.live_docs.cardinality(),
-            "deletedCount does not match maxDoc - liveDocs.cardinality()"
+            "deletedCount={count} does not match maxDoc - liveDocs.cardinality()={}",
+            self.max_doc - self.live_docs.cardinality()
         );
         // The private `DenseLiveDocs` constructor (`DenseLiveDocs.java:115-116`).
         debug_assert!(self.live_docs.length() >= self.max_doc);
@@ -2145,15 +2165,20 @@ impl SparseLiveDocsBuilder {
         let count = self
             .deleted_count
             .unwrap_or_else(|| self.deleted_docs.cardinality());
-        assert!(
-            count <= self.max_doc,
-            "deletedCount={count} is outside valid range [0, {}]",
-            self.max_doc
-        );
-        assert_eq!(
+        if count > self.max_doc {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some(&format!(
+                    "deletedCount={count} is outside valid range [0, {}]",
+                    self.max_doc
+                )),
+            );
+        }
+        debug_assert_eq!(
             count,
             self.deleted_docs.cardinality(),
-            "deletedCount does not match deletedDocs.cardinality()"
+            "deletedCount={count} does not match deletedDocs.cardinality()={}",
+            self.deleted_docs.cardinality()
         );
         // The private `SparseLiveDocs` constructor (`SparseLiveDocs.java:114-115`).
         debug_assert!(self.deleted_docs.length() >= self.max_doc);
@@ -2995,6 +3020,28 @@ mod roaring_java_blocks_tests {
         assert_eq!(
             (mixed.ram_bytes_used(), mixed.cardinality()),
             (9904, 153708)
+        );
+    }
+}
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+
+    /// G-109: `RoaringDocIdSet.Builder` refuses a range past `maxDoc` with
+    /// `"max must be <= maxDoc (" + maxDoc + "), got max=" + max`
+    /// (`RoaringDocIdSet.java:156-160`).
+    #[test]
+    fn gap_g109_roaring_builder_max_message() {
+        let mut builder = RoaringDocIdSetBuilder::new(10);
+        let error = builder.add_range(0, 11).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                crate::error::LuceneErrorKind::IllegalArgument { message, .. }
+                    if message == "max must be <= maxDoc (10), got max=11"
+            ),
+            "{error:?}"
         );
     }
 }

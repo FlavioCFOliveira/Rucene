@@ -119,7 +119,12 @@ impl Query for AssertingQuery {
     }
 
     /// `-in.hashCode()`.
-    fn query_hash(&self) -> u64 {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.tests.search.AssertingQuery"
+    }
+
+    /// `-in.hashCode()`.
+    fn query_hash(&self) -> i32 {
         self.inner.query_hash().wrapping_neg()
     }
 }

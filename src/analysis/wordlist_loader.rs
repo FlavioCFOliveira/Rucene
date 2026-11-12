@@ -9,7 +9,7 @@
 #![deny(unsafe_code)]
 
 use crate::analysis::{CharArrayMap, CharArraySet, CharReader};
-use crate::error::{LuceneError, Result};
+use crate::error::Result;
 
 const INITIAL_CAPACITY: usize = 16;
 
@@ -234,31 +234,311 @@ pub fn get_lines<R: std::io::Read>(stream: R, char_set: &str) -> Result<Vec<Stri
 /// Each line holds a word and its stem separated by a single tab; the stem
 /// overrules whatever a stemming algorithm would produce for that word.
 ///
-/// Divergence: Java indexes the second field of `line.split("\t", 2)`
-/// unconditionally, so a line without a tab raises
-/// `ArrayIndexOutOfBoundsException` (`WordlistLoader.java` lines 274-283). The
-/// port reports that malformed line as an error instead, because the method
-/// already returns `Result` and a panic would give the caller no way to say
-/// which line was wrong.
+/// Java indexes the second field of `line.split("\t", 2)` unconditionally,
+/// so a line without a tab raises `ArrayIndexOutOfBoundsException`
+/// (`WordlistLoader.java` lines 276-286), as here.
 ///
 /// # Errors
 ///
-/// Returns whatever the reader returns, or
-/// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a line carries no tab.
+/// Returns whatever the reader returns, or the JVM's
+/// `ArrayIndexOutOfBoundsException` (`Index 1 out of bounds for length 1`)
+/// when a line carries no tab.
 ///
 /// Equivalent to `org.apache.lucene.analysis.WordlistLoader#getStemDict`.
 pub fn get_stem_dict(reader: &mut dyn CharReader, result: &mut CharArrayMap<String>) -> Result<()> {
     for line in get_buffered_reader(reader)? {
         let mut fields = line.splitn(2, '\t');
         let word = fields.next().unwrap_or_default();
-        let stem = fields.next().ok_or_else(|| {
-            LuceneError::illegal_argument(format!(
-                "stem dictionary line has no tab separating word and stem: {line}"
-            ))
-        })?;
+        // `wordstem[1]` of `line.split("\t", 2)`: the JVM's
+        // `ArrayIndexOutOfBoundsException` for a line without a tab.
+        let stem = fields
+            .next()
+            .ok_or_else(|| crate::store::array_index_out_of_bounds(1, 1))?;
         result.put(word, stem.to_string());
     }
     Ok(())
+}
+
+/// `java.io.BufferedReader.readLine()` over a [`CharReader`]: a line ends at
+/// a line feed, a carriage return, or a carriage return followed by a line
+/// feed, the terminator is not part of the line, and a trailing fragment with
+/// no terminator is still a line. Lines are produced as the reader is
+/// consumed, so a caller that stops on a read error has seen exactly the lines
+/// before it, as Java's `while ((word = br.readLine()) != null)` loops have.
+///
+/// Each line is converted with
+/// [`utf16_to_string`](crate::analysis::character_utils::utf16_to_string)
+/// (a lone surrogate becomes U+FFFD, the declared limit of a Rust `String`).
+struct LineReader<'r> {
+    reader: &'r mut dyn CharReader,
+    buffer: Vec<u16>,
+    pos: usize,
+    len: usize,
+    /// `BufferedReader.skipLF`: the previous line ended with a carriage
+    /// return, so a line feed that follows it is part of that terminator.
+    skip_lf: bool,
+}
+
+impl<'r> LineReader<'r> {
+    fn new(reader: &'r mut dyn CharReader) -> Self {
+        Self {
+            reader,
+            buffer: vec![0u16; 8192],
+            pos: 0,
+            len: 0,
+            skip_lf: false,
+        }
+    }
+
+    /// `BufferedReader.readLine()`: the next line, or `None` at the end of
+    /// the stream.
+    fn read_line(&mut self) -> Result<Option<String>> {
+        let mut line: Vec<u16> = Vec::new();
+        let mut read_any = false;
+        loop {
+            if self.pos >= self.len {
+                self.len = self.reader.read(&mut self.buffer)?;
+                self.pos = 0;
+                if self.len == 0 {
+                    return Ok(if read_any {
+                        Some(crate::analysis::character_utils::utf16_to_string(&line))
+                    } else {
+                        None
+                    });
+                }
+            }
+            let unit = self.buffer[self.pos];
+            self.pos += 1;
+            if self.skip_lf {
+                self.skip_lf = false;
+                if unit == u16::from(b'\n') {
+                    continue;
+                }
+            }
+            if unit == u16::from(b'\n') {
+                return Ok(Some(crate::analysis::character_utils::utf16_to_string(
+                    &line,
+                )));
+            }
+            if unit == u16::from(b'\r') {
+                self.skip_lf = true;
+                return Ok(Some(crate::analysis::character_utils::utf16_to_string(
+                    &line,
+                )));
+            }
+            read_any = true;
+            line.push(unit);
+        }
+    }
+}
+
+/// Runs `body` over the lines of `reader` and then closes `reader`, as
+/// Java's `try (BufferedReader br = getBufferedReader(reader)) { ... }` does:
+/// a close failure after a body failure is suppressed into the body failure.
+fn with_lines(reader: &mut dyn CharReader, mut body: impl FnMut(&str)) -> Result<()> {
+    let read = {
+        let mut lines = LineReader::new(&mut *reader);
+        loop {
+            match lines.read_line() {
+                Ok(Some(line)) => body(&line),
+                Ok(None) => break Ok(()),
+                Err(e) => break Err(e),
+            }
+        }
+    };
+    let closed = reader.close();
+    match (read, closed) {
+        (Ok(()), closed) => closed,
+        (Err(e), Ok(())) => Err(e),
+        (Err(mut e), Err(close_error)) => {
+            e.add_suppressed(close_error);
+            Err(e)
+        }
+    }
+}
+
+/// Reads lines from `reader` into a new, unmodifiable [`CharArraySet`],
+/// trimming each line and skipping blank lines.
+///
+/// Equivalent to `org.apache.lucene.analysis.WordlistLoader.getWordSet(Reader)`
+/// (`WordlistLoader.java:74-77`).
+///
+/// # Errors
+///
+/// Propagates the reader's I/O errors.
+pub fn get_word_set_reader(reader: &mut dyn CharReader) -> Result<CharArraySet> {
+    let mut result = CharArraySet::new(INITIAL_CAPACITY, false);
+    get_word_set_reader_into(reader, &mut result)?;
+    Ok(CharArraySet::unmodifiable_set(Some(result)))
+}
+
+/// Reads lines from `reader` into `result`, trimming each line and skipping
+/// blank lines; `reader` is closed afterwards.
+///
+/// Equivalent to `WordlistLoader.getWordSet(Reader, CharArraySet)`
+/// (`WordlistLoader.java:52-64`), which returns `result`.
+///
+/// # Errors
+///
+/// Propagates the reader's I/O errors.
+pub fn get_word_set_reader_into(
+    reader: &mut dyn CharReader,
+    result: &mut CharArraySet,
+) -> Result<()> {
+    with_lines(reader, |line| {
+        let word = java_trim(line);
+        // skip blank lines
+        if !word.is_empty() {
+            result.add(word);
+        }
+    })
+}
+
+/// Reads lines from `stream`, decoded with `charset`, into a new,
+/// unmodifiable [`CharArraySet`].
+///
+/// Equivalent to `WordlistLoader.getWordSet(InputStream, Charset)`
+/// (`WordlistLoader.java:100-103`), and with `charset` `"UTF-8"` to
+/// `getWordSet(InputStream)` (`WordlistLoader.java:88-90`). The stream is
+/// decoded through
+/// [`IOUtils::get_decoding_reader`](crate::util::IOUtils::get_decoding_reader),
+/// the port's `IOUtils.getDecodingReader`, so malformed input is an error.
+///
+/// # Errors
+///
+/// Propagates I/O and decoding errors.
+pub fn get_word_set_stream(stream: &mut dyn std::io::Read, charset: &str) -> Result<CharArraySet> {
+    let mut reader = decoding_reader(stream, charset)?;
+    get_word_set_reader(&mut reader)
+}
+
+/// Reads lines from `reader` into a new, unmodifiable [`CharArraySet`],
+/// skipping lines that start with `comment`.
+///
+/// Equivalent to `WordlistLoader.getWordSet(Reader, String)`
+/// (`WordlistLoader.java:141-144`).
+///
+/// # Errors
+///
+/// Propagates the reader's I/O errors.
+pub fn get_word_set_reader_with_comment(
+    reader: &mut dyn CharReader,
+    comment: &str,
+) -> Result<CharArraySet> {
+    let mut result = CharArraySet::new(INITIAL_CAPACITY, false);
+    get_word_set_reader_with_comment_into(reader, comment, &mut result)?;
+    Ok(CharArraySet::unmodifiable_set(Some(result)))
+}
+
+/// Reads lines from `reader` into `result`, skipping lines that start with
+/// `comment`; `reader` is closed afterwards.
+///
+/// Equivalent to `WordlistLoader.getWordSet(Reader, String, CharArraySet)`
+/// (`WordlistLoader.java:116-130`), which returns `result`.
+///
+/// # Errors
+///
+/// Propagates the reader's I/O errors.
+pub fn get_word_set_reader_with_comment_into(
+    reader: &mut dyn CharReader,
+    comment: &str,
+    result: &mut CharArraySet,
+) -> Result<()> {
+    with_lines(reader, |line| {
+        if !line.starts_with(comment) {
+            let word = java_trim(line);
+            // skip blank lines
+            if !word.is_empty() {
+                result.add(word);
+            }
+        }
+    })
+}
+
+/// Reads lines from `stream` decoded with `charset`, skipping lines that start
+/// with `comment`.
+///
+/// Equivalent to `WordlistLoader.getWordSet(InputStream, Charset, String)`
+/// (`WordlistLoader.java:171-174`), and with `charset` `"UTF-8"` to
+/// `getWordSet(InputStream, String)` (`WordlistLoader.java:156-158`).
+///
+/// # Errors
+///
+/// Propagates I/O and decoding errors.
+pub fn get_word_set_stream_with_comment(
+    stream: &mut dyn std::io::Read,
+    charset: &str,
+    comment: &str,
+) -> Result<CharArraySet> {
+    let mut reader = decoding_reader(stream, charset)?;
+    get_word_set_reader_with_comment(&mut reader, comment)
+}
+
+/// Reads a snowball-format stop word file from `reader` into a new,
+/// unmodifiable [`CharArraySet`]: `|` starts a comment, and a line may hold
+/// several words.
+///
+/// Equivalent to `WordlistLoader.getSnowballWordSet(Reader)`
+/// (`WordlistLoader.java:222-225`).
+///
+/// # Errors
+///
+/// Propagates the reader's I/O errors.
+pub fn get_snowball_word_set_reader(reader: &mut dyn CharReader) -> Result<CharArraySet> {
+    let mut result = CharArraySet::new(INITIAL_CAPACITY, false);
+    get_snowball_word_set_reader_into(reader, &mut result)?;
+    Ok(CharArraySet::unmodifiable_set(Some(result)))
+}
+
+/// Reads a snowball-format stop word file from `reader` into `result`;
+/// `reader` is closed afterwards.
+///
+/// Equivalent to `WordlistLoader.getSnowballWordSet(Reader, CharArraySet)`
+/// (`WordlistLoader.java:192-206`), which returns `result`.
+///
+/// # Errors
+///
+/// Propagates the reader's I/O errors.
+pub fn get_snowball_word_set_reader_into(
+    reader: &mut dyn CharReader,
+    result: &mut CharArraySet,
+) -> Result<()> {
+    with_lines(reader, |line| {
+        let line = match line.find('|') {
+            Some(comment) => &line[..comment],
+            None => line,
+        };
+        for word in java_split_whitespace(line) {
+            result.add(word);
+        }
+    })
+}
+
+/// Reads a snowball-format stop word file from `stream` decoded with
+/// `charset`.
+///
+/// Equivalent to `WordlistLoader.getSnowballWordSet(InputStream, Charset)`
+/// (`WordlistLoader.java:260-263`), and with `charset` `"UTF-8"` to
+/// `getSnowballWordSet(InputStream)` (`WordlistLoader.java:240-242`).
+///
+/// # Errors
+///
+/// Propagates I/O and decoding errors.
+pub fn get_snowball_word_set_stream(
+    stream: &mut dyn std::io::Read,
+    charset: &str,
+) -> Result<CharArraySet> {
+    let mut reader = decoding_reader(stream, charset)?;
+    get_snowball_word_set_reader(&mut reader)
+}
+
+/// `IOUtils.getDecodingReader(stream, charset)` as a [`CharReader`].
+fn decoding_reader(
+    stream: &mut dyn std::io::Read,
+    charset: &str,
+) -> Result<crate::analysis::StringCharReader> {
+    let decoded = crate::util::IOUtils::get_decoding_reader(stream, charset)?;
+    Ok(crate::analysis::StringCharReader::new(decoded.into_inner()))
 }
 
 #[cfg(test)]
@@ -291,6 +571,63 @@ mod tests {
         assert_eq!(set.size(), 7);
         for word in ["a", "an", "the", "is", "are", "was", "were"] {
             assert!(set.contains(Some(word)));
+        }
+    }
+
+    /// G-101: the `Reader` and `InputStream` forms of `WordlistLoader`
+    /// (`WordlistLoader.java`), run on `TestWordlistLoader`'s inputs through
+    /// `new StringReader(s)` and a UTF-8 stream; `BufferedReader.readLine`
+    /// ends a line at `\n`, `\r` or `\r\n`.
+    #[test]
+    fn gap_g101_reader_and_stream_forms_as_test_wordlist_loader() {
+        let check = |set: &CharArraySet| {
+            assert_eq!(set.size(), 3);
+            assert!(set.contains(Some("ONE")));
+            assert!(set.contains(Some("two")));
+            assert!(set.contains(Some("three")));
+            assert!(!set.contains(Some("four")));
+        };
+        let s = "ONE\n  two \nthree\n\n";
+        check(&get_word_set_reader(&mut crate::analysis::StringCharReader::new(s)).unwrap());
+        check(&get_word_set_stream(&mut s.as_bytes(), "UTF-8").unwrap());
+        let mut into = CharArraySet::new(4, false);
+        get_word_set_reader_into(&mut crate::analysis::StringCharReader::new(s), &mut into)
+            .unwrap();
+        check(&into);
+        check(
+            &get_word_set_reader(&mut crate::analysis::StringCharReader::new(
+                "ONE\r\n  two \rthree",
+            ))
+            .unwrap(),
+        );
+
+        let s = "ONE\n  two \nthree\n#comment";
+        let set =
+            get_word_set_reader_with_comment(&mut crate::analysis::StringCharReader::new(s), "#")
+                .unwrap();
+        check(&set);
+        assert!(!set.contains(Some("#comment")));
+        check(&get_word_set_stream_with_comment(&mut s.as_bytes(), "UTF-8", "#").unwrap());
+
+        let s = concat!(
+            "|comment\n",
+            " |comment\n",
+            "\n",
+            "  \t\n",
+            " |comment | comment\n",
+            "ONE\n",
+            "   two   \n",
+            " three   four five \n",
+            "six seven | comment\n"
+        );
+        for set in [
+            get_snowball_word_set_reader(&mut crate::analysis::StringCharReader::new(s)).unwrap(),
+            get_snowball_word_set_stream(&mut s.as_bytes(), "UTF-8").unwrap(),
+        ] {
+            assert_eq!(set.size(), 7);
+            for word in ["ONE", "two", "three", "four", "five", "six", "seven"] {
+                assert!(set.contains(Some(word)), "{word}");
+            }
         }
     }
 }

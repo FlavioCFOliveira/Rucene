@@ -140,17 +140,13 @@ impl AbstractKnnVectorQuery {
     ///
     /// Equivalent to `AbstractKnnVectorQuery.hashCode()`, which — unlike
     /// `equals` — deliberately leaves the search strategy out.
-    pub fn base_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.field.hash(&mut hasher);
-        self.k.hash(&mut hasher);
-        self.filter
-            .as_ref()
-            .map(|filter| filter.query_hash())
-            .hash(&mut hasher);
-        hasher.finish()
+    pub fn base_hash(&self) -> i32 {
+        // `Objects.hash(field, k, filter)`; a `null` filter hashes as 0.
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            crate::util::java_collections::java_string_hash_code(&self.field),
+            self.k,
+            self.filter.as_ref().map_or(0, |filter| filter.query_hash()),
+        ])
     }
 }
 
@@ -166,15 +162,6 @@ pub trait AbstractKnnVectorQueryImpl: Query {
     /// Equivalent to reading the inherited `field`, `k`, `filter` and
     /// `searchStrategy` fields.
     fn knn_base(&self) -> &AbstractKnnVectorQuery;
-
-    /// Returns this query viewed as a [`Query`].
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java gets this for free, because
-    /// `AbstractKnnVectorQuery extends Query`. Rust before 1.86 cannot coerce a
-    /// `&dyn AbstractKnnVectorQueryImpl` into a `&dyn Query`, and this crate's
-    /// minimum supported Rust version is 1.80, so the upcast is spelled out as
-    /// a method. Every implementation writes `self`.
-    fn as_query(&self) -> &dyn Query;
 
     /// Returns this query as a shared handle on itself.
     ///

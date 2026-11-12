@@ -277,9 +277,10 @@ impl CodecRegistry {
         let name = name.into();
         validate_service_name(&name)?;
 
-        let mut codecs = self.codecs.write().map_err(|_| {
-            LuceneError::illegal_state("codec registry lock was poisoned".to_string())
-        })?;
+        let mut codecs = self
+            .codecs
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         if codecs.lookup(&name).is_ok() {
             return Err(LuceneError::illegal_state(format!(
@@ -296,8 +297,7 @@ impl CodecRegistry {
     pub fn for_name(&self, name: &str) -> Option<Arc<dyn Codec>> {
         self.codecs
             .read()
-            .map_err(|_| LuceneError::illegal_state("codec registry lock was poisoned".to_string()))
-            .ok()?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .lookup(name)
             .ok()
     }
@@ -310,14 +310,11 @@ impl CodecRegistry {
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message,
-    /// listing the available names, when no codec is registered under `name`,
-    /// and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is poisoned.
+    /// listing the available names, when no codec is registered under `name`.
     pub fn lookup(&self, name: &str) -> Result<Arc<dyn Codec>> {
         self.codecs
             .read()
-            .map_err(|_| {
-                LuceneError::illegal_state("codec registry lock was poisoned".to_string())
-            })?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .lookup(name)
     }
 
@@ -326,9 +323,10 @@ impl CodecRegistry {
     /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
     /// Java's insertion-ordered `LinkedHashMap`.
     pub fn available_codecs(&self) -> Vec<String> {
-        let Ok(codecs) = self.codecs.read() else {
-            return Vec::new();
-        };
+        let codecs = self
+            .codecs
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         codecs
             .available_services()
             .into_iter()
@@ -436,7 +434,10 @@ static DEFAULT_CODEC: RwLock<Option<Arc<dyn Codec>>> = RwLock::new(None);
 ///
 /// Equivalent to `Codec.setDefault(Codec)`.
 pub fn set_default(codec: Arc<dyn Codec>) {
-    if let Ok(mut slot) = DEFAULT_CODEC.write() {
+    {
+        let mut slot = DEFAULT_CODEC
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *slot = Some(codec);
     }
 }
@@ -463,7 +464,10 @@ pub(crate) fn swap_default(codec: Option<Arc<dyn Codec>>) -> Option<Arc<dyn Code
 /// [`DEFAULT_CODEC_NAME`], which is the codec Java's SPI loader would have
 /// found for the same name.
 pub fn get_default() -> Option<Arc<dyn Codec>> {
-    if let Ok(slot) = DEFAULT_CODEC.read() {
+    {
+        let slot = DEFAULT_CODEC
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(codec) = slot.as_ref() {
             return Some(Arc::clone(codec));
         }
@@ -482,13 +486,12 @@ pub fn get_default() -> Option<Arc<dyn Codec>> {
 /// # Errors
 ///
 /// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
-/// returns, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is
-/// poisoned.
+/// returns.
 pub fn reload_codecs(classloader: &Arc<crate::util::resource_loader::ClassLoader>) -> Result<()> {
     GLOBAL_REGISTRY
         .codecs
         .write()
-        .map_err(|_| LuceneError::illegal_state("codec registry lock was poisoned".to_string()))?
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .reload(classloader)
 }
 
@@ -925,7 +928,7 @@ pub(crate) mod tests {
                 HashMap::new(),
                 id,
                 HashMap::new(),
-                crate::search::Sort::default(),
+                None,
             )
         }
 
@@ -1167,14 +1170,17 @@ pub(crate) mod tests {
     impl CloseLog {
         /// The names closed through `close()`, in order, one entry per call.
         pub(crate) fn closed(&self) -> Vec<String> {
-            self.closed.lock().unwrap().clone()
+            self.closed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
         }
 
         /// How many times `name` was closed.
         pub(crate) fn close_count(&self, name: &str) -> usize {
             self.closed
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
                 .filter(|n| *n == name)
                 .count()
@@ -1182,7 +1188,10 @@ pub(crate) mod tests {
 
         /// Makes every later `close()` of `name` fail, after delegating it.
         pub(crate) fn fail_close(&self, name: &str) {
-            self.fail_close.lock().unwrap().insert(name.to_string());
+            self.fail_close
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(name.to_string());
         }
 
         /// Makes every later `close()` of `name` fail with an
@@ -1191,35 +1200,52 @@ pub(crate) mod tests {
         pub(crate) fn assertion_close(&self, name: &str) {
             self.assertion_close
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(name.to_string());
         }
 
         /// Makes every later `close()` of `name` panic, the port's form of an
         /// unchecked throwable, after delegating it.
         pub(crate) fn panic_close(&self, name: &str) {
-            self.panic_close.lock().unwrap().insert(name.to_string());
+            self.panic_close
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(name.to_string());
         }
 
         /// Makes every later `openInput`/`createOutput` of `name` fail.
         pub(crate) fn fail_open(&self, name: &str) {
-            self.fail_open.lock().unwrap().insert(name.to_string());
+            self.fail_open
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(name.to_string());
         }
 
         /// Makes every later `openInput`/`createOutput` of `name` panic, the
         /// port's form of an unchecked throwable.
         pub(crate) fn panic_open(&self, name: &str) {
-            self.panic_open.lock().unwrap().insert(name.to_string());
+            self.panic_open
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(name.to_string());
         }
 
         /// Makes every later write to an output of `name` fail, as
         /// `MockDirectoryWrapper`'s random `IOException` on a write does.
         pub(crate) fn fail_write(&self, name: &str) {
-            self.fail_write.lock().unwrap().insert(name.to_string());
+            self.fail_write
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(name.to_string());
         }
 
         fn check_write(&self, name: &str) -> Result<()> {
-            if self.fail_write.lock().unwrap().contains(name) {
+            if self
+                .fail_write
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(name)
+            {
                 return Err(crate::error::LuceneError::from(
                     crate::error::LuceneErrorKind::Io(std::io::Error::other(format!(
                         "write failed: {name}"
@@ -1236,16 +1262,34 @@ pub(crate) mod tests {
         }
 
         fn record_close(&self, name: &str) -> Result<()> {
-            self.closed.lock().unwrap().push(name.to_string());
-            if self.panic_close.lock().unwrap().contains(name) {
+            self.closed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(name.to_string());
+            if self
+                .panic_close
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(name)
+            {
                 panic!("close panicked: {name}");
             }
-            if self.assertion_close.lock().unwrap().contains(name) {
+            if self
+                .assertion_close
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(name)
+            {
                 return Err(crate::error::LuceneError::from(
                     crate::error::LuceneErrorKind::AssertionError(format!("close failed: {name}")),
                 ));
             }
-            if self.fail_close.lock().unwrap().contains(name) {
+            if self
+                .fail_close
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(name)
+            {
                 return Err(crate::error::LuceneError::from(
                     crate::error::LuceneErrorKind::Io(std::io::Error::other(format!(
                         "close failed: {name}"
@@ -1256,10 +1300,20 @@ pub(crate) mod tests {
         }
 
         fn check_open(&self, name: &str) -> Result<()> {
-            if self.panic_open.lock().unwrap().contains(name) {
+            if self
+                .panic_open
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(name)
+            {
                 panic!("open panicked: {name}");
             }
-            if self.fail_open.lock().unwrap().contains(name) {
+            if self
+                .fail_open
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(name)
+            {
                 return Err(crate::error::LuceneError::from(
                     crate::error::LuceneErrorKind::Io(std::io::Error::other(format!(
                         "open failed: {name}"
@@ -1311,7 +1365,7 @@ pub(crate) mod tests {
             self.log.record_close(&self.name)
         }
 
-        fn file_pointer(&self) -> i64 {
+        fn file_pointer(&self) -> Result<i64> {
             self.inner.file_pointer()
         }
 
@@ -1572,7 +1626,7 @@ pub(crate) mod tests {
             std::collections::HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             std::collections::HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .expect("test segment info should be valid")
     }

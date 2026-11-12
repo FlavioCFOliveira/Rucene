@@ -1,8 +1,10 @@
 //! Lucene 10.4 postings format.
 //!
-//! This module provides the format wrapper, constants, and skeleton reader/writer
-//! for the Lucene 10.4 postings format. It delegates the terms dictionary side
-//! to the `Lucene103BlockTreeTermsWriter` / `Lucene103BlockTreeTermsReader` from
+//! This module provides the format wrapper and constants of the Lucene 10.4
+//! postings format. The postings themselves are written and read by
+//! `Lucene104PostingsWriter` and `Lucene104PostingsReader` (`postings_writer`,
+//! `postings_reader`); the terms dictionary side is delegated to the
+//! `Lucene103BlockTreeTermsWriter` / `Lucene103BlockTreeTermsReader` from
 //! `crate::codecs::lucene103::blocktree`.
 //!
 //! Lucene Core equivalent: `org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat`.
@@ -154,12 +156,14 @@ impl Lucene104PostingsFormat {
         max_term_block_size: i32,
         version: i32,
     ) -> Result<Self> {
-        Lucene103BlockTreeTermsWriter::validate_settings(min_term_block_size, max_term_block_size)?;
+        // `Lucene104PostingsFormat.java:398-405`: the version first, then the
+        // block sizes.
         if version < VERSION_START || version > VERSION_CURRENT {
             return Err(LuceneError::illegal_argument(format!(
-                "Lucene104PostingsFormat version out of range: {version}"
+                "Version out of range: {version}"
             )));
         }
+        Lucene103BlockTreeTermsWriter::validate_settings(min_term_block_size, max_term_block_size)?;
         Ok(Self {
             version,
             min_term_block_size,
@@ -265,7 +269,7 @@ mod tests {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .expect("test segment info should be valid")
     }

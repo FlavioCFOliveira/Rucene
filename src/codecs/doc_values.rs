@@ -369,9 +369,10 @@ impl DocValuesFormatRegistry {
         let name = name.into();
         super::validate_service_name(&name)?;
 
-        let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::illegal_state("doc-values format registry lock was poisoned".to_string())
-        })?;
+        let mut formats = self
+            .formats
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         if formats.lookup(&name).is_ok() {
             return Err(LuceneError::illegal_state(format!(
@@ -388,12 +389,7 @@ impl DocValuesFormatRegistry {
     pub fn for_name(&self, name: &str) -> Option<Arc<dyn DocValuesFormat>> {
         self.formats
             .read()
-            .map_err(|_| {
-                LuceneError::illegal_state(
-                    "doc-values format registry lock was poisoned".to_string(),
-                )
-            })
-            .ok()?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .lookup(name)
             .ok()
     }
@@ -407,15 +403,11 @@ impl DocValuesFormatRegistry {
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message,
     /// listing the available names, when no format is registered under
-    /// `name`, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is poisoned.
+    /// `name`.
     pub fn lookup(&self, name: &str) -> Result<Arc<dyn DocValuesFormat>> {
         self.formats
             .read()
-            .map_err(|_| {
-                LuceneError::illegal_state(
-                    "doc-values format registry lock was poisoned".to_string(),
-                )
-            })?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .lookup(name)
     }
 
@@ -424,9 +416,10 @@ impl DocValuesFormatRegistry {
     /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
     /// Java's insertion-ordered `LinkedHashMap`.
     pub fn available_doc_values_formats(&self) -> Vec<String> {
-        let Ok(formats) = self.formats.read() else {
-            return Vec::new();
-        };
+        let formats = self
+            .formats
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         formats
             .available_services()
             .into_iter()
@@ -446,17 +439,14 @@ impl DocValuesFormatRegistry {
 /// # Errors
 ///
 /// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
-/// returns, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is
-/// poisoned.
+/// returns.
 pub fn reload_doc_values_formats(
     classloader: &Arc<crate::util::resource_loader::ClassLoader>,
 ) -> Result<()> {
     GLOBAL_DOC_VALUES_REGISTRY
         .formats
         .write()
-        .map_err(|_| {
-            LuceneError::illegal_state("doc-values format registry lock was poisoned".to_string())
-        })?
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .reload(classloader)
 }
 
@@ -671,10 +661,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_sorted_numeric_doc_values_has_zero_values() {
+    fn empty_sorted_numeric_doc_values_counts_one_value() {
         let mut values = EmptySortedNumericDocValues::new();
         assert!(!values.advance_exact(0).unwrap());
-        assert_eq!(values.doc_value_count().unwrap(), 0);
+        // `singleton(emptyNumeric()).docValueCount()` is `1`.
+        assert_eq!(values.doc_value_count().unwrap(), 1);
     }
 
     #[test]
@@ -930,9 +921,9 @@ fn sub_field_info<'a>(
 /// from `advance` and `advanceExact`, because a merge only ever walks the
 /// merged doc-id space once, in order.
 fn merge_iterator_is_forward_only() -> LuceneError {
-    LuceneError::unsupported_operation(
-        "a merged doc-values iterator can only be advanced with next_doc".to_string(),
-    )
+    // `new UnsupportedOperationException()`, no message
+    // (`DocValuesConsumer.java:258-263` and the other merged iterators).
+    LuceneError::unsupported_operation(String::new())
 }
 
 macro_rules! merged_iterator_common {
@@ -970,6 +961,13 @@ struct MergedNumericDocValues {
 }
 
 impl DocIdSetIterator for MergedNumericDocValues {
+    /// `DocValuesConsumer$2` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.DocValuesConsumer$2",
+        )
+    }
     merged_iterator_common!();
 
     fn next_doc(&mut self) -> Result<i32> {
@@ -1060,6 +1058,13 @@ struct MergedBinaryDocValues {
 }
 
 impl DocIdSetIterator for MergedBinaryDocValues {
+    /// `DocValuesConsumer$4` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.DocValuesConsumer$4",
+        )
+    }
     merged_iterator_common!();
 
     fn next_doc(&mut self) -> Result<i32> {
@@ -1137,6 +1142,13 @@ struct MergedSortedNumericDocValues {
 }
 
 impl DocIdSetIterator for MergedSortedNumericDocValues {
+    /// `DocValuesConsumer$6` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.DocValuesConsumer$6",
+        )
+    }
     merged_iterator_common!();
 
     fn next_doc(&mut self) -> Result<i32> {
@@ -1225,7 +1237,7 @@ pub fn get_merged_sorted_numeric_doc_values(
         // encode the merged field as a plain numeric one.
         let mut single_valued_subs = Vec::with_capacity(subs.len());
         for sub in subs {
-            let single = sub.values.into_singleton();
+            let single = sub.values.into_singleton()?;
             debug_assert!(single.is_some());
             // Java dereferences the null `unwrapSingleton` result (an NPE) when
             // assertions are off.
@@ -1239,7 +1251,7 @@ pub fn get_merged_sorted_numeric_doc_values(
             });
         }
         let merged = merge_numeric_values(single_valued_subs, merge_state.needs_index_sort)?;
-        return Ok(Box::new(DocValues::singleton_numeric(merged)));
+        return Ok(Box::new(DocValues::singleton_numeric(merged)?));
     }
 
     Ok(Box::new(MergedSortedNumericDocValues {
@@ -1262,6 +1274,13 @@ struct MergedSortedDocValues {
 }
 
 impl DocIdSetIterator for MergedSortedDocValues {
+    /// `DocValuesConsumer$8` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.DocValuesConsumer$8",
+        )
+    }
     merged_iterator_common!();
 
     fn next_doc(&mut self) -> Result<i32> {
@@ -1431,6 +1450,13 @@ struct MergedSortedSetDocValues {
 }
 
 impl DocIdSetIterator for MergedSortedSetDocValues {
+    /// `DocValuesConsumer$10` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.DocValuesConsumer$10",
+        )
+    }
     merged_iterator_common!();
 
     fn next_doc(&mut self) -> Result<i32> {
@@ -1594,7 +1620,7 @@ pub fn get_merged_sorted_set_doc_values(
     if all_singletons {
         let mut single_valued_subs = Vec::with_capacity(subs.len());
         for sub in subs {
-            let single = sub.values.into_singleton();
+            let single = sub.values.into_singleton()?;
             debug_assert!(single.is_some());
             // Java dereferences the null `unwrapSingleton` result (an NPE) when
             // assertions are off.
@@ -1610,7 +1636,7 @@ pub fn get_merged_sorted_set_doc_values(
             });
         }
         let merged = merge_sorted_values(single_valued_subs, merge_state.needs_index_sort, map)?;
-        return Ok(Box::new(DocValues::singleton_sorted(merged)));
+        return Ok(Box::new(DocValues::singleton_sorted(merged)?));
     }
 
     Ok(Box::new(MergedSortedSetDocValues {
@@ -1775,10 +1801,14 @@ impl<'a> MergedDocValuesProducer<'a> {
         }
     }
 
-    /// Fails when asked for a field other than the one being merged.
-    fn check_field(&self, field: &FieldInfo) -> Result<()> {
+    /// Fails when asked for a field other than the one being merged, with the
+    /// message of the Java guard: `"wrong fieldInfo"` in the numeric and
+    /// binary producers (`DocValuesConsumer.java:191,309`), `"wrong
+    /// FieldInfo"` in the sorted, sorted-numeric and sorted-set ones
+    /// (`DocValuesConsumer.java:420,650,863`).
+    fn check_field(&self, field: &FieldInfo, message: &str) -> Result<()> {
         if field.name != self.field.name {
-            return Err(LuceneError::illegal_argument("wrong fieldInfo".to_string()));
+            return Err(LuceneError::illegal_argument(message));
         }
         Ok(())
     }
@@ -1792,18 +1822,17 @@ impl<'a> MergedDocValuesProducer<'a> {
         })
     }
 
-    fn unsupported(&self, kind: &str) -> LuceneError {
-        LuceneError::unsupported_operation(format!(
-            "the merged view of field '{}' does not provide {kind} doc values",
-            self.field.name
-        ))
+    /// `new UnsupportedOperationException()` of `EmptyDocValuesProducer`
+    /// (`index/EmptyDocValuesProducer.java:54-68`): no message.
+    fn unsupported(&self) -> LuceneError {
+        LuceneError::unsupported_operation(String::new())
     }
 }
 
 impl DocValuesProducer for MergedDocValuesProducer<'_> {
     fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         let values: Result<Box<dyn NumericDocValues>> = {
-            self.check_field(field)?;
+            self.check_field(field, "wrong fieldInfo")?;
             get_merged_numeric_doc_values(self.merge_state, self.field)
         };
         Ok(Some(values?))
@@ -1811,7 +1840,7 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
 
     fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
         let values: Result<Box<dyn BinaryDocValues>> = {
-            self.check_field(field)?;
+            self.check_field(field, "wrong fieldInfo")?;
             get_merged_binary_doc_values(self.field, self.merge_state)
         };
         Ok(Some(values?))
@@ -1819,7 +1848,7 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
 
     fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
         let values: Result<Box<dyn SortedDocValues>> = {
-            self.check_field(field)?;
+            self.check_field(field, "wrong FieldInfo")?;
             get_merged_sorted_doc_values(self.field, self.merge_state, self.map()?)
         };
         Ok(Some(values?))
@@ -1830,7 +1859,7 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
         field: &FieldInfo,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
         let values: Result<Box<dyn SortedNumericDocValues>> = {
-            self.check_field(field)?;
+            self.check_field(field, "wrong FieldInfo")?;
             get_merged_sorted_numeric_doc_values(self.field, self.merge_state)
         };
         Ok(Some(values?))
@@ -1838,7 +1867,7 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
 
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         let values: Result<Box<dyn SortedSetDocValues>> = {
-            self.check_field(field)?;
+            self.check_field(field, "wrong FieldInfo")?;
             get_merged_sorted_set_doc_values(self.field, self.merge_state, self.map()?)
         };
         Ok(Some(values?))
@@ -1848,7 +1877,7 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
     /// `DocValuesConsumer` inherit from `EmptyDocValuesProducer`
     /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(self.unsupported("skip-index"))
+        Err(self.unsupported())
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -1856,10 +1885,72 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        Err(self.unsupported("merge-instance"))
+        Err(self.unsupported())
     }
 
     fn close(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod census_gap_wrong_field_info_tests {
+    use super::*;
+    use crate::error::LuceneErrorKind;
+
+    /// G-109: the merged producers `DocValuesConsumer.merge*Field` hands to
+    /// `add*Field` refuse another field with `"wrong FieldInfo"` in the
+    /// sorted, sorted-numeric and sorted-set kinds
+    /// (`DocValuesConsumer.java:420, 650, 863`).
+    #[test]
+    fn gap_g109_merged_producers_wrong_field_info_message() {
+        let merged = FieldInfo::new("merged", 0);
+        let other = FieldInfo::new("other", 1);
+        let field_infos = crate::index::FieldInfos::new(vec![merged.clone()]).unwrap();
+        let merge_state = MergeState::new(
+            Vec::new(),
+            crate::codecs::tests::test_segment_info("_m", 0),
+            field_infos,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            false,
+            None,
+        );
+        let producer = MergedDocValuesProducer::new(&merged, &merge_state, None);
+        let message = |e: LuceneError| match e.kind {
+            LuceneErrorKind::IllegalArgument { message, .. } => message,
+            other => panic!("expected IllegalArgumentException, got {other:?}"),
+        };
+        assert_eq!(
+            message(producer.get_sorted(&other).err().expect("another field")),
+            "wrong FieldInfo"
+        );
+        assert_eq!(
+            message(
+                producer
+                    .get_sorted_numeric(&other)
+                    .err()
+                    .expect("another field")
+            ),
+            "wrong FieldInfo"
+        );
+        assert_eq!(
+            message(
+                producer
+                    .get_sorted_set(&other)
+                    .err()
+                    .expect("another field")
+            ),
+            "wrong FieldInfo"
+        );
     }
 }

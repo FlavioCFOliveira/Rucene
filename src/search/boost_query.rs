@@ -142,12 +142,19 @@ impl Query for BoostQuery {
         self.query.query_eq(&*other.query) && self.boost.to_bits() == other.boost.to_bits()
     }
 
-    fn query_hash(&self) -> u64 {
+    /// `getClass().getName()` of `org.apache.lucene.search.BoostQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.BoostQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `BoostQuery.hashCode()`: `classHash()`, `query.hashCode()`,
+        // `Float.floatToIntBits(boost)`.
         let mut h = self.class_hash();
         h = h.wrapping_mul(31).wrapping_add(self.query.query_hash());
-        h = h
-            .wrapping_mul(31)
-            .wrapping_add(u64::from(self.boost.to_bits()));
-        h
+        h.wrapping_mul(31)
+            .wrapping_add(crate::util::java_collections::java_float_hash_code(
+                self.boost,
+            ))
     }
 }

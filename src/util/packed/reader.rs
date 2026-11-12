@@ -112,21 +112,6 @@ pub trait PackedIntsMutable: PackedIntsReader + Send + Sync {
         let size = self.size();
         self.fill(0, size, 0);
     }
-
-    /// Borrows this mutable as a read-only reader.
-    ///
-    /// Java needs no such method: `Mutable` extends `Reader`, so a `Mutable`
-    /// reference is already a `Reader` reference. Coercing `&dyn
-    /// PackedIntsMutable` to `&dyn PackedIntsReader` requires trait upcasting,
-    /// which is newer than this crate's minimum supported Rust version, so the
-    /// conversion is spelled out as a one-line method on each implementation.
-    fn as_packed_ints_reader(&self) -> &dyn PackedIntsReader;
-
-    /// Converts this boxed mutable into a boxed read-only reader.
-    ///
-    /// The counterpart of [`Self::as_packed_ints_reader`] for owned values; see
-    /// its documentation for why the conversion is explicit.
-    fn into_packed_ints_reader(self: Box<Self>) -> Box<dyn PackedIntsReader + Send + Sync>;
 }
 
 /// The body of `PackedInts.Mutable.set(int, long[], int, int)`.

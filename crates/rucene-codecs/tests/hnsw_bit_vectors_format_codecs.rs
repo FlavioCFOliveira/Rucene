@@ -120,7 +120,7 @@ fn test_index_and_search_bit_vectors() -> Result<()> {
                 let mut collector = TopKnnCollector::new(3, i64::from(i32::MAX));
                 let mut accept = BitsAcceptDocs::from_live_docs(None, r.max_doc())?;
                 r.search_nearest_vectors_byte("v1", &vectors[0], &mut collector, &mut accept)?;
-                let top_docs = collector.top_docs();
+                let top_docs = collector.top_docs()?;
                 Assert::assert_equals(3usize, top_docs.score_docs.len());
 
                 let fields = r.stored_fields()?;

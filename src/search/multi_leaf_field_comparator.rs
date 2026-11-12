@@ -58,9 +58,11 @@ impl MultiLeafFieldComparator {
                 reverse_mul.len()
             )));
         }
+        // `firstComparator = comparators[0]` of an empty array.
         if comparators.is_empty() {
-            return Err(LuceneError::illegal_argument(
-                "Must have at least one comparator".to_string(),
+            return Err(LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                "Index 0 out of bounds for length 0",
             ));
         }
         Ok(Self {

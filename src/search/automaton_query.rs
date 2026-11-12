@@ -4,8 +4,6 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::Result;
@@ -18,7 +16,7 @@ use crate::search::multi_term_query::{
 use crate::search::query::Query;
 use crate::search::query_visitor::QueryVisitor;
 use crate::util::attribute::AttributeSource;
-use crate::util::automaton::{Automaton, AutomatonType, CompiledAutomaton};
+use crate::util::automaton::{Automaton, CompiledAutomaton};
 use crate::util::{Accountable, RamUsageEstimator};
 
 /// A [`Query`] that matches terms against a finite-state machine.
@@ -201,53 +199,25 @@ impl AutomatonQuery {
     }
 }
 
-/// Hashes a [`Term`], standing in for Java's `Term.hashCode()`.
-///
-/// Java's is `31 * field.hashCode() + bytes.hashCode()`; this port's [`Term`]
-/// has no [`Hash`] implementation, so its two components are hashed here.
-pub fn term_hash(term: &Term) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    term.field().hash(&mut hasher);
-    term.bytes().slice().hash(&mut hasher);
-    hasher.finish()
+/// Java's `Term.hashCode()`; see [`Term::hash_code`].
+pub fn term_hash(term: &Term) -> i32 {
+    term.hash_code()
 }
 
-/// Hashes a [`CompiledAutomaton`], standing in for Java's
-/// `CompiledAutomaton.hashCode()`.
-///
-/// **Divergence from Lucene 10.5.0.** Java mixes the type, the singleton term
-/// and `runAutomaton.hashCode()`, which is built from the run automaton's
-/// alphabet size, number of interval points and number of states. Those fields
-/// are private on this port's `RunAutomaton` and have no accessor, so the hash
-/// is built from the type and the singleton term alone. A weaker hash is still
-/// a correct one — [`CompiledAutomaton`]s that compare equal still hash equal —
-/// and only the distribution of hash buckets changes.
-pub fn compiled_automaton_hash(compiled: &CompiledAutomaton) -> u64 {
-    let prime = 31u64;
-    let mut result = 1u64;
-    let mut hasher = DefaultHasher::new();
-    match compiled.automaton_type {
-        AutomatonType::None => 0u8.hash(&mut hasher),
-        AutomatonType::All => 1u8.hash(&mut hasher),
-        AutomatonType::Single => 2u8.hash(&mut hasher),
-        AutomatonType::Normal => 3u8.hash(&mut hasher),
-    }
-    result = prime.wrapping_mul(result).wrapping_add(hasher.finish());
-    let mut hasher = DefaultHasher::new();
-    match compiled.term.as_ref() {
-        None => 0usize.hash(&mut hasher),
-        Some(term) => term.slice().hash(&mut hasher),
-    }
-    prime.wrapping_mul(result).wrapping_add(hasher.finish())
+/// Java's `CompiledAutomaton.hashCode()`; see [`CompiledAutomaton::hash_code`].
+pub fn compiled_automaton_hash(compiled: &CompiledAutomaton) -> i32 {
+    compiled.hash_code()
 }
 
 /// The hash code shared by every automaton query.
 ///
-/// Equivalent to `AutomatonQuery.hashCode()`. `outer` is the query itself, so
-/// that a subclass contributes its own class hash exactly as Java's
+/// Equivalent to `AutomatonQuery.hashCode()` (`AutomatonQuery.java:156-163`):
+/// `super.hashCode()` (the [`multi_term_query_hash`]), then
+/// `compiled.hashCode()` and `term.hashCode()`. `outer` is the query itself,
+/// so that a subclass contributes its own class hash exactly as Java's
 /// `super.hashCode()` chain does.
-pub fn automaton_query_hash(outer: &dyn MultiTermQuery, inner: &AutomatonQuery) -> u64 {
-    let prime = 31u64;
+pub fn automaton_query_hash(outer: &dyn MultiTermQuery, inner: &AutomatonQuery) -> i32 {
+    let prime = 31i32;
     let mut result = multi_term_query_hash(outer);
     result = prime
         .wrapping_mul(result)
@@ -353,7 +323,12 @@ impl Query for AutomatonQuery {
         automaton_query_eq(self, self, other, other)
     }
 
-    fn query_hash(&self) -> u64 {
+    /// `getClass().getName()` of `org.apache.lucene.search.AutomatonQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.AutomatonQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
         automaton_query_hash(self, self)
     }
 }
@@ -375,10 +350,6 @@ impl MultiTermQuery for AutomatonQuery {
         self.terms_enum(&**terms)
     }
 
-    fn as_query(&self) -> &dyn Query {
-        self
-    }
-
     fn to_multi_term_query_arc(&self) -> Arc<dyn MultiTermQuery> {
         Arc::new(self.clone())
     }
@@ -389,5 +360,52 @@ impl MultiTermQuery for AutomatonQuery {
 
     fn accountable_ram_bytes_used(&self) -> Option<i64> {
         Some(self.ram_bytes_used)
+    }
+}
+
+#[cfg(test)]
+mod census_gap_hash_tests {
+    use super::*;
+    use crate::util::automaton::reg_exp::RegExp;
+
+    fn query(regexp: &str) -> AutomatonQuery {
+        let automaton = RegExp::new(regexp).unwrap().to_automaton().unwrap();
+        AutomatonQuery::new(Term::from_text("f", ""), automaton).unwrap()
+    }
+
+    /// G-026: `AutomatonQuery.hashCode()` folds `compiled.hashCode()`
+    /// (`AutomatonQuery.java:111-117`), which folds `runAutomaton.hashCode()`
+    /// (`CompiledAutomaton.java:509-517`): `31 * (31 * (31 + alphabetSize) +
+    /// points.length) + size` (`RunAutomaton.java:182-189`). Two automata with
+    /// the same alphabet, interval count and state count hash alike, as in
+    /// Java.
+    #[test]
+    fn gap_g026_automaton_query_hash_follows_the_run_automaton() {
+        let a = query("a[bc]");
+        let b = query("x[yz]");
+        let c = query("a[bc]d");
+        let run_hash = |q: &AutomatonQuery| {
+            let compiled = q.get_compiled();
+            let run = compiled.run_automaton.as_ref().expect("a NORMAL automaton");
+            let expected = 31i32
+                .wrapping_mul(31i32.wrapping_mul(31 + 256) + run.get_char_intervals().len() as i32)
+                .wrapping_add(run.size());
+            assert_eq!(run.hash_code(), expected);
+            run.hash_code()
+        };
+        assert_eq!(run_hash(&a), run_hash(&b));
+        assert_ne!(run_hash(&a), run_hash(&c));
+        assert_eq!(a.query_hash(), b.query_hash());
+        assert_ne!(a.query_hash(), c.query_hash());
+        assert_eq!(
+            a.query_hash(),
+            31i32
+                .wrapping_mul(
+                    31i32
+                        .wrapping_mul(multi_term_query_hash(&a))
+                        .wrapping_add(a.get_compiled().hash_code())
+                )
+                .wrapping_add(term_hash(&a.term))
+        );
     }
 }

@@ -117,7 +117,7 @@ impl SimpleTextStoredFieldsReader {
                 *offsets
                     .get_mut(upto)
                     .ok_or_else(|| array_index_out_of_bounds(upto as i64, offsets_len(size)))? =
-                    input.file_pointer();
+                    input.file_pointer()?;
                 upto += 1;
             }
         }

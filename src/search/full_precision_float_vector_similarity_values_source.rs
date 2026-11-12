@@ -12,7 +12,7 @@ use crate::index::{
     VectorSimilarityFunction,
 };
 use crate::search::double_values::{DoubleValues, EmptyDoubleValues};
-use crate::search::double_values_source::{hash_of, DoubleValuesSource};
+use crate::search::double_values_source::DoubleValuesSource;
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::segment_cacheable::SegmentCacheable;
 use crate::search::vector_scorer::{SharedVectorScorer, SharedVectorScorerIterator};
@@ -96,10 +96,17 @@ impl DoubleValuesSource for FullPrecisionFloatVectorSimilarityValuesSource {
             return Ok(Box::new(EmptyDoubleValues));
         };
         let infos = reader.get_field_infos();
+        // `fi.getVectorDimension()` on a null `fi` is dereferenced
+        // (`FullPrecisionFloatVectorSimilarityValuesSource.java:79-80`).
         let dimension = infos
             .field_info(&self.field_name)
             .map(|fi| fi.vector_dimension)
-            .unwrap_or(0);
+            .ok_or_else(|| {
+                LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"org.apache.lucene.index.FieldInfo.getVectorDimension()\" \
+                     because \"fi\" is null",
+                )
+            })?;
         if dimension as usize != self.query_vector.len() {
             return Err(LuceneError::illegal_argument(format!(
                 "Query vector dimension does not match field dimension: {} != {}",
@@ -152,13 +159,24 @@ impl DoubleValuesSource for FullPrecisionFloatVectorSimilarityValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        let bits: Vec<u32> = self.query_vector.iter().map(|v| v.to_bits()).collect();
-        hash_of(&(
-            &self.field_name,
-            bits,
-            self.vector_similarity_function.map(|f| f as u8),
-        ))
+    fn source_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_floats, java_arrays_hash_code_ints,
+            java_identity_hash_code_stand_in, java_string_hash_code,
+        };
+        // `Objects.hash(fieldName, Arrays.hashCode(queryVector),
+        // vectorSimilarityFunction)`; the enum constant's hash is a JVM identity
+        // hash, replaced by the stable stand-in of
+        // `java_identity_hash_code_stand_in` (`0` for `null`).
+        java_arrays_hash_code_ints(&[
+            java_string_hash_code(&self.field_name),
+            java_arrays_hash_code_floats(&self.query_vector),
+            self.vector_similarity_function.map_or(0, |function| {
+                java_identity_hash_code_stand_in(&format!(
+                    "org.apache.lucene.index.VectorSimilarityFunction.{function:?}"
+                ))
+            }),
+        ])
     }
 
     fn to_source_string(&self) -> String {

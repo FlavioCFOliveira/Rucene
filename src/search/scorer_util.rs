@@ -175,14 +175,18 @@ impl ScorerUtil {
         num_scorers: usize,
         min_should_match: usize,
     ) -> Result<i64> {
-        let capacity = num_scorers
-            .checked_sub(min_should_match)
-            .and_then(|slack| slack.checked_add(1))
-            .ok_or_else(|| {
-                LuceneError::illegal_argument(format!(
-                    "minShouldMatch must not exceed numScorers, got minShouldMatch={min_should_match}, numScorers={num_scorers}"
-                ))
-            })?;
+        // `new PriorityQueue<>(numScorers - minShouldMatch + 1)`, an `int`
+        // expression whose negative value the queue refuses
+        // (`PriorityQueue.java:86-90`).
+        let max_size = (num_scorers as i32)
+            .wrapping_sub(min_should_match as i32)
+            .wrapping_add(1);
+        let capacity = usize::try_from(max_size).map_err(|_| {
+            LuceneError::illegal_argument(format!(
+                "maxSize must be >= 0 and < {}; got: {max_size}",
+                crate::util::ArrayUtil::MAX_ARRAY_LENGTH
+            ))
+        })?;
         let mut pq: PriorityQueue<i64, GreatestCostFirst> =
             PriorityQueue::new(capacity, GreatestCostFirst)?;
         for cost in costs {
@@ -285,35 +289,33 @@ impl ScorerUtil {
     /// competitive enough to exceed the minimum competitive score, given the
     /// maximum remaining score and the number of scorers.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java delegates the compaction to
-    /// `VectorUtil.filterByScore`, which dispatches to a SIMD implementation
-    /// when one is available. This crate's `vector_util` does not expose that
-    /// primitive, so the scalar loop that backs Java's default provider is
-    /// spelled out here; the result is identical.
+    /// The compaction is `VectorUtil.filterByScore(buffer.docs, buffer.scores,
+    /// minRequiredScore, buffer.size)` (`ScorerUtil.java:160-162`).
+    ///
+    /// # Errors
+    ///
+    /// The `IllegalArgumentException` of `VectorUtil.filterByScore` when the
+    /// buffer's two arrays differ in length or are shorter than its size.
     pub fn filter_competitive_hits(
         buffer: &mut DocAndScoreAccBuffer,
         max_remaining_score: f64,
         min_competitive_score: f32,
         num_scorers: i32,
-    ) {
+    ) -> Result<()> {
         let min_required_score =
             Self::min_required_score(max_remaining_score, min_competitive_score, num_scorers);
 
         if min_required_score <= 0.0 {
-            return;
+            return Ok(());
         }
 
-        let mut new_size = 0;
-        for i in 0..buffer.size {
-            let doc = buffer.docs[i];
-            let score = buffer.scores[i];
-            buffer.docs[new_size] = doc;
-            buffer.scores[new_size] = score;
-            if score >= min_required_score {
-                new_size += 1;
-            }
-        }
-        buffer.size = new_size;
+        buffer.size = crate::util::vector_util::filter_by_score(
+            &mut buffer.docs,
+            &mut buffer.scores,
+            min_required_score,
+            buffer.size,
+        )?;
+        Ok(())
     }
 
     /// Applies the given scorable as a required clause on the buffer, removing
@@ -321,27 +323,35 @@ impl ScorerUtil {
     ///
     /// Equivalent to
     /// `ScorerUtil.applyRequiredClause(DocAndScoreAccBuffer, DocIdSetIterator,
-    /// Scorable)`. The buffer must contain doc IDs in sorted order, with no
-    /// duplicates.
+    /// Scorable)` (`ScorerUtil.java:177-202`). The buffer must contain doc IDs
+    /// in sorted order, with no duplicates.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's callers pass the clause's
+    /// iterator and its scorable as two arguments that are often aliases of
+    /// one object (`MaxScoreBulkScorer` passes `w.iterator, w.scorable`,
+    /// `BlockMaxConjunctionBulkScorer` a scorer's `iterator()` and the scorer
+    /// itself). Rust cannot hold two mutable references to one object, so the
+    /// clause is passed once, as a [`ScorerClause`] that hands out each view in
+    /// turn. The calls made on each view, and their order, are Java's.
     ///
     /// # Errors
     ///
     /// Propagates any I/O error raised while advancing or scoring.
-    pub fn apply_required_clause(
+    pub fn apply_required_clause<C: ScorerClause + ?Sized>(
         buffer: &mut DocAndScoreAccBuffer,
-        iterator: &mut dyn DocIdSetIterator,
-        scorable: &mut dyn Scorable,
+        clause: &mut C,
     ) -> Result<()> {
         let mut intersection_size = 0;
-        let mut cur_doc = iterator.doc_id();
+        let mut cur_doc = clause.clause_iterator().doc_id();
         for i in 0..buffer.size {
             let target_doc = buffer.docs[i];
             if cur_doc < target_doc {
-                cur_doc = iterator.advance(target_doc)?;
+                cur_doc = clause.clause_iterator().advance(target_doc)?;
             }
             if cur_doc == target_doc {
                 buffer.docs[intersection_size] = target_doc;
-                buffer.scores[intersection_size] = buffer.scores[i] + f64::from(scorable.score()?);
+                buffer.scores[intersection_size] =
+                    buffer.scores[i] + f64::from(clause.clause_scorable().score()?);
                 intersection_size += 1;
             }
         }
@@ -354,28 +364,64 @@ impl ScorerUtil {
     ///
     /// Equivalent to
     /// `ScorerUtil.applyOptionalClause(DocAndScoreAccBuffer, DocIdSetIterator,
-    /// Scorable)`. The buffer must contain doc IDs in sorted order, with no
-    /// duplicates.
+    /// Scorable)` (`ScorerUtil.java:212-230`). The buffer must contain doc IDs
+    /// in sorted order, with no duplicates. See
+    /// [`apply_required_clause`](Self::apply_required_clause) for why the
+    /// clause is one argument.
     ///
     /// # Errors
     ///
     /// Propagates any I/O error raised while advancing or scoring.
-    pub fn apply_optional_clause(
+    pub fn apply_optional_clause<C: ScorerClause + ?Sized>(
         buffer: &mut DocAndScoreAccBuffer,
-        iterator: &mut dyn DocIdSetIterator,
-        scorable: &mut dyn Scorable,
+        clause: &mut C,
     ) -> Result<()> {
-        let mut cur_doc = iterator.doc_id();
+        let mut cur_doc = clause.clause_iterator().doc_id();
         for i in 0..buffer.size {
             let target_doc = buffer.docs[i];
             if cur_doc < target_doc {
-                cur_doc = iterator.advance(target_doc)?;
+                cur_doc = clause.clause_iterator().advance(target_doc)?;
             }
             if cur_doc == target_doc {
-                buffer.scores[i] += f64::from(scorable.score()?);
+                buffer.scores[i] += f64::from(clause.clause_scorable().score()?);
             }
         }
         Ok(())
+    }
+}
+
+/// The `(DocIdSetIterator, Scorable)` pair of one clause that
+/// [`ScorerUtil::apply_required_clause`] and
+/// [`ScorerUtil::apply_optional_clause`] read, handed out one view at a time
+/// because the two may alias.
+pub trait ScorerClause {
+    /// The clause's iterator, Java's `DocIdSetIterator` argument.
+    fn clause_iterator(&mut self) -> &mut dyn DocIdSetIterator;
+    /// The clause's scorable, Java's `Scorable` argument.
+    fn clause_scorable(&mut self) -> &mut dyn Scorable;
+}
+
+impl ScorerClause for crate::search::disi_wrapper::DisiWrapper {
+    /// `w.iterator`.
+    fn clause_iterator(&mut self) -> &mut dyn DocIdSetIterator {
+        self.iterator()
+    }
+
+    /// `w.scorable`.
+    fn clause_scorable(&mut self) -> &mut dyn Scorable {
+        self.scorable()
+    }
+}
+
+impl ScorerClause for dyn crate::search::scorer::Scorer + '_ {
+    /// `scorer.iterator()`.
+    fn clause_iterator(&mut self) -> &mut dyn DocIdSetIterator {
+        self.iterator()
+    }
+
+    /// The scorer itself, which is its own `Scorable`.
+    fn clause_scorable(&mut self) -> &mut dyn Scorable {
+        self
     }
 }
 

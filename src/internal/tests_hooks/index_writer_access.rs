@@ -20,8 +20,7 @@ use crate::index::SegmentCommitInfo;
 ///   writer's lock, so the port returns a clone.
 /// * **`Result` where the writer's method returns one.** The port's
 ///   `IndexWriter::seg_string`, `get_segment_count`, `is_deleter_closed` and
-///   `newest_segment` report a poisoned writer lock as an error, which Java's
-///   monitors cannot be; the accessor passes it on.
+///   `newest_segment` return a `Result`; the accessor passes it on.
 /// * **`get_reader` returns an `Arc`.** It is what `IndexWriter::get_reader`
 ///   returns, readers being shared in this crate.
 /// * **`Send + Sync + Debug` bounds.** Needed because
@@ -33,7 +32,7 @@ pub trait IndexWriterAccess: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns the error the writer raises when its lock is poisoned.
+    /// Returns the error the writer raises.
     fn seg_string(&self, iw: &IndexWriter) -> Result<String>;
 
     /// Returns how many segments the writer currently holds.
@@ -42,7 +41,7 @@ pub trait IndexWriterAccess: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns the error the writer raises when its lock is poisoned.
+    /// Returns the error the writer raises.
     fn get_segment_count(&self, iw: &IndexWriter) -> Result<i32>;
 
     /// Returns whether the writer has been closed.
@@ -77,7 +76,7 @@ pub trait IndexWriterAccess: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns the error the writer raises when its lock is poisoned.
+    /// Returns the error the writer raises.
     fn is_deleter_closed(&self, iw: &IndexWriter) -> Result<bool>;
 
     /// Returns the most recently flushed segment, if there is one.
@@ -87,6 +86,6 @@ pub trait IndexWriterAccess: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns the error the writer raises when its lock is poisoned.
+    /// Returns the error the writer raises.
     fn newest_segment(&self, iw: &IndexWriter) -> Result<Option<SegmentCommitInfo>>;
 }

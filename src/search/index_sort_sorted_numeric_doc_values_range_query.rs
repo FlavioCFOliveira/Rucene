@@ -15,7 +15,6 @@ use crate::search::abstract_doc_id_set_iterator::AbstractDocIdSetIterator;
 use crate::search::constant_score_scorer_supplier::ConstantScoreScorerSupplier;
 use crate::search::constant_score_weight::{ConstantScoreWeight, ConstantScoreWeightImpl};
 use crate::search::doc_id_set_iterator::{all, empty, range, DocIdSetIterator, NO_MORE_DOCS};
-use crate::search::doc_values_iteration::numeric_as_iterator;
 use crate::search::field_comparator::SortValue;
 use crate::search::field_exists_query::FieldExistsQuery;
 use crate::search::index_searcher::IndexSearcher;
@@ -168,10 +167,15 @@ struct FindNextValueVisitor<'a> {
 }
 
 impl IntersectVisitor for FindNextValueVisitor<'_> {
+    /// `IndexSortSortedNumericDocValuesRangeQuery$2` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery$2",
+        )
+    }
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "this visitor is only handed leaf values".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
@@ -215,10 +219,15 @@ struct LastDocVisitor<'a> {
 }
 
 impl IntersectVisitor for LastDocVisitor<'_> {
+    /// `IndexSortSortedNumericDocValuesRangeQuery$3` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery$3",
+        )
+    }
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "this visitor is only handed leaf values".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
@@ -623,7 +632,7 @@ impl IndexSortSortedNumericDocValuesRangeQuery {
             return Ok(None);
         };
         if let Some(it_and_count) =
-            self.doc_id_set_iterator_from_bkd(context, numeric_as_iterator(numeric_values))?
+            self.doc_id_set_iterator_from_bkd(context, numeric_values as Box<dyn DocIdSetIterator>)?
         {
             return Ok(Some(it_and_count));
         }
@@ -650,7 +659,7 @@ impl IndexSortSortedNumericDocValuesRangeQuery {
             sort_field,
             sort_field_type,
             context,
-            numeric_as_iterator(numeric_values),
+            numeric_values as Box<dyn DocIdSetIterator>,
         )
         .map(Some)
     }
@@ -830,7 +839,7 @@ impl ConstantScoreWeightImpl for IndexSortRangeWeight {
                 if let Some(numeric_values) = numeric_values {
                     it_and_count = self.query.doc_id_set_iterator_from_bkd(
                         context,
-                        numeric_as_iterator(numeric_values),
+                        numeric_values as Box<dyn DocIdSetIterator>,
                     )?;
                 }
             }
@@ -867,7 +876,7 @@ impl ConstantScoreWeightImpl for IndexSortRangeWeight {
                                         sort_field,
                                         sort_field_type,
                                         context,
-                                        numeric_as_iterator(numeric_values),
+                                        numeric_values as Box<dyn DocIdSetIterator>,
                                     )?;
                                     if it_and_count.count != -1 {
                                         return Ok(it_and_count.count);
@@ -968,12 +977,21 @@ impl Query for IndexSortSortedNumericDocValuesRangeQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.base.hash(&mut hasher);
-        self.fallback_query.query_hash().hash(&mut hasher);
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_ints, java_long_hash_code, java_string_hash_code,
+        };
+        // `Objects.hash(field, lowerValue, upperValue, fallbackQuery)`.
+        java_arrays_hash_code_ints(&[
+            java_string_hash_code(self.base.get_field()),
+            java_long_hash_code(self.base.lower_value()),
+            java_long_hash_code(self.base.upper_value()),
+            self.fallback_query.query_hash(),
+        ])
     }
 }

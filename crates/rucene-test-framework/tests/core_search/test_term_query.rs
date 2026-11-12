@@ -325,7 +325,7 @@ impl Query for RecordingTermQuery {
                 .is_some_and(|o| self.inner.query_eq(&o.inner))
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         self.inner.query_hash()
     }
 
@@ -470,7 +470,7 @@ impl Terms for NoSeekTerms {
         self.inner.has_payloads()
     }
 
-    fn stats(&self) -> Result<String> {
+    fn stats(&self) -> Result<Box<dyn rucene::index::terms::StatsObject>> {
         self.inner.stats()
     }
 }

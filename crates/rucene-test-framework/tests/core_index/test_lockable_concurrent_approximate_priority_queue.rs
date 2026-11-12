@@ -131,7 +131,7 @@ fn test_never_return_null_on_non_empty_queue() -> Result<()> {
     for _ in 0..iters {
         let concurrency = TestUtil::next_int(&*random(), 1, 16);
         let queue: Arc<LockableConcurrentApproximatePriorityQueue<WeightedLock>> = Arc::new(
-            LockableConcurrentApproximatePriorityQueue::with_concurrency(concurrency as usize),
+            LockableConcurrentApproximatePriorityQueue::with_concurrency(concurrency as usize)?,
         );
         let num_threads = TestUtil::next_int(&*random(), 2, 16);
         let mut threads = Vec::with_capacity(num_threads as usize);

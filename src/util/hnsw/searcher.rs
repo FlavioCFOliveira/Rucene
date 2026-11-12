@@ -150,7 +150,7 @@ impl HnswGraphSearcher {
         } else {
             Box::new(HnswGraphSearcher::new(
                 NeighborQueue::new(knn_collector.k(), true)?,
-                create_bit_set(knn_collector.k(), get_graph_size(graph)),
+                create_bit_set(knn_collector.k(), get_graph_size(graph))?,
             ))
         };
         // Then, check if the search strategy is seeded.
@@ -388,6 +388,29 @@ impl HnswGraphSearcher {
             self.bulk_scores.resize(bulk, 0.0);
         }
     }
+
+    /// Searches one level of `graph` from `eps`, collecting the `top_k` nearest
+    /// nodes, with no accept filter.
+    ///
+    /// Equivalent to the public `HnswGraphSearcher.searchLevel(RandomVectorScorer,
+    /// int, int, int[], HnswGraph)` (`HnswGraphSearcher.java:201-210`), which
+    /// returns a new `GraphBuilderKnnCollector(topK)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the scorer's and the graph's errors.
+    pub fn search_level_top_k(
+        &mut self,
+        scorer: &mut dyn RandomVectorScorer,
+        top_k: i32,
+        level: i32,
+        eps: &[i32],
+        graph: &mut dyn HnswGraph,
+    ) -> Result<crate::util::hnsw::builder::GraphBuilderKnnCollector> {
+        let mut results = crate::util::hnsw::builder::GraphBuilderKnnCollector::new(top_k)?;
+        self.search_level(&mut results, scorer, level, eps, graph, None)?;
+        Ok(results)
+    }
 }
 
 /// Thread-safe searcher for `OnHeapHnswGraph` that avoids mutating the graph.
@@ -439,7 +462,10 @@ impl OnHeapSearcher {
     }
 
     fn graph_next_neighbor(&mut self) -> i32 {
-        let cur = self.cur_neighbors.as_ref().expect("graph_seek not called");
+        // `cur.size()` on a `null` `cur`: the JVM's `NullPointerException`.
+        let Some(cur) = self.cur_neighbors.as_ref() else {
+            crate::store::java_nio_file::throw_unchecked("java.lang.NullPointerException", None)
+        };
         self.cur_upto += 1;
         if self.cur_upto < cur.size() {
             cur.node(self.cur_upto)
@@ -678,13 +704,30 @@ pub fn expected_visited_nodes(k: i32, graph_size: i32) -> i32 {
 /// int)`, which follows the same reasoning as `FixedBitSet.of`: a search
 /// expected to touch under a 128th of the graph is better served by a sparse
 /// set than by one word per 64 nodes.
-pub fn create_bit_set(k: i32, graph_size: i32) -> Box<dyn BitSet> {
-    let size = graph_size.max(1) as usize;
-    if expected_visited_nodes(k, graph_size) < (graph_size >> 7) {
-        Box::new(SparseFixedBitSet::new(size).expect("INVARIANT: size is graph_size.max(1)"))
-    } else {
-        Box::new(FixedBitSet::new(size))
-    }
+///
+/// For an empty graph (`graph_size == 0`) and `k >= 1`,
+/// `expectedVisitedNodes` is `(int) (log(0) * k)`, `Integer.MIN_VALUE`, so
+/// Java builds `new SparseFixedBitSet(0)`, which throws
+/// `IllegalArgumentException` (`HnswGraphSearcher.java:68-72`,
+/// `SparseFixedBitSet.java:63-66`); this port does the same.
+///
+/// # Errors
+///
+/// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
+/// (`length needs to be >= 1`) when the sparse set is chosen for an empty
+/// graph.
+pub fn create_bit_set(k: i32, graph_size: i32) -> Result<Box<dyn BitSet>> {
+    // INVARIANT: every caller passes `getGraphSize(graph)`, `maxNodeId() + 1`,
+    // which is never negative.
+    debug_assert!(graph_size >= 0);
+    let size = graph_size as usize;
+    Ok(
+        if expected_visited_nodes(k, graph_size) < (graph_size >> 7) {
+            Box::new(SparseFixedBitSet::new(size)?)
+        } else {
+            Box::new(FixedBitSet::new(size))
+        },
+    )
 }
 
 #[cfg(test)]

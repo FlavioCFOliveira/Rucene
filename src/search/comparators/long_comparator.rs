@@ -69,6 +69,7 @@ impl LongComparator {
                 pruning,
                 8, // `Long.BYTES`
                 Self::sortable_bytes_to_long,
+                "org.apache.lucene.search.comparators.LongComparator",
             ),
             values: vec![0; num_hits],
             top_value: 0,
@@ -141,6 +142,24 @@ impl LongComparator {
     /// Equivalent to `LongComparator.LongLeafComparator.topAsComparableLong()`.
     fn top_as_comparable_long(&self) -> i64 {
         self.top_value
+    }
+}
+
+impl LongComparator {
+    /// `getLeafComparator(context)` of a subclass whose leaf comparator
+    /// overrides `getNumericDocValues` to return `doc_values`; see
+    /// [`NumericComparator::new_leaf_with_doc_values`].
+    ///
+    /// # Errors
+    ///
+    /// As [`NumericComparator::new_leaf_with_doc_values`].
+    pub fn new_leaf_with_doc_values(
+        &mut self,
+        context: &LeafReaderContext,
+        doc_values: Box<dyn crate::index::NumericDocValues>,
+    ) -> Result<NumericLeafState> {
+        let top = self.top_as_comparable_long();
+        self.base.new_leaf_with_doc_values(context, top, doc_values)
     }
 }
 

@@ -196,8 +196,10 @@ impl Query for BitSetQuery {
                 .is_some_and(|o| *self.docs == *o.docs)
     }
 
-    fn query_hash(&self) -> u64 {
-        (31u64.wrapping_mul(self.class_hash())).wrapping_add(self.docs.hash_code() as u32 as u64)
+    fn query_hash(&self) -> i32 {
+        31i32
+            .wrapping_mul(self.class_hash())
+            .wrapping_add(self.docs.hash_code())
     }
 
     fn as_any(&self) -> &dyn Any {

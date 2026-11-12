@@ -16,9 +16,9 @@ use crate::util::attribute::{Attribute, AttributeImpl, AttributeReflector};
 use crate::util::byte_block_pool::hash_bytes;
 use crate::util::{ArrayUtil, BytesRef, BytesRefBuilder};
 
-/// Produces a lazily-initialized `&'static [TypeId]` that respects the crate's
-/// 1.80 MSRV by computing `TypeId`s at runtime rather than in a `const`
-/// context.
+/// Produces a lazily-initialized `&'static [TypeId]`, computing the `TypeId`s
+/// at runtime because `TypeId::of` is not a `const fn` at the crate's MSRV
+/// (1.89).
 macro_rules! static_type_ids {
     ($($ty:ty),* $(,)?) => {{
         static IDS: OnceLock<&'static [TypeId]> = OnceLock::new();
@@ -1242,7 +1242,7 @@ impl PositionIncrementAttribute for PackedTokenAttributeImpl {
     fn set_position_increment(&mut self, position_increment: i32) {
         assert!(
             position_increment >= 0,
-            "Position increment must be zero or greater; got {position_increment}"
+            "Increment must be zero or greater: {position_increment}"
         );
         self.position_increment = position_increment;
     }

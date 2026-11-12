@@ -272,7 +272,7 @@ impl SkipDataReader for SkipReaderData {
             }
             Ok(())
         })();
-        skip_stream.seek(input.file_pointer())?;
+        skip_stream.seek(input.file_pointer()?)?;
         result?;
         Ok(skip_doc)
     }

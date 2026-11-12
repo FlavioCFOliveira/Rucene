@@ -34,7 +34,6 @@ use rucene::codecs::Codec;
 use rucene::error::Result;
 use rucene::index::documents_writer::MAX_DOCS;
 use rucene::index::segment_info::{SegmentCommitInfo, SegmentInfo};
-use rucene::search::Sort;
 use rucene::store::{DEFAULT_IO_CONTEXT, READONCE_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
 use rucene::util::{Bits, FixedBitSet, Version};
@@ -226,7 +225,7 @@ pub trait BaseLiveDocsFormatTestCase: Send + Sync + 'static {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            Sort::default(),
+            None,
         )?;
         let sci0 = SegmentCommitInfo::new(si.clone(), 0, 0, 0, -1, -1, StringHelper::random_id())?;
         format.write_live_docs(

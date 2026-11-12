@@ -285,5 +285,37 @@ name = "portability_index_interop"
 path = "tests/portability/index_interop.rs"
 
 [[test]]
+name = "portability_similarity_scores"
+path = "tests/portability/similarity_scores.rs"
+
+[[test]]
+name = "portability_multi_term_queries"
+path = "tests/portability/multi_term_queries.rs"
+
+[[test]]
+name = "portability_scoring_queries"
+path = "tests/portability/scoring_queries.rs"
+
+[[test]]
+name = "portability_geo_shapes"
+path = "tests/portability/geo_shapes.rs"
+
+[[test]]
+name = "portability_dv_range_feature_queries"
+path = "tests/portability/dv_range_feature_queries.rs"
+
+[[test]]
+name = "portability_terms_dictionary"
+path = "tests/portability/terms_dictionary.rs"
+
+[[test]]
 name = "portability_utf16_offsets"
 path = "tests/portability/utf16_offsets.rs"
+
+[[test]]
+name = "portability_analysis_tokens"
+path = "tests/portability/analysis_tokens.rs"
+
+[[test]]
+name = "portability_knn_variants"
+path = "tests/portability/knn_variants.rs"

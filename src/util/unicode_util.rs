@@ -260,7 +260,15 @@ impl UnicodeUtil {
 
         let mut code_point_count = 0usize;
         while pos < limit {
-            let v = bytes[pos] as u32;
+            // `bytes[pos] & 0xFF`: the JVM's `ArrayIndexOutOfBoundsException`
+            // past the backing array.
+            let Some(&v) = bytes.get(pos) else {
+                return Err(crate::store::array_index_out_of_bounds(
+                    pos as i64,
+                    bytes.len(),
+                ));
+            };
+            let v = v as u32;
             if v < 0x80 {
                 pos += 1;
             } else if v >= 0xC0 {
@@ -271,24 +279,19 @@ impl UnicodeUtil {
                 } else if v < 0xF8 {
                     pos += 4;
                 } else {
-                    // 5- and 6-byte sequences are invalid.
-                    return Err(LuceneError::illegal_argument(
-                        "invalid UTF-8 lead byte".to_string(),
-                    ));
+                    // 5- and 6-byte sequences are invalid:
+                    // `throw new IllegalArgumentException()`.
+                    return Err(LuceneError::illegal_argument(String::new()));
                 }
             } else {
-                return Err(LuceneError::illegal_argument(
-                    "invalid UTF-8 lead byte".to_string(),
-                ));
+                return Err(LuceneError::illegal_argument(String::new()));
             }
             code_point_count += 1;
         }
 
         // Check we did not go over the limit on the last character.
         if pos > limit {
-            return Err(LuceneError::illegal_argument(
-                "truncated UTF-8 sequence".to_string(),
-            ));
+            return Err(LuceneError::illegal_argument(String::new()));
         }
 
         Ok(code_point_count)
@@ -417,9 +420,12 @@ impl UnicodeUtil {
     ///
     /// As [`new_string_utf16`](Self::new_string_utf16), and
     /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
-    /// for an unpaired surrogate, which Java accepts because a Java `String`
-    /// may hold lone surrogates and a Rust `String` may not. That is the only
-    /// behavioural difference.
+    /// for an unpaired surrogate.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java accepts an unpaired surrogate
+    /// because a Java `String` may hold lone surrogates; a Rust `String` may
+    /// not, so this form fails there. [`new_string_utf16`](Self::new_string_utf16)
+    /// is the faithful form.
     pub fn new_string(code_points: &[i32], offset: usize, count: usize) -> Result<String> {
         let (Ok(offset), Ok(count)) = (i32::try_from(offset), i32::try_from(count)) else {
             return Err(LuceneError::illegal_argument(String::new()));

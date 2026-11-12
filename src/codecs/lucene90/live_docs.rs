@@ -7,7 +7,7 @@
 use crate::codecs::codec_util;
 use crate::codecs::live_docs::LiveDocsFormat;
 use crate::codecs::stub::SegmentCommitInfo;
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::{LuceneError, Result};
 use crate::index::index_file_names::{file_name_from_generation, LIVE_DOCS_EXTENSION};
 use crate::store::{Directory, IOContext, IndexInput, IndexOutput};
 use crate::util::bit_sets::{DenseLiveDocs, SparseFixedBitSet, SparseLiveDocs};
@@ -46,12 +46,9 @@ impl LiveDocsFormat for Lucene90LiveDocsFormat {
     ) -> Result<Box<dyn Bits>> {
         let gen = info.get_del_gen();
         let name = file_name_from_generation(&info.info.name, LIVE_DOCS_EXTENSION, gen)
-            .ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "missing live docs generation for segment: {}",
-                    info.info.name
-                ))
-            })?;
+            // `fileNameFromGeneration` returns `null` for generation -1, and
+            // the directory dereferences it: the JVM's `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)?;
         let max_doc = info.info.max_doc()?;
         let del_count = info.get_del_count();
         let deletion_rate = del_count as f64 / max_doc as f64;
@@ -89,12 +86,9 @@ impl LiveDocsFormat for Lucene90LiveDocsFormat {
     ) -> Result<()> {
         let gen = info.get_next_del_gen();
         let name = file_name_from_generation(&info.info.name, LIVE_DOCS_EXTENSION, gen)
-            .ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "missing live docs generation for segment: {}",
-                    info.info.name
-                ))
-            })?;
+            // `fileNameFromGeneration` returns `null` for generation -1, and
+            // the directory dereferences it: the JVM's `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)?;
         // `try (IndexOutput output = dir.createOutput(name, context))`
         // (`Lucene90LiveDocsFormat.java:171-183`): the output is closed
         // whether or not the body throws; a failure of the body wins, and the
@@ -118,13 +112,15 @@ impl LiveDocsFormat for Lucene90LiveDocsFormat {
 
         let expected = info.get_del_count() + new_del_count;
         if del_count != expected as usize {
-            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+            // `Lucene90LiveDocsFormat.java:184-192`: `CorruptIndexException(String,
+            // String)` with the file name as the resource description.
+            return Err(LuceneError::corrupt_index(
                 format!(
                     "bits.deleted={del_count} info.delcount={} newdelcount={new_del_count}",
                     info.get_del_count()
                 ),
-            ))));
+                &name,
+            ));
         }
         Ok(())
     }
@@ -165,10 +161,11 @@ fn read_live_docs(
         };
 
     if actual_del_count != expected_del_count {
-        return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
+        // `Lucene90LiveDocsFormat.java:123-126`.
+        return Err(LuceneError::corrupt_index(
             format!("bits.deleted={actual_del_count} info.delcount={expected_del_count}"),
-        ))));
+            input.to_java_string(),
+        ));
     }
     Ok(live_docs)
 }

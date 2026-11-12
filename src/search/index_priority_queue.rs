@@ -105,10 +105,11 @@ impl<T, O: IndexOrder<T>> IndexPriorityQueue<T, O> {
     /// `ArrayIndexOutOfBoundsException` Java raises.
     pub fn add(&mut self, values: &[T], element: usize) -> usize {
         let index = self.size + 1;
+        // `heap[index] = element` past the array.
         assert!(
             index < self.heap.len(),
-            "cannot add to a full PriorityQueue of max size {}",
-            self.max_size
+            "java.lang.ArrayIndexOutOfBoundsException: Index {index} out of bounds for length {}",
+            self.heap.len()
         );
         self.heap[index] = element;
         self.size = index;

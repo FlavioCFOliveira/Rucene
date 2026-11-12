@@ -288,7 +288,15 @@ fn intro_select_bounded(ops: &mut dyn PivotOps, from: usize, to: usize, k: usize
 /// decided by the algorithm, not by the comparator — so a stable sort, or any
 /// other correct sort, writes a different `.kdd`.
 pub fn intro_sort(ops: &mut dyn PivotOps, from: usize, to: usize) {
-    assert!(from <= to, "from must be <= to");
+    // `Sorter.checkRange(from, to)` (`Sorter.java:81-86`).
+    if to < from {
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.IllegalArgumentException",
+            Some(&format!(
+                "'to' must be >= 'from', got from={from} and to={to}"
+            )),
+        );
+    }
     if to - from <= 1 {
         return;
     }
@@ -765,7 +773,11 @@ impl RadixSelector {
             }
             bucket_from = bucket_to;
         }
-        unreachable!("the bucket holding k must exist");
+        // `throw new AssertionError("Unreachable code")` (`RadixSelector.java:171`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.AssertionError",
+            Some("Unreachable code"),
+        );
     }
 
     /// `RadixSelector.computeCommonPrefixLengthAndBuildHistogram`.

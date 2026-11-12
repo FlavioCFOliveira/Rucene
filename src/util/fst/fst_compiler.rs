@@ -128,6 +128,15 @@ impl<'a> From<ReadWriteDataOutput> for FstOutputSink<'a> {
 }
 
 impl DataOutput for FstOutputSink<'_> {
+    /// The `toString()` of the output this sink stands for: Java's
+    /// `dataOutput` field is that output itself.
+    fn to_java_string(&self) -> String {
+        match self {
+            FstOutputSink::OnHeap(output) => output.to_java_string(),
+            FstOutputSink::Streaming(output) => output.to_java_string(),
+        }
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         match self {
             FstOutputSink::OnHeap(output) => output.write_byte(b),
@@ -160,19 +169,19 @@ impl Accountable for NullFSTReader {
 impl FSTReader for NullFSTReader {
     fn get_reverse_bytes_reader(&self) -> Result<Box<dyn BytesReader + '_>> {
         Err(LuceneError::unsupported_operation(
-            "FST was not constructed with get_on_heap_reader_writer()".to_string(),
+            "FST was not constructed with getOnHeapReaderWriter()".to_string(),
         ))
     }
 
     fn get_owned_reverse_bytes_reader(self: std::sync::Arc<Self>) -> Result<Box<dyn BytesReader>> {
         Err(LuceneError::unsupported_operation(
-            "FST was not constructed with get_on_heap_reader_writer()".to_string(),
+            "FST was not constructed with getOnHeapReaderWriter()".to_string(),
         ))
     }
 
     fn write_to(&self, _out: &mut dyn DataOutput) -> Result<()> {
         Err(LuceneError::unsupported_operation(
-            "FST was not constructed with get_on_heap_reader_writer()".to_string(),
+            "FST was not constructed with getOnHeapReaderWriter()".to_string(),
         ))
     }
 }
@@ -730,13 +739,15 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the sink is not the on-heap
-    /// one and therefore cannot be read back.
+    /// one and therefore cannot be read back: `"The DataOutput must
+    /// implement FSTReader, but got " + dataOutput` (`FSTCompiler.java:227-233`).
     pub fn fst_reader(&self) -> Result<&dyn FSTReader> {
         match &self.data_output {
             FstOutputSink::OnHeap(output) => Ok(output),
-            FstOutputSink::Streaming(_) => Err(LuceneError::illegal_state(
-                "The DataOutput must implement FSTReader".to_string(),
-            )),
+            FstOutputSink::Streaming(output) => Err(LuceneError::illegal_state(format!(
+                "The DataOutput must implement FSTReader, but got {}",
+                output.to_java_string()
+            ))),
         }
     }
 
@@ -754,9 +765,10 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     pub fn into_fst_reader(self) -> Result<Box<dyn FSTReader>> {
         match self.data_output {
             FstOutputSink::OnHeap(output) => Ok(Box::new(output)),
-            FstOutputSink::Streaming(_) => Err(LuceneError::illegal_state(
-                "The DataOutput must implement FSTReader".to_string(),
-            )),
+            FstOutputSink::Streaming(output) => Err(LuceneError::illegal_state(format!(
+                "The DataOutput must implement FSTReader, but got {}",
+                output.to_java_string()
+            ))),
         }
     }
 

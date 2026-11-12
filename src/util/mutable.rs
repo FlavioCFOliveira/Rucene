@@ -176,10 +176,15 @@ pub trait MutableValue: Any {
 }
 
 fn downcast<'a, T: 'static>(value: &'a dyn MutableValue, expected: &str) -> &'a T {
-    value
-        .as_any()
-        .downcast_ref::<T>()
-        .unwrap_or_else(|| panic!("class cast: expected {}", expected))
+    value.as_any().downcast_ref::<T>().unwrap_or_else(|| {
+        // `(MutableValueX) source`: the JVM's `ClassCastException`.
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.ClassCastException",
+            Some(&format!(
+                "cannot be cast to class org.apache.lucene.util.mutable.{expected}"
+            )),
+        )
+    })
 }
 
 macro_rules! ordering_of {
@@ -656,7 +661,10 @@ fn as_long_view(value: &dyn MutableValue) -> (i64, bool) {
     if let Some(v) = value.as_any().downcast_ref::<MutableValueDate>() {
         return (v.value, v.exists);
     }
-    panic!("class cast: expected MutableValueLong");
+    crate::store::java_nio_file::throw_unchecked(
+        "java.lang.ClassCastException",
+        Some("cannot be cast to class org.apache.lucene.util.mutable.MutableValueLong"),
+    )
 }
 
 impl MutableValue for MutableValueLong {

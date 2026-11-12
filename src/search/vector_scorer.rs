@@ -262,6 +262,12 @@ impl SharedDocIndexIterator {
 }
 
 impl DocIdSetIterator for SharedDocIndexIterator {
+    /// The shared iterator's `toString()`: every handle stands for the one Java
+    /// object.
+    fn java_to_string(&self) -> String {
+        self.inner.borrow().java_to_string()
+    }
+
     fn doc_id(&self) -> i32 {
         self.inner.borrow().doc_id()
     }

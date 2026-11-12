@@ -20,7 +20,6 @@ use rucene::error::Result;
 use rucene::index::index_file_names::segment_file_name;
 use rucene::index::segment_info::SegmentInfo;
 use rucene::index::Term;
-use rucene::search::Sort;
 use rucene::store::{IndexInput, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
 use rucene::util::{BytesRef, Version};
@@ -83,7 +82,7 @@ impl TestSimpleTextSegmentInfoFormat {
             HashMap::new(),
             id,
             HashMap::new(),
-            Sort::default(),
+            None,
         )?;
         info.set_files(std::iter::empty::<String>())?;
         codec

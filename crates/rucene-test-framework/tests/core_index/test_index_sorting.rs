@@ -1545,7 +1545,7 @@ fn test_random1() -> Result<()> {
             .unwrap_or_else(|| npe("diagnostics source"));
         match source.as_str() {
             index_writer::SOURCE_FLUSH | index_writer::SOURCE_MERGE => {
-                assert_equals(&index_sort, info.index_sort());
+                assert_equals(&Some(&index_sort), &info.index_sort());
                 let mut values = numeric(&leaf_reader, "foo")?;
                 let mut previous = i64::MIN;
                 for i in 0..leaf_reader.max_doc() {

@@ -532,7 +532,7 @@ fn assert_sorted_set_range_query_uses_two_phase_range_iterator_with_skipper(
                 &DocValues::unwrap_singleton_sorted(DocValues::get_sorted_set(
                     &*leaf.leaf_reader(),
                     "dv",
-                )?)
+                )?)?
                 .is_some(),
             );
 

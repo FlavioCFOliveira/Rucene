@@ -304,7 +304,7 @@ pub trait AbstractPagedMutableOps: Sized {
                         .as_mut()
                         .expect("INVARIANT: the page was just allocated");
                     PackedInts::copy_with_buffer(
-                        source.as_packed_ints_reader(),
+                        source,
                         0,
                         dest.as_mut(),
                         0,

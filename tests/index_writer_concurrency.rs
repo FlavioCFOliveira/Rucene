@@ -315,7 +315,7 @@ impl MergePolicy for LockProbePolicy {
             // Detached on purpose: while the lock is held the probe cannot
             // finish, and it finishes on its own once the lock is released.
             thread::spawn(move || {
-                let _ = writer.num_docs();
+                let _ = writer.get_doc_stats();
                 let _ = tx.send(());
             });
             let held = rx.recv_timeout(Duration::from_millis(500)).is_err();

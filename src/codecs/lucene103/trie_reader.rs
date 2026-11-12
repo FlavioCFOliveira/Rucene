@@ -5,7 +5,7 @@
 //! location of its children.
 
 use crate::error::{LuceneError, Result};
-use crate::store::RandomAccessInput;
+use crate::store::{IndexInput, RandomAccessInput};
 
 /// Sentinel for a node that carries no output pointer.
 pub const NO_OUTPUT: i64 = -1;
@@ -65,9 +65,12 @@ impl ChildSaveStrategy {
             0 => Ok(Self::ReverseArray),
             1 => Ok(Self::Array),
             2 => Ok(Self::Bits),
-            _ => Err(LuceneError::illegal_argument(format!(
-                "illegal child save strategy code: {code}"
-            ))),
+            // `STRATEGIES_BY_CODE[code]` (`TrieBuilder.java:665-667`): the
+            // array's `ArrayIndexOutOfBoundsException`.
+            _ => Err(LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!("Index {code} out of bounds for length 3"),
+            )),
         }
     }
 
@@ -208,7 +211,13 @@ impl Node {
 ///
 /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.TrieReader`.
 pub struct TrieReader {
+    /// `TrieReader.access`, the random-access view the node loads read.
     input: Box<dyn RandomAccessInput>,
+    /// `TrieReader.input`, the sequential view floor data is read from
+    /// (`TrieReader.java:74-80`). Java keeps both views of the same slice;
+    /// this port does too, so seeking the floor data never moves the
+    /// position the random-access reads rely on.
+    floor_input: Box<dyn IndexInput>,
     /// The trie's root node, loaded on construction.
     pub root: Node,
 }
@@ -226,25 +235,38 @@ impl TrieReader {
     pub fn new(mut input: Box<dyn RandomAccessInput>, root_fp: i64) -> Result<Self> {
         let mut root = Node::default();
         Self::load_node(input.as_mut(), &mut root, root_fp)?;
-        Ok(Self { input, root })
+        let mut floor_input = input.clone_input()?;
+        floor_input.seek(0)?;
+        Ok(Self {
+            input,
+            floor_input,
+            root,
+        })
     }
 
-    /// Returns the underlying input, for reading a node's floor data.
+    /// Returns the underlying random-access input.
     pub fn input(&mut self) -> &mut dyn RandomAccessInput {
         self.input.as_mut()
     }
 
-    /// Reads the floor data of `node` into a byte vector.
+    /// Returns the sequential input the floor data of every node is read from.
     ///
-    /// Equivalent to `Node.floorData(TrieReader)`, which in Java simply seeks
-    /// the shared input; here the bytes are copied out so the caller does not
-    /// hold the input across a later seek.
-    pub fn floor_data(&mut self, node: &Node, len: usize) -> Result<Vec<u8>> {
+    /// Equivalent to the field `TrieReader.input`, which every
+    /// `floorDataReader` of the blocktree frames aliases.
+    pub fn floor_input(&mut self) -> &mut dyn IndexInput {
+        self.floor_input.as_mut()
+    }
+
+    /// Positions the floor-data input at `node`'s floor data and returns it.
+    ///
+    /// Equivalent to `Node.floorData(TrieReader)` (`TrieReader.java:67-71`):
+    /// `r.input.seek(floorDataFp); return r.input;`. The floor data is read
+    /// straight from the input, with no bound on its length, exactly as Java
+    /// reads it.
+    pub fn floor_data(&mut self, node: &Node) -> Result<&mut dyn IndexInput> {
         debug_assert!(node.is_floor());
-        let mut buf = vec![0u8; len];
-        self.input
-            .read_bytes_at(node.floor_data_fp, &mut buf, 0, len)?;
-        Ok(buf)
+        self.floor_input.seek(node.floor_data_fp)?;
+        Ok(self.floor_input.as_mut())
     }
 
     /// Loads the node stored at `fp`.

@@ -255,7 +255,7 @@ fn rucene_report() -> String {
                 out.push_str(&format!("{label} -> {}\n", ids.join(" ")));
             }
             Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(message),
+                kind: LuceneErrorKind::CorruptIndex { message, .. },
                 ..
             }) => {
                 out.push_str(&format!("{label} -> CorruptIndexException: {message}\n"));

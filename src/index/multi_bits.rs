@@ -21,7 +21,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::error::{LuceneError, Result};
+use crate::error::Result;
 use crate::index::index_reader::IndexReader;
 use crate::index::multi_reader::{reader_util, ReaderSlice};
 use crate::util::Bits;
@@ -39,68 +39,63 @@ use crate::util::Bits;
 #[derive(Debug)]
 pub struct BitsSlice {
     parent: Box<dyn Bits>,
-    /// First parent index covered by this slice (inclusive).
-    start: usize,
-    /// Number of indices covered; the parent range is `start..start + length`.
-    length: usize,
+    /// First parent index covered by this slice (inclusive), Java's `int`.
+    start: i32,
+    /// Number of indices covered, Java's `int`: `BitsSlice` only asserts it
+    /// is not negative.
+    length: i32,
 }
 
 impl BitsSlice {
     /// Narrows `parent` to the window described by `slice`.
     ///
-    /// Equivalent to `BitsSlice(Bits, ReaderSlice)`.
-    ///
-    /// **Deliberate divergence**: Java only checks `length >= 0`, and does so
-    /// with an `assert`, which production builds disable — a negative length
-    /// then silently yields a slice that rejects every lookup. Both bounds are
-    /// checked here, and the check is reported as an error rather than
-    /// skipped, because [`Bits::get`] has no way to signal the problem later.
+    /// Equivalent to `BitsSlice(Bits, ReaderSlice)` (`BitsSlice.java:33-38`),
+    /// which keeps `start` and `length` as given and only asserts
+    /// `length >= 0`.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `slice.start` or
-    /// `slice.length` is negative.
+    /// None; the `Result` is kept for the callers.
     pub fn new(parent: Box<dyn Bits>, slice: ReaderSlice) -> Result<Self> {
         debug_assert!(slice.length >= 0, "length={}", slice.length);
-        let start = usize::try_from(slice.start).map_err(|_| {
-            LuceneError::illegal_argument(format!("slice start must be >= 0; got {}", slice.start))
-        })?;
-        let length = usize::try_from(slice.length).map_err(|_| {
-            LuceneError::illegal_argument(format!(
-                "slice length must be >= 0; got {}",
-                slice.length
-            ))
-        })?;
         Ok(Self {
             parent,
-            start,
-            length,
+            start: slice.start,
+            length: slice.length,
         })
     }
 
     /// Returns the first parent index covered by this slice.
     pub fn start(&self) -> usize {
-        self.start
+        self.start as usize
+    }
+
+    /// `Objects.checkIndex(doc, length)`, then the parent index `doc + start`
+    /// (an `int` sum, wrapping as Java's does).
+    fn parent_index(&self, index: usize) -> usize {
+        let doc = index as i32;
+        assert!(
+            doc >= 0 && doc < self.length,
+            "java.lang.IndexOutOfBoundsException: Index {doc} out of bounds for length {}",
+            self.length
+        );
+        // A negative parent index is the parent's own array-bounds failure.
+        doc.wrapping_add(self.start) as usize
     }
 }
 
 impl Bits for BitsSlice {
     /// Returns the parent's bit at `slice.start + index`.
     ///
+    /// Equivalent to `BitsSlice.get(int)` (`BitsSlice.java:40-44`).
+    ///
     /// # Panics
     ///
-    /// Panics if `index` is outside `0..length()`, mirroring the
-    /// `IndexOutOfBoundsException` that Java's `Objects.checkIndex` raises.
-    /// Lookups inside the slice may still panic if the slice reaches past the
-    /// end of the parent, which is a bug in the [`ReaderSlice`] handed to
-    /// [`BitsSlice::new`], not in the caller of `get`.
+    /// `java.lang.IndexOutOfBoundsException` when `index` is outside
+    /// `[0, length)`, as `Objects.checkIndex` throws; a parent index outside
+    /// the parent fails as the parent's lookup does.
     fn get(&self, index: usize) -> bool {
-        assert!(
-            index < self.length,
-            "index {index} out of bounds for slice of length {}",
-            self.length
-        );
-        self.parent.get(index + self.start)
+        self.parent.get(self.parent_index(index))
     }
 
     /// Forwards to the wrapped bits' `try_get`, so that an error they raise
@@ -111,16 +106,16 @@ impl Bits for BitsSlice {
     ///
     /// As [`get`](Self::get).
     fn try_get(&self, index: usize) -> Result<bool> {
-        assert!(
-            index < self.length,
-            "index {index} out of bounds for slice of length {}",
-            self.length
-        );
-        self.parent.try_get(index + self.start)
+        self.parent.try_get(self.parent_index(index))
     }
 
+    /// `return length;` (`BitsSlice.java:46-49`).
+    ///
+    /// The `int` is returned as is: a negative length, possible when
+    /// assertions are off, is not clamped; its `usize` image converts back to
+    /// the same `i32` with `as i32`.
     fn length(&self) -> usize {
-        self.length
+        self.length as usize
     }
 }
 
@@ -341,7 +336,6 @@ impl Debug for MultiBits {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::LuceneErrorKind;
     use std::collections::HashSet;
 
     use crate::codecs::stub::StoredFieldVisitor;
@@ -708,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "out of bounds for slice of length 3")]
+    #[should_panic(expected = "Index 3 out of bounds for length 3")]
     fn bits_slice_rejects_index_at_the_length() {
         let parent = ListBits::boxed(&[true; 10]);
         let slice = BitsSlice::new(parent, ReaderSlice::new(2, 3, 0)).unwrap();
@@ -718,7 +712,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "out of bounds for slice of length 0")]
+    #[should_panic(expected = "Index 0 out of bounds for length 0")]
     fn bits_slice_of_zero_length_rejects_index_zero() {
         let parent = ListBits::boxed(&[true, true]);
         let slice = BitsSlice::new(parent, ReaderSlice::new(1, 0, 0)).unwrap();
@@ -726,31 +720,25 @@ mod tests {
     }
 
     /// `BitsSlice(Bits, ReaderSlice)` asserts `length >= 0`
-    /// (`BitsSlice.java:37`): a debug build fails it; without assertions this
-    /// port refuses the slice.
+    /// (`BitsSlice.java:37`): a debug build fails it; without assertions the
+    /// slice is built, `length()` answers the `int` as given, and every
+    /// lookup fails `Objects.checkIndex`.
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "length=-1"))]
     fn bits_slice_asserts_a_negative_length() {
-        let negative_length = BitsSlice::new(ListBits::boxed(&[true]), ReaderSlice::new(0, -1, 0));
-        assert!(matches!(
-            negative_length,
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        let negative_length =
+            BitsSlice::new(ListBits::boxed(&[true]), ReaderSlice::new(0, -1, 0)).unwrap();
+        assert_eq!(negative_length.length() as i32, -1);
     }
 
+    /// Java keeps a negative start as given (`BitsSlice.java:35`), so
+    /// `get(1)` answers `parent.get(1 + -1)` (`BitsSlice.java:40-44`): the
+    /// parent's bit 0.
     #[test]
-    fn bits_slice_rejects_a_negative_start() {
-        let negative_start = BitsSlice::new(ListBits::boxed(&[true]), ReaderSlice::new(-1, 1, 0));
-        assert!(matches!(
-            negative_start,
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+    fn bits_slice_keeps_a_negative_start() {
+        let negative_start =
+            BitsSlice::new(ListBits::boxed(&[true, false]), ReaderSlice::new(-1, 2, 0)).unwrap();
+        assert!(negative_start.get(1));
     }
 
     #[test]

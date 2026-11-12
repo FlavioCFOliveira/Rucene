@@ -158,7 +158,7 @@ pub fn java_message(e: &LuceneError) -> Option<String> {
         // `CorruptIndexException(message, resourceDescription)` has the
         // message `message + " (resource=" + resourceDescription + ")"`,
         // which the payload already holds (`LuceneError::corrupt_index`).
-        LuceneErrorKind::CorruptIndex(message)
+        LuceneErrorKind::CorruptIndex { message, .. }
         | LuceneErrorKind::IndexFormatNotSupported(message)
         | LuceneErrorKind::IndexNotFound(message)
         | LuceneErrorKind::NotFound(message)

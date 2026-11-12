@@ -8,8 +8,7 @@ use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::index::{
-    DocValues, LeafReader, LeafReaderContext, SortedSetDocValues, SortedSetDocValuesTermsEnum,
-    Terms, TermsEnum,
+    DocValues, LeafReader, LeafReaderContext, SortedSetDocValuesTermsEnum, Terms, TermsEnum,
 };
 use crate::search::boolean_clause::Occur;
 use crate::search::constant_score_query::ConstantScoreQuery;
@@ -68,7 +67,7 @@ impl RewriteMethod for DocValuesRewriteMethod {
     ///
     /// Equivalent to `DocValuesRewriteMethod#hashCode`
     /// (`DocValuesRewriteMethod.java:200-202`).
-    fn method_hash(&self) -> u64 {
+    fn method_hash(&self) -> i32 {
         641
     }
 }
@@ -104,7 +103,7 @@ impl Query for MultiTermQueryDocValuesWrapper {
     fn to_query_string(&self, field: &str) -> String {
         // The wrapped query's rendering is fine for the filter too, since the
         // query boost is 1.
-        self.query.as_query().to_query_string(field)
+        (&*self.query as &dyn Query).to_query_string(field)
     }
 
     fn visit(&self, visitor: &mut dyn QueryVisitor) {
@@ -112,7 +111,7 @@ impl Query for MultiTermQueryDocValuesWrapper {
             // Java pulls the sub-visitor and discards it, so the wrapped query
             // is never actually visited; reproduced here so that a visitor
             // observing `getSubVisitor` sees the same calls.
-            let _ = visitor.get_sub_visitor(Occur::FILTER, self.query.as_query());
+            let _ = visitor.get_sub_visitor(Occur::FILTER, &*self.query as &dyn Query);
         }
     }
 
@@ -146,50 +145,19 @@ impl Query for MultiTermQueryDocValuesWrapper {
         else {
             return false;
         };
-        self.query.as_query().query_eq(other.query.as_query())
+        (&*self.query as &dyn Query).query_eq(&*other.query as &dyn Query)
     }
 
-    fn query_hash(&self) -> u64 {
-        31u64
+    /// `getClass().getName()` of `org.apache.lucene.search.DocValuesRewriteMethod$MultiTermQueryDocValuesWrapper`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.DocValuesRewriteMethod$MultiTermQueryDocValuesWrapper"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `31 * classHash() + query.hashCode()` (`DocValuesRewriteMethod.java:80-82`).
+        31i32
             .wrapping_mul(self.class_hash())
-            .wrapping_add(self.query.as_query().query_hash())
-    }
-}
-
-/// Opens the sorted-set view of a doc-values field.
-///
-/// Equivalent to `DocValues.getSortedSet(LeafReader, String)`, whose
-/// single-valued branch wraps a `SortedDocValues` in a singleton and whose
-/// missing-field branch answers the empty instance.
-///
-/// **Divergence from Lucene 10.5.0.** Java's `checkField` reports the
-/// mismatched doc-values type before answering the empty instance; this port
-/// has no `DocValuesType` check to make here, so a field with the wrong type
-/// simply has no sorted or sorted-set view and yields the empty instance.
-///
-/// # Errors
-///
-/// Propagates any I/O error raised while opening the doc values.
-fn get_sorted_set(
-    reader: &Arc<dyn LeafReader>,
-    field: &str,
-) -> Result<Box<dyn SortedSetDocValues>> {
-    if let Some(dv) = reader.get_sorted_set_doc_values(field)? {
-        return Ok(dv);
-    }
-    if let Some(sorted) = reader.get_sorted_doc_values(field)? {
-        return Ok(Box::new(DocValues::singleton_sorted(sorted)));
-    }
-    Ok(Box::new(DocValues::empty_sorted_set()))
-}
-
-/// Returns whether the doc-values field has not been updated.
-///
-/// Equivalent to `DocValues.isCacheable(LeafReaderContext, String...)`.
-fn doc_values_is_cacheable(ctx: &LeafReaderContext, field: &str) -> bool {
-    match ctx.leaf_reader().get_field_infos().field_info(field) {
-        Some(fi) => fi.doc_values_gen <= -1,
-        None => true,
+            .wrapping_add((&*self.query as &dyn Query).query_hash())
     }
 }
 
@@ -212,8 +180,10 @@ struct DocValuesTerms {
 
 impl Terms for DocValuesTerms {
     fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
-        Ok(SortedSetDocValuesTermsEnum::new(get_sorted_set(
-            &self.reader,
+        // `DocValues.getSortedSet(context.reader(), query.field)`
+        // (`DocValuesRewriteMethod.java:151`).
+        Ok(SortedSetDocValuesTermsEnum::new(DocValues::get_sorted_set(
+            self.reader.as_ref(),
             &self.field,
         )?))
     }
@@ -226,25 +196,22 @@ impl Terms for DocValuesTerms {
     /// Throws `UnsupportedOperationException`, as Java's does
     /// (`DocValuesRewriteMethod.java:107-110`).
     fn sum_total_term_freq(&self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "getSumTotalTermFreq".to_string(),
-        ))
+        // No message, as Java's `new UnsupportedOperationException()`.
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Throws `UnsupportedOperationException`, as Java's does
     /// (`DocValuesRewriteMethod.java:112-115`).
     fn sum_doc_freq(&self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "getSumDocFreq".to_string(),
-        ))
+        // No message, as Java's `new UnsupportedOperationException()`.
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Throws `UnsupportedOperationException`, as Java's does
     /// (`DocValuesRewriteMethod.java:117-120`).
     fn doc_count(&self) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "getDocCount".to_string(),
-        ))
+        // No message, as Java's `new UnsupportedOperationException()`.
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn has_freqs(&self) -> bool {
@@ -296,7 +263,9 @@ impl ConstantScoreWeightImpl for DocValuesWeightImpl {
         score: f32,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let reader = context.leaf_reader();
-        let values = get_sorted_set(&reader, self.query.get_field())?;
+        // `DocValues.getSortedSet(context.reader(), query.field)`
+        // (`DocValuesRewriteMethod.java:151`), with its `checkField`.
+        let values = DocValues::get_sorted_set(reader.as_ref(), self.query.get_field())?;
         if values.get_value_count()? == 0 {
             // No values or docs, so nothing can match.
             return Ok(None);
@@ -314,7 +283,8 @@ impl ConstantScoreWeightImpl for DocValuesWeightImpl {
     }
 
     fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
-        doc_values_is_cacheable(ctx, self.query.get_field())
+        // `DocValues.isCacheable(ctx, query.field)` (`DocValuesRewriteMethod.java:188`).
+        DocValues::is_cacheable(ctx, &[self.query.get_field()])
     }
 
     fn matches(
@@ -386,12 +356,29 @@ impl ScorerSupplier for DocValuesScorerSupplier {
                 "ScorerSupplier.get(long) must be called at most once".to_string(),
             )
         })?;
-        let values = get_sorted_set(&self.reader, &self.field)?;
+        let values = DocValues::get_sorted_set(self.reader.as_ref(), &self.field)?;
         // Leverage a doc-values skipper when one was indexed for the field.
         let skipper = self.reader.get_doc_values_skipper(&self.field)?;
-        let iterator: Box<dyn TwoPhaseIterator> = Box::new(
-            DocValuesRangeIterator::for_sorted_set_ordinal_set(values, skipper, &mut *terms_enum)?,
-        );
+        // `SortedDocValues singleton = DocValues.unwrapSingleton(values);` and
+        // the `forOrdinalSet` overload it selects
+        // (`DocValuesRewriteMethod.java:166-174`). `is_singleton` asks the
+        // `instanceof` question without giving the values up, so the
+        // multi-valued branch still has them.
+        let iterator: Box<dyn TwoPhaseIterator> = if values.is_singleton() {
+            let singleton = DocValues::unwrap_singleton_sorted(values)?
+                .expect("INVARIANT: is_singleton answered true");
+            Box::new(DocValuesRangeIterator::for_ordinal_set(
+                singleton,
+                skipper,
+                &mut *terms_enum,
+            )?)
+        } else {
+            Box::new(DocValuesRangeIterator::for_sorted_set_ordinal_set(
+                values,
+                skipper,
+                &mut *terms_enum,
+            )?)
+        };
         Ok(Box::new(ConstantScoreScorer::from_two_phase(
             self.score,
             self.score_mode,

@@ -274,7 +274,7 @@ impl MergeScheduler for SerialMergeScheduler {
         let _guard = self
             .lock
             .lock()
-            .map_err(|_| LuceneError::illegal_state("merge scheduler lock poisoned".to_string()))?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while let Some(merge) = merge_source.get_next_merge()? {
             merge_source.merge(merge)?;
         }
@@ -2200,10 +2200,15 @@ impl MergeScheduler for ConcurrentMergeScheduler {
                 inner: directory,
                 rate_limiter,
             })),
-            None => Err(LuceneError::illegal_state(format!(
+            // `throw new AssertionError("wrapForMerge should be called from
+            // MergeThread. Current thread: " + mergeThread)`
+            // (`ConcurrentMergeScheduler.java:289-292`). **Divergence from
+            // Lucene 10.5.0.** `Thread.toString()` is `Thread[#id,name,
+            // priority,group]`; a Rust thread has only its name.
+            None => Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
                 "wrapForMerge should be called from MergeThread. Current thread: {}",
                 std::thread::current().name().unwrap_or("<unnamed>")
-            ))),
+            )))),
         }
     }
 
@@ -3765,7 +3770,7 @@ mod intra_merge_executor_tests {
             std::collections::HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             std::collections::HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap();
         let commit = SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, [0u8; 16]).unwrap();
@@ -3916,7 +3921,10 @@ mod intra_merge_executor_tests {
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
         cms.set_handle_merge_exception_override(Some(Arc::new(move |error| {
-            tx.lock().unwrap().send(error.to_string()).unwrap();
+            tx.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .send(error.to_string())
+                .unwrap();
         })));
         let big = cms
             .get_intra_merge_executor(&one_merge(BIG))
@@ -3954,7 +3962,13 @@ mod intra_merge_executor_tests {
         let first_thread = rx.recv_timeout(Duration::from_secs(10)).unwrap();
         // Wait until the thread waits for work again.
         let started = std::time::Instant::now();
-        while pool.state.lock().unwrap().idle.is_empty() {
+        while pool
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .idle
+            .is_empty()
+        {
             assert!(started.elapsed() < Duration::from_secs(10));
             std::thread::yield_now();
         }
@@ -3973,12 +3987,23 @@ mod intra_merge_executor_tests {
         // again; `execute` takes it off the idle list, so it is busy and the
         // pool, at its maximum of one, must reject the next command.
         let (release, wait) = mpsc::channel::<()>();
-        while pool.state.lock().unwrap().idle.is_empty() {
+        while pool
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .idle
+            .is_empty()
+        {
             std::thread::yield_now();
         }
         pool.execute(Box::new(move || wait.recv().unwrap()))
             .unwrap();
-        assert!(pool.state.lock().unwrap().idle.is_empty());
+        assert!(pool
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .idle
+            .is_empty());
         assert!(pool.execute(Box::new(|| {})).is_err());
         release.send(()).unwrap();
 
@@ -4009,7 +4034,13 @@ mod intra_merge_executor_tests {
         let pool = CachedThreadPool::new(4, keep_alive);
         pool.execute(Box::new(|| {})).unwrap();
         let started = std::time::Instant::now();
-        while pool.state.lock().unwrap().idle.is_empty() {
+        while pool
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .idle
+            .is_empty()
+        {
             assert!(started.elapsed() < Duration::from_secs(10));
             std::thread::yield_now();
         }
@@ -4031,7 +4062,10 @@ mod intra_merge_executor_tests {
     #[test]
     fn a_thread_that_cannot_start_rejects_and_returns_the_command() {
         let pool = CachedThreadPool::new(4, Duration::from_secs(60));
-        pool.state.lock().unwrap().fail_spawn = true;
+        pool.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fail_spawn = true;
         let (tx, rx) = mpsc::channel();
         let rejected = pool
             .execute(Box::new(move || tx.send(()).unwrap()))
@@ -4052,7 +4086,10 @@ mod intra_merge_executor_tests {
     fn an_expiring_thread_leaves_the_count_when_it_decides_to_exit() {
         let pool = CachedThreadPool::new(4, Duration::from_millis(50));
         let pause = Arc::new(std::sync::Barrier::new(2));
-        pool.state.lock().unwrap().exit_pause = Some(Arc::clone(&pause));
+        pool.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .exit_pause = Some(Arc::clone(&pause));
         pool.execute(Box::new(|| {})).unwrap();
         // The thread times out, decides to exit and parks before returning.
         pause.wait();

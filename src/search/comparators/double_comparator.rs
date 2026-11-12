@@ -69,6 +69,7 @@ impl DoubleComparator {
                 pruning,
                 8, // `Double.BYTES`
                 Self::sortable_bytes_to_long,
+                "org.apache.lucene.search.comparators.DoubleComparator",
             ),
             values: vec![0.0; num_hits],
             top_value: 0.0,
@@ -141,6 +142,24 @@ impl DoubleComparator {
     /// Equivalent to `DoubleComparator.DoubleLeafComparator.topAsComparableLong()`.
     fn top_as_comparable_long(&self) -> i64 {
         NumericUtils::double_to_sortable_long(self.top_value)
+    }
+}
+
+impl DoubleComparator {
+    /// `getLeafComparator(context)` of a subclass whose leaf comparator
+    /// overrides `getNumericDocValues` to return `doc_values`; see
+    /// [`NumericComparator::new_leaf_with_doc_values`].
+    ///
+    /// # Errors
+    ///
+    /// As [`NumericComparator::new_leaf_with_doc_values`].
+    pub fn new_leaf_with_doc_values(
+        &mut self,
+        context: &LeafReaderContext,
+        doc_values: Box<dyn crate::index::NumericDocValues>,
+    ) -> Result<NumericLeafState> {
+        let top = self.top_as_comparable_long();
+        self.base.new_leaf_with_doc_values(context, top, doc_values)
     }
 }
 

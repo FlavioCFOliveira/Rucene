@@ -402,6 +402,13 @@ pub struct IndexWriter {
     ///
     /// Equivalent to `IndexWriter.pendingSeqNo`.
     pending_seq_no: AtomicI64,
+    /// When the commit in progress started, on
+    /// [`now_ns`](crate::index::merge_scheduler::now_ns)'s clock: the
+    /// `commit: took` message of `finish_commit` reports the time since.
+    ///
+    /// Equivalent to `IndexWriter.startCommitTime` (`IndexWriter.java:413-416`),
+    /// set by `prepareCommitInternal` (`IndexWriter.java:3751`).
+    start_commit_time: AtomicI64,
     /// A weak handle on this writer, recorded by [`new`](Self::new).
     ///
     /// `IndexWriter.getReader` hands `this` to `StandardDirectoryReader.open`
@@ -806,18 +813,11 @@ impl FlushNotifications for WriterFlushNotifications {
     /// `FlushNotifications` (`IndexWriter.java:435-438`): `eventQueue.add(w
     /// -> w.flushFailed(info))`, whose event deletes `info.files()`
     /// (`IndexWriter.java:6023-6037`); an `IllegalStateException` from
-    /// `info.files()` means there is nothing to delete.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java reads `info.files()` when the
-    /// event runs, this port when it is queued; nothing changes the files of
-    /// a segment whose flush failed in between.
+    /// `info.files()` means there is nothing to delete. As in Java, the files
+    /// are read when the event runs.
     fn flush_failed(&self, info: &SegmentInfo) -> Result<()> {
-        // `IndexWriter.flushFailed(SegmentInfo)` (`IndexWriter.java:6023-6037`).
-        let files = info.files().ok();
-        self.add_event(Box::new(move |w: &IndexWriter| match files {
-            Some(files) => w.delete_new_files(files),
-            None => Ok(()),
-        }))
+        let info = info.clone();
+        self.add_event(Box::new(move |w: &IndexWriter| w.flush_failed(&info)))
     }
 
     /// Equivalent to `afterSegmentsFlushed()` of `IndexWriter`'s
@@ -951,8 +951,9 @@ impl IndexWriter {
         enable_test_points: bool,
     ) -> Result<Arc<Self>> {
         // `conf.setIndexWriter(this); // prevent reuse by other instances`
-        // (`IndexWriter.java:951`): refused before the write lock is taken.
-        config.live().check_not_attached()?;
+        // (`IndexWriter.java:951`): before the write lock is taken, and kept
+        // when the constructor fails afterwards.
+        config.live().attach_writer()?;
         // `infoStream = config.getInfoStream()` (`IndexWriter.java:953`).
         let info_stream = config.info_stream();
         // Obtain the write.lock. If the user configured a timeout, we wrap
@@ -1069,7 +1070,7 @@ impl IndexWriter {
         } else {
             // Init from either the latest commit point, or an explicit prior
             // commit point (`IndexWriter.java:1079-1118`).
-            let last_segments_file = SegmentInfos::get_last_commit_segments_file_name(&files)
+            let last_segments_file = SegmentInfos::get_last_commit_segments_file_name(&files)?
                 .ok_or_else(|| {
                     // `"no segments* file found in " + directory + ": files: "
                     // + Arrays.toString(files)` (`IndexWriter.java:1083-1086`).
@@ -1332,6 +1333,7 @@ impl IndexWriter {
             commit_lock: ReentrantLock::default(),
             write_doc_values_lock: Mutex::new(()),
             pending_seq_no: AtomicI64::new(0),
+            start_commit_time: AtomicI64::new(0),
             self_ref: OnceLock::new(),
             overrides: OnceLock::new(),
             enable_test_points,
@@ -1345,19 +1347,13 @@ impl IndexWriter {
             .flush_notifications
             .writer
             .set(Arc::downgrade(&writer));
-        // `conf.setIndexWriter(this); // prevent reuse by other instances`
-        // (`IndexWriter.java:951`).
-        //
-        // **Divergence from Lucene 10.5.0.** Java attaches the writer first
-        // thing; a handle on a Rust writer exists only once it is inside its
-        // `Arc`, so the configuration is attached here instead. Nothing can
-        // observe the difference: the constructor owns the configuration
-        // until now, so no other writer can have attached it in between, and
-        // the only reader of the attachment during construction — the
-        // `writer=` line of the configuration that `messageState` prints — runs
-        // after this point, as it does in Java.
+        // The configuration was attached first thing (`new_impl`,
+        // `IndexWriter.java:951`); a handle on a Rust writer exists only once
+        // it is inside its `Arc`, so the handle the `writer=` line of the
+        // configuration prints is bound here. Its only reader during
+        // construction, `messageState`, runs after this point, as in Java.
         let weak: Weak<IndexWriter> = Arc::downgrade(&writer);
-        writer.config.attach_writer(weak)?;
+        writer.config.bind_attached_writer(weak);
         // `IndexWriter.java:1202-1205`.
         if writer.info_stream.is_enabled(IW) {
             let reader = reader.map_or_else(|| "null".to_string(), |reader| reader.to_string());
@@ -1418,7 +1414,8 @@ impl IndexWriter {
                     .to_string(),
             ));
         }
-        if reader_infos.last_generation() <= 0 {
+        if reader_infos.last_generation() == 0 {
+            // `IndexWriter.java:1047`: only generation `0` is rejected.
             // TODO (Java): maybe we could allow this? It's tricky...
             return Err(LuceneError::illegal_argument(
                 "index must already have an initial commit to open from reader".to_string(),
@@ -1428,11 +1425,10 @@ impl IndexWriter {
         // Must clone because we don't want the incoming NRT reader to "see"
         // any changes this writer now makes.
         let mut segment_infos = reader_infos.clone();
-        let segments_file_name = segment_infos.segments_file_name().ok_or_else(|| {
-            LuceneError::illegal_state(
-                "a SegmentInfos past its first commit names its segments file".to_string(),
-            )
-        })?;
+        // `getLastGeneration() != -1` was checked above, so the name exists.
+        let segments_file_name = segment_infos
+            .segments_file_name()
+            .expect("INVARIANT: a SegmentInfos past its first commit names its segments file");
         let mut last_commit =
             match SegmentInfos::read_commit(Arc::clone(directory_orig), &segments_file_name) {
                 Ok(last_commit) => last_commit,
@@ -1516,7 +1512,10 @@ impl IndexWriter {
     /// the `AlreadyClosed` and `IllegalState` errors that carry it as their
     /// cause.
     pub fn get_tragic_exception(&self) -> Option<Arc<LuceneError>> {
-        self.tragedy.lock().ok().and_then(|guard| guard.clone())
+        self.tragedy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Records a tragic error, closing the writer to further work.
@@ -1630,8 +1629,8 @@ impl IndexWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`] when the writer's state lock is
-    /// poisoned.
+    /// None in practice: the writer's state lock recovers from poisoning, as a
+    /// Java monitor is never poisoned.
     pub fn is_deleter_closed(&self) -> Result<bool> {
         let state = self.state()?;
         Ok(state.deleter.is_closed(self))
@@ -1848,7 +1847,8 @@ impl IndexWriter {
         if state.segment_infos.version() < new_version {
             state.segment_infos.set_version(new_version)?;
         }
-        state.segment_infos.changed();
+        // `changed()` (`IndexWriter.java:1430`): `changeCount` too.
+        self.changed_locked(&mut state);
         Ok(())
     }
 
@@ -1861,7 +1861,8 @@ impl IndexWriter {
         if state.segment_infos.counter < new_counter {
             state.segment_infos.counter = new_counter;
         }
-        state.segment_infos.changed();
+        // `changed()` (`IndexWriter.java:1443`): `changeCount` too.
+        self.changed_locked(&mut state);
         Ok(())
     }
 
@@ -1920,10 +1921,12 @@ impl IndexWriter {
         self.ensure_open()?;
         state.deleter.inc_ref_segment_infos(segment_infos, false)?;
         if self.info_stream.is_enabled(IW) {
+            // `" segments=" + segString(segmentInfos)` (`IndexWriter.java:6095-6100`).
+            let segments = self.seg_string_of(state, segment_infos.as_slice())?;
             self.info_stream.message(
                 IW,
                 &format!(
-                    "incRefDeleter for NRT reader version={}",
+                    "incRefDeleter for NRT reader version={} segments={segments}",
                     segment_infos.version()
                 ),
             );
@@ -1940,10 +1943,12 @@ impl IndexWriter {
         let mut state = self.state()?;
         state.deleter.dec_ref_segment_infos(segment_infos)?;
         if self.info_stream.is_enabled(IW) {
+            // `" segments=" + segString(segmentInfos)` (`IndexWriter.java:6113-6118`).
+            let segments = self.seg_string_of(&state, segment_infos.as_slice())?;
             self.info_stream.message(
                 IW,
                 &format!(
-                    "decRefDeleter for NRT reader version={}",
+                    "decRefDeleter for NRT reader version={} segments={segments}",
                     segment_infos.version()
                 ),
             );
@@ -2339,7 +2344,8 @@ impl IndexWriter {
                 "at least one soft delete must be present".to_string(),
             ));
         }
-        self.ensure_open()?;
+        // `buildDocValuesUpdate` runs before any `ensureOpen`, which
+        // `updateDocuments` makes (`IndexWriter.java:1955-1956`).
         let updates = self.build_doc_values_update(&term, soft_deletes)?;
         self.update_document_with_node(
             Some(DeleteNode::new_doc_values_updates(updates)),
@@ -2376,7 +2382,8 @@ impl IndexWriter {
                 "at least one soft delete must be present".to_string(),
             ));
         }
-        self.ensure_open()?;
+        // `buildDocValuesUpdate` runs before any `ensureOpen`, which
+        // `updateDocuments` makes (`IndexWriter.java:1684-1686`).
         let updates = self.build_doc_values_update(&term, soft_deletes)?;
         self.update_documents_with_node(
             Some(DeleteNode::new_doc_values_updates(updates)),
@@ -2494,7 +2501,9 @@ impl IndexWriter {
 
             let update = match dv_type {
                 DocValuesType::NUMERIC => {
-                    let value = field.numeric_value().map(numeric_as_long);
+                    // `Long value = (Long) f.numericValue()`
+                    // (`IndexWriter.java:2070`).
+                    let value = field.numeric_value().map(numeric_as_long).transpose()?;
                     DocValuesUpdate::new(
                         DocValuesType::NUMERIC,
                         term.clone(),
@@ -2666,19 +2675,6 @@ impl IndexWriter {
         Ok(())
     }
 
-    /// Returns how many documents the index holds, including buffered ones and
-    /// excluding deletions not yet applied.
-    ///
-    /// Equivalent to `IndexWriter.numDocs()`.
-    pub fn num_docs(&self) -> Result<i32> {
-        let state = self.state()?;
-        let mut count = self.documents_writer.num_docs();
-        for info in state.segment_infos.iter() {
-            count += info.info.max_doc()? - info.get_del_count();
-        }
-        Ok(count)
-    }
-
     /// Returns whether the index has deletions, including buffered ones.
     ///
     /// Equivalent to `IndexWriter.hasDeletions()`. As in Lucene, buffered term
@@ -2757,10 +2753,10 @@ impl IndexWriter {
         // must not trigger merges here or it can deadlock
         // (`IndexWriter.java:3799`, `:4396`). This is what deletes the raw
         // segment files a compound file has just replaced.
-        let processed = self.process_events(false);
+        // An exception of the `finally` replaces the body's.
+        self.process_events(false)?;
         let any_changes = flush_result?;
         published?;
-        processed?;
         Ok(any_changes)
     }
 
@@ -2795,13 +2791,18 @@ impl IndexWriter {
                 None => {
                     if let Some(buffered_updates) = buffered_updates {
                         if !buffered_updates.is_empty() {
+                            // `publishFrozenUpdates(bufferedUpdates)`, then the
+                            // message, which renders the packet's
+                            // `toString()` with the generation the push gave it
+                            // (`IndexWriter.java:6057-6060`).
+                            let buffered_updates = Arc::new(buffered_updates);
+                            self.publish_frozen_updates(Arc::clone(&buffered_updates))?;
                             if self.info_stream.is_enabled(IW) {
                                 self.info_stream.message(
                                     IW,
-                                    &format!("flush: push buffered updates: {buffered_updates:?}"),
+                                    &format!("flush: push buffered updates: {buffered_updates}"),
                                 );
                             }
-                            self.publish_frozen_updates(buffered_updates)?;
                         }
                     }
                     Ok(())
@@ -2815,6 +2816,18 @@ impl IndexWriter {
                                 new_segment.segment_updates
                             ),
                         );
+                    }
+                    // `IndexWriter.java:6069-6072`: logged on the IW component
+                    // while gated by DW.
+                    if let Some(segment_updates) = new_segment.segment_updates.as_ref() {
+                        if self.info_stream.is_enabled("DW") {
+                            self.info_stream.message(
+                                IW,
+                                &format!(
+                                    "flush: push buffered seg private updates: {segment_updates}"
+                                ),
+                            );
+                        }
                     }
                     self.publish_flushed_segment(
                         new_segment.segment_info,
@@ -2841,7 +2854,8 @@ impl IndexWriter {
     ///
     /// # Errors
     ///
-    /// Fails when the writer's state lock is poisoned.
+    /// None in practice: the writer's state lock recovers from poisoning, as a
+    /// Java monitor is never poisoned.
     pub fn set_live_commit_data<I>(&self, data: I) -> Result<()>
     where
         I: IntoIterator<Item = (String, String)> + Clone + Send + Sync + 'static,
@@ -2860,7 +2874,8 @@ impl IndexWriter {
     ///
     /// # Errors
     ///
-    /// Fails when the writer's state lock is poisoned.
+    /// None in practice: the writer's state lock recovers from poisoning, as a
+    /// Java monitor is never poisoned.
     pub fn set_live_commit_data_with_increment<I>(
         &self,
         data: I,
@@ -2918,6 +2933,9 @@ impl IndexWriter {
     /// commit are prepared and waited for that long, and the commit records
     /// the segments they produced (`IndexWriter.java:3848-3889`).
     fn prepare_commit_internal(&self) -> Result<i64> {
+        // `startCommitTime = System.nanoTime()` (`IndexWriter.java:3751`).
+        self.start_commit_time
+            .store(crate::index::merge_scheduler::now_ns(), Ordering::Release);
         self.ensure_open_with(false)?;
         if self.info_stream.is_enabled(IW) {
             self.info_stream.message(IW, "prepareCommit: flush");
@@ -3098,7 +3116,7 @@ impl IndexWriter {
         // have changed if any merges did complete (`IndexWriter.java:3884-3889`).
         let to_commit = to_commit
             .lock()
-            .map_err(|_| LuceneError::illegal_state("toCommit mutex poisoned".to_string()))?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         {
             let mut state = self.state()?;
@@ -3109,12 +3127,15 @@ impl IndexWriter {
             self.maybe_merge.store(true, Ordering::Release);
         }
 
-        if let Err(error) = self.start_commit(to_commit) {
+        if let Err(mut error) = self.start_commit(to_commit) {
             // `IndexWriter.java:3898-3911`: a failed `startCommit` releases the
-            // reference its files still hold.
+            // reference its files still hold; `catch (Throwable t1) {
+            // t.addSuppressed(t1); } finally { filesToCommit = null; }`.
             let mut state = self.state()?;
             if let Some(files) = state.files_to_commit.take() {
-                let _ = state.deleter.dec_ref_files(files.iter());
+                if let Err(suppressed) = state.deleter.dec_ref_files(files.iter()) {
+                    error.add_suppressed(suppressed);
+                }
             }
             return Err(error);
         }
@@ -3222,34 +3243,55 @@ impl IndexWriter {
 
             // This call can take a long time -- 10s of seconds or more. We do it
             // without syncing on this.
-            let files_to_sync: Vec<String> = synced.files(false)?.into_iter().collect();
-            // `directory.sync(filesToSync)` (`IndexWriter.java:5774`).
-            if let Err(error) = self.directory.sync(&files_to_sync) {
-                let mut state = self.state()?;
-                pending_commit_set = false;
-                if let Some(mut pending) = state.pending_commit.take() {
-                    // `toSync.rollbackCommit(directory)` (`IndexWriter.java:5780`).
-                    pending.rollback_commit(self.directory.as_ref());
+            // `try { filesToSync = toSync.files(false); directory.sync(filesToSync);
+            // success = true; } finally { if (!success) { pendingCommitSet =
+            // false; pendingCommit = null; toSync.rollbackCommit(directory); } }`
+            // (`IndexWriter.java:5770-5782`): listing the files is guarded too.
+            let synced_files = synced.files(false).and_then(|files| {
+                let files_to_sync: Vec<String> = files.into_iter().collect();
+                self.directory.sync(&files_to_sync)?;
+                Ok(files_to_sync)
+            });
+            let files_to_sync = match synced_files {
+                Ok(files_to_sync) => files_to_sync,
+                Err(error) => {
+                    let mut state = self.state()?;
+                    pending_commit_set = false;
+                    if let Some(mut pending) = state.pending_commit.take() {
+                        // `toSync.rollbackCommit(directory)` (`IndexWriter.java:5780`).
+                        pending.rollback_commit(self.directory.as_ref());
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
+            };
             if self.info_stream.is_enabled(IW) {
                 self.info_stream
-                    .message(IW, &format!("done all syncs: {files_to_sync:?}"));
+                    // `"done all syncs: " + filesToSync`: `AbstractCollection.toString()`.
+                    .message(
+                        IW,
+                        &format!("done all syncs: [{}]", files_to_sync.join(", ")),
+                    );
             }
             self.test_point("midStartCommitSuccess");
             Ok(())
         })();
 
+        let mut outcome = outcome;
         let mut state = self.state()?;
-        if outcome.is_err() && !pending_commit_set {
-            if self.info_stream.is_enabled(IW) {
-                self.info_stream
-                    .message(IW, "hit exception committing segments file");
-            }
-            // Hit exception.
-            if let Some(files) = state.files_to_commit.take() {
-                let _ = state.deleter.dec_ref_files(files.iter());
+        if let Err(error) = outcome.as_mut() {
+            if !pending_commit_set {
+                if self.info_stream.is_enabled(IW) {
+                    self.info_stream
+                        .message(IW, "hit exception committing segments file");
+                }
+                // Hit exception: `try { deleter.decRef(filesToCommit); } catch
+                // (Throwable t1) { t.addSuppressed(t1); } finally { filesToCommit
+                // = null; }` (`IndexWriter.java:5792-5801`).
+                if let Some(files) = state.files_to_commit.take() {
+                    if let Err(suppressed) = state.deleter.dec_ref_files(files.iter()) {
+                        error.add_suppressed(suppressed);
+                    }
+                }
             }
         }
         // Have our master segmentInfos record the generations we just prepared.
@@ -3377,12 +3419,25 @@ impl IndexWriter {
                 state.rollback_segments = pending.create_backup_segment_infos();
                 Ok(())
             })();
+            // `finally { notifyAll(); pendingCommit = null; filesToCommit =
+            // null; }` (`IndexWriter.java:4297-4301`): the pending commit and
+            // its files were taken above.
+            self.state_changed.notify_all();
+            // `try (Closeable finalizer = () -> deleter.decRef(commitFiles))`
+            // (`IndexWriter.java:4270`): the body's exception stays primary,
+            // with the finalizer's added to it as suppressed.
             let released = match commit_files {
                 Some(files) => state.deleter.dec_ref_files(files.iter()),
                 None => Ok(()),
             };
-            committed?;
-            released
+            match (committed, released) {
+                (Err(mut error), Err(finalizer_error)) => {
+                    error.add_suppressed(finalizer_error);
+                    Err(error)
+                }
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Ok(()), Ok(())) => Ok(()),
+            }
         })();
         if let Err(error) = outcome {
             if self.info_stream.is_enabled(IW) {
@@ -3395,6 +3450,14 @@ impl IndexWriter {
             return Err(error);
         }
         if self.info_stream.is_enabled(IW) {
+            // `String.format(Locale.ROOT, "commit: took %.1f msec", ...)`
+            // (`IndexWriter.java:4319-4326`).
+            let elapsed_ns = crate::index::merge_scheduler::now_ns()
+                - self.start_commit_time.load(Ordering::Acquire);
+            self.info_stream.message(
+                IW,
+                &format!("commit: took {:.1} msec", elapsed_ns as f64 / 1_000_000.0),
+            );
             self.info_stream.message(IW, "commit: done");
         }
         Ok(())
@@ -3680,7 +3743,7 @@ impl IndexWriter {
         let taken = self
             .write_lock
             .lock()
-            .map_err(|_| LuceneError::illegal_state("write lock mutex poisoned".to_string()))?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         // The writer's handle goes, as `writeLock = null` does; the
         // lock-validating directory keeps its own and, the lock now being
@@ -4178,8 +4241,11 @@ impl IndexWriter {
 
     /// Does the work of [`merge_init`](Self::merge_init).
     ///
-    /// Equivalent to `IndexWriter._mergeInit(OneMerge)`.
+    /// Equivalent to the `synchronized` `IndexWriter._mergeInit(OneMerge)`
+    /// (`IndexWriter.java:5053-5130`): the whole body runs under one hold of
+    /// the writer's lock, the test point included.
     fn _merge_init(&self, merge: &mut OneMerge) -> Result<()> {
+        let mut state = self.state()?;
         self.test_point("startMergeInit");
         debug_assert!(merge.register_done);
         debug_assert!(
@@ -4197,7 +4263,8 @@ impl IndexWriter {
             // `merge_init` already ran.
             return Ok(());
         }
-        merge.set_merge_start_ns(crate::index::merge_scheduler::now_ns());
+        // `merge.mergeInit()` (`IndexWriter.java:5070`).
+        merge.merge_init();
         if merge.is_aborted() {
             return Ok(());
         }
@@ -4218,7 +4285,6 @@ impl IndexWriter {
             .reader_pool
             .write_doc_values_updates_for_merge(&merge.segments)?
         {
-            let mut state = self.state()?;
             self.checkpoint(&mut state)?;
         }
 
@@ -4226,10 +4292,7 @@ impl IndexWriter {
 
         // Bind the segment name here, so that segment names stay deterministic
         // even under a concurrent merge scheduler.
-        let merge_segment_name = {
-            let mut state = self.state()?;
-            self.new_segment_name(&mut state)
-        };
+        let merge_segment_name = self.new_segment_name(&mut state);
         // The minimum version is left unset; `SegmentMerger` fills it in. The
         // segment belongs to `directoryOrig` (`IndexWriter.java:5106-5108`).
         let mut si = SegmentInfo::new(
@@ -4244,7 +4307,7 @@ impl IndexWriter {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            self.config.index_sort().unwrap_or_default(),
+            self.config.index_sort(),
         )?;
         let details = HashMap::from([
             (
@@ -4272,7 +4335,7 @@ impl IndexWriter {
                 .unwrap_or_default();
             // `segString(merge.segments)` (`IndexWriter.java:5126-5129`), not
             // `OneMerge.segString()`.
-            let segments = self.seg_string_infos(&merge.segments)?;
+            let segments = self.seg_string_of(&state, &merge.segments)?;
             self.info_stream
                 .message(IW, &format!("merge seg={name} {segments}"));
         }
@@ -4366,8 +4429,17 @@ impl IndexWriter {
                 None => false,
             };
         if all_deleted && self.info_stream.is_enabled(IW) {
-            self.info_stream
-                .message(IW, "merged segment is 100% deleted; skipping insert");
+            // `"merged segment " + merge.info + " is 100% deleted; skipping
+            // insert"` (`IndexWriter.java:4726-4729`): `merge.info` renders
+            // `SegmentCommitInfo.toString()`, `null` when there is none.
+            let info = merge
+                .info()
+                .as_ref()
+                .map_or_else(|| "null".to_string(), ToString::to_string);
+            self.info_stream.message(
+                IW,
+                &format!("merged segment {info} is 100% deleted; skipping insert"),
+            );
         }
         let drop_segment = all_deleted;
         // If we merged no segments then we had better be dropping the new one.
@@ -4381,9 +4453,12 @@ impl IndexWriter {
             // Pass false for `assert_info_live`, because the merged segment is
             // not live yet: only below is it committed to the segment infos.
             if let Err(err) = self.release_with(&mut state, rld, false) {
+                // `finally { if (!success) { mergedUpdates.dropChanges();
+                // readerPool.drop(merge.info); } }` (`IndexWriter.java:4752-4757`):
+                // a failure of the drop replaces the release's.
                 rld.drop_changes();
                 if let Some(info) = merge.info().as_ref() {
-                    let _ = ReaderPool::drop(&self.reader_pool, info);
+                    ReaderPool::drop(&self.reader_pool, info)?;
                 }
                 return Err(err);
             }
@@ -4417,7 +4492,9 @@ impl IndexWriter {
         if drop_segment {
             if let Some(info) = merge.info().as_ref() {
                 debug_assert!(!state.segment_infos.contains(info));
-                let _ = ReaderPool::drop(&self.reader_pool, info);
+                // `readerPool.drop(merge.info)` (`IndexWriter.java:4782`): its
+                // failure propagates.
+                ReaderPool::drop(&self.reader_pool, info)?;
                 let files = info.files()?;
                 state.deleter.delete_new_files(files)?;
             }
@@ -4524,7 +4601,7 @@ impl IndexWriter {
             .as_ref()
             .map(SegmentCommitInfo::size_in_bytes)
             .transpose()?
-            .ok_or_else(|| LuceneError::illegal_state("merge has no merged segment".to_string()))?;
+            .ok_or_else(LuceneError::null_pointer)?;
         let segment_mb = size_in_bytes as f64 / 1024. / 1024.;
         Ok(format!(
             "merge codec={codec_name} maxDoc={max_doc}{merged_fields}; {} sec{pause_info} to merge \
@@ -4546,12 +4623,9 @@ impl IndexWriter {
     /// (`IndexWriter.java:5255`), so the scheduler can throttle it, and the
     /// merged segment is warmed with the configured
     /// [`MergedSegmentWarmer`](crate::index::index_writer_config::MergedSegmentWarmer)
-    /// before it is committed (`IndexWriter.java:5562-5574`).
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java passes an intra-merge
-    /// `Executor` to `SegmentMerger` so a codec can parallelise one merge;
-    /// `SegmentMerger` carries none here, so the merge runs on the calling
-    /// thread.
+    /// before it is committed (`IndexWriter.java:5562-5574`). The intra-merge
+    /// executor comes from `mergeScheduler.getIntraMergeExecutor(merge)`
+    /// (`IndexWriter.java:5327`) and is passed to `SegmentMerger`, as in Java.
     ///
     /// # Errors
     ///
@@ -4614,12 +4688,9 @@ impl IndexWriter {
         let _ = created_version_major;
 
         merge.init_merge_readers(|sci| {
-            let rld = self.get_pooled_instance(sci, true)?.ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "segment {} has no pooled reader",
-                    sci.info.name
-                ))
-            })?;
+            let rld = self
+                .get_pooled_instance(sci, true)?
+                .expect("INVARIANT: getPooledInstance(info, true) creates the entry");
             rld.set_is_merging();
             let mut state = self.state()?;
             rld.get_reader_for_merge(context.as_ref(), |mr| {
@@ -4739,7 +4810,13 @@ impl IndexWriter {
                     let max_doc = reader.max_doc();
                     let doc_map = Arc::clone(&doc_map);
                     maps.push(Arc::new(move |doc_id: i32| {
-                        assert!(doc_id >= 0 && doc_id < max_doc, "doc id out of range");
+                        // `Objects.checkIndex(docID, reader.maxDoc())`
+                        // (`IndexWriter.java:5352`).
+                        assert!(
+                            doc_id >= 0 && doc_id < max_doc,
+                            "java.lang.IndexOutOfBoundsException: Index {doc_id} out of bounds for \
+                             length {max_doc}"
+                        );
                         doc_map.old_to_new(current_doc_base + doc_id)
                     }));
                     doc_base += max_doc;
@@ -4780,9 +4857,7 @@ impl IndexWriter {
         // checks against it as Java's `setSoftDelCount` does.
         let merged_info = merge
             .get_merge_info()
-            .ok_or_else(|| {
-                LuceneError::illegal_state("mergeMiddle ran before mergeInit".to_string())
-            })?
+            .expect("INVARIANT: mergeInit ran before mergeMiddle")
             .info;
         let codec = self.config.codec();
 
@@ -4801,7 +4876,7 @@ impl IndexWriter {
             .merge_state
             .segment_info
             .as_ref()
-            .expect("the merge state holds the merged segment's info")
+            .expect("INVARIANT: the merge state holds the merged segment's info")
             .max_doc()?;
         if let Some(info) = merge.info().as_mut() {
             info.info.set_max_doc(merged_max_doc)?;
@@ -4893,7 +4968,7 @@ impl IndexWriter {
             let info = merge
                 .info()
                 .as_ref()
-                .expect("merge info was set by mergeInit")
+                .expect("INVARIANT: merge info was set by mergeInit")
                 .clone();
             let locked = LockedMergeContext {
                 writer: self,
@@ -4906,7 +4981,7 @@ impl IndexWriter {
             let files_to_remove = merge
                 .info()
                 .as_ref()
-                .expect("merge info was set by mergeInit")
+                .expect("INVARIANT: merge info was set by mergeInit")
                 .files()?;
             // The compound file must be created against the original directory
             // rather than the merging one, so that it is not throttled:
@@ -4926,7 +5001,7 @@ impl IndexWriter {
             // the non-compound files Java deletes below.
             let compound = merge
                 .get_merge_info()
-                .expect("merge info was set by mergeInit")
+                .expect("INVARIANT: merge info was set by mergeInit")
                 .info;
             let outcome = {
                 let mut delete_files =
@@ -4943,7 +5018,7 @@ impl IndexWriter {
                 merge
                     .info()
                     .as_ref()
-                    .expect("merge info was set by mergeInit")
+                    .expect("INVARIANT: merge info was set by mergeInit")
                     .info
                     .set_files(compound.files_ordered()?)?;
             }
@@ -4982,7 +5057,7 @@ impl IndexWriter {
                 let files = merge
                     .info()
                     .as_ref()
-                    .expect("merge info was set by mergeInit")
+                    .expect("INVARIANT: merge info was set by mergeInit")
                     .files()?;
                 self.delete_new_files(files)?;
                 match caught {
@@ -5008,7 +5083,7 @@ impl IndexWriter {
                 let files = merge
                     .info()
                     .as_ref()
-                    .expect("merge info was set by mergeInit")
+                    .expect("INVARIANT: merge info was set by mergeInit")
                     .files()?;
                 self.delete_new_files(files)?;
                 return Ok((0, false));
@@ -5017,10 +5092,18 @@ impl IndexWriter {
             merge
                 .info()
                 .as_mut()
-                .expect("merge info was set by mergeInit")
+                .expect("INVARIANT: merge info was set by mergeInit")
                 .info
                 .set_use_compound_file(true);
         }
+
+        // `merge.setMergeInfo(merge.info)` (`IndexWriter.java:5535`): an
+        // overridden `setMergeInfo` sees the merged segment once more, after
+        // the compound file.
+        let merged_info = merge
+            .get_merge_info()
+            .expect("INVARIANT: merge info was set by mergeInit");
+        merge.set_merge_info(merged_info);
 
         // Have the codec write the SegmentInfo. This must happen after creating
         // the compound file, so that the `.si` is not slurped into it and so
@@ -5036,7 +5119,7 @@ impl IndexWriter {
                 let merge_info = merge.info();
                 let info = merge_info
                     .as_ref()
-                    .expect("merge info was set by mergeInit");
+                    .expect("INVARIANT: merge info was set by mergeInit");
                 match codec.segment_info_format().write(
                     self.directory.as_ref(),
                     &info.info,
@@ -5053,6 +5136,24 @@ impl IndexWriter {
             }
         }
 
+        if self.info_stream.is_enabled(IW) {
+            // `String.format(Locale.ROOT, "merged segment size=%.3f MB vs
+            // estimate=%.3f MB", ...)` (`IndexWriter.java:5556-5564`).
+            let size_in_bytes = merge
+                .info()
+                .as_ref()
+                .expect("INVARIANT: merge info was set by mergeInit")
+                .size_in_bytes()?;
+            self.info_stream.message(
+                IW,
+                &format!(
+                    "merged segment size={:.3} MB vs estimate={:.3} MB",
+                    size_in_bytes as f64 / 1024. / 1024.,
+                    merge.estimated_merge_bytes as f64 / 1024. / 1024.
+                ),
+            );
+        }
+
         // `IndexWriter.java:5562-5574`: warm the merged segment through a pooled
         // reader before it becomes visible.
         if let Some(merged_segment_warmer) = self.config.merged_segment_warmer() {
@@ -5060,25 +5161,22 @@ impl IndexWriter {
                 let merged_info = merge
                     .info()
                     .clone()
-                    .expect("merge info was set by mergeInit");
+                    .expect("INVARIANT: merge info was set by mergeInit");
                 let rld = self
                     .get_pooled_instance(&merged_info, true)?
-                    .ok_or_else(|| {
-                        LuceneError::illegal_state(format!(
-                            "segment {} has no pooled reader",
-                            merged_info.info.name
-                        ))
-                    })?;
+                    .expect("INVARIANT: getPooledInstance(info, true) creates the entry");
                 let sr = rld.get_reader(&*crate::store::DEFAULT_IO_CONTEXT)?;
                 let warmed = merged_segment_warmer
                     .warm(&(Arc::clone(&sr) as Arc<dyn crate::index::LeafReader>));
-                let released = {
+                // `finally { synchronized (this) { rld.release(sr);
+                // release(rld); } }` (`IndexWriter.java:5571-5576`): an
+                // exception of the release replaces the warmer's.
+                {
                     let mut state = self.state()?;
-                    rld.release(&sr)
-                        .and_then(|()| self.release_with(&mut state, &rld, true))
-                };
+                    rld.release(&sr)?;
+                    self.release_with(&mut state, &rld, true)?;
+                }
                 warmed?;
-                released?;
             }
         }
 
@@ -5185,7 +5283,7 @@ impl IndexWriter {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            self.config.index_sort().unwrap_or_default(),
+            self.config.index_sort(),
         )?;
 
         let mut readers: Vec<Arc<dyn CodecReader>> = Vec::with_capacity(merge_readers.len());
@@ -5447,7 +5545,7 @@ impl IndexWriter {
         let merged_info = merge
             .info()
             .as_ref()
-            .ok_or_else(|| LuceneError::illegal_state("merge has no merged segment".to_string()))?
+            .expect("INVARIANT: mergeInit set the merged segment")
             .clone();
         let Some(merged_deletes_and_updates) =
             self.get_pooled_instance_with(state, &merged_info, true)?
@@ -5470,21 +5568,18 @@ impl IndexWriter {
             let max_doc = info.info.max_doc()?;
             // We hold a ref from when we opened the readers during mergeInit, so
             // the segment had better still be in the pool.
-            let rld = self
-                .get_pooled_instance_with(state, info, false)?
-                .ok_or_else(|| {
-                    LuceneError::illegal_state(format!(
-                        "seg={} is no longer pooled",
-                        info.info.name
-                    ))
-                })?;
+            let rld = self.get_pooled_instance_with(state, info, false)?;
+            // `assert rld != null : "seg=" + info.info.name`; without `-ea` the
+            // `rld.getHardLiveDocs()` below throws `NullPointerException`.
+            debug_assert!(rld.is_some(), "seg={}", info.info.name);
+            let rld = rld.ok_or_else(LuceneError::null_pointer)?;
 
             let seg_doc_map = &doc_maps[i];
 
             let prev_hard_live_docs = merge_readers
                 .get(i)
                 .and_then(|mr| mr.hard_live_docs.clone());
-            let current_hard_live_docs = rld.get_hard_live_docs();
+            let current_hard_live_docs = rld.get_hard_live_docs_shared();
             Self::carry_over_hard_deletes(
                 &merged_deletes_and_updates,
                 max_doc,
@@ -5542,14 +5637,15 @@ impl IndexWriter {
                                 // Not deleted.
                                 match update.dv_type {
                                     crate::index::DocValuesType::BINARY => {
-                                        mapped_updates.add_binary(mapped_doc, &it.binary_value());
+                                        mapped_updates
+                                            .add_binary(mapped_doc, &it.binary_value())?;
                                     }
                                     _ => {
-                                        mapped_updates.add_long(mapped_doc, it.long_value());
+                                        mapped_updates.add_long(mapped_doc, it.long_value())?;
                                     }
                                 }
                             } else {
-                                mapped_updates.reset(mapped_doc);
+                                mapped_updates.reset(mapped_doc)?;
                             }
                             any_dv_updates = true;
                         }
@@ -5580,8 +5676,10 @@ impl IndexWriter {
                 merged_deletes_and_updates.get_del_count() - num_deletes_before
             );
             if any_dv_updates {
+                // `" and " + n + " new field updates"` then `" (" + bytes +
+                // ") bytes"` (`IndexWriter.java:4592-4594`).
                 msg.push_str(&format!(
-                    " and {} new field updates ({} bytes)",
+                    " and {} new field updates ({}) bytes",
                     merged_deletes_and_updates.get_num_dv_updates(),
                     merged_deletes_and_updates.ram_bytes_used()
                 ));
@@ -5639,10 +5737,8 @@ impl MergeContext for LockedMergeContext<'_> {
 
     /// `IndexWriter.numDeletedDocs(SegmentCommitInfo)`, read through the held
     /// guard.
-    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
-        self.writer
-            .num_deleted_docs_with(self.state, info)
-            .unwrap_or_else(|_| info.get_del_count())
+    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> Result<i32> {
+        self.writer.num_deleted_docs_with(self.state, info)
     }
 
     /// `IndexWriter.getMergingSegments()`, read through the held guard.
@@ -5660,14 +5756,8 @@ impl MergeContext for IndexWriter {
         self.num_deletes_to_merge_for(info)
     }
 
-    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
-        // Java's override declares no checked exception even though
-        // `ensureOpen`/`validate` can raise one; a merge policy only calls this
-        // through an already-open, already-validated writer, so falling back to
-        // the segment's own recorded delete count on the (unreachable in
-        // practice) error path is the closest infallible equivalent.
-        self.num_deleted_docs(info)
-            .unwrap_or_else(|_| info.get_del_count())
+    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> Result<i32> {
+        IndexWriter::num_deleted_docs(self, info)
     }
 
     fn get_merging_segments(&self) -> HashSet<String> {
@@ -6040,14 +6130,16 @@ impl IndexWriter {
     ///
     /// Equivalent to `AddIndexesMergeSource.registerMerge(OneMerge)`
     /// (`IndexWriter.java:3397-3406`): the merge's byte estimates, then the
-    /// queue, under the writer's lock.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java wraps a failure to estimate
-    /// the bytes in `UncheckedIOException`; this port returns the error
-    /// itself, having no unchecked counterpart. A merge of readers has no
-    /// segments, so the estimate reads nothing and cannot fail.
+    /// queue, under the writer's lock. An `IOException` of the estimate is
+    /// rethrown as `UncheckedIOException` (`IndexWriter.java:3398-3402`).
     fn register_add_indexes_merge(&self, merge: &mut OneMerge) -> Result<()> {
-        self.add_estimated_bytes_to_merge(merge)?;
+        self.add_estimated_bytes_to_merge(merge).map_err(|error| {
+            if error.is_io_exception() {
+                LuceneError::unchecked_io_exception(error)
+            } else {
+                error
+            }
+        })?;
         self.state()?
             .pending_add_indexes_merges
             .push_back(merge.clone());
@@ -6578,7 +6670,7 @@ fn radix_36(mut value: i64) -> String {
         value /= 36;
     }
     out.reverse();
-    String::from_utf8(out).expect("base-36 digits are ASCII")
+    String::from_utf8(out).expect("INVARIANT: base-36 digits are ASCII")
 }
 
 /// The parts of an [`IndexWriter`] its segment rendering reads.
@@ -6670,7 +6762,7 @@ fn is_java_io_exception(error: &LuceneError) -> bool {
             kind: LuceneErrorKind::Io(_),
             ..
         } | LuceneError {
-            kind: LuceneErrorKind::CorruptIndex(_),
+            kind: LuceneErrorKind::CorruptIndex { .. },
             ..
         } | LuceneError {
             kind: LuceneErrorKind::IndexFormatNotSupported(_),
@@ -6737,19 +6829,27 @@ pub struct DocStats {
     pub num_docs: i32,
 }
 
-/// Converts a document field's numeric value to the `long` Lucene stores.
+/// The `(Long) f.numericValue()` cast of `IndexWriter.buildDocValuesUpdate`
+/// (`IndexWriter.java:2070`): a `Long` passes, any other boxed number fails
+/// the cast.
 ///
-/// Equivalent to the `(Long) f.numericValue()` cast in
-/// `IndexWriter.buildDocValuesUpdate`. Java's doc-values updates are always
-/// `long`; a field holding a narrower or floating value is widened the way
-/// `Number.longValue()` does.
-fn numeric_as_long(value: NumericValue) -> i64 {
-    match value {
-        NumericValue::Int(v) => i64::from(v),
-        NumericValue::Long(v) => v,
-        NumericValue::Float(v) => v as i64,
-        NumericValue::Double(v) => v as i64,
-    }
+/// # Errors
+///
+/// `java.lang.ClassCastException` with the JDK's message for an `Integer`,
+/// `Float` or `Double` value.
+fn numeric_as_long(value: NumericValue) -> Result<i64> {
+    let class = match value {
+        NumericValue::Long(v) => return Ok(v),
+        NumericValue::Int(_) => "java.lang.Integer",
+        NumericValue::Float(_) => "java.lang.Float",
+        NumericValue::Double(_) => "java.lang.Double",
+    };
+    Err(LuceneError::unchecked(
+        "java.lang.ClassCastException",
+        format!(
+            "class {class} cannot be cast to class java.lang.Long ({class} and java.lang.Long are in module java.base of loader 'bootstrap')"
+        ),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -6796,6 +6896,29 @@ impl IndexWriter {
     {
         let mut state = self.state()?;
         state.deleter.delete_new_files(files)
+    }
+
+    /// Cleans up the residuals of a segment that could not be entirely
+    /// flushed because of an error.
+    ///
+    /// Equivalent to the `synchronized` `IndexWriter.flushFailed(SegmentInfo)`
+    /// (`IndexWriter.java:6023-6037`): only an `IllegalStateException` from
+    /// `info.files()` is caught, and means there is nothing to delete.
+    fn flush_failed(&self, info: &SegmentInfo) -> Result<()> {
+        let mut state = self.state()?;
+        let files = match info.files() {
+            Ok(files) => Some(files),
+            // OK
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            }) => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(files) = files {
+            state.deleter.delete_new_files(files)?;
+        }
+        Ok(())
     }
 
     /// Drops a segment every document of which has been deleted.
@@ -7130,15 +7253,8 @@ impl IndexWriter {
         };
         for info in segment_infos.iter() {
             let segment_sort = info.info.index_sort();
-            // `SegmentInfo.getIndexSort()` is `null` for an unsorted segment;
-            // this port stores the relevance sort there instead.
-            let unsorted = segment_sort.fields().is_empty() || *segment_sort == Sort::default();
-            if unsorted || !Self::is_congruent_sort(&index_sort, segment_sort) {
-                let segment_sort = if unsorted {
-                    "null".to_string()
-                } else {
-                    segment_sort.to_string()
-                };
+            if segment_sort.is_none_or(|sort| !Self::is_congruent_sort(&index_sort, sort)) {
+                let segment_sort = segment_sort.map_or_else(|| "null".to_string(), Sort::to_string);
                 return Err(LuceneError::illegal_argument(format!(
                     "cannot change previous indexSort={segment_sort} (from segment={info}) to new indexSort={index_sort}"
                 )));
@@ -7356,10 +7472,10 @@ impl IndexWriter {
     fn to_live_infos_in(live: &SegmentInfos, sis: &SegmentInfos) -> Result<SegmentInfos> {
         let mut new_sis = SegmentInfos::new(sis.index_created_version_major())?;
         for info in sis.iter() {
-            let live = live
-                .iter()
-                .find(|live| live.info.name == info.info.name)
-                .cloned();
+            // `liveSIS.get(info)`: a `HashMap` keyed by the object's
+            // identity, `SegmentCommitInfo` overriding neither `equals` nor
+            // `hashCode` (`IndexWriter.java:5672-5679`).
+            let live = live.iter().find(|live| live.same_object(info)).cloned();
             new_sis.add(live.unwrap_or_else(|| info.clone()))?;
         }
         Ok(new_sis)
@@ -7673,13 +7789,17 @@ impl IndexWriter {
         }
         self.do_before_flush()?;
         self.test_point("startDoFlush");
-        if self.info_stream.is_enabled(IW) {
-            self.info_stream.message(
-                IW,
-                &format!("  start flush: applyAllDeletes={apply_all_deletes}"),
-            );
-        }
         let outcome = (|| -> Result<bool> {
+            // Inside Java's `try` (`IndexWriter.java:4375-4380`).
+            if self.info_stream.is_enabled(IW) {
+                self.info_stream.message(
+                    IW,
+                    &format!("  start flush: applyAllDeletes={apply_all_deletes}"),
+                );
+                // `"  index before flush " + segString()` (`IndexWriter.java:4379`).
+                self.info_stream
+                    .message(IW, &format!("  index before flush {}", self.seg_string()?));
+            }
             let mut any_changes = self.do_flush()?;
             if apply_all_deletes {
                 self.apply_all_deletes_and_updates()?;
@@ -7753,8 +7873,10 @@ impl IndexWriter {
             self.info_stream.message(
                 IW,
                 &format!(
-                    "now apply all deletes for all segments buffered updates bytesUsed={}",
-                    self.buffered_updates_stream.ram_bytes_used()
+                    "now apply all deletes for all segments buffered updates bytesUsed={} \
+                     reader pool bytesUsed={}",
+                    self.buffered_updates_stream.ram_bytes_used(),
+                    self.reader_pool.ram_bytes_used()
                 ),
             );
         }
@@ -7835,6 +7957,8 @@ impl IndexWriter {
         {
             return Ok(());
         }
+        // `long startNS = System.nanoTime()` (`IndexWriter.java:816`).
+        let start_ns = crate::index::merge_scheduler::now_ns();
         let limit = 0.5 * ram_buffer_size_mb * 1024.0 * 1024.0;
         let mut ram_bytes_used = self.reader_pool.ram_bytes_used();
         if (ram_bytes_used as f64) <= limit {
@@ -7893,9 +8017,10 @@ impl IndexWriter {
                 "BD",
                 &format!(
                     "done write some DV updates for {count} segments: now {:.2} MB used vs IWC \
-                     Buffer {:.2} MB",
+                     Buffer {:.2} MB; took {:.2} sec",
                     self.reader_pool.ram_bytes_used() as f64 / 1024. / 1024.,
-                    ram_buffer_size_mb
+                    ram_buffer_size_mb,
+                    (crate::index::merge_scheduler::now_ns() - start_ns) as f64 / 1_000_000_000.0
                 ),
             );
         }
@@ -8116,9 +8241,10 @@ impl IndexWriter {
     pub fn read_field_infos(
         si: &SegmentCommitInfo,
     ) -> Result<crate::index::field_infos::FieldInfos> {
-        let codec = si.info.codec().ok_or_else(|| {
-            LuceneError::illegal_state(format!("segment {} has no codec", si.info.name))
-        })?;
+        let codec = si
+            .info
+            .codec()
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
         let reader = codec.field_infos_format();
         let context = &*crate::store::READONCE_IO_CONTEXT;
         if si.has_field_updates() {
@@ -8253,19 +8379,19 @@ impl IndexWriter {
         doc_id: i32,
     ) -> Result<i64> {
         // NOTE: do not use `doc_id` inside the closure; `try_modify_document`
-        // rebases it onto the leaf that owns it.
-        self.try_modify_document(reader_in, doc_id, |leaf_doc_id, rld| {
+        // rebases it onto the leaf that owns it. The whole operation runs
+        // under the writer's lock, Java's `synchronized` method.
+        let state = self.state()?;
+        self.try_modify_document(state, reader_in, doc_id, |leaf_doc_id, rld, state| {
             if rld.delete(leaf_doc_id)? {
                 if self.is_fully_deleted(rld)? {
                     let info = rld.info();
-                    let mut state = self.state()?;
-                    self.drop_deleted_segment(&mut state, &info)?;
-                    self.checkpoint(&mut state)?;
+                    self.drop_deleted_segment(state, &info)?;
+                    self.checkpoint(state)?;
                 }
                 // Must bump the change count so that, even if nothing else
                 // changed, this change is still committed.
-                let mut state = self.state()?;
-                self.changed_locked(&mut state);
+                self.changed_locked(state);
             }
             Ok(())
         })
@@ -8274,7 +8400,9 @@ impl IndexWriter {
     /// Updates the doc-values of one document by doc ID, if the reader is still
     /// current.
     ///
-    /// Equivalent to `IndexWriter.tryUpdateDocValue(IndexReader, int, Field...)`.
+    /// Equivalent to the `synchronized`
+    /// `IndexWriter.tryUpdateDocValue(IndexReader, int, Field...)`
+    /// (`IndexWriter.java:1718-1790`).
     pub fn try_update_doc_value(
         &self,
         reader_in: &Arc<dyn crate::index::index_reader::IndexReader>,
@@ -8282,8 +8410,11 @@ impl IndexWriter {
         fields: &[Field],
     ) -> Result<i64> {
         // NOTE: do not use `doc_id` inside the closure.
+        // `synchronized`: `buildDocValuesUpdate` and the modification run
+        // under one hold of the writer's lock.
+        let state = self.state()?;
         let dv_updates = self.build_doc_values_update(&Term::empty(""), fields)?;
-        self.try_modify_document(reader_in, doc_id, move |leaf_doc_id, rld| {
+        self.try_modify_document(state, reader_in, doc_id, move |leaf_doc_id, rld, state| {
             let next_gen = self.buffered_updates_stream.get_next_gen();
             let outcome = (|| -> Result<()> {
                 let max_doc = rld.info().info.max_doc()?;
@@ -8300,9 +8431,13 @@ impl IndexWriter {
                             )
                         });
                     match &update.value {
-                        DocValuesUpdateValue::Numeric(value) => entry.add_long(leaf_doc_id, *value),
-                        DocValuesUpdateValue::Binary(value) => entry.add_binary(leaf_doc_id, value),
-                        DocValuesUpdateValue::None => entry.reset(leaf_doc_id),
+                        DocValuesUpdateValue::Numeric(value) => {
+                            entry.add_long(leaf_doc_id, *value)?
+                        }
+                        DocValuesUpdateValue::Binary(value) => {
+                            entry.add_binary(leaf_doc_id, value)?
+                        }
+                        DocValuesUpdateValue::None => entry.reset(leaf_doc_id)?,
                     }
                 }
                 for (_, mut updates) in field_updates_map {
@@ -8315,8 +8450,7 @@ impl IndexWriter {
             outcome?;
             // Must bump the change count so that, even if nothing else changed,
             // this change is still committed.
-            let mut state = self.state()?;
-            self.changed_locked(&mut state);
+            self.changed_locked(state);
             Ok(())
         })
     }
@@ -8324,36 +8458,55 @@ impl IndexWriter {
     /// Rebases `doc_id` onto the leaf that owns it and applies `to_apply` to
     /// that leaf's pooled reader.
     ///
-    /// Equivalent to `IndexWriter.tryModifyDocument(IndexReader, int, DocModifier)`.
-    /// Returns `-1` when the segment is no longer part of this index — which is
-    /// how the caller learns its reader has gone stale.
+    /// Equivalent to the `synchronized`
+    /// `IndexWriter.tryModifyDocument(IndexReader, int, DocModifier)`
+    /// (`IndexWriter.java:1802-1840`): the segment check, `toApply` and the
+    /// sequence number run under the hold of the writer's lock `state` the
+    /// caller took, which `to_apply` receives, and `toApply` under the
+    /// buffered-updates stream's monitor as well. Returns `-1` when the segment is no longer part of
+    /// this index — which is how the caller learns its reader has gone stale.
     fn try_modify_document<F>(
         &self,
+        mut state: MutexGuard<'_, WriterState>,
         reader_in: &Arc<dyn crate::index::index_reader::IndexReader>,
         mut doc_id: i32,
         to_apply: F,
     ) -> Result<i64>
     where
-        F: FnOnce(i32, &Arc<crate::index::readers_and_updates::ReadersAndUpdates>) -> Result<()>,
+        F: FnOnce(
+            i32,
+            &Arc<crate::index::readers_and_updates::ReadersAndUpdates>,
+            &mut WriterState,
+        ) -> Result<()>,
     {
         // Java reads `readerIn.leaves()`, and with it `ensureOpen()`, only for
         // a composite reader; a leaf reader is used as it is
         // (`IndexWriter.java:1806-1817`).
         let top = Arc::clone(reader_in).build_context(None, 0, 0, 0, 0);
-        if !top.is_leaf_context() {
-            reader_in.ensure_open()?;
-        }
+        let is_leaf = top.is_leaf_context();
         let leaves = top.leaves();
-        if leaves.is_empty() {
-            return Ok(-1);
-        }
-        let reader = if leaves.len() == 1 {
+        let reader = if is_leaf {
             // The reader is already atomic: use the incoming doc ID.
             Arc::clone(&leaves[0])
         } else {
+            reader_in.ensure_open()?;
             // Composite reader: look the sub-reader up and re-base the doc ID.
+            // `leaves.get(subIndex)` throws for the `-1` an empty reader (or
+            // a negative doc ID) yields.
             let sub_index = crate::index::multi_reader::sub_index_from_leaves(doc_id, &leaves);
-            let context = Arc::clone(&leaves[sub_index as usize]);
+            let context = usize::try_from(sub_index)
+                .ok()
+                .and_then(|index| leaves.get(index))
+                .cloned()
+                .ok_or_else(|| {
+                    LuceneError::unchecked(
+                        "java.lang.IndexOutOfBoundsException",
+                        format!(
+                            "Index {sub_index} out of bounds for length {}",
+                            leaves.len()
+                        ),
+                    )
+                })?;
             doc_id -= context.doc_base();
             debug_assert!(doc_id >= 0);
             debug_assert!(doc_id < context.leaf_reader().max_doc());
@@ -8373,16 +8526,15 @@ impl IndexWriter {
 
         // A linear search, as Java's is: the segment count stays small unless
         // something is seriously wrong with the index.
-        let created = {
-            let state = self.state()?;
-            if state.segment_infos.index_of(&info).is_none() {
-                return Ok(-1);
+        if state.segment_infos.index_of(&info).is_some() {
+            if let Some(rld) = self.get_pooled_instance_with(&state, &info, false)? {
+                // `synchronized (bufferedUpdatesStream) { toApply.run(docID,
+                // rld); return docWriter.getNextSequenceNumber(); }`.
+                return self.buffered_updates_stream.synchronized(|| {
+                    to_apply(doc_id, &rld, &mut state)?;
+                    Ok(self.documents_writer.next_sequence_number())
+                })?;
             }
-            state.segment_infos.index_created_version_major()
-        };
-        if let Some(rld) = self.reader_pool.get(&info, false, created)? {
-            to_apply(doc_id, &rld)?;
-            return Ok(self.documents_writer.next_sequence_number());
         }
         Ok(-1)
     }
@@ -8471,8 +8623,14 @@ impl IndexWriter {
         let created = { self.state()?.segment_infos.index_created_version_major() };
         for dir in dirs {
             if self.info_stream.is_enabled(IW) {
-                self.info_stream
-                    .message(IW, "addIndexes: process directory");
+                // `"addIndexes: process directory " + dir` (`IndexWriter.java:3107`).
+                self.info_stream.message(
+                    IW,
+                    &format!(
+                        "addIndexes: process directory {}",
+                        dir.directory_to_string()
+                    ),
+                );
             }
             let sis = SegmentInfos::read_latest_commit(Arc::clone(dir))?;
             if created != sis.index_created_version_major() {
@@ -8494,16 +8652,11 @@ impl IndexWriter {
                 for info in sis.iter() {
                     let segment_index_sort = info.info.index_sort();
                     if let Some(index_sort) = index_sort.as_ref() {
-                        if segment_index_sort.fields().is_empty()
-                            || !Self::is_congruent_sort(index_sort, segment_index_sort)
-                        {
+                        if segment_index_sort.is_none_or(|segment_index_sort| {
+                            !Self::is_congruent_sort(index_sort, segment_index_sort)
+                        }) {
                             // `"cannot change index sort from " + segmentIndexSort
                             // + " to " + indexSort` (`IndexWriter.java:3135-3139`).
-                            // A segment without an index sort carries the
-                            // relevance sort here (`SegmentInfo::to_string_verbose`),
-                            // which is Java's `null`.
-                            let segment_index_sort = Some(segment_index_sort)
-                                .filter(|sort| !sort.fields().is_empty() && **sort != Sort::new());
                             return Err(LuceneError::illegal_argument(format!(
                                 "cannot change index sort from {} to {index_sort}",
                                 sort_or_null(segment_index_sort)
@@ -8518,7 +8671,8 @@ impl IndexWriter {
                         self.info_stream.message(
                             IW,
                             &format!(
-                                "addIndexes: process segment origName={} newName={new_seg_name}",
+                                "addIndexes: process segment origName={} newName={new_seg_name} \
+                                 info={info}",
                                 info.info.name
                             ),
                         );
@@ -8547,16 +8701,32 @@ impl IndexWriter {
             return Err(error);
         }
 
-        let seq_no = {
-            let mut state = self.state()?;
+        // `synchronized (this) { success = false; try { ensureOpen();
+        // reserveDocs(totalMaxDoc); seqNo = docWriter.getNextSequenceNumber();
+        // success = true; } finally { if (!success) { for (sipc : infos)
+        // deleteNewFiles(sipc.files()); } } segmentInfos.addAll(infos);
+        // checkpoint(); }` (`IndexWriter.java:3177-3198`).
+        let mut state = self.state()?;
+        let reserved = (|| -> Result<i64> {
             self.ensure_open()?;
             // Reserve the docs only now, just before `segment_infos` is updated.
             self.reserve_docs(total_max_doc)?;
-            let seq_no = self.documents_writer.next_sequence_number();
-            state.segment_infos.add_all(infos)?;
-            self.checkpoint(&mut state)?;
-            seq_no
+            Ok(self.documents_writer.next_sequence_number())
+        })();
+        let seq_no = match reserved {
+            Ok(seq_no) => seq_no,
+            Err(error) => {
+                for sipc in &infos {
+                    // Safe: these files must exist. A failure here replaces
+                    // the original one, as an exception thrown by Java's
+                    // `finally` does.
+                    state.deleter.delete_new_files(sipc.files()?)?;
+                }
+                return Err(error);
+            }
         };
+        state.segment_infos.add_all(infos)?;
+        self.checkpoint(&mut state)?;
         Ok(seq_no)
     }
 
@@ -8571,8 +8741,9 @@ impl IndexWriter {
         context: &dyn IOContext,
     ) -> Result<SegmentCommitInfo> {
         // The same `SegmentInfo` as before, but with a new directory and name:
-        // `directoryOrig` (`IndexWriter.java:3632-3634`).
-        let new_info = SegmentInfo::new(
+        // `directoryOrig` (`IndexWriter.java:3632-3634`). Java passes
+        // `info.info.getCodec()` through as it is, `null` included.
+        let mut new_info = SegmentInfo::new_without_codec(
             Arc::clone(&self.directory_orig),
             info.info.version(),
             info.info.min_version(),
@@ -8580,14 +8751,14 @@ impl IndexWriter {
             info.info.max_doc()?,
             info.info.get_use_compound_file(),
             info.info.get_has_blocks(),
-            info.info.codec().ok_or_else(|| {
-                LuceneError::illegal_state(format!("segment {} has no codec", info.info.name))
-            })?,
             info.info.get_diagnostics().to_std(),
             info.info.id(),
             info.info.get_attributes(),
-            info.info.index_sort().clone(),
+            info.info.index_sort().cloned(),
         )?;
+        if let Some(codec) = info.info.codec() {
+            new_info.set_codec(Some(codec))?;
+        }
         new_info.set_files(info.info.files_ordered()?)?;
 
         let new_info_per_commit = SegmentCommitInfo::new(
@@ -8658,9 +8829,9 @@ impl IndexWriter {
         if info_stream.is_enabled(IW) {
             info_stream.message(IW, "create compound file");
         }
-        let codec = info.codec().ok_or_else(|| {
-            LuceneError::illegal_state(format!("segment {} has no codec", info.name))
-        })?;
+        let codec = info
+            .codec()
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
         if let Err(error) = codec.compound_format().write(directory, info, context) {
             // Safe: these files must exist.
             delete_files(directory.get_created_files())?;
@@ -9037,16 +9208,25 @@ impl IndexWriter {
                 debug_assert!(
                     current_hard_live_docs.is_none_or(|bits| bits.length() == max_doc as usize)
                 );
-                for j in 0..max_doc {
-                    if !prev.get(j as usize) {
-                        // A document deleted before the merge had better still
-                        // be deleted.
-                        debug_assert!(
-                            current_hard_live_docs.is_none_or(|bits| !bits.get(j as usize))
-                        );
-                    } else if carry_over_delete(j) {
-                        // The document was deleted while the merge ran.
-                        merged_readers_and_updates.delete(seg_doc_map(j))?;
+                // The live docs are copy-on-write: `if (currentHardLiveDocs !=
+                // prevHardLiveDocs)` (`IndexWriter.java:4642`), an identity
+                // test, tells whether deletes were applied since the merge
+                // started; only then are they merged one document at a time.
+                let unchanged = current_hard_live_docs.is_some_and(|current| {
+                    std::ptr::addr_eq(current as *const dyn crate::util::Bits, prev as *const _)
+                });
+                if !unchanged {
+                    for j in 0..max_doc {
+                        if !prev.get(j as usize) {
+                            // A document deleted before the merge had better
+                            // still be deleted.
+                            debug_assert!(
+                                current_hard_live_docs.is_none_or(|bits| !bits.get(j as usize))
+                            );
+                        } else if carry_over_delete(j) {
+                            // The document was deleted while the merge ran.
+                            merged_readers_and_updates.delete(seg_doc_map(j))?;
+                        }
                     }
                 }
             }
@@ -9193,10 +9373,9 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.publishFrozenUpdates(FrozenBufferedUpdates)`.
     fn publish_frozen_updates(
         &self,
-        packet: crate::index::documents_writer::FrozenBufferedUpdates,
+        packet: Arc<crate::index::documents_writer::FrozenBufferedUpdates>,
     ) -> Result<i64> {
         debug_assert!(!packet.is_empty());
-        let packet = Arc::new(packet);
         let next_gen = self.buffered_updates_stream.push(Arc::clone(&packet))?;
         // Do this as an event so it applies higher in the stack, when we are
         // not holding the flush queue's purge lock.
@@ -9290,9 +9469,9 @@ impl IndexWriter {
             }
         }
         self.flush_count.fetch_add(1, Ordering::AcqRel);
-        let after = self.do_after_flush();
-        outcome?;
-        after
+        // An exception of `doAfterFlush` in the `finally` replaces the body's.
+        self.do_after_flush()?;
+        outcome
     }
 
     /// The `synchronized` body of
@@ -9326,12 +9505,12 @@ impl IndexWriter {
 
         if let Some(global_packet) = global_packet {
             if !global_packet.is_empty() {
-                self.publish_frozen_updates(global_packet)?;
+                self.publish_frozen_updates(Arc::new(global_packet))?;
             }
         }
 
         let next_gen = match packet {
-            Some(packet) if !packet.is_empty() => self.publish_frozen_updates(packet)?,
+            Some(packet) if !packet.is_empty() => self.publish_frozen_updates(Arc::new(packet))?,
             _ => {
                 // With no delete packet to apply, a generation can be taken and
                 // marked finished immediately.
@@ -9341,12 +9520,13 @@ impl IndexWriter {
             }
         };
         if self.info_stream.is_enabled(IW) {
+            // `" seg=" + segString(newSegment)` (`IndexWriter.java:2956-2958`).
+            let segment = self
+                .seg_string_parts()
+                .seg_string_info(&state.segment_infos, &new_segment)?;
             self.info_stream.message(
                 IW,
-                &format!(
-                    "publish sets newSegment delGen={next_gen} seg={}",
-                    new_segment.info.name
-                ),
+                &format!("publish sets newSegment delGen={next_gen} seg={segment}"),
             );
         }
         new_segment.set_buffered_deletes_gen(next_gen)?;
@@ -9399,9 +9579,10 @@ impl IndexWriter {
                     }
                     Ok(())
                 })();
-                let released = self.release_with(&mut state, &rld, true);
+                // `finally { release(rld); }` (`IndexWriter.java:2998-3000`):
+                // an exception of the release replaces the body's.
+                self.release_with(&mut state, &rld, true)?;
                 outcome?;
-                released?;
             }
         }
         drop(state);
@@ -9548,8 +9729,10 @@ impl IndexWriter {
             self.info_stream.message(
                 "BD",
                 &format!(
-                    "closeSegmentStates: {tot_del_count} new deleted documents; pool {} packets",
-                    self.buffered_updates_stream.get_pending_updates_count()
+                    "closeSegmentStates: {tot_del_count} new deleted documents; pool {} packets; \
+                     bytesUsed={}",
+                    self.buffered_updates_stream.get_pending_updates_count(),
+                    self.reader_pool.ram_bytes_used()
                 ),
             );
         }
@@ -9588,10 +9771,14 @@ impl IndexWriter {
             self.checkpoint(&mut state)?;
         }
         if !result.all_deleted.is_empty() {
-            if self.info_stream.is_enabled(IW) {
-                self.info_stream.message(IW, "drop 100% deleted segments");
-            }
             let mut state = self.state()?;
+            if self.info_stream.is_enabled(IW) {
+                // `"drop 100% deleted segments: " + segString(result.allDeleted())`
+                // (`IndexWriter.java:6527-6529`).
+                let segments = self.seg_string_of(&state, &result.all_deleted)?;
+                self.info_stream
+                    .message(IW, &format!("drop 100% deleted segments: {segments}"));
+            }
             for info in &result.all_deleted {
                 self.drop_deleted_segment(&mut state, info)?;
             }
@@ -9692,8 +9879,18 @@ impl IndexWriter {
         // the same space `SegmentCommitInfo.buffered_deletes_gen` is stamped
         // from — not the delete queue's own generation.
         let del_gen = updates.del_gen();
+        // `long startNS = System.nanoTime()` (`IndexWriter.java:6316`).
+        let start_ns = crate::index::merge_scheduler::now_ns();
+        // `this` in the messages' `String.format(..., this, ...)`: the
+        // writer, rendered by `Object.toString()`.
+        let this = crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.IndexWriter",
+            self,
+        );
         let mut seen_segments: HashSet<String> = HashSet::new();
         let mut iter = 0usize;
+        let mut total_segment_count: usize = 0;
+        let mut total_del_count: i64 = 0;
         let mut finished = false;
         loop {
             let message_prefix = if iter == 0 {
@@ -9701,6 +9898,7 @@ impl IndexWriter {
             } else {
                 format!("iter {iter}")
             };
+            let iter_start_ns = crate::index::merge_scheduler::now_ns();
             let merge_gen_start = self.merge_finished_gen.load(Ordering::Acquire);
 
             // Must open while holding the writer's lock so that e.g. segments are
@@ -9727,12 +9925,13 @@ impl IndexWriter {
                     self.info_stream.message(
                         "BD",
                         &format!(
-                            "{message_prefix}now apply del packet to {} segments, mergeGen \
-                             {merge_gen_start}",
+                            "{message_prefix}now apply del packet ({this}) to {} segments, \
+                             mergeGen {merge_gen_start}",
                             seg_states.len()
                         ),
                     );
                 }
+                total_segment_count += seg_states.len();
                 // Important, else IFD may try to delete our files while we are
                 // still using them, if e.g. a merge finishes on some of the
                 // segments we are resolving on.
@@ -9745,20 +9944,39 @@ impl IndexWriter {
             // `finish_apply` whether or not resolving succeeded, as Java's
             // try-with-resources does.
             let outcome = updates.apply(&seg_states);
-            self.finish_apply(&seg_states, outcome.is_ok(), &del_files)?;
-            let del_count = outcome?;
+            let finalized = self.finish_apply(&seg_states, outcome.is_ok(), &del_files);
+            // `try (Closeable finalizer = ...)` (`IndexWriter.java:6391-6397`):
+            // the body's exception stays primary and the finalizer's is added
+            // to it as suppressed; the finalizer's is thrown only when the
+            // body succeeded.
+            let del_count = match (outcome, finalized) {
+                (Ok(del_count), Ok(())) => del_count,
+                (Ok(_), Err(finalizer_error)) => return Err(finalizer_error),
+                (Err(mut error), Err(finalizer_error)) => {
+                    error.add_suppressed(finalizer_error);
+                    return Err(error);
+                }
+                (Err(error), Ok(())) => return Err(error),
+            };
 
             // Since we just resolved some more deletes/updates, now is a good
             // time to write them.
             self.write_some_doc_values_updates()?;
 
+            // It's OK to add this here, even if the loop retries, because
+            // `del_count` only includes newly deleted documents, on the
+            // segments not already done in previous iterations.
+            total_del_count += del_count;
+
             if self.info_stream.is_enabled("BD") {
                 self.info_stream.message(
                     "BD",
                     &format!(
-                        "{message_prefix}done inner apply del packet to {} segments; \
-                         {del_count} new deletes/updates",
-                        seg_states.len()
+                        "{message_prefix}done inner apply del packet ({this}) to {} segments; \
+                         {del_count} new deletes/updates; took {:.3} sec",
+                        seg_states.len(),
+                        (crate::index::merge_scheduler::now_ns() - iter_start_ns) as f64
+                            / 1_000_000_000.0
                     ),
                 );
             }
@@ -9798,6 +10016,23 @@ impl IndexWriter {
         if !finished {
             // Record that this packet is finished.
             self.buffered_updates_stream.finished(updates)?;
+        }
+
+        if self.info_stream.is_enabled("BD") {
+            // `IndexWriter.java:6466-6480`.
+            let mut message = format!(
+                "done apply del packet ({this}) to {total_segment_count} segments; \
+                 {total_del_count} new deletes/updates; took {:.3} sec",
+                (crate::index::merge_scheduler::now_ns() - start_ns) as f64 / 1_000_000_000.0
+            );
+            if iter > 0 {
+                message.push_str(&format!("; {} iters due to concurrent merges", iter + 1));
+            }
+            message.push_str(&format!(
+                "; {} packets remain",
+                self.buffered_updates_stream.get_pending_updates_count()
+            ));
+            self.info_stream.message("BD", &message);
         }
         Ok(())
     }
@@ -9876,13 +10111,14 @@ impl GetReaderState {
 /// Locks one of the maps `get_reader` shares between its closures.
 ///
 /// Equivalent to reading a `HashMap` Java's `getReader` captures in a lambda;
-/// Rust needs the sharing spelled out, and a poisoned lock reported.
-fn lock_reader_map<'a>(
-    map: &'a Mutex<HashMap<String, Arc<SegmentReader>>>,
-    name: &str,
-) -> Result<MutexGuard<'a, HashMap<String, Arc<SegmentReader>>>> {
-    map.lock()
-        .map_err(|_| LuceneError::illegal_state(format!("{name} mutex poisoned")))
+/// Rust needs the sharing spelled out. Java has no lock poisoning, so a
+/// poisoned lock continues with the map it guards.
+fn lock_reader_map(
+    map: &Mutex<HashMap<String, Arc<SegmentReader>>>,
+) -> Result<MutexGuard<'_, HashMap<String, Arc<SegmentReader>>>> {
+    Ok(map
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner))
 }
 
 impl IndexWriter {
@@ -9945,24 +10181,21 @@ impl IndexWriter {
     ) -> Result<Arc<SegmentReader>> {
         let rld = self
             .get_pooled_instance_with(state, sci, true)?
-            .ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "segment {} has no pooled reader",
-                    sci.info.name
-                ))
-            })?;
-        // Java releases the pooled entry from a `finally`, whatever the clone
-        // did, so both outcomes are collected before either is reported.
-        let cloned = rld.get_read_only_clone(&*DEFAULT_IO_CONTEXT);
-        let released = self.release_with(state, &rld, true);
-        let segment_reader = cloned?;
-        released?;
-        // Only track this if we actually do fullFlush merges.
-        if max_full_flush_merge_wait_millis > 0 {
-            lock_reader_map(opened_read_only_clones, "openedReadOnlyClones")?
-                .insert(sci.info.name.clone(), Arc::clone(&segment_reader));
-        }
-        Ok(segment_reader)
+            .expect("INVARIANT: getPooledInstance(info, true) creates the entry");
+        // `try { ... return segmentReader; } finally { release(rld); }`
+        // (`IndexWriter.java:545-555`): the release runs whatever the body
+        // did, and an exception it throws replaces the body's outcome.
+        let body = (|| -> Result<Arc<SegmentReader>> {
+            let segment_reader = rld.get_read_only_clone(&*DEFAULT_IO_CONTEXT)?;
+            // Only track this if we actually do fullFlush merges.
+            if max_full_flush_merge_wait_millis > 0 {
+                lock_reader_map(opened_read_only_clones)?
+                    .insert(sci.info.name.clone(), Arc::clone(&segment_reader));
+            }
+            Ok(segment_reader)
+        })();
+        self.release_with(state, &rld, true)?;
+        body
     }
 
     /// Flushes everything in memory and opens the reader over the result.
@@ -10076,8 +10309,7 @@ impl IndexWriter {
                     };
                     let apply =
                         writer.nrt_reader_factory(sci, max_wait, &opened_read_only_clones)?;
-                    lock_reader_map(&merged_readers, "mergedReaders")?
-                        .insert(sci.info.name.clone(), apply);
+                    lock_reader_map(&merged_readers)?.insert(sci.info.name.clone(), apply);
                     // We need to incRef the files of the opened SR otherwise
                     // it's possible that another merge removes the segment
                     // before we pass it on to the SDR.
@@ -10127,9 +10359,7 @@ impl IndexWriter {
         stop_collecting_merged_readers.store(true, Ordering::Release);
         let infos = opening_segment_infos
             .lock()
-            .map_err(|_| {
-                LuceneError::illegal_state("openingSegmentInfos mutex poisoned".to_string())
-            })?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let reader = self.maybe_reopen_merged_nrt_reader_with(
             &mut state,
@@ -10139,17 +10369,18 @@ impl IndexWriter {
             apply_all_deletes,
             write_all_deletes,
         )?;
-        // `IOUtils.close(mergedReaders.values()); mergedReaders.clear();`:
-        // draining does both at once and cannot close the same reader twice.
-        let leftover: Vec<Arc<SegmentReader>> = lock_reader_map(merged_readers, "mergedReaders")?
-            .drain()
-            .map(|(_, reader)| reader)
-            .collect();
+        // `IOUtils.close(mergedReaders.values()); mergedReaders.clear();`
+        // (`IndexWriter.java:752-753`): the map is cleared only once every
+        // reader closed, so when a close fails the readers stay for
+        // `onGetReaderMergeResources` to release.
+        let leftover: Vec<Arc<SegmentReader>> =
+            lock_reader_map(merged_readers)?.values().cloned().collect();
         crate::util::IOUtils::close(
             leftover
                 .iter()
                 .map(|merged| Some(|| IndexReader::close(merged.as_ref()))),
         )?;
+        lock_reader_map(merged_readers)?.clear();
         Ok(reader)
     }
 
@@ -10175,7 +10406,7 @@ impl IndexWriter {
         apply_all_deletes: bool,
         write_all_deletes: bool,
     ) -> Result<Option<Arc<StandardDirectoryReader>>> {
-        if lock_reader_map(merged_readers, "mergedReaders")?.is_empty() {
+        if lock_reader_map(merged_readers)?.is_empty() {
             return Ok(None);
         }
         let files: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -10188,24 +10419,18 @@ impl IndexWriter {
                 // StandardDirectoryReader#open will take care of closing it. We
                 // only need to handle the readers that remain in the
                 // mergedReaders map and close them.
-                let removed =
-                    lock_reader_map(merged_readers, "mergedReaders")?.remove(&sci.info.name);
+                let removed = lock_reader_map(merged_readers)?.remove(&sci.info.name);
                 match removed {
                     Some(reader) => {
                         files
                             .lock()
-                            .map_err(|_| {
-                                LuceneError::illegal_state(
-                                    "merged files mutex poisoned".to_string(),
-                                )
-                            })?
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .extend(reader.get_segment_info().files()?);
                         Ok(reader)
                     }
                     None => {
                         let reader =
-                            lock_reader_map(opened_read_only_clones, "openedReadOnlyClones")?
-                                .remove(&sci.info.name);
+                            lock_reader_map(opened_read_only_clones)?.remove(&sci.info.name);
                         debug_assert!(reader.is_some());
                         // Without assertions Java dereferences the null
                         // `remove` (`IndexWriter.java:781`).
@@ -10231,11 +10456,11 @@ impl IndexWriter {
         // Now the SDR#open call has incRef'd the files so we can let them go.
         let files = files
             .into_inner()
-            .map_err(|_| LuceneError::illegal_state("merged files mutex poisoned".to_string()))?;
-        let released = held.into_inner().deleter.dec_ref_files(files.iter());
-        let opened = opened?;
-        released?;
-        Ok(Some(opened))
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // `finally { deleter.decRef(files); }` (`IndexWriter.java:790-793`):
+        // an exception of the release replaces the open's outcome.
+        held.into_inner().deleter.dec_ref_files(files.iter())?;
+        Ok(Some(opened?))
     }
 
     /// Releases everything the merges on getReader opened, whatever the outcome.
@@ -10258,7 +10483,7 @@ impl IndexWriter {
         // This only happens for readers that haven't been removed from the
         // mergedReaders and released elsewhere; draining the map is how a
         // second call is made harmless.
-        let readers: Vec<Arc<SegmentReader>> = lock_reader_map(merged_readers, "mergedReaders")?
+        let readers: Vec<Arc<SegmentReader>> = lock_reader_map(merged_readers)?
             .drain()
             .map(|(_, reader)| reader)
             .collect();
@@ -10304,7 +10529,7 @@ impl IndexWriter {
         // Make sure onMergeComplete really was called.
         let orig_info = orig_info
             .lock()
-            .map_err(|_| LuceneError::illegal_state("origInfo mutex poisoned".to_string()))?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         debug_assert!(orig_info.is_some());
 
@@ -10327,9 +10552,9 @@ impl IndexWriter {
             })
         })?;
 
-        let mut infos = merging_segment_infos.lock().map_err(|_| {
-            LuceneError::illegal_state("mergingSegmentInfos mutex poisoned".to_string())
-        })?;
+        let mut infos = merging_segment_infos
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let merged_segment_names: HashSet<&str> = merge
             .segments
@@ -10357,13 +10582,20 @@ impl IndexWriter {
             }
         }
 
-        let segment_counter = i64::from_str_radix(&orig_info.info.name[1..], 36).map_err(|_| {
-            LuceneError::illegal_state(format!(
-                "segment name {} is not a base-36 counter",
-                orig_info.info.name
-            ))
-        })?;
-        infos.counter = infos.counter.max(segment_counter + 1);
+        // `Long.parseLong(origInfo.info.name.substring(1),
+        // Character.MAX_RADIX)` (`IndexWriter.java:3996`).
+        let counter_digits = {
+            let mut chars = orig_info.info.name.chars();
+            if chars.next().is_none() {
+                return Err(LuceneError::from(LuceneErrorKind::StringIndexOutOfBounds(
+                    "Range [1, 0) out of bounds for length 0".to_string(),
+                )));
+            }
+            chars.as_str()
+        };
+        let segment_counter = crate::util::extra::java_parse_long_radix(counter_digits, 36)
+            .ok_or_else(|| LuceneError::number_format_for_input_string(counter_digits, 36))?;
+        infos.counter = infos.counter.max(segment_counter.wrapping_add(1));
         infos.apply_merge_changes(&orig_info, &to_commit_merged_away_segments, false)?;
         Ok(())
     }
@@ -10456,9 +10688,10 @@ impl IndexWriter {
                             // Clone the target info to make sure we have the
                             // original info without the updated del and update
                             // gens.
-                            *orig_info.lock().map_err(|_| {
-                                LuceneError::illegal_state("origInfo mutex poisoned".to_string())
-                            })? = Some(info.java_clone());
+                            *orig_info
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                Some(info.java_clone());
                         }
                     }
                     if let Some(to_wrap_on_merge_complete) = to_wrap_on_merge_complete.as_ref() {
@@ -10546,12 +10779,7 @@ impl IndexWriter {
                     self.run_point_in_time_merge_registered_hook();
                     let rld = self
                         .get_pooled_instance_with(state, sci, true)?
-                        .ok_or_else(|| {
-                            LuceneError::illegal_state(format!(
-                                "segment {} has no pooled reader",
-                                sci.info.name
-                            ))
-                        })?;
+                        .expect("INVARIANT: getPooledInstance(info, true) creates the entry");
                     // Calling set_is_merging is important since it causes the
                     // RaU to record all DV updates in a separate map in order to
                     // be applied to the merged segment after it's done.
@@ -10715,13 +10943,9 @@ impl IndexWriterTrait for IndexWriter {
 
             // Only relevant if we do merge on getReader.
             if let Some(point_in_time_merges) = nrt.on_get_reader_merges.take() {
-                let opening_segment_infos =
-                    Arc::clone(nrt.opening_segment_infos.as_ref().ok_or_else(|| {
-                        LuceneError::illegal_state(
-                            "point-in-time merges were prepared without opening segment infos"
-                                .to_string(),
-                        )
-                    })?);
+                let opening_segment_infos = Arc::clone(nrt.opening_segment_infos.as_ref().expect(
+                    "INVARIANT: point-in-time merges are prepared with opening segment infos",
+                ));
                 let merged_reader = self.finish_get_reader_merge(
                     &nrt.stop_collecting_merged_readers,
                     &nrt.merged_readers,
@@ -10775,9 +10999,10 @@ impl IndexWriterTrait for IndexWriter {
             Ok(()) => {
                 // `IOUtils.close(onGetReaderMergeResources)`.
                 crate::util::IOUtils::close([on_get_reader_merge_resources])?;
-                let reader = nrt.reader.take().ok_or_else(|| {
-                    LuceneError::illegal_state("getReader produced no reader".to_string())
-                })?;
+                let reader = nrt
+                    .reader
+                    .take()
+                    .expect("INVARIANT: a successful getReader produced its reader");
                 Ok(reader as Arc<dyn DirectoryReader>)
             }
             Err(error) => {
@@ -11265,7 +11490,7 @@ mod tests {
             "price",
             DocValuesType::NUMERIC,
         );
-        update.add_long(0, 5);
+        update.add_long(0, 5).unwrap();
         update.finish().unwrap();
         rld.add_dv_update(update).unwrap();
         assert!(!writer.nrt_is_current(&infos).unwrap());
@@ -12338,7 +12563,7 @@ mod tests {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            Sort::default(),
+            None,
         )
         .unwrap();
         info.set_files(["_9.cfs".to_string()]).unwrap();
@@ -14254,7 +14479,7 @@ mod tests {
                 HashMap::new(),
                 StringHelper::random_id(),
                 HashMap::new(),
-                Sort::new(),
+                None,
             )
             .unwrap();
             merged.set_files(Vec::<String>::new()).unwrap();
@@ -14735,7 +14960,7 @@ mod tests {
                 HashMap::new(),
                 StringHelper::random_id(),
                 HashMap::new(),
-                Sort::new(),
+                None,
             )
             .unwrap(),
             0,

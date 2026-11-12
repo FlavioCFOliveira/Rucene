@@ -810,6 +810,13 @@ impl SortingValuesIterator {
 }
 
 impl DocIdSetIterator for SortingValuesIterator {
+    /// `SortingCodecReader$SortingValuesIterator` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SortingCodecReader$SortingValuesIterator",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc
     }
@@ -825,7 +832,7 @@ impl DocIdSetIterator for SortingValuesIterator {
     /// `UnsupportedOperationException`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
         Err(crate::error::LuceneError::unsupported_operation(
-            "SortingValuesIterator::advance".to_string(),
+            String::new(),
         ))
     }
 
@@ -964,11 +971,11 @@ impl SortingCodecReaderState {
                 .as_ref()
                 .expect("INVARIANT: the slot was just filled unless it already held this field"),
         );
-        cached.downcast::<T>().map_err(|_| {
-            crate::error::LuceneError::illegal_state(format!(
-                "the cached sorted view of field \"{field}\" has a different type"
-            ))
-        })
+        // Java's unchecked cast of the cached object: one field is cached
+        // under one kind only.
+        Ok(cached
+            .downcast::<T>()
+            .unwrap_or_else(|_| panic!("INVARIANT: field \"{field}\" is cached as one type")))
     }
 
     /// Records that a sorted view was built for `field`, and checks Lucene's
@@ -1312,14 +1319,15 @@ impl SlowCompositeCodecReaderWrapper {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneErrorKind::IllegalArgument`] when `doc` is outside
-/// `[0, maxDoc)`, as `Objects.checkIndex` throws.
+/// `java.lang.IndexOutOfBoundsException` when `doc` is outside `[0, maxDoc)`,
+/// as `Objects.checkIndex` throws (`SlowCompositeCodecReaderWrapper.java:102`).
 fn doc_id_to_reader_id(doc_starts: &[i32], doc: i32) -> Result<usize> {
     let max_doc = doc_starts[doc_starts.len() - 1];
     if doc < 0 || doc >= max_doc {
-        return Err(LuceneError::illegal_argument(format!(
-            "Index {doc} out of bounds for length {max_doc}"
-        )));
+        return Err(LuceneError::unchecked(
+            "java.lang.IndexOutOfBoundsException",
+            format!("Index {doc} out of bounds for length {max_doc}"),
+        ));
     }
     Ok(
         match reader_util::binary_search_range(doc_starts, 0, doc_starts.len(), doc) {
@@ -1337,16 +1345,13 @@ fn doc_id_to_reader_id(doc_starts: &[i32], doc: i32) -> Result<usize> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneErrorKind::IllegalState`] when the merged field infos lack the
-/// name, where Java would hand the visitor `null`; every field a wrapped
-/// reader reports was merged into them, so this cannot happen.
+/// None: every field a wrapped reader reports was merged into the field
+/// infos, so the lookup always succeeds; the `Result` is kept for the callers.
 fn remap(field_infos: &FieldInfos, info: &FieldInfo) -> Result<FieldInfo> {
-    field_infos.field_info(&info.name).cloned().ok_or_else(|| {
-        LuceneError::illegal_state(format!(
-            "field \"{}\" is missing from the merged field infos",
-            info.name
-        ))
-    })
+    Ok(field_infos
+        .field_info(&info.name)
+        .cloned()
+        .expect("INVARIANT: every field of a wrapped reader is in the merged field infos"))
 }
 
 impl LeafReader for SlowCompositeCodecReaderWrapper {
@@ -1638,11 +1643,10 @@ impl SlowCompositeStoredFieldsReader {
     /// The reader that owns `doc_id`, and the document's number within it.
     fn locate(&self, doc_id: i32) -> Result<(&dyn StoredFieldsReader, i32)> {
         let reader_id = doc_id_to_reader_id(&self.doc_starts, doc_id)?;
-        let reader = self.readers[reader_id].as_deref().ok_or_else(|| {
-            LuceneError::illegal_state(format!(
-                "reader {reader_id} of the composite has no stored fields reader"
-            ))
-        })?;
+        // `readers[readerId].document(...)` on a `null` reader.
+        let reader = self.readers[reader_id]
+            .as_deref()
+            .ok_or_else(LuceneError::null_pointer)?;
         Ok((reader, doc_id - self.doc_starts[reader_id]))
     }
 }
@@ -2180,11 +2184,10 @@ impl PointsReader for SlowCompositePointsReader {
                 .field_info(field)
                 .is_some_and(|fi| fi.point_dimension_count > 0);
             if has_points {
-                let points_reader = self.points_readers[i].as_ref().ok_or_else(|| {
-                    LuceneError::illegal_state(format!(
-                        "reader {i} indexes points for field \"{field}\" but has no points reader"
-                    ))
-                })?;
+                // A `null` points reader is dereferenced.
+                let points_reader = self.points_readers[i]
+                    .as_ref()
+                    .ok_or_else(LuceneError::null_pointer)?;
                 // Apparently FieldInfo can claim a field has points, yet the
                 // returned PointValues is null.
                 if let Some(v) = points_reader.get_values(field)? {
@@ -2239,6 +2242,13 @@ impl SlowCompositePointValues {
 }
 
 impl PointValues for SlowCompositePointValues {
+    /// `SlowCompositeCodecReaderWrapper$SlowCompositePointsReaderWrapper$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SlowCompositeCodecReaderWrapper$SlowCompositePointsReaderWrapper$1",
+        )
+    }
     fn point_tree(&self) -> Result<Box<dyn PointTree>> {
         Ok(Box::new(self.tree()))
     }
@@ -2333,11 +2343,9 @@ impl SlowCompositePointTree {
             } else {
                 sub.sub.max_packed_value()?
             };
-            bound.ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "a reader with point values reports no packed bound".to_string(),
-                )
-            })
+            // `sub.sub.getMinPackedValue().clone()` (or the comparison) on a
+            // `null` bound: `NullPointerException`.
+            bound.ok_or_else(LuceneError::null_pointer)
         };
         let mut packed: Option<Vec<u8>> = None;
         for sub in values {
@@ -2356,13 +2364,20 @@ impl SlowCompositePointTree {
                 }
             }
         }
-        packed.ok_or_else(|| {
-            LuceneError::illegal_state("a composite point tree needs a sub".to_string())
-        })
+        // `getValues` returns `null` instead of a tree when no sub has points
+        // (`SlowCompositeCodecReaderWrapper.java:610-612`).
+        Ok(packed.expect("INVARIANT: a composite point tree has at least one sub"))
     }
 }
 
 impl PointTree for SlowCompositePointTree {
+    /// `SlowCompositeCodecReaderWrapper$SlowCompositePointsReaderWrapper$1$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SlowCompositeCodecReaderWrapper$SlowCompositePointsReaderWrapper$1$1",
+        )
+    }
     fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
         Ok(Box::new(self.clone()))
     }
@@ -2430,6 +2445,13 @@ struct DocBaseIntersectVisitor<'a> {
 }
 
 impl IntersectVisitor for DocBaseIntersectVisitor<'_> {
+    /// `SlowCompositeCodecReaderWrapper$SlowCompositePointsReaderWrapper$1$1$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SlowCompositeCodecReaderWrapper$SlowCompositePointsReaderWrapper$1$1$1",
+        )
+    }
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         self.visitor.visit(self.doc_start + doc_id)
     }
@@ -2537,9 +2559,7 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
         _knn_collector: &mut dyn KnnCollector,
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "SlowCompositeKnnVectorsReaderWrapper.search".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Equivalent to `SlowCompositeKnnVectorsReaderWrapper.search(String,
@@ -2555,9 +2575,7 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
         _knn_collector: &mut dyn KnnCollector,
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "SlowCompositeKnnVectorsReaderWrapper.search".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Inherited from `KnnVectorsReader.getMergeInstance()`, which returns
@@ -2570,15 +2588,17 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
     /// (`SlowCompositeCodecReaderWrapper.java:845-852`). Java dereferences
     /// every reader's vectors reader, including a `null` one; a reader without
     /// one contributes nothing here.
-    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
-        let mut map = HashMap::new();
-        for reader in self.vectors_readers.iter().flatten() {
-            map = crate::codecs::knn_vectors::merge_off_heap_byte_size_maps(
-                map,
-                reader.get_off_heap_byte_size(field_info),
-            );
-        }
-        map
+    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> Result<HashMap<String, i64>> {
+        Ok({
+            let mut map = HashMap::new();
+            for reader in self.vectors_readers.iter().flatten() {
+                map = crate::codecs::knn_vectors::merge_off_heap_byte_size_maps(
+                    map,
+                    reader.get_off_heap_byte_size(field_info)?,
+                );
+            }
+            map
+        })
     }
 
     /// Java `IOUtils.close(readers)` (`SlowCompositeCodecReaderWrapper.java:822-825`):
@@ -2635,6 +2655,13 @@ impl<T: ?Sized + KnnVectorValues> MergedDocIterator<T> {
 }
 
 impl<T: ?Sized + KnnVectorValues> DocIdSetIterator for MergedDocIterator<T> {
+    /// `SlowCompositeCodecReaderWrapper$MergedDocIterator` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SlowCompositeCodecReaderWrapper$MergedDocIterator",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc
     }
@@ -2665,9 +2692,7 @@ impl<T: ?Sized + KnnVectorValues> DocIdSetIterator for MergedDocIterator<T> {
     /// Equivalent to `MergedDocIterator.advance(int)`, which throws
     /// `UnsupportedOperationException`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "MergedDocIterator.advance".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Equivalent to `MergedDocIterator.cost()`
@@ -2676,7 +2701,7 @@ impl<T: ?Sized + KnnVectorValues> DocIdSetIterator for MergedDocIterator<T> {
     /// returns a plain value, as Java's does, so the unchecked exception is a
     /// panic here.
     fn cost(&self) -> i64 {
-        panic!("UnsupportedOperationException: MergedDocIterator.cost()")
+        panic!("java.lang.UnsupportedOperationException")
     }
 }
 
@@ -2704,6 +2729,12 @@ impl<T: ?Sized + KnnVectorValues> SharedMergedDocIterator<T> {
 }
 
 impl<T: ?Sized + KnnVectorValues> DocIdSetIterator for SharedMergedDocIterator<T> {
+    /// The shared iterator's `toString()`: every handle stands for the one Java
+    /// object.
+    fn java_to_string(&self) -> String {
+        self.lock().java_to_string()
+    }
+
     fn doc_id(&self) -> i32 {
         self.lock().doc_id()
     }
@@ -2811,17 +2842,12 @@ impl MergedFloatVectorValues {
         for sub in self.subs.iter() {
             subs_copy.push(DocValuesSub {
                 // `DocValuesSub.copy()` calls `sub.copy()` unconditionally
-                // (`SlowCompositeCodecReaderWrapper.java:297-299`), so a reader
-                // without vectors makes the copy fail.
+                // (`SlowCompositeCodecReaderWrapper.java:307-309`): a reader
+                // without vectors is the `NullPointerException` of `null.copy()`.
                 sub: Some(
                     sub.sub
                         .as_ref()
-                        .ok_or_else(|| {
-                            LuceneError::illegal_state(
-                                "cannot copy merged vector values over a reader without vectors"
-                                    .to_string(),
-                            )
-                        })?
+                        .ok_or_else(LuceneError::null_pointer)?
                         .copy_float()?,
                 ),
                 doc_start: sub.doc_start,
@@ -2870,9 +2896,7 @@ impl FloatVectorValues for MergedFloatVectorValues {
         self.last_sub_index.store(last, Ordering::Relaxed);
         let sub = &self.subs[last];
         debug_assert!(sub.sub.is_some());
-        let values = sub.sub.as_ref().ok_or_else(|| {
-            LuceneError::illegal_state(format!("ordinal {ord} falls in a sub without vectors"))
-        })?;
+        let values = sub.sub.as_ref().ok_or_else(LuceneError::null_pointer)?;
         values.vector_value(ord - sub.ord_start)
     }
 
@@ -2921,17 +2945,12 @@ impl MergedByteVectorValues {
         for sub in self.subs.iter() {
             subs_copy.push(DocValuesSub {
                 // `DocValuesSub.copy()` calls `sub.copy()` unconditionally
-                // (`SlowCompositeCodecReaderWrapper.java:297-299`), so a reader
-                // without vectors makes the copy fail.
+                // (`SlowCompositeCodecReaderWrapper.java:307-309`): a reader
+                // without vectors is the `NullPointerException` of `null.copy()`.
                 sub: Some(
                     sub.sub
                         .as_ref()
-                        .ok_or_else(|| {
-                            LuceneError::illegal_state(
-                                "cannot copy merged vector values over a reader without vectors"
-                                    .to_string(),
-                            )
-                        })?
+                        .ok_or_else(LuceneError::null_pointer)?
                         .copy_byte()?,
                 ),
                 doc_start: sub.doc_start,
@@ -2977,9 +2996,7 @@ impl ByteVectorValues for MergedByteVectorValues {
         // Relaxed: the index is only a search hint; see MergedFloatVectorValues.
         self.last_sub_index.store(last, Ordering::Relaxed);
         let sub = &self.subs[last];
-        let values = sub.sub.as_ref().ok_or_else(|| {
-            LuceneError::illegal_state(format!("ordinal {ord} falls in a sub without vectors"))
-        })?;
+        let values = sub.sub.as_ref().ok_or_else(LuceneError::null_pointer)?;
         values.vector_value(ord - sub.ord_start)
     }
 
@@ -3076,6 +3093,13 @@ impl SortingNumericDocValues {
 }
 
 impl DocIdSetIterator for SortingNumericDocValues {
+    /// `NumericDocValuesWriter$SortingNumericDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.NumericDocValuesWriter$SortingNumericDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -3167,6 +3191,13 @@ impl SortingBinaryDocValues {
 }
 
 impl DocIdSetIterator for SortingBinaryDocValues {
+    /// `BinaryDocValuesWriter$SortingBinaryDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.BinaryDocValuesWriter$SortingBinaryDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -3277,6 +3308,13 @@ impl SortingSortedDocValues {
 }
 
 impl DocIdSetIterator for SortingSortedDocValues {
+    /// `SortedDocValuesWriter$SortingSortedDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SortedDocValuesWriter$SortingSortedDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -3393,6 +3431,13 @@ impl SortingSortedNumericDocValues {
 }
 
 impl DocIdSetIterator for SortingSortedNumericDocValues {
+    /// `SortedNumericDocValuesWriter$SortingSortedNumericDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SortedNumericDocValuesWriter$SortingSortedNumericDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -3511,6 +3556,13 @@ impl SortingSortedSetDocValues {
 }
 
 impl DocIdSetIterator for SortingSortedSetDocValues {
+    /// `SortedSetDocValuesWriter$SortingSortedSetDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SortedSetDocValuesWriter$SortingSortedSetDocValues",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -3901,11 +3953,8 @@ impl Fields for SortingFieldsProducer {
         let index_options = self
             .field_infos
             .field_info(field)
-            .ok_or_else(|| {
-                crate::error::LuceneError::illegal_state(format!(
-                    "field \"{field}\" has terms but no FieldInfo"
-                ))
-            })?
+            // `fieldInfos.fieldInfo(field).getIndexOptions()` on `null`.
+            .ok_or_else(crate::error::LuceneError::null_pointer)?
             .index_options;
         Ok(Some(Box::new(SortingTerms::new(
             terms,
@@ -3994,6 +4043,13 @@ struct SortingPointValues {
 }
 
 impl PointValues for SortingPointValues {
+    /// `SortingCodecReader$SortingPointValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SortingCodecReader$SortingPointValues",
+        )
+    }
     fn point_tree(&self) -> Result<Box<dyn PointTree>> {
         Ok(Box::new(SortingPointTree {
             index_tree: self.inner.point_tree()?,
@@ -4044,6 +4100,13 @@ struct SortingPointTree {
 }
 
 impl PointTree for SortingPointTree {
+    /// `SortingCodecReader$SortingPointTree` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SortingCodecReader$SortingPointTree",
+        )
+    }
     fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
         Ok(Box::new(SortingPointTree {
             index_tree: self.index_tree.clone_tree()?,
@@ -4104,6 +4167,13 @@ struct SortingIntersectVisitor<'a> {
 }
 
 impl IntersectVisitor for SortingIntersectVisitor<'_> {
+    /// `SortingCodecReader$SortingIntersectVisitor` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.SortingCodecReader$SortingIntersectVisitor",
+        )
+    }
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         self.visitor.visit(self.doc_map.old_to_new(doc_id))
     }
@@ -4178,7 +4248,7 @@ impl KnnVectorsReader for SortingKnnVectorsReader {
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
         Err(crate::error::LuceneError::unsupported_operation(
-            "SortingCodecReader's vectors reader does not search".to_string(),
+            String::new(),
         ))
     }
 
@@ -4196,7 +4266,7 @@ impl KnnVectorsReader for SortingKnnVectorsReader {
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
         Err(crate::error::LuceneError::unsupported_operation(
-            "SortingCodecReader's vectors reader does not search".to_string(),
+            String::new(),
         ))
     }
 
@@ -4211,7 +4281,7 @@ impl KnnVectorsReader for SortingKnnVectorsReader {
 
     /// Equivalent to the anonymous reader's `getOffHeapByteSize(FieldInfo)`
     /// (`SortingCodecReader.java:597-600`).
-    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
+    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> Result<HashMap<String, i64>> {
         self.delegate.get_off_heap_byte_size(field_info)
     }
 
@@ -4256,7 +4326,7 @@ impl KnnVectorValues for SortingFloatVectorValues {
     /// `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
         Err(crate::error::LuceneError::unsupported_operation(
-            "SortingFloatVectorValues.copy".to_string(),
+            String::new(),
         ))
     }
 
@@ -4279,7 +4349,7 @@ impl FloatVectorValues for SortingFloatVectorValues {
     /// `UnsupportedOperationException`.
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
         Err(crate::error::LuceneError::unsupported_operation(
-            "SortingFloatVectorValues.copy".to_string(),
+            String::new(),
         ))
     }
 }
@@ -4319,7 +4389,7 @@ impl KnnVectorValues for SortingByteVectorValues {
     /// `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
         Err(crate::error::LuceneError::unsupported_operation(
-            "SortingByteVectorValues.copy".to_string(),
+            String::new(),
         ))
     }
 
@@ -4341,7 +4411,7 @@ impl ByteVectorValues for SortingByteVectorValues {
     /// `UnsupportedOperationException`.
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
         Err(crate::error::LuceneError::unsupported_operation(
-            "SortingByteVectorValues.copy".to_string(),
+            String::new(),
         ))
     }
 }

@@ -297,10 +297,9 @@ impl NormsProducer for BufferedNormsProducer {
     fn get_norms(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         let values: Result<Box<dyn NumericDocValues>> = {
             if field.number != self.field_number {
-                return Err(LuceneError::illegal_argument(format!(
-                    "wrong fieldInfo: expected {} ({}), got {} ({})",
-                    self.field_name, self.field_number, field.name, field.number
-                )));
+                // `throw new IllegalArgumentException("wrong fieldInfo")`
+                // (`NormValuesWriter.java:89-91`).
+                return Err(LuceneError::illegal_argument("wrong fieldInfo"));
             }
             match &self.sorted {
                 None => Ok(Box::new(BufferedNorms::new(
@@ -364,6 +363,13 @@ impl BufferedNorms {
 }
 
 impl DocIdSetIterator for BufferedNorms {
+    /// `NormValuesWriter$BufferedNorms` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.NormValuesWriter$BufferedNorms",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.docs_with_field.doc_id()
     }
@@ -377,9 +383,7 @@ impl DocIdSetIterator for BufferedNorms {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(
-            "BufferedNorms does not support advance".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn cost(&self) -> i64 {
@@ -389,9 +393,7 @@ impl DocIdSetIterator for BufferedNorms {
 
 impl DocValuesIterator for BufferedNorms {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::unsupported_operation(
-            "BufferedNorms does not support advance_exact".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 
@@ -601,8 +603,8 @@ mod tests {
 
         #[derive(Debug, Default)]
         struct ProbingConsumer {
-            advance: Option<String>,
-            advance_exact: Option<String>,
+            advance: Option<LuceneError>,
+            advance_exact: Option<LuceneError>,
         }
         impl NormsConsumer for ProbingConsumer {
             fn add_norms_field(
@@ -611,8 +613,8 @@ mod tests {
                 values: &dyn NormsProducer,
             ) -> Result<()> {
                 let mut norms = values.get_norms(field)?.unwrap();
-                self.advance = Some(norms.advance(0).unwrap_err().to_string());
-                self.advance_exact = Some(norms.advance_exact(0).unwrap_err().to_string());
+                self.advance = norms.advance(0).err();
+                self.advance_exact = norms.advance_exact(0).err();
                 Ok(())
             }
             fn close(&mut self) -> Result<()> {
@@ -622,8 +624,24 @@ mod tests {
 
         let mut consumer = ProbingConsumer::default();
         writer.flush(&mut consumer, None).unwrap();
-        assert!(consumer.advance.unwrap().contains("advance"));
-        assert!(consumer.advance_exact.unwrap().contains("advance_exact"));
+        // `throw new UnsupportedOperationException()`, with no message
+        // (`NormValuesWriter.java:134-142`).
+        assert!(
+            matches!(
+                &consumer.advance.as_ref().unwrap().kind,
+                LuceneErrorKind::UnsupportedOperation { message, cause: None } if message.is_empty()
+            ),
+            "{:?}",
+            consumer.advance
+        );
+        assert!(
+            matches!(
+                &consumer.advance_exact.as_ref().unwrap().kind,
+                LuceneErrorKind::UnsupportedOperation { message, cause: None } if message.is_empty()
+            ),
+            "{:?}",
+            consumer.advance_exact
+        );
     }
 
     #[test]

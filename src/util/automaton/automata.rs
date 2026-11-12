@@ -493,10 +493,8 @@ impl Automata {
         let mut x = min.to_string();
         let mut y = max.to_string();
         if min > max || (digits > 0 && y.len() as i32 > digits) {
-            return Err(LuceneError::illegal_argument(format!(
-                "invalid decimal interval: min={} max={} digits={}",
-                min, max, digits
-            )));
+            // `throw new IllegalArgumentException()` (`Automata.java:506-508`).
+            return Err(LuceneError::illegal_argument(String::new()));
         }
         let d = if digits > 0 { digits } else { y.len() as i32 };
         let mut bx = String::new();

@@ -178,7 +178,16 @@ impl Weight for PhraseWeight {
         while matcher.next_match()? {
             freq += matcher.sloppy_weight();
         }
-        let freq_explanation = Explanation::matched(freq, format!("phraseFreq={freq}"), Vec::new());
+        // `"phraseFreq=" + freq` concatenates the float with `Float.toString`
+        // (`PhraseWeight.java:86`), which renders `1.0`, not `1`.
+        let freq_explanation = Explanation::matched(
+            freq,
+            format!(
+                "phraseFreq={}",
+                crate::util::java_fmt::float_to_string(freq)
+            ),
+            Vec::new(),
+        );
         let mut norms = if self.score_mode.needs_scores() {
             context.leaf_reader().get_norm_values(&self.field)?
         } else {

@@ -139,7 +139,12 @@ impl Clone for FieldInfo {
             store_term_vector: self.store_term_vector,
             omit_norms: self.omit_norms,
             store_payloads: self.store_payloads,
-            attributes: RwLock::new(self.attributes.read().unwrap().clone()),
+            attributes: RwLock::new(
+                self.attributes
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+            ),
         }
     }
 }
@@ -158,7 +163,13 @@ impl std::fmt::Debug for FieldInfo {
             .field("store_term_vector", &self.store_term_vector)
             .field("omit_norms", &self.omit_norms)
             .field("store_payloads", &self.store_payloads)
-            .field("attributes", &self.attributes.read().unwrap())
+            .field(
+                "attributes",
+                &self
+                    .attributes
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
             .field("doc_values_gen", &self.doc_values_gen)
             .field("point_dimension_count", &self.point_dimension_count)
             .field(
@@ -188,7 +199,14 @@ impl PartialEq for FieldInfo {
             && self.store_term_vector == other.store_term_vector
             && self.omit_norms == other.omit_norms
             && self.store_payloads == other.store_payloads
-            && *self.attributes.read().unwrap() == *other.attributes.read().unwrap()
+            && *self
+                .attributes
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                == *other
+                    .attributes
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
             && self.doc_values_gen == other.doc_values_gen
             && self.point_dimension_count == other.point_dimension_count
             && self.point_index_dimension_count == other.point_index_dimension_count
@@ -334,9 +352,10 @@ impl FieldInfo {
             && doc_values_type != DocValuesType::NONE
             && self.doc_values_type != doc_values_type
         {
+            // `FieldInfo.java:548-558`.
             return Err(LuceneError::illegal_argument(format!(
-                "cannot change DocValues type from {} to {} for field '{}'",
-                self.doc_values_type as i32, doc_values_type as i32, self.name
+                "cannot change DocValues type from {:?} to {:?} for field \"{}\"",
+                self.doc_values_type, doc_values_type, self.name
             )));
         }
         self.doc_values_type = doc_values_type;
@@ -370,16 +389,12 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the field is not indexed.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) from the consistency check if the
+    /// field is not indexed; as in Java, the flag stays set
+    /// (`FieldInfo.java:611-614`).
     pub fn set_store_term_vectors(&mut self) -> Result<()> {
-        if self.index_options == IndexOptions::NONE {
-            return Err(LuceneError::illegal_state(format!(
-                "non-indexed field '{}' cannot store term vectors",
-                self.name
-            )));
-        }
         self.store_term_vector = true;
-        Ok(())
+        self.check_consistency()
     }
 
     /// Returns `true` if norms are explicitly omitted for this field.
@@ -394,10 +409,10 @@ impl FieldInfo {
     /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the field is not indexed.
     pub fn set_omits_norms(&mut self) -> Result<()> {
         if self.index_options == IndexOptions::NONE {
-            return Err(LuceneError::illegal_state(format!(
-                "cannot omit norms: field '{}' is not indexed",
-                self.name
-            )));
+            // `FieldInfo.java:630-632`.
+            return Err(LuceneError::illegal_state(
+                "cannot omit norms: this field is not indexed",
+            ));
         }
         self.omit_norms = true;
         Ok(())
@@ -473,56 +488,57 @@ impl FieldInfo {
         index_dimension_count: i32,
         num_bytes: i32,
     ) -> Result<()> {
+        // `FieldInfo.setPointDimensions` (`FieldInfo.java:432-510`), messages
+        // verbatim.
+        let name = &self.name;
         if dimension_count <= 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "point dimension count must be > 0; got {dimension_count} for field='{}'",
-                self.name
+                "point dimension count must be >= 0; got {dimension_count} for field=\"{name}\""
             )));
         }
         if index_dimension_count > MAX_INDEX_DIMENSIONS {
             return Err(LuceneError::illegal_argument(format!(
-                "point index dimension count must be <= PointValues.MAX_INDEX_DIMENSIONS (={}); got {index_dimension_count} for field='{}'",
-                MAX_INDEX_DIMENSIONS,
-                self.name
+                "point index dimension count must be < PointValues.MAX_INDEX_DIMENSIONS (= \
+                 {MAX_INDEX_DIMENSIONS}); got {index_dimension_count} for field=\"{name}\""
             )));
         }
         if index_dimension_count > dimension_count {
             return Err(LuceneError::illegal_argument(format!(
-                "point index dimension count must be <= point dimension count (={dimension_count}); got {index_dimension_count} for field='{}'",
-                self.name
+                "point index dimension count must be <= point dimension count (= \
+                 {dimension_count}); got {index_dimension_count} for field=\"{name}\""
             )));
         }
         if num_bytes <= 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "point numBytes must be > 0; got {num_bytes} for field='{}'",
-                self.name
+                "point numBytes must be >= 0; got {num_bytes} for field=\"{name}\""
             )));
         }
         if num_bytes > MAX_NUM_BYTES {
             return Err(LuceneError::illegal_argument(format!(
-                "point numBytes must be <= PointValues.MAX_NUM_BYTES (={}); got {num_bytes} for field='{}'",
-                MAX_NUM_BYTES,
-                self.name
+                "point numBytes must be <= PointValues.MAX_NUM_BYTES (= {MAX_NUM_BYTES}); got \
+                 {num_bytes} for field=\"{name}\""
             )));
         }
         if self.point_dimension_count != 0 && self.point_dimension_count != dimension_count {
             return Err(LuceneError::illegal_argument(format!(
-                "cannot change point dimension count from {} to {dimension_count} for field='{}'",
-                self.point_dimension_count, self.name
+                "cannot change point dimension count from {} to {dimension_count} for \
+                 field=\"{name}\"",
+                self.point_dimension_count
             )));
         }
         if self.point_index_dimension_count != 0
             && self.point_index_dimension_count != index_dimension_count
         {
             return Err(LuceneError::illegal_argument(format!(
-                "cannot change point index dimension count from {} to {index_dimension_count} for field='{}'",
-                self.point_index_dimension_count, self.name
+                "cannot change point index dimension count from {} to {index_dimension_count} \
+                 for field=\"{name}\"",
+                self.point_index_dimension_count
             )));
         }
         if self.point_num_bytes != 0 && self.point_num_bytes != num_bytes {
             return Err(LuceneError::illegal_argument(format!(
-                "cannot change point numBytes from {} to {num_bytes} for field='{}'",
-                self.point_num_bytes, self.name
+                "cannot change point numBytes from {} to {num_bytes} for field=\"{name}\"",
+                self.point_num_bytes
             )));
         }
 
@@ -549,7 +565,11 @@ impl FieldInfo {
 
     /// Returns a codec attribute value, or `None` if absent.
     pub fn get_attribute(&self, key: &str) -> Option<String> {
-        self.attributes.read().unwrap().get(key).cloned()
+        self.attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
     }
 
     /// Stores a codec attribute value, returning the previous value if any.
@@ -568,7 +588,10 @@ impl FieldInfo {
         key: impl Into<String>,
         value: impl Into<String>,
     ) -> Option<String> {
-        let mut guard = self.attributes.write().unwrap();
+        let mut guard = self
+            .attributes
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut new_map = guard.to_java_hash_map();
         let old_value = new_map.insert(key.into(), value.into());
         *guard = JavaStringMap::Hash(new_map);
@@ -586,7 +609,10 @@ impl FieldInfo {
     /// (`FieldInfos.java:775-776, 801`). This port returns a copy because the
     /// map is behind a lock.
     pub fn attributes(&self) -> JavaStringMap {
-        self.attributes.read().unwrap().clone()
+        self.attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Verifies that the combination of field options is internally consistent.
@@ -684,7 +710,7 @@ impl FieldInfo {
 
         if self.vector_dimension < 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "vectorDimension must be >= 0; got {} (field: '{}')",
+                "vectorDimension must be >=0; got {} (field: '{}')",
                 self.vector_dimension, self.name
             )));
         }
@@ -929,9 +955,9 @@ impl FieldInfos {
         let mut has_point_values = false;
         let mut has_vector_values = false;
 
+        // `FieldInfos.java:91-137`: Java does not re-run `checkConsistency()`
+        // here; each `FieldInfo` was checked when it was built or changed.
         for info in &infos {
-            info.check_consistency()?;
-
             if info.number < 0 {
                 return Err(LuceneError::illegal_argument(format!(
                     "illegal field number: {} for field {}",
@@ -1083,6 +1109,25 @@ impl FieldInfos {
         self.by_name
             .get(name)
             .and_then(|&number| self.field_info_by_number(number))
+    }
+
+    /// Looks up a field by number with Java's argument check.
+    ///
+    /// Equivalent to `FieldInfos.fieldInfo(int)` (`FieldInfos.java:341-346`):
+    /// a negative number throws `IllegalArgumentException("Illegal field
+    /// number: " + fieldNumber)`, an unknown one yields `null` (`None`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
+    /// for a negative number.
+    pub fn field_info_checked(&self, number: i32) -> Result<Option<&FieldInfo>> {
+        if number < 0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "Illegal field number: {number}"
+            )));
+        }
+        Ok(self.field_info_by_number(number))
     }
 
     /// Looks up a visible field by number.
@@ -1780,7 +1825,9 @@ impl FieldInfosBuilder {
             return Ok(current);
         }
 
-        if self.finished {
+        // `assert assertNotFinished();` (`FieldInfos.java:787,819-824`): the
+        // check only runs with assertions enabled.
+        if cfg!(debug_assertions) && self.finished {
             return Err(LuceneError::illegal_state(
                 "FieldInfos.Builder was already finished; cannot add new fields".to_string(),
             ));

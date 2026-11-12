@@ -329,11 +329,11 @@ impl RandomVectorScorer for CompressedInt4DotProduct {
             compressed_vector,
             ..
         } = self;
-        let slice = values.get_slice_mut().ok_or_else(|| {
-            LuceneError::illegal_state(
-                "compressed int4 scoring needs the values' index slice".to_string(),
-            )
-        })?;
+        // A `null` `values.getSlice()` dereferenced: the JVM's
+        // `NullPointerException`.
+        let slice = values
+            .get_slice_mut()
+            .ok_or_else(LuceneError::null_pointer)?;
         slice
             .seek(i64::from(vector_ordinal) * (byte_length + std::mem::size_of::<f32>() as i64))?;
         let len = compressed_vector.len();

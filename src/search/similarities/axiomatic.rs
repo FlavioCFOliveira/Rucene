@@ -37,7 +37,7 @@ const DEFAULT_QUERY_LEN: i32 = 1;
 /// this struct instead, so that the validation Java performs in
 /// `Axiomatic(boolean, float, int, float)` is written once.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct AxiomaticParams {
+pub struct AxiomaticParams {
     s: f32,
     k: f32,
     query_len: i32,
@@ -51,7 +51,7 @@ impl AxiomaticParams {
     /// (`Axiomatic.java:57-75`). Java tests `Float.isFinite(x) == false ||
     /// Float.isNaN(x)`, which is redundant — a NaN is not finite — and is
     /// collapsed here.
-    fn new(discount_overlaps: bool, s: f32, query_len: i32, k: f32) -> Result<Self> {
+    pub fn new(discount_overlaps: bool, s: f32, query_len: i32, k: f32) -> Result<Self> {
         if !s.is_finite() || !(0.0..=1.0).contains(&s) {
             return Err(LuceneError::illegal_argument(format!(
                 "illegal s value: {}, must be between 0 and 1",
@@ -75,6 +75,61 @@ impl AxiomaticParams {
             query_len,
             discount_overlaps,
         })
+    }
+
+    /// Equivalent to `Axiomatic(float s, int queryLen, float k)`
+    /// (`Axiomatic.java:53-55`), which is `this(true, s, queryLen, k)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn with_s_query_len_k(s: f32, query_len: i32, k: f32) -> Result<Self> {
+        Self::new(true, s, query_len, k)
+    }
+
+    /// Equivalent to `Axiomatic(float s)` (`Axiomatic.java:87-89`), which is
+    /// `this(s, 1, 0.35f)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn with_s(s: f32) -> Result<Self> {
+        Self::with_s_query_len_k(s, DEFAULT_QUERY_LEN, DEFAULT_K)
+    }
+
+    /// Equivalent to `Axiomatic(float s, int queryLen)` (`Axiomatic.java:97-99`),
+    /// which is `this(s, queryLen, 0.35f)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn with_s_query_len(s: f32, query_len: i32) -> Result<Self> {
+        Self::with_s_query_len_k(s, query_len, DEFAULT_K)
+    }
+}
+
+impl AxiomaticParams {
+    /// The `protected final float s` field (`Axiomatic.java:38`):
+    /// hyper-parameter of the growth function.
+    pub fn s(&self) -> f32 {
+        self.s
+    }
+
+    /// The `protected final float k` field (`Axiomatic.java:41`):
+    /// hyper-parameter of the primitive weighting function.
+    pub fn k(&self) -> f32 {
+        self.k
+    }
+
+    /// The `protected final int queryLen` field (`Axiomatic.java:44`).
+    pub fn query_len(&self) -> i32 {
+        self.query_len
+    }
+
+    /// The `discountOverlaps` flag the constructor passes to
+    /// `SimilarityBase(boolean)` (`Axiomatic.java:66`).
+    pub fn discount_overlaps(&self) -> bool {
+        self.discount_overlaps
     }
 }
 
@@ -462,6 +517,11 @@ fn ln_one_explain(value: f64) -> Explanation {
 macro_rules! axiomatic_boilerplate {
     ($ty:ident, $name:literal) => {
         impl Similarity for $ty {
+            /// Java `toString()`, which this similarity overrides.
+            fn to_java_string(&self) -> String {
+                self.to_string()
+            }
+
             fn java_class_name(&self) -> &'static str {
                 concat!("org.apache.lucene.search.similarities.", stringify!($ty))
             }

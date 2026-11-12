@@ -85,8 +85,11 @@ impl FSTDictionary {
                 if is_fst_on_heap {
                     FST::new(metadata, input)?
                 } else {
-                    let store =
-                        OffHeapFSTStore::new(input.clone_input()?, input.file_pointer(), &metadata);
+                    let store = OffHeapFSTStore::new(
+                        input.clone_input()?,
+                        input.file_pointer()?,
+                        &metadata,
+                    );
                     FST::from_reader(metadata, Box::new(store))
                 }
             }

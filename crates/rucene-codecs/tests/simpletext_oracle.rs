@@ -302,13 +302,15 @@ fn format_segment_info(dir: &Arc<dyn Directory>) -> rucene::index::SegmentInfo {
             .collect(),
         SEGMENT_ID,
         std::collections::HashMap::new(),
-        Sort::new_fields(vec![
-            SortField::new_reverse(Some("s".to_string()), SortFieldType::String, true).unwrap(),
-            rucene::search::SortedNumericSortField::new("n", SortFieldType::Long)
-                .unwrap()
-                .into(),
-        ])
-        .unwrap(),
+        Some(
+            Sort::new_fields(vec![
+                SortField::new_reverse(Some("s".to_string()), SortFieldType::String, true).unwrap(),
+                rucene::search::SortedNumericSortField::new("n", SortFieldType::Long)
+                    .unwrap()
+                    .into(),
+            ])
+            .unwrap(),
+        ),
     )
     .unwrap();
     si.put_attribute("b", "2");
@@ -695,14 +697,14 @@ fn corrupted_files_raise_lucenes_errors() {
             Err(e) => {
                 let class = match &e {
                     rucene::error::LuceneError {
-                        kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+                        kind: rucene::error::LuceneErrorKind::CorruptIndex { .. },
                         ..
                     } => "org.apache.lucene.index.CorruptIndexException".to_string(),
                     other => format!("rucene::{}", other.java_simple_name()),
                 };
                 let message = match &e {
                     rucene::error::LuceneError {
-                        kind: rucene::error::LuceneErrorKind::CorruptIndex(m),
+                        kind: rucene::error::LuceneErrorKind::CorruptIndex { message: m, .. },
                         ..
                     } => m.clone(),
                     other => other.to_string(),
@@ -1359,7 +1361,7 @@ fn a_failed_compound_write_closes_the_output() {
         std::collections::HashMap::new(),
         [0u8; 16],
         std::collections::HashMap::new(),
-        Sort::default(),
+        None,
     )
     .unwrap();
     info.set_files(["_0.missing".to_string()]).unwrap();

@@ -54,11 +54,9 @@ pub struct PagedBytes {
 impl PagedBytes {
     /// Creates an arena whose pages hold `1 << block_bits` bytes.
     ///
-    /// # Panics
-    ///
-    /// Panics unless `0 < block_bits <= 31`, which is Java's assertion.
+    /// `0 < block_bits <= 31` is only asserted, as Java does.
     pub fn new(block_bits: u32) -> Self {
-        assert!(block_bits > 0 && block_bits <= 31, "{block_bits}");
+        debug_assert!(block_bits > 0 && block_bits <= 31, "{block_bits}");
         let block_size = 1usize << block_bits;
         Self {
             blocks: Vec::new(),
@@ -627,6 +625,10 @@ impl PagedBytesDataOutput<'_> {
 }
 
 impl DataOutput for PagedBytesDataOutput<'_> {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.util.PagedBytes$PagedBytesDataOutput"
+    }
+
     fn write_byte(&mut self, b: u8) -> Result<()> {
         if self.owner.upto == self.owner.block_size {
             if let Some(block) = self.owner.current_block.take() {

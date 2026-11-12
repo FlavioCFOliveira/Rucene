@@ -18,7 +18,6 @@ use rucene::codecs::lucene90::Lucene90CompoundFormat;
 use rucene::codecs::{Lucene104Codec, Lucene94FieldInfosFormat};
 use rucene::index::field_infos::{FieldInfo, FieldInfos};
 use rucene::index::segment_info::SegmentInfo;
-use rucene::search::Sort;
 use rucene::store::{ByteBuffersDirectory, Directory, IOContext, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
 use rucene::util::Version;
@@ -49,7 +48,7 @@ fn segment_info(dir: Arc<dyn Directory>) -> SegmentInfo {
         HashMap::new(),
         StringHelper::random_id(),
         HashMap::new(),
-        Sort::default(),
+        None,
     )
     .unwrap()
 }

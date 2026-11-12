@@ -4,8 +4,6 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
@@ -356,24 +354,24 @@ impl Query for FuzzyQuery {
             && self.term == other.term
     }
 
-    fn query_hash(&self) -> u64 {
-        let prime = 31u64;
+    /// `getClass().getName()` of `org.apache.lucene.search.FuzzyQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.FuzzyQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `FuzzyQuery.hashCode()`.
+        let prime = 31i32;
         let mut result = multi_term_query_hash(self);
-        result = prime
-            .wrapping_mul(result)
-            .wrapping_add(self.max_edits as u64);
-        result = prime
-            .wrapping_mul(result)
-            .wrapping_add(self.prefix_length as u64);
-        result = prime
-            .wrapping_mul(result)
-            .wrapping_add(self.max_expansions as u64);
+        result = prime.wrapping_mul(result).wrapping_add(self.max_edits);
+        result = prime.wrapping_mul(result).wrapping_add(self.prefix_length);
+        result = prime.wrapping_mul(result).wrapping_add(self.max_expansions);
         result = prime
             .wrapping_mul(result)
             .wrapping_add(if self.transpositions { 0 } else { 1 });
-        let mut hasher = DefaultHasher::new();
-        term_hash(&self.term).hash(&mut hasher);
-        prime.wrapping_mul(result).wrapping_add(hasher.finish())
+        prime
+            .wrapping_mul(result)
+            .wrapping_add(term_hash(&self.term))
     }
 }
 
@@ -406,10 +404,6 @@ impl MultiTermQuery for FuzzyQuery {
             self.prefix_length,
             self.transpositions,
         )?))
-    }
-
-    fn as_query(&self) -> &dyn Query {
-        self
     }
 
     fn to_multi_term_query_arc(&self) -> Arc<dyn MultiTermQuery> {

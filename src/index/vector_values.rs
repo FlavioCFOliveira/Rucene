@@ -75,6 +75,13 @@ impl DenseDocIndexIterator {
 }
 
 impl DocIdSetIterator for DenseDocIndexIterator {
+    /// `KnnVectorValues.createDenseIterator()` returns an anonymous class (`KnnVectorValues$2`) that declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.KnnVectorValues$2",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc
     }
@@ -150,6 +157,13 @@ impl FromDisiDocIndexIterator {
 }
 
 impl DocIdSetIterator for FromDisiDocIndexIterator {
+    /// `KnnVectorValues.fromDISI(DocIdSetIterator)` returns an anonymous class (`KnnVectorValues$3`) that declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.KnnVectorValues$3",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.docs.doc_id()
     }
@@ -227,6 +241,13 @@ impl fmt::Debug for SparseDocIndexIterator {
 }
 
 impl DocIdSetIterator for SparseDocIndexIterator {
+    /// `KnnVectorValues.createSparseIterator()` returns an anonymous class (`KnnVectorValues$4`) that declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.KnnVectorValues$4",
+        )
+    }
     fn doc_id(&self) -> i32 {
         if self.ord == -1 {
             return -1;
@@ -379,9 +400,7 @@ pub trait KnnVectorValues: Send + Sync {
     /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) unless the implementation
     /// overrides this method.
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Err(LuceneError::unsupported_operation(
-            "KnnVectorValues::iterator".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Returns an iterator for a field every document has a vector for, where
@@ -435,6 +454,13 @@ impl OrdinalDocIndexIterator {
 }
 
 impl DocIdSetIterator for OrdinalDocIndexIterator {
+    /// `KnnVectorValues$4` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.KnnVectorValues$4",
+        )
+    }
     fn doc_id(&self) -> i32 {
         if self.ord == -1 {
             return -1;
@@ -678,9 +704,7 @@ pub trait FloatVectorValues: KnnVectorValues {
     /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) unless the implementation
     /// overrides this method, or an I/O error raised while opening the scorer.
     fn scorer(&self, _target: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
-        Err(LuceneError::unsupported_operation(
-            "FloatVectorValues::scorer".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Returns a [`VectorScorer`] for `target` intended for rescoring an
@@ -867,9 +891,7 @@ pub trait ByteVectorValues: KnnVectorValues {
     /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) unless the implementation
     /// overrides this method, or an I/O error raised while opening the scorer.
     fn scorer(&self, _target: &[u8]) -> Result<Option<Box<dyn VectorScorer>>> {
-        Err(LuceneError::unsupported_operation(
-            "ByteVectorValues::scorer".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Returns a [`VectorScorer`] for `target` intended for rescoring an
@@ -941,13 +963,15 @@ impl ByteVectorValues for ListByteVectorValues {
 
 /// Rejects an ordinal outside `[0, size)`.
 ///
-/// Equivalent to the `IndexOutOfBoundsException` that Java's
-/// `vectorValue(int)` is documented to throw.
+/// Equivalent to the `IndexOutOfBoundsException` of Java's
+/// `vectors.get(targetOrd)` on the backing `ArrayList`
+/// (`FloatVectorValues.java`/`ByteVectorValues.java`, `fromFloats`/`fromBytes`).
 fn check_ord(ord: i32, size: usize) -> Result<()> {
     if ord < 0 || ord as usize >= size {
-        return Err(LuceneError::illegal_argument(format!(
-            "ordinal {ord} out of range [0, {size})"
-        )));
+        return Err(LuceneError::unchecked(
+            "java.lang.IndexOutOfBoundsException",
+            format!("Index {ord} out of bounds for length {size}"),
+        ));
     }
     Ok(())
 }

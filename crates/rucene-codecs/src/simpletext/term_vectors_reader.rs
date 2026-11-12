@@ -133,7 +133,7 @@ impl SimpleTextTermVectorsReader {
             if scratch.starts_with(DOC) {
                 *offsets.get_mut(upto).ok_or_else(|| {
                     array_index_out_of_bounds(upto as i64, max_doc.max(0) as usize)
-                })? = input.file_pointer();
+                })? = input.file_pointer()?;
                 upto += 1;
             }
         }

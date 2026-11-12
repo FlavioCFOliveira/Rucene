@@ -103,9 +103,7 @@ impl SortedSetSortField {
         use crate::index::index_sorter::StringSorter;
         let field = self
             .get_field()
-            .ok_or_else(|| {
-                LuceneError::illegal_argument("a sort field must name a field".to_string())
-            })?
+            .expect("INVARIANT: a SortedSetSortField has a field")
             .to_string();
         let selector = self.get_selector();
         Ok(std::sync::Arc::new(StringSorter::new(
@@ -206,6 +204,14 @@ impl SortedSetSortField {
     /// propagates any I/O error.
     fn read_selector_type(input: &mut dyn DataInput) -> Result<SortedSetSelectorType> {
         let selector_ordinal = input.read_int()?;
+        // `type >= values().length` throws; a negative ordinal reaches
+        // `values()[type]`, an `ArrayIndexOutOfBoundsException`.
+        if selector_ordinal < 0 {
+            return Err(LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!("Index {selector_ordinal} out of bounds for length 4"),
+            ));
+        }
         SortedSetSelectorType::from_ordinal(selector_ordinal).ok_or_else(|| {
             LuceneError::illegal_argument(format!(
                 "Cannot deserialize SortedSetSortField: unknown selector type {selector_ordinal}"

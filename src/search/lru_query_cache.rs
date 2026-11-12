@@ -38,23 +38,6 @@ use crate::util::bit_sets::{RoaringDocIdSet, RoaringDocIdSetBuilder};
 use crate::util::doc_id_set::BitDocIdSet;
 use crate::util::{Accountable, BitSet, FixedBitSet, RamUsageEstimator};
 
-/// The estimated per-entry overhead of a hash table.
-///
-/// **Divergence from Lucene 10.5.0.** Java declares this constant on
-/// `org.apache.lucene.util.RamUsageEstimator`. This crate's port of that class
-/// does not carry it yet, and the accounting of this cache depends on it, so it
-/// is declared here with Java's own definition: two references — a key and a
-/// value — doubled, because hash tables are oversized to avoid collisions.
-pub const HASHTABLE_RAM_BYTES_PER_ENTRY: i64 = 2 * RamUsageEstimator::NUM_BYTES_OBJECT_REF * 2;
-
-/// The estimated per-entry overhead of a linked hash table.
-///
-/// See [`HASHTABLE_RAM_BYTES_PER_ENTRY`] for why the constant lives here: this
-/// is Java's `RamUsageEstimator.LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY`, the hash
-/// table entry plus the previous and next references.
-pub const LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY: i64 =
-    HASHTABLE_RAM_BYTES_PER_ENTRY + 2 * RamUsageEstimator::NUM_BYTES_OBJECT_REF;
-
 /// The shallow size of a [`CacheAndCount`].
 ///
 /// Equivalent to `CacheAndCount.BASE_RAM_BYTES_USED`, which is
@@ -277,11 +260,19 @@ impl LruQueryMap {
     /// Removes and returns the least-recently-used query.
     ///
     /// Equivalent to `mostRecentlyUsedQueries.iterator().next()` followed by
-    /// `iterator.remove()`.
+    /// `iterator.remove()`. Java's `HashIterator.remove()` finds the entry by
+    /// the hash stored in its node and by identity, so it removes the entry
+    /// even when the query's `hashCode()` has changed since it was put; when a
+    /// lookup by the query's current hash and `equals` misses, the entry is
+    /// therefore removed by identity, which is that same entry.
     fn remove_eldest(&mut self) -> Option<Arc<dyn Query>> {
         let (seq, key) = self.order.iter().next().map(|(s, k)| (*s, k.clone()))?;
         self.order.remove(&seq);
-        self.entries.remove(&key).map(|(query, _)| query)
+        if self.entries.remove(&key).is_none() {
+            self.entries
+                .retain(|stored, _| !Arc::ptr_eq(stored.query(), key.query()));
+        }
+        Some(key.into_query())
     }
 
     fn len(&self) -> usize {
@@ -616,7 +607,7 @@ impl CacheState {
         query: Arc<dyn Query>,
         cached: CacheAndCount,
         cache_helper: &dyn CacheHelper,
-    ) {
+    ) -> Result<()> {
         debug_assert!(!is_boost_query(query.as_ref()));
         debug_assert!(!is_constant_score_query(query.as_ref()));
         // Under the write lock, so that the query map and the leaf caches stay
@@ -639,8 +630,10 @@ impl CacheState {
         if !cache.contains_key(&key) {
             let previous = cache.insert(key.clone(), LeafCache::new());
             debug_assert!(previous.is_none());
-            self.ram_bytes_used
-                .fetch_add(HASHTABLE_RAM_BYTES_PER_ENTRY, Ordering::AcqRel);
+            self.ram_bytes_used.fetch_add(
+                RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY,
+                Ordering::AcqRel,
+            );
             // We just created a new leaf cache, so we need to register a close
             // listener.
             cache_helper.add_closed_listener(Arc::new(ClearCoreCacheKey {
@@ -655,16 +648,22 @@ impl CacheState {
         debug_assert!(!is_constant_score_query(query.as_ref()));
         let query_key = QueryKey::new(query);
         if !leaf_cache.cache.contains_key(&query_key) {
-            let ram = HASHTABLE_RAM_BYTES_PER_ENTRY + cached.ram_bytes_used();
+            let ram = RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY + cached.ram_bytes_used();
             leaf_cache.cache.insert(query_key, cached);
             leaf_cache.ram_bytes_used += ram;
             self.on_doc_id_set_cache(&key, ram);
         }
-        self.evict_if_necessary(&mut cache);
+        self.evict_if_necessary(&mut cache)
     }
 
-    /// Equivalent to the private `LRUQueryCache.evictIfNecessary()`.
-    fn evict_if_necessary(&self, cache: &mut HashMap<CacheKey, LeafCache>) {
+    /// Equivalent to the private `LRUQueryCache.evictIfNecessary()`
+    /// (`LRUQueryCache.java:346-371`).
+    ///
+    /// # Errors
+    ///
+    /// Returns the `java.util.ConcurrentModificationException` Java throws
+    /// when removing the eldest query did not shrink the query map.
+    fn evict_if_necessary(&self, cache: &mut HashMap<CacheKey, LeafCache>) -> Result<()> {
         loop {
             let query = {
                 let mut queries = self
@@ -672,12 +671,27 @@ impl CacheState {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
                 if !self.requires_eviction(&queries) {
-                    return;
+                    return Ok(());
                 }
-                queries.remove_eldest()
-            };
-            let Some(query) = query else {
-                return;
+                let size = queries.len();
+                let Some(query) = queries.remove_eldest() else {
+                    return Ok(());
+                };
+                if size == queries.len() {
+                    // size did not decrease, because the hash of the query
+                    // changed since it has been put into the cache
+                    return Err(LuceneError::unchecked(
+                        "java.util.ConcurrentModificationException",
+                        format!(
+                            "Removal from the cache failed! This is probably due to a query \
+                             which has been modified after having been put into  the cache or \
+                             a badly implemented clone(). Query class: [class {}], query: [{}]",
+                            query.java_class_name(),
+                            crate::search::query::query_to_string(query.as_ref())
+                        ),
+                    ));
+                }
+                query
             };
             self.on_eviction(cache, &query);
         }
@@ -693,7 +707,8 @@ impl CacheState {
         let key = QueryKey::new(Arc::clone(singleton));
         for (core_key, leaf_cache) in cache.iter_mut() {
             if let Some(removed) = leaf_cache.cache.remove(&key) {
-                let ram = HASHTABLE_RAM_BYTES_PER_ENTRY + removed.ram_bytes_used();
+                let ram =
+                    RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY + removed.ram_bytes_used();
                 leaf_cache.ram_bytes_used -= ram;
                 self.on_doc_id_set_eviction(core_key, 1, ram);
             }
@@ -737,9 +752,10 @@ impl ClosedListener for ClearCoreCacheKey {
 fn clear_core_cache_key(state: &Arc<CacheState>, core_key: &CacheKey) {
     let mut cache = state.cache.write().unwrap_or_else(PoisonError::into_inner);
     if let Some(leaf_cache) = cache.remove(core_key) {
-        state
-            .ram_bytes_used
-            .fetch_sub(HASHTABLE_RAM_BYTES_PER_ENTRY, Ordering::AcqRel);
+        state.ram_bytes_used.fetch_sub(
+            RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY,
+            Ordering::AcqRel,
+        );
         let num_entries = leaf_cache.cache.len();
         if num_entries > 0 {
             state.on_doc_id_set_eviction(core_key, num_entries as i32, leaf_cache.ram_bytes_used);
@@ -755,7 +771,7 @@ fn clear_core_cache_key(state: &Arc<CacheState>, core_key: &CacheKey) {
 /// query's own footprint when it is `Accountable`
 /// ([`Query::as_accountable`]), `QUERY_DEFAULT_RAM_BYTES_USED` otherwise.
 fn query_ram_bytes_used(query: &dyn Query) -> i64 {
-    LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY
+    RamUsageEstimator::LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY
         + match query.as_accountable() {
             Some(accountable) => accountable.ram_bytes_used(),
             None => RamUsageEstimator::QUERY_DEFAULT_RAM_BYTES_USED,
@@ -934,7 +950,8 @@ impl LRUQueryCache {
         // guard, because every comparison against NaN is false.
         if !(skip_cache_factor >= 1.0) {
             return Err(LuceneError::illegal_argument(format!(
-                "skipCacheFactor must be no less than 1, get {skip_cache_factor}"
+                "skipCacheFactor must be no less than 1, get {}",
+                crate::util::java_fmt::float_to_string(skip_cache_factor)
             )));
         }
         Ok(Self {
@@ -1160,12 +1177,11 @@ impl LRUQueryCache {
     ///
     /// Equivalent to the package-private
     /// `LRUQueryCache.assertConsistent()`, which exists for testing and throws
-    /// an `AssertionError`; this port reports the same conditions as
-    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState).
+    /// an `AssertionError`.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an eviction is still
+    /// Returns [`LuceneErrorKind::AssertionError`](crate::error::LuceneErrorKind::AssertionError) when an eviction is still
     /// required, when a leaf cache holds a key the top-level cache does not,
     /// or when the recomputed RAM usage or cache size disagrees with the
     /// tracked one.
@@ -1181,7 +1197,7 @@ impl LRUQueryCache {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if self.state.requires_eviction(&queries) {
-            return Err(LuceneError::illegal_state(format!(
+            return Err(assertion_error(format!(
                 "requires evictions: size={}, maxSize={}, ramBytesUsed={}, maxRamBytesUsed={}",
                 queries.len(),
                 self.state.max_size,
@@ -1190,27 +1206,34 @@ impl LRUQueryCache {
             )));
         }
         for leaf_cache in cache.values() {
-            for key in leaf_cache.cache.keys() {
-                if !queries.entries.contains_key(key) {
-                    return Err(LuceneError::illegal_state(
-                        "One leaf cache contains more keys than the top-level cache".to_string(),
-                    ));
-                }
+            let keys: Vec<String> = leaf_cache
+                .cache
+                .keys()
+                .filter(|key| !queries.entries.contains_key(key))
+                .map(|key| key.0.to_query_string(""))
+                .collect();
+            if !keys.is_empty() {
+                // `"... top-level cache: " + keys` (`LRUQueryCache.java:450-457`).
+                return Err(assertion_error(format!(
+                    "One leaf cache contains more keys than the top-level cache: [{}]",
+                    keys.join(", ")
+                )));
             }
         }
-        let mut recomputed_ram_bytes_used = HASHTABLE_RAM_BYTES_PER_ENTRY * cache.len() as i64;
+        let mut recomputed_ram_bytes_used =
+            RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY * cache.len() as i64;
         for query in queries.queries() {
             recomputed_ram_bytes_used += query_ram_bytes_used(query.as_ref());
         }
         for leaf_cache in cache.values() {
             recomputed_ram_bytes_used +=
-                HASHTABLE_RAM_BYTES_PER_ENTRY * leaf_cache.cache.len() as i64;
+                RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY * leaf_cache.cache.len() as i64;
             for cached in leaf_cache.cache.values() {
                 recomputed_ram_bytes_used += cached.ram_bytes_used();
             }
         }
         if recomputed_ram_bytes_used != self.ram_bytes_used() {
-            return Err(LuceneError::illegal_state(format!(
+            return Err(assertion_error(format!(
                 "ramBytesUsed mismatch : {} != {recomputed_ram_bytes_used}",
                 self.ram_bytes_used()
             )));
@@ -1221,7 +1244,7 @@ impl LRUQueryCache {
             .map(|leaf_cache| leaf_cache.cache.len() as i64)
             .sum();
         if recomputed_cache_size != self.get_cache_size() {
-            return Err(LuceneError::illegal_state(format!(
+            return Err(assertion_error(format!(
                 "cacheSize mismatch : {} != {recomputed_cache_size}",
                 self.get_cache_size()
             )));
@@ -1502,7 +1525,7 @@ impl ConstantScoreWeightImpl for CachingWrapperWeightImpl {
                     Arc::clone(&self.query),
                     CacheAndCount::empty(),
                     cache_helper.as_ref(),
-                );
+                )?;
                 return Ok(None);
             };
             let cost = supplier.cost();
@@ -1666,7 +1689,7 @@ fn base_try_populate_cache(
     max_doc: i32,
 ) -> Result<Option<CacheAndCount>> {
     let cached = cache_impl(scorer_supplier.bulk_scorer()?, max_doc)?;
-    state.put_if_absent(weight.get_query(), cached.clone(), cache_helper);
+    state.put_if_absent(weight.get_query(), cached.clone(), cache_helper)?;
     Ok(Some(cached))
 }
 
@@ -1882,7 +1905,11 @@ mod child_resources_tests {
         let cache = LRUQueryCache::new(10, 1 << 20).unwrap();
         let keys = [CacheKey::new(), CacheKey::new()];
         {
-            let mut leaves = cache.state.cache.write().unwrap();
+            let mut leaves = cache
+                .state
+                .cache
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for (key, ram) in keys.iter().zip([152, 40]) {
                 let mut leaf = LeafCache::new();
                 leaf.ram_bytes_used = ram;
@@ -2027,4 +2054,10 @@ mod null_iterator_tests {
         .unwrap();
         assert!(dense.iterator_or_null().unwrap().is_some());
     }
+}
+
+/// Java's `throw new AssertionError(message)`, which `assertConsistent()`
+/// throws whether or not assertions are enabled (`LRUQueryCache.java:436-484`).
+fn assertion_error(message: String) -> LuceneError {
+    LuceneError::from(crate::error::LuceneErrorKind::AssertionError(message))
 }

@@ -163,8 +163,8 @@ impl IndexInput for CountingIndexInput {
         Ok(())
     }
 
-    fn file_pointer(&self) -> i64 {
-        0
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(0)
     }
 
     fn length(&self) -> i64 {

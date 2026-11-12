@@ -241,7 +241,7 @@ mod tests {
     use rucene::index::documents_writer::BufferedUpdates;
     use rucene::index::segment_info::SegmentInfo;
     use rucene::index::FieldInfos;
-    use rucene::search::Sort;
+
     use rucene::store::{ByteBuffersDirectory, DefaultIOContext};
     use rucene::util::{NoOutputInfoStream, Version};
     use rucene_test_framework::store::MockDirectoryWrapper;
@@ -270,7 +270,7 @@ mod tests {
                 HashMap::new(),
                 [0u8; 16],
                 HashMap::new(),
-                Sort::new(),
+                None,
             )
             .unwrap();
             let field_infos = FieldInfos::new(Vec::new()).unwrap();

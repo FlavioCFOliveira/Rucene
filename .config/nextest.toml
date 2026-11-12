@@ -1,0 +1,43 @@
+# cargo-nextest configuration for Rucene (sprint 7, 2026-11-12).
+#
+# One process per test, run in parallel across the whole workspace. Every test
+# process goes through the target runner `rucene-mem-runner`, which places it in
+# `rucene-tests.slice` (aggregate MemoryMax 14G, MemoryHigh 13G) with a
+# per-process cap, so the parallelism below can never take the machine out of
+# memory: a runaway test is killed inside the slice, never the session.
+#
+# Run:  tools/test/run_suite.sh <out-dir>   (wraps everything below, with the
+#       stall watchdog tools/test/stall_watchdog.py)
+#       cargo nextest run --workspace --exclude randomizedtesting --no-fail-fast
+#       cargo test -p randomizedtesting   (its two harness=false targets cannot
+#                                          be listed by nextest)
+# Before a run, compile the Java harness once:
+#       (cd tests/fixtures/java-codec-harness && mvn -q -o compile)
+
+[profile.default]
+# 16 CPUs: leave headroom for the session, rust-analyzer and the JVMs the
+# oracle tests start.
+test-threads = 12
+fail-fast = false
+# A test silent for 2 minutes is reported; after 15 such periods (30 min) it is
+# killed and counted as a failure instead of stalling the run.
+slow-timeout = { period = "120s", terminate-after = 15 }
+status-level = "fail"
+final-status-level = "slow"
+
+[test-groups]
+# Tests that run `mvn -q compile exec:java` in the shared harness directory
+# (tests/fixtures/java-codec-harness): concurrent `compile` goals race on
+# target/classes, so they run one at a time (still in parallel with all others).
+maven-harness = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(=portability_bkd_doc_ids) | binary(=portability_bkd_writer_layout) | binary(=portability_byte_block_pool_accounting) | binary(=portability_codecs) | binary(=portability_compressing_accounting) | binary(=portability_delete_by_query) | binary(=portability_deletion_policy) | binary(=portability_doc_values) | binary(=portability_doc_values_skipper) | binary(=portability_flush_files) | binary(=portability_fst_arcs_buffer) | binary(=portability_fst_enum_reader) | binary(=portability_hnsw_graph) | binary(=portability_index_file_deleter) | binary(=portability_indexing_chain) | binary(=portability_io_context_contracts) | binary(=portability_java_collections) | binary(=portability_member_contracts) | binary(=portability_norms) | binary(=portability_object_contract_core) | binary(=portability_object_contract_search) | binary(=portability_points) | binary(=portability_prefix_coded_terms) | binary(=portability_scalar_quantized_vectors) | binary(=portability_seal_bytes) | binary(=portability_search_domain) | binary(=portability_store_analysis_contracts) | binary(=portability_stored_fields) | binary(=portability_term_vectors) | binary(=portability_token_stream_to_automaton) | binary(=portability_vector_point) | binary(=portability_vectors)'
+test-group = "maven-harness"
+
+# Memory-heavy randomized fuzz targets (up to several GB each): each takes four
+# of the twelve slots, so at most three run at once.
+[[profile.default.overrides]]
+filter = 'binary(/^fuzz_/)'
+threads-required = 4
+slow-timeout = { period = "300s", terminate-after = 12 }

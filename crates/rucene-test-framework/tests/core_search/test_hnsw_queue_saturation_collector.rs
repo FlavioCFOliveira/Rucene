@@ -84,7 +84,7 @@ impl KnnCollector for SharedCollector {
     fn min_competitive_similarity(&self) -> f32 {
         lock(&self.inner).min_competitive_similarity()
     }
-    fn top_docs(&mut self) -> TopDocs {
+    fn top_docs(&mut self) -> rucene::error::Result<TopDocs> {
         lock(&self.inner).top_docs()
     }
     fn get_search_strategy(&self) -> Option<&KnnSearchStrategy> {
@@ -188,14 +188,14 @@ fn test_early_exit_relation() -> Result<()> {
             queue_saturation_collector.next_candidate();
         }
         if lock(&delegate).early_terminated() {
-            let top_docs = queue_saturation_collector.top_docs();
+            let top_docs = queue_saturation_collector.top_docs()?;
             assert_equals(
                 &TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO,
                 &top_docs.total_hits.relation(),
             );
         }
         if queue_saturation_collector.early_terminated() {
-            let top_docs = queue_saturation_collector.top_docs();
+            let top_docs = queue_saturation_collector.top_docs()?;
             assert_equals(
                 &TotalHitsRelation::EQUAL_TO,
                 &top_docs.total_hits.relation(),

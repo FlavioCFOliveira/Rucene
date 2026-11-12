@@ -595,7 +595,7 @@ impl AbstractMultiTermQueryConstantScoreWrapper {
     /// the wrapped query's own rendering — correct for the filter too, since
     /// the boost is `1`.
     pub fn to_query_string(&self, field: &str) -> String {
-        self.query.as_query().to_query_string(field)
+        (&*self.query as &dyn Query).to_query_string(field)
     }
 
     /// Recurses into the wrapped query.
@@ -606,7 +606,7 @@ impl AbstractMultiTermQueryConstantScoreWrapper {
     pub fn visit(&self, wrapper: &dyn Query, visitor: &mut dyn QueryVisitor) {
         if visitor.accept_field(self.get_field()) {
             let mut sub = visitor.get_sub_visitor(Occur::FILTER, wrapper);
-            self.query.as_query().visit(&mut *sub);
+            (&*self.query as &dyn Query).visit(&mut *sub);
         }
     }
 
@@ -616,7 +616,7 @@ impl AbstractMultiTermQueryConstantScoreWrapper {
     /// `AbstractMultiTermQueryConstantScoreWrapper.equals(Object)` beyond its
     /// `sameClassAs` check, which the caller has already made.
     pub fn query_eq(&self, other: &Self) -> bool {
-        self.query.as_query().query_eq(other.query.as_query())
+        (&*self.query as &dyn Query).query_eq(&*other.query as &dyn Query)
     }
 
     /// The hash code of the query.
@@ -624,10 +624,12 @@ impl AbstractMultiTermQueryConstantScoreWrapper {
     /// Equivalent to
     /// `AbstractMultiTermQueryConstantScoreWrapper.hashCode()`; `wrapper` is
     /// the outer query, whose class hash Java's `classHash()` answers.
-    pub fn query_hash(&self, wrapper: &dyn Query) -> u64 {
-        31u64
+    pub fn query_hash(&self, wrapper: &dyn Query) -> i32 {
+        // `31 * classHash() + query.hashCode()`
+        // (`AbstractMultiTermQueryConstantScoreWrapper.java:91-94`).
+        31i32
             .wrapping_mul(wrapper.class_hash())
-            .wrapping_add(self.query.as_query().query_hash())
+            .wrapping_add((&*self.query as &dyn Query).query_hash())
     }
 
     /// The estimated heap usage of the query.

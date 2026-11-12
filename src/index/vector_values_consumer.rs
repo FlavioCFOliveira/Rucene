@@ -348,7 +348,7 @@ mod tests {
             HashMap::new(),
             [7u8; crate::util::string_helper::ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .expect("segment info");
         let consumer = VectorValuesConsumer::new(

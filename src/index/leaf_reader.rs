@@ -429,7 +429,7 @@ pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
         }
         let mut collector = TopKnnCollector::new(k, visited_limit as i64);
         self.search_nearest_vectors(field, target, &mut collector, accept_docs)?;
-        Ok(collector.top_docs())
+        collector.top_docs()
     }
 
     /// Convenience KNN search that collects the top `k` byte-vector matches.
@@ -457,7 +457,7 @@ pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
         }
         let mut collector = TopKnnCollector::new(k, visited_limit as i64);
         self.search_nearest_vectors_byte(field, target, &mut collector, accept_docs)?;
-        Ok(collector.top_docs())
+        collector.top_docs()
     }
 }
 

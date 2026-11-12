@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::index::POSTINGS_ENUM_OFFSETS;
-use crate::index::{EmptyTerms, LeafReaderContext, PostingsEnum, Term, Terms, TermsEnum};
+use crate::index::{LeafReaderContext, PostingsEnum, Term, TermsEnum};
 use crate::search::matches::MatchesIterator;
 use crate::search::query::Query;
 use crate::search::term_matches_iterator::TermMatchesIterator;
@@ -120,12 +120,8 @@ pub fn from_terms_enum(
     field: &str,
     mut terms: Box<dyn BytesRefIterator>,
 ) -> Result<Option<Box<dyn MatchesIterator>>> {
-    // Equivalent to `Terms.getTerms(context.reader(), field)`, which answers
-    // `Terms.EMPTY` when the field is absent.
-    let t: Box<dyn Terms> = match context.leaf_reader().terms(field)? {
-        Some(t) => t,
-        None => Box::new(EmptyTerms),
-    };
+    // `Terms.getTerms(context.reader(), field)`.
+    let t = crate::index::terms::get_terms(context.leaf_reader().as_ref(), field)?;
     let mut te = t.iterator()?;
     let mut reuse: Option<Box<dyn PostingsEnum>> = None;
     while let Some(term) = terms.next()? {
@@ -360,20 +356,29 @@ impl MatchesIterator for DisjunctionMatchesIterator {
 /// back to offsets when positions are unavailable.
 ///
 /// Equivalent to the anonymous `PriorityQueue.lessThan` of
-/// `DisjunctionMatchesIterator`.
-///
-/// **Divergence from Lucene 10.5.0.** Java's `lessThan` cannot throw a checked
-/// exception, so it catches the `IOException` raised while reading an offset
-/// and rethrows it as an unchecked `IllegalArgumentException`. This port
-/// returns [`Result`] instead, and the error travels to the caller of
-/// [`MatchesIterator::next`] unchanged. The ordering is identical.
+/// `DisjunctionMatchesIterator` (`DisjunctionMatchesIterator.java:195-209`),
+/// including its offset reads in Java's short-circuit order and its
+/// `catch (IOException e) { throw new IllegalArgumentException("Failed to
+/// retrieve term offset", e); }`. The comparator returns [`Result`] because a
+/// Rust function cannot throw; the error it returns is that
+/// `IllegalArgumentException`, or an unchecked exception unchanged.
 fn less_than(a: &dyn MatchesIterator, b: &dyn MatchesIterator) -> Result<bool> {
     if a.start_position() == -1 && b.start_position() == -1 {
-        let (a_start, a_end) = (a.start_offset()?, a.end_offset()?);
-        let (b_start, b_end) = (b.start_offset()?, b.end_offset()?);
-        return Ok(a_start < b_start
-            || (a_start == b_start && a_end < b_end)
-            || (a_start == b_start && a_end == b_end));
+        let by_offsets = || -> Result<bool> {
+            Ok(a.start_offset()? < b.start_offset()?
+                || (a.start_offset()? == b.start_offset()? && a.end_offset()? < b.end_offset()?)
+                || (a.start_offset()? == b.start_offset()? && a.end_offset()? == b.end_offset()?))
+        };
+        return by_offsets().map_err(|e| {
+            if e.is_io_exception() {
+                LuceneError::illegal_argument_with_cause(
+                    "Failed to retrieve term offset",
+                    Arc::new(e),
+                )
+            } else {
+                e
+            }
+        });
     }
     Ok(a.start_position() < b.start_position()
         || (a.start_position() == b.start_position() && a.end_position() < b.end_position())
@@ -497,5 +502,54 @@ impl MatchesQueue {
         }
         self.heap[i] = Some(node);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct NoOffsets;
+
+    impl MatchesIterator for NoOffsets {
+        fn next(&mut self) -> Result<bool> {
+            Ok(false)
+        }
+        fn start_position(&self) -> i32 {
+            -1
+        }
+        fn end_position(&self) -> i32 {
+            -1
+        }
+        fn start_offset(&self) -> Result<i32> {
+            Err(LuceneError::from(crate::error::LuceneErrorKind::Io(
+                std::io::Error::other("no offsets"),
+            )))
+        }
+        fn end_offset(&self) -> Result<i32> {
+            self.start_offset()
+        }
+        fn get_sub_matches(&self) -> Result<Option<Box<dyn MatchesIterator>>> {
+            Ok(None)
+        }
+        fn get_query(&self) -> Arc<dyn Query> {
+            Arc::new(crate::search::MatchAllDocsQuery)
+        }
+    }
+
+    /// G-110: the queue's `lessThan` wraps an `IOException` from the offset
+    /// reads in `IllegalArgumentException("Failed to retrieve term offset",
+    /// e)` (`DisjunctionMatchesIterator.java:195-209`).
+    #[test]
+    fn gap_g110_less_than_wraps_offset_io_exceptions() {
+        let error = less_than(&NoOffsets, &NoOffsets).unwrap_err();
+        match &error.kind {
+            crate::error::LuceneErrorKind::IllegalArgument { message, cause, .. } => {
+                assert_eq!(message, "Failed to retrieve term offset");
+                assert!(cause.as_ref().is_some_and(|c| c.is_io_exception()));
+            }
+            other => panic!("expected IllegalArgumentException, got {other:?}"),
+        }
     }
 }

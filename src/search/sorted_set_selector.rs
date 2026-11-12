@@ -158,6 +158,21 @@ impl SelectedValue {
 }
 
 impl DocIdSetIterator for SelectedValue {
+    /// `SortedSetSelector.MinValue`, `MaxValue`, `MiddleMinValue` and
+    /// `MiddleMaxValue` declare no `toString()`, so `java.lang.Object.toString()`
+    /// applies ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(match self.selector {
+            SortedSetSelectorType::MIN => "org.apache.lucene.search.SortedSetSelector$MinValue",
+            SortedSetSelectorType::MAX => "org.apache.lucene.search.SortedSetSelector$MaxValue",
+            SortedSetSelectorType::MIDDLE_MIN => {
+                "org.apache.lucene.search.SortedSetSelector$MiddleMinValue"
+            }
+            SortedSetSelectorType::MIDDLE_MAX => {
+                "org.apache.lucene.search.SortedSetSelector$MiddleMaxValue"
+            }
+        })
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }

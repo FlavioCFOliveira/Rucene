@@ -87,7 +87,12 @@ impl Query for IndriAndQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
+    /// `getClass().getName()` of `org.apache.lucene.search.IndriAndQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.IndriAndQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
         self.base.base_hash()
     }
 }

@@ -700,7 +700,7 @@ fn base_pack(
         while i < num_values {
             i += mutable.set_bulk(i as i32, pending, i, num_values - i) as usize;
         }
-        state.values[block] = Some(mutable.into_packed_ints_reader());
+        state.values[block] = Some(mutable as Box<dyn PackedIntsReader + Send + Sync>);
     }
     Ok(())
 }
@@ -1211,8 +1211,8 @@ impl MonotonicLongValuesBuilder {
 
 /// The heap cost of a `float[]`.
 ///
-/// Mirrors `RamUsageEstimator.sizeOf(float[])`, which this crate's estimator
-/// does not yet expose.
+/// Mirrors `RamUsageEstimator.sizeOf(float[])`, also ported as
+/// [`RamUsageEstimator::size_of_float`].
 fn size_of_float(array: &[f32]) -> i64 {
     RamUsageEstimator::align_object_size(
         RamUsageEstimator::NUM_BYTES_ARRAY_HEADER + 4 * array.len() as i64,

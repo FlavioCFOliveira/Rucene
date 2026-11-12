@@ -427,7 +427,7 @@ impl DoubleValuesSource for TwiceTheScore {
         other.as_any().is::<TwiceTheScore>()
     }
 
-    fn source_hash(&self) -> u64 {
+    fn source_hash(&self) -> i32 {
         2
     }
 

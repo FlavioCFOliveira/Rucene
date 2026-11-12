@@ -53,7 +53,7 @@ use rucene::index::{
     VectorEncoding, VectorSimilarityFunction,
 };
 use rucene::internal::tests_hooks::{IndexPackageAccess, TestSecrets};
-use rucene::search::{DocIdSetIterator, Sort, NO_MORE_DOCS};
+use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
 use rucene::store::java_nio_file::Path;
 use rucene::store::{flush_io_context, Directory, FlushInfo, DEFAULT_IO_CONTEXT};
 use rucene::util::attribute::AttributeSource;
@@ -1189,7 +1189,7 @@ impl RandomPostingsTester {
             std::collections::HashMap::new(),
             StringHelper::random_id(),
             std::collections::HashMap::new(),
-            Sort::default(),
+            None,
         )?;
 
         let max_index_option = index_option_ordinal(max_allowed);

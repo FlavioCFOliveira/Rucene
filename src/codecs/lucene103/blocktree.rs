@@ -91,8 +91,9 @@ impl CompressionAlgorithm {
             0 => Ok(Self::NoCompression),
             1 => Ok(Self::LowercaseAscii),
             2 => Ok(Self::Lz4),
+            // `CompressionAlgorithm.byCode` (`CompressionAlgorithm.java:59-64`).
             _ => Err(LuceneError::illegal_argument(format!(
-                "illegal compression algorithm code: {code}"
+                "Illegal code for a compression algorithm: {code}"
             ))),
         }
     }
@@ -244,7 +245,8 @@ impl Stats {
         } else if sub_block_count != 0 {
             self.sub_blocks_only_block_count += 1;
         } else {
-            panic!("a block must hold either terms or sub-blocks");
+            // `throw new IllegalStateException()` (`Stats.java:143-144`).
+            crate::store::java_nio_file::throw_unchecked("java.lang.IllegalStateException", None);
         }
         self.end_block_count += 1;
         let other_bytes =
@@ -285,6 +287,13 @@ impl Stats {
             self.sub_blocks_only_block_count,
             self.terms_only_block_count
         );
+    }
+}
+
+/// `FieldReader.getStats()` returns a `Stats` (`FieldReader.java:111-114`).
+impl crate::index::terms::StatsObject for Stats {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -649,7 +658,7 @@ impl TrieBuilder {
 
             // Phase 2: the key buffer now holds the current key.
             iter.read_body()?;
-            frontier[iter.key_len].output = iter.output.clone();
+            frontier[iter.key_len as usize].output = iter.output.clone();
         }
 
         // Freeze everything the last key left standing.
@@ -668,17 +677,19 @@ impl TrieBuilder {
     /// Returns whatever error writing a node to the index raised.
     fn freeze_from(
         key: &[u8],
-        key_len: usize,
-        to_depth: usize,
+        key_len: i32,
+        to_depth: i32,
         frontier: &mut [FrontierNode],
         start_fp: i64,
         index: &mut dyn IndexOutput,
     ) -> Result<()> {
+        // `for (int d = keyLen; d > toDepth; d--)` over Java `int`s: a
+        // negative depth indexes the arrays as Java's does, out of bounds.
         let mut d = key_len;
         while d > to_depth {
-            let fp = Self::freeze_node(&frontier[d], start_fp, index)?;
-            frontier[d - 1].add_child(i32::from(key[d - 1]), fp);
-            frontier[d].reset();
+            let fp = Self::freeze_node(&frontier[d as usize], start_fp, index)?;
+            frontier[(d - 1) as usize].add_child(i32::from(key[(d - 1) as usize]), fp);
+            frontier[d as usize].reset();
             d -= 1;
         }
         Ok(())
@@ -884,10 +895,12 @@ impl TrieBuilder {
         while iter.has_next() {
             iter.read_header()?;
             iter.read_body()?;
-            let output = iter.output.as_ref().ok_or_else(|| {
-                LuceneError::illegal_state("trie entry read without an output".to_string())
-            })?;
-            consumer(BytesRef::new(iter.key[..iter.key_len].to_vec()), output);
+            // A `null` output dereferenced: the JVM's `NullPointerException`.
+            let output = iter.output.as_ref().ok_or_else(LuceneError::null_pointer)?;
+            consumer(
+                BytesRef::new(iter.key[..iter.key_len as usize].to_vec()),
+                output,
+            );
         }
         Ok(())
     }
@@ -902,14 +915,17 @@ struct EntryIterator<'a> {
     input: Option<ByteBuffersDataInput>,
     min_key_consumed: bool,
     header_read: bool,
-    /// Length of the current entry's suffix.
-    suffix_len: usize,
-    /// Length of the prefix the current entry shares with its predecessor.
-    prefix_len: usize,
-    /// The key buffer; after `read_header` it still holds the previous key.
+    /// Length of the current entry's suffix, Java's `int suffixLen`.
+    suffix_len: i32,
+    /// Length of the prefix the current entry shares with its predecessor,
+    /// Java's `int prefixLen`.
+    prefix_len: i32,
+    /// The key buffer, `new byte[Math.max(maxKeyDepth, 1)]` and never grown
+    /// (`TrieBuilder.java:198`); after `read_header` it still holds the
+    /// previous key.
     key: Vec<u8>,
-    /// Length of the key currently in the buffer.
-    key_len: usize,
+    /// Length of the key currently in the buffer, Java's `int keyLen`.
+    key_len: i32,
     /// The current entry's output.
     output: Option<Output>,
 }
@@ -956,16 +972,18 @@ impl<'a> EntryIterator<'a> {
 
         if !self.min_key_consumed {
             self.prefix_len = 0;
-            self.suffix_len = self.trie.min_key.length;
+            self.suffix_len = self.trie.min_key.length as i32;
             return Ok(());
         }
 
         let input = self
             .input
             .as_mut()
-            .ok_or_else(|| LuceneError::illegal_state("no more trie entries".to_string()))?;
-        self.prefix_len = input.read_v_int()?.max(0) as usize;
-        self.suffix_len = input.read_v_int()?.max(0) as usize;
+            // A `null` input read from: the JVM's `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)?;
+        // `TrieBuilder.java:227-228`: read as-is, unclamped.
+        self.prefix_len = input.read_v_int()?;
+        self.suffix_len = input.read_v_int()?;
         Ok(())
     }
 
@@ -978,7 +996,7 @@ impl<'a> EntryIterator<'a> {
         self.header_read = false;
 
         if !self.min_key_consumed {
-            self.key_len = self.trie.min_key.length;
+            self.key_len = self.trie.min_key.length as i32;
             self.output = self.trie.min_output.clone();
             self.min_key_consumed = true;
             return Ok(());
@@ -987,16 +1005,24 @@ impl<'a> EntryIterator<'a> {
         let input = self
             .input
             .as_mut()
-            .ok_or_else(|| LuceneError::illegal_state("no more trie entries".to_string()))?;
-        self.key_len = self.prefix_len + self.suffix_len;
-        if self.key.len() < self.key_len {
-            self.key.resize(self.key_len, 0);
+            // A `null` input read from: the JVM's `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)?;
+        // `TrieBuilder.java:248-257`. `ByteBuffersDataInput.readBytes` loops
+        // `while (len > 0)` (`ByteBuffersDataInput.java:143-167`), so a
+        // suffix length that is not positive reads nothing.
+        self.key_len = self.prefix_len.wrapping_add(self.suffix_len);
+        if self.suffix_len > 0 {
+            input.read_bytes(
+                Some(&mut self.key),
+                self.prefix_len as usize,
+                self.suffix_len as usize,
+            )?;
         }
-        input.read_bytes(Some(&mut self.key), self.prefix_len, self.suffix_len)?;
         let fp = input.read_v_long()?;
         let has_terms = input.read_byte()? == 1;
-        let floor_data_len = input.read_v_int()?.max(0) as usize;
+        let floor_data_len = input.read_v_int()?;
         let floor_data = if floor_data_len > 0 {
+            let floor_data_len = floor_data_len as usize;
             let mut fd = vec![0u8; floor_data_len];
             input.read_bytes(Some(&mut fd), 0, floor_data_len)?;
             Some(BytesRef::new(fd))
@@ -1266,7 +1292,7 @@ impl PendingBlock {
                 floor_data,
             },
         );
-        scratch_bytes.reset();
+        scratch_bytes.reset()?;
 
         // Fold in the index of every sub-block.
         for block in blocks.iter_mut() {
@@ -1306,9 +1332,10 @@ impl PendingBlock {
 
 /// Writer for the terms of a single field.
 ///
-/// In this checkpoint the writer only collects per-field statistics in memory.
-/// Recursive block building, suffix compression and trie serialization are
-/// intentionally not implemented yet.
+/// Buffers the field's pending terms and blocks, builds the block tree
+/// recursively (`push_term`, `write_blocks`, `write_block`), compresses term
+/// suffixes (LZ4 or lowercase-ASCII), and serializes the field's trie index in
+/// `finish`.
 ///
 /// Lucene Core equivalent: `Lucene103BlockTreeTermsWriter.TermsWriter`.
 struct TermsWriter<'a> {
@@ -1747,7 +1774,7 @@ impl<'a> TermsWriter<'a> {
                 }
             }
             if compression_alg == CompressionAlgorithm::NoCompression {
-                self.spare_writer.reset();
+                self.spare_writer.reset()?;
                 if self.spare_bytes.len() < suffix_len {
                     self.spare_bytes = vec![0u8; crate::util::ArrayUtil::oversize(suffix_len, 1)];
                 }
@@ -1775,7 +1802,7 @@ impl<'a> TermsWriter<'a> {
             self.spare_writer.copy_to(self.terms_out)?;
         }
         self.suffix_writer.clear();
-        self.spare_writer.reset();
+        self.spare_writer.reset()?;
 
         // Suffix lengths
         let num_suffix_bytes = self.suffix_lengths_writer.size();
@@ -1784,7 +1811,7 @@ impl<'a> TermsWriter<'a> {
         // (`Lucene103BlockTreeTermsWriter.java:939`).
         self.suffix_lengths_writer
             .copy_to(&mut ByteArrayDataOutput::new(&mut self.spare_bytes))?;
-        self.suffix_lengths_writer.reset();
+        self.suffix_lengths_writer.reset()?;
         // Java tests `allEqual(spareBytes, 1, numSuffixBytes, spareBytes[0])`,
         // which is vacuously true for a single length byte — the common case of
         // a block holding one term. Requiring more than one byte here produced
@@ -1805,12 +1832,12 @@ impl<'a> TermsWriter<'a> {
         let num_stats_bytes = self.stats_writer.size();
         self.terms_out.write_v_int(num_stats_bytes as i32)?;
         self.stats_writer.copy_to(self.terms_out)?;
-        self.stats_writer.reset();
+        self.stats_writer.reset()?;
 
         // Term metadata
         self.terms_out.write_v_int(self.meta_writer.size() as i32)?;
         self.meta_writer.copy_to(self.terms_out)?;
-        self.meta_writer.reset();
+        self.meta_writer.reset()?;
 
         if has_floor_lead_label {
             prefix.bytes[prefix.length] = floor_lead_label as u8;
@@ -1901,11 +1928,9 @@ impl<'a> TermsWriter<'a> {
             )?;
 
             let first_term = self.first_pending_term.take().unwrap();
-            let root_index = root.index.ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "the root block of a field must carry a compiled trie index".to_string(),
-                )
-            })?;
+            // `root.index.save(...)` on a `null` index: the JVM's
+            // `NullPointerException`.
+            let root_index = root.index.ok_or_else(LuceneError::null_pointer)?;
             root_index.save(&mut meta, self.index_out)?;
 
             // Keep postings writer in sync.
@@ -2166,9 +2191,9 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
                 .field_info(&field)
                 .cloned()
                 .ok_or_else(|| {
-                    LuceneError::null_pointer_with_message(format!(
-                        "no FieldInfo for field \"{field}\""
-                    ))
+                    LuceneError::null_pointer_with_message(
+                        "Cannot invoke \"org.apache.lucene.index.FieldInfo.getIndexOptions()\" because \"fieldInfo\" is null",
+                    )
                 })?;
             let postings_writer: &mut dyn PostingsWriterBase = self.postings_writer.as_mut();
             postings_writer.set_field(&field_info)?;
@@ -2241,15 +2266,14 @@ impl<'a> Lucene103BlockTreeTermsWriter<'a> {
 }
 
 // -----------------------------------------------------------------------------
-// Terms dictionary reader skeleton
+// Terms dictionary reader
 // -----------------------------------------------------------------------------
 
 /// Block-based terms index and dictionary reader.
 ///
-/// This is a minimal skeleton that satisfies the [`FieldsProducer`] contract.
-/// It opens no files and reports an empty term space. The full recursive block
-/// tree loading, suffix decompression and FST-style trie index will be added in
-/// later tasks.
+/// Opens a segment's `.tim`, `.tip` and `.tmd` files, loads one
+/// [`FieldReader`] per field with its trie index, and serves the terms through
+/// the [`FieldsProducer`] contract.
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.Lucene103BlockTreeTermsReader`.
 pub struct Lucene103BlockTreeTermsReader {
@@ -2376,6 +2400,9 @@ impl Lucene103BlockTreeTermsReader {
 
         let meta_name = segment_file_name(&segment, &segment_suffix, TERMS_META_EXTENSION);
         let mut meta_in = state.directory.open_checksum_input(&meta_name)?;
+        // `Objects.toString(metaIn)`, the resource every `CorruptIndexException`
+        // of the meta loop quotes (`Lucene103BlockTreeTermsReader.java:155-215`).
+        let meta_desc = meta_in.to_java_string();
         // The `try` block of the try-with-resources over `metaIn`, whose
         // failure `CodecUtil.checkFooter(metaIn, priorE)` weighs in the
         // `finally` (`Lucene103BlockTreeTermsReader.java:150-246`).
@@ -2407,7 +2434,7 @@ impl Lucene103BlockTreeTermsReader {
             if num_fields < 0 {
                 return Err(LuceneError::corrupt_index(
                     format!("invalid numFields: {num_fields}"),
-                    &meta_name,
+                    &meta_desc,
                 ));
             }
 
@@ -2418,17 +2445,17 @@ impl Lucene103BlockTreeTermsReader {
                 let num_terms = meta_in.read_v_long()?;
                 if num_terms <= 0 {
                     return Err(LuceneError::corrupt_index(
-                        format!("illegal numTerms for field number {field_number}"),
-                        &meta_name,
+                        format!("Illegal numTerms for field number: {field_number}"),
+                        &meta_desc,
                     ));
                 }
                 let field_info = state
                     .field_infos
-                    .field_info_by_number(field_number)
+                    .field_info_checked(field_number)?
                     .ok_or_else(|| {
                         LuceneError::corrupt_index(
                             format!("invalid field number: {field_number}"),
-                            &meta_name,
+                            &meta_desc,
                         )
                     })?
                     .clone();
@@ -2442,7 +2469,7 @@ impl Lucene103BlockTreeTermsReader {
                     meta_in.read_v_long()?
                 };
                 let doc_count = meta_in.read_v_int()?;
-                let min_term = read_bytes_ref(meta_in.as_mut(), &meta_name)?;
+                let min_term = read_bytes_ref(meta_in.as_mut(), &meta_desc)?;
                 // The writer always emits both terms
                 // (`Lucene103BlockTreeTermsWriter.java:1091-1092`), so both must
                 // always be read. Java's `numTerms == 1` branch only *aliases*
@@ -2450,7 +2477,7 @@ impl Lucene103BlockTreeTermsReader {
                 // it does not skip the read. Skipping it left the max term's length
                 // and bytes in the stream, which threw off every field decoded after
                 // it and made the `.tmd` footer land in the wrong place.
-                let max_term_read = read_bytes_ref(meta_in.as_mut(), &meta_name)?;
+                let max_term_read = read_bytes_ref(meta_in.as_mut(), &meta_desc)?;
                 let max_term = if num_terms == 1 {
                     debug_assert_eq!(max_term_read, min_term);
                     min_term.clone()
@@ -2461,13 +2488,13 @@ impl Lucene103BlockTreeTermsReader {
                 if doc_count < 0 || doc_count > max_doc {
                     return Err(LuceneError::corrupt_index(
                         format!("invalid docCount: {doc_count} maxDoc: {max_doc}"),
-                        &meta_name,
+                        &meta_desc,
                     ));
                 }
                 if sum_doc_freq < i64::from(doc_count) {
                     return Err(LuceneError::corrupt_index(
                         format!("invalid sumDocFreq: {sum_doc_freq} docCount: {doc_count}"),
-                        &meta_name,
+                        &meta_desc,
                     ));
                 }
                 if sum_total_term_freq < sum_doc_freq {
@@ -2475,7 +2502,7 @@ impl Lucene103BlockTreeTermsReader {
                         format!(
                         "invalid sumTotalTermFreq: {sum_total_term_freq} sumDocFreq: {sum_doc_freq}"
                     ),
-                        &meta_name,
+                        &meta_desc,
                     ));
                 }
 
@@ -2494,7 +2521,7 @@ impl Lucene103BlockTreeTermsReader {
                 if fields.insert(name.clone(), reader).is_some() {
                     return Err(LuceneError::corrupt_index(
                         format!("duplicate field: {name}"),
-                        &meta_name,
+                        &meta_desc,
                     ));
                 }
             }
@@ -2843,7 +2870,7 @@ mod tests {
             HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .expect("test segment info should be valid")
     }
@@ -3668,7 +3695,9 @@ mod tests {
         let segment_info = test_segment_info("_0", 10);
         let field = three_term_field(&dir, &segment_info);
 
-        let stats = Terms::stats(&field).expect("stats should compute");
+        let stats = Terms::stats(&field)
+            .expect("stats should compute")
+            .to_string();
         assert!(
             stats.starts_with("  index trie:\n"),
             "expected the block-tree statistics, got: {stats}"
@@ -3843,7 +3872,7 @@ mod close_family_tests {
             matches!(
                 error,
                 crate::error::LuceneError {
-                    kind: crate::error::LuceneErrorKind::CorruptIndex(_),
+                    kind: crate::error::LuceneErrorKind::CorruptIndex { .. },
                     ..
                 }
             ),

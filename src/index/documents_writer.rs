@@ -76,7 +76,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{self, Debug, Display, Formatter};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
 use crate::codecs::state::SegmentWriteState;
@@ -120,7 +120,7 @@ pub const MAX_DOCS: i32 = i32::MAX - 128;
 /// Equivalent to `IndexWriter.MAX_STORED_STRING_LENGTH`, which Lucene defines
 /// as `ArrayUtil.MAX_ARRAY_LENGTH / UnicodeUtil.MAX_UTF8_BYTES_PER_CHAR`: the
 /// longest string whose UTF-8 encoding still fits in one Java array. It lives
-/// here, next to [`MAX_DOCS`], until `IndexWriter` itself is ported.
+/// here, next to [`MAX_DOCS`].
 pub const MAX_STORED_STRING_LENGTH: usize = crate::util::ArrayUtil::MAX_ARRAY_LENGTH / 3;
 
 /// Diagnostics value recorded on segments produced by a flush.
@@ -1016,11 +1016,13 @@ impl FrozenBufferedUpdates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`] when the lock is poisoned.
+    /// None: Java has no lock poisoning, so a poisoned lock is entered as Java
+    /// enters its monitor.
     pub fn lock_apply(&self) -> Result<MutexGuard<'_, ()>> {
-        self.apply_lock.lock().map_err(|_| {
-            LuceneError::illegal_state("frozen buffered updates apply lock poisoned".to_string())
-        })
+        Ok(self
+            .apply_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 
     /// Returns whether this packet has already been resolved.
@@ -1088,7 +1090,7 @@ impl FrozenBufferedUpdates {
     /// `assert this.delGen == -1`.
     pub fn set_del_gen(&self, del_gen: i64) {
         let previous = self.del_gen.swap(del_gen, Ordering::AcqRel);
-        assert_eq!(
+        debug_assert_eq!(
             previous, -1,
             "delGen was already previously set to {previous}"
         );
@@ -1102,13 +1104,10 @@ impl FrozenBufferedUpdates {
     ///
     /// Equivalent to `FrozenBufferedUpdates.delGen()`.
     ///
-    /// # Panics
-    ///
-    /// Panics if the packet has not been pushed yet, which is Lucene's
-    /// `assert delGen != -1`.
+    /// Lucene only asserts `delGen != -1`: an unpushed packet answers `-1`.
     pub fn del_gen(&self) -> i64 {
         let del_gen = self.del_gen.load(Ordering::Acquire);
-        assert_ne!(del_gen, -1, "gen is not yet set; call push first");
+        debug_assert_ne!(del_gen, -1);
         del_gen
     }
 
@@ -1501,9 +1500,9 @@ impl FrozenBufferedUpdates {
                     {
                         let update = &mut resolved_updates[index];
                         if !buffered_update.has_value {
-                            update.reset(doc);
+                            update.reset(doc)?;
                         } else if is_numeric {
-                            update.add_long(doc, buffered_update.numeric_value);
+                            update.add_long(doc, buffered_update.numeric_value)?;
                         } else {
                             update.add_binary(
                                 doc,
@@ -1511,7 +1510,7 @@ impl FrozenBufferedUpdates {
                                     .binary_value
                                     .as_ref()
                                     .expect("INVARIANT: a binary update with a value carries it"),
-                            );
+                            )?;
                         }
                         update_count += 1;
                     }
@@ -1694,13 +1693,13 @@ impl<'a> TermDocsIterator<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`] when no term is positioned.
+    /// Java's `NullPointerException` when no term is positioned.
     pub fn docs(&mut self) -> Result<&mut dyn PostingsEnum> {
         match self.postings_enum.as_mut() {
             Some(postings) => Ok(postings.as_mut()),
-            None => Err(LuceneError::illegal_state(
-                "no term is positioned on this TermDocsIterator".to_string(),
-            )),
+            // Java hands back the `null` enum, whose use throws
+            // `NullPointerException`.
+            None => Err(LuceneError::null_pointer()),
         }
     }
 }
@@ -1731,9 +1730,11 @@ pub const INTS_SCRATCH_SIZE: usize = 1024;
 ///
 /// Equivalent to `org.apache.lucene.index.SharedIndexingScratch`.
 ///
-/// Java takes a `org.apache.lucene.util.Counter`; that class is not ported yet,
-/// so this port takes the shared `AtomicI64` the DWPT already uses to account
-/// indexing RAM, which has the same `addAndGet` contract.
+/// Java takes a `org.apache.lucene.util.Counter`. The port of that class,
+/// [`Counter`](crate::util::concurrent::Counter), exists, but the indexing
+/// chain and its per-field writers account indexing RAM in one shared
+/// `Arc<AtomicI64>`, so this port takes that counter; `fetch_add` has the same
+/// `addAndGet` contract.
 #[derive(Debug)]
 pub struct SharedIndexingScratch {
     bytes_used: Arc<AtomicI64>,
@@ -3224,9 +3225,8 @@ impl FlushControlHandle<'_> {
 /// Equivalent to `org.apache.lucene.index.FlushPolicy`.
 ///
 /// Java's `init` mutates the policy instance; a policy is shared through an
-/// `Arc` here, so implementations store their configuration in a [`OnceLock`],
-/// which gives the same write-once semantics with lock-free reads on the hot
-/// path.
+/// `Arc` here, so implementations store their configuration behind interior
+/// mutability, reassigned on every `init` as Java reassigns its fields.
 pub trait FlushPolicy: Send + Sync + Debug {
     /// Called after every buffered insert, update or delete.
     ///
@@ -3237,7 +3237,12 @@ pub trait FlushPolicy: Send + Sync + Debug {
         per_thread: Option<&DocumentsWriterPerThread>,
     );
 
-    /// Binds the live configuration to this policy. Called once.
+    /// Binds the live configuration to this policy.
+    ///
+    /// Equivalent to `FlushPolicy.init(LiveIndexWriterConfig)`
+    /// (`FlushPolicy.java:61-64`), called by every `DocumentsWriter` the
+    /// policy serves: each call replaces the configuration and the info
+    /// stream the previous one recorded.
     fn init(&self, config: Arc<LiveIndexWriterConfig>);
 
     /// Returns the non-pending DWPT with at least one buffered document that
@@ -3288,7 +3293,21 @@ pub trait FlushPolicy: Send + Sync + Debug {
 /// writer makes while it holds the config).
 #[derive(Debug, Default)]
 pub struct FlushByRamOrCountsPolicy {
-    config: OnceLock<std::sync::Weak<LiveIndexWriterConfig>>,
+    /// Java's `FlushPolicy.indexWriterConfig` and `FlushPolicy.infoStream`
+    /// (`FlushPolicy.java:43-44`), both set by every `init`.
+    initialized: RwLock<Option<FlushPolicyInit>>,
+}
+
+/// What `FlushPolicy.init` records: the configuration and its info stream.
+struct FlushPolicyInit {
+    config: std::sync::Weak<LiveIndexWriterConfig>,
+    info_stream: Arc<dyn InfoStream>,
+}
+
+impl Debug for FlushPolicyInit {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FlushPolicyInit").finish_non_exhaustive()
+    }
 }
 
 impl FlushByRamOrCountsPolicy {
@@ -3297,30 +3316,48 @@ impl FlushByRamOrCountsPolicy {
         Self::default()
     }
 
+    /// The configuration the last `init` recorded, while it is alive.
+    fn index_writer_config(&self) -> Option<Arc<LiveIndexWriterConfig>> {
+        self.initialized
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|init| init.config.upgrade())
+    }
+
+    /// The info stream the last `init` recorded: Java's
+    /// `FlushPolicy.infoStream`.
+    fn policy_info_stream(&self) -> Option<Arc<dyn InfoStream>> {
+        self.initialized
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|init| Arc::clone(&init.info_stream))
+    }
+
     /// Returns `true` when flushing by buffered document count is enabled.
     pub fn flush_on_doc_count(&self) -> bool {
-        self.config
-            .get()
-            .and_then(std::sync::Weak::upgrade)
-            .is_some_and(|config| {
-                config.max_buffered_docs() != LiveIndexWriterConfig::DISABLE_AUTO_FLUSH
-            })
+        self.index_writer_config().is_some_and(|config| {
+            config.max_buffered_docs() != LiveIndexWriterConfig::DISABLE_AUTO_FLUSH
+        })
     }
 
     /// Returns `true` when flushing by buffered RAM is enabled.
     pub fn flush_on_ram(&self) -> bool {
-        self.config
-            .get()
-            .and_then(std::sync::Weak::upgrade)
-            .is_some_and(|config| {
-                config.ram_buffer_size_mb() != f64::from(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)
-            })
+        self.index_writer_config().is_some_and(|config| {
+            config.ram_buffer_size_mb() != f64::from(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)
+        })
     }
 
-    fn flush_deletes(&self, control: &FlushControlHandle<'_>, config: &LiveIndexWriterConfig) {
+    fn flush_deletes(
+        &self,
+        control: &FlushControlHandle<'_>,
+        config: &LiveIndexWriterConfig,
+        info_stream: &dyn InfoStream,
+    ) {
         control.set_apply_all_deletes();
-        if control.info_stream().is_enabled("FP") {
-            control.info_stream().message(
+        if info_stream.is_enabled("FP") {
+            info_stream.message(
                 "FP",
                 &format!(
                     "force apply deletes bytesUsed={} vs ramBufferMB={}",
@@ -3335,16 +3372,17 @@ impl FlushByRamOrCountsPolicy {
         &self,
         control: &mut FlushControlHandle<'_>,
         config: &LiveIndexWriterConfig,
+        info_stream: &dyn InfoStream,
         per_thread: &DocumentsWriterPerThread,
     ) {
-        if control.info_stream().is_enabled("FP") {
+        if info_stream.is_enabled("FP") {
             let message = format!(
                 "trigger flush: activeBytes={} deleteBytes={} vs ramBufferMB={}",
                 control.active_bytes(),
                 control.delete_bytes_used(),
                 config.ram_buffer_size_mb()
             );
-            control.info_stream().message("FP", &message);
+            info_stream.message("FP", &message);
         }
         self.mark_largest_writer_pending(control, per_thread);
     }
@@ -3371,7 +3409,9 @@ impl FlushPolicy for FlushByRamOrCountsPolicy {
         control: &mut FlushControlHandle<'_>,
         per_thread: Option<&DocumentsWriterPerThread>,
     ) {
-        let Some(config) = self.config.get().and_then(std::sync::Weak::upgrade) else {
+        let (Some(config), Some(info_stream)) =
+            (self.index_writer_config(), self.policy_info_stream())
+        else {
             debug_assert!(false, "FlushPolicy::init must be called before on_change");
             return;
         };
@@ -3395,18 +3435,27 @@ impl FlushPolicy for FlushByRamOrCountsPolicy {
 
         if deletes_ram >= limit && active_ram >= limit && per_thread.is_some() {
             let per_thread = per_thread.expect("INVARIANT: presence checked above");
-            self.flush_deletes(control, &config);
-            self.flush_active_bytes(control, &config, per_thread);
+            self.flush_deletes(control, &config, info_stream.as_ref());
+            self.flush_active_bytes(control, &config, info_stream.as_ref(), per_thread);
         } else if deletes_ram >= limit {
-            self.flush_deletes(control, &config);
+            self.flush_deletes(control, &config, info_stream.as_ref());
         } else if active_ram + deletes_ram >= limit && per_thread.is_some() {
             let per_thread = per_thread.expect("INVARIANT: presence checked above");
-            self.flush_active_bytes(control, &config, per_thread);
+            self.flush_active_bytes(control, &config, info_stream.as_ref(), per_thread);
         }
     }
 
+    /// `protected synchronized void init(LiveIndexWriterConfig)`
+    /// (`FlushPolicy.java:61-64`): both fields are replaced on every call.
     fn init(&self, config: Arc<LiveIndexWriterConfig>) {
-        let _ = self.config.set(Arc::downgrade(&config));
+        let info_stream = config.info_stream();
+        *self
+            .initialized
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(FlushPolicyInit {
+            config: Arc::downgrade(&config),
+            info_stream,
+        });
     }
 }
 
@@ -3717,7 +3766,7 @@ impl DocumentsWriterPerThread {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            index_writer_config.index_sort().unwrap_or_default(),
+            index_writer_config.index_sort(),
         )?;
         let delete_slice = delete_queue.new_slice();
         let has_parent_field = index_writer_config.parent_field().is_some();
@@ -4839,12 +4888,11 @@ impl DwptGuard {
                     ),
                 );
             }
-            let codec = flushed_segment.segment_info.info.codec().ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "segment {} has no codec",
-                    flushed_segment.segment_info.info.name
-                ))
-            })?;
+            let codec = flushed_segment
+                .segment_info
+                .info
+                .codec()
+                .ok_or_else(crate::error::LuceneError::null_pointer)?;
             // `writeLiveDocs` names the file from `getNextDelGen()`, so it has
             // to run before `advanceDelGen`.
             codec.live_docs_format().write_live_docs(
@@ -5740,11 +5788,6 @@ impl DocumentsWriterFlushControl {
                 !inner.full_flush,
                 "called DWFC#markForFullFlush() while full flush is still running"
             );
-            if inner.full_flush {
-                return Err(LuceneError::illegal_state(
-                    "called markForFullFlush() while full flush is still running".to_string(),
-                ));
-            }
             debug_assert!(!inner.full_flush_mark_done);
             inner.full_flush = true;
             let flushing_queue = self.shared.delete_queue();
@@ -6000,7 +6043,7 @@ impl DocumentsWriterFlushControl {
                     inner.flushing_writers.len(),
                     inner.blocked_flushes.len(),
                     inner.peak_delta,
-                    inner.max_configured_ram_buffer
+                    crate::util::java_fmt::double_to_string(inner.max_configured_ram_buffer)
                 );
             }
         } else {
@@ -7226,10 +7269,10 @@ mod tests {
             _field_infos: &mut FieldInfosBuilder,
         ) -> Result<()> {
             if self.corrupt_on_doc == Some(doc_id) {
-                self.aborting_error = Some(LuceneError::from(LuceneErrorKind::CorruptIndex(
-                    "scripted".to_string(),
-                )));
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                self.aborting_error = Some(LuceneError::from(
+                    LuceneErrorKind::corrupt_index_message("scripted".to_string()),
+                ));
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
                     "scripted".to_string(),
                 )));
             }
@@ -7473,6 +7516,41 @@ mod tests {
             frozen.ram_bytes_used(),
             frozen_terms_ram + FROZEN_BYTES_PER_DEL_QUERY + finished
         );
+    }
+
+    /// G-303: `FlushPolicy.init(LiveIndexWriterConfig)` replaces the
+    /// configuration (and its info stream) on every call
+    /// (`FlushPolicy.java:61-64`); a later init wins.
+    #[test]
+    fn gap_g303_flush_policy_init_replaces_the_config() {
+        let policy = FlushByRamOrCountsPolicy::default();
+        assert!(policy.index_writer_config().is_none());
+        let first = Arc::new(LiveIndexWriterConfig::new(None));
+        let second = Arc::new(LiveIndexWriterConfig::new(None));
+        policy.init(Arc::clone(&first));
+        assert!(Arc::ptr_eq(&policy.index_writer_config().unwrap(), &first));
+        policy.init(Arc::clone(&second));
+        assert!(Arc::ptr_eq(&policy.index_writer_config().unwrap(), &second));
+    }
+
+    /// G-017: `BufferedUpdatesStream.push` charges `packet.bytesUsed` and
+    /// `finished` subtracts it (`BufferedUpdatesStream.java:80, 164`), so the
+    /// stream's RAM is the frozen packets' bytes, not their operation count.
+    #[test]
+    fn gap_g017_stream_charges_packet_bytes() {
+        let mut updates = BufferedUpdates::new("_0");
+        updates.add_term(term("id", "a"), 3).unwrap();
+        updates.add_term(term("id", "b"), 3).unwrap();
+        updates.add_query(label_query("q1"), 3);
+        let packet = Arc::new(FrozenBufferedUpdates::new(updates, None));
+        let bytes = packet.ram_bytes_used();
+        assert!(bytes > 3, "bytes, not the operation count: {bytes}");
+        let stream = crate::index::buffered_updates_stream::BufferedUpdatesStream::new();
+        assert_eq!(stream.ram_bytes_used(), 0);
+        stream.push(Arc::clone(&packet)).unwrap();
+        assert_eq!(stream.ram_bytes_used(), bytes);
+        stream.finished(&packet).unwrap();
+        assert_eq!(stream.ram_bytes_used(), 0);
     }
 
     #[test]

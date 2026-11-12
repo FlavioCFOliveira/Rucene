@@ -57,6 +57,17 @@ pub trait DimensionFormatter: Debug + Send + Sync {
     ///
     /// Every implementation writes `self`.
     fn as_any(&self) -> &dyn Any;
+
+    /// The Java binary name of the anonymous `PointRangeQuery` subclass this
+    /// formatter stands for — `org.apache.lucene.document.IntPoint$1` for
+    /// `IntPoint.newRangeQuery`, for one — which is the range query's
+    /// [`Query::java_class_name`] and so the source of its `classHash()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** The default answers the Rust type
+    /// path of a formatter that has no Lucene class (a test's own subclass).
+    fn java_class_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
 }
 
 /// Abstract class for range queries against single or multi-dimensional points.
@@ -395,6 +406,13 @@ struct CountingVisitor<'a> {
 }
 
 impl IntersectVisitor for CountingVisitor<'_> {
+    /// `PointRangeQuery$1$4` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.PointRangeQuery$1$4",
+        )
+    }
     /// This branch is unreachable: the visitor is only ever handed leaf values.
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         Err(LuceneError::unsupported_operation(format!(
@@ -429,6 +447,13 @@ struct MatchingVisitor<'a> {
 }
 
 impl IntersectVisitor for MatchingVisitor<'_> {
+    /// `PointRangeQuery$1$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.PointRangeQuery$1$1",
+        )
+    }
     fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
         Ok(())
@@ -482,6 +507,13 @@ struct InverseVisitor<'a> {
 }
 
 impl IntersectVisitor for InverseVisitor<'_> {
+    /// `PointRangeQuery$1$2` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.PointRangeQuery$1$2",
+        )
+    }
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         BitSet::set(self.result, doc_id as usize);
         self.cost += 1;
@@ -874,16 +906,30 @@ impl Query for PointRangeQuery {
             && self.upper_point == other.upper_point
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.formatter.as_any().type_id().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.lower_point.hash(&mut hasher);
-        self.upper_point.hash(&mut hasher);
-        self.num_dims.hash(&mut hasher);
-        self.bytes_per_dim.hash(&mut hasher);
-        hasher.finish()
+    /// The anonymous subclass the formatter stands for; see
+    /// [`DimensionFormatter::java_class_name`].
+    fn java_class_name(&self) -> &'static str {
+        self.formatter.java_class_name()
+    }
+
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{java_arrays_hash_code_bytes, java_string_hash_code};
+        // `PointRangeQuery.hashCode()` (`PointRangeQuery.java`): `classHash()`,
+        // `field.hashCode()`, `Arrays.hashCode` of both points, `numDims` and
+        // `Objects.hashCode(bytesPerDim)` (an `Integer`).
+        let mut hash = self.class_hash();
+        hash = 31i32
+            .wrapping_mul(hash)
+            .wrapping_add(java_string_hash_code(&self.field));
+        hash = 31i32
+            .wrapping_mul(hash)
+            .wrapping_add(java_arrays_hash_code_bytes(&self.lower_point));
+        hash = 31i32
+            .wrapping_mul(hash)
+            .wrapping_add(java_arrays_hash_code_bytes(&self.upper_point));
+        hash = 31i32.wrapping_mul(hash).wrapping_add(self.num_dims);
+        31i32
+            .wrapping_mul(hash)
+            .wrapping_add(self.bytes_per_dim as i32)
     }
 }

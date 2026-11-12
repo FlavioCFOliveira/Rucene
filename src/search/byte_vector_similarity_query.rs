@@ -124,15 +124,7 @@ impl AbstractVectorSimilarityQueryImpl for ByteVectorSimilarityQuery {
         &self.base
     }
 
-    fn as_query(&self) -> &dyn Query {
-        self
-    }
-
     fn clone_similarity_query(&self) -> Arc<dyn AbstractVectorSimilarityQueryImpl> {
-        Arc::new(self.clone())
-    }
-
-    fn clone_as_query(&self) -> Arc<dyn Query> {
         Arc::new(self.clone())
     }
 
@@ -167,7 +159,7 @@ impl AbstractVectorSimilarityQueryImpl for ByteVectorSimilarityQuery {
             collector.as_mut(),
             accept_docs,
         )?;
-        Ok(collector.top_docs())
+        collector.top_docs()
     }
 }
 
@@ -210,12 +202,15 @@ impl Query for ByteVectorSimilarityQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.base.base_hash().hash(&mut hasher);
-        self.target.hash(&mut hasher);
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.ByteVectorSimilarityQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.ByteVectorSimilarityQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `31 * super.hashCode() + Arrays.hashCode(target)`.
+        31i32.wrapping_mul(self.base.base_hash()).wrapping_add(
+            crate::util::java_collections::java_arrays_hash_code_bytes(&self.target),
+        )
     }
 }

@@ -35,8 +35,6 @@
 //!   (`files()`, `get_attributes()`) or a shared reference with no mutator
 //!   (`get_diagnostics()`), so the write cannot reach the `SegmentInfo`; the
 //!   tests check instead that the segment still answers what was written.
-//! * Java's `null` index sort is the port's `Sort::default()`, which the
-//!   segment info formats write as "no sort", as `SegmentInfo` holds it.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
@@ -181,7 +179,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
         diagnostics: HashMap<String, String>,
         id: [u8; ID_LENGTH],
         attributes: HashMap<String, String>,
-        index_sort: Sort,
+        index_sort: Option<Sort>,
     ) -> SegmentInfo {
         let v = self.get_versions()[0];
         SegmentInfo::new(
@@ -213,7 +211,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                 HashMap::new(),
                 id,
                 HashMap::new(),
-                Sort::default(),
+                None,
             );
             set_no_files(&info);
             codec
@@ -247,7 +245,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                 HashMap::new(),
                 id,
                 HashMap::new(),
-                Sort::default(),
+                None,
             );
             set_no_files(&info);
             codec
@@ -276,7 +274,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                 HashMap::new(),
                 id,
                 HashMap::new(),
-                Sort::default(),
+                None,
             );
             let original_files: HashSet<String> = ["_123.a".to_string()].into_iter().collect();
             info.set_files(original_files.iter().cloned())?;
@@ -323,7 +321,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                 diagnostics.clone(),
                 id,
                 HashMap::new(),
-                Sort::default(),
+                None,
             );
             set_no_files(&info);
             codec
@@ -358,7 +356,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                 HashMap::new(),
                 id,
                 attributes.clone(),
-                Sort::default(),
+                None,
             );
             set_no_files(&info);
             codec
@@ -393,7 +391,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                 HashMap::new(),
                 id,
                 HashMap::new(),
-                Sort::default(),
+                None,
             );
             set_no_files(&info);
             codec
@@ -430,7 +428,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                         HashMap::new(),
                         id,
                         HashMap::new(),
-                        Sort::default(),
+                        None,
                     )?;
                     set_no_files(&info);
                     codec.segment_info_format().write(
@@ -594,13 +592,13 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
         let iters = LuceneTestCase::at_least(5);
         for i in 0..iters {
             let sort = if i == 0 {
-                Sort::default()
+                None
             } else {
                 let num_sort_fields = TestUtil::next_int(&*random(), 1, 3);
                 let sort_fields: Vec<SortField> = (0..num_sort_fields)
                     .map(|_| self.random_index_sort_field())
                     .collect();
-                Sort::new_fields(sort_fields)?
+                Some(Sort::new_fields(sort_fields)?)
             };
 
             let dir = LuceneTestCase::new_directory();
@@ -627,7 +625,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                     &id,
                     &*DEFAULT_IO_CONTEXT,
                 )?;
-                assert_equals_debug(&sort, info2.index_sort());
+                assert_equals_debug(&sort.as_ref(), &info2.index_sort());
             }
             dir.close()?;
         }
@@ -655,7 +653,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             HashMap::new(),
             id,
             HashMap::new(),
-            Sort::default(),
+            None,
         );
         set_no_files(&info);
         (dir, fail, info, id)
@@ -819,7 +817,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                     diagnostics,
                     id,
                     attributes,
-                    Sort::default(),
+                    None,
                 )?;
                 info.set_files(files.iter().cloned())?;
                 codec

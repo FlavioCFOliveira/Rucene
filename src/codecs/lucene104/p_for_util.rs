@@ -44,10 +44,11 @@ impl PForUtil {
         let mut histogram = [0i32; 32];
         let mut max_bits_required = 0;
         for &v in ints.iter() {
+            // `PackedInts.bitsRequired(v)` rejects a negative value.
             if v < 0 {
-                return Err(LuceneError::illegal_argument(
-                    "PForUtil cannot encode negative values".to_string(),
-                ));
+                return Err(LuceneError::illegal_argument(format!(
+                    "maxValue must be non-negative (got: {v})"
+                )));
             }
             let bits = 32 - (v as u32).leading_zeros() as i32;
             let bits = if v == 0 { 0 } else { bits };
@@ -225,7 +226,7 @@ mod tests {
         let trailing_offset = (data.len() - 2) as i64;
         let mut input = MockIndexInput::new(data, "pfor-skip");
         PForUtil::skip(&mut input).unwrap();
-        assert_eq!(input.file_pointer(), trailing_offset);
+        assert_eq!(input.file_pointer().unwrap(), trailing_offset);
         assert_eq!(input.read_byte().unwrap(), 0xAA);
         assert_eq!(input.read_byte().unwrap(), 0xBB);
     }

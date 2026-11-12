@@ -1254,6 +1254,18 @@ pub trait Analyzer: Debug + Send + Sync {
     /// every implementor states its own.
     fn java_class_name(&self) -> &'static str;
 
+    /// Returns the analyzer's `toString()`.
+    ///
+    /// `Analyzer` declares no `toString()`, so `java.lang.Object`'s applies:
+    /// the binary class name ([`java_class_name`](Self::java_class_name)),
+    /// `@`, and the identity hash in hexadecimal, rendered by
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string),
+    /// which declares the divergence of the digits. An analyzer whose Java
+    /// class overrides `toString()` overrides this method with that text.
+    fn analyzer_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(self.java_class_name(), self)
+    }
+
     /// Creates a new [`TokenStreamComponents`] instance for `field_name`.
     ///
     /// Equivalent to `Analyzer.createComponents(String)`. An unchecked
@@ -1393,16 +1405,33 @@ pub trait Analyzer: Debug + Send + Sync {
 
     /// Normalizes `text` to the representation it would have in the index.
     ///
-    /// Equivalent to `Analyzer.normalize(String, String)`.
+    /// Equivalent to `Analyzer.normalize(String, String)`
+    /// (`Analyzer.java:213-264`), which reads no reuse state, so it works on
+    /// a closed analyzer as well.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalStateException` when the normalization token stream produces
+    /// no token or more than one, naming the analyzer's `toString()`, and
+    /// `IllegalStateException("Normalization threw an unexpected exception",
+    /// e)` around an `IOException` `e`; any other failure propagates.
     fn normalize(&self, field_name: &str, text: &str) -> Result<BytesRef> {
-        if self.analyzer_state().is_closed() {
-            return Err(LuceneError::already_closed(
-                "this Analyzer is closed".to_string(),
-            ));
-        }
+        // `catch (IOException e) { throw new IllegalStateException(
+        // "Normalization threw an unexpected exception", e); }`, around the
+        // char filters and around the token stream.
+        let wrap_io = |error: LuceneError| {
+            if error.is_io_exception() {
+                LuceneError::illegal_state_with_cause(
+                    "Normalization threw an unexpected exception",
+                    Arc::new(error),
+                )
+            } else {
+                error
+            }
+        };
 
         // Apply char filters and read the filtered text into a string.
-        let filtered_text = {
+        let filtered_text = (|| -> Result<String> {
             let mut reader = self
                 .init_reader_for_normalization(field_name, Box::new(StringCharReader::new(text)));
             let mut buffer = [0u16; 64];
@@ -1417,42 +1446,48 @@ pub trait Analyzer: Debug + Send + Sync {
             reader.close()?;
             // A Rust `String` cannot hold a lone surrogate, which becomes
             // U+FFFD (see `utf16_to_string`).
-            character_utils::utf16_to_string(&builder)
-        };
+            Ok(character_utils::utf16_to_string(&builder))
+        })()
+        .map_err(wrap_io)?;
 
-        let attribute_factory = self.attribute_factory(field_name);
-        let string_stream = Box::new(StringTokenStream::new_with_factory(
-            attribute_factory,
-            filtered_text,
-            text.encode_utf16().count() as i32,
-        )?);
-        let mut token_stream = self.normalize_token_stream(field_name, string_stream);
-        token_stream
-            .attribute_source_mut()
-            .add_attribute_interface::<dyn TermToBytesRefAttribute>()?;
+        (|| -> Result<BytesRef> {
+            let attribute_factory = self.attribute_factory(field_name);
+            let string_stream = Box::new(StringTokenStream::new_with_factory(
+                attribute_factory,
+                filtered_text,
+                text.encode_utf16().count() as i32,
+            )?);
+            let mut token_stream = self.normalize_token_stream(field_name, string_stream);
+            token_stream
+                .attribute_source_mut()
+                .add_attribute_interface::<dyn TermToBytesRefAttribute>()?;
 
-        token_stream.reset()?;
-        if !token_stream.increment_token()? {
-            return Err(LuceneError::illegal_state(format!(
-                "The normalization token stream is expected to produce exactly 1 token, but got 0 for analyzer and input \"{}\"",
-                text
-            )));
-        }
-        let term = token_stream
-            .attribute_source()
-            .get_attribute_interface::<dyn TermToBytesRefAttribute>()
-            .expect("INVARIANT: added above")
-            .get_bytes_ref();
-        let term = BytesRef::deep_copy_of(&term);
-        if token_stream.increment_token()? {
-            return Err(LuceneError::illegal_state(format!(
-                "The normalization token stream is expected to produce exactly 1 token, but got 2+ for analyzer and input \"{}\"",
-                text
-            )));
-        }
-        token_stream.end()?;
-        token_stream.close()?;
-        Ok(term)
+            token_stream.reset()?;
+            if !token_stream.increment_token()? {
+                return Err(LuceneError::illegal_state(format!(
+                    "The normalization token stream is expected to produce exactly 1 token, but got 0 for analyzer {} and input \"{}\"",
+                    self.analyzer_to_string(),
+                    text
+                )));
+            }
+            let term = token_stream
+                .attribute_source()
+                .get_attribute_interface::<dyn TermToBytesRefAttribute>()
+                .expect("INVARIANT: added above")
+                .get_bytes_ref();
+            let term = BytesRef::deep_copy_of(&term);
+            if token_stream.increment_token()? {
+                return Err(LuceneError::illegal_state(format!(
+                    "The normalization token stream is expected to produce exactly 1 token, but got 2+ for analyzer {} and input \"{}\"",
+                    self.analyzer_to_string(),
+                    text
+                )));
+            }
+            token_stream.end()?;
+            token_stream.close()?;
+            Ok(term)
+        })()
+        .map_err(wrap_io)
     }
 
     /// Closes the analyzer and releases reusable components.
@@ -1644,33 +1679,143 @@ pub trait DelegatingAnalyzerWrapperLogic: Debug + Send + Sync {
     }
 }
 
-/// An analyzer wrapper that delegates all work to another analyzer without
-/// wrapping components or readers.
+/// The reuse strategy of a [`DelegatingAnalyzerWrapper`]: for the wrapper
+/// itself it delegates to the reuse strategy of the wrapped analyzer, for any
+/// other analyzer to the fallback strategy.
 ///
-/// Equivalent to `org.apache.lucene.analysis.DelegatingAnalyzerWrapper`.
+/// Equivalent to the private `DelegatingAnalyzerWrapper.DelegatingReuseStrategy`
+/// (`DelegatingAnalyzerWrapper.java:76-111`).
+///
+/// Java's `analyzer == wrapper` test compares the analyzer passed in with the
+/// wrapper the strategy was built for. A Rust strategy is owned by exactly one
+/// [`AnalyzerState`] — the wrapper's — so the same identity is "the state whose
+/// reuse strategy is this strategy"; the wrapper's subclass logic, which
+/// Java reaches through `wrapper.getWrappedAnalyzer`, is shared with it.
+#[derive(Debug)]
+pub(crate) struct DelegatingReuseStrategy {
+    /// `wrapper.getWrappedAnalyzer`, the subclass logic of the wrapper.
+    logic: Arc<dyn DelegatingAnalyzerWrapperLogic>,
+    /// `fallbackStrategy`, used when the analyzer is not the wrapper.
+    fallback_strategy: Box<dyn ReuseStrategy>,
+}
+
+impl DelegatingReuseStrategy {
+    /// Java's `analyzer == wrapper`: whether `state` is the state that owns
+    /// this strategy, which is the wrapper's.
+    fn is_wrapper(&self, state: &AnalyzerState) -> bool {
+        std::ptr::addr_eq(
+            state.reuse_strategy() as *const dyn ReuseStrategy,
+            self as *const Self,
+        )
+    }
+}
+
+impl ReuseStrategy for DelegatingReuseStrategy {
+    /// Equivalent to `DelegatingReuseStrategy.getReusableComponents(Analyzer, String)`
+    /// (`DelegatingAnalyzerWrapper.java:84-92`).
+    fn get_reusable_components(
+        &self,
+        state: &AnalyzerState,
+        field_name: &str,
+    ) -> Option<Arc<AtomicRefCell<TokenStreamComponents>>> {
+        if self.is_wrapper(state) {
+            let wrapped_analyzer = self.logic.get_wrapped_analyzer(field_name);
+            let wrapped_state = wrapped_analyzer.analyzer_state();
+            wrapped_state
+                .reuse_strategy()
+                .get_reusable_components(wrapped_state, field_name)
+        } else {
+            self.fallback_strategy
+                .get_reusable_components(state, field_name)
+        }
+    }
+
+    /// Equivalent to `DelegatingReuseStrategy.setReusableComponents(Analyzer, String,
+    /// TokenStreamComponents)` (`DelegatingAnalyzerWrapper.java:94-105`).
+    fn set_reusable_components(
+        &self,
+        state: &AnalyzerState,
+        field_name: &str,
+        components: Arc<AtomicRefCell<TokenStreamComponents>>,
+    ) {
+        if self.is_wrapper(state) {
+            let wrapped_analyzer = self.logic.get_wrapped_analyzer(field_name);
+            let wrapped_state = wrapped_analyzer.analyzer_state();
+            wrapped_state.reuse_strategy().set_reusable_components(
+                wrapped_state,
+                field_name,
+                components,
+            );
+        } else {
+            self.fallback_strategy
+                .set_reusable_components(state, field_name, components);
+        }
+    }
+}
+
+/// The [`AnalyzerWrapperLogic`] a [`DelegatingAnalyzerWrapper`] gives its
+/// [`AnalyzerWrapper`]: the subclass's `getWrappedAnalyzer` and gap overrides,
+/// with the four `wrap*` hooks left at their `AnalyzerWrapper` defaults, which
+/// is what Java's `final` overrides of them pin
+/// (`DelegatingAnalyzerWrapper.java:52-74`).
+#[derive(Debug)]
+struct DelegatingWrapperLogic(Arc<dyn DelegatingAnalyzerWrapperLogic>);
+
+impl AnalyzerWrapperLogic for DelegatingWrapperLogic {
+    fn get_wrapped_analyzer(&self, field_name: &str) -> &dyn Analyzer {
+        self.0.get_wrapped_analyzer(field_name)
+    }
+
+    fn get_position_increment_gap(&self, field_name: &str) -> i32 {
+        self.0.get_position_increment_gap(field_name)
+    }
+
+    fn get_offset_gap(&self, field_name: &str) -> i32 {
+        self.0.get_offset_gap(field_name)
+    }
+}
+
+/// An analyzer wrapper that delegates all work to another analyzer without
+/// wrapping components or readers, and reuses the wrapped analyzer's
+/// components through the wrapped analyzer's own reuse strategy.
+///
+/// Equivalent to `org.apache.lucene.analysis.DelegatingAnalyzerWrapper`, an
+/// `AnalyzerWrapper` subclass: this type is built on an [`AnalyzerWrapper`]
+/// whose reuse strategy is a [`DelegatingReuseStrategy`].
 #[derive(Debug)]
 pub struct DelegatingAnalyzerWrapper {
-    state: AnalyzerState,
-    logic: Box<dyn DelegatingAnalyzerWrapperLogic>,
+    /// The `AnalyzerWrapper` superclass state and behaviour.
+    inner: AnalyzerWrapper,
 }
 
 impl DelegatingAnalyzerWrapper {
-    /// Creates a delegating wrapper that uses `fallback_strategy` when the same
-    /// strategy is reused elsewhere.
+    /// Creates a delegating wrapper; `fallback_strategy` is used when the
+    /// reuse strategy is asked about an analyzer other than this wrapper.
+    ///
+    /// Equivalent to `DelegatingAnalyzerWrapper(ReuseStrategy)`
+    /// (`DelegatingAnalyzerWrapper.java:45-49`):
+    /// `super(new DelegatingReuseStrategy(fallbackStrategy))`.
     pub fn new(
         fallback_strategy: Box<dyn ReuseStrategy>,
         logic: Box<dyn DelegatingAnalyzerWrapperLogic>,
     ) -> Self {
+        let logic: Arc<dyn DelegatingAnalyzerWrapperLogic> = Arc::from(logic);
+        let strategy = DelegatingReuseStrategy {
+            logic: Arc::clone(&logic),
+            fallback_strategy,
+        };
         Self {
-            state: AnalyzerState::new(fallback_strategy),
-            logic,
+            inner: AnalyzerWrapper::new(
+                Box::new(DelegatingWrapperLogic(logic)),
+                Box::new(strategy),
+            ),
         }
     }
 }
 
 impl Analyzer for DelegatingAnalyzerWrapper {
     fn analyzer_state(&self) -> &AnalyzerState {
-        &self.state
+        self.inner.analyzer_state()
     }
 
     fn java_class_name(&self) -> &'static str {
@@ -1678,9 +1823,7 @@ impl Analyzer for DelegatingAnalyzerWrapper {
     }
 
     fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .create_components(field_name)
+        self.inner.create_components(field_name)
     }
 
     fn normalize_token_stream(
@@ -1688,15 +1831,11 @@ impl Analyzer for DelegatingAnalyzerWrapper {
         field_name: &str,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .normalize_token_stream(field_name, input)
+        self.inner.normalize_token_stream(field_name, input)
     }
 
     fn init_reader(&self, field_name: &str, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .init_reader(field_name, reader)
+        self.inner.init_reader(field_name, reader)
     }
 
     fn init_reader_for_normalization(
@@ -1704,49 +1843,19 @@ impl Analyzer for DelegatingAnalyzerWrapper {
         field_name: &str,
         reader: Box<dyn CharReader>,
     ) -> Box<dyn CharReader> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .init_reader_for_normalization(field_name, reader)
+        self.inner.init_reader_for_normalization(field_name, reader)
     }
 
     fn attribute_factory(&self, field_name: &str) -> Arc<dyn AttributeFactory> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .attribute_factory(field_name)
+        self.inner.attribute_factory(field_name)
     }
 
     fn get_position_increment_gap(&self, field_name: &str) -> i32 {
-        self.logic.get_position_increment_gap(field_name)
+        self.inner.get_position_increment_gap(field_name)
     }
 
     fn get_offset_gap(&self, field_name: &str) -> i32 {
-        self.logic.get_offset_gap(field_name)
-    }
-
-    fn token_stream(
-        &self,
-        field_name: &str,
-        reader: Box<dyn CharReader>,
-    ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .token_stream(field_name, reader)
-    }
-
-    fn token_stream_from_str(
-        &self,
-        field_name: &str,
-        text: &str,
-    ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .token_stream_from_str(field_name, text)
-    }
-
-    fn normalize(&self, field_name: &str, text: &str) -> Result<BytesRef> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .normalize(field_name, text)
+        self.inner.get_offset_gap(field_name)
     }
 }
 
@@ -2384,6 +2493,178 @@ mod tests {
         let analyzer = WhitespaceAnalyzer::new();
         let term = analyzer.normalize("field", "Hello")?;
         assert_eq!(term.utf8_to_string()?, "Hello");
+        Ok(())
+    }
+
+    /// G-110: `Analyzer.normalize` wraps an `IOException` from the char
+    /// filters in `IllegalStateException("Normalization threw an unexpected
+    /// exception", e)` (`Analyzer.java:229-231, 261-263`); a non-I/O failure passes
+    /// through.
+    #[test]
+    fn gap_g110_normalize_wraps_io_exceptions() {
+        #[derive(Debug)]
+        struct FailingReader(bool);
+        impl CharReader for FailingReader {
+            fn read(&mut self, _buf: &mut [u16]) -> Result<usize> {
+                if self.0 {
+                    Err(LuceneError::from(LuceneErrorKind::Io(
+                        std::io::Error::other("boom"),
+                    )))
+                } else {
+                    Err(LuceneError::illegal_argument("not I/O".to_string()))
+                }
+            }
+            fn close(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+        #[derive(Debug)]
+        struct FailingNormalization {
+            inner: WhitespaceAnalyzer,
+            io: bool,
+        }
+        impl Analyzer for FailingNormalization {
+            fn analyzer_state(&self) -> &AnalyzerState {
+                self.inner.analyzer_state()
+            }
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
+            }
+            fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+                self.inner.create_components(field_name)
+            }
+            fn init_reader_for_normalization(
+                &self,
+                _field_name: &str,
+                _reader: Box<dyn CharReader>,
+            ) -> Box<dyn CharReader> {
+                Box::new(FailingReader(self.io))
+            }
+        }
+        let analyzer = FailingNormalization {
+            inner: WhitespaceAnalyzer::new(),
+            io: true,
+        };
+        let error = analyzer.normalize("f", "x").unwrap_err();
+        match &error.kind {
+            LuceneErrorKind::IllegalState { message, cause, .. } => {
+                assert_eq!(message, "Normalization threw an unexpected exception");
+                assert!(cause.as_ref().is_some_and(|c| c.is_io_exception()));
+            }
+            other => panic!("expected IllegalStateException, got {other:?}"),
+        }
+        let analyzer = FailingNormalization {
+            inner: WhitespaceAnalyzer::new(),
+            io: false,
+        };
+        assert!(analyzer
+            .normalize("f", "x")
+            .unwrap_err()
+            .is_illegal_argument_exception());
+    }
+
+    /// G-110: `QueryBuilder.createFieldQuery(Analyzer, ...)` wraps an
+    /// `IOException` of the analysis chain in `RuntimeException("Error
+    /// analyzing query text", e)` (`QueryBuilder.java:255-259`).
+    #[test]
+    fn gap_g110_query_builder_wraps_analysis_io_exceptions() {
+        use crate::util::query_builder::{QueryBuilder, QueryBuilderOps};
+        #[derive(Debug)]
+        struct FailingReader;
+        impl CharReader for FailingReader {
+            fn read(&mut self, _buf: &mut [u16]) -> Result<usize> {
+                Err(LuceneError::from(LuceneErrorKind::Io(
+                    std::io::Error::other("boom"),
+                )))
+            }
+            fn close(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+        #[derive(Debug)]
+        struct FailingAnalyzer(WhitespaceAnalyzer);
+        impl Analyzer for FailingAnalyzer {
+            fn analyzer_state(&self) -> &AnalyzerState {
+                self.0.analyzer_state()
+            }
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
+            }
+            fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+                self.0.create_components(field_name)
+            }
+            fn init_reader(
+                &self,
+                _field_name: &str,
+                _reader: Box<dyn CharReader>,
+            ) -> Box<dyn CharReader> {
+                Box::new(FailingReader)
+            }
+        }
+        let builder = QueryBuilder::new(Some(Arc::new(FailingAnalyzer(WhitespaceAnalyzer::new()))));
+        let error = builder
+            .create_boolean_query("f", "a b")
+            .expect_err("the analysis fails");
+        match &error.kind {
+            LuceneErrorKind::Unchecked {
+                class,
+                message,
+                cause,
+            } => {
+                assert_eq!(*class, "java.lang.RuntimeException");
+                assert_eq!(message.as_deref(), Some("Error analyzing query text"));
+                assert!(cause.as_ref().is_some_and(|c| c.is_io_exception()));
+            }
+            other => panic!("expected RuntimeException, got {other:?}"),
+        }
+    }
+
+    /// G-006: `DelegatingAnalyzerWrapper` installs a `DelegatingReuseStrategy`
+    /// (`DelegatingAnalyzerWrapper.java:45-102`) that keeps the wrapper's
+    /// components in the *wrapped* analyzer's reuse strategy. With a wrapped
+    /// analyzer on `GLOBAL_REUSE_STRATEGY`, two fields delegating to it share
+    /// one set of components even though the fallback strategy is per field.
+    #[test]
+    fn gap_g006_delegating_wrapper_reuses_through_the_wrapped_strategy() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        #[derive(Debug)]
+        struct Counting {
+            inner: WhitespaceAnalyzer,
+            created: AtomicUsize,
+        }
+        impl Analyzer for Counting {
+            fn analyzer_state(&self) -> &AnalyzerState {
+                self.inner.analyzer_state()
+            }
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
+            }
+            fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+                self.created.fetch_add(1, Ordering::SeqCst);
+                self.inner.create_components(field_name)
+            }
+        }
+        #[derive(Debug)]
+        struct Logic(Arc<Counting>);
+        impl DelegatingAnalyzerWrapperLogic for Logic {
+            fn get_wrapped_analyzer(&self, _field_name: &str) -> &dyn Analyzer {
+                &*self.0
+            }
+        }
+        let wrapped = Arc::new(Counting {
+            inner: WhitespaceAnalyzer::new(),
+            created: AtomicUsize::new(0),
+        });
+        let wrapper = DelegatingAnalyzerWrapper::new(
+            Box::new(PerFieldReuseStrategy),
+            Box::new(Logic(Arc::clone(&wrapped))),
+        );
+        let first = wrapper.token_stream_from_str("a", "x y")?;
+        assert_eq!(collect_terms(Arc::clone(&first))?, vec!["x", "y"]);
+        let second = wrapper.token_stream_from_str("b", "z")?;
+        assert_eq!(collect_terms(Arc::clone(&second))?, vec!["z"]);
+        assert_eq!(wrapped.created.load(Ordering::SeqCst), 1);
+        assert!(Arc::ptr_eq(&first, &second));
         Ok(())
     }
 

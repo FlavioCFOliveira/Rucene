@@ -165,12 +165,18 @@ pub fn check_unpositioned(iter: &dyn DocIdSetIterator) -> Result<()> {
 ///
 /// Propagates iteration errors and rejects an already-positioned iterator.
 pub fn bit_set_of(it: &mut dyn DocIdSetIterator, max_doc: i32) -> Result<Box<dyn BitSet>> {
+    // `BitSet.java:33-44`: `final int threshold = maxDoc >>> 7`, an unsigned
+    // shift.
     let cost = it.cost();
-    let threshold = (max_doc as i64) >> 7;
-    let mut set: Box<dyn BitSet> = if cost < threshold {
-        Box::new(SparseFixedBitSet::new(max_doc.max(0) as usize)?)
+    let threshold = ((max_doc as u32) >> 7) as i32;
+    let mut set: Box<dyn BitSet> = if cost < i64::from(threshold) {
+        // `new SparseFixedBitSet(maxDoc)` rejects any `maxDoc < 1` with
+        // `length needs to be >= 1`, which a negative `maxDoc` reaches as `0`.
+        Box::new(SparseFixedBitSet::new(
+            usize::try_from(max_doc).unwrap_or(0),
+        )?)
     } else {
-        Box::new(FixedBitSet::new(max_doc.max(0) as usize))
+        Box::new(FixedBitSet::new_java(max_doc)?)
     };
     set.or(it)?;
     Ok(set)
@@ -609,6 +615,13 @@ impl BitSetIterator {
 }
 
 impl DocIdSetIterator for BitSetIterator {
+    /// `BitSetIterator` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.util.BitSetIterator",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc
     }

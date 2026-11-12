@@ -35,6 +35,32 @@ impl ConjunctionUtils {
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when fewer than two scorers are
     /// supplied, or when they are not all on the same document.
     pub fn intersect_scorers(scorers: Vec<Box<dyn Scorer>>) -> Result<ScorerIterator> {
+        let conjunction = Self::intersect_scorers_conjunction(scorers)?;
+        if conjunction.has_two_phase() {
+            Ok(ScorerIterator::TwoPhase(Box::new(conjunction)))
+        } else {
+            Ok(ScorerIterator::Simple(Box::new(conjunction)))
+        }
+    }
+
+    /// [`intersect_scorers`](Self::intersect_scorers) before its result is
+    /// erased: the [`ConjunctionDISI`](conjunction_disi::ConjunctionDISI)
+    /// `ConjunctionDISI.createConjunction` builds.
+    ///
+    /// Equivalent to `ConjunctionUtils.intersectScorers(Collection<Scorer>)`
+    /// (`ConjunctionUtils.java:34-43`) for
+    /// [`ConjunctionScorer`](crate::search::conjunction_scorer::ConjunctionScorer),
+    /// whose constructor calls it (`ConjunctionScorer.java:36`) and then keeps
+    /// reaching its clauses' scorers. Java's scorer holds them a second time in
+    /// its `scorers` and `required` fields; Rust cannot alias them, so it keeps
+    /// the unerased conjunction instead.
+    ///
+    /// # Errors
+    ///
+    /// As [`intersect_scorers`](Self::intersect_scorers).
+    pub(crate) fn intersect_scorers_conjunction(
+        scorers: Vec<Box<dyn Scorer>>,
+    ) -> Result<conjunction_disi::ConjunctionDISI> {
         if scorers.len() < 2 {
             return Err(LuceneError::illegal_argument(
                 "Cannot make a ConjunctionDISI of less than 2 iterators".to_string(),
@@ -46,7 +72,8 @@ impl ConjunctionUtils {
             // (`ConjunctionUtils.java:20,41`).
             conjunction_disi::add_scorer(scorer, &mut members);
         }
-        conjunction_disi::create_conjunction(members)
+        // `ConjunctionDISI.createConjunction(allIterators, twoPhaseIterators)`.
+        conjunction_disi::ConjunctionDISI::new(members)
     }
 
     /// Creates a conjunction over the provided [`DocIdSetIterator`]s.

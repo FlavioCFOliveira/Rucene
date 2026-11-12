@@ -122,7 +122,7 @@ fn open_fst<O: Outputs + Clone>(
         Some(reader) => FST::from_reader(metadata, reader),
         None => {
             let index_input = dir.open_input("fst", &*DEFAULT_IO_CONTEXT)?;
-            let fp = index_input.file_pointer();
+            let fp = index_input.file_pointer()?;
             let store = OffHeapFSTStore::new(index_input, fp, &metadata);
             FST::from_reader(metadata, Box::new(store))
         }

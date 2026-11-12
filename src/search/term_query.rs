@@ -4,8 +4,6 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
@@ -140,13 +138,14 @@ impl Query for TermQuery {
         self.term == other.term
     }
 
-    fn query_hash(&self) -> u64 {
-        // Java is `classHash() ^ term.hashCode()`; `Term` has no `Hash`
-        // implementation in this port, so its two components are hashed here.
-        let mut hasher = DefaultHasher::new();
-        self.term.field().hash(&mut hasher);
-        self.term.bytes().slice().hash(&mut hasher);
-        self.class_hash() ^ hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.TermQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.TermQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `classHash() ^ term.hashCode()`.
+        self.class_hash() ^ self.term.hash_code()
     }
 }
 
@@ -230,12 +229,8 @@ impl TermWeight {
             None => None,
             Some(term_stats) => {
                 if score_mode.needs_scores() {
-                    let collection_stats = collection_stats.ok_or_else(|| {
-                        LuceneError::illegal_state(format!(
-                            "field {} has term statistics but no collection statistics",
-                            term.field()
-                        ))
-                    })?;
+                    let collection_stats =
+                        collection_stats.ok_or_else(LuceneError::null_pointer)?;
                     Some(Arc::new(SimScorerSource::new(
                         Arc::clone(&similarity),
                         boost,
@@ -268,11 +263,11 @@ impl TermWeight {
     /// Returns the [`TermState`] registered for `context`, or `None` when the
     /// term is not present in that reader.
     fn term_state(&self, context: &LeafReaderContext) -> Result<Option<Box<dyn TermState>>> {
-        let states = self.term_states.as_ref().ok_or_else(|| {
-            LuceneError::illegal_state(
-                "TermWeight was built without termStates and cannot produce scorers".to_string(),
-            )
-        })?;
+        // `termStates.get(context)` on a `null` `termStates`.
+        let states = self
+            .term_states
+            .as_ref()
+            .ok_or_else(LuceneError::null_pointer)?;
         states.get(context)
     }
 
@@ -436,12 +431,10 @@ impl Weight for TermWeight {
                     "freq, occurrences of term within document",
                     Vec::new(),
                 );
-                let sim_scorer = self.sim_scorer.as_ref().ok_or_else(|| {
-                    LuceneError::illegal_state(
-                        "a matching document requires the term to exist, and therefore a scorer"
-                            .to_string(),
-                    )
-                })?;
+                let sim_scorer = self
+                    .sim_scorer
+                    .as_ref()
+                    .ok_or_else(LuceneError::null_pointer)?;
                 let score_explanation = sim_scorer.explain(&freq_explanation, norm);
                 return Ok(Explanation::matched(
                     score_explanation.value().float_value(),

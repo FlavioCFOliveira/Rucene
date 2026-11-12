@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::error::Result;
 use crate::index::codec_reader::CodecReader;
@@ -52,7 +52,13 @@ pub trait MergeContext {
     /// Returns how many documents of `info` are deleted.
     ///
     /// Equivalent to `MergeContext.numDeletedDocs(SegmentCommitInfo)`.
-    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32;
+    ///
+    /// # Errors
+    ///
+    /// Whatever the implementation raises: `IndexWriter` raises
+    /// `AlreadyClosed` (`ensureOpen(false)`) and `IllegalArgument`
+    /// (`validate`).
+    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> Result<i32>;
 
     /// Returns the segments already taking part in a running merge.
     ///
@@ -284,9 +290,9 @@ impl MergeCompletion {
 ///   times are fields of this merge, shared with the merge's
 ///   [`MergeRateLimiter`](crate::index::merge_scheduler::MergeRateLimiter),
 ///   which records the pauses; [`get_pause_times`](Self::get_pause_times) is
-///   `getMergeProgress().getPauseTimes()`. Nothing records the owning thread,
-///   which Java's progress uses only in assertions, so
-///   [`merge_init`](Self::merge_init) records nothing.
+///   `getMergeProgress().getPauseTimes()`. The owning thread, which Java's
+///   progress uses only in assertions, is a field of this merge too, set by
+///   [`merge_init`](Self::merge_init).
 /// * Java completes the `mergeCompleted` future with the merge's success flag.
 ///   There is no `CompletableFuture` in Rust's standard library, so the
 ///   future is a value behind a mutex and a condition variable
@@ -391,6 +397,13 @@ pub struct OneMerge {
     /// value is shared through an `Arc`, as [`aborted`](Self::is_aborted) is;
     /// read it with [`merge_start_ns`](Self::merge_start_ns).
     merge_start_ns: Arc<AtomicI64>,
+    /// The thread executing the merge.
+    ///
+    /// Equivalent to `OneMergeProgress.owner` (`MergePolicy.java:103`), set
+    /// once by [`merge_init`](Self::merge_init) and read only by assertions;
+    /// shared through an `Arc` as every field a holder sets after the policy
+    /// built the merge.
+    merge_thread: Arc<OnceLock<std::thread::ThreadId>>,
     /// The readers the writer opened over [`segments`](Self::segments).
     ///
     /// Equivalent to `OneMerge.mergeReaders`. Java replaces the list wholesale
@@ -526,6 +539,7 @@ impl OneMerge {
             error: Arc::new(Mutex::new(None)),
             info: Arc::new(Mutex::new(None)),
             merge_start_ns: Arc::new(AtomicI64::new(-1)),
+            merge_thread: Arc::new(OnceLock::new()),
             merge_readers: Arc::new(Mutex::new(Vec::new())),
             wrap_for_merge: None,
             reorder: None,
@@ -588,6 +602,7 @@ impl OneMerge {
             error: Arc::new(Mutex::new(None)),
             info: Arc::new(Mutex::new(None)),
             merge_start_ns: Arc::new(AtomicI64::new(-1)),
+            merge_thread: Arc::new(OnceLock::new()),
             merge_readers: Arc::new(Mutex::new(readers)),
             wrap_for_merge: None,
             reorder: None,
@@ -857,12 +872,13 @@ impl OneMerge {
 
     /// Marks the merge as started on the calling thread.
     ///
-    /// Equivalent to `OneMerge.mergeInit()`, which records the merge thread on
-    /// the merge's `OneMergeProgress`, where only assertions read it. This
-    /// port has no progress object (see the type's divergences), so there is
-    /// no owner to record and the call is a no-op kept for the sequence
-    /// `IndexWriter` performs.
-    pub fn merge_init(&self) {}
+    /// Equivalent to `OneMerge.mergeInit()` (`MergePolicy.java:264-266`):
+    /// `mergeProgress.setMergeThread(Thread.currentThread())`, whose `assert
+    /// this.owner == null` (`MergePolicy.java:170-173`) refuses a second call.
+    pub fn merge_init(&self) {
+        let recorded = self.merge_thread.set(std::thread::current().id());
+        debug_assert!(recorded.is_ok(), "mergeInit called twice on one merge");
+    }
 
     /// Returns when the merge started, in nanoseconds on
     /// [`now_ns`](crate::index::merge_scheduler::now_ns)'s clock, or `-1`
@@ -1026,8 +1042,9 @@ impl OneMerge {
     pub fn get_error(&self) -> Option<String> {
         self.error
             .lock()
-            .ok()
-            .and_then(|g| g.as_ref().map(ToString::to_string))
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(ToString::to_string)
     }
 
     /// Returns the error that stopped this merge, if any.
@@ -1037,8 +1054,9 @@ impl OneMerge {
     pub fn get_exception(&self) -> Option<crate::error::LuceneError> {
         self.error
             .lock()
-            .ok()
-            .and_then(|g| g.as_ref().map(crate::error::LuceneError::duplicate))
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(crate::error::LuceneError::duplicate)
     }
 
     /// Completes the merge with its success flag, and returns whether this
@@ -1197,7 +1215,9 @@ impl OneMerge {
     /// Public so that a [`SetMergeInfoHook`] can change the merged segment it
     /// has just set, as Java's override changes the shared `info` object.
     pub fn info(&self) -> std::sync::MutexGuard<'_, Option<SegmentCommitInfo>> {
-        self.info.lock().expect("OneMerge info mutex poisoned")
+        self.info
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Returns how many documents the merged segment will hold, before deletes
@@ -1542,9 +1562,12 @@ impl CfsSettings {
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `no_cfs_ratio` is outside `[0.0, 1.0]`.
     pub fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
-        if !(0.0..=1.0).contains(&no_cfs_ratio) {
+        // `MergePolicy.java:815`: `NaN` passes, as in Java.
+        #[allow(clippy::manual_range_contains)]
+        if no_cfs_ratio < 0.0 || no_cfs_ratio > 1.0 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "noCFSRatio must be 0.0 to 1.0 inclusive; got {no_cfs_ratio}"
+                "noCFSRatio must be 0.0 to 1.0 inclusive; got {}",
+                crate::util::java_fmt::double_to_string(no_cfs_ratio)
             )));
         }
         self.no_cfs_ratio
@@ -1578,7 +1601,8 @@ impl CfsSettings {
     pub fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
         if v < 0.0 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "maxCFSSegmentSizeMB must be >=0 (got {v})"
+                "maxCFSSegmentSizeMB must be >=0 (got {})",
+                crate::util::java_fmt::double_to_string(v)
             )));
         }
         let v = v * 1024. * 1024.;
@@ -1935,23 +1959,27 @@ pub fn merge_policy_size<P: MergePolicy + ?Sized>(
 }
 
 /// Renders `infos` the way `MergePolicy.segString(MergeContext, Iterable)` does.
+///
+/// # Errors
+///
+/// Propagates what [`MergeContext::num_deleted_docs`] raises.
 pub fn seg_string<'a>(
     merge_context: &dyn MergeContext,
     infos: impl IntoIterator<Item = &'a SegmentCommitInfo>,
-) -> String {
-    infos
+) -> Result<String> {
+    Ok(infos
         .into_iter()
         .map(|info| {
             // `info.toString(mergeContext.numDeletedDocs(info) - info.getDelCount())`
             // (`MergePolicy.java:872-876`) is `SegmentCommitInfo.toString(int
             // pendingDelCount)`, which adds the segment's own deletion count
             // back: the segment renders with every deletion the context knows.
-            info.to_string_with_pending_del_count(
-                merge_context.num_deleted_docs(info) - info.get_del_count(),
-            )
+            Ok(info.to_string_with_pending_del_count(
+                merge_context.num_deleted_docs(info)? - info.get_del_count(),
+            ))
         })
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect::<Result<Vec<_>>>()?
+        .join(" "))
 }
 
 /// Logs `message` to the merge context's info stream under the `"MP"` component,
@@ -2675,7 +2703,8 @@ impl TieredMergePolicy {
     pub fn set_max_merged_segment_mb(&self, v: f64) -> Result<&Self> {
         if v < 0.0 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "maxMergedSegmentMB must be >= 0.0 (got {v})"
+                "maxMergedSegmentMB must be >=0 (got {})",
+                crate::util::java_fmt::double_to_string(v)
             )));
         }
         let bytes = (v * 1024.0 * 1024.0).min(i64::MAX as f64);
@@ -2687,7 +2716,8 @@ impl TieredMergePolicy {
     pub fn set_floor_segment_mb(&self, v: f64) -> Result<&Self> {
         if v <= 0.0 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "floorSegmentMB must be > 0.0 (got {v})"
+                "floorSegmentMB must be > 0.0 (got {})",
+                crate::util::java_fmt::double_to_string(v)
             )));
         }
         let bytes = v * 1024.0 * 1024.0;
@@ -2722,7 +2752,8 @@ impl TieredMergePolicy {
     pub fn set_segments_per_tier(&self, v: f64) -> Result<&Self> {
         if v < 2.0 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "segmentsPerTier must be >= 2.0 (got {v})"
+                "segmentsPerTier must be >= 2.0 (got {})",
+                crate::util::java_fmt::double_to_string(v)
             )));
         }
         self.segs_per_tier.set(v);
@@ -2734,7 +2765,8 @@ impl TieredMergePolicy {
     pub fn set_deletes_pct_allowed(&self, v: f64) -> Result<&Self> {
         if v <= 0.0 || v > 50.0 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "indexPctDeletedTarget must be > 0 and <= 50 (got {v})"
+                "indexPctDeletedTarget must be > 0 and <= 50 (got {})",
+                crate::util::java_fmt::double_to_string(v)
             )));
         }
         self.deletes_pct_allowed.set(v);
@@ -2759,9 +2791,12 @@ impl TieredMergePolicy {
     /// Returns [`LuceneError`](crate::error::LuceneError)`::IllegalArgument`
     /// when `v` is outside `[0.0, 100.0]`.
     pub fn set_force_merge_deletes_pct_allowed(&self, v: f64) -> Result<&Self> {
-        if !(0.0..=100.0).contains(&v) {
+        // `TieredMergePolicy.java:235`: `NaN` passes, as in Java.
+        #[allow(clippy::manual_range_contains)]
+        if v < 0.0 || v > 100.0 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "forceMergeDeletesPctAllowed must be between 0.0 and 100.0 inclusive (got {v})"
+                "forceMergeDeletesPctAllowed must be between 0.0 and 100.0 inclusive (got {})",
+                crate::util::java_fmt::double_to_string(v)
             )));
         }
         self.force_merge_deletes_pct_allowed.set(v);
@@ -3066,7 +3101,7 @@ impl TieredMergePolicy {
                     mp_message(
                         &format!(
                             "  maybe={} score={} {} tooLarge={hit_too_large} size={} MB",
-                            seg_string(merge_context, candidate_infos),
+                            seg_string(merge_context, candidate_infos)?,
                             double_to_string(score.get_score()),
                             score.get_explanation(),
                             format_fixed(bytes_this_merge as f64 / 1024. / 1024., 3),
@@ -3109,7 +3144,7 @@ impl TieredMergePolicy {
                     mp_message(
                         &format!(
                             "  add merge={} size={} MB score={} {}{}",
-                            seg_string(merge_context, merge.segments.iter()),
+                            seg_string(merge_context, merge.segments.iter())?,
                             format_fixed(best_merge_bytes as f64 / 1024. / 1024., 3),
                             format_fixed(best_score.get_score(), 3),
                             best_score.get_explanation(),
@@ -3173,7 +3208,7 @@ impl MergePolicy for TieredMergePolicy {
                         seg_string(
                             merge_context,
                             std::iter::once(segment_infos.info(seg_size_docs.index))
-                        ),
+                        )?,
                         format_fixed(seg_bytes as f64 / 1024. / 1024., 3)
                     ),
                     merge_context,
@@ -3351,7 +3386,7 @@ impl MergePolicy for TieredMergePolicy {
                 &format!(
                     "findForcedMerges maxSegmentCount={max_num_segments} infos={} \
                      segmentsToMerge={{{}}}",
-                    seg_string(merge_context, segment_infos.iter()),
+                    seg_string(merge_context, segment_infos.iter())?,
                     entries.join(", ")
                 ),
                 merge_context,
@@ -3500,7 +3535,7 @@ impl MergePolicy for TieredMergePolicy {
                     mp_message(
                         &format!(
                             "add merge={}",
-                            seg_string(merge_context, merge.segments.iter())
+                            seg_string(merge_context, merge.segments.iter())?
                         ),
                         merge_context,
                     );
@@ -3534,7 +3569,7 @@ impl MergePolicy for TieredMergePolicy {
             mp_message(
                 &format!(
                     "findForcedDeletesMerges infos={} forceMergeDeletesPctAllowed={}",
-                    seg_string(merge_context, segment_infos.iter()),
+                    seg_string(merge_context, segment_infos.iter())?,
                     double_to_string(self.force_merge_deletes_pct_allowed.get())
                 ),
                 merge_context,
@@ -3812,9 +3847,9 @@ impl LogMergePolicy {
     /// Returns `IllegalArgument` when `v` is below 2.
     pub fn set_merge_factor(&self, v: i32) -> Result<&Self> {
         if v < 2 {
-            return Err(crate::error::LuceneError::illegal_argument(format!(
-                "mergeFactor cannot be less than 2 (got {v})"
-            )));
+            return Err(crate::error::LuceneError::illegal_argument(
+                "mergeFactor cannot be less than 2",
+            ));
         }
         self.merge_factor.set(v);
         Ok(self)
@@ -4552,7 +4587,7 @@ impl MergeContext for CachingMergeContext<'_> {
         Ok(count)
     }
 
-    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
+    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> Result<i32> {
         self.inner.num_deleted_docs(info)
     }
 
@@ -5274,9 +5309,9 @@ impl TemporalMergePolicy {
         segment_info: &SegmentCommitInfo,
     ) -> Result<Option<SegmentDateRange>> {
         let si = &segment_info.info;
-        let codec = si.codec().ok_or_else(|| {
-            crate::error::LuceneError::illegal_state(format!("segment {} has no codec", si.name))
-        })?;
+        let codec = si
+            .codec()
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
         let context = &*crate::store::READONCE_IO_CONTEXT;
 
         let mut compound_dir = if si.get_use_compound_file() {
@@ -5941,9 +5976,7 @@ impl SoftDeletesRetentionMergePolicy {
             .get_leaf_contexts()
             .first()
             .cloned()
-            .ok_or_else(|| {
-                crate::error::LuceneError::illegal_state("the searcher has no leaf".to_string())
-            })?;
+            .expect("INVARIANT: a searcher over a leaf reader has that leaf");
         weight.scorer(&context)
     }
 }
@@ -6279,7 +6312,7 @@ mod merge_policy_setting_tests {
         assert_eq!(p.get_deletes_pct_allowed(), 1.0);
         let err = p.set_deletes_pct_allowed(0.0).unwrap_err().to_string();
         assert!(
-            err.contains("indexPctDeletedTarget must be > 0 and <= 50 (got 0)"),
+            err.contains("indexPctDeletedTarget must be > 0 and <= 50 (got 0.0)"),
             "{err}"
         );
         assert!(p.set_deletes_pct_allowed(50.0).is_ok());
@@ -6297,7 +6330,7 @@ mod merge_policy_setting_tests {
             .to_string();
         assert!(
             err.contains(
-                "forceMergeDeletesPctAllowed must be between 0.0 and 100.0 inclusive (got 101)"
+                "forceMergeDeletesPctAllowed must be between 0.0 and 100.0 inclusive (got 101.0)"
             ),
             "{err}"
         );
@@ -6651,7 +6684,7 @@ mod reader_variant_forwarding_tests {
             HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap();
         SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, [0u8; 16]).unwrap()
@@ -6727,8 +6760,8 @@ mod log_merge_policy_size_tests {
             Ok(self.0)
         }
 
-        fn num_deleted_docs(&self, _info: &SegmentCommitInfo) -> i32 {
-            self.0
+        fn num_deleted_docs(&self, _info: &SegmentCommitInfo) -> crate::error::Result<i32> {
+            Ok(self.0)
         }
 
         fn get_merging_segments(&self) -> HashSet<String> {
@@ -6758,7 +6791,7 @@ mod log_merge_policy_size_tests {
             HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap();
         info.set_files(["_0.dat".to_string()]).unwrap();
@@ -6940,7 +6973,10 @@ mod tiered_merge_policy_selection_tests {
         }
         fn message(&self, component: &str, message: &str) {
             if component == "MP" {
-                self.0.lock().unwrap().push(message.to_string());
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(message.to_string());
             }
         }
         fn is_enabled(&self, _component: &str) -> bool {
@@ -6957,8 +6993,8 @@ mod tiered_merge_policy_selection_tests {
         fn num_deletes_to_merge(&self, info: &SegmentCommitInfo) -> Result<i32> {
             Ok(info.get_del_count())
         }
-        fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
-            info.get_del_count()
+        fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> crate::error::Result<i32> {
+            Ok(info.get_del_count())
         }
         fn get_merging_segments(&self) -> HashSet<String> {
             HashSet::new()
@@ -6988,7 +7024,7 @@ mod tiered_merge_policy_selection_tests {
             HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap();
         info.set_files([file]).unwrap();
@@ -7034,7 +7070,11 @@ mod tiered_merge_policy_selection_tests {
                 &Context(Arc::clone(&stream)),
             )
             .unwrap();
-        let lines = stream.0.lock().unwrap().clone();
+        let lines = stream
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert!(
             lines
                 .iter()
@@ -7065,7 +7105,11 @@ mod tiered_merge_policy_selection_tests {
             )
             .unwrap()
             .expect("twelve equal segments over a tier of 8 merge");
-        let lines = stream.0.lock().unwrap().clone();
+        let lines = stream
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(lines.iter().filter(|l| l.starts_with("  seg=")).count(), 12);
         assert!(lines.iter().any(|l| l == "findMerges: 12 segments"));
         assert!(lines.iter().any(|l| l.starts_with("  maybe=")));
@@ -7104,7 +7148,11 @@ mod tiered_merge_policy_selection_tests {
             names(&spec),
             vec![vec!["_0"], vec!["_1"], vec!["_2"], vec!["_3"]]
         );
-        let lines = stream.0.lock().unwrap().clone();
+        let lines = stream
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(
             lines
                 .iter()

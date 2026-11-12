@@ -443,14 +443,15 @@ impl Decompressor for Lz4Decompressor {
         // Add 7 padding bytes; not required but may help decompression speed.
         let buffer_len = original_length + 7;
         if bytes.bytes.len() < buffer_len {
-            bytes.bytes = vec![0; buffer_len];
+            bytes.bytes = vec![0; crate::util::ArrayUtil::oversize(buffer_len, 1)];
         }
         let decompressed_length = Lz4::decompress(input, offset + length, &mut bytes.bytes, 0)?;
+        // `CompressionMode.java:135-138`.
         if decompressed_length > original_length {
-            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("corrupted: lengths mismatch: {decompressed_length} > {original_length}"),
-            ))));
+            return Err(LuceneError::corrupt_index(
+                format!("Corrupted: lengths mismatch: {decompressed_length} > {original_length}"),
+                input.to_java_string(),
+            ));
         }
         bytes.offset = offset;
         bytes.length = length;
@@ -539,14 +540,11 @@ impl Compressor for Lz4WithPresetDictCompressor {
         let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
         self.buffer.clear();
         self.buffer.resize(dict_length + block_length, 0);
-        out.write_v_int(i32::try_from(dict_length).map_err(|_| {
-            LuceneError::illegal_state(format!("dictionary too large: {dict_length}"))
-        })?)?;
-        out.write_v_int(i32::try_from(block_length).map_err(|_| {
-            LuceneError::illegal_state(format!("block too large: {block_length}"))
-        })?)?;
+        // `int` lengths in Java, which never exceed a chunk.
+        out.write_v_int(dict_length as i32)?;
+        out.write_v_int(block_length as i32)?;
 
-        self.compressed.reset();
+        self.compressed.reset()?;
         // The dictionary first, compressed against nothing.
         self.buffer[..dict_length].copy_from_slice(&bytes[..dict_length]);
         self.do_compress(0, dict_length, out)?;
@@ -591,20 +589,33 @@ impl Lz4WithPresetDictDecompressor {
         block_length: usize,
     ) -> Result<usize> {
         input.read_v_int()?; // compressed length of the dictionary, unused
+                             // `originalLength / blockLength`: the JVM's `ArithmeticException`
+                             // for a zero block length.
         if block_length == 0 {
-            return Ok(0);
+            return Err(LuceneError::from(LuceneErrorKind::Arithmetic(
+                "/ by zero".to_string(),
+            )));
         }
         let mut total_length = dict_length;
         let mut count = 0;
+        // `ArrayUtil.growNoCopy(compressedLengths, originalLength / blockLength
+        // + 1)`, which over-allocates as `ArrayUtil.oversize` does.
         let capacity = original_length / block_length + 1;
         if self.compressed_lengths.len() < capacity {
-            self.compressed_lengths.resize(capacity, 0);
+            self.compressed_lengths
+                .resize(crate::util::ArrayUtil::oversize(capacity, 4), 0);
         }
         while total_length < original_length {
+            // `compressedLengths[i++]`: the JVM's
+            // `ArrayIndexOutOfBoundsException` past the array.
             if count >= self.compressed_lengths.len() {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
-                    "more compressed sub blocks than the chunk can hold".to_string(),
-                )));
+                return Err(LuceneError::unchecked(
+                    "java.lang.ArrayIndexOutOfBoundsException",
+                    format!(
+                        "Index {count} out of bounds for length {}",
+                        self.compressed_lengths.len()
+                    ),
+                ));
             }
             self.compressed_lengths[count] = input.read_v_int()?;
             count += 1;
@@ -637,13 +648,18 @@ impl Decompressor for Lz4WithPresetDictDecompressor {
             return Ok(());
         }
 
+        // **Divergence from Lucene 10.5.0.** Java keeps the two lengths as
+        // `int`s and a negative one fails later, in `ArrayUtil.grow*` or as the
+        // decompressor's own "dict length" `CorruptIndexException`; this
+        // decompressor works in `usize`, so a negative length is reported here
+        // as corruption.
         let dict_length = usize::try_from(input.read_v_int()?).map_err(|_| {
-            LuceneError::from(LuceneErrorKind::CorruptIndex(
+            LuceneError::from(LuceneErrorKind::corrupt_index_message(
                 "negative dictionary length".to_string(),
             ))
         })?;
         let block_length = usize::try_from(input.read_v_int()?).map_err(|_| {
-            LuceneError::from(LuceneErrorKind::CorruptIndex(
+            LuceneError::from(LuceneErrorKind::corrupt_index_message(
                 "negative block length".to_string(),
             ))
         })?;
@@ -658,9 +674,11 @@ impl Decompressor for Lz4WithPresetDictDecompressor {
 
         // The dictionary is needed by every block, so it is always read.
         if Lz4::decompress(input, dict_length, &mut self.buffer, 0)? != dict_length {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
-                "Illegal dict length".to_string(),
-            )));
+            // `LZ4WithPresetDictCompressionMode.java:105-107`.
+            return Err(LuceneError::corrupt_index(
+                "Illegal dict length",
+                input.to_java_string(),
+            ));
         }
 
         let mut offset_in_block = dict_length;
@@ -801,64 +819,83 @@ fn write_deflate_block(
         return out.write_v_int(0);
     }
     deflate_to(compressor, input, scratch)?;
-    let length = i32::try_from(scratch.len()).map_err(|_| {
-        LuceneError::illegal_state(format!("compressed block too large: {}", scratch.len()))
-    })?;
-    out.write_v_int(length)?;
+    // `out.writeVInt(compressedLength)`, an `int` in Java.
+    out.write_v_int(scratch.len() as i32)?;
     out.write_bytes(scratch, 0, scratch.len())
 }
 
-/// Reads one deflate-compressed block written by [`write_deflate_block`] and
-/// appends the inflated bytes to `out`.
-///
-/// Equivalent to `DeflateWithPresetDictDecompressor.doDecompress`, including
-/// the trailing dummy byte Lucene appends "for compliance" with the raw
-/// inflater contract. `expected` is how many bytes the block is known to hold,
-/// used only to size the destination.
-fn read_deflate_block(
+/// Reads the `compressedLength` bytes of one deflate block into `compressed`,
+/// followed by the extra zero "dummy byte" Lucene appends "for compliance"
+/// with the raw inflater contract (`CompressionMode.java:214-220`,
+/// `DeflateWithPresetDictCompressionMode.java:84-89`). Returns the padded
+/// length handed to `Inflater.setInput`.
+fn read_compressed_block(
     input: &mut dyn DataInput,
-    decompressor: &mut Decompress,
     compressed: &mut Vec<u8>,
-    out: &mut Vec<u8>,
-    expected: usize,
-) -> Result<()> {
-    let compressed_length = input.read_v_int()?;
+    compressed_length: i32,
+) -> Result<usize> {
+    // **Divergence from Lucene 10.5.0.** Java grows its buffer to
+    // `compressedLength + 1` and reads `compressedLength` bytes, so a negative
+    // length fails inside `ArrayUtil.growNoCopy` or the input's `readBytes`,
+    // with whatever that raises; this port sizes a `Vec` from it, so a negative
+    // length is reported here as corruption.
     if compressed_length < 0 {
-        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "negative compressed block length: {compressed_length}"
-        ))));
-    }
-    if compressed_length == 0 {
-        return Ok(());
+        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("negative compressed block length: {compressed_length}"),
+        )));
     }
     let compressed_length = compressed_length as usize;
+    let padded_length = compressed_length + 1;
     compressed.clear();
-    compressed.resize(compressed_length + 1, 0);
+    compressed.resize(padded_length, 0);
     input.read_bytes(Some(compressed), 0, compressed_length)?;
-    // The extra byte is already zero; raw inflate needs one byte past the end.
-    out.reserve(expected.max(1));
-    loop {
-        if out.len() == out.capacity() {
-            out.reserve(out.capacity().max(64));
-        }
-        let consumed = decompressor.total_in() as usize;
-        let produced = decompressor.total_out();
-        let status = decompressor
-            .decompress_vec(&compressed[consumed..], out, FlushDecompress::Finish)
-            .map_err(|error| {
-                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                    "inflate failed: {error}"
-                )))
-            })?;
-        if status == Status::StreamEnd {
-            return Ok(());
-        }
-        if decompressor.total_in() as usize == consumed && decompressor.total_out() == produced {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
-                "invalid decoder state: inflate made no progress and did not finish".to_string(),
-            )));
-        }
+    Ok(padded_length)
+}
+
+/// One `Inflater.inflate(b, off, len)` call over the whole padded input,
+/// followed by the `finished()` check every Lucene deflate decompressor makes.
+/// Returns the number of bytes inflated into `out` (`len` is `out.len()`).
+///
+/// The JDK's `Inflater.inflate` runs a single zlib `inflate` pass, which
+/// consumes input and fills `out` until the stream ends or either runs out;
+/// a single `Decompress::decompress` call is that pass. A zlib data error is
+/// Java's `DataFormatException(strm->msg)`, which the callers wrap as `new
+/// IOException(e)` (message `e.toString()`).
+///
+/// # Errors
+///
+/// The `IOException` above, and `CorruptIndexException("Invalid decoder
+/// state: needsInput=" + needsInput() + ", needsDict=" + needsDictionary(),
+/// in)` when the stream did not finish (`CompressionMode.java:231-237`,
+/// `DeflateWithPresetDictCompressionMode.java:96-102`). `needsInput()` is
+/// whether the whole input was consumed; `needsDictionary()` is `false`,
+/// since a raw (`nowrap`) inflater never asks for one.
+fn java_inflate(
+    decompressor: &mut Decompress,
+    compressed: &[u8],
+    out: &mut [u8],
+    input: &dyn DataInput,
+) -> Result<usize> {
+    let in_before = decompressor.total_in();
+    let out_before = decompressor.total_out();
+    let status = decompressor
+        .decompress(compressed, out, FlushDecompress::Sync)
+        .map_err(|error| {
+            let message = match error.message() {
+                Some(msg) => format!("java.util.zip.DataFormatException: {msg}"),
+                None => "java.util.zip.DataFormatException".to_string(),
+            };
+            LuceneError::from(LuceneErrorKind::Io(std::io::Error::other(message)))
+        })?;
+    let produced = (decompressor.total_out() - out_before) as usize;
+    if status != Status::StreamEnd {
+        let needs_input = (decompressor.total_in() - in_before) as usize == compressed.len();
+        return Err(LuceneError::corrupt_index(
+            format!("Invalid decoder state: needsInput={needs_input}, needsDict=false"),
+            input.to_java_string(),
+        ));
     }
+    Ok(produced)
 }
 
 /// Deflates a whole chunk in one raw-deflate stream.
@@ -941,22 +978,28 @@ impl Decompressor for DeflateDecompressor {
             bytes.length = 0;
             return Ok(());
         }
-        let mut out: Vec<u8> = Vec::with_capacity(original_length);
+        // `CompressionMode.java:211-243`.
+        let compressed_length = input.read_v_int()?;
+        let padded_length = read_compressed_block(input, &mut self.compressed, compressed_length)?;
+        // A fresh `new Inflater(true)` per call.
         self.decompressor.reset(false);
-        read_deflate_block(
-            input,
-            &mut self.decompressor,
-            &mut self.compressed,
-            &mut out,
-            original_length,
-        )?;
-        if out.len() != original_length {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "Lengths mismatch: {} != {original_length}",
-                out.len()
-            ))));
+        bytes.offset = 0;
+        bytes.length = 0;
+        if bytes.bytes.len() < original_length {
+            bytes.bytes = crate::util::ArrayUtil::grow_no_copy(&bytes.bytes, original_length);
         }
-        bytes.bytes = out;
+        bytes.length = java_inflate(
+            &mut self.decompressor,
+            &self.compressed[..padded_length],
+            &mut bytes.bytes[..original_length],
+            input,
+        )?;
+        if bytes.length != original_length {
+            return Err(LuceneError::corrupt_index(
+                format!("Lengths mismatch: {} != {original_length}", bytes.length),
+                input.to_java_string(),
+            ));
+        }
         bytes.offset = offset;
         bytes.length = length;
         Ok(())
@@ -1007,12 +1050,9 @@ impl Compressor for DeflateWithPresetDictCompressor {
         input.read_bytes(Some(&mut bytes), 0, len)?;
         let dict_length = len / (NUM_SUB_BLOCKS * DEFLATE_DICT_SIZE_FACTOR);
         let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
-        out.write_v_int(i32::try_from(dict_length).map_err(|_| {
-            LuceneError::illegal_state(format!("dictionary too large: {dict_length}"))
-        })?)?;
-        out.write_v_int(i32::try_from(block_length).map_err(|_| {
-            LuceneError::illegal_state(format!("block too large: {block_length}"))
-        })?)?;
+        // `int` lengths in Java, which never exceed a chunk.
+        out.write_v_int(dict_length as i32)?;
+        out.write_v_int(block_length as i32)?;
 
         self.buffer.clear();
         self.buffer.resize(dict_length + block_length, 0);
@@ -1094,38 +1134,38 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
             return Ok(());
         }
 
+        // **Divergence from Lucene 10.5.0.** Java keeps the two lengths as
+        // `int`s and a negative one fails later, in `ArrayUtil.grow*` or as the
+        // decompressor's own "dict length" `CorruptIndexException`; this
+        // decompressor works in `usize`, so a negative length is reported here
+        // as corruption.
         let dict_length = usize::try_from(input.read_v_int()?).map_err(|_| {
-            LuceneError::from(LuceneErrorKind::CorruptIndex(
+            LuceneError::from(LuceneErrorKind::corrupt_index_message(
                 "negative dictionary length".to_string(),
             ))
         })?;
         let block_length = usize::try_from(input.read_v_int()?).map_err(|_| {
-            LuceneError::from(LuceneErrorKind::CorruptIndex(
+            LuceneError::from(LuceneErrorKind::corrupt_index_message(
                 "negative block length".to_string(),
             ))
         })?;
-        if block_length == 0 {
-            // Only a zero-length chunk can have zero-length blocks, and that
-            // case returned above; a zero here would loop forever.
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
-                "a non-empty chunk cannot have zero-length sub blocks".to_string(),
-            )));
-        }
 
-        let mut out: Vec<u8> = Vec::with_capacity(dict_length + block_length);
+        // `DeflateWithPresetDictCompressionMode.java:116-150`: the
+        // dictionary first, then every block that intersects the interval,
+        // each inflated after the bytes already in `bytes`.
+        if bytes.bytes.len() < dict_length {
+            bytes.bytes = crate::util::ArrayUtil::grow_no_copy(&bytes.bytes, dict_length);
+        }
+        bytes.offset = 0;
+        bytes.length = 0;
+        // A fresh `new Inflater(true)` per call.
         self.decompressor.reset(false);
-        read_deflate_block(
-            input,
-            &mut self.decompressor,
-            &mut self.compressed,
-            &mut out,
-            dict_length,
-        )?;
-        if out.len() != dict_length {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "Unexpected dict length: {} != {dict_length}",
-                out.len()
-            ))));
+        self.do_decompress(input, bytes)?;
+        if dict_length != bytes.length {
+            return Err(LuceneError::corrupt_index(
+                "Unexpected dict length",
+                input.to_java_string(),
+            ));
         }
 
         let mut offset_in_block = dict_length;
@@ -1133,11 +1173,6 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
         // Skip the blocks that end before the interval starts.
         while offset_in_block + block_length < offset {
             let compressed_length = input.read_v_int()?;
-            if compressed_length < 0 {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                    "negative compressed block length: {compressed_length}"
-                ))));
-            }
             input.skip_bytes(i64::from(compressed_length))?;
             offset_in_block += block_length;
             offset_in_bytes_ref -= block_length;
@@ -1145,28 +1180,47 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
 
         // Read the blocks that intersect the interval.
         while offset_in_block < offset + length {
+            if bytes.bytes.len() < bytes.length + block_length {
+                bytes.bytes =
+                    crate::util::ArrayUtil::grow(&bytes.bytes, bytes.length + block_length);
+            }
             self.decompressor.reset(false);
             self.decompressor
-                .set_dictionary(&out[..dict_length])
+                .set_dictionary(&bytes.bytes[..dict_length])
                 .map_err(|error| {
-                    LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                        "inflate dictionary rejected: {error}"
-                    )))
+                    LuceneError::from(LuceneErrorKind::Io(std::io::Error::other(format!(
+                        "java.lang.IllegalArgumentException: {error}"
+                    ))))
                 })?;
-            read_deflate_block(
-                input,
-                &mut self.decompressor,
-                &mut self.compressed,
-                &mut out,
-                block_length,
-            )?;
+            self.do_decompress(input, bytes)?;
             offset_in_block += block_length;
         }
 
-        bytes.bytes = out;
         bytes.offset = offset_in_bytes_ref;
         bytes.length = length;
         debug_assert!(bytes.is_valid().is_ok(), "{:?}", bytes.is_valid());
+        Ok(())
+    }
+}
+
+impl DeflateWithPresetDictDecompressor {
+    /// `DeflateWithPresetDictDecompressor.doDecompress`
+    /// (`DeflateWithPresetDictCompressionMode.java:76-103`): an empty block
+    /// adds nothing; any other inflates into the free tail of `bytes.bytes`
+    /// and advances `bytes.length`.
+    fn do_decompress(&mut self, input: &mut dyn DataInput, bytes: &mut BytesRef) -> Result<()> {
+        let compressed_length = input.read_v_int()?;
+        if compressed_length == 0 {
+            return Ok(());
+        }
+        let padded_length = read_compressed_block(input, &mut self.compressed, compressed_length)?;
+        let start = bytes.length;
+        bytes.length += java_inflate(
+            &mut self.decompressor,
+            &self.compressed[..padded_length],
+            &mut bytes.bytes[start..],
+            input,
+        )?;
         Ok(())
     }
 }
@@ -1624,6 +1678,59 @@ mod tests {
                 "merge store matchedCount=1 vs 3".to_string(),
                 "2 non-bulk merges".to_string()
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+    use crate::store::{DataOutput, MockIndexInput, MockIndexOutput};
+
+    /// G-109: the LZ4 decompressor refuses a block that decompresses past
+    /// `originalLength` with `"Corrupted: lengths mismatch: <decompressed> >
+    /// <original>"` (`CompressionMode.java:135-138`). One LZ4 sequence of ten
+    /// literals decompresses to ten bytes.
+    #[test]
+    fn gap_g109_lz4_lengths_mismatch_message() {
+        let mut block = vec![0xA0u8];
+        block.extend_from_slice(b"abcdefghij");
+        let mut input = MockIndexInput::new(block, "block");
+        let mut bytes = BytesRef::new(Vec::new());
+        let error = FAST
+            .new_decompressor()
+            .decompress(&mut input, 5, 0, 5, &mut bytes)
+            .unwrap_err();
+        assert_eq!(
+            error.original_message(),
+            Some("Corrupted: lengths mismatch: 10 > 5")
+        );
+    }
+
+    /// G-109: a deflate block that ends before the stream does is
+    /// `CorruptIndexException("Invalid decoder state: needsInput=true,
+    /// needsDict=false")` (`CompressionMode.java:229-237`).
+    #[test]
+    fn gap_g109_deflate_invalid_decoder_state_message() {
+        let text = b"hello hello hello hello hello world world world".repeat(4);
+        let mut compressor = flate2::Compress::new(flate2::Compression::new(6), false);
+        let mut compressed = vec![0u8; 1024];
+        compressor
+            .compress(&text, &mut compressed, flate2::FlushCompress::Finish)
+            .unwrap();
+        compressed.truncate(compressor.total_out() as usize / 2);
+        let mut out = MockIndexOutput::new("block", "block");
+        out.write_v_int(compressed.len() as i32).unwrap();
+        out.write_bytes(&compressed, 0, compressed.len()).unwrap();
+        let mut input = MockIndexInput::new(out.into_inner(), "block");
+        let mut bytes = BytesRef::new(Vec::new());
+        let error = HIGH_COMPRESSION
+            .new_decompressor()
+            .decompress(&mut input, text.len(), 0, text.len(), &mut bytes)
+            .unwrap_err();
+        assert_eq!(
+            error.original_message(),
+            Some("Invalid decoder state: needsInput=true, needsDict=false")
         );
     }
 }

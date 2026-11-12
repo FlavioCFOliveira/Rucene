@@ -133,7 +133,7 @@ impl MergeContext for NoContext {
     fn num_deletes_to_merge(&self, _info: &SegmentCommitInfo) -> rucene::error::Result<i32> {
         unreachable!("ForceMergePolicy.findMerges reads no argument")
     }
-    fn num_deleted_docs(&self, _info: &SegmentCommitInfo) -> i32 {
+    fn num_deleted_docs(&self, _info: &SegmentCommitInfo) -> rucene::error::Result<i32> {
         unreachable!("ForceMergePolicy.findMerges reads no argument")
     }
     fn get_merging_segments(&self) -> HashSet<String> {

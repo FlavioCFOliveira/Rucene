@@ -352,7 +352,7 @@ impl Query for RandomQuery {
                 .is_some_and(|o| self.equals_to(o))
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         // `Objects.hash(seed, density)`, then the identity of `docValues` and
         // the class hash.
         let mut h: i32 = 31;
@@ -363,8 +363,8 @@ impl Query for RandomQuery {
         let mut identity = std::collections::hash_map::DefaultHasher::new();
         (Arc::as_ptr(&self.doc_values) as usize).hash(&mut identity);
         h = h.wrapping_mul(31).wrapping_add(identity.finish() as i32);
-        h = h.wrapping_mul(31).wrapping_add(self.class_hash() as i32);
-        h as u32 as u64
+        h = h.wrapping_mul(31).wrapping_add(self.class_hash());
+        h
     }
 
     fn as_any(&self) -> &dyn Any {

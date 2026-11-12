@@ -615,7 +615,7 @@ impl SegmentTermsEnum {
         // all N terms up front then seeking could do a fast
         // bsearch w/in the block...
 
-        self.state.block_file_pointer = self.input.file_pointer();
+        self.state.block_file_pointer = self.input.file_pointer()?;
         self.block_term_count = self.input.read_v_int()?;
         if self.block_term_count == 0 {
             return Ok(false);

@@ -218,6 +218,17 @@ impl PendingDeletes {
         self.get_live_docs()
     }
 
+    /// [`get_hard_live_docs`](Self::get_hard_live_docs) as the shared object
+    /// itself, so that two calls between which no delete was applied return
+    /// the same object, as Java's copy-on-write `liveDocs` reference does.
+    pub(crate) fn get_hard_live_docs_shared(&mut self) -> Option<Arc<dyn Bits>> {
+        // Prevent modifications to the returned live docs.
+        self.writeable_live_docs = None;
+        self.live_docs
+            .as_ref()
+            .map(|bits| Arc::clone(bits.shared()))
+    }
+
     /// Returns the number of pending deletes not yet written to disk.
     pub fn num_pending_deletes(&self) -> i32 {
         self.pending_delete_count
@@ -308,7 +319,7 @@ impl PendingDeletes {
         let live_docs: &dyn Bits = self
             .live_docs
             .as_ref()
-            .expect("live_docs must exist when pending_delete_count > 0");
+            .expect("INVARIANT: live_docs exist when pending_delete_count > 0");
         // We have new deletes: `assert liveDocs.length() == info.info.maxDoc()`
         // (`PendingDeletes.java:179`).
         debug_assert_eq!(
@@ -320,7 +331,7 @@ impl PendingDeletes {
             .info
             .info
             .codec()
-            .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
         let live_docs_format = codec.live_docs_format();
 
         let write_result = live_docs_format.write_live_docs(
@@ -690,6 +701,12 @@ impl PendingSoftDeletes {
         self.hard_deletes.get_live_docs()
     }
 
+    /// [`get_hard_live_docs`](Self::get_hard_live_docs) as the shared object
+    /// itself; see `PendingDeletes::get_hard_live_docs_shared`.
+    pub(crate) fn get_hard_live_docs_shared(&mut self) -> Option<Arc<dyn Bits>> {
+        self.hard_deletes.get_hard_live_docs_shared()
+    }
+
     /// Returns the total number of pending deletes (soft + hard).
     ///
     /// Equivalent to `PendingSoftDeletes.numPendingDeletes()`.
@@ -739,76 +756,33 @@ impl PendingSoftDeletes {
         Ok(())
     }
 
+    /// The soft-delete branch of `PendingSoftDeletes.onNewReader`
+    /// (`PendingSoftDeletes.java:79-88`): a first
+    /// `FieldExistsQuery.getDocValuesDocIdSetIterator` probes for any document,
+    /// and only then a second one is applied to the live-docs bits, lazily.
     fn apply_soft_deletes_from_reader(&mut self, reader: &SegmentReader) -> Result<i32> {
-        let docs_with_values = match Self::doc_values_doc_ids(reader, &self.field)? {
-            Some(docs) => docs,
-            None => return Ok(0),
+        use crate::search::field_exists_query::FieldExistsQuery;
+        let Some(mut iterator) =
+            FieldExistsQuery::get_doc_values_doc_id_set_iterator(&self.field, reader)?
+        else {
+            return Ok(0);
         };
-        // `PendingSoftDeletes.onNewReader` only touches the live-docs bit set
-        // when the iterator produced at least one document; an empty iterator
-        // means "nothing is soft-deleted in this segment" and leaves the bits
-        // un-materialised.
-        if docs_with_values.is_empty() {
+        if iterator.next_doc()? == NO_MORE_DOCS {
+            // nothing is deleted we don't have a soft deletes field in this
+            // segment
             return Ok(0);
         }
-
+        let mut iterator =
+            FieldExistsQuery::get_doc_values_doc_id_set_iterator(&self.field, reader)?
+                .ok_or_else(LuceneError::null_pointer)?;
         let mutable = self.get_mutable_bits();
-        let mut docs = docs_with_values.into_iter();
         // Java hands `applySoftDeletes` a plain doc-values iterator here, which
         // is not a `DocValuesFieldUpdates.Iterator`, so its `hasValue` is null
         // and every document takes the clear branch.
-        Self::apply_soft_deletes(mutable, || Ok(docs.next().map(|doc| (doc, true))))
-    }
-
-    /// Returns the documents that carry a value for `field`, or `None` when the
-    /// segment has no doc values for it.
-    ///
-    /// Equivalent to `org.apache.lucene.search.FieldExistsQuery#getDocValuesDocIdSetIterator`,
-    /// which `PendingSoftDeletes.onNewReader` uses to find the soft-deleted
-    /// documents. All five doc-values kinds are covered, as they are in Java: a
-    /// soft-deletes field is normally numeric, but nothing in Lucene requires
-    /// that, and returning nothing for the other three kinds made this port
-    /// disagree with the segment's own soft-delete count.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java returns the iterator itself and
-    /// consumes it lazily; this collects the document ids first, because the
-    /// five doc-values traits here cannot be handed back as one boxed
-    /// `DocIdSetIterator` without a trait upcast.
-    fn doc_values_doc_ids(reader: &SegmentReader, field: &str) -> Result<Option<Vec<i32>>> {
-        let field_infos = reader.get_field_infos();
-        let dv_type = match field_infos.field_info(field) {
-            Some(fi) => fi.get_doc_values_type(),
-            None => return Ok(None),
-        };
-
-        macro_rules! drain {
-            ($values:expr) => {{
-                match $values? {
-                    Some(mut values) => {
-                        let mut docs = Vec::new();
-                        while values.next_doc()? != NO_MORE_DOCS {
-                            docs.push(values.doc_id());
-                        }
-                        Some(docs)
-                    }
-                    None => None,
-                }
-            }};
-        }
-
-        let docs = match dv_type {
-            DocValuesType::NONE => None,
-            DocValuesType::NUMERIC => drain!(LeafReader::get_numeric_doc_values(reader, field)),
-            DocValuesType::BINARY => drain!(LeafReader::get_binary_doc_values(reader, field)),
-            DocValuesType::SORTED => drain!(LeafReader::get_sorted_doc_values(reader, field)),
-            DocValuesType::SORTED_NUMERIC => {
-                drain!(LeafReader::get_sorted_numeric_doc_values(reader, field))
-            }
-            DocValuesType::SORTED_SET => {
-                drain!(LeafReader::get_sorted_set_doc_values(reader, field))
-            }
-        };
-        Ok(docs)
+        Self::apply_soft_deletes(mutable, || {
+            let doc = iterator.next_doc()?;
+            Ok((doc != NO_MORE_DOCS).then_some((doc, true)))
+        })
     }
 
     /// Clears every bit that is set and is also produced by `next`, and sets
@@ -1105,9 +1079,9 @@ impl PendingSoftDeletes {
     /// Propagates whatever opening or decoding the field-infos file raises.
     pub fn read_field_infos(info: &SegmentCommitInfo) -> Result<FieldInfos> {
         let seg_info = &info.info;
-        let codec = seg_info.codec().ok_or_else(|| {
-            LuceneError::illegal_state(format!("segment {} has no codec", seg_info.name))
-        })?;
+        let codec = seg_info
+            .codec()
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
         let fis_format = codec.field_infos_format();
         let context = &*READONCE_IO_CONTEXT;
         if info.has_field_updates() {
@@ -1408,7 +1382,10 @@ pub struct ReadersAndUpdates {
 
 impl std::fmt::Debug for ReadersAndUpdates {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state = self.state.lock().expect("state mutex poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f.debug_struct("ReadersAndUpdates")
             .field("seg", &state.info.info.name)
             .field("ref_count", &self.ref_count.load(Ordering::Relaxed))
@@ -1425,7 +1402,10 @@ impl std::fmt::Display for ReadersAndUpdates {
     /// updates were added. It also leaves its parenthesis open, and so does the
     /// `PendingDeletes` it embeds. Measured against `lucene-core-10.5.0.jar`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state = self.state.lock().expect("state mutex poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         write!(
             f,
             "ReadersAndLiveDocs(seg={} pendingDeletes={}",
@@ -1550,7 +1530,10 @@ impl ReadersAndUpdates {
     /// Equivalent to `IndexWriter.publishFlushedSegment`'s assignment
     /// `rld.sortMap = sortMap`.
     pub fn set_sort_map(&self, sort_map: Arc<SorterDocMap>) {
-        self.state.lock().expect("state mutex poisoned").sort_map = Some(sort_map);
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .sort_map = Some(sort_map);
     }
 
     /// Returns the permutation the segment was sorted with on flush, when one
@@ -1560,7 +1543,7 @@ impl ReadersAndUpdates {
     pub fn sort_map(&self) -> Option<Arc<SorterDocMap>> {
         self.state
             .lock()
-            .expect("state mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .sort_map
             .clone()
     }
@@ -1571,7 +1554,10 @@ impl ReadersAndUpdates {
     /// resolved an update to, which no file shows.
     #[cfg(test)]
     pub(crate) fn pending_dv_updates_single_valued(&self, field: &str) -> Vec<bool> {
-        let state = self.state.lock().expect("state mutex poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .pending_dv_updates
             .get(field)
@@ -1595,7 +1581,7 @@ impl ReadersAndUpdates {
     pub fn info(&self) -> SegmentCommitInfo {
         self.state
             .lock()
-            .expect("state mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .info
             .clone()
     }
@@ -1604,7 +1590,7 @@ impl ReadersAndUpdates {
     pub fn segment_name(&self) -> String {
         self.state
             .lock()
-            .expect("state mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .info
             .info
             .name
@@ -1613,7 +1599,10 @@ impl ReadersAndUpdates {
 
     /// Returns the delete count.
     pub fn get_del_count(&self) -> i32 {
-        let state = self.state.lock().expect("state mutex poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.get_del_count(),
             PendingDeletesKind::Soft(pd) => pd.get_del_count(),
@@ -1622,7 +1611,10 @@ impl ReadersAndUpdates {
 
     /// Returns a `SegmentReader`.  The caller must call `release` when done.
     pub fn get_reader(&self, context: &dyn IOContext) -> Result<Arc<SegmentReader>> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Self::get_reader_locked(&mut state, context)
     }
 
@@ -1686,7 +1678,10 @@ impl ReadersAndUpdates {
 
     /// Deletes a document.  Returns `true` if the document was deleted.
     pub fn delete(&self, doc_id: i32) -> Result<bool> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let must_init = match &state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.must_init_on_delete(),
             PendingDeletesKind::Soft(pd) => pd.must_init_on_delete(),
@@ -1704,7 +1699,10 @@ impl ReadersAndUpdates {
 
     /// Drops all readers and decrements the ref count.
     pub fn drop_readers(&self) -> Result<()> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(reader) = state.reader.take() {
             reader.dec_ref()?;
         }
@@ -1715,7 +1713,10 @@ impl ReadersAndUpdates {
 
     /// Returns a read-only clone with the latest live docs.
     pub fn get_read_only_clone(&self, context: &dyn IOContext) -> Result<Arc<SegmentReader>> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.reader.is_none() {
             // `getReader(context).decRef()` (`ReadersAndUpdates.java:221-224`).
             Self::get_reader_locked(&mut state, context)?.dec_ref()?;
@@ -1759,7 +1760,10 @@ impl ReadersAndUpdates {
 
     /// Returns a snapshot of the live docs.
     pub fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &mut state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.get_live_docs(),
             PendingDeletesKind::Soft(pd) => pd.get_live_docs(),
@@ -1768,16 +1772,37 @@ impl ReadersAndUpdates {
 
     /// Returns the hard live docs (excluding soft-deleted docs).
     pub fn get_hard_live_docs(&self) -> Option<Box<dyn Bits>> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &mut state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.get_hard_live_docs(),
             PendingDeletesKind::Soft(pd) => pd.get_hard_live_docs(),
         }
     }
 
+    /// [`get_hard_live_docs`](Self::get_hard_live_docs) as the shared object
+    /// itself: the same object until a delete is applied, as Java's
+    /// `ReadersAndUpdates.getHardLiveDocs()` reference is
+    /// (`IndexWriter.java:4642` compares two of them by identity).
+    pub(crate) fn get_hard_live_docs_shared(&self) -> Option<Arc<dyn Bits>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &mut state.pending_deletes {
+            PendingDeletesKind::Hard(pd) => pd.get_hard_live_docs_shared(),
+            PendingDeletesKind::Soft(pd) => pd.get_hard_live_docs_shared(),
+        }
+    }
+
     /// Discards pending changes (used after a successful merge).
     pub fn drop_changes(&self) {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &mut state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.drop_changes(),
             PendingDeletesKind::Soft(pd) => pd.drop_changes(),
@@ -1790,7 +1815,10 @@ impl ReadersAndUpdates {
     pub fn write_live_docs(&self, dir: &dyn Directory) -> Result<bool> {
         // The pending deletes write through the segment's shared commit
         // object, `state.info` itself.
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &mut state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.write_live_docs(dir),
             PendingDeletesKind::Soft(pd) => pd.write_live_docs(dir),
@@ -1800,11 +1828,12 @@ impl ReadersAndUpdates {
     /// Adds a resolved doc-values update packet.
     pub fn add_dv_update(&self, update: DocValuesFieldUpdates) -> Result<()> {
         if !update.get_finished() {
-            return Err(LuceneError::illegal_argument(
-                "DocValuesFieldUpdates not finished — call finish() first".to_string(),
-            ));
+            return Err(LuceneError::illegal_argument("call finish first"));
         }
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let field = update.field.clone();
         let ram = update.ram_bytes_used();
 
@@ -1840,7 +1869,10 @@ impl ReadersAndUpdates {
 
     /// Returns the number of buffered DV updates.
     pub fn get_num_dv_updates(&self) -> usize {
-        let state = self.state.lock().expect("state mutex poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.pending_dv_updates.values().map(|v| v.len()).sum()
     }
 
@@ -1851,7 +1883,10 @@ impl ReadersAndUpdates {
 
     /// Sets the merging flag.
     pub fn set_is_merging(&self) {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.is_merging {
             state.is_merging = true;
             // `ReadersAndUpdates.java:830`.
@@ -1861,12 +1896,18 @@ impl ReadersAndUpdates {
 
     /// Returns whether this segment is merging.
     pub fn is_merging(&self) -> bool {
-        self.state.lock().expect("state mutex poisoned").is_merging
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_merging
     }
 
     /// Drops all merging updates.
     pub fn drop_merging_updates(&self) {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.merging_dv_updates.clear();
         state.is_merging = false;
     }
@@ -1880,7 +1921,10 @@ impl ReadersAndUpdates {
     /// clears it; this port returns a copy of each update and leaves the map,
     /// which is equivalent, because the caller only reads it.
     pub fn get_merging_dv_updates(&self) -> JavaHashMap<Vec<DocValuesFieldUpdates>> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.is_merging = false;
         let mut copy = JavaHashMap::new();
         for (field, updates) in state.merging_dv_updates.iter() {
@@ -1908,7 +1952,10 @@ impl ReadersAndUpdates {
         &self,
         policy: &dyn crate::index::merge_policy::MergePolicy,
     ) -> Result<bool> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut reader_supplier = || -> Result<Arc<dyn crate::index::codec_reader::CodecReader>> {
             let reader = Self::get_latest_reader_locked(&mut state, self)?;
             Ok(reader as Arc<dyn crate::index::codec_reader::CodecReader>)
@@ -1932,7 +1979,10 @@ impl ReadersAndUpdates {
     ///
     /// Propagates whatever initialising the soft-delete counts raises.
     pub fn is_fully_deleted(&self) -> Result<bool> {
-        let mut guard = self.state.lock().expect("state mutex poisoned");
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let RauState {
             info,
             index_created_version_major,
@@ -2002,7 +2052,10 @@ impl ReadersAndUpdates {
         max_del_gen: i64,
         info_stream: &dyn InfoStream,
     ) -> Result<bool> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Check if there are any updates to apply.
         let mut any = false;
@@ -2062,7 +2115,7 @@ impl ReadersAndUpdates {
             .info
             .info
             .codec()
-            .ok_or_else(|| LuceneError::illegal_state("segment has no codec".to_string()))?;
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
 
         // Open a reader if we don't have one.  We clone the Arc so `reader`
         // does not borrow `state`, allowing later `state.info` mutations.
@@ -2307,12 +2360,23 @@ impl ReadersAndUpdates {
                         binary_updates: fd.binary_updates.clone(),
                     };
 
-                    if fd.dv_type == DocValuesType::BINARY {
-                        consumer.add_binary_field(&field_info_mut, &merged_producer)?;
+                    // try-with-resources (`ReadersAndUpdates.java:335-455`): the
+                    // consumer is closed on every exit; a failed write keeps its
+                    // own error, with the close's failure suppressed into it.
+                    let added = if fd.dv_type == DocValuesType::BINARY {
+                        consumer.add_binary_field(&field_info_mut, &merged_producer)
                     } else {
-                        consumer.add_numeric_field(&field_info_mut, &merged_producer)?;
+                        consumer.add_numeric_field(&field_info_mut, &merged_producer)
+                    };
+                    let closed = consumer.close();
+                    match (added, closed) {
+                        (Err(mut error), Err(suppressed)) => {
+                            error.add_suppressed(suppressed);
+                            return Err(error);
+                        }
+                        (Err(error), Ok(())) | (Ok(()), Err(error)) => return Err(error),
+                        (Ok(()), Ok(())) => {}
                     }
-                    consumer.close()?;
                 }
 
                 state.info.advance_doc_values_gen();
@@ -2545,7 +2609,9 @@ impl ReadersAndUpdates {
         let old_reader = Arc::clone(
             reader
                 .as_ref()
-                .ok_or_else(|| LuceneError::illegal_state("no reader to swap".to_string()))?,
+                // `createNewReaderWithLatestLiveDocs(reader)` dereferences
+                // the `null` reader.
+                .ok_or_else(LuceneError::null_pointer)?,
         );
         let new_reader = Self::create_new_reader_with_latest_live_docs_parts(
             info,
@@ -2569,7 +2635,10 @@ impl ReadersAndUpdates {
     ///
     /// Propagates whatever opening or refreshing the reader raises.
     pub fn get_latest_reader(&self) -> Result<Arc<SegmentReader>> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Self::get_latest_reader_locked(&mut state, self)
     }
 
@@ -2645,7 +2714,10 @@ impl ReadersAndUpdates {
         &self,
         policy: &dyn crate::index::merge_policy::MergePolicy,
     ) -> Result<i32> {
-        let mut guard = self.state.lock().expect("state mutex poisoned");
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let RauState {
             info,
             index_created_version_major,
@@ -2691,7 +2763,10 @@ impl ReadersAndUpdates {
     where
         F: FnOnce(&crate::index::merge_policy::MergeReader) -> Result<()>,
     {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // We must carry over any still-pending DV updates because they were not
         // successfully written.
@@ -2737,13 +2812,11 @@ impl ReadersAndUpdates {
         debug_assert!(state.pending_deletes.verify_doc_counts(&reader));
 
         let hard_live_docs = match &mut state.pending_deletes {
-            PendingDeletesKind::Hard(pd) => pd.get_hard_live_docs(),
-            PendingDeletesKind::Soft(pd) => pd.get_hard_live_docs(),
+            PendingDeletesKind::Hard(pd) => pd.get_hard_live_docs_shared(),
+            PendingDeletesKind::Soft(pd) => pd.get_hard_live_docs_shared(),
         };
-        let merge_reader = crate::index::merge_policy::MergeReader::from_segment_reader(
-            reader,
-            hard_live_docs.map(Arc::from),
-        );
+        let merge_reader =
+            crate::index::merge_policy::MergeReader::from_segment_reader(reader, hard_live_docs);
         reader_consumer(&merge_reader)?;
         Ok(merge_reader)
     }
@@ -2801,8 +2874,8 @@ impl std::fmt::Debug for MergedDvProducer {
 
 impl MergedDvProducer {
     /// The `UnsupportedOperationException` `EmptyDocValuesProducer` throws.
-    fn unsupported(method: &str) -> LuceneError {
-        LuceneError::unsupported_operation(format!("EmptyDocValuesProducer.{method}"))
+    fn unsupported(_method: &str) -> LuceneError {
+        LuceneError::unsupported_operation(String::new())
     }
 }
 
@@ -2918,6 +2991,13 @@ impl MergedNumericDocValues {
 }
 
 impl DocIdSetIterator for MergedNumericDocValues {
+    /// `ReadersAndUpdates$2$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.ReadersAndUpdates$2$1",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -3033,6 +3113,13 @@ impl MergedBinaryDocValues {
 }
 
 impl DocIdSetIterator for MergedBinaryDocValues {
+    /// `ReadersAndUpdates$1$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.ReadersAndUpdates$1$1",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -3144,7 +3231,10 @@ pub struct ReaderPool {
 
 impl std::fmt::Debug for ReaderPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f.debug_struct("ReaderPool")
             .field("pool_size", &map.len())
             .field("pool_readers", &self.pool_readers.load(Ordering::Relaxed))
@@ -3211,7 +3301,10 @@ impl ReaderPool {
             crate::index::index_reader::IndexReader::ensure_open(reader)?;
             let leaves = reader.segment_readers();
             debug_assert_eq!(segment_infos.size(), leaves.len());
-            let mut map = pool.reader_map.lock().expect("reader_map mutex poisoned");
+            let mut map = pool
+                .reader_map
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for (i, seg_reader) in leaves.iter().enumerate() {
                 let new_reader = SegmentReader::new_shared(
                     segment_infos.info(i).clone(),
@@ -3270,7 +3363,10 @@ impl ReaderPool {
             "Reader map is not empty"
         );
         self.ensure_open()?;
-        let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let mut map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(rld) = map.get(&info.info.name) {
             let rld = Arc::clone(rld);
             if create {
@@ -3325,7 +3421,10 @@ impl ReaderPool {
         assert_info_live: bool,
         live_infos: &SegmentInfos,
     ) -> Result<bool> {
-        let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let mut map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut changed = false;
         // Matches incRef in get:
         rld.dec_ref();
@@ -3451,7 +3550,10 @@ impl ReaderPool {
     /// says "in MB" while the body sums bytes; the body is the contract, and
     /// this returns bytes too.
     pub fn ram_bytes_used(&self) -> i64 {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.values().map(|rld| rld.ram_bytes_used()).sum()
     }
 
@@ -3459,7 +3561,10 @@ impl ReaderPool {
     ///
     /// Equivalent to `org.apache.lucene.index.ReaderPool#anyDeletions`.
     pub fn any_deletions(&self) -> bool {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.values().any(|rld| rld.get_del_count() > 0)
     }
 
@@ -3469,7 +3574,10 @@ impl ReaderPool {
     /// Pending deletions are deliberately not consulted: they carry over in RAM
     /// to NRT readers, so they are not a reason to write anything out.
     pub fn any_doc_values_changes(&self) -> bool {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.values().any(|rld| rld.get_num_dv_updates() != 0)
     }
 
@@ -3513,7 +3621,10 @@ impl ReaderPool {
         // `IndexWriter.writeReaderPool` checkpoint when, and only when,
         // something was written, so that the new `.liv` and doc-values
         // generations are the ones the next commit records.
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut at_least_one_change = false;
         for info in infos {
             if let Some(rld) = map.get(&info.info.name) {
@@ -3543,7 +3654,10 @@ impl ReaderPool {
     /// without taking a reference for the caller: the lookup half of
     /// `ReaderPool.get(info, false)` (`ReaderPool.java:390-412`).
     pub fn peek(&self, segment_name: &str) -> Option<Arc<ReadersAndUpdates>> {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.get(segment_name).map(Arc::clone)
     }
 
@@ -3555,7 +3669,10 @@ impl ReaderPool {
     /// suppressed. The decRefs need not close the readers: a near-real-time
     /// reader may still hold them.
     pub fn drop_all(&self) -> Result<()> {
-        let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let mut map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entries: Vec<Arc<ReadersAndUpdates>> = map.drain().map(|(_, rld)| rld).collect();
         drop(map);
         crate::util::IOUtils::close(entries.iter().map(|rld| Some(move || rld.drop_readers())))
@@ -3568,7 +3685,10 @@ impl ReaderPool {
     /// Returns whether any file was written (`ReaderPool.java:240-254`), which
     /// is what tells `IndexWriter.writeReaderPool` to checkpoint.
     pub fn write_all_doc_values_updates(&self) -> Result<bool> {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut any = false;
         for rld in map.values() {
             any |= rld.write_field_updates(
@@ -3593,7 +3713,10 @@ impl ReaderPool {
         &self,
         merging_segments: &[SegmentCommitInfo],
     ) -> Result<bool> {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut any = false;
         for info in merging_segments {
             if let Some(rld) = map.get(&info.info.name) {
@@ -3633,7 +3756,10 @@ impl ReaderPool {
         // `RamRecordingHolder(ReadersAndUpdates)`: the reader and the RAM it
         // used when it was recorded.
         let mut readers_by_ram: Vec<(Arc<ReadersAndUpdates>, i64)> = {
-            let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+            let map = self
+                .reader_map
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if map.is_empty() {
                 return Vec::new();
             }
@@ -3656,7 +3782,10 @@ impl ReaderPool {
     ///
     /// Propagates whatever dropping the readers raises.
     pub fn drop(&self, info: &SegmentCommitInfo) -> Result<bool> {
-        let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let mut map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match map.remove(&info.info.name) {
             Some(rld) => {
                 rld.drop_readers()?;
@@ -3764,7 +3893,7 @@ mod pending_soft_deletes_tests {
         let mut bits = FixedBitSet::new(4);
         bits.set_range(0, 4);
         let error = PendingSoftDeletes::apply_soft_deletes(&mut bits, || {
-            Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+            Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
                 "unreadable".to_string(),
             )))
         })
@@ -3773,7 +3902,7 @@ mod pending_soft_deletes_tests {
             matches!(
                 error,
                 LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex(_),
+                    kind: LuceneErrorKind::CorruptIndex { .. },
                     ..
                 }
             ),
@@ -3824,7 +3953,7 @@ mod reader_pool_accounting_tests {
         assert_eq!(pool.ram_bytes_used(), 0);
 
         let mut updates = DocValuesFieldUpdates::new(8, -1, "f", DocValuesType::NUMERIC);
-        updates.add_long(3, 7);
+        updates.add_long(3, 7).unwrap();
         updates.finish().unwrap();
         let packet_bytes = updates.ram_bytes_used();
         assert!(packet_bytes > 0);
@@ -3835,8 +3964,8 @@ mod reader_pool_accounting_tests {
         assert_eq!(pool.ram_bytes_used(), packet_bytes);
 
         let mut more = DocValuesFieldUpdates::new(8, -1, "f", DocValuesType::NUMERIC);
-        more.add_long(1, 5);
-        more.add_long(2, 6);
+        more.add_long(1, 5).unwrap();
+        more.add_long(2, 6).unwrap();
         more.finish().unwrap();
         let more_bytes = more.ram_bytes_used();
         rld_b.add_dv_update(more).unwrap();
@@ -3871,7 +4000,7 @@ mod reader_pool_accounting_tests {
         let a = make_sci_in(&dir, "_a", 8);
         let rld = pool.get(&a, true, 10).unwrap().unwrap();
         let mut updates = DocValuesFieldUpdates::new(8, 5, "f", DocValuesType::NUMERIC);
-        updates.add_long(3, 7);
+        updates.add_long(3, 7).unwrap();
         updates.finish().unwrap();
         rld.add_dv_update(updates).unwrap();
 
@@ -3935,7 +4064,7 @@ mod tests {
             HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .expect("test SegmentInfo should be valid");
         SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, [0u8; 16])
@@ -3950,7 +4079,7 @@ mod tests {
         rld.set_is_merging();
         let mut update =
             DocValuesFieldUpdates::new(4, 1, "f", crate::index::DocValuesType::NUMERIC);
-        update.add_long(2, 9);
+        update.add_long(2, 9).unwrap();
         update.finish().unwrap();
         rld.add_dv_update(update).unwrap();
         assert_eq!(rld.get_merging_dv_updates().get("f").map(Vec::len), Some(1));
@@ -4332,7 +4461,7 @@ mod tests {
                 HashMap::new(),
                 [0u8; crate::util::string_helper::ID_LENGTH],
                 HashMap::new(),
-                crate::search::Sort::default(),
+                None,
             )
             .unwrap();
             SegmentCommitInfo::new(si, 5, 0, 1, -1, -1, [0u8; 16]).unwrap()
@@ -4402,9 +4531,9 @@ mod tests {
         // Apply a soft-delete DV update for docs 1, 3, 5 (all with values).
         // The field_info must have doc_values_gen > dv_generation (= -1).
         let mut updates = DocValuesFieldUpdates::new(10, 1, "soft_field", DocValuesType::NUMERIC);
-        updates.add_long(1, 1);
-        updates.add_long(3, 1);
-        updates.add_long(5, 1);
+        updates.add_long(1, 1).unwrap();
+        updates.add_long(3, 1).unwrap();
+        updates.add_long(5, 1).unwrap();
         updates.finish().unwrap();
 
         let mut field_info = FieldInfo::new("soft_field", 0);
@@ -4569,8 +4698,8 @@ mod tests {
     #[test]
     fn doc_values_field_updates_clone_for_merge() {
         let mut updates = DocValuesFieldUpdates::new(100, 42, "field1", DocValuesType::NUMERIC);
-        updates.add_long(5, 123);
-        updates.add_long(10, 456);
+        updates.add_long(5, 123).unwrap();
+        updates.add_long(10, 456).unwrap();
         updates.finish().unwrap();
 
         let clone = updates.clone_for_merge();

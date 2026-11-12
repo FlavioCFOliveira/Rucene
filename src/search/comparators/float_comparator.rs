@@ -69,6 +69,7 @@ impl FloatComparator {
                 pruning,
                 4, // `Float.BYTES`
                 Self::sortable_bytes_to_long,
+                "org.apache.lucene.search.comparators.FloatComparator",
             ),
             values: vec![0.0; num_hits],
             top_value: 0.0,

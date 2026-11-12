@@ -283,7 +283,7 @@ impl TermsWriter {
             .encode_term(&mut self.meta_writer, &self.field_info, state, true)?;
         if self.meta_writer.size() > 0 {
             meta.bytes = Some(Arc::from(self.meta_writer.to_array_copy()?));
-            self.meta_writer.reset();
+            self.meta_writer.reset()?;
         }
         let input = Util::to_ints_ref(text, &mut self.scratch_term);
         self.fst_compiler.add(&input, meta)?;

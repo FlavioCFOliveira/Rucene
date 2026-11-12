@@ -4,8 +4,6 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::Result;
@@ -59,21 +57,13 @@ const BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
 /// see [`MultiTermQuery`] for the other options.
 ///
 /// **NOTE**: this query produces scores that are equal to its boost.
-///
-/// **Scope note.** Java also offers the static factory
-/// `TermInSetQuery.newIndexOrDocValuesQuery(RewriteMethod, String, Collection<BytesRef>)`,
-/// which packs the terms once and pairs an indexed query with a doc-values one
-/// inside an `IndexOrDocValuesQuery`. That query type belongs to
-/// `org.apache.lucene.search` but is not part of this port yet, so the factory
-/// is absent; building the two `TermInSetQuery` instances by hand produces the
-/// same pair, only packing the terms twice.
 #[derive(Debug, Clone)]
 pub struct TermInSetQuery {
     field: String,
     rewrite_method: Arc<dyn RewriteMethod>,
     term_data: Arc<PrefixCodedTerms>,
     /// Cached hash code of `term_data`, as in Java.
-    term_data_hash_code: u64,
+    term_data_hash_code: i32,
 }
 
 impl TermInSetQuery {
@@ -123,7 +113,8 @@ impl TermInSetQuery {
         field: impl Into<String>,
         term_data: Arc<PrefixCodedTerms>,
     ) -> Result<Self> {
-        let term_data_hash_code = Self::digest(&term_data)?;
+        // `termDataHashCode = termData.hashCode()` (`TermInSetQuery.java:113`).
+        let term_data_hash_code = term_data.hash_code();
         Ok(Self {
             field: field.into(),
             rewrite_method,
@@ -192,29 +183,6 @@ impl TermInSetQuery {
             previous = Some(term);
         }
         Ok(builder.finish())
-    }
-
-    /// Computes the cached hash code and encoded size of the packed terms.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java's `PrefixCodedTerms.hashCode()`
-    /// folds one `ByteBuffer.hashCode()` per block of the encoded payload and
-    /// its `equals` compares the payload block by block
-    /// (`PrefixCodedTerms.java:180-197`); this port derives both from the term
-    /// sequence the iterator yields instead. The encoding is canonical, so two
-    /// packed term sets have the same bytes exactly when they have the same
-    /// term sequence, and the derived hash agrees with the derived equality.
-    /// The payload is now reachable through `PrefixCodedTerms::content`, so
-    /// this could be made byte-wise; doing so would change the hash these
-    /// queries publish and belongs to a task of its own.
-    fn digest(term_data: &PrefixCodedTerms) -> Result<u64> {
-        let mut hasher = DefaultHasher::new();
-        let mut iterator = term_data.iterator();
-        while let Some(term) = iterator.next()? {
-            iterator.field().unwrap_or_default().hash(&mut hasher);
-            term.slice().hash(&mut hasher);
-        }
-        term_data.size().hash(&mut hasher);
-        Ok(hasher.finish())
     }
 
     /// Returns an iterator over the encoded terms, for query inspection.
@@ -375,8 +343,14 @@ impl Query for TermInSetQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        31u64
+    /// `getClass().getName()` of `org.apache.lucene.search.TermInSetQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.TermInSetQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `31 * classHash() + termDataHashCode`.
+        31i32
             .wrapping_mul(self.class_hash())
             .wrapping_add(self.term_data_hash_code)
     }
@@ -418,10 +392,6 @@ impl MultiTermQuery for TermInSetQuery {
         self.term_data.size()
     }
 
-    fn as_query(&self) -> &dyn Query {
-        self
-    }
-
     fn to_multi_term_query_arc(&self) -> Arc<dyn MultiTermQuery> {
         Arc::new(self.clone())
     }
@@ -448,6 +418,10 @@ struct SetEnumFilter {
 }
 
 impl FilteredTermsEnumFilter for SetEnumFilter {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.TermInSetQuery$SetEnum"
+    }
+
     fn accept(&mut self, term: &BytesRef) -> Result<AcceptStatus> {
         // Advance the iterator until it is `>=` the incoming term: an exact
         // match is a hit, anything else is a miss.

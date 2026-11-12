@@ -363,7 +363,7 @@ fn segment_info(dir: &Arc<dyn Directory>, codec: &Arc<dyn Codec>, name: &str) ->
         std::collections::HashMap::new(),
         rucene::util::string_helper::StringHelper::random_id(),
         std::collections::HashMap::new(),
-        rucene::search::Sort::default(),
+        None,
     )
     .unwrap()
 }

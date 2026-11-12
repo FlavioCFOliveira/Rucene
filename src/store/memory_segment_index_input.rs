@@ -179,11 +179,11 @@ impl MemorySegmentIndexInput {
         shared_prefetch_counter: Arc<AtomicI32>,
         layout: Layout,
     ) -> Result<Self> {
-        let first = segments.first().ok_or_else(|| {
-            LuceneError::illegal_argument(
-                "MemorySegmentIndexInput requires at least one segment".to_string(),
-            )
-        })?;
+        // `segments[0]` on an empty array: the JVM's
+        // `ArrayIndexOutOfBoundsException`.
+        let first = segments
+            .first()
+            .ok_or_else(|| crate::store::array_index_out_of_bounds(0, 0))?;
         let scope = Arc::clone(first.scope());
         let cur_segment = Some(first.clone());
         let mut input = Self {
@@ -309,26 +309,33 @@ impl MemorySegmentIndexInput {
         }
     }
 
-    /// Reads `dst.len()` bytes that are known to cross a segment boundary.
+    /// Reads `len` bytes into `b[offset..]` after the fast path failed:
+    /// either the read crosses a segment boundary or the destination range is
+    /// invalid.
     ///
-    /// Equivalent to `MemorySegmentIndexInput.readBytesBoundary(byte[], int, int)`.
-    fn read_bytes_boundary(&mut self, dst: &mut [u8]) -> Result<()> {
-        let mut written = 0usize;
-        let mut remaining = dst.len() as i64;
+    /// Equivalent to `MemorySegmentIndexInput.readBytesBoundary(byte[], int, int)`
+    /// (`MemorySegmentIndexInput.java:208-229`). Every `MemorySegment.copy`
+    /// checks the destination range (`Objects.checkFromIndexSize`), and the
+    /// `IndexOutOfBoundsException` it throws is not caught here, so an invalid
+    /// destination surfaces after the copies that fit were made, with the
+    /// cursor already advanced, as in Java.
+    fn read_bytes_boundary(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        let mut offset = offset as i64;
+        let mut remaining = len as i64;
+        let b_len = b.len() as i64;
         let mut cur_avail = self.cur_segment().byte_size() - self.cur_position;
         while remaining > cur_avail {
-            let take = cur_avail.max(0) as usize;
+            let take = cur_avail.max(0);
+            check_from_index_size(offset, take, b_len)?;
             if take > 0 {
                 let pos = self.cur_position;
-                if !self
-                    .cur_segment()
-                    .copy_to(pos, &mut dst[written..written + take])
-                {
+                let (start, end) = (offset as usize, (offset + take) as usize);
+                if !self.cur_segment().copy_to(pos, &mut b[start..end]) {
                     return Err(self.read_past_eof());
                 }
             }
-            remaining -= take as i64;
-            written += take;
+            remaining -= take;
+            offset += take;
             self.cur_segment_index += 1;
             let index = self.cur_segment_index;
             if index < 0 || index as usize >= self.segments.len() {
@@ -339,12 +346,10 @@ impl MemorySegmentIndexInput {
             self.cur_segment = Some(segment);
             self.cur_position = 0;
         }
+        check_from_index_size(offset, remaining, b_len)?;
         let pos = self.cur_position;
-        let take = remaining as usize;
-        if !self
-            .cur_segment()
-            .copy_to(pos, &mut dst[written..written + take])
-        {
+        let (start, end) = (offset as usize, (offset + remaining) as usize);
+        if !self.cur_segment().copy_to(pos, &mut b[start..end]) {
             return Err(self.read_past_eof());
         }
         self.cur_position += remaining;
@@ -378,27 +383,49 @@ impl MemorySegmentIndexInput {
             .ok_or_else(|| self.positional_error("read", reported))
     }
 
-    /// Reads bytes at an absolute file offset, spanning segments as needed.
+    /// Reads `len` bytes into `b[offset..]` at an absolute file offset,
+    /// spanning segments as needed.
     ///
-    /// Equivalent to the base `MemorySegmentIndexInput.readBytes(long, byte[], int, int)`.
-    fn read_bytes_absolute(&self, absolute: i64, dst: &mut [u8], reported: i64) -> Result<()> {
+    /// Equivalent to the base `MemorySegmentIndexInput.readBytes(long, byte[], int, int)`
+    /// (`MemorySegmentIndexInput.java:476-499`) as `MultiSegmentImpl` calls it
+    /// with `pos + offset` (`slice_offset` is that `offset`). An invalid
+    /// destination range makes `MemorySegment.copy` throw
+    /// `IndexOutOfBoundsException`, which Java reports through
+    /// `handlePositionalIOOBE` (`EOFException`, or `IllegalArgumentException`
+    /// for a negative position), after the copies that fit were made. The
+    /// position it reports is the method's `pos` variable at that moment —
+    /// already masked to the current segment, and `0` once a segment boundary
+    /// was crossed — minus `slice_offset`, which the multi-segment override
+    /// subtracts (`MemorySegmentIndexInput.java:880-883`).
+    fn read_bytes_absolute(
+        &self,
+        absolute: i64,
+        b: &mut [u8],
+        offset: usize,
+        len: usize,
+        slice_offset: i64,
+    ) -> Result<()> {
         let mut index = absolute >> self.chunk_size_power;
-        if index < 0 || index as usize >= self.segments.len() {
-            return Err(self.positional_error("read", reported));
-        }
         let mut pos = absolute & self.chunk_size_mask;
-        let mut written = 0usize;
-        let mut remaining = dst.len() as i64;
+        let reported = |pos: i64| pos - slice_offset;
+        if index < 0 || index as usize >= self.segments.len() {
+            return Err(self.positional_error("read", reported(pos)));
+        }
+        let mut offset = offset as i64;
+        let mut remaining = len as i64;
+        let b_len = b.len() as i64;
         let mut cur_avail = self.segments[index as usize].byte_size() - pos;
         while remaining > cur_avail {
-            let take = cur_avail.max(0) as usize;
-            if take > 0
-                && !self.segments[index as usize].copy_to(pos, &mut dst[written..written + take])
-            {
-                return Err(self.positional_error("read", reported));
+            let take = cur_avail.max(0);
+            if check_from_index_size(offset, take, b_len).is_err() {
+                return Err(self.positional_error("read", reported(pos)));
             }
-            remaining -= take as i64;
-            written += take;
+            let (start, end) = (offset as usize, (offset + take) as usize);
+            if take > 0 && !self.segments[index as usize].copy_to(pos, &mut b[start..end]) {
+                return Err(self.positional_error("read", reported(pos)));
+            }
+            remaining -= take;
+            offset += take;
             index += 1;
             if index as usize >= self.segments.len() {
                 return Err(self.read_past_eof());
@@ -406,9 +433,12 @@ impl MemorySegmentIndexInput {
             pos = 0;
             cur_avail = self.segments[index as usize].byte_size();
         }
-        let take = remaining as usize;
-        if !self.segments[index as usize].copy_to(pos, &mut dst[written..written + take]) {
-            return Err(self.positional_error("read", reported));
+        if check_from_index_size(offset, remaining, b_len).is_err() {
+            return Err(self.positional_error("read", reported(pos)));
+        }
+        let (start, end) = (offset as usize, (offset + remaining) as usize);
+        if !self.segments[index as usize].copy_to(pos, &mut b[start..end]) {
+            return Err(self.positional_error("read", reported(pos)));
         }
         Ok(())
     }
@@ -457,7 +487,14 @@ impl MemorySegmentIndexInput {
 
         let advised = segment
             .as_slice(offset, length)
-            .ok_or_else(|| self.read_past_eof())?;
+            // `asSlice` throws IndexOutOfBoundsException, reported as
+            // `EOFException("Read past EOF: " + this)` (MemorySegmentIndexInput.java:437-440).
+            .ok_or_else(|| {
+                LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    format!("Read past EOF: {self}"),
+                )))
+            })?;
         advice(&advised)
     }
 
@@ -637,7 +674,7 @@ impl MemorySegmentIndexInput {
             Arc::clone(&self.shared_prefetch_counter),
             self.layout,
         )?;
-        clone.seek(self.file_pointer())?;
+        clone.seek(self.file_pointer()?)?;
         Ok(clone)
     }
 
@@ -701,21 +738,57 @@ impl DataInput for MemorySegmentIndexInput {
         Ok(value)
     }
 
+    /// `readBytes(b, offset, len)` with a negative `offset` or `len`
+    /// (`MemorySegmentIndexInput.java:194-228`): `MemorySegment.copy` throws
+    /// `IndexOutOfBoundsException` — for a negative length the segment access
+    /// check (`"Out of bound access on segment …; new offset = pos; new length
+    /// = len"`), for a negative destination index the destination range check
+    /// (`"Range [offset, offset + len) out of bounds for length n"`) — and
+    /// `readBytesBoundary` retries the same copy, which throws it again.
+    ///
+    /// **Divergence from the JDK.** The segment is described with this
+    /// port's mapping address; the JVM prints its own.
+    fn read_bytes_out_of_range(&mut self, b: &mut [u8], offset: i32, len: i32) -> Result<()> {
+        self.ensure_open()?;
+        if len < 0 {
+            let segment = self.cur_segment();
+            return Err(LuceneError::from(LuceneErrorKind::Unchecked {
+                class: "java.lang.IndexOutOfBoundsException",
+                message: Some(format!(
+                    "Out of bound access on segment MemorySegment{{ heapBase: Optional.empty address:{} limit: {} }}; new offset = {}; new length = {len}",
+                    segment.address(),
+                    segment.byte_size(),
+                    self.cur_position
+                )),
+                cause: None,
+            }));
+        }
+        Err(crate::store::check_from_index_size_ioobe(
+            offset,
+            len,
+            b.len(),
+        ))
+    }
+
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.ensure_open()?;
         // A `null` array: `MemorySegment.copy` throws NPE, which
         // `alreadyClosed(e)` rethrows unmodified on an open input.
         let b = crate::store::require_array(b)?;
-        check_dst(offset, len, b.len())?;
+        // `MemorySegment.copy` throws IndexOutOfBoundsException for a source
+        // or destination out of range; both fall into `readBytesBoundary`
+        // (MemorySegmentIndexInput.java:194-206).
         let pos = self.cur_position;
-        if self
-            .cur_segment()
-            .copy_to(pos, &mut b[offset..offset + len])
+        let dst_in_range = offset.checked_add(len).is_some_and(|end| end <= b.len());
+        if dst_in_range
+            && self
+                .cur_segment()
+                .copy_to(pos, &mut b[offset..offset + len])
         {
             self.cur_position += len as i64;
             return Ok(());
         }
-        self.read_bytes_boundary(&mut b[offset..offset + len])
+        self.read_bytes_boundary(b, offset, len)
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
@@ -724,7 +797,7 @@ impl DataInput for MemorySegmentIndexInput {
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let skip_to = self.file_pointer() + num_bytes;
+        let skip_to = self.file_pointer()? + num_bytes;
         self.seek(skip_to)
     }
 
@@ -904,14 +977,23 @@ impl IndexInput for MemorySegmentIndexInput {
         Ok(())
     }
 
-    fn file_pointer(&self) -> i64 {
-        match self.layout {
-            Layout::Single => self.cur_position,
-            Layout::Multi { offset } => {
-                ((self.cur_segment_index as i64) << self.chunk_size_power) + self.cur_position
-                    - offset
-            }
+    /// Equivalent to `getFilePointer()` (`MemorySegmentIndexInput.java:329-333`,
+    /// `769-773`, `891-894`): `ensureOpen()` first, which raises
+    /// `AlreadyClosedException` once `curSegment` is `null` (only that check,
+    /// not the scope liveness the reads detect through their exceptions).
+    fn file_pointer(&self) -> Result<i64> {
+        if self.cur_segment.is_none() {
+            return Err(self.already_closed());
         }
+        Ok({
+            match self.layout {
+                Layout::Single => self.cur_position,
+                Layout::Multi { offset } => {
+                    ((self.cur_segment_index as i64) << self.chunk_size_power) + self.cur_position
+                        - offset
+                }
+            }
+        })
     }
 
     fn length(&self) -> i64 {
@@ -1051,12 +1133,18 @@ impl RandomAccessInput for MemorySegmentIndexInput {
         len: usize,
     ) -> Result<()> {
         self.ensure_open()?;
-        check_dst(offset, len, bytes.len())?;
+        // An out-of-range destination makes `MemorySegment.copy` throw
+        // IndexOutOfBoundsException, reported through `handlePositionalIOOBE`
+        // (MemorySegmentIndexInput.java:786-795, 476-499).
         match self.layout {
             Layout::Single => {
-                if self
-                    .cur_segment()
-                    .copy_to(pos, &mut bytes[offset..offset + len])
+                let dst_in_range = offset
+                    .checked_add(len)
+                    .is_some_and(|end| end <= bytes.len());
+                if dst_in_range
+                    && self
+                        .cur_segment()
+                        .copy_to(pos, &mut bytes[offset..offset + len])
                 {
                     Ok(())
                 } else {
@@ -1064,7 +1152,7 @@ impl RandomAccessInput for MemorySegmentIndexInput {
                 }
             }
             Layout::Multi { offset: base } => {
-                self.read_bytes_absolute(pos + base, &mut bytes[offset..offset + len], pos)
+                self.read_bytes_absolute(pos + base, bytes, offset, len, base)
             }
         }
     }
@@ -1162,13 +1250,26 @@ impl MemorySegmentAccessInput for MemorySegmentIndexInput {
                 )?))
             }
             Layout::Multi { offset } => {
+                // `MemorySegmentIndexInput.java:922-925`: the position is
+                // handed over before `offset` is added, and the multi-segment
+                // `handlePositionalIOOBE` subtracts `offset` from it.
                 if pos + len > self.length {
-                    return Err(self.positional_error("segmentSliceOrNull", pos));
+                    return Err(self.positional_error("segmentSliceOrNull", pos - offset));
                 }
                 let absolute = pos + offset;
                 let index = absolute >> self.chunk_size_power;
+                // `segments[si]` outside any `try`: the
+                // `ArrayIndexOutOfBoundsException` propagates.
                 if index < 0 || index as usize >= self.segments.len() {
-                    return Err(self.positional_error("segmentSliceOrNull", pos));
+                    return Err(LuceneError::from(LuceneErrorKind::Unchecked {
+                        class: "java.lang.ArrayIndexOutOfBoundsException",
+                        message: Some(format!(
+                            "Index {} out of bounds for length {}",
+                            index as i32,
+                            self.segments.len()
+                        )),
+                        cause: None,
+                    }));
                 }
                 let segment = &self.segments[index as usize];
                 let segment_offset = absolute & self.chunk_size_mask;

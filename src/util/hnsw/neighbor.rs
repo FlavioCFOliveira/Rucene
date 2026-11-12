@@ -722,7 +722,12 @@ impl NeighborQueue {
     ///
     /// Panics when the queue is empty.
     pub fn pop(&mut self) -> i32 {
-        let top = self.heap.pop().unwrap_or_else(|e| panic!("{e}"));
+        let top = self.heap.pop().unwrap_or_else(|_| {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalStateException",
+                Some("The heap is empty"),
+            )
+        });
         self.decode_node(top)
     }
 

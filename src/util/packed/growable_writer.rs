@@ -87,7 +87,7 @@ impl GrowableWriter {
             Err(_) => return,
         };
         PackedInts::copy(
-            self.current.as_packed_ints_reader(),
+            &*self.current,
             0,
             next.as_mut(),
             0,
@@ -113,7 +113,7 @@ impl GrowableWriter {
         )?;
         let limit = std::cmp::min(self.size(), new_size);
         PackedInts::copy(
-            self.current.as_packed_ints_reader(),
+            &*self.current,
             0,
             &mut next,
             0,
@@ -172,14 +172,6 @@ impl PackedIntsMutable for GrowableWriter {
 
     fn clear(&mut self) {
         self.current.clear();
-    }
-
-    fn as_packed_ints_reader(&self) -> &dyn PackedIntsReader {
-        self
-    }
-
-    fn into_packed_ints_reader(self: Box<Self>) -> Box<dyn PackedIntsReader + Send + Sync> {
-        self
     }
 }
 

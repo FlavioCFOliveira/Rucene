@@ -391,9 +391,11 @@ impl BytesRefHash {
         capacity: usize,
         mut bytes_start_array: Box<dyn BytesStartArray>,
     ) -> Self {
+        // `BytesRefHash.java:122-128`.
+        assert!(capacity > 0, "capacity must be greater than 0");
         assert!(
-            capacity > 0 && capacity.is_power_of_two(),
-            "capacity must be a positive power of two, got {capacity}"
+            capacity.is_power_of_two(),
+            "capacity must be a power of two, got {capacity}"
         );
         let bytes_start = Some(bytes_start_array.init());
         let bytes_used = bytes_start_array
@@ -1578,5 +1580,22 @@ mod size_of_object_tests {
             hash.close(&mut pool);
             assert_eq!(hash.ram_bytes_used(&pool), closed, "closed, n={n}");
         }
+    }
+}
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+
+    /// G-109: `BytesRefHash(ByteBlockPool, int capacity, BytesStartArray)`
+    /// refuses a capacity of 0 with `"capacity must be greater than 0"`
+    /// (`BytesRefHash.java:122-128`).
+    #[test]
+    #[should_panic(expected = "capacity must be greater than 0")]
+    fn gap_g109_bytes_ref_hash_capacity_message() {
+        let _ = BytesRefHash::with_bytes_start_array(
+            0,
+            Box::new(DirectBytesStartArray::new(16, Arc::new(AtomicI64::new(0)))),
+        );
     }
 }

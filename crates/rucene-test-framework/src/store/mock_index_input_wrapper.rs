@@ -314,6 +314,11 @@ impl DataInput for MockIndexInputWrapper {
         self.r#in.read_bytes(b, offset, len)
     }
 
+    fn read_bytes_out_of_range(&mut self, b: &mut [u8], offset: i32, len: i32) -> Result<()> {
+        self.ensure_open_and_accessible()?;
+        self.r#in.read_bytes_out_of_range(b, offset, len)
+    }
+
     fn read_bytes_buffered(
         &mut self,
         b: Option<&mut [u8]>,
@@ -334,7 +339,7 @@ impl DataInput for MockIndexInputWrapper {
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let skip_to = self.file_pointer() + num_bytes;
+        let skip_to = self.file_pointer()? + num_bytes;
         self.seek(skip_to)
     }
 
@@ -399,10 +404,12 @@ impl IndexInput for MockIndexInputWrapper {
         self.close_impl()
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.ensure_open_unchecked();
-        self.ensure_accessible_unchecked();
-        self.r#in.file_pointer()
+    fn file_pointer(&self) -> Result<i64> {
+        Ok({
+            self.ensure_open_unchecked();
+            self.ensure_accessible_unchecked();
+            self.r#in.file_pointer()?
+        })
     }
 
     fn length(&self) -> i64 {

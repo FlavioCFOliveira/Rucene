@@ -73,8 +73,8 @@ impl MergeContext for Context {
         Ok(info.get_del_count_with_soft(true))
     }
 
-    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
-        info.get_del_count_with_soft(true)
+    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> Result<i32> {
+        Ok(info.get_del_count_with_soft(true))
     }
 
     fn get_merging_segments(&self) -> HashSet<String> {

@@ -12,7 +12,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use super::exceptions::LockObtainFailedException;
 use super::lock_verify_server::START_GUN_SIGNAL;
 use super::verifying_lock_factory::VerifyingLockFactory;
-use super::{LockFactory, NIOFSDirectory, NativeFSLockFactory, NoLockFactory, SimpleFSLockFactory};
+use super::{
+    FSLockFactory, LockFactory, NIOFSDirectory, NativeFSLockFactory, NoLockFactory,
+    SimpleFSLockFactory,
+};
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 /// Name of the lock file the stress test contends on.
@@ -133,8 +136,11 @@ impl LockStressTest {
 
         let my_id = Self::parse(&args[0], "myID")?;
         let verifier_host = &args[1];
-        let verifier_port: u16 = args[2].parse().map_err(|_| {
-            LuceneError::illegal_argument(format!("verifierPort is not a port: {}", args[2]))
+        // `Integer.parseInt(args[2])`, then `new InetSocketAddress(verifierHost,
+        // verifierPort)`, whose range check throws `IllegalArgumentException`.
+        let verifier_port = Self::parse(&args[2], "verifierPort")?;
+        let verifier_port = u16::try_from(verifier_port).map_err(|_| {
+            LuceneError::illegal_argument(format!("port out of range:{verifier_port}"))
         })?;
         let lock_factory_class_name = &args[3];
         let lock_dir_path = Path::new(&args[4]);
@@ -152,10 +158,17 @@ impl LockStressTest {
         )
     }
 
-    fn parse(value: &str, name: &str) -> Result<i64> {
-        value
-            .parse()
-            .map_err(|_| LuceneError::illegal_argument(format!("{name} is not a number: {value}")))
+    /// `Integer.parseInt(value)`, failing with its `NumberFormatException`
+    /// (`For input string: "<value>"`); `_name` names the argument.
+    fn parse(value: &str, _name: &str) -> Result<i64> {
+        crate::util::extra::java_parse_int(value)
+            .map(i64::from)
+            .ok_or_else(|| {
+                LuceneError::unchecked(
+                    "java.lang.NumberFormatException",
+                    format!("For input string: \"{value}\""),
+                )
+            })
     }
 
     /// Runs the stress loop: connects to the verification server, waits for the
@@ -279,7 +292,7 @@ impl LockStressTest {
         if rnd.next_int(10) == 0 {
             if rnd.next_bool() {
                 *verify_lf = VerifyingLockFactory::new(
-                    Self::get_new_lock_factory(lock_factory_class_name)?,
+                    Self::get_new_lock_factory(lock_factory_class_name)? as Box<dyn LockFactory>,
                     Box::new(socket.try_clone()?),
                     Box::new(socket.try_clone()?),
                 );
@@ -315,17 +328,13 @@ impl LockStressTest {
     /// command line. Rust has no reflection, so this port resolves the name
     /// against the filesystem lock factories the crate provides —
     /// [`NativeFSLockFactory`] and [`SimpleFSLockFactory`] — accepting both the
-    /// simple and the fully qualified Java class name. The returned value is
-    /// typed as [`LockFactory`] rather than as `FSLockFactory` because Rust
-    /// gained trait-object upcasting only in 1.86, after this crate's minimum
-    /// supported version; the factories returned are filesystem factories all
-    /// the same.
+    /// simple and the fully qualified Java class name.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::Io`] for an unknown name, exactly as Java throws
     /// `IOException("Cannot get lock factory singleton of …")`.
-    pub fn get_new_lock_factory(lock_factory_class_name: &str) -> Result<Box<dyn LockFactory>> {
+    pub fn get_new_lock_factory(lock_factory_class_name: &str) -> Result<Box<dyn FSLockFactory>> {
         let simple_name = lock_factory_class_name
             .rsplit('.')
             .next()

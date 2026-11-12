@@ -103,8 +103,12 @@ pub fn write_bit_set(
     dense_rank_power: i8,
 ) -> Result<i16> {
     if (dense_rank_power < 7 || dense_rank_power > 15) && dense_rank_power != -1 {
+        // `IndexedDISI.java:195-203`; `(int) Math.pow(2, denseRankPower)`
+        // truncates and saturates as `as i32` does.
         return Err(LuceneError::illegal_argument(format!(
-            "denseRankPower must be in [7, 15] or -1, got {dense_rank_power}"
+            "Acceptable values for denseRankPower are 7-15 (every 128-32768 docIDs). \
+             The provided power was {dense_rank_power} (every {} docIDs)",
+            2f64.powi(i32::from(dense_rank_power)) as i32
         )));
     }
     let origo = out.file_pointer();
@@ -336,8 +340,11 @@ impl IndexedDISI {
         cost: i64,
     ) -> Result<Self> {
         if (dense_rank_power < 7 || dense_rank_power > 15) && dense_rank_power != -1 {
+            // `IndexedDISI.java:332-340`, whose message ends in `". "`.
             return Err(LuceneError::illegal_argument(format!(
-                "denseRankPower must be in [7, 15] or -1, got {dense_rank_power}"
+                "Acceptable values for denseRankPower are 7-15 (every 128-32768 docIDs). \
+                 The provided power was {dense_rank_power} (every {} docIDs). ",
+                2f64.powi(i32::from(dense_rank_power)) as i32
             )));
         }
         let rank_index_shift = if dense_rank_power == -1 {
@@ -435,17 +442,17 @@ impl IndexedDISI {
         self.next_block_index = self.index.wrapping_add(num_values);
         if num_values <= MAX_ARRAY_LENGTH as i32 {
             self.method = Method::Sparse;
-            self.block_end = self.slice.file_pointer() + (num_values as i64 * 2);
+            self.block_end = self.slice.file_pointer()? + (num_values as i64 * 2);
             self.next_exist_doc_in_block = -1;
         } else if num_values == BLOCK_SIZE as i32 {
             self.method = Method::All;
-            self.block_end = self.slice.file_pointer();
+            self.block_end = self.slice.file_pointer()?;
             let gap = self.block.wrapping_sub(self.index).wrapping_sub(1);
             self.doc = -1; // will be set by advance
             self.dense_origo_index = gap; // repurpose for ALL gap
         } else {
             self.method = Method::Dense;
-            self.dense_bitmap_offset = self.slice.file_pointer()
+            self.dense_bitmap_offset = self.slice.file_pointer()?
                 + if self.dense_rank_power == -1 {
                     0
                 } else {
@@ -574,7 +581,7 @@ impl IndexedDISI {
                 self.next_exist_doc_in_block = doc_in_block;
                 if doc_in_block != target_in_block {
                     self.index = self.index.wrapping_sub(1);
-                    self.slice.seek(self.slice.file_pointer() - 2)?;
+                    self.slice.seek(self.slice.file_pointer()? - 2)?;
                     break;
                 }
                 self.exists = true;
@@ -660,7 +667,7 @@ impl IndexedDISI {
         let source_from = self.doc & 0xFFFF;
         let source_to = cmp::min(dest_to.wrapping_sub(self.block), BLOCK_SIZE as i32);
 
-        let fp = self.slice.file_pointer();
+        let fp = self.slice.file_pointer()?;
         // seek back a long to include current word (disi.word).
         self.slice.seek(fp - 8)?;
         let word_index = self.word_index as usize;
@@ -724,6 +731,13 @@ impl IndexedDISI {
 }
 
 impl DocIdSetIterator for IndexedDISI {
+    /// `IndexedDISI` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.lucene90.IndexedDISI",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc
     }
@@ -806,6 +820,13 @@ impl SharedDocIndexIterator {
 }
 
 impl DocIdSetIterator for SharedDocIndexIterator {
+    /// `IndexedDISI$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.lucene90.IndexedDISI$1",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.disi().doc_id()
     }

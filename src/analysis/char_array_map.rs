@@ -210,7 +210,7 @@ impl<V> CharArrayMap<V> {
     /// so an entry cannot be taken out without rebuilding it.
     pub fn remove(&mut self, _key: &[u16]) -> crate::error::Result<Option<V>> {
         Err(crate::error::LuceneError::unsupported_operation(
-            "CharArrayMap does not support removal".to_string(),
+            String::new(),
         ))
     }
 
@@ -573,9 +573,7 @@ impl<V> std::fmt::Display for KeySet<'_, V> {
 
 /// The `UnsupportedOperationException` the key-set view's `add` throws.
 fn unsupported_key_set_add() -> crate::error::LuceneError {
-    crate::error::LuceneError::unsupported_operation(
-        "the key set of a CharArrayMap cannot add keys".to_string(),
-    )
+    crate::error::LuceneError::unsupported_operation(String::new())
 }
 
 /// A view of the values of a [`CharArrayMap`].
@@ -817,7 +815,7 @@ impl EntryIterator {
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     pub fn remove(&mut self) -> crate::error::Result<()> {
         Err(crate::error::LuceneError::unsupported_operation(
-            "CharArrayMap entries cannot be removed".to_string(),
+            String::new(),
         ))
     }
 }
@@ -887,9 +885,7 @@ impl MapEntry {
 
 /// The `UnsupportedOperationException` an unmodifiable map's entries throw.
 fn unmodifiable_entry() -> crate::error::LuceneError {
-    crate::error::LuceneError::unsupported_operation(
-        "CharArrayMap is unmodifiable and its entries cannot be written to".to_string(),
-    )
+    crate::error::LuceneError::unsupported_operation(String::new())
 }
 
 /// Iterator over the entries of a [`CharArrayMap`].

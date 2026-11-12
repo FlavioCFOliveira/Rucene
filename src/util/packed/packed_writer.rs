@@ -12,11 +12,15 @@ use super::{Format, PackedInts};
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{DataInput, DataOutput};
 
-fn end_of_stream(message: &'static str) -> LuceneError {
-    LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
-        std::io::ErrorKind::UnexpectedEof,
-        message,
-    )))
+/// `new EOFException(message)` (`null` for `None`).
+fn end_of_stream(message: Option<&'static str>) -> LuceneError {
+    LuceneError::from(LuceneErrorKind::Io(
+        crate::store::java_nio_file::JavaIoException::new(
+            crate::store::java_nio_file::EOF_EXCEPTION,
+            message.map(str::to_string),
+        )
+        .into_io_error(),
+    ))
 }
 
 /// Writes a fixed-width packed-integer stream, most significant byte first.
@@ -110,15 +114,16 @@ impl PackedIntsWriter for PackedWriter<'_> {
         debug_assert!(PackedInts::unsigned_bits_required(v) <= self.bits_per_value);
         debug_assert!(!self.finished);
         if self.value_count != -1 && self.written >= self.value_count {
-            return Err(end_of_stream("Writing past end of stream"));
+            return Err(end_of_stream(Some("Writing past end of stream")));
         }
         if self.off == self.next_values.len() {
-            // Java would fail with an `ArrayIndexOutOfBoundsException` here,
-            // which only happens when `computeIterations` returned zero for an
-            // unknown value count paired with a non-zero memory budget.
-            return Err(LuceneError::illegal_state(
-                "PackedWriter has no buffer capacity; use mem = 0 with an unknown value count"
-                    .to_string(),
+            // `nextValues[off++] = v` on an empty buffer, which only happens
+            // when `computeIterations` returned zero for an unknown value
+            // count paired with a non-zero memory budget: the JVM's
+            // `ArrayIndexOutOfBoundsException`.
+            return Err(crate::store::array_index_out_of_bounds(
+                self.off as i64,
+                self.next_values.len(),
             ));
         }
         self.next_values[self.off] = v;
@@ -230,7 +235,8 @@ impl PackedIntsReaderIterator for PackedReaderIterator<'_> {
 
         let remaining = self.value_count - self.position - 1;
         if remaining <= 0 {
-            return Err(end_of_stream("read past end of packed-integer stream"));
+            // `throw new EOFException()` (`PackedReaderIterator.java:62-65`).
+            return Err(end_of_stream(None));
         }
         let count = std::cmp::min(remaining as usize, count);
 

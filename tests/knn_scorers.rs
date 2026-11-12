@@ -742,6 +742,7 @@ fn sparse_search(reader: &Arc<dyn DirectoryReader>, filter: Option<(i32, i32)>) 
     .unwrap();
     collector
         .top_docs()
+        .unwrap()
         .score_docs
         .iter()
         .map(|score_doc| score_doc.doc)
@@ -909,7 +910,7 @@ fn readers_built_per_search(doc_count: i32) -> (u64, u64, usize) {
     leaf.search_nearest_vectors(VECTOR_FIELD, &[0.0, 0.0], &mut collector, &mut accept_docs)
         .unwrap();
     let search = monotonic_reader_constructions() - before_search;
-    let docs = collector.top_docs().score_docs;
+    let docs = collector.top_docs().unwrap().score_docs;
     assert!(!docs.is_empty() && docs.iter().all(|hit| (lo..hi).contains(&hit.doc)));
 
     let values = leaf.get_float_vector_values(VECTOR_FIELD).unwrap().unwrap();

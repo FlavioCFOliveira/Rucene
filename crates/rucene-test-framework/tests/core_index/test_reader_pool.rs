@@ -278,7 +278,7 @@ fn test_update() -> Result<()> {
                     DocValuesType::NUMERIC,
                 );
                 doc = p.doc_id();
-                number.add_long(doc, 1000);
+                number.add_long(doc, 1000)?;
                 number.finish()?;
                 readers_and_updates.add_dv_update(number)?;
                 expect_update = true;
@@ -617,7 +617,7 @@ fn test_get_reader_by_ram() -> Result<()> {
             "test",
             DocValuesType::BINARY,
         );
-        test.add_binary(0, &BytesRef::new(vec![0u8; ord]));
+        test.add_binary(0, &BytesRef::new(vec![0u8; ord]))?;
         ord += 1;
         test.finish()?;
         readers_and_updates.add_dv_update(test)?;

@@ -134,7 +134,11 @@ impl InfoStream for PrintStreamInfoStream {
             self.message_id,
             self.get_timestamp()
         );
-        if let Ok(mut stream) = self.stream.lock() {
+        {
+            let mut stream = self
+                .stream
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             // Java's `PrintStream.println` swallows I/O errors; so does this.
             let _ = stream.write_all(line.as_bytes());
             let _ = stream.flush();
@@ -147,7 +151,11 @@ impl InfoStream for PrintStreamInfoStream {
 
     fn close(&self) {
         if !self.is_system_stream {
-            if let Ok(mut stream) = self.stream.lock() {
+            {
+                let mut stream = self
+                    .stream
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let _ = stream.flush();
             }
         }

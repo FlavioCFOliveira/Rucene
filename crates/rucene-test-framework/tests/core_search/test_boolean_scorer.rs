@@ -195,9 +195,10 @@ impl Query for CrazyMustUseBulkScorerQuery {
         std::ptr::addr_eq(self as *const Self, other as *const dyn Query)
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         // `System.identityHashCode(this)`: the address stands for it.
-        self as *const Self as usize as u64
+        let address = self as *const Self as usize as u64;
+        (address ^ (address >> 32)) as i32
     }
 }
 

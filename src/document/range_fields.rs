@@ -49,6 +49,27 @@ pub enum RangeQueryType {
 }
 
 impl RangeQueryType {
+    /// Java's `QueryType.hashCode()`.
+    ///
+    /// An enum constant does not override `hashCode()`, so Java answers its JVM
+    /// identity hash, which differs between runs; the stable stand-in of
+    /// [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)
+    /// replaces it.
+    pub fn java_hash_code(self) -> i32 {
+        crate::util::java_collections::java_identity_hash_code_stand_in(match self {
+            RangeQueryType::Intersects => {
+                "org.apache.lucene.document.RangeFieldQuery$QueryType.INTERSECTS"
+            }
+            RangeQueryType::Within => "org.apache.lucene.document.RangeFieldQuery$QueryType.WITHIN",
+            RangeQueryType::Contains => {
+                "org.apache.lucene.document.RangeFieldQuery$QueryType.CONTAINS"
+            }
+            RangeQueryType::Crosses => {
+                "org.apache.lucene.document.RangeFieldQuery$QueryType.CROSSES"
+            }
+        })
+    }
+
     /// Returns whether a document range matches the query range under this
     /// relation.
     ///
@@ -119,14 +140,7 @@ fn check_args<T: PartialOrd + std::fmt::Debug>(min: &[T], max: &[T], kind: &str)
             "{kind} does not support greater than {MAX_RANGE_DIMENSIONS} dimensions"
         )));
     }
-    for d in 0..min.len() {
-        if min[d] > max[d] {
-            return Err(LuceneError::illegal_argument(format!(
-                "min value ({:?}) is greater than max value ({:?})",
-                min[d], max[d]
-            )));
-        }
-    }
+    // The `min > max` check is `verifyAndEncode`'s, per dimension.
     Ok(())
 }
 
@@ -208,15 +222,15 @@ macro_rules! range_field {
             pub fn get_min(&self, dimension: usize) -> Result<$prim> {
                 let dims =
                     (IndexableFieldType::point_dimension_count(&self.field_type) / 2) as usize;
+                // `Objects.checkIndex(dimension, type.pointDimensionCount() / 2)`.
                 if dimension >= dims {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "dimension {dimension} is out of range for {dims} dimensions"
-                    )));
+                    return Err(LuceneError::unchecked(
+                        "java.lang.IndexOutOfBoundsException",
+                        format!("Index {dimension} out of bounds for length {dims}"),
+                    ));
                 }
                 let FieldData::Bytes(bytes) = &*self.fields_data.borrow() else {
-                    return Err(LuceneError::illegal_state(
-                        "range field has no packed value".to_string(),
-                    ));
+                    panic!("INVARIANT: a range field always holds its packed BytesRef");
                 };
                 Ok($decode(bytes.slice(), dimension * $bytes))
             }
@@ -225,15 +239,15 @@ macro_rules! range_field {
             pub fn get_max(&self, dimension: usize) -> Result<$prim> {
                 let dims =
                     (IndexableFieldType::point_dimension_count(&self.field_type) / 2) as usize;
+                // `Objects.checkIndex(dimension, type.pointDimensionCount() / 2)`.
                 if dimension >= dims {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "dimension {dimension} is out of range for {dims} dimensions"
-                    )));
+                    return Err(LuceneError::unchecked(
+                        "java.lang.IndexOutOfBoundsException",
+                        format!("Index {dimension} out of bounds for length {dims}"),
+                    ));
                 }
                 let FieldData::Bytes(bytes) = &*self.fields_data.borrow() else {
-                    return Err(LuceneError::illegal_state(
-                        "range field has no packed value".to_string(),
-                    ));
+                    panic!("INVARIANT: a range field always holds its packed BytesRef");
                 };
                 Ok($decode(bytes.slice(), (dims + dimension) * $bytes))
             }
@@ -290,20 +304,32 @@ macro_rules! range_field {
             ///
             /// # Errors
             ///
-            /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a minimum exceeds
-            /// its maximum, or when `bytes` is not `2 * n * BYTES` long.
+            /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a NaN bound or a
+            /// minimum that exceeds its maximum, dimension by dimension, and the
+            /// JVM's `ArrayIndexOutOfBoundsException` when `max` or `bytes` is
+            /// too short; like Java's, it checks nothing else.
             pub fn verify_and_encode(min: &[$prim], max: &[$prim], bytes: &mut [u8]) -> Result<()> {
-                check_args(min, max, $kind)?;
                 let n = min.len();
-                if bytes.len() != $bytes * 2 * n {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "encoded range must be {} bytes long, got {}",
-                        $bytes * 2 * n,
-                        bytes.len()
-                    )));
-                }
+                // `BitUtil.VH_BE_*.set(bytes, offset, ...)`: the view's
+                // `ArrayIndexOutOfBoundsException` past the array.
+                let check_room = |offset: usize, bytes: &[u8]| -> Result<()> {
+                    if offset + $bytes > bytes.len() {
+                        return Err(crate::store::array_index_out_of_bounds(
+                            offset as i64,
+                            (bytes.len() + 1).saturating_sub($bytes),
+                        ));
+                    }
+                    Ok(())
+                };
                 #[allow(clippy::redundant_closure_call)]
                 for d in 0..n {
+                    if d >= max.len() {
+                        // `max[d]`: the JVM's `ArrayIndexOutOfBoundsException`.
+                        return Err(crate::store::array_index_out_of_bounds(
+                            d as i64,
+                            max.len(),
+                        ));
+                    }
                     // Lucene rejects a NaN bound here rather than in checkArgs,
                     // because `min[d] > max[d]` is false for NaN and would let
                     // it through. IntRange and LongRange carry no such check —
@@ -321,7 +347,16 @@ macro_rules! range_field {
                             $kind
                         )));
                     }
+                    if min[d] > max[d] {
+                        return Err(LuceneError::illegal_argument(format!(
+                            "min value ({}) is greater than max value ({})",
+                            $render(min[d]),
+                            $render(max[d])
+                        )));
+                    }
+                    check_room(d * $bytes, bytes)?;
                     $encode(min[d], bytes, d * $bytes);
+                    check_room((n + d) * $bytes, bytes)?;
                     $encode(max[d], bytes, (n + d) * $bytes);
                 }
                 Ok(())
@@ -760,6 +795,13 @@ impl BinaryRangeDocValues {
 }
 
 impl DocIdSetIterator for BinaryRangeDocValues {
+    /// `BinaryRangeDocValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.BinaryRangeDocValues",
+        )
+    }
     /// Returns the document the cursor is on.
     ///
     /// Equivalent to `BinaryRangeDocValues.docID()`, which reports the wrapped
@@ -1062,14 +1104,23 @@ impl Query for BinaryRangeFieldRangeQuery {
     }
 
     /// Equivalent to `BinaryRangeFieldRangeQuery.hashCode()`.
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.query_ranges.hash(&mut hasher);
-        hasher.finish()
+    /// Java's `BinaryRangeFieldRangeQuery` is abstract; its concrete
+    /// subclasses (`IntRangeSlowRangeQuery` and its siblings) are reached
+    /// through this one type here.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.BinaryRangeFieldRangeQuery"
+    }
+
+    /// Equivalent to `BinaryRangeFieldRangeQuery.hashCode()`: `classHash()`,
+    /// `field.hashCode()` and `Arrays.hashCode(queryPackedValue)`.
+    fn query_hash(&self) -> i32 {
+        let mut h = self.class_hash();
+        h = 31i32.wrapping_mul(h).wrapping_add(
+            crate::util::java_collections::java_string_hash_code(&self.field),
+        );
+        31i32.wrapping_mul(h).wrapping_add(
+            crate::util::java_collections::java_arrays_hash_code_bytes(&self.query_ranges),
+        )
     }
 }
 
@@ -1136,9 +1187,9 @@ impl RangeQueryType {
                 }
                 Ok(PointRelation::CellCrossesQuery)
             }
-            Self::Crosses => Err(LuceneError::unsupported_operation(
-                "CROSSES cannot be decided from a cell's bounds".to_string(),
-            )),
+            // `throw new UnsupportedOperationException()`
+            // (`RangeFieldQuery.java:206-216`).
+            Self::Crosses => Err(LuceneError::unsupported_operation(String::new())),
         }
     }
 
@@ -1313,12 +1364,8 @@ impl RangeFieldQuery {
     /// Checks the constructor's arguments.
     ///
     /// Equivalent to `RangeFieldQuery.checkArgs(String, byte[], int)`.
-    fn check_args(field: &str, ranges: &[u8], num_dims: usize) -> Result<()> {
-        if field.is_empty() {
-            return Err(LuceneError::illegal_argument(
-                "field must not be null".to_string(),
-            ));
-        }
+    fn check_args(_field: &str, ranges: &[u8], num_dims: usize) -> Result<()> {
+        // `field == null` has no counterpart: a `&str` is never `null`.
         if num_dims > MAX_RANGE_DIMENSIONS {
             return Err(LuceneError::illegal_argument(format!(
                 "dimension size cannot be greater than {MAX_RANGE_DIMENSIONS}"
@@ -1403,6 +1450,13 @@ struct RangeFieldVisitor<'a> {
 }
 
 impl IntersectVisitor for RangeFieldVisitor<'_> {
+    /// `RangeFieldQuery$1$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.document.RangeFieldQuery$1$1",
+        )
+    }
     fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
         Ok(())
@@ -1708,20 +1762,33 @@ impl Query for RangeFieldQuery {
     }
 
     /// Equivalent to `RangeFieldQuery.hashCode()`.
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        // `classHash()` in Java already distinguishes the anonymous subclasses;
-        // this port has one concrete type, so the kind carries that difference
-        // and keeps the hash consistent with `query_eq`.
-        self.value_kind.hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.num_dims.hash(&mut hasher);
-        self.query_type.hash(&mut hasher);
-        self.ranges.hash(&mut hasher);
-        hasher.finish()
+    /// The anonymous `RangeFieldQuery` subclass of the range family that
+    /// built this query (`IntRange$1` and its siblings).
+    fn java_class_name(&self) -> &'static str {
+        match self.value_kind {
+            RangeValueKind::Int => "org.apache.lucene.document.IntRange$1",
+            RangeValueKind::Long => "org.apache.lucene.document.LongRange$1",
+            RangeValueKind::Float => "org.apache.lucene.document.FloatRange$1",
+            RangeValueKind::Double => "org.apache.lucene.document.DoubleRange$1",
+            RangeValueKind::InetAddress => "org.apache.lucene.document.InetAddressRange$1",
+        }
+    }
+
+    /// Equivalent to `RangeFieldQuery.hashCode()`: `classHash()` (the
+    /// anonymous subclass), `field.hashCode()`, `numDims`,
+    /// `queryType.hashCode()` and `Arrays.hashCode(ranges)`.
+    fn query_hash(&self) -> i32 {
+        let mut hash = self.class_hash();
+        hash = 31i32.wrapping_mul(hash).wrapping_add(
+            crate::util::java_collections::java_string_hash_code(&self.field),
+        );
+        hash = 31i32.wrapping_mul(hash).wrapping_add(self.num_dims as i32);
+        hash = 31i32
+            .wrapping_mul(hash)
+            .wrapping_add(self.query_type.java_hash_code());
+        31i32.wrapping_mul(hash).wrapping_add(
+            crate::util::java_collections::java_arrays_hash_code_bytes(&self.ranges),
+        )
     }
 }
 

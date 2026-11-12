@@ -287,17 +287,19 @@ fn decode_slow(
     // that depends on the width, and for a width outside the table Java throws
     // `ArrayIndexOutOfBoundsException` there, before any byte is read. A full
     // block of a corrupt `.doc` reaches this with a width up to 127, the
-    // largest positive signed byte `refillFullBlock` reads. Java's exception
-    // maps to `IllegalArgument`, this crate's carrier for an
-    // `IndexOutOfBoundsException`, with the JDK's message.
+    // largest positive signed byte `refillFullBlock` reads. It is raised as
+    // that `ArrayIndexOutOfBoundsException`, with the JDK's message.
     let Some(&mask) = usize::try_from(bits_per_value)
         .ok()
         .and_then(|index| MASKS32.get(index))
     else {
-        return Err(LuceneError::illegal_argument(format!(
-            "Index {bits_per_value} out of bounds for length {}",
-            MASKS32.len()
-        )));
+        return Err(LuceneError::unchecked(
+            "java.lang.ArrayIndexOutOfBoundsException",
+            format!(
+                "Index {bits_per_value} out of bounds for length {}",
+                MASKS32.len()
+            ),
+        ));
     };
     pdu.split_ints(
         num_ints as i32,
@@ -802,14 +804,23 @@ mod tests {
             };
             match error {
                 LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { message, .. },
+                    kind:
+                        LuceneErrorKind::Unchecked {
+                            class: "java.lang.ArrayIndexOutOfBoundsException",
+                            message: Some(message),
+                            ..
+                        },
                     ..
                 } => {
                     assert_eq!(message, format!("Index {bits} out of bounds for length 32"))
                 }
                 other => panic!("unexpected error for {bits} bits: {other:?}"),
             }
-            assert_eq!(input.file_pointer(), 0, "nothing is read before the check");
+            assert_eq!(
+                input.file_pointer().unwrap(),
+                0,
+                "nothing is read before the check"
+            );
         }
     }
 

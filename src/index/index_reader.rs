@@ -287,10 +287,11 @@ impl ReaderLink {
     fn report_close_to_parents(&self) {
         // The lock is released before recursing so a cycle in the (weakly
         // linked) reader tree cannot deadlock on a re-entrant lock.
-        let parents: Vec<Weak<ReaderLink>> = match self.parents.lock() {
-            Ok(parents) => parents.clone(),
-            Err(_) => return,
-        };
+        let parents: Vec<Weak<ReaderLink>> = self
+            .parents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         for parent in parents {
             if let Some(parent) = parent.upgrade() {
                 if !parent.closed_by_child.swap(true, Ordering::SeqCst) {
@@ -546,7 +547,12 @@ impl IndexReaderCore {
     /// parent (`IndexReader.java:162-165`).
     pub fn register_parent_core(&self, parent: &IndexReaderCore) -> Result<()> {
         self.ensure_open()?;
-        if let Ok(mut parents) = self.link.parents.lock() {
+        {
+            let mut parents = self
+                .link
+                .parents
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             parents.push(Arc::downgrade(&parent.link));
         }
         Ok(())
@@ -937,6 +943,26 @@ pub fn java_object_to_string<T: ?Sized>(class_name: &str, identity: &T) -> Strin
         "{}@{:x}",
         class_name,
         std::ptr::from_ref(identity).cast::<()>() as usize
+    )
+}
+
+/// Renders an object the way `java.lang.Object.toString()` does, with the
+/// port's stable identity-hash stand-in as the hexadecimal suffix.
+///
+/// Java's default is `getClass().getName() + "@" +
+/// Integer.toHexString(hashCode())`, where `hashCode()` is the identity hash.
+/// `class_name` must be the **binary** Java name (a `$` before a nested or
+/// anonymous class). The suffix is
+/// `Integer.toHexString(`[`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)`(class_name))`.
+///
+/// **Divergence from Lucene 10.5.0.** The JVM draws an identity hash at random,
+/// so the digits differ from one JVM run to the next and no port can reproduce
+/// them; the stand-in keeps the class name and the `name@hex` shape exactly and
+/// is the same in every run. No Lucene format depends on the digits.
+pub fn java_object_to_string_stand_in(class_name: &str) -> String {
+    format!(
+        "{class_name}@{:x}",
+        crate::util::java_collections::java_identity_hash_code_stand_in(class_name) as u32
     )
 }
 

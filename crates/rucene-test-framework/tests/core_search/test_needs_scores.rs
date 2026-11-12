@@ -338,18 +338,17 @@ impl Query for AssertNeedsScores {
 
     /// `value.hashCode()` is the enum constant's identity hash in Java; the
     /// port hashes the constant.
-    fn query_hash(&self) -> u64 {
-        let prime = 31u32;
-        let mut result = self.class_hash() as u32;
+    fn query_hash(&self) -> i32 {
+        let prime = 31i32;
+        let mut result = self.class_hash();
         result = prime
             .wrapping_mul(result)
-            .wrapping_add(self.r#in.query_hash() as u32);
+            .wrapping_add(self.r#in.query_hash());
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.value.hash(&mut hasher);
-        result = prime
+        prime
             .wrapping_mul(result)
-            .wrapping_add(hasher.finish() as u32);
-        result as u64
+            .wrapping_add(hasher.finish() as i32)
     }
 
     fn query_eq(&self, other: &dyn Query) -> bool {

@@ -527,7 +527,12 @@ def load(roadmap, claims, commit, date):
             if (simple, c["file"]) in types:
                 target = simple
                 module_resolved += 1
-            elif c["file"] in files_with_types:
+            elif c["file"] in files_with_types and c["file"] not in component_of_file:
+                # A file that already has a `Component` keeps it when it later
+                # gains a type of its own: sprint 9 added the trait
+                # `HashContainerOverrides` to `hash_containers.rs`, which made
+                # `HashContainers` lose its port although its free functions
+                # had not moved (2026-11-11).
                 continue
             else:
                 target = component_of_file.get(c["file"], simple)

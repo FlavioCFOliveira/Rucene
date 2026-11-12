@@ -222,7 +222,7 @@ impl DoubleValuesSource for OtherImpl {
         false
     }
 
-    fn source_hash(&self) -> u64 {
+    fn source_hash(&self) -> i32 {
         0
     }
 

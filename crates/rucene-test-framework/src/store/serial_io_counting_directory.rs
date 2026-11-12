@@ -287,14 +287,19 @@ impl DataInput for SerializedIOCountingIndexInput {
 
     /// `readByte()`.
     fn read_byte(&mut self) -> Result<u8> {
-        self.on_read(self.file_pointer(), 1);
+        self.on_read(self.file_pointer()?, 1);
         self.r#in.read_byte()
     }
 
     /// `readBytes(b, offset, len)`.
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
-        self.on_read(self.file_pointer(), len as i64);
+        self.on_read(self.file_pointer()?, len as i64);
         self.r#in.read_bytes(b, offset, len)
+    }
+
+    fn read_bytes_out_of_range(&mut self, b: &mut [u8], offset: i32, len: i32) -> Result<()> {
+        self.on_read(self.file_pointer()?, i64::from(len));
+        self.r#in.read_bytes_out_of_range(b, offset, len)
     }
 
     /// `IndexInput.skipBytes`: `seek(getFilePointer() + numBytes)`.
@@ -304,7 +309,7 @@ impl DataInput for SerializedIOCountingIndexInput {
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let skip_to = self.file_pointer() + num_bytes;
+        let skip_to = self.file_pointer()? + num_bytes;
         self.seek(skip_to)
     }
 }
@@ -314,8 +319,8 @@ impl IndexInput for SerializedIOCountingIndexInput {
         self.r#in.close()
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.r#in.file_pointer() - self.slice_offset
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.r#in.file_pointer()? - self.slice_offset)
     }
 
     fn length(&self) -> i64 {

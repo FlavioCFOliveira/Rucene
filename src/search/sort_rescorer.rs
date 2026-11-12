@@ -83,10 +83,15 @@ impl SortRescorer {
             let doc_id = hits[hit_upto].doc;
             while doc_id >= end_doc {
                 reader_upto += 1;
+                // `leaves.get(readerUpto)` (`SortRescorer.java:66`).
                 let context = leaves.get(reader_upto as usize).ok_or_else(|| {
-                    LuceneError::illegal_state(format!(
-                        "hit docId={doc_id} is beyond the last leaf of the provided searcher"
-                    ))
+                    LuceneError::unchecked(
+                        "java.lang.IndexOutOfBoundsException",
+                        format!(
+                            "Index {reader_upto} out of bounds for length {}",
+                            leaves.len()
+                        ),
+                    )
                 })?;
                 end_doc = context.doc_base() + context.leaf_reader().max_doc();
             }

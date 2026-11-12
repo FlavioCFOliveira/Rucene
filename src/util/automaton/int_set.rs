@@ -103,6 +103,71 @@ impl Hash for FrozenIntSet {
     }
 }
 
+/// The `IntSet.equals`/`hashCode` contract (`IntSet.java:40-53`), shared by
+/// every int set so that a [`FrozenIntSet`] map key can be looked up with a
+/// live [`StateSet`] without freezing it first, as Java's
+/// `newstate.get(statesSet)` does in `Operations.determinize`
+/// (`Operations.java:760`).
+///
+/// Two keys are equal when their 64-bit hash codes and their first `size()`
+/// values are equal; the hash fed to a [`Hasher`] is the 64-bit hash code,
+/// exactly as [`FrozenIntSet`]'s [`Hash`] implementation feeds it.
+pub(crate) trait IntSetKey {
+    /// `longHashCode()`.
+    fn key_hash_code(&self) -> i64;
+    /// `getArray()` truncated to `size()`.
+    fn key_values(&self) -> &[i32];
+}
+
+impl Hash for dyn IntSetKey + '_ {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_i64(self.key_hash_code());
+    }
+}
+
+impl PartialEq for dyn IntSetKey + '_ {
+    /// `IntSet.equals(Object)` (`IntSet.java:47-53`).
+    fn eq(&self, other: &Self) -> bool {
+        self.key_hash_code() == other.key_hash_code() && self.key_values() == other.key_values()
+    }
+}
+
+impl Eq for dyn IntSetKey + '_ {}
+
+impl IntSetKey for FrozenIntSet {
+    fn key_hash_code(&self) -> i64 {
+        self.hash_code
+    }
+
+    fn key_values(&self) -> &[i32] {
+        &self.values
+    }
+}
+
+impl<'a> std::borrow::Borrow<dyn IntSetKey + 'a> for FrozenIntSet {
+    fn borrow(&self) -> &(dyn IntSetKey + 'a) {
+        self
+    }
+}
+
+/// A borrowed view of a [`StateSet`]'s current hash code and sorted values,
+/// usable as a [`FrozenIntSet`] map key without allocating.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StateSetKey<'a> {
+    values: &'a [i32],
+    hash_code: i64,
+}
+
+impl IntSetKey for StateSetKey<'_> {
+    fn key_hash_code(&self) -> i64 {
+        self.hash_code
+    }
+
+    fn key_values(&self) -> &[i32] {
+        self.values
+    }
+}
+
 impl std::fmt::Display for FrozenIntSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.values)
@@ -195,6 +260,17 @@ impl StateSet {
         self.array_cache.sort_unstable();
         self.array_updated = true;
         &self.array_cache
+    }
+
+    /// This set as a lookup key for a map keyed by [`FrozenIntSet`]: the
+    /// live set itself, as Java passes `statesSet` to `HashMap.get`
+    /// (`Operations.java:760`), with no snapshot allocated.
+    pub(crate) fn as_key(&mut self) -> StateSetKey<'_> {
+        let hash_code = self.long_hash_code();
+        StateSetKey {
+            values: self.get_array(),
+            hash_code,
+        }
     }
 
     /// The number of states in this set.

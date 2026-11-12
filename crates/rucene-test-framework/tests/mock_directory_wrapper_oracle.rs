@@ -125,7 +125,7 @@ fn class_and_message(e: &LuceneError) -> (String, String) {
             },
         ),
         LuceneError {
-            kind: LuceneErrorKind::CorruptIndex(message),
+            kind: LuceneErrorKind::CorruptIndex { message, .. },
             ..
         } => (
             "org.apache.lucene.index.CorruptIndexException".to_string(),
@@ -1018,7 +1018,9 @@ fn serial_io(r: &mut Recorder) {
         sl.read_bytes(Some(&mut [0u8; 10]), 0, 10)?;
         count(&dir)
     });
-    r.rec("slice getFilePointer", || Ok(sl.file_pointer().to_string()));
+    r.rec("slice getFilePointer", || {
+        Ok(sl.file_pointer()?.to_string())
+    });
     r.rec("slice length", || Ok(sl.length().to_string()));
     r.rec_obj("slice of slice", || {
         input.slice("bad", 60 * 4096, 10 * 4096)

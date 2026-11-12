@@ -230,9 +230,9 @@ impl Terms for FieldReader {
         // (`FieldReader.java:176-177`): the DFA's two objects, or the query's
         // one `NFARunAutomaton` for both, which the clone shares.
         let view = crate::index::automaton_terms_enum::CompiledAutomatonView::new(compiled.clone())
-            .ok_or_else(|| {
-                LuceneError::illegal_argument("compiled automaton has no runnable form".to_string())
-            })?;
+            // A `null` transition accessor or byte runnable, dereferenced by
+            // the enum: the JVM's `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)?;
         Ok(Box::new(
             crate::codecs::lucene103::intersect_terms_enum::IntersectTermsEnum::new(
                 self.clone(),
@@ -294,16 +294,14 @@ impl Terms for FieldReader {
     /// prints for it.
     ///
     /// Equivalent to `FieldReader.getStats()` (`FieldReader.java:110-114`):
-    /// `new SegmentTermsEnum(this, newReader()).computeBlockStats()`. Java
-    /// returns the `Stats` object and `CheckIndex` keeps it as an `Object`;
-    /// [`Terms::stats`] returns its `toString()`, which is what `CheckIndex`
-    /// prints.
+    /// `new SegmentTermsEnum(this, newReader()).computeBlockStats()`, the
+    /// `Stats` object itself, which `CheckIndex` keeps as an `Object`.
     ///
     /// # Errors
     ///
     /// Returns whatever opening the cursor or reading a block raises.
-    fn stats(&self) -> Result<String> {
-        Ok(self.get_stats()?.to_string())
+    fn stats(&self) -> Result<Box<dyn crate::index::terms::StatsObject>> {
+        Ok(Box::new(self.get_stats()?))
     }
 
     /// A `FieldReader`, for the casts Java tests make on a `Terms`

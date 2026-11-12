@@ -750,7 +750,11 @@ impl FileSystemProvider for DefaultFileSystemProvider {
         for name in names.split(',') {
             if name == "*" {
                 for n in BASIC_NAMES {
-                    out.push((n.to_string(), basic_value(&attrs, n).expect("basic name")));
+                    out.push((
+                        n.to_string(),
+                        basic_value(&attrs, n)
+                            .expect("INVARIANT: every BASIC_NAMES entry is a basic attribute"),
+                    ));
                 }
                 continue;
             }

@@ -381,6 +381,10 @@ impl AutomatonTermsEnum {
 }
 
 impl FilteredTermsEnumFilter for AutomatonTermsEnum {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.index.AutomatonTermsEnum"
+    }
+
     /// Answers Java's class check on the enumeration
     /// (`getClass().getSimpleName()`, `TestWildcardQuery.testPrefixTerm`).
     fn as_any(&self) -> Option<&dyn std::any::Any> {

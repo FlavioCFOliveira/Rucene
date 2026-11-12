@@ -238,12 +238,23 @@ fn assert_deterministic_vector_path(stdout: &str) {
     assert_eq!(header(stdout, "version"), "10.5.0");
 }
 
+/// Puts the Rust side under the switch the JVM oracle gets: the environment
+/// variable `lucene.useScalarFMA`, this port's form of the
+/// `-Dlucene.useScalarFMA` system property (`Constants.getSysProp`), set to
+/// `false` before any vector computation reads `Constants.HAS_FAST_SCALAR_FMA`
+/// (`rucene::util::vector_util::use_fma`), which is evaluated once.
+fn pin_scalar_fma_off() {
+    static PIN: std::sync::Once = std::sync::Once::new();
+    PIN.call_once(|| std::env::set_var("lucene.useScalarFMA", "false"));
+}
+
 // ---------------------------------------------------------------------------
 // Vector similarity
 // ---------------------------------------------------------------------------
 
 #[test]
 fn float_vector_similarity_is_bit_identical_to_java() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("vector-similarity-float");
     let stdout =
@@ -319,6 +330,7 @@ fn float_vector_similarity_is_bit_identical_to_java() {
 
 #[test]
 fn byte_vector_similarity_is_bit_identical_to_java() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("vector-similarity-byte");
     let stdout =
@@ -764,6 +776,7 @@ fn assert_one_dimensional_case_matches_java(case: &str, scratch: &str) {
 
 #[test]
 fn one_dimensional_single_leaf_intersect_trace_matches_java() {
+    pin_scalar_fma_off();
     require_maven();
     assert_one_dimensional_case_matches_java("ONE_LEAF_1D", "point-tree-1d");
 }
@@ -775,12 +788,14 @@ fn one_dimensional_single_leaf_intersect_trace_matches_java() {
 /// point estimate unchanged and the formula is never evaluated.
 #[test]
 fn multi_valued_single_leaf_estimates_match_java() {
+    pin_scalar_fma_off();
     require_maven();
     assert_one_dimensional_case_matches_java("MULTI_VALUED_1D", "point-tree-multivalued");
 }
 
 #[test]
 fn two_dimensional_single_leaf_results_match_java() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("point-tree-2d");
     let stdout =
@@ -830,6 +845,7 @@ fn two_dimensional_single_leaf_results_match_java() {
 
 #[test]
 fn multi_leaf_aggregates_match_java() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("point-tree-multi");
     let stdout =
@@ -957,12 +973,14 @@ fn assert_multi_leaf_bkd_cursor_case_matches_java(case: &str, scratch: &str) {
 
 #[test]
 fn multi_leaf_one_dimensional_bkd_cursor_trace_matches_java() {
+    pin_scalar_fma_off();
     require_maven();
     assert_multi_leaf_bkd_cursor_case_matches_java("MULTI_LEAF_1D", "point-tree-cursor-1d");
 }
 
 #[test]
 fn multi_leaf_two_dimensional_bkd_cursor_trace_matches_java() {
+    pin_scalar_fma_off();
     require_maven();
     assert_multi_leaf_bkd_cursor_case_matches_java("MULTI_LEAF_2D", "point-tree-cursor-2d");
 }
@@ -1030,6 +1048,7 @@ fn sequence_lines(stdout: &str, prefix: &str, name: &str) -> Vec<HashMap<String,
 
 #[test]
 fn doc_index_iterators_match_java() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("vector-iterators");
     let stdout = run_fixture("VectorValuesIteratorFixture", &dir, "ITERATORS")
@@ -1182,6 +1201,7 @@ fn advance_lines<'a>(stdout: &'a str, name: &str) -> Vec<HashMap<&'a str, &'a st
 
 #[test]
 fn indexed_vector_values_metadata_matches_java() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("vector-indexed");
     let stdout = run_fixture("VectorValuesIteratorFixture", &dir, "INDEXED")
@@ -1257,5 +1277,354 @@ fn indexed_vector_values_metadata_matches_java() {
             observed.push((doc, iterator.index()));
         }
         assert_eq!(observed, expected, "{field}: (docID, index()) sequence");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Remaining VectorUtil kernels
+// ---------------------------------------------------------------------------
+
+fn parse_i64(fields: &HashMap<&str, &str>, key: &str) -> i64 {
+    fields[key]
+        .parse()
+        .unwrap_or_else(|e| panic!("{key}={:?} is not an integer: {e}", fields[key]))
+}
+
+fn parse_bool(fields: &HashMap<&str, &str>, key: &str) -> bool {
+    fields[key]
+        .parse()
+        .unwrap_or_else(|e| panic!("{key}={:?} is not a boolean: {e}", fields[key]))
+}
+
+fn float_from(fields: &HashMap<&str, &str>, key: &str) -> f32 {
+    f32::from_bits(parse_bits(fields[key]))
+}
+
+/// Asserts two float vectors are bit-identical, component by component.
+fn assert_same_float_bits(actual: &[f32], expected: &[f32], what: &str) {
+    let a: Vec<u32> = actual.iter().map(|f| f.to_bits()).collect();
+    let e: Vec<u32> = expected.iter().map(|f| f.to_bits()).collect();
+    assert_eq!(a, e, "{what}");
+}
+
+/// Parses `[1,2,3]`.
+fn parse_int_list(value: &str) -> Vec<i32> {
+    let inner = value
+        .strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+        .unwrap_or_else(|| panic!("not a list: {value}"));
+    if inner.is_empty() {
+        return Vec::new();
+    }
+    inner
+        .split(',')
+        .map(|v| v.parse().expect("an integer"))
+        .collect()
+}
+
+/// Parses `[hex,hex]` of `Double.doubleToRawLongBits`.
+fn parse_double_list(value: &str) -> Vec<f64> {
+    let inner = value
+        .strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+        .unwrap_or_else(|| panic!("not a list: {value}"));
+    if inner.is_empty() {
+        return Vec::new();
+    }
+    inner
+        .split(',')
+        .map(|v| f64::from_bits(u64::from_str_radix(v, 16).expect("double bits")))
+        .collect()
+}
+
+/// The `VectorUtil` methods `VectorSimilarityFixture KERNELS` prints, over
+/// its inputs: every result compared exactly, floats by their raw bits.
+///
+/// Covered here: `int4DotProduct`, `int4SquareDistance`,
+/// `int4DotProductSinglePacked`, `int4DotProductBothPacked`,
+/// `int4SquareDistanceSinglePacked`, `int4SquareDistanceBothPacked`,
+/// `int4BitDotProduct`, `int4DibitDotProduct`, `uint8DotProduct`,
+/// `uint8SquareDistance`, `xorBitCount`, `minMaxScalarQuantize`,
+/// `recalculateOffset`, `findNextGEQ`, `filterByScore`, `l2normalize`,
+/// `isUnitVector`, both `isZeroVector`, `add`, `checkFinite`,
+/// `scaleMaxInnerProductScore`, `normalizeToUnitInterval` and
+/// `normalizeDistanceToUnitInterval`; the float and signed byte
+/// `dotProduct`, `cosine`, `squareDistance` and `dotProductScore` are covered
+/// by the two tests above.
+#[test]
+fn vector_util_kernels_are_bit_identical_to_java() {
+    pin_scalar_fma_off();
+    require_maven();
+    let dir = scratch_dir("vector-util-kernels");
+    let stdout =
+        run_fixture("VectorSimilarityFixture", &dir, "KERNELS").unwrap_or_else(|e| panic!("{e}"));
+    assert_deterministic_vector_path(&stdout);
+
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    let mut geq_buffer: Option<Vec<i32>> = None;
+
+    for line in stdout.lines() {
+        let Some((kind, rest)) = line.split_once(' ') else {
+            continue;
+        };
+        match kind {
+            "int4" => {
+                let f = pairs(rest, 0);
+                let label = format!("int4 dim={} id={}", f["dim"], f["id"]);
+                let (a, b) = (decode_b64(f["a"]), decode_b64(f["b"]));
+                assert_eq!(
+                    i64::from(vector_util::int4_dot_product(&a, &b).unwrap()),
+                    parse_i64(&f, "dotProduct"),
+                    "{label} int4DotProduct"
+                );
+                assert_eq!(
+                    i64::from(vector_util::int4_square_distance(&a, &b).unwrap()),
+                    parse_i64(&f, "squareDistance"),
+                    "{label} int4SquareDistance"
+                );
+                if f.contains_key("pa") {
+                    let (pa, pb) = (decode_b64(f["pa"]), decode_b64(f["pb"]));
+                    assert_eq!(
+                        i64::from(vector_util::int4_dot_product_single_packed(&a, &pb).unwrap()),
+                        parse_i64(&f, "singlePackedDot"),
+                        "{label} int4DotProductSinglePacked"
+                    );
+                    assert_eq!(
+                        i64::from(vector_util::int4_dot_product_both_packed(&pa, &pb).unwrap()),
+                        parse_i64(&f, "bothPackedDot"),
+                        "{label} int4DotProductBothPacked"
+                    );
+                    assert_eq!(
+                        i64::from(
+                            vector_util::int4_square_distance_single_packed(&a, &pb).unwrap()
+                        ),
+                        parse_i64(&f, "singlePackedSquare"),
+                        "{label} int4SquareDistanceSinglePacked"
+                    );
+                    assert_eq!(
+                        i64::from(vector_util::int4_square_distance_both_packed(&pa, &pb).unwrap()),
+                        parse_i64(&f, "bothPackedSquare"),
+                        "{label} int4SquareDistanceBothPacked"
+                    );
+                    *counts.entry("int4-packed").or_default() += 1;
+                }
+            }
+            "bit" => {
+                let f = pairs(rest, 0);
+                let (q, d) = (decode_b64(f["q"]), decode_b64(f["d"]));
+                assert_eq!(
+                    vector_util::int4_bit_dot_product(&q, &d).unwrap(),
+                    parse_i64(&f, "int4BitDotProduct"),
+                    "bit dim={} id={} int4BitDotProduct",
+                    f["dim"],
+                    f["id"]
+                );
+            }
+            "dibit" => {
+                let f = pairs(rest, 0);
+                let (q, d) = (decode_b64(f["q"]), decode_b64(f["d"]));
+                assert_eq!(
+                    vector_util::int4_dibit_dot_product(&q, &d).unwrap(),
+                    parse_i64(&f, "int4DibitDotProduct"),
+                    "dibit dim={} id={} int4DibitDotProduct",
+                    f["dim"],
+                    f["id"]
+                );
+            }
+            "u8" => {
+                let f = pairs(rest, 0);
+                let label = format!("u8 dim={} id={}", f["dim"], f["id"]);
+                let (a, b) = (decode_b64(f["a"]), decode_b64(f["b"]));
+                assert_eq!(
+                    i64::from(vector_util::uint8_dot_product(&a, &b).unwrap()),
+                    parse_i64(&f, "uint8DotProduct"),
+                    "{label} uint8DotProduct"
+                );
+                assert_eq!(
+                    i64::from(vector_util::uint8_square_distance(&a, &b).unwrap()),
+                    parse_i64(&f, "uint8SquareDistance"),
+                    "{label} uint8SquareDistance"
+                );
+                assert_eq!(
+                    i64::from(vector_util::xor_bit_count(&a, &b).unwrap()),
+                    parse_i64(&f, "xorBitCount"),
+                    "{label} xorBitCount"
+                );
+            }
+            "quant" => {
+                let f = pairs(rest, 0);
+                let label = format!("quant dim={} id={}", f["dim"], f["id"]);
+                let v = decode_floats(f["v"]);
+                let expected_dest = decode_b64(f["dest"]);
+                let mut dest = vec![0u8; v.len()];
+                let offset = vector_util::min_max_scalar_quantize(
+                    &v,
+                    &mut dest,
+                    float_from(&f, "scale"),
+                    float_from(&f, "alpha"),
+                    float_from(&f, "min"),
+                    float_from(&f, "max"),
+                )
+                .unwrap();
+                assert_eq!(dest, expected_dest, "{label} minMaxScalarQuantize dest");
+                assert_same_bits(
+                    offset,
+                    parse_bits(f["offset"]),
+                    &format!("{label} minMaxScalarQuantize offset"),
+                );
+                let recalculated = vector_util::recalculate_offset(
+                    &expected_dest,
+                    float_from(&f, "alpha"),
+                    float_from(&f, "min"),
+                    float_from(&f, "rscale"),
+                    float_from(&f, "ralpha"),
+                    float_from(&f, "rmin"),
+                    float_from(&f, "rmax"),
+                );
+                assert_same_bits(
+                    recalculated,
+                    parse_bits(f["roffset"]),
+                    &format!("{label} recalculateOffset"),
+                );
+            }
+            "floats" => {
+                let f = pairs(rest, 0);
+                let label = format!("floats dim={} id={}", f["dim"], f["id"]);
+                let v = decode_floats(f["v"]);
+                let mut normalized = v.clone();
+                vector_util::l2normalize(&mut normalized, false).unwrap();
+                assert_same_float_bits(
+                    &normalized,
+                    &decode_floats(f["l2"]),
+                    &format!("{label} l2normalize"),
+                );
+                assert_eq!(
+                    vector_util::is_unit_vector(&v),
+                    parse_bool(&f, "unit"),
+                    "{label} isUnitVector"
+                );
+                assert_eq!(
+                    vector_util::is_zero_vector_f32(&v),
+                    parse_bool(&f, "zero"),
+                    "{label} isZeroVector(float[])"
+                );
+                let mut sum = decode_floats(f["u"]);
+                vector_util::add(&mut sum, &v).unwrap();
+                assert_same_float_bits(&sum, &decode_floats(f["sum"]), &format!("{label} add"));
+                assert_eq!(
+                    vector_util::is_zero_vector_bytes(&decode_b64(f["bytes"])),
+                    parse_bool(&f, "zeroBytes"),
+                    "{label} isZeroVector(byte[])"
+                );
+            }
+            "finite" => {
+                let (head, java) = match rest.split_once(" error message=") {
+                    Some((head, message)) => (head, Some(message)),
+                    None => (
+                        rest.strip_suffix(" ok")
+                            .unwrap_or_else(|| panic!("unexpected finite line: {line}")),
+                        None,
+                    ),
+                };
+                let f = pairs(head, 0);
+                let label = format!("finite dim={} id={}", f["dim"], f["id"]);
+                let rust = vector_util::check_finite(&decode_floats(f["v"]))
+                    .err()
+                    .map(|e| e.to_string());
+                assert_eq!(
+                    rust,
+                    java.map(|m| format!("illegal argument: {m}")),
+                    "{label} checkFinite"
+                );
+            }
+            "geqbuf" => {
+                let values = rest.strip_prefix("values=").expect("geqbuf values");
+                geq_buffer = Some(
+                    values
+                        .split(',')
+                        .map(|v| v.parse().expect("an integer"))
+                        .collect(),
+                );
+            }
+            "geq" => {
+                let f = pairs(rest, 0);
+                let buffer = geq_buffer.as_ref().expect("geqbuf precedes geq");
+                let from: usize = f["from"].parse().unwrap();
+                let to: usize = f["to"].parse().unwrap();
+                let target: i32 = f["target"].parse().unwrap();
+                assert_eq!(
+                    vector_util::find_next_geq(buffer, target, from, to) as i64,
+                    parse_i64(&f, "result"),
+                    "findNextGEQ target={target} from={from} to={to}"
+                );
+            }
+            "filter" => {
+                let f = pairs(rest, 0);
+                let label = format!("filterByScore length={} t={}", f["length"], f["t"]);
+                let mut docs = parse_int_list(f["docs"]);
+                let mut scores = parse_double_list(f["scores"]);
+                let min = f64::from_bits(u64::from_str_radix(f["min"], 16).unwrap());
+                let up_to: usize = f["upTo"].parse().unwrap();
+                let count =
+                    vector_util::filter_by_score(&mut docs, &mut scores, min, up_to).unwrap();
+                assert_eq!(count as i64, parse_i64(&f, "count"), "{label} count");
+                assert_eq!(docs, parse_int_list(f["outDocs"]), "{label} docBuffer");
+                let expected: Vec<u64> = parse_double_list(f["outScores"])
+                    .iter()
+                    .map(|d| d.to_bits())
+                    .collect();
+                let actual: Vec<u64> = scores.iter().map(|d| d.to_bits()).collect();
+                assert_eq!(actual, expected, "{label} scoreBuffer");
+            }
+            "scalar" => {
+                let f = pairs(rest, 0);
+                let x = float_from(&f, "x");
+                let label = format!("scalar x={}", f["x"]);
+                assert_same_bits(
+                    vector_util::scale_max_inner_product_score(x),
+                    parse_bits(f["scaleMaxInnerProductScore"]),
+                    &format!("{label} scaleMaxInnerProductScore"),
+                );
+                assert_same_bits(
+                    vector_util::normalize_to_unit_interval(x),
+                    parse_bits(f["normalizeToUnitInterval"]),
+                    &format!("{label} normalizeToUnitInterval"),
+                );
+                assert_same_bits(
+                    vector_util::normalize_distance_to_unit_interval(x),
+                    parse_bits(f["normalizeDistanceToUnitInterval"]),
+                    &format!("{label} normalizeDistanceToUnitInterval"),
+                );
+            }
+            _ => continue,
+        }
+        *counts.entry(kind).or_default() += 1;
+    }
+
+    // Every table must be complete: 24 lengths (8 of them even and so
+    // packed), 4 int4 pairs, 3 bit and 3 dibit documents, 5 uint8 pairs, 2
+    // quantization settings, 4 float vectors and 4 checkFinite vectors per
+    // length; 7 ranges x 13 targets of findNextGEQ; 7 lengths x 7 thresholds
+    // of filterByScore; 16 scalars.
+    let expected: [(&str, usize); 12] = [
+        ("int4", 96),
+        ("int4-packed", 32),
+        ("bit", 72),
+        ("dibit", 72),
+        ("u8", 120),
+        ("quant", 48),
+        ("floats", 96),
+        ("finite", 96),
+        ("geqbuf", 1),
+        ("geq", 91),
+        ("filter", 49),
+        ("scalar", 16),
+    ];
+    for (kind, count) in expected {
+        assert_eq!(
+            counts.get(kind).copied().unwrap_or(0),
+            count,
+            "unexpected number of {kind} cases:\n{stdout}"
+        );
     }
 }

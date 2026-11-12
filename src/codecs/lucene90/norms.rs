@@ -44,6 +44,7 @@
 
 #![deny(unsafe_code)]
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -271,9 +272,8 @@ impl NormsConsumer for Lucene90NormsConsumer {
             let offset = self.data.file_pointer();
             self.meta.write_long(offset)?;
             let mut it = crate::codecs::doc_values::non_null(values.get_norms(field)?, field)?;
-            let mut docs = NormsDocs::new(it.as_mut());
             let jump_table_entry_count =
-                write_bit_set(&mut docs, self.data.as_mut(), DEFAULT_DENSE_RANK_POWER)?;
+                write_bit_set(it.as_mut(), self.data.as_mut(), DEFAULT_DENSE_RANK_POWER)?;
             self.meta.write_long(self.data.file_pointer() - offset)?;
             self.meta.write_short(jump_table_entry_count)?;
             self.meta.write_byte(DEFAULT_DENSE_RANK_POWER as u8)?;
@@ -310,42 +310,6 @@ impl NormsConsumer for Lucene90NormsConsumer {
         }
         self.closed = true;
         Self::close_outputs(Some(&mut self.data), Some(&mut self.meta))
-    }
-}
-
-/// Views the documents of a [`NumericDocValues`] as a plain
-/// [`DocIdSetIterator`].
-///
-/// `write_bit_set` takes a `&mut dyn DocIdSetIterator`, and this crate's MSRV
-/// (1.80) predates trait upcasting, so a `&mut dyn NumericDocValues` cannot be
-/// coerced to its supertrait object. Delegating through a thin adapter keeps
-/// the streaming behaviour of Java's
-/// `IndexedDISI.writeBitSet(values, data, ...)` without buffering the doc ids.
-struct NormsDocs<'a> {
-    values: &'a mut dyn NumericDocValues,
-}
-
-impl<'a> NormsDocs<'a> {
-    fn new(values: &'a mut dyn NumericDocValues) -> Self {
-        Self { values }
-    }
-}
-
-impl DocIdSetIterator for NormsDocs<'_> {
-    fn doc_id(&self) -> i32 {
-        self.values.doc_id()
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        self.values.next_doc()
-    }
-
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        self.values.advance(target)
-    }
-
-    fn cost(&self) -> i64 {
-        self.values.cost()
     }
 }
 
@@ -502,9 +466,11 @@ impl Lucene90NormsProducer {
                 &state.segment_suffix,
             )?;
             if version != version2 {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                    "Format versions mismatch: meta={version}, data={version2}"
-                ))));
+                // `Lucene90NormsProducer.java:96-98`: no space after the comma.
+                return Err(LuceneError::corrupt_index(
+                    format!("Format versions mismatch: meta={version},data={version2}"),
+                    data.to_java_string(),
+                ));
             }
             // Cheap structural check of the data footer; the actual checksum is
             // verified by `check_integrity` on demand.
@@ -584,19 +550,10 @@ impl Lucene90NormsProducer {
     /// `data.randomAccessSlice(entry.normsOffset, entry.numDocsWithField *
     /// (long) entry.bytesPerNorm)`.
     fn data_input(&self, entry: &NormsEntry) -> Result<Box<dyn RandomAccessInput>> {
-        // `read_fields` has already restricted `bytes_per_norm` to 0, 1, 2, 4
-        // or 8, so the product of an `i32` and it cannot leave `i64`; what can
-        // still arrive off disk is a negative `num_docs_with_field`, which
-        // would ask for a slice of negative length. Java lets
-        // `randomAccessSlice` refuse that; it is refused here with the numbers
-        // that caused it.
+        // `entry.numDocsWithField * (long) entry.bytesPerNorm`: a negative
+        // length off disk reaches `randomAccessSlice`, which refuses it as in
+        // Java.
         let length = entry.num_docs_with_field as i64 * entry.bytes_per_norm as i64;
-        if length < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "invalid norms slice: numDocsWithField={}, bytesPerNorm={}",
-                entry.num_docs_with_field, entry.bytes_per_norm
-            ))));
-        }
         self.data
             .read()
             .random_access_slice(entry.norms_offset, length)
@@ -721,16 +678,18 @@ fn read_fields(
         if field_number == -1 {
             break;
         }
-        let info = infos.field_info_by_number(field_number).ok_or_else(|| {
-            LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "Invalid field number: {field_number}"
-            )))
-        })?;
+        // `Lucene90NormsProducer.java:217-221`.
+        let Some(info) = infos.field_info_checked(field_number)? else {
+            return Err(LuceneError::corrupt_index(
+                format!("Invalid field number: {field_number}"),
+                meta.to_java_string(),
+            ));
+        };
         if !info.has_norms() {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "Invalid field: {} (no norms)",
-                info.name
-            ))));
+            return Err(LuceneError::corrupt_index(
+                format!("Invalid field: {}", info.name),
+                meta.to_java_string(),
+            ));
         }
         let mut entry = NormsEntry {
             docs_with_field_offset: meta.read_long()?,
@@ -744,10 +703,14 @@ fn read_fields(
         match entry.bytes_per_norm {
             0 | 1 | 2 | 4 | 8 => {}
             _ => {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                    "Invalid bytesPerNorm: {}, field: {}",
-                    entry.bytes_per_norm, info.name
-                ))))
+                // `Lucene90NormsProducer.java:239-241`.
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "Invalid bytesPerValue: {}, field: {}",
+                        entry.bytes_per_norm, info.name
+                    ),
+                    meta.to_java_string(),
+                ));
             }
         }
         entry.norms_offset = meta.read_long()?;
@@ -760,7 +723,11 @@ impl Lucene90NormsProducer {
     /// The body of `Lucene90NormsProducer.getNorms(FieldInfo)`.
     fn norms_of(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
         let entry = self.norms.get(&field.number).ok_or_else(|| {
-            LuceneError::illegal_argument(format!("no norms for field {}", field.name))
+            // `entry.docsWithFieldOffset` on the `null` that `norms.get`
+            // returns: the JVM's `NullPointerException`.
+            LuceneError::null_pointer_with_message(
+                "Cannot read field \"docsWithFieldOffset\" because \"entry\" is null",
+            )
         })?;
 
         if entry.docs_with_field_offset == -2 {
@@ -871,7 +838,7 @@ impl IndexInput for SharedRandomAccessSlice {
         lock_random_access_input(&self.input).close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         lock_random_access_input(&self.input).file_pointer()
     }
 
@@ -1010,8 +977,8 @@ impl IndexInput for MergingDisiInput {
         unused_by_indexed_disi()
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.offset
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.offset)
     }
 
     fn length(&self) -> i64 {
@@ -1056,8 +1023,7 @@ impl IndexInput for MergingDisiInput {
 ///
 /// Equivalent to the four `slice.readByte(...)`/`readShort(...)`/`readInt(...)`/
 /// `readLong(...)` bodies of `Lucene90NormsProducer.getNorms`, whose positions
-/// are `index << log2(bytesPerNorm)`. The shift is done in `i64` from an `i32`
-/// ordinal, so it cannot overflow.
+/// are `((long) index) << log2(bytesPerNorm)`.
 fn read_norm_at(slice: &mut dyn RandomAccessInput, index: i32, bytes_per_norm: i8) -> Result<i64> {
     let index = index as i64;
     match bytes_per_norm {
@@ -1065,10 +1031,11 @@ fn read_norm_at(slice: &mut dyn RandomAccessInput, index: i32, bytes_per_norm: i
         2 => Ok(slice.read_short_at(index << 1)? as i64),
         4 => Ok(slice.read_int_at(index << 2)? as i64),
         8 => slice.read_long_at(index << 3),
-        // `read_fields` rejects every other width before an entry is stored.
-        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid bytes per norm: {bytes_per_norm}"
-        )))),
+        // `default: throw new AssertionError()` ("should not happen, we
+        // already validate bytesPerNorm in readFields").
+        _ => Err(LuceneError::from(LuceneErrorKind::AssertionError(
+            String::new(),
+        ))),
     }
 }
 
@@ -1094,22 +1061,34 @@ impl DenseConstantNormsIterator {
     }
 }
 
+/// `DenseNormsIterator.advance(int)` (`Lucene90NormsProducer.java:162-167`).
+fn dense_advance(doc: &mut i32, max_doc: i32, target: i32) -> i32 {
+    *doc = if target >= max_doc {
+        NO_MORE_DOCS
+    } else {
+        target
+    };
+    *doc
+}
+
 impl DocIdSetIterator for DenseConstantNormsIterator {
+    /// `Lucene90NormsProducer$2` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$2",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        self.advance(self.doc + 1)
+        self.advance(self.doc.wrapping_add(1))
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
-        if target >= self.max_doc {
-            self.doc = NO_MORE_DOCS;
-        } else {
-            self.doc = target.max(0);
-        }
-        Ok(self.doc)
+        Ok(dense_advance(&mut self.doc, self.max_doc, target))
     }
 
     fn cost(&self) -> i64 {
@@ -1118,19 +1097,16 @@ impl DocIdSetIterator for DenseConstantNormsIterator {
 }
 
 impl DocValuesIterator for DenseConstantNormsIterator {
+    /// `this.doc = target; return true;`.
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
         self.doc = target;
-        Ok(target >= 0 && target < self.max_doc)
+        Ok(true)
     }
 }
 
 impl NumericDocValues for DenseConstantNormsIterator {
+    /// `return entry.normsOffset;`, whatever the current document.
     fn long_value(&self) -> Result<i64> {
-        if self.doc < 0 || self.doc >= self.max_doc {
-            return Err(LuceneError::illegal_state(
-                "long_value called with no current document".to_string(),
-            ));
-        }
         Ok(self.value)
     }
 }
@@ -1138,19 +1114,15 @@ impl NumericDocValues for DenseConstantNormsIterator {
 /// Dense iterator that reads each norm from the `.nvd` slice on demand.
 ///
 /// Equivalent to the `DenseNormsIterator` subclasses of
-/// `Lucene90NormsProducer.getNorms`. Java reads inside `longValue()`; here the
-/// read happens in the positioning methods, because [`NumericDocValues`] takes
-/// `&self` in `long_value` while [`RandomAccessInput`] needs `&mut self`. The
-/// two are observationally identical — nothing can change between positioning
-/// and reading — and it keeps the reader lazy: a segment's norms are never
-/// materialised in memory, so a corrupt `num_docs_with_field` cannot ask for a
-/// multi-gigabyte allocation.
+/// `Lucene90NormsProducer.getNorms`: `longValue()` reads the current
+/// document's norm. [`NumericDocValues::long_value`] takes `&self` while
+/// [`RandomAccessInput`] reads through `&mut self`, so the slice sits in a
+/// [`RefCell`].
 struct DenseNormsIterator {
     max_doc: i32,
     doc: i32,
-    slice: Box<dyn RandomAccessInput>,
+    slice: RefCell<Box<dyn RandomAccessInput>>,
     bytes_per_norm: i8,
-    value: i64,
 }
 
 impl fmt::Debug for DenseNormsIterator {
@@ -1168,35 +1140,37 @@ impl DenseNormsIterator {
         Self {
             max_doc,
             doc: -1,
-            slice,
+            slice: RefCell::new(slice),
             bytes_per_norm,
-            value: 0,
         }
-    }
-
-    fn load(&mut self) -> Result<()> {
-        self.value = read_norm_at(self.slice.as_mut(), self.doc, self.bytes_per_norm)?;
-        Ok(())
     }
 }
 
 impl DocIdSetIterator for DenseNormsIterator {
+    /// The anonymous `DenseNormsIterator` subclass `Lucene90NormsProducer.getNorms`
+    /// builds for this `bytesPerNorm` (`$3` to `$6` for 1, 2, 4 and 8, in
+    /// source order, checked with `javap -c`) declares no `toString()`, so
+    /// `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(match self.bytes_per_norm {
+            1 => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$3",
+            2 => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$4",
+            4 => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$5",
+            // The producer builds this iterator for 1, 2, 4 and 8 only.
+            _ => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$6",
+        })
+    }
     fn doc_id(&self) -> i32 {
         self.doc
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        self.advance(self.doc + 1)
+        self.advance(self.doc.wrapping_add(1))
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
-        if target >= self.max_doc {
-            self.doc = NO_MORE_DOCS;
-            return Ok(self.doc);
-        }
-        self.doc = target.max(0);
-        self.load()?;
-        Ok(self.doc)
+        Ok(dense_advance(&mut self.doc, self.max_doc, target))
     }
 
     fn cost(&self) -> i64 {
@@ -1205,24 +1179,22 @@ impl DocIdSetIterator for DenseNormsIterator {
 }
 
 impl DocValuesIterator for DenseNormsIterator {
+    /// `this.doc = target; return true;`.
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
         self.doc = target;
-        if target < 0 || target >= self.max_doc {
-            return Ok(false);
-        }
-        self.load()?;
         Ok(true)
     }
 }
 
 impl NumericDocValues for DenseNormsIterator {
+    /// Reads the norm of `doc`, wherever the iterator stands; the slice
+    /// rejects a position it does not hold, as in Java.
     fn long_value(&self) -> Result<i64> {
-        if self.doc < 0 || self.doc >= self.max_doc {
-            return Err(LuceneError::illegal_state(
-                "long_value called with no current document".to_string(),
-            ));
-        }
-        Ok(self.value)
+        read_norm_at(
+            self.slice.borrow_mut().as_mut(),
+            self.doc,
+            self.bytes_per_norm,
+        )
     }
 }
 
@@ -1233,7 +1205,6 @@ impl NumericDocValues for DenseNormsIterator {
 struct SparseConstantNormsIterator {
     disi: IndexedDISI,
     value: i64,
-    positioned: bool,
 }
 
 impl fmt::Debug for SparseConstantNormsIterator {
@@ -1247,29 +1218,28 @@ impl fmt::Debug for SparseConstantNormsIterator {
 
 impl SparseConstantNormsIterator {
     fn new(disi: IndexedDISI, value: i64) -> Self {
-        Self {
-            disi,
-            value,
-            positioned: false,
-        }
+        Self { disi, value }
     }
 }
 
 impl DocIdSetIterator for SparseConstantNormsIterator {
+    /// `Lucene90NormsProducer$7` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$7",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.disi.doc_id()
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        let doc = self.disi.next_doc()?;
-        self.positioned = doc != NO_MORE_DOCS;
-        Ok(doc)
+        self.disi.next_doc()
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
-        let doc = self.disi.advance(target)?;
-        self.positioned = doc != NO_MORE_DOCS;
-        Ok(doc)
+        self.disi.advance(target)
     }
 
     fn cost(&self) -> i64 {
@@ -1279,22 +1249,13 @@ impl DocIdSetIterator for SparseConstantNormsIterator {
 
 impl DocValuesIterator for SparseConstantNormsIterator {
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
-        self.positioned = self.disi.advance_exact(target)?;
-        Ok(self.positioned)
+        self.disi.advance_exact(target)
     }
 }
 
 impl NumericDocValues for SparseConstantNormsIterator {
+    /// `return entry.normsOffset;`, whatever the current document.
     fn long_value(&self) -> Result<i64> {
-        // `IndexedDISI.advanceExact` sets its current document to the target
-        // whether or not that document has a value, so whether this iterator is
-        // on a document that has a norm has to be remembered rather than read
-        // back off the iterator.
-        if !self.positioned {
-            return Err(LuceneError::illegal_state(
-                "long_value called with no current document".to_string(),
-            ));
-        }
         Ok(self.value)
     }
 }
@@ -1303,14 +1264,12 @@ impl NumericDocValues for SparseConstantNormsIterator {
 /// indexed by the ordinal the [`IndexedDISI`] reports.
 ///
 /// Equivalent to the `SparseNormsIterator` subclasses of
-/// `Lucene90NormsProducer.getNorms`. See [`DenseNormsIterator`] for why the
-/// read happens while positioning.
+/// `Lucene90NormsProducer.getNorms`, whose `longValue()` reads the norm at
+/// `disi.index()`. See [`DenseNormsIterator`] for the [`RefCell`].
 struct SparseNormsIterator {
     disi: IndexedDISI,
-    slice: Box<dyn RandomAccessInput>,
+    slice: RefCell<Box<dyn RandomAccessInput>>,
     bytes_per_norm: i8,
-    value: i64,
-    positioned: bool,
 }
 
 impl fmt::Debug for SparseNormsIterator {
@@ -1326,36 +1285,37 @@ impl SparseNormsIterator {
     fn new(disi: IndexedDISI, slice: Box<dyn RandomAccessInput>, bytes_per_norm: i8) -> Self {
         Self {
             disi,
-            slice,
+            slice: RefCell::new(slice),
             bytes_per_norm,
-            value: 0,
-            positioned: false,
         }
-    }
-
-    fn load(&mut self, doc: i32) -> Result<i32> {
-        self.positioned = false;
-        if doc != NO_MORE_DOCS {
-            self.value = read_norm_at(self.slice.as_mut(), self.disi.index(), self.bytes_per_norm)?;
-            self.positioned = true;
-        }
-        Ok(doc)
     }
 }
 
 impl DocIdSetIterator for SparseNormsIterator {
+    /// The anonymous `SparseNormsIterator` subclass `Lucene90NormsProducer.getNorms`
+    /// builds for this `bytesPerNorm` (`$8` to `$11` for 1, 2, 4 and 8, in
+    /// source order, checked with `javap -c`) declares no `toString()`, so
+    /// `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(match self.bytes_per_norm {
+            1 => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$8",
+            2 => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$9",
+            4 => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$10",
+            // The producer builds this iterator for 1, 2, 4 and 8 only.
+            _ => "org.apache.lucene.codecs.lucene90.Lucene90NormsProducer$11",
+        })
+    }
     fn doc_id(&self) -> i32 {
         self.disi.doc_id()
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        let doc = self.disi.next_doc()?;
-        self.load(doc)
+        self.disi.next_doc()
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
-        let doc = self.disi.advance(target)?;
-        self.load(doc)
+        self.disi.advance(target)
     }
 
     fn cost(&self) -> i64 {
@@ -1365,24 +1325,17 @@ impl DocIdSetIterator for SparseNormsIterator {
 
 impl DocValuesIterator for SparseNormsIterator {
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
-        self.positioned = false;
-        if !self.disi.advance_exact(target)? {
-            return Ok(false);
-        }
-        self.value = read_norm_at(self.slice.as_mut(), self.disi.index(), self.bytes_per_norm)?;
-        self.positioned = true;
-        Ok(true)
+        self.disi.advance_exact(target)
     }
 }
 
 impl NumericDocValues for SparseNormsIterator {
     fn long_value(&self) -> Result<i64> {
-        if !self.positioned {
-            return Err(LuceneError::illegal_state(
-                "long_value called with no current document".to_string(),
-            ));
-        }
-        Ok(self.value)
+        read_norm_at(
+            self.slice.borrow_mut().as_mut(),
+            self.disi.index(),
+            self.bytes_per_norm,
+        )
     }
 }
 
@@ -1424,7 +1377,7 @@ mod tests {
             HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap()
     }
@@ -1854,7 +1807,7 @@ mod tests {
         assert!(matches!(
             err,
             LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(_),
+                kind: LuceneErrorKind::CorruptIndex { .. },
                 ..
             }
         ));
@@ -1887,7 +1840,7 @@ mod tests {
         assert!(matches!(
             err,
             LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(_),
+                kind: LuceneErrorKind::CorruptIndex { .. },
                 ..
             }
         ));
@@ -2058,7 +2011,9 @@ mod tests {
         assert!(values.advance_exact(5).unwrap());
         assert_eq!(values.long_value().unwrap(), -7);
         assert!(!values.advance_exact(6).unwrap());
-        assert!(values.long_value().is_err());
+        // Java's `longValue()` reads at `disi.index()`, which a failed
+        // `advanceExact` leaves on the last document found (5).
+        assert_eq!(values.long_value().unwrap(), -7);
         assert!(values.advance_exact(64).unwrap());
         assert_eq!(values.long_value().unwrap(), 9);
     }
@@ -2082,7 +2037,8 @@ mod tests {
         let mut values = producer.get_norms(&body).unwrap().unwrap();
         assert!(values.advance_exact(7).unwrap());
         assert_eq!(values.long_value().unwrap(), 3);
-        assert!(!values.advance_exact(8).unwrap());
+        // `DenseNormsIterator.advanceExact` is `doc = target; return true`.
+        assert!(values.advance_exact(8).unwrap());
     }
 
     #[test]
@@ -2290,7 +2246,7 @@ mod tests {
             .unwrap_err();
         let message = error.to_string();
         assert!(
-            message.contains("Invalid bytesPerNorm"),
+            message.contains("Invalid bytesPerValue"),
             "the entry failure must be the one reported, got: {message}"
         );
     }
@@ -2318,7 +2274,7 @@ mod tests {
             "the corruption must be the one reported, got: {message}"
         );
         assert!(
-            !message.contains("Invalid bytesPerNorm"),
+            !message.contains("Invalid bytesPerValue"),
             "the entry failure is suppressed, not in the message: {message}"
         );
     }

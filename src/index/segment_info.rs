@@ -88,8 +88,9 @@ pub struct SegmentInfo {
     /// 16-byte id that uniquely identifies this segment.
     id: [u8; ID_LENGTH],
 
-    /// Sort order of the segment, if any.
-    index_sort: Sort,
+    /// Sort order of the segment, if any: `None` for an unsorted segment, as
+    /// Java's `indexSort` is `null` (`SegmentInfo.java:92`).
+    index_sort: Option<Sort>,
 
     /// Files referenced by this segment.
     ///
@@ -128,7 +129,7 @@ impl SegmentInfo {
         diagnostics: HashMap<String, String>,
         id: [u8; ID_LENGTH],
         attributes: HashMap<String, String>,
-        index_sort: Sort,
+        index_sort: Option<Sort>,
     ) -> Result<Self> {
         Ok(Self {
             directory,
@@ -171,7 +172,7 @@ impl SegmentInfo {
         diagnostics: HashMap<String, String>,
         id: [u8; ID_LENGTH],
         attributes: HashMap<String, String>,
-        index_sort: Sort,
+        index_sort: Option<Sort>,
     ) -> Result<Self> {
         Ok(Self {
             directory,
@@ -325,7 +326,11 @@ impl SegmentInfo {
 
     /// Returns a codec attribute, if present.
     pub fn get_attribute(&self, key: &str) -> Option<String> {
-        self.attributes.read().unwrap().get(key).cloned()
+        self.attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
     }
 
     /// Stores a codec attribute, returning the previous value if any.
@@ -338,7 +343,10 @@ impl SegmentInfo {
         // map rather than mutating it: `new HashMap<>(attributes)`, put, then
         // swap in an unmodifiable view of the copy. The copy constructor's
         // pre-sizing is what fixes the resulting iteration order.
-        let mut guard = self.attributes.write().unwrap();
+        let mut guard = self
+            .attributes
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut new_map = guard.to_java_hash_map();
         let old_value = new_map.insert(key.into(), value.into());
         *guard = JavaStringMap::Hash(new_map);
@@ -347,7 +355,10 @@ impl SegmentInfo {
 
     /// Returns a copy of the codec attributes map, without its iteration order.
     pub fn get_attributes(&self) -> HashMap<String, String> {
-        self.attributes.read().unwrap().to_std()
+        self.attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .to_std()
     }
 
     /// Returns a copy of the codec attributes map, iteration order included.
@@ -355,16 +366,22 @@ impl SegmentInfo {
     /// Equivalent to `SegmentInfo.getAttributes()`, which returns the internal
     /// map itself (`SegmentInfo.java:384-386`).
     pub fn get_attributes_ordered(&self) -> JavaStringMap {
-        self.attributes.read().unwrap().clone()
+        self.attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
-    /// Returns the index sort for this segment.
-    pub fn index_sort(&self) -> &Sort {
-        &self.index_sort
+    /// Returns the index sort for this segment, `None` when it is unsorted.
+    ///
+    /// Equivalent to `SegmentInfo.getIndexSort()`, which returns `null` for
+    /// an unsorted segment.
+    pub fn index_sort(&self) -> Option<&Sort> {
+        self.index_sort.as_ref()
     }
 
     /// Replaces the index sort for this segment.
-    pub fn set_index_sort(&mut self, sort: Sort) {
+    pub fn set_index_sort(&mut self, sort: Option<Sort>) {
         self.index_sort = sort;
     }
 
@@ -389,7 +406,10 @@ impl SegmentInfo {
     /// Returns `LuceneErrorKind::IllegalState` if the file set has not been
     /// computed.
     pub fn files_ordered(&self) -> Result<JavaHashSet> {
-        let files = self.files.read().unwrap();
+        let files = self
+            .files
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match files.as_ref() {
             Some(f) => Ok(f.clone()),
             None => Err(LuceneError::illegal_state(format!(
@@ -419,7 +439,10 @@ impl SegmentInfo {
     {
         let files: Vec<String> = files.into_iter().collect();
         // `setFiles = new HashSet<>()`.
-        *self.files.write().unwrap() = Some(JavaHashSet::new());
+        *self
+            .files
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(JavaHashSet::new());
         // `addFiles(files)`.
         self.add_files(&files)
     }
@@ -464,7 +487,10 @@ impl SegmentInfo {
     /// [`check_file_names`](Self::check_file_names), which is where Java throws.
     pub fn add_files(&self, files: &[String]) -> Result<()> {
         Self::check_file_names(files)?;
-        let mut guard = self.files.write().unwrap();
+        let mut guard = self
+            .files
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match guard.as_mut() {
             Some(set) => {
                 for f in files {
@@ -536,18 +562,12 @@ impl SegmentInfo {
     /// Lucene itself, so this port sorts. The entries are identical; only their
     /// order inside the braces differs.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java guards the sort with
-    /// `indexSort != null`. This port has no null `Sort`: a segment with no
-    /// index sort carries `Sort::new()`, the relevance sort, which is the same
-    /// value `write_segment_sort` recognises when it writes a field count of
-    /// zero. The test is therefore against that value rather than against null.
-    /// Lucene rejects `SortField.FIELD_SCORE` as an index sort, so no segment
-    /// can be sorted by the value that stands in for "unsorted" here.
+    /// Java guards the sort with `indexSort != null`.
     pub fn to_string_verbose(&self) -> String {
         let mut s = self.to_string_with_del_count(0);
-        if self.index_sort != Sort::new() {
+        if let Some(index_sort) = self.index_sort.as_ref() {
             s.push_str(":[indexSort=");
-            s.push_str(&self.index_sort.to_string());
+            s.push_str(&index_sort.to_string());
             s.push(']');
         }
         if !self.diagnostics.is_empty() {
@@ -555,7 +575,10 @@ impl SegmentInfo {
             s.push_str(&self.diagnostics.to_string());
             s.push(']');
         }
-        let attributes = self.attributes.read().unwrap();
+        let attributes = self
+            .attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !attributes.is_empty() {
             s.push_str(":[attributes=");
             s.push_str(&attributes.to_string());
@@ -1490,7 +1513,7 @@ mod tests {
             HashMap::from([("source".to_string(), "flush".to_string())]),
             StringHelper::random_id(),
             HashMap::from([("test".to_string(), "value".to_string())]),
-            Sort::default(),
+            None,
         )
         .unwrap()
     }
@@ -1526,7 +1549,7 @@ mod tests {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            Sort::default(),
+            None,
         )
         .unwrap();
         assert_eq!(info.max_doc().unwrap(), -2);
@@ -1642,7 +1665,7 @@ mod tests {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            Sort::default(),
+            None,
         );
         assert_eq!(result.unwrap().max_doc().unwrap(), -3);
     }
@@ -1787,5 +1810,60 @@ impl Display for SegmentCommitInfo {
     /// overload `SegmentInfos.toString()` calls with zero.
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(&self.info.to_string_with_del_count(0))
+    }
+}
+
+#[cfg(test)]
+mod census_gap_index_sort_tests {
+    use crate::codecs::{register_codec, Lucene104Codec};
+    use crate::document::{Document, Store, StringField};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::index::SegmentInfos;
+    use crate::search::{Sort, SortField, SortFieldType};
+    use crate::store::{ByteBuffersDirectory, Directory};
+    use std::sync::Arc;
+
+    /// G-027: an unsorted segment has `getIndexSort() == null` once written
+    /// and read back, so `IndexWriter.validateIndexSort` prints
+    /// `indexSort=null` (`IndexWriter.java:1223-1233`).
+    #[test]
+    fn gap_g027_unsorted_segment_has_no_index_sort() {
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            StringField::new("id", "a".to_string(), Store::NO).unwrap(),
+        ));
+        writer.add_document(&doc).unwrap();
+        writer.commit().unwrap();
+        writer.close().unwrap();
+
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        let info = infos.info(0);
+        assert!(info.info.index_sort().is_none());
+
+        let config = IndexWriterConfig::new();
+        config
+            .set_index_sort(
+                Sort::new_fields(vec![SortField::new(
+                    Some("foo".to_string()),
+                    SortFieldType::Long,
+                )
+                .unwrap()])
+                .unwrap(),
+            )
+            .unwrap();
+        let error = match IndexWriter::new(Arc::clone(&dir), config) {
+            Ok(_) => panic!("an index sort over an unsorted segment must be refused"),
+            Err(e) => e,
+        };
+        let text = error.to_string();
+        assert!(
+            text.contains("cannot change previous indexSort=null (from segment=_0("),
+            "{text}"
+        );
+        assert!(text.ends_with("to new indexSort=<long: \"foo\">"), "{text}");
     }
 }

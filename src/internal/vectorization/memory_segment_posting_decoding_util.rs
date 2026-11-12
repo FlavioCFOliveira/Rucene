@@ -152,7 +152,7 @@ impl MemorySegmentPostingDecodingUtil {
         c_mask: i32,
     ) -> Result<()> {
         let max_iter = (b_shift - 1) / dec;
-        let offset = self.base.input().file_pointer();
+        let offset = self.base.input().file_pointer()?;
         let end_offset = offset + (count as i64) * (std::mem::size_of::<i32>() as i64);
 
         let data = self.memory_segment.bytes();

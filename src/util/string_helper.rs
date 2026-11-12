@@ -242,9 +242,9 @@ impl StringHelper {
             .zip(b)
             .position(|(x, y)| x != y)
             .unwrap_or(a.len().min(b.len()));
-        mismatch
+        Ok(mismatch
             .try_into()
-            .map_err(|_| LuceneError::illegal_state("mismatch index overflow".to_string()))
+            .expect("INVARIANT: a Java array index fits an int"))
     }
 
     /// Returns the length of `current_term` needed as a sort key so that byte

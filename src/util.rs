@@ -41,6 +41,7 @@ pub mod mutable;
 pub mod offline_sorter;
 pub mod packed;
 pub mod paged_bytes;
+pub mod print_stream;
 pub mod quantization;
 pub mod query_builder;
 pub mod refs;
@@ -51,6 +52,7 @@ pub mod sloppy_math;
 pub mod small_float;
 pub mod sorter;
 pub mod spi;
+pub mod strict_math;
 pub mod string_helper;
 pub mod unicode_util;
 
@@ -114,6 +116,7 @@ pub use offline_sorter::{
     SortInfo,
 };
 pub use paged_bytes::{PagedBytes, PagedBytesDataInput, PagedBytesDataOutput, PagedBytesReader};
+pub use print_stream::{ByteArrayPrintStream, PrintStream, WriterPrintStream};
 pub use refs::{CharsRefBuilder, IntsRefBuilder, LongsRef, EMPTY_LONGS};
 pub use resource_loader::{
     ClassLoader, ClassLoaderUtils, ClassRegistry, ClasspathResourceLoader, ModuleResourceLoader,
@@ -164,7 +167,7 @@ pub use vector_util::{
     add, check_finite, cosine_bytes, cosine_f32, dot_product_bytes, dot_product_f32,
     dot_product_score, is_unit_vector, is_zero_vector_bytes, is_zero_vector_f32, l2normalize,
     normalize_distance_to_unit_interval, normalize_to_unit_interval, scale_max_inner_product_score,
-    square_distance_bytes, square_distance_f32, USE_FMA,
+    square_distance_bytes, square_distance_f32, use_fma,
 };
 
 use std::{
@@ -226,6 +229,72 @@ pub(crate) fn java_array_element_type<T>() -> &'static str {
         "f64" => "double",
         "bool" => "boolean",
         _ => "object array",
+    }
+}
+
+/// Java's `System.arraycopy(src, srcPos, dest, destPos, length)` between two
+/// distinct `byte[]`, with the checks and messages of HotSpot's
+/// `TypeArrayKlass::copy_array`: a negative position or length first, then a
+/// range past the end of either array, each an
+/// `ArrayIndexOutOfBoundsException`.
+pub(crate) fn java_byte_arraycopy(
+    src: &[u8],
+    src_pos: i32,
+    dest: &mut [u8],
+    dest_pos: i32,
+    length: i32,
+) -> crate::error::Result<()> {
+    let aioobe = |message: String| {
+        Err(crate::error::LuceneError::unchecked(
+            "java.lang.ArrayIndexOutOfBoundsException",
+            message,
+        ))
+    };
+    if src_pos < 0 {
+        return aioobe(format!(
+            "arraycopy: source index {src_pos} out of bounds for byte[{}]",
+            src.len()
+        ));
+    }
+    if dest_pos < 0 {
+        return aioobe(format!(
+            "arraycopy: destination index {dest_pos} out of bounds for byte[{}]",
+            dest.len()
+        ));
+    }
+    if length < 0 {
+        return aioobe(format!("arraycopy: length {length} is negative"));
+    }
+    let src_end = src_pos as u64 + length as u64;
+    if src_end > src.len() as u64 {
+        return aioobe(format!(
+            "arraycopy: last source index {src_end} out of bounds for byte[{}]",
+            src.len()
+        ));
+    }
+    let dest_end = dest_pos as u64 + length as u64;
+    if dest_end > dest.len() as u64 {
+        return aioobe(format!(
+            "arraycopy: last destination index {dest_end} out of bounds for byte[{}]",
+            dest.len()
+        ));
+    }
+    let (src_pos, dest_pos, length) = (src_pos as usize, dest_pos as usize, length as usize);
+    dest[dest_pos..dest_pos + length].copy_from_slice(&src[src_pos..src_pos + length]);
+    Ok(())
+}
+
+/// Throws the `IndexOutOfBoundsException` of `Objects.checkFromIndexSize(from,
+/// size, length)` (`Range [from, from + size) out of bounds for length
+/// length`) when the range does not fit.
+fn check_from_index_size_or_throw(from: usize, size: usize, length: usize) {
+    if from > length || size > length - from {
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.IndexOutOfBoundsException",
+            Some(&format!(
+                "Range [{from}, {from} + {size}) out of bounds for length {length}"
+            )),
+        );
     }
 }
 
@@ -332,14 +401,70 @@ impl BytesRef {
         self.slice() == other.slice()
     }
 
-    /// Decodes the active bytes as UTF-8.
+    /// Interprets the active bytes as UTF-8 and returns the string they
+    /// decode to.
+    ///
+    /// Equivalent to `BytesRef.utf8ToString()` (`BytesRef.java:137-141`):
+    /// `new char[length]` filled by `UnicodeUtil.UTF8toUTF16(bytes, offset,
+    /// length, ref)`, which assumes well-formed UTF-8 and checks nothing
+    /// beyond its `assert`s — a malformed sequence decodes to whatever its
+    /// bits give, never to U+FFFD; only a sequence running past the end of
+    /// the backing array fails, with the JVM's
+    /// `ArrayIndexOutOfBoundsException`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** A lone surrogate the decoding
+    /// produces becomes U+FFFD, since a Rust `String` cannot hold one (see
+    /// [`utf16_to_string`](crate::analysis::character_utils::utf16_to_string)).
     ///
     /// # Errors
     ///
-    /// Returns `LuceneErrorKind::IllegalArgument` if the bytes are not valid UTF-8.
+    /// `java.lang.ArrayIndexOutOfBoundsException` (`Index i out of bounds for
+    /// length L`) when a multi-byte sequence reads past the backing array.
     pub fn utf8_to_string(&self) -> Result<String, LuceneError> {
-        String::from_utf8(self.slice().to_vec())
-            .map_err(|e| LuceneError::illegal_argument(format!("invalid UTF-8: {e}")))
+        let utf8 = &self.bytes;
+        let at = |index: usize| -> Result<u32, LuceneError> {
+            utf8.get(index).map(|&b| u32::from(b)).ok_or_else(|| {
+                LuceneError::unchecked(
+                    "java.lang.ArrayIndexOutOfBoundsException",
+                    format!("Index {index} out of bounds for length {}", utf8.len()),
+                )
+            })
+        };
+        let mut out: Vec<u16> = Vec::with_capacity(self.length);
+        let mut offset = self.offset;
+        let limit = self.offset + self.length;
+        while offset < limit {
+            let b = at(offset)?;
+            offset += 1;
+            if b < 0xc0 {
+                debug_assert!(b < 0x80);
+                out.push(b as u16);
+            } else if b < 0xe0 {
+                out.push((((b & 0x1f) << 6) + (at(offset)? & 0x3f)) as u16);
+                offset += 1;
+            } else if b < 0xf0 {
+                out.push(
+                    (((b & 0xf) << 12) + ((at(offset)? & 0x3f) << 6) + (at(offset + 1)? & 0x3f))
+                        as u16,
+                );
+                offset += 2;
+            } else {
+                debug_assert!(b < 0xf8, "b = 0x{b:x}");
+                let ch = ((b & 0x7) << 18)
+                    + ((at(offset)? & 0x3f) << 12)
+                    + ((at(offset + 1)? & 0x3f) << 6)
+                    + (at(offset + 2)? & 0x3f);
+                offset += 3;
+                if ch < 0xFFFF {
+                    out.push(ch as u16);
+                } else {
+                    let ch_half = ch - 0x0010000;
+                    out.push(((ch_half >> 10) + 0xD800) as u16);
+                    out.push(((ch_half & 0x3FF) + 0xDC00) as u16);
+                }
+            }
+        }
+        Ok(crate::analysis::character_utils::utf16_to_string(&out))
     }
 
     /// Returns a hex-encoded representation such as `[6c 75 63 65 6e 65]`.
@@ -822,7 +947,10 @@ impl NumericUtils {
         result: &mut [u8],
         offset: usize,
     ) {
-        assert!(!big_int.is_empty(), "big_int must not be empty");
+        assert!(
+            !big_int.is_empty(),
+            "INVARIANT: BigInteger.toByteArray() is never empty"
+        );
         let mut full_big_int_bytes = vec![0u8; big_int_size];
         match big_int.len().cmp(&big_int_size) {
             Ordering::Less => {
@@ -834,9 +962,13 @@ impl NumericUtils {
                 }
             }
             Ordering::Equal => full_big_int_bytes.copy_from_slice(big_int),
-            Ordering::Greater => {
-                panic!("BigInteger requires more than {big_int_size} bytes storage")
-            }
+            Ordering::Greater => crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some(&format!(
+                    "BigInteger: {} requires more than {big_int_size} bytes storage",
+                    big_integer_to_string(big_int)
+                )),
+            ),
         }
         // Flip the sign bit so negative bigints sort before positive bigints:
         full_big_int_bytes[0] ^= 0x80;
@@ -856,6 +988,47 @@ impl NumericUtils {
         big_int_bytes[0] ^= 0x80;
         big_int_bytes
     }
+}
+
+/// `BigInteger.toString()` (radix 10) of the value whose
+/// `BigInteger.toByteArray()` form — minimal two's-complement big-endian
+/// bytes — is `bytes`: an optional `-` followed by the decimal digits of the
+/// magnitude, `"0"` for zero (`BigInteger.java` `toString(int)`).
+fn big_integer_to_string(bytes: &[u8]) -> String {
+    let negative = bytes.first().is_some_and(|b| b & 0x80 != 0);
+    // Magnitude, big-endian: the two's complement negation of a negative value.
+    let mut magnitude: Vec<u8> = if negative {
+        let mut m: Vec<u8> = bytes.iter().map(|b| !b).collect();
+        for b in m.iter_mut().rev() {
+            let (v, carry) = b.overflowing_add(1);
+            *b = v;
+            if !carry {
+                break;
+            }
+        }
+        m
+    } else {
+        bytes.to_vec()
+    };
+    let mut digits = Vec::new();
+    while magnitude.iter().any(|&b| b != 0) {
+        // Divide the big-endian magnitude by 10, collecting the remainder.
+        let mut rem = 0u32;
+        for b in magnitude.iter_mut() {
+            let cur = (rem << 8) | u32::from(*b);
+            *b = (cur / 10) as u8;
+            rem = cur % 10;
+        }
+        digits.push(b'0' + rem as u8);
+    }
+    if digits.is_empty() {
+        digits.push(b'0');
+    }
+    if negative {
+        digits.push(b'-');
+    }
+    digits.reverse();
+    String::from_utf8(digits).expect("INVARIANT: decimal digits and '-' are ASCII")
 }
 
 // ---------------------------------------------------------------------------
@@ -1096,6 +1269,17 @@ const SHIFT4: u32 = 16;
 
 /// Maximum length of a single group-varint: 1 flag byte + 4 integers.
 pub const MAX_LENGTH_PER_GROUP: usize = 1 + 4 * 4;
+
+/// Reads an `int` value at a position, for the deprecated
+/// [`GroupVIntUtil::read_group_vint_reader`].
+///
+/// Equivalent to the deprecated functional interface
+/// `org.apache.lucene.util.GroupVIntUtil.IntReader` (`GroupVIntUtil.java:140-150`).
+#[deprecated(note = "No longer used.")]
+pub trait IntReader {
+    /// Equivalent to `IntReader.read(long)`.
+    fn read(&self, v: i64) -> i32;
+}
 
 /// Utility methods for group-varint encoding, matching Lucene 10.5.0.
 pub struct GroupVIntUtil;
@@ -1400,6 +1584,30 @@ impl GroupVIntUtil {
         let uv = (v as u32) | 1;
         4 - (uv.leading_zeros() >> 3) as usize
     }
+
+    /// Always fails: this method is no longer implemented.
+    ///
+    /// Equivalent to the deprecated `GroupVIntUtil.readGroupVInt(DataInput,
+    /// long, IntReader, long, int[], int)` (`GroupVIntUtil.java:152-167`).
+    ///
+    /// # Errors
+    ///
+    /// Always `UnsupportedOperation("No longer implemented.")`.
+    #[deprecated(note = "No longer implemented; any caller should be removed.")]
+    #[allow(deprecated)]
+    pub fn read_group_vint_reader<I: DataInput + ?Sized>(
+        input: &mut I,
+        remaining: i64,
+        reader: &dyn IntReader,
+        pos: i64,
+        dst: &mut [i32],
+        offset: usize,
+    ) -> crate::error::Result<i32> {
+        let _ = (input, remaining, reader, pos, dst, offset);
+        Err(LuceneError::unsupported_operation(
+            "No longer implemented.".to_string(),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1509,6 +1717,38 @@ pub struct ArrayUtil;
 impl ArrayUtil {
     /// Maximum length for an array (`i32::MAX` minus an estimated header size).
     pub const MAX_ARRAY_LENGTH: usize = i32::MAX as usize - 16;
+
+    /// `ArrayUtil.oversize(int, int)` over Java's `int` argument, with every
+    /// check Java makes reported as the error Java throws.
+    ///
+    /// Equivalent to `ArrayUtil.oversize(int, int)` (`ArrayUtil.java:134-193`)
+    /// for callers whose size comes off a file and may therefore be negative:
+    /// `minTargetSize < 0` is the `IllegalArgumentException`
+    /// `"invalid array size " + minTargetSize`, and a size past
+    /// [`Self::MAX_ARRAY_LENGTH`] the `"requested array size …"` one.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
+    /// as described above.
+    pub fn oversize_int(
+        min_target_size: i32,
+        bytes_per_element: usize,
+    ) -> crate::error::Result<usize> {
+        if min_target_size < 0 {
+            // catch usage that accidentally overflows int
+            return Err(crate::error::LuceneError::illegal_argument(format!(
+                "invalid array size {min_target_size}"
+            )));
+        }
+        if min_target_size as usize > Self::MAX_ARRAY_LENGTH {
+            return Err(crate::error::LuceneError::illegal_argument(format!(
+                "requested array size {min_target_size} exceeds maximum array in java ({})",
+                Self::MAX_ARRAY_LENGTH
+            )));
+        }
+        Ok(Self::oversize(min_target_size as usize, bytes_per_element))
+    }
 
     /// Returns a size greater than or equal to `min_target_size`, generally
     /// over-allocating exponentially.
@@ -2429,6 +2669,8 @@ impl IOUtils {
         mut stream: R,
         char_set: &str,
     ) -> Result<io::Cursor<String>, LuceneError> {
+        // **Divergence from Lucene 10.5.0.** Java decodes with any `Charset`;
+        // this port decodes UTF-8 only and refuses any other name.
         if !char_set.eq_ignore_ascii_case(Self::UTF_8) {
             return Err(LuceneError::unsupported_operation(format!(
                 "unsupported charset: {char_set}"
@@ -2436,10 +2678,20 @@ impl IOUtils {
         }
         let mut bytes = Vec::new();
         stream.read_to_end(&mut bytes)?;
+        // `CodingErrorAction.REPORT`: the decoder's `MalformedInputException`
+        // (`Input length = <n>`, the length of the malformed sequence).
         let text = String::from_utf8(bytes).map_err(|e| {
-            LuceneError::from(LuceneErrorKind::Other(format!(
-                "MalformedInputException: {e}"
-            )))
+            let error = e.utf8_error();
+            let length = error
+                .error_len()
+                .unwrap_or(e.as_bytes().len() - error.valid_up_to());
+            LuceneError::from(LuceneErrorKind::Io(
+                crate::store::java_nio_file::JavaIoException::new(
+                    "java.nio.charset.MalformedInputException",
+                    Some(format!("Input length = {length}")),
+                )
+                .into_io_error(),
+            ))
         })?;
         Ok(io::Cursor::new(text))
     }
@@ -2606,6 +2858,26 @@ impl IOUtils {
                 .flatten()
                 .map(|t| Some(move || (consumer.borrow_mut())(t))),
         )
+    }
+
+    /// Deletes every named file of `dir`, ignoring every exception.
+    ///
+    /// Equivalent to `IOUtils.deleteFilesIgnoringExceptions(Directory,
+    /// Collection<String>)` and `(Directory, String...)`
+    /// (`IOUtils.java:223-237`): `dir.deleteFile(name)` for each name, in
+    /// order, inside `catch (Throwable ignored)`, so an unchecked exception
+    /// (a panic here) is ignored too.
+    pub fn delete_files_ignoring_exceptions_in<D, I, S>(dir: &D, files: I)
+    where
+        D: crate::store::Directory + ?Sized,
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        for name in files {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = dir.delete_file(name.as_ref());
+            }));
+        }
     }
 }
 
@@ -3372,22 +3644,40 @@ impl RamUsageEstimator {
     /// `RoundingMode.HALF_EVEN` on the exact value (1280 bytes, exactly 1.25 KB,
     /// renders `1.2 KB`).
     pub fn human_readable_units(bytes: i64) -> String {
-        /// `DecimalFormat("0.#").format((double) value)`. Rust's fixed-precision
-        /// float formatting rounds the exact binary value half to even, as
-        /// `DecimalFormat` does since JDK 8.
-        fn format_0_hash(value: f32) -> String {
-            let formatted = format!("{:.1}", f64::from(value));
-            match formatted.strip_suffix(".0") {
-                Some(integral) => integral.to_string(),
-                None => formatted,
-            }
-        }
+        static ZERO_POINT_HASH: std::sync::LazyLock<crate::util::java_fmt::DecimalFormat> =
+            std::sync::LazyLock::new(|| {
+                crate::util::java_fmt::DecimalFormat::new("0.#")
+                    .expect("INVARIANT: \"0.#\" is a well-formed DecimalFormat pattern")
+            });
+        Self::human_readable_units_with(bytes, &ZERO_POINT_HASH)
+    }
+
+    /// Renders `bytes` in human-readable units — GB, MB, KB, or bytes — with
+    /// the number formatted by `df`.
+    ///
+    /// Equivalent to `RamUsageEstimator.humanReadableUnits(long, DecimalFormat)`
+    /// (`RamUsageEstimator.java:606-617`).
+    pub fn human_readable_units_with(
+        bytes: i64,
+        df: &crate::util::java_fmt::DecimalFormat,
+    ) -> String {
+        // `df.format((float) bytes / ONE_GB)`: the `float` quotient is
+        // widened to `double` by `NumberFormat.format(double)`.
         if bytes / Self::ONE_GB > 0 {
-            format!("{} GB", format_0_hash(bytes as f32 / Self::ONE_GB as f32))
+            format!(
+                "{} GB",
+                df.format(f64::from(bytes as f32 / Self::ONE_GB as f32))
+            )
         } else if bytes / Self::ONE_MB > 0 {
-            format!("{} MB", format_0_hash(bytes as f32 / Self::ONE_MB as f32))
+            format!(
+                "{} MB",
+                df.format(f64::from(bytes as f32 / Self::ONE_MB as f32))
+            )
         } else if bytes / Self::ONE_KB > 0 {
-            format!("{} KB", format_0_hash(bytes as f32 / Self::ONE_KB as f32))
+            format!(
+                "{} KB",
+                df.format(f64::from(bytes as f32 / Self::ONE_KB as f32))
+            )
         } else {
             format!("{bytes} bytes")
         }
@@ -3686,7 +3976,7 @@ impl Constants {
     /// arithmetic.
     ///
     /// Equivalent to the private `Constants.HAS_FMA`.
-    fn has_fma() -> bool {
+    pub(crate) fn has_fma() -> bool {
         !Self::is_client_vm()
             && HotspotVMOptions::get("UseFMA")
                 .and_then(|v| v.parse::<bool>().ok())
@@ -3694,14 +3984,14 @@ impl Constants {
     }
 
     /// Equivalent to the private `Constants.MAX_VECTOR_SIZE`.
-    fn max_vector_size() -> i32 {
+    pub(crate) fn max_vector_size() -> i32 {
         HotspotVMOptions::get("MaxVectorSize")
             .and_then(|v| v.parse::<i32>().ok())
             .unwrap_or(0)
     }
 
     /// Equivalent to the private `Constants.HAS_SSE4A`: an AMD CPU with SSE4a.
-    fn has_sse4a() -> bool {
+    pub(crate) fn has_sse4a() -> bool {
         HotspotVMOptions::get("UseXmmI2F")
             .and_then(|v| v.parse::<bool>().ok())
             .unwrap_or(false)
@@ -3709,7 +3999,7 @@ impl Constants {
 
     /// Equivalent to the private `Constants.HAS_AVX2`: AVX support of at least
     /// AVX2.
-    fn has_avx2() -> bool {
+    pub(crate) fn has_avx2() -> bool {
         HotspotVMOptions::get("UseAVX")
             .and_then(|v| v.parse::<i32>().ok())
             .unwrap_or(0)
@@ -3717,7 +4007,7 @@ impl Constants {
     }
 
     /// Equivalent to the private `Constants.HAS_SVE`: an Arm CPU with SVE.
-    fn has_sve() -> bool {
+    pub(crate) fn has_sve() -> bool {
         HotspotVMOptions::get("UseSVE")
             .and_then(|v| v.parse::<i32>().ok())
             .unwrap_or(0)
@@ -3815,7 +4105,14 @@ impl Constants {
                 "NORMAL" => ReadAdvice::Normal,
                 "RANDOM" => ReadAdvice::Random,
                 "SEQUENTIAL" => ReadAdvice::Sequential,
-                other => panic!("No enum constant ReadAdvice.{other}"),
+                // `ReadAdvice.valueOf`: `Enum.valueOf`'s
+                // `IllegalArgumentException`.
+                other => crate::store::java_nio_file::throw_unchecked(
+                    "java.lang.IllegalArgumentException",
+                    Some(&format!(
+                        "No enum constant org.apache.lucene.store.ReadAdvice.{other}"
+                    )),
+                ),
             },
         }
     }
@@ -4193,6 +4490,40 @@ impl FixedBitSet {
         }
     }
 
+    /// `new FixedBitSet(int numBits)` over Java's `int` argument
+    /// (`FixedBitSet.java:148-152`), for callers that hold the size as Java
+    /// does, unchecked: the array is `new long[bits2words(numBits)]`
+    /// (`FixedBitSet.java:88-92`), so a negative `numBits` whose word count
+    /// is negative fails with Java's `NegativeArraySizeException`, whose
+    /// message is that count.
+    ///
+    /// Divergence (the length is a `usize`): a negative `numBits` whose word
+    /// count is not negative (`-64..=-1`, and `Integer.MIN_VALUE`, which wraps)
+    /// builds, in Java, a set whose `length()` is negative. This port builds
+    /// the same words with a length of `0`, so every access fails as Java's
+    /// `index < numBits` assertion does, reporting `numBits=0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `java.lang.NegativeArraySizeException` for a negative word count.
+    pub fn new_java(num_bits: i32) -> Result<Self, LuceneError> {
+        if let Ok(num_bits) = usize::try_from(num_bits) {
+            return Ok(Self::new(num_bits));
+        }
+        let num_words = (num_bits.wrapping_sub(1) >> 6).wrapping_add(1);
+        let num_words = usize::try_from(num_words).map_err(|_| {
+            LuceneError::unchecked(
+                "java.lang.NegativeArraySizeException",
+                num_words.to_string(),
+            )
+        })?;
+        Ok(Self {
+            bits: new_words(num_words),
+            num_bits: 0,
+            num_words,
+        })
+    }
+
     /// Creates a `FixedBitSet` from an existing `u64` buffer.
     ///
     /// Equivalent to `FixedBitSet(long[], int)`.
@@ -4276,13 +4607,21 @@ impl FixedBitSet {
 
     /// Sets the bit at `index`.
     ///
+    /// Equivalent to `FixedBitSet.set(int)` (`FixedBitSet.java:297-302`),
+    /// whose bound is an `assert`: a debug build — Java under `-ea` — stops on
+    /// an index outside `[0, numBits)`; otherwise only the word array bounds
+    /// the index, as Java's `bits[wordNum]` does.
+    ///
     /// # Panics
     ///
-    /// Panics if `index` is out of bounds.
+    /// In a debug build, if `index` is not below `length()`; always, if
+    /// `index >> 6` is past the word array (Java's
+    /// `ArrayIndexOutOfBoundsException`).
     pub fn set(&mut self, index: usize) {
-        assert!(
+        debug_assert!(
             index < self.num_bits,
-            "index={index}, numBits={}",
+            "index={}, numBits={}",
+            index as i32,
             self.num_bits
         );
         let word = index >> 6;
@@ -4292,13 +4631,17 @@ impl FixedBitSet {
 
     /// Clears the bit at `index`.
     ///
+    /// Equivalent to `FixedBitSet.clear(int)` (`FixedBitSet.java:337-342`),
+    /// whose bound is an `assert`; see [`set`](Self::set).
+    ///
     /// # Panics
     ///
-    /// Panics if `index` is out of bounds.
+    /// As [`set`](Self::set).
     pub fn clear(&mut self, index: usize) {
-        assert!(
+        debug_assert!(
             index < self.num_bits,
-            "index={index}, numBits={}",
+            "index={}, numBits={}",
+            index as i32,
             self.num_bits
         );
         let word = index >> 6;
@@ -4308,11 +4651,19 @@ impl FixedBitSet {
 
     /// Returns the value of the bit at `index`.
     ///
+    /// Equivalent to `FixedBitSet.get(int)` (`FixedBitSet.java:287-294`),
+    /// whose bound is an `assert`; see [`set`](Self::set).
+    ///
     /// # Panics
     ///
-    /// Panics if `index` is out of bounds.
+    /// As [`set`](Self::set).
     pub fn get(&self, index: usize) -> bool {
-        assert!(index < self.num_bits, "index {} out of bounds", index);
+        debug_assert!(
+            index < self.num_bits,
+            "index={}, numBits={}",
+            index as i32,
+            self.num_bits
+        );
         let word = index >> 6;
         let mask = 1u64 << (index & 0x3f);
         (self.word(word) & mask) != 0
@@ -4320,11 +4671,21 @@ impl FixedBitSet {
 
     /// Returns the previous value of the bit at `index` and sets it to true.
     ///
+    /// Equivalent to `FixedBitSet.getAndSet(int)` (`FixedBitSet.java:327-334`),
+    /// whose bound is an `assert`: a debug build — Java under `-ea` — stops on
+    /// an index outside `[0, numBits)`, a negative Java `int` arriving here as
+    /// a `usize` past any bit set.
+    ///
     /// # Panics
     ///
     /// Panics if `index` is out of bounds.
     pub fn get_and_set(&mut self, index: usize) -> bool {
-        assert!(index < self.num_bits, "index {} out of bounds", index);
+        debug_assert!(
+            index < self.num_bits,
+            "index={}, numBits={}",
+            index as i32,
+            self.num_bits
+        );
         let word = index >> 6;
         let mask = 1u64 << (index & 0x3f);
         let previous = (self.word(word) & mask) != 0;
@@ -4646,9 +5007,11 @@ impl FixedBitSet {
     /// bulk-setting bits from a SIMD comparison result without per-bit
     /// extraction; the mask must carry at most `mask_len` significant bits.
     pub fn or_mask(&mut self, start_bit: usize, mask: u64, mask_len: usize) {
-        assert!(
+        // Java's `assert startBit >= 0 && startBit + maskLen <= numBits`
+        // (`FixedBitSet.java:314-315`).
+        debug_assert!(
             start_bit + mask_len <= self.num_bits,
-            "start_bit={start_bit}, mask_len={mask_len}, num_bits={}",
+            "startBit={start_bit}, maskLen={mask_len}, numBits={}",
             self.num_bits
         );
         let word_index = start_bit >> 6;
@@ -4685,14 +5048,10 @@ impl FixedBitSet {
         mut dest_from: usize,
         mut length: usize,
     ) {
-        assert!(
-            source_from + length <= source.length(),
-            "source range out of bounds"
-        );
-        assert!(
-            dest_from + length <= dest.length(),
-            "dest range out of bounds"
-        );
+        // `Objects.checkFromIndexSize(sourceFrom, length, source.length())`
+        // and the same for `dest`: `IndexOutOfBoundsException`.
+        check_from_index_size_or_throw(source_from, length, source.length());
+        check_from_index_size_or_throw(dest_from, length, dest.length());
 
         if length == 0 {
             return;
@@ -4769,14 +5128,10 @@ impl FixedBitSet {
         mut dest_from: usize,
         mut length: usize,
     ) {
-        assert!(
-            source_from + length <= source.length(),
-            "source range out of bounds"
-        );
-        assert!(
-            dest_from + length <= dest.length(),
-            "dest range out of bounds"
-        );
+        // `Objects.checkFromIndexSize(sourceFrom, length, source.length())`
+        // and the same for `dest`: `IndexOutOfBoundsException`.
+        check_from_index_size_or_throw(source_from, length, source.length());
+        check_from_index_size_or_throw(dest_from, length, dest.length());
 
         if length == 0 {
             return;
@@ -6790,5 +7145,56 @@ mod fixed_bit_set_copy_of_tests {
             "FixedBitSet::copy_of({NUM_BITS} bits): word copy {word_copy:?}, \
              bit-by-bit copy {bit_copy:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod fixed_bit_set_assert_tests {
+    use super::FixedBitSet;
+
+    /// `FixedBitSet.get/set/clear` check the index only with an `assert`
+    /// (`FixedBitSet.java:287-342`): a debug build — Java under `-ea` — stops
+    /// with Java's assertion message.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "index=70, numBits=70")]
+    fn set_past_num_bits_fails_the_java_assertion() {
+        FixedBitSet::new(70).set(70);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "index=70, numBits=70")]
+    fn get_past_num_bits_fails_the_java_assertion() {
+        let _ = FixedBitSet::new(70).get(70);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "index=-1, numBits=70")]
+    fn clear_of_a_negative_index_fails_the_java_assertion() {
+        FixedBitSet::new(70).clear(-1i32 as usize);
+    }
+
+    /// Without the assertion only the word array bounds the index, as Java's
+    /// `bits[index >> 6]` does: a ghost bit inside the last word is set, read
+    /// and cleared.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn release_get_set_clear_reach_the_last_word() {
+        let mut bits = FixedBitSet::new(70);
+        bits.set(127);
+        assert!(bits.get(127));
+        bits.clear(127);
+        assert!(!bits.get(127));
+    }
+
+    /// Past the word array, Java raises `ArrayIndexOutOfBoundsException`;
+    /// the port fails on the same array access.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    #[should_panic(expected = "index out of bounds")]
+    fn release_set_past_the_word_array_fails_the_array_access() {
+        FixedBitSet::new(70).set(128);
     }
 }

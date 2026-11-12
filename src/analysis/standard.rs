@@ -225,12 +225,9 @@ pub type StandardTokenizer = Tokenizer<StandardTokenizerLogic>;
 fn interface_mut<I: crate::util::attribute::AttributeInterface + ?Sized>(
     source: &AttributeSource,
 ) -> Result<crate::util::atomic_ref_cell::AtomicRefMut<'_, I>> {
-    source.get_attribute_interface_mut::<I>().ok_or_else(|| {
-        LuceneError::illegal_state(format!(
-            "the StandardTokenizer's source lacks {}",
-            std::any::type_name::<I>()
-        ))
-    })
+    Ok(source
+        .get_attribute_interface_mut::<I>()
+        .expect("INVARIANT: new_standard_tokenizer_with_factory added the attribute"))
 }
 
 /// Creates a new `StandardTokenizer` with default settings.

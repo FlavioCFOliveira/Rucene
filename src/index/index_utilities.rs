@@ -4,6 +4,7 @@
 //! contract and the approximate priority queues that `DocumentsWriter` uses to
 //! pick a thread state.
 
+use crate::error::{LuceneError, Result};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
@@ -20,6 +21,18 @@ pub trait QueryTimeout: Send + Sync + std::fmt::Debug {
     ///
     /// Equivalent to `QueryTimeout.shouldExit()`.
     fn should_exit(&self) -> bool;
+
+    /// This object's `toString()`, as the `ExitableDirectoryReader` messages
+    /// render it.
+    ///
+    /// The default is `java.lang.Object.toString()`, which applies to every
+    /// Lucene class that declares no `toString()`: see
+    /// [`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in).
+    /// It names the Rust type; an implementation porting a Lucene class
+    /// overrides it with that class's binary name or its own `toString()`.
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(std::any::type_name::<Self>())
+    }
 }
 
 /// A [`QueryTimeout`] that expires a fixed number of milliseconds after it is
@@ -58,27 +71,41 @@ impl QueryTimeoutImpl {
     ///
     /// Equivalent to `QueryTimeoutImpl.getTimeoutAt()`.
     pub fn get_timeout_at(&self) -> Option<Instant> {
-        self.timeout_at.read().ok().and_then(|guard| *guard)
+        *self
+            .timeout_at
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Clears the deadline, so the timeout never fires again.
     ///
     /// Equivalent to `QueryTimeoutImpl.reset()`.
     pub fn reset(&self) {
-        if let Ok(mut guard) = self.timeout_at.write() {
+        {
+            let mut guard = self
+                .timeout_at
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *guard = None;
         }
     }
 }
 
 impl QueryTimeout for QueryTimeoutImpl {
+    /// `QueryTimeoutImpl.toString()`; see the [`Display`](std::fmt::Display)
+    /// implementation.
+    fn java_to_string(&self) -> String {
+        self.to_string()
+    }
+
     fn should_exit(&self) -> bool {
-        match self.timeout_at.read() {
-            Ok(guard) => match *guard {
-                Some(deadline) => Instant::now() > deadline,
-                None => false,
-            },
-            Err(_) => false,
+        match *self
+            .timeout_at
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            Some(deadline) => Instant::now() > deadline,
+            None => false,
         }
     }
 }
@@ -245,18 +272,34 @@ impl<T> Default for ConcurrentApproximatePriorityQueue<T> {
 
 impl<T> ConcurrentApproximatePriorityQueue<T> {
     /// Creates a queue with the default concurrency.
+    ///
+    /// Equivalent to `ConcurrentApproximatePriorityQueue()`
+    /// (`ConcurrentApproximatePriorityQueue.java:47-49`), whose concurrency
+    /// `getConcurrency()` keeps inside the accepted range.
     pub fn new() -> Self {
-        Self::with_concurrency(default_concurrency())
+        Self::build(default_concurrency())
     }
 
     /// Creates a queue sharded `concurrency` ways.
     ///
-    /// `concurrency` is clamped into `[MIN_CONCURRENCY, MAX_CONCURRENCY]`, where
-    /// Java throws `IllegalArgumentException`: the only two callers in the crate
-    /// derive it from the core count, so a value outside the range is a
-    /// programming error rather than user input.
-    pub fn with_concurrency(concurrency: usize) -> Self {
-        let concurrency = concurrency.clamp(MIN_CONCURRENCY, MAX_CONCURRENCY);
+    /// Equivalent to `ConcurrentApproximatePriorityQueue(int)`
+    /// (`ConcurrentApproximatePriorityQueue.java:51-70`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgument("concurrency must be in [1, 256], got N")` when
+    /// `concurrency` is outside `[MIN_CONCURRENCY, MAX_CONCURRENCY]`.
+    pub fn with_concurrency(concurrency: usize) -> Result<Self> {
+        if !(MIN_CONCURRENCY..=MAX_CONCURRENCY).contains(&concurrency) {
+            return Err(LuceneError::illegal_argument(format!(
+                "concurrency must be in [{MIN_CONCURRENCY}, {MAX_CONCURRENCY}], got {concurrency}"
+            )));
+        }
+        Ok(Self::build(concurrency))
+    }
+
+    /// The body of the constructor once `concurrency` is known to be valid.
+    fn build(concurrency: usize) -> Self {
         let mut queues = Vec::with_capacity(concurrency);
         for _ in 0..concurrency {
             queues.push(Mutex::new(ApproximatePriorityQueue::new()));
@@ -299,7 +342,10 @@ impl<T> ConcurrentApproximatePriorityQueue<T> {
             }
         }
         let index = seed % n;
-        if let Ok(mut queue) = self.queues[index].lock() {
+        {
+            let mut queue = self.queues[index]
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             queue.add(entry, weight);
         }
     }
@@ -319,7 +365,10 @@ impl<T> ConcurrentApproximatePriorityQueue<T> {
         }
         for i in 0..n {
             let index = (seed + i) % n;
-            if let Ok(mut queue) = self.queues[index].lock() {
+            {
+                let mut queue = self.queues[index]
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(entry) = queue.poll(&mut predicate) {
                     return Some(entry);
                 }
@@ -340,15 +389,21 @@ impl<T: PartialEq> ConcurrentApproximatePriorityQueue<T> {
         if !cfg!(debug_assertions) {
             panic!("contains should only be used for assertions");
         }
-        self.queues
-            .iter()
-            .any(|queue| queue.lock().map(|q| q.contains(entry)).unwrap_or(false))
+        self.queues.iter().any(|queue| {
+            queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(entry)
+        })
     }
 
     /// Removes `entry` from whichever shard holds it.
     pub fn remove(&self, entry: &T) -> bool {
         for queue in &self.queues {
-            if let Ok(mut queue) = queue.lock() {
+            {
+                let mut queue = queue
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if queue.remove(entry) {
                     return true;
                 }
@@ -404,11 +459,18 @@ impl<T: TryLockable> LockableConcurrentApproximatePriorityQueue<T> {
     }
 
     /// Creates a queue sharded `concurrency` ways.
-    pub fn with_concurrency(concurrency: usize) -> Self {
-        Self {
-            queue: ConcurrentApproximatePriorityQueue::with_concurrency(concurrency),
+    ///
+    /// Equivalent to `LockableConcurrentApproximatePriorityQueue(int)`
+    /// (`LockableConcurrentApproximatePriorityQueue.java:28-30`).
+    ///
+    /// # Errors
+    ///
+    /// As [`ConcurrentApproximatePriorityQueue::with_concurrency`].
+    pub fn with_concurrency(concurrency: usize) -> Result<Self> {
+        Ok(Self {
+            queue: ConcurrentApproximatePriorityQueue::with_concurrency(concurrency)?,
             add_and_unlock_counter: AtomicUsize::new(0),
-        }
+        })
     }
 
     /// Polls an entry whose lock could be taken, retrying while entries keep
@@ -471,7 +533,10 @@ impl std::fmt::Display for QueryTimeoutImpl {
     /// reading as `0`. Neither number is stable between runs in Java either —
     /// `nanoTime()`'s origin is arbitrary — so nothing may parse them.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let deadline = self.timeout_at.read().expect("timeout_at lock poisoned");
+        let deadline = self
+            .timeout_at
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match deadline.as_ref() {
             Some(instant) => {
                 let now = std::time::Instant::now();

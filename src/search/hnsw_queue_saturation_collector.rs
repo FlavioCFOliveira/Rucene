@@ -222,23 +222,25 @@ impl KnnCollector for HnswQueueSaturationCollector {
         self.delegate.min_competitive_similarity()
     }
 
-    fn top_docs(&mut self) -> TopDocs {
-        if self.patience_finished() && !self.delegate.early_terminated() {
-            // This avoids re-running exact search in the filtered scenario when
-            // patience is exhausted.
-            let delegate_docs = self.delegate.top_docs();
-            let total_hits = TotalHits::new(
-                delegate_docs.total_hits.value(),
-                TotalHitsRelation::EQUAL_TO,
-            )
-            .expect("INVARIANT: a hit count read back from a TopDocs is never negative");
-            TopDocs {
-                total_hits,
-                score_docs: delegate_docs.score_docs,
+    fn top_docs(&mut self) -> crate::error::Result<TopDocs> {
+        Ok({
+            if self.patience_finished() && !self.delegate.early_terminated() {
+                // This avoids re-running exact search in the filtered scenario when
+                // patience is exhausted.
+                let delegate_docs = self.delegate.top_docs()?;
+                let total_hits = TotalHits::new(
+                    delegate_docs.total_hits.value(),
+                    TotalHitsRelation::EQUAL_TO,
+                )
+                .expect("INVARIANT: a hit count read back from a TopDocs is never negative");
+                TopDocs {
+                    total_hits,
+                    score_docs: delegate_docs.score_docs,
+                }
+            } else {
+                self.delegate.top_docs()?
             }
-        } else {
-            self.delegate.top_docs()
-        }
+        })
     }
 
     fn get_search_strategy(&self) -> Option<&KnnSearchStrategy> {

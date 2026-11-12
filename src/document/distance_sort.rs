@@ -28,7 +28,7 @@
 //! [`XYPointSortField::get_comparator`].
 
 use crate::document::geo_fields::{LatLonDocValuesField, XYDocValuesField};
-use crate::error::{LuceneError, Result};
+use crate::error::Result;
 use crate::geo::encoding::{GeoEncodingUtils, GeoUtils, XYEncodingUtils};
 use crate::geo::geometry::{Rectangle, XYRectangle};
 use crate::index::{DocValues, LeafReader, LeafReaderContext, SortedNumericDocValues};
@@ -704,7 +704,7 @@ impl XYPointDistanceComparator {
 ///
 /// Equivalent to `org.apache.lucene.document.LatLonPointSortField`, which
 /// `LatLonDocValuesField.newDistanceSort` builds.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct LatLonPointSortField {
     sort_field: SortField,
     latitude: f64,
@@ -853,12 +853,12 @@ impl LatLonPointSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the sort field carries no
-    /// field name, which its constructor rules out.
+    /// What building the comparator raises; a sort field always names a
+    /// field, which its constructor guarantees.
     pub fn get_comparator(&self, num_hits: usize) -> Result<LatLonPointDistanceComparator> {
-        let field = self.get_field().ok_or_else(|| {
-            LuceneError::illegal_state("a distance sort field always names a field".to_string())
-        })?;
+        let field = self
+            .get_field()
+            .expect("INVARIANT: a distance sort field always names a field");
         Ok(LatLonPointDistanceComparator::new(
             field,
             self.latitude,
@@ -888,6 +888,99 @@ impl LatLonPointSortField {
     pub fn set_missing_value(&mut self, missing_value: f64) -> Result<()> {
         self.sort_field
             .set_missing_value(Some(MissingValue::Double(missing_value)))
+    }
+}
+
+/// `java.lang.Double.doubleToLongBits`: the bits of `value`, every NaN
+/// collapsed to the canonical `0x7ff8000000000000`.
+fn double_to_long_bits(value: f64) -> i64 {
+    if value.is_nan() {
+        0x7ff8_0000_0000_0000
+    } else {
+        value.to_bits() as i64
+    }
+}
+
+/// Equivalent to `org.apache.lucene.document.LatLonPointSortField.equals(Object)`
+/// (`LatLonPointSortField.java:73-82`), which compares the coordinates through
+/// `Double.doubleToLongBits`.
+impl PartialEq for LatLonPointSortField {
+    fn eq(&self, other: &Self) -> bool {
+        // `super.equals(obj)`, then `getClass() != obj.getClass()` (both are
+        // `LatLonPointSortField` by type here), then the coordinate bits.
+        self.sort_field == other.sort_field
+            && double_to_long_bits(self.latitude) == double_to_long_bits(other.latitude)
+            && double_to_long_bits(self.longitude) == double_to_long_bits(other.longitude)
+    }
+}
+
+impl LatLonPointSortField {
+    /// Returns the Java hash code of this sort field.
+    ///
+    /// Equivalent to `org.apache.lucene.document.LatLonPointSortField.hashCode()`
+    /// (`LatLonPointSortField.java:61-71`): `super.hashCode()` combined with the
+    /// `Double.doubleToLongBits` of latitude and longitude.
+    pub fn hash_code(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_identity_hash_code_stand_in, java_string_hash_code,
+        };
+        // `Long.hashCode`-style fold of `Double.doubleToLongBits`.
+        let long_bits_hash = |value: f64| -> i32 {
+            let temp = double_to_long_bits(value);
+            (temp ^ ((temp as u64) >> 32) as i64) as i32
+        };
+        // `SortField.hashCode()` (`SortField.java:501-503`):
+        // `Objects.hash(field, type, reverse, comparatorSource, missingValue)`,
+        // which folds `31 * h + hash(e)` from 1. `type` is the enum constant
+        // `CUSTOM`, whose identity hash is unreproducible in Java itself and is
+        // replaced by the declared stable stand-in. `comparatorSource` is always
+        // `null` for this class (`LatLonPointSortField.java:30`).
+        let mut super_hash: i32 = 1;
+        super_hash = super_hash
+            .wrapping_mul(31)
+            .wrapping_add(self.sort_field.field().map_or(0, java_string_hash_code));
+        super_hash = super_hash
+            .wrapping_mul(31)
+            .wrapping_add(java_identity_hash_code_stand_in(
+                "org.apache.lucene.search.SortField$Type.CUSTOM",
+            ));
+        super_hash = super_hash
+            .wrapping_mul(31)
+            .wrapping_add(if self.sort_field.reverse() {
+                1231
+            } else {
+                1237
+            });
+        super_hash = super_hash.wrapping_mul(31);
+        let missing_hash = match self.sort_field.missing_value() {
+            None => 0,
+            Some(MissingValue::Double(v)) => long_bits_hash(v),
+            Some(MissingValue::Float(v)) => {
+                if v.is_nan() {
+                    0x7fc0_0000
+                } else {
+                    v.to_bits() as i32
+                }
+            }
+            Some(MissingValue::Int(v)) => v,
+            Some(MissingValue::Long(v)) => (v ^ ((v as u64) >> 32) as i64) as i32,
+            Some(MissingValue::StringFirst) => {
+                java_identity_hash_code_stand_in("org.apache.lucene.search.SortField.STRING_FIRST")
+            }
+            Some(MissingValue::StringLast) => {
+                java_identity_hash_code_stand_in("org.apache.lucene.search.SortField.STRING_LAST")
+            }
+        };
+        super_hash = super_hash.wrapping_mul(31).wrapping_add(missing_hash);
+        // `LatLonPointSortField.java:62-70`.
+        let mut result = super_hash;
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(long_bits_hash(self.latitude));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(long_bits_hash(self.longitude));
+        result
     }
 }
 
@@ -978,12 +1071,12 @@ impl XYPointSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the sort field carries no
-    /// field name, which its constructor rules out.
+    /// What building the comparator raises; a sort field always names a
+    /// field, which its constructor guarantees.
     pub fn get_comparator(&self, num_hits: usize) -> Result<XYPointDistanceComparator> {
-        let field = self.get_field().ok_or_else(|| {
-            LuceneError::illegal_state("a distance sort field always names a field".to_string())
-        })?;
+        let field = self
+            .get_field()
+            .expect("INVARIANT: a distance sort field always names a field");
         Ok(XYPointDistanceComparator::new(
             field, self.x, self.y, num_hits,
         ))
@@ -1128,5 +1221,35 @@ mod comparator_trait_tests {
         assert_send(&SharedFieldComparator::new(XYPointDistanceComparator::new(
             "point", 0.0, 0.0, 1,
         )));
+    }
+}
+
+#[cfg(test)]
+mod census_gap_equality_tests {
+    use super::*;
+
+    /// G-008: `LatLonPointSortField.equals` and `hashCode` compare the
+    /// coordinates through `Double.doubleToLongBits`
+    /// (`LatLonPointSortField.java:61-82`), so `0.0` and `-0.0` differ while
+    /// equal coordinates agree.
+    #[test]
+    fn gap_g008_lat_lon_sort_field_equality_uses_double_bits() {
+        let a = LatLonPointSortField::new("p", 0.0, 10.0).unwrap();
+        let b = LatLonPointSortField::new("p", 0.0, 10.0).unwrap();
+        let negative_zero = LatLonPointSortField::new("p", -0.0, 10.0).unwrap();
+        assert!(a == b);
+        assert_eq!(a.hash_code(), b.hash_code());
+        assert!(a != negative_zero);
+        assert_ne!(a.hash_code(), negative_zero.hash_code());
+        let other_lon = LatLonPointSortField::new("p", 0.0, -0.0).unwrap();
+        let other_lon2 = LatLonPointSortField::new("p", 0.0, 0.0).unwrap();
+        assert!(other_lon != other_lon2);
+        // `Long.hashCode(doubleToLongBits(-0.0))` is `Integer.MIN_VALUE`, so
+        // the two hashes differ by exactly `31 * MIN_VALUE` in the latitude
+        // term (`LatLonPointSortField.java:66-69`).
+        assert_eq!(
+            negative_zero.hash_code().wrapping_sub(a.hash_code()),
+            i32::MIN.wrapping_mul(31)
+        );
     }
 }

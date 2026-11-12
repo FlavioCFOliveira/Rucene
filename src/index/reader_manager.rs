@@ -123,12 +123,43 @@ impl ReaderManager {
         ))
     }
 
-    // TODO(task: IndexWriter): implement the `ReaderManager(IndexWriter,
-    // apply_all_deletes, write_all_deletes)` constructor once IndexWriter is
-    // ported. It should call
-    // `DirectoryReader::open_if_changed_with_writer` (or the NRT `open`
-    // equivalent) for refresh, instead of the directory-based
-    // `DirectoryReaderRefreshSource`. Do NOT add a fake IndexWriter stub.
+    /// Creates a manager over a near-real-time reader of `writer`, applying
+    /// and writing all deletes.
+    ///
+    /// Equivalent to `org.apache.lucene.index.ReaderManager(IndexWriter)`
+    /// (`ReaderManager.java:41-43`), which is `this(writer, true, false)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the reader raises.
+    pub fn from_writer(writer: &dyn crate::index::DirectoryReaderIndexWriter) -> Result<Self> {
+        Self::from_writer_with(writer, true, false)
+    }
+
+    /// Creates a manager over a near-real-time reader of `writer`.
+    ///
+    /// Equivalent to `org.apache.lucene.index.ReaderManager(IndexWriter,
+    /// boolean, boolean)` (`ReaderManager.java:60-64`):
+    /// `current = DirectoryReader.open(writer, applyAllDeletes,
+    /// writeAllDeletes)`. As in Java, every manager refreshes through
+    /// `DirectoryReader.openIfChanged(reader)` (`ReaderManager.java:91-94`),
+    /// which reopens a near-real-time reader through its writer.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the reader raises.
+    pub fn from_writer_with(
+        writer: &dyn crate::index::DirectoryReaderIndexWriter,
+        apply_all_deletes: bool,
+        write_all_deletes: bool,
+    ) -> Result<Self> {
+        let reader = crate::index::directory_reader::open_with_writer_flags(
+            writer,
+            apply_all_deletes,
+            write_all_deletes,
+        )?;
+        Self::from_reader(reader)
+    }
 }
 
 #[cfg(test)]
@@ -181,14 +212,14 @@ mod tests {
         max_doc: i32,
     ) -> crate::index::SegmentInfo {
         let mut info = test_segment_info_with_codec(name, max_doc, test_codec());
-        info.set_index_sort(
+        info.set_index_sort(Some(
             crate::search::Sort::new_fields(vec![crate::search::SortField::new(
                 Some("id".to_string()),
                 crate::search::SortFieldType::String,
             )
             .unwrap()])
             .unwrap(),
-        );
+        ));
         info.set_files(HashSet::from([segment_file_name(
             name,
             "",
@@ -560,5 +591,66 @@ mod tests {
         ) -> Result<Self> {
             Ok(ReferenceManager::new(reader, source))
         }
+    }
+}
+
+#[cfg(test)]
+mod census_gap_writer_constructor_tests {
+    use super::*;
+    use crate::codecs::{register_codec, Lucene104Codec};
+    use crate::document::{Document, Store, StringField};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::index::Term;
+    use crate::store::ByteBuffersDirectory;
+
+    fn doc(id: &str) -> Document {
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            StringField::new("id", id.to_string(), Store::NO).unwrap(),
+        ));
+        doc
+    }
+
+    /// G-035: `ReaderManager(IndexWriter)` is `this(writer, true, false)` and
+    /// `ReaderManager(IndexWriter, boolean, boolean)` opens
+    /// `DirectoryReader.open(writer, applyAllDeletes, writeAllDeletes)`
+    /// (`ReaderManager.java:41-64`); both refresh through the writer.
+    #[test]
+    fn gap_g035_reader_manager_over_a_writer() {
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        writer.add_document(&doc("a")).unwrap();
+        writer.add_document(&doc("b")).unwrap();
+
+        let manager = ReaderManager::from_writer(&*writer).unwrap();
+        let reader = manager.acquire().unwrap();
+        assert_eq!(reader.num_docs(), 2);
+        manager.release(reader).unwrap();
+
+        writer
+            .delete_documents_by_terms(vec![Term::from_text("id", "a")])
+            .unwrap();
+        writer.add_document(&doc("c")).unwrap();
+        assert!(manager.maybe_refresh().unwrap());
+        let reader = manager.acquire().unwrap();
+        // applyAllDeletes = true: the delete of "a" is visible ("b" and "c"
+        // remain; a merge on refresh may have dropped the deleted slot).
+        assert_eq!(reader.num_docs(), 2);
+        manager.release(reader).unwrap();
+
+        // applyAllDeletes = false may leave the buffered delete unapplied, but
+        // the reader still sees every added document.
+        writer
+            .delete_documents_by_terms(vec![Term::from_text("id", "b")])
+            .unwrap();
+        let unapplied = ReaderManager::from_writer_with(&*writer, false, false).unwrap();
+        let reader = unapplied.acquire().unwrap();
+        assert!((1..=2).contains(&reader.num_docs()));
+        unapplied.release(reader).unwrap();
+        unapplied.close().unwrap();
+        manager.close().unwrap();
+        writer.close().unwrap();
     }
 }

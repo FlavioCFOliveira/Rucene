@@ -437,7 +437,7 @@ impl IntersectBlockReader {
         let block_start_fp = match self.block_iteration {
             BlockIteration::Next => {
                 java_assert!(self.seek_term.is_none());
-                self.base.input()?.file_pointer()
+                self.base.input()?.file_pointer()?
             }
             BlockIteration::Seek => {
                 java_assert!(self.seek_term.is_some());

@@ -25,8 +25,30 @@ pub enum LuceneErrorKind {
     Io(#[from] std::io::Error),
 
     /// An index file is corrupt or inconsistent.
-    #[error("corrupt index: {0}")]
-    CorruptIndex(String),
+    ///
+    /// Equivalent to `org.apache.lucene.index.CorruptIndexException`
+    /// (`CorruptIndexException.java:25-70`), which keeps the composed
+    /// `Throwable` message, the original message, the resource description
+    /// and the cause. Build one with [`LuceneError::corrupt_index`] or
+    /// [`LuceneError::corrupt_index_with_cause`];
+    /// [`LuceneErrorKind::corrupt_index_message`] builds one from a message
+    /// the caller composed, with no separate resource description.
+    #[error("corrupt index: {message}")]
+    CorruptIndex {
+        /// The message, Java's `getMessage()`: `message + " (resource=" +
+        /// resourceDescription + ")"` (`CorruptIndexException.java:58`).
+        message: String,
+        /// The message without the resource description, Java's
+        /// `getOriginalMessage()` (`CorruptIndexException.java:67-70`).
+        original_message: String,
+        /// The description of the corrupted file, Java's
+        /// `getResourceDescription()` (`CorruptIndexException.java:62-65`);
+        /// `None` where the caller composed the message itself.
+        resource_description: Option<String>,
+        /// The cause, Java's `getCause()`.
+        #[source]
+        cause: Option<Arc<LuceneError>>,
+    },
 
     /// An index file is too old, too new, or otherwise unsupported.
     #[error("index format not supported: {0}")]
@@ -335,6 +357,21 @@ pub enum LuceneErrorKind {
     },
 }
 
+/// The binary name of `java.lang.NumberFormatException`, a subclass of
+/// `IllegalArgumentException`.
+pub const NUMBER_FORMAT_EXCEPTION: &str = "java.lang.NumberFormatException";
+
+/// The JDK classes carried as [`LuceneErrorKind::Unchecked`] that extend
+/// `java.lang.IllegalArgumentException`.
+const ILLEGAL_ARGUMENT_SUBCLASSES: [&str; 6] = [
+    NUMBER_FORMAT_EXCEPTION,
+    "java.util.regex.PatternSyntaxException",
+    "java.nio.charset.IllegalCharsetNameException",
+    "java.nio.charset.UnsupportedCharsetException",
+    "java.nio.file.InvalidPathException",
+    "java.security.InvalidParameterException",
+];
+
 /// The top-level error type for Rucene operations: a Java `Throwable`.
 ///
 /// [`kind`](Self::kind) is the Java exception class with its fields;
@@ -506,6 +543,43 @@ impl LuceneError {
         self.kind.is_io_exception()
     }
 
+    /// Whether the Java class this error stands for is a
+    /// `java.lang.IllegalArgumentException`: what a `catch
+    /// (IllegalArgumentException e)` clause catches.
+    /// [`LuceneErrorKind::is_illegal_argument_exception`] of its kind.
+    pub fn is_illegal_argument_exception(&self) -> bool {
+        self.kind.is_illegal_argument_exception()
+    }
+
+    /// Whether this error is a `java.lang.NumberFormatException`: what a
+    /// `catch (NumberFormatException e)` clause catches.
+    pub fn is_number_format_exception(&self) -> bool {
+        matches!(
+            &self.kind,
+            LuceneErrorKind::Unchecked { class, .. } if *class == NUMBER_FORMAT_EXCEPTION
+        )
+    }
+
+    /// `new NumberFormatException(message)`: a [`LuceneErrorKind::Unchecked`]
+    /// of class `java.lang.NumberFormatException`, which extends
+    /// `IllegalArgumentException`, so
+    /// [`is_illegal_argument_exception`](Self::is_illegal_argument_exception)
+    /// answers `true` for it.
+    pub fn number_format(message: impl Into<String>) -> Self {
+        Self::unchecked(NUMBER_FORMAT_EXCEPTION, message)
+    }
+
+    /// `NumberFormatException.forInputString(s, radix)`, which
+    /// `Integer.parseInt` and `Long.parseLong` throw: `For input string:
+    /// "<s>"`, followed by ` under radix <radix>` when the radix is not 10.
+    pub fn number_format_for_input_string(s: &str, radix: u32) -> Self {
+        Self::number_format(if radix == 10 {
+            format!("For input string: \"{s}\"")
+        } else {
+            format!("For input string: \"{s}\" under radix {radix}")
+        })
+    }
+
     /// Returns an equal error: [`LuceneErrorKind::duplicate`] of its kind,
     /// with the same suppressed exceptions.
     pub fn duplicate(&self) -> Self {
@@ -613,7 +687,7 @@ impl LuceneErrorKind {
     pub fn java_simple_name(&self) -> &'static str {
         match self {
             Self::Io(_) => "IOException",
-            Self::CorruptIndex(_) => "CorruptIndexException",
+            Self::CorruptIndex { .. } => "CorruptIndexException",
             Self::IndexFormatTooOld { .. } => "IndexFormatTooOldException",
             Self::IndexFormatTooNew { .. } => "IndexFormatTooNewException",
             Self::IndexNotFound(_) => "IndexNotFoundException",
@@ -659,7 +733,7 @@ impl LuceneErrorKind {
         matches!(
             self,
             Self::Io(_)
-                | Self::CorruptIndex(_)
+                | Self::CorruptIndex { .. }
                 | Self::IndexFormatTooOld { .. }
                 | Self::IndexFormatTooNew { .. }
                 | Self::IndexNotFound(_)
@@ -668,6 +742,25 @@ impl LuceneErrorKind {
                 | Self::LockReleaseFailed { .. }
                 | Self::MergeAborted(_)
         )
+    }
+
+    /// Whether the Java class this error stands for is a
+    /// `java.lang.IllegalArgumentException` — what a `catch
+    /// (IllegalArgumentException e)` clause catches.
+    ///
+    /// True for [`LuceneErrorKind::IllegalArgument`] and for the
+    /// [`LuceneErrorKind::Unchecked`] classes of the JDK that extend it:
+    /// `NumberFormatException`, `java.util.regex.PatternSyntaxException`,
+    /// `java.nio.charset.IllegalCharsetNameException`,
+    /// `java.nio.charset.UnsupportedCharsetException`,
+    /// `java.nio.file.InvalidPathException` and
+    /// `java.security.InvalidParameterException`.
+    pub fn is_illegal_argument_exception(&self) -> bool {
+        match self {
+            Self::IllegalArgument { .. } => true,
+            Self::Unchecked { class, .. } => ILLEGAL_ARGUMENT_SUBCLASSES.contains(class),
+            _ => false,
+        }
     }
 
     /// Returns an equal error: the same variant, message and fields, and the
@@ -685,7 +778,17 @@ impl LuceneErrorKind {
         }
         match self {
             Self::Io(error) => Self::Io(io(error)),
-            Self::CorruptIndex(m) => Self::CorruptIndex(m.clone()),
+            Self::CorruptIndex {
+                message,
+                original_message,
+                resource_description,
+                cause,
+            } => Self::CorruptIndex {
+                message: message.clone(),
+                original_message: original_message.clone(),
+                resource_description: resource_description.clone(),
+                cause: cause.clone(),
+            },
             Self::IndexFormatNotSupported(m) => Self::IndexFormatNotSupported(m.clone()),
             Self::IndexFormatTooOld {
                 resource_description,
@@ -768,11 +871,26 @@ impl LuceneErrorKind {
         }
     }
 
+    /// A `CorruptIndex` whose message the caller composed itself: the message
+    /// is both `getMessage()` and `getOriginalMessage()`, with no resource
+    /// description and no cause.
+    pub fn corrupt_index_message(message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self::CorruptIndex {
+            original_message: message.clone(),
+            message,
+            resource_description: None,
+            cause: None,
+        }
+    }
+
     /// `Throwable.toString()` of the `IOException` this error stands for.
     fn io_exception_to_string(&self) -> String {
         match self {
             Self::Io(e) => crate::store::java_nio_file::java_to_string(e),
-            Self::CorruptIndex(m) => format!("org.apache.lucene.index.CorruptIndexException: {m}"),
+            Self::CorruptIndex { message, .. } => {
+                format!("org.apache.lucene.index.CorruptIndexException: {message}")
+            }
             Self::IndexFormatTooOld { .. } => {
                 format!("org.apache.lucene.index.IndexFormatTooOldException: {self}")
             }
@@ -844,6 +962,22 @@ impl LuceneError {
         })
     }
 
+    /// `new UncheckedIOException(cause)`: an [`LuceneErrorKind::Unchecked`]
+    /// `java.io.UncheckedIOException` whose message is the cause's
+    /// `Throwable.toString()`, as `UncheckedIOException(IOException)` sets it
+    /// through `RuntimeException(Throwable)`.
+    ///
+    /// `cause` is one of the variants [`is_io_exception`](Self::is_io_exception)
+    /// accepts.
+    pub fn unchecked_io_exception(cause: LuceneError) -> Self {
+        let message = cause.kind.io_exception_to_string();
+        Self::from(LuceneErrorKind::Unchecked {
+            class: "java.io.UncheckedIOException",
+            message: Some(message),
+            cause: Some(Arc::new(cause)),
+        })
+    }
+
     /// The `NullPointerException` the JVM raises when Java code dereferences
     /// `null` (or `Objects.requireNonNull` rejects it): a
     /// [`LuceneErrorKind::Unchecked`] of class `java.lang.NullPointerException`.
@@ -884,25 +1018,78 @@ impl LuceneError {
     /// `org.apache.lucene.index.CorruptIndexException` does: the caller's message
     /// followed by ` (resource=<description>)`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java keeps `message` and
-    /// `resourceDescription` as separate fields, reachable through
-    /// `getOriginalMessage()` and `getResourceDescription()`
-    /// (`CorruptIndexException.java:62-70`). This variant carries the composed
-    /// string only, because 232 call sites in the crate construct
-    /// `LuceneErrorKind::CorruptIndex` directly with an already-composed message
-    /// (only 29 of them go through this constructor); splitting the variant
-    /// into separate fields would require rewriting every one of those sites,
-    /// most of which live outside this module. `getOriginalMessage()` and
-    /// `getResourceDescription()` are therefore not ported: recovering the two
-    /// parts from the composed string is not reliable, since most call sites
-    /// never route through the `" (resource=...)"` suffix this constructor
-    /// appends. The rendered message is identical to Java's.
+    /// Equivalent to `new CorruptIndexException(String, String)` and, with
+    /// `Objects.toString(input)` as the description, to the `DataInput` and
+    /// `DataOutput` forms (`CorruptIndexException.java:31-54`).
     pub fn corrupt_index(message: impl AsRef<str>, resource_description: impl AsRef<str>) -> Self {
-        Self::from(LuceneErrorKind::CorruptIndex(format!(
-            "{} (resource={})",
-            message.as_ref(),
-            resource_description.as_ref()
-        )))
+        Self::from(LuceneErrorKind::CorruptIndex {
+            message: format!(
+                "{} (resource={})",
+                message.as_ref(),
+                resource_description.as_ref()
+            ),
+            original_message: message.as_ref().to_string(),
+            resource_description: Some(resource_description.as_ref().to_string()),
+            cause: None,
+        })
+    }
+
+    /// Creates a `CorruptIndex` error with a cause.
+    ///
+    /// Equivalent to `new CorruptIndexException(String, String, Throwable)`
+    /// and, with `Objects.toString(input)` as the description, to the
+    /// `DataInput` and `DataOutput` forms with a cause
+    /// (`CorruptIndexException.java:41-60`).
+    pub fn corrupt_index_with_cause(
+        message: impl AsRef<str>,
+        resource_description: impl AsRef<str>,
+        cause: LuceneError,
+    ) -> Self {
+        Self::from(LuceneErrorKind::CorruptIndex {
+            message: format!(
+                "{} (resource={})",
+                message.as_ref(),
+                resource_description.as_ref()
+            ),
+            original_message: message.as_ref().to_string(),
+            resource_description: Some(resource_description.as_ref().to_string()),
+            cause: Some(Arc::new(cause)),
+        })
+    }
+
+    /// Returns whether Java would throw `self` as an `EOFException`, a
+    /// `NoSuchFileException` or a `FileNotFoundException` (or a subclass):
+    /// what a `catch (EOFException | NoSuchFileException |
+    /// FileNotFoundException e)` clause catches.
+    ///
+    /// Those are an [`LuceneErrorKind::Io`] of kind
+    /// [`std::io::ErrorKind::UnexpectedEof`] or [`std::io::ErrorKind::NotFound`]
+    /// (the kind `NoSuchFileException` maps to), the `FileNotFoundException`
+    /// [`LuceneErrorKind::NotFound`], and its subclass
+    /// `IndexNotFoundException`.
+    pub fn is_eof_or_missing_file(&self) -> bool {
+        match &self.kind {
+            LuceneErrorKind::Io(error) => matches!(
+                error.kind(),
+                std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::NotFound
+            ),
+            LuceneErrorKind::NotFound(_) | LuceneErrorKind::IndexNotFound(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Returns the message of a `CorruptIndex` without its resource
+    /// description.
+    ///
+    /// Equivalent to `org.apache.lucene.index.CorruptIndexException#getOriginalMessage`
+    /// (`CorruptIndexException.java:67-70`); `None` for every other error.
+    pub fn original_message(&self) -> Option<&str> {
+        match &self.kind {
+            LuceneErrorKind::CorruptIndex {
+                original_message, ..
+            } => Some(original_message),
+            _ => None,
+        }
     }
 
     /// Creates an `IndexFormatTooOld` error from a free-form reason, for when the
@@ -951,13 +1138,23 @@ impl LuceneError {
         })
     }
 
-    /// Returns a description of the file that was too old or too new, when
-    /// this error is an `IndexFormatTooOld` or `IndexFormatTooNew`.
+    /// Returns a description of the file that was corrupt, too old or too
+    /// new, when this error is a `CorruptIndex`, an `IndexFormatTooOld` or an
+    /// `IndexFormatTooNew`.
     ///
-    /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getResourceDescription`
+    /// Equivalent to `org.apache.lucene.index.CorruptIndexException#getResourceDescription`
+    /// (`CorruptIndexException.java:62-65`),
+    /// `org.apache.lucene.index.IndexFormatTooOldException#getResourceDescription`
     /// and `org.apache.lucene.index.IndexFormatTooNewException#getResourceDescription`.
+    /// A `CorruptIndex` whose message the caller composed itself
+    /// ([`LuceneErrorKind::corrupt_index_message`]) has no separate
+    /// description and returns `None`.
     pub fn resource_description(&self) -> Option<&str> {
         match &self.kind {
+            LuceneErrorKind::CorruptIndex {
+                resource_description,
+                ..
+            } => resource_description.as_deref(),
             LuceneErrorKind::IndexFormatTooOld {
                 resource_description,
                 ..
@@ -1224,7 +1421,7 @@ mod tests {
             None
         );
         assert_eq!(
-            LuceneError::from(LuceneErrorKind::CorruptIndex("x".to_string())).reason(),
+            LuceneError::from(LuceneErrorKind::corrupt_index_message("x")).reason(),
             None
         );
     }
@@ -1317,5 +1514,43 @@ mod tests {
             error.duplicate(),
             LuceneError { kind: LuceneErrorKind::IllegalArgument { cause: Some(c), .. }, .. } if Arc::ptr_eq(&c, &cause)
         ));
+    }
+
+    /// G-007 and G-103: `CorruptIndexException` keeps the composed message,
+    /// the original message, the resource description and the cause
+    /// (`CorruptIndexException.java:31-70`).
+    #[test]
+    fn gap_g007_g103_corrupt_index_keeps_message_parts_and_cause() {
+        let plain = LuceneError::corrupt_index("bad block", "MockInput(\"_0.tim\")");
+        assert_eq!(
+            plain.to_string(),
+            "corrupt index: bad block (resource=MockInput(\"_0.tim\"))"
+        );
+        assert_eq!(plain.original_message(), Some("bad block"));
+        assert_eq!(plain.resource_description(), Some("MockInput(\"_0.tim\")"));
+        assert!(std::error::Error::source(&plain).is_none());
+
+        let cause = LuceneError::illegal_state("inner");
+        let wrapped = LuceneError::corrupt_index_with_cause("outer", "res", cause);
+        assert_eq!(wrapped.original_message(), Some("outer"));
+        assert_eq!(wrapped.resource_description(), Some("res"));
+        match &wrapped.kind {
+            LuceneErrorKind::CorruptIndex {
+                message,
+                cause: Some(c),
+                ..
+            } => {
+                assert_eq!(message, "outer (resource=res)");
+                assert!(matches!(
+                    &c.kind,
+                    LuceneErrorKind::IllegalState { message, .. } if message == "inner"
+                ));
+            }
+            other => panic!("expected a CorruptIndex with a cause, got {other:?}"),
+        }
+        let composed = LuceneError::from(LuceneErrorKind::corrupt_index_message("whole"));
+        assert_eq!(composed.original_message(), Some("whole"));
+        assert_eq!(composed.resource_description(), None);
+        assert_eq!(LuceneError::illegal_state("x").original_message(), None);
     }
 }

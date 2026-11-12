@@ -14,10 +14,10 @@ use crate::util::BitUtil;
 /// The float and byte similarity kernels are not re-derived here: they already
 /// exist in [`crate::util::vector_util`], which reproduces this very class
 /// operation by operation (the accumulator count and the summation order are
-/// observable in the result), so this type delegates to them. The kernels that
-/// `VectorUtil` does not expose — the int4/uint8 variants, the bit dot
-/// products, the scalar quantizer and the buffer filters — are implemented
-/// below.
+/// observable in the result), so this type delegates to them. The other
+/// kernels — the int4/uint8 variants, the bit dot products, the scalar
+/// quantizer and the buffer filters — are implemented below, and
+/// [`crate::util::vector_util`] delegates to them.
 ///
 /// # Divergence from Lucene 10.5.0
 ///
@@ -39,11 +39,12 @@ impl DefaultVectorUtilSupport {
     /// Returns `a * b + c`, fusing the multiply and the add when the platform
     /// offers a fast scalar FMA.
     ///
-    /// Lucene picks the fused form on `Constants.HAS_FAST_SCALAR_FMA`. This
-    /// port reads [`vector_util::USE_FMA`] instead, the very gate the float
-    /// kernels of [`crate::util::vector_util`] — the kernels this type
-    /// delegates to — are pinned to, so the two copies of this helper can never
-    /// disagree about the low-order bits of a score.
+    /// Lucene picks the fused form on `Constants.HAS_FAST_SCALAR_FMA`
+    /// (`DefaultVectorUtilSupport.java:29-36`). This port reads it through
+    /// [`vector_util::use_fma`], the very gate the float kernels of
+    /// [`crate::util::vector_util`] — the kernels this type delegates to —
+    /// read, so the two copies of this helper can never disagree about the
+    /// low-order bits of a score.
     ///
     /// # Divergence from Lucene 10.5.0
     ///
@@ -57,7 +58,7 @@ impl DefaultVectorUtilSupport {
     /// `org.apache.lucene.internal.vectorization.DefaultVectorUtilSupport#fma`.
     #[inline]
     pub fn fma(a: f32, b: f32, c: f32) -> f32 {
-        if vector_util::USE_FMA {
+        if vector_util::use_fma() {
             a.mul_add(b, c)
         } else {
             a * b + c

@@ -153,14 +153,17 @@ impl BytesRefArray {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `index` is out of bounds,
-    /// which is Java's `IndexOutOfBoundsException` from `Objects.checkIndex`.
+    /// Returns Java's `IndexOutOfBoundsException` from `Objects.checkIndex`
+    /// when `index` is out of bounds.
     pub fn get(&self, index: usize) -> Result<BytesRef> {
         if index >= self.last_element {
-            return Err(LuceneError::illegal_argument(format!(
-                "Index {index} out of bounds for length {}",
-                self.last_element
-            )));
+            return Err(LuceneError::unchecked(
+                "java.lang.IndexOutOfBoundsException",
+                format!(
+                    "Index {index} out of bounds for length {}",
+                    self.last_element
+                ),
+            ));
         }
         let (offset, length) = self.offset_and_length(index);
         let mut bytes = vec![0u8; length];
@@ -411,10 +414,15 @@ impl FixedLengthBytesRefArray {
     ///
     /// # Panics
     ///
-    /// Panics when `value_length` is zero, which would make the block layout
-    /// undefined; Java would divide by zero.
+    /// Throws Java's `ArithmeticException` (`/ by zero`) when `value_length`
+    /// is zero, from `32768 / valueLength`.
     pub fn new(value_length: usize) -> Self {
-        assert!(value_length > 0, "value length must be > 0");
+        if value_length == 0 {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.ArithmeticException",
+                Some("/ by zero"),
+            );
+        }
         // ~32K per page, unless each value is larger than 32K.
         let values_per_block = (32768 / value_length).max(1);
         Self {
@@ -433,13 +441,14 @@ impl FixedLengthBytesRefArray {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `index` is out of bounds.
+    /// Returns Java's `IndexOutOfBoundsException` from `Objects.checkIndex`
+    /// when `index` is out of bounds.
     pub fn get(&self, index: usize) -> Result<BytesRef> {
         if index >= self.size {
-            return Err(LuceneError::illegal_argument(format!(
-                "Index {index} out of bounds for length {}",
-                self.size
-            )));
+            return Err(LuceneError::unchecked(
+                "java.lang.IndexOutOfBoundsException",
+                format!("Index {index} out of bounds for length {}", self.size),
+            ));
         }
         Ok(self.value_at(index))
     }

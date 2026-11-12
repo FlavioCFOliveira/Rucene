@@ -475,7 +475,7 @@ impl MonotonicBlockPackedReader {
             let bits_per_value = input.read_v_int()?;
             sum_bpv += i64::from(bits_per_value);
             if !(0..=64).contains(&bits_per_value) {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
                     "Corrupted".to_string(),
                 )));
             }

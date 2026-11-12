@@ -49,17 +49,7 @@ pub trait BlendedRewriteMethod: Send + Sync + Debug {
     /// Rewrite-method hash code, consistent with [`method_eq`](Self::method_eq).
     ///
     /// Equivalent to `RewriteMethod.hashCode()`.
-    fn method_hash(&self) -> u64;
-}
-
-/// Hashes a [`std::any::TypeId`], which stands in for Java's
-/// `getClass().hashCode()`.
-fn type_hash<T: ?Sized + Any>(value: &T) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    value.type_id().hash(&mut hasher);
-    hasher.finish()
+    fn method_hash(&self) -> i32;
 }
 
 /// A [`BlendedRewriteMethod`] that adds all sub-queries to a
@@ -84,8 +74,14 @@ impl BlendedRewriteMethod for BooleanRewrite {
         self
     }
 
-    fn method_hash(&self) -> u64 {
-        type_hash(self)
+    /// `BOOLEAN_REWRITE` is an anonymous subclass that does not override
+    /// `hashCode()`, so Java answers its identity hash, for which this port
+    /// substitutes a stable stand-in (see
+    /// [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)).
+    fn method_hash(&self) -> i32 {
+        crate::util::java_collections::java_identity_hash_code_stand_in(
+            "org.apache.lucene.search.BlendedTermQuery$1",
+        )
     }
 }
 
@@ -131,10 +127,20 @@ impl BlendedRewriteMethod for DisjunctionMaxRewrite {
         }
     }
 
-    fn method_hash(&self) -> u64 {
-        type_hash(self)
-            .wrapping_mul(31)
-            .wrapping_add(u64::from(self.tie_breaker_multiplier.to_bits()))
+    /// `31 * getClass().hashCode() + Float.floatToIntBits(tieBreakerMultiplier)`
+    /// (`BlendedTermQuery.java:184-186`); `getClass().hashCode()` is an
+    /// identity hash, replaced by a stable stand-in (see
+    /// [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)).
+    fn method_hash(&self) -> i32 {
+        31i32
+            .wrapping_mul(
+                crate::util::java_collections::java_identity_hash_code_stand_in(
+                    "org.apache.lucene.search.BlendedTermQuery$DisjunctionMaxRewrite",
+                ),
+            )
+            .wrapping_add(crate::util::java_collections::java_float_hash_code(
+                self.tie_breaker_multiplier,
+            ))
     }
 }
 
@@ -292,8 +298,8 @@ impl BlendedTermQuery {
         contexts: Vec<Option<Arc<TermStates>>>,
         rewrite_method: Arc<dyn BlendedRewriteMethod>,
     ) -> Self {
-        assert_eq!(terms.len(), boosts.len());
-        assert_eq!(terms.len(), contexts.len());
+        debug_assert_eq!(terms.len(), boosts.len());
+        debug_assert_eq!(terms.len(), contexts.len());
 
         // The terms are sorted so that equality and hashing do not depend on
         // the order. Java uses an `InPlaceMergeSorter`, which is stable, and so
@@ -452,32 +458,40 @@ impl Query for BlendedTermQuery {
             && self.rewrite_method.method_eq(&*other.rewrite_method)
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+    /// `getClass().getName()` of `org.apache.lucene.search.BlendedTermQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.BlendedTermQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_floats, java_arrays_hash_code_ints,
+            java_identity_hash_code_stand_in,
+        };
+        // `BlendedTermQuery.hashCode()` (`BlendedTermQuery.java:244-251`).
         let mut h = self.class_hash();
-        let mut hasher = DefaultHasher::new();
-        for term in &self.terms {
-            term.field().hash(&mut hasher);
-            term.bytes().slice().hash(&mut hasher);
-        }
-        h = h.wrapping_mul(31).wrapping_add(hasher.finish());
-        // Java's `Arrays.hashCode(contexts)` mixes the identity hash codes of
-        // the `TermStates`, which are arbitrary; the pointer addresses are the
-        // same kind of value and are consistent with `query_eq`.
-        let mut hasher = DefaultHasher::new();
-        for ctx in &self.contexts {
-            match ctx {
-                None => 0usize.hash(&mut hasher),
-                Some(ctx) => (Arc::as_ptr(ctx) as usize).hash(&mut hasher),
-            }
-        }
-        h = h.wrapping_mul(31).wrapping_add(hasher.finish());
-        let mut hasher = DefaultHasher::new();
-        for boost in &self.boosts {
-            boost.to_bits().hash(&mut hasher);
-        }
-        h = h.wrapping_mul(31).wrapping_add(hasher.finish());
+        let terms: Vec<i32> = self.terms.iter().map(Term::hash_code).collect();
+        h = h
+            .wrapping_mul(31)
+            .wrapping_add(java_arrays_hash_code_ints(&terms));
+        // `Arrays.hashCode(contexts)`: `TermStates` does not override
+        // `hashCode()`, so each element is an identity hash (a `null` is 0),
+        // for which a stable stand-in is used; it is consistent with
+        // `query_eq`, which compares the contexts by identity.
+        let contexts: Vec<i32> = self
+            .contexts
+            .iter()
+            .map(|ctx| match ctx {
+                None => 0,
+                Some(_) => java_identity_hash_code_stand_in("org.apache.lucene.index.TermStates"),
+            })
+            .collect();
+        h = h
+            .wrapping_mul(31)
+            .wrapping_add(java_arrays_hash_code_ints(&contexts));
+        h = h
+            .wrapping_mul(31)
+            .wrapping_add(java_arrays_hash_code_floats(&self.boosts));
         h.wrapping_mul(31)
             .wrapping_add(self.rewrite_method.method_hash())
     }

@@ -301,7 +301,7 @@ fn test_search_with_skewed_accept_ords(this: &mut Fixture<FloatCase>) -> Result<
         i32::MAX as i64,
     )?;
 
-    let nodes = nn.top_docs();
+    let nodes = nn.top_docs()?;
     assert_equals_msg(
         Some("Number of found results is not equal to [10]."),
         &10,

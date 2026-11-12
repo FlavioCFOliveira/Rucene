@@ -135,19 +135,21 @@ impl KnnCollector for VectorSimilarityCollector {
         self.min_competitive_similarity
     }
 
-    fn top_docs(&mut self) -> TopDocs {
-        // The results are not returned in sorted order, to avoid unnecessary
-        // calculations: there is no top-k to maintain.
-        let relation = if self.early_terminated() {
-            TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO
-        } else {
-            TotalHitsRelation::EQUAL_TO
-        };
-        TopDocs {
-            total_hits: TotalHits::new(self.visited_count(), relation)
-                .expect("INVARIANT: a visited count is never negative"),
-            score_docs: self.score_doc_list.clone(),
-        }
+    fn top_docs(&mut self) -> crate::error::Result<TopDocs> {
+        Ok({
+            // The results are not returned in sorted order, to avoid unnecessary
+            // calculations: there is no top-k to maintain.
+            let relation = if self.early_terminated() {
+                TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO
+            } else {
+                TotalHitsRelation::EQUAL_TO
+            };
+            TopDocs {
+                total_hits: TotalHits::new(self.visited_count(), relation)
+                    .expect("INVARIANT: a visited count is never negative"),
+                score_docs: self.score_doc_list.clone(),
+            }
+        })
     }
 
     fn get_search_strategy(&self) -> Option<&KnnSearchStrategy> {

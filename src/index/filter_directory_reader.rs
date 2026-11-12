@@ -655,23 +655,72 @@ impl DirectoryReader for FilterDirectoryReader {
 /// Equivalent to `ExitableDirectoryReader.ExitingReaderException`, which Java
 /// makes a `RuntimeException` so it can escape an iterator method that declares
 /// no checked exception. Rust returns it as an error like any other.
-pub fn exiting_reader_error(what: &str) -> LuceneError {
-    exiting_reader_action_error(&format!("iterate over {what}"))
+///
+/// The message is Java's (`ExitableDirectoryReader.java:441-914`):
+/// `"The request took too long to " + action + ". Timeout: " + queryTimeout +
+/// ", " + label + "=" + object`, where `action` is e.g. `"iterate over doc
+/// values"`, `label` names the iterated object (`DocValues`, `TermsEnum`,
+/// `PointValues`, `KnnVectorValues`, `Reader`) and `object` is its
+/// `toString()`. `query_timeout` is rendered with
+/// [`QueryTimeout::java_to_string`].
+pub fn exiting_reader_error(
+    action: &str,
+    query_timeout: &dyn QueryTimeout,
+    label: &str,
+    object: &str,
+) -> LuceneError {
+    LuceneError::from(LuceneErrorKind::ExitingReader(format!(
+        "The request took too long to {action}. Timeout: {}, {label}={object}",
+        query_timeout.java_to_string()
+    )))
 }
 
-/// Raised when a [`QueryTimeout`] fires inside a reader, for an action that is
-/// not an iteration.
+/// Raised when the current thread is found interrupted inside a reader.
 ///
-/// Equivalent to the `ExitingReaderException` messages that name an action of
-/// their own: `"intersect point values"` and `"search nearest vectors"`.
-///
-/// **Divergence from Lucene 10.5.0.** Java appends `", Timeout: " + queryTimeout`
-/// and the object it was iterating — `DocValues=`, `TermsEnum=`, `PointValues=`
-/// and so on. This port's message names the action only.
-fn exiting_reader_action_error(action: &str) -> LuceneError {
+/// Equivalent to the `else if (Thread.interrupted())` branch of every
+/// `ExitableDirectoryReader` check (`ExitableDirectoryReader.java:446-914`),
+/// which throws `ExitingReaderException` with the message `"Interrupted while
+/// " + action + ". " + label + "=" + object`, where `action` is e.g.
+/// `"iterating over doc values"` and `object` the `toString()` of what is
+/// iterated. Java tests the interrupt only when the timeout has not fired, and
+/// `Thread.interrupted()` clears the status:
+/// [`InterruptHandle::interrupted`](crate::util::concurrent::InterruptHandle::interrupted)
+/// is that call.
+pub fn exiting_reader_interrupted_error(action: &str, label: &str, object: &str) -> LuceneError {
     LuceneError::from(LuceneErrorKind::ExitingReader(format!(
-        "The request took too long to {action}"
+        "Interrupted while {action}. {label}={object}"
     )))
+}
+
+/// Java's `checkAndThrow` body: the timeout error when `query_timeout` has
+/// fired, else the interrupted error when `Thread.interrupted()` (which
+/// clears the status) is true. Each object is rendered only for its error.
+///
+/// # Errors
+///
+/// As described above.
+fn check_timeout_then_interrupt(
+    query_timeout: &dyn QueryTimeout,
+    label: &str,
+    timeout: (&str, &dyn Fn() -> String),
+    interrupted: (&str, &dyn Fn() -> String),
+) -> Result<()> {
+    if query_timeout.should_exit() {
+        return Err(exiting_reader_error(
+            timeout.0,
+            query_timeout,
+            label,
+            &(timeout.1)(),
+        ));
+    }
+    if crate::util::concurrent::InterruptHandle::interrupted() {
+        return Err(exiting_reader_interrupted_error(
+            interrupted.0,
+            label,
+            &(interrupted.1)(),
+        ));
+    }
+    Ok(())
 }
 
 /// How many documents an [`ExitableFilterLeafReader`]-family iterator lets
@@ -778,16 +827,28 @@ struct ExitableCheck {
     /// Equivalent to the `calls` field of the sampling inner classes. Java's
     /// `int` wraps on overflow, matched here by the atomic's wrapping add.
     calls: AtomicI32,
-    /// The action the message names, e.g. `"iterate over terms"`.
+    /// The action the timeout message names, e.g. `"iterate over terms"`.
     action: &'static str,
+    /// The action the interrupted message names, e.g. `"iterating over
+    /// terms"`.
+    interrupted_action: &'static str,
+    /// The name the message gives the iterated object, e.g. `"TermsEnum"`.
+    label: &'static str,
 }
 
 impl ExitableCheck {
-    fn new(query_timeout: Arc<dyn QueryTimeout>, action: &'static str) -> Self {
+    fn new(
+        query_timeout: Arc<dyn QueryTimeout>,
+        action: &'static str,
+        interrupted_action: &'static str,
+        label: &'static str,
+    ) -> Self {
         Self {
             query_timeout,
             calls: AtomicI32::new(0),
             action,
+            interrupted_action,
+            label,
         }
     }
 
@@ -797,21 +858,37 @@ impl ExitableCheck {
         &self.query_timeout
     }
 
-    /// The timeout test itself.
-    fn fired(&self) -> bool {
-        self.query_timeout.should_exit()
-    }
-
-    /// Equivalent to the `checkAndThrow()` of the enclosing inner class.
+    /// Equivalent to the `checkAndThrow()` of the enclosing inner class:
+    /// `object` renders the `toString()` of what the wrapper iterates, for
+    /// both messages.
     ///
     /// # Errors
     ///
-    /// Raises the exiting-reader error when the timeout has fired.
-    fn check_and_throw(&self) -> Result<()> {
-        if self.fired() {
-            return Err(exiting_reader_action_error(self.action));
-        }
-        Ok(())
+    /// Raises the exiting-reader error when the timeout has fired, or else
+    /// when the current thread is interrupted (clearing its status).
+    fn check_and_throw(&self, object: &dyn Fn() -> String) -> Result<()> {
+        self.check_and_throw_objects(object, object)
+    }
+
+    /// As [`check_and_throw`](Self::check_and_throw), for a check whose two
+    /// messages render different objects: `ExitablePointTree.checkAndThrow()`
+    /// names `pointValues` on timeout and the tree `in` on interrupt
+    /// (`ExitableDirectoryReader.java:719-729`).
+    ///
+    /// # Errors
+    ///
+    /// As [`check_and_throw`](Self::check_and_throw).
+    fn check_and_throw_objects(
+        &self,
+        timeout_object: &dyn Fn() -> String,
+        interrupted_object: &dyn Fn() -> String,
+    ) -> Result<()> {
+        check_timeout_then_interrupt(
+            &*self.query_timeout,
+            self.label,
+            (self.action, timeout_object),
+            (self.interrupted_action, interrupted_object),
+        )
     }
 
     /// Equivalent to `checkAndThrowWithSampling()`, which checks when
@@ -820,9 +897,29 @@ impl ExitableCheck {
     /// # Errors
     ///
     /// As [`check_and_throw`](Self::check_and_throw), on a sampled call.
-    fn check_and_throw_with_sampling(&self, modulus: i32) -> Result<()> {
-        if self.sample(modulus) && self.fired() {
-            return Err(exiting_reader_action_error(self.action));
+    fn check_and_throw_with_sampling(
+        &self,
+        modulus: i32,
+        object: &dyn Fn() -> String,
+    ) -> Result<()> {
+        self.check_and_throw_objects_with_sampling(modulus, object, object)
+    }
+
+    /// As [`check_and_throw_with_sampling`](Self::check_and_throw_with_sampling),
+    /// with the two objects of
+    /// [`check_and_throw_objects`](Self::check_and_throw_objects).
+    ///
+    /// # Errors
+    ///
+    /// As [`check_and_throw`](Self::check_and_throw), on a sampled call.
+    fn check_and_throw_objects_with_sampling(
+        &self,
+        modulus: i32,
+        timeout_object: &dyn Fn() -> String,
+        interrupted_object: &dyn Fn() -> String,
+    ) -> Result<()> {
+        if self.sample(modulus) {
+            return self.check_and_throw_objects(timeout_object, interrupted_object);
         }
         Ok(())
     }
@@ -834,10 +931,10 @@ impl ExitableCheck {
     /// # Errors
     ///
     /// As [`check_and_throw`](Self::check_and_throw), on a sampled call.
-    fn check_and_throw_with_mask(&self, mask: i32) -> Result<()> {
+    fn check_and_throw_with_mask(&self, mask: i32, object: &dyn Fn() -> String) -> Result<()> {
         let calls = self.calls.fetch_add(1, Ordering::Relaxed);
-        if calls & mask == 0 && self.fired() {
-            return Err(exiting_reader_action_error(self.action));
+        if calls & mask == 0 {
+            return self.check_and_throw(object);
         }
         Ok(())
     }
@@ -1016,12 +1113,12 @@ impl LeafReader for ExitableFilterLeafReader {
         // [`SortedNumericDocValues::into_singleton`].
         if sorted_numeric_doc_values.is_singleton() {
             let numeric_doc_values = sorted_numeric_doc_values
-                .into_singleton()
+                .into_singleton()?
                 .expect("INVARIANT: is_singleton() reported a singleton view");
             let wrapped = self
                 .wrap_numeric_doc_values(Some(numeric_doc_values))
                 .expect("INVARIANT: wrap_numeric_doc_values keeps a present value present");
-            return Ok(Some(Box::new(DocValues::singleton_numeric(wrapped))));
+            return Ok(Some(Box::new(DocValues::singleton_numeric(wrapped)?)));
         }
         Ok(Some(Box::new(ExitableSortedNumericDocValues::new(
             sorted_numeric_doc_values,
@@ -1040,12 +1137,12 @@ impl LeafReader for ExitableFilterLeafReader {
         // `DocValues.unwrapSingleton(SortedSetDocValues)`.
         if sorted_set_doc_values.is_singleton() {
             let sorted_doc_values = sorted_set_doc_values
-                .into_singleton()
+                .into_singleton()?
                 .expect("INVARIANT: is_singleton() reported a singleton view");
             let wrapped = self
                 .wrap_sorted_doc_values(Some(sorted_doc_values))
                 .expect("INVARIANT: wrap_sorted_doc_values keeps a present value present");
-            return Ok(Some(Box::new(DocValues::singleton_sorted(wrapped))));
+            return Ok(Some(Box::new(DocValues::singleton_sorted(wrapped)?)));
         }
         Ok(Some(Box::new(ExitableSortedSetDocValues::new(
             sorted_set_doc_values,
@@ -1102,7 +1199,7 @@ impl LeafReader for ExitableFilterLeafReader {
     ) -> Result<()> {
         let mut timeout_checking_accept_docs = ExitableAcceptDocs::new(
             accept_docs,
-            LeafReader::max_doc(self),
+            Arc::clone(self.inner.get_delegate()),
             Arc::clone(&self.query_timeout),
         );
         self.inner.search_nearest_vectors(
@@ -1122,7 +1219,7 @@ impl LeafReader for ExitableFilterLeafReader {
     ) -> Result<()> {
         let mut timeout_checking_accept_docs = ExitableAcceptDocs::new(
             accept_docs,
-            LeafReader::max_doc(self),
+            Arc::clone(self.inner.get_delegate()),
             Arc::clone(&self.query_timeout),
         );
         self.inner.search_nearest_vectors_byte(
@@ -1260,7 +1357,7 @@ impl Terms for ExitableTerms {
         self.inner.has_payloads()
     }
 
-    fn stats(&self) -> Result<String> {
+    fn stats(&self) -> Result<Box<dyn crate::index::terms::StatsObject>> {
         self.inner.stats()
     }
 }
@@ -1299,7 +1396,12 @@ impl ExitableTermsEnum {
     ) -> Result<Self> {
         let enumeration = Self {
             inner: FilterTermsEnum::new(terms_enum),
-            check: ExitableCheck::new(query_timeout, "iterate over terms"),
+            check: ExitableCheck::new(
+                query_timeout,
+                "iterate over terms",
+                "iterating over terms",
+                "TermsEnum",
+            ),
         };
         enumeration.check_timeout_with_sampling()?;
         Ok(enumeration)
@@ -1309,7 +1411,9 @@ impl ExitableTermsEnum {
     /// `ExitableTermsEnum.checkTimeoutWithSampling()`.
     fn check_timeout_with_sampling(&self) -> Result<()> {
         self.check
-            .check_and_throw_with_mask(NUM_CALLS_PER_TIMEOUT_CHECK)
+            .check_and_throw_with_mask(NUM_CALLS_PER_TIMEOUT_CHECK, &|| {
+                self.inner.get_delegate().to_string()
+            })
     }
 }
 
@@ -1418,6 +1522,9 @@ const MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK: i32 = 16;
 struct ExitablePointValues {
     inner: Box<dyn PointValues>,
     check: ExitableCheck,
+    /// `in.toString()`, the `PointValues=` part of the messages this wrapper
+    /// and the [`ExitablePointTree`]s it hands out raise.
+    rendering: Arc<str>,
 }
 
 impl ExitablePointValues {
@@ -1434,16 +1541,35 @@ impl ExitablePointValues {
         point_values: Box<dyn PointValues>,
         query_timeout: Arc<dyn QueryTimeout>,
     ) -> Result<Self> {
+        let rendering: Arc<str> = point_values.java_to_string().into();
         let values = Self {
             inner: point_values,
-            check: ExitableCheck::new(query_timeout, "iterate over point values"),
+            check: ExitableCheck::new(
+                query_timeout,
+                "iterate over point values",
+                "iterating over point values",
+                "PointValues",
+            ),
+            rendering,
         };
-        values.check.check_and_throw()?;
+        values.check_and_throw()?;
         Ok(values)
+    }
+
+    /// Equivalent to `ExitablePointValues.checkAndThrow()`.
+    fn check_and_throw(&self) -> Result<()> {
+        self.check.check_and_throw(&|| self.rendering.to_string())
     }
 }
 
 impl PointValues for ExitablePointValues {
+    /// `ExitableDirectoryReader$ExitablePointValues` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.ExitableDirectoryReader$ExitablePointValues",
+        )
+    }
     /// Equivalent to `ExitablePointValues.getPointTree()`.
     ///
     /// # Errors
@@ -1451,35 +1577,36 @@ impl PointValues for ExitablePointValues {
     /// Raises the exiting-reader error when the timeout has fired, and
     /// otherwise propagates the delegate's errors.
     fn point_tree(&self) -> Result<Box<dyn PointTree>> {
-        self.check.check_and_throw()?;
+        self.check_and_throw()?;
         Ok(Box::new(ExitablePointTree::new(
             self.inner.point_tree()?,
             Arc::clone(self.check.query_timeout()),
+            Arc::clone(&self.rendering),
         )))
     }
 
     fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
-        self.check.check_and_throw()?;
+        self.check_and_throw()?;
         self.inner.min_packed_value()
     }
 
     fn max_packed_value(&self) -> Result<Option<Vec<u8>>> {
-        self.check.check_and_throw()?;
+        self.check_and_throw()?;
         self.inner.max_packed_value()
     }
 
     fn num_dimensions(&self) -> Result<i32> {
-        self.check.check_and_throw()?;
+        self.check_and_throw()?;
         self.inner.num_dimensions()
     }
 
     fn num_index_dimensions(&self) -> Result<i32> {
-        self.check.check_and_throw()?;
+        self.check_and_throw()?;
         self.inner.num_index_dimensions()
     }
 
     fn bytes_per_dimension(&self) -> Result<i32> {
-        self.check.check_and_throw()?;
+        self.check_and_throw()?;
         self.inner.bytes_per_dimension()
     }
 
@@ -1491,7 +1618,7 @@ impl PointValues for ExitablePointValues {
     /// Raises the exiting-reader error when the timeout has fired, and
     /// otherwise propagates the delegate's errors.
     fn size(&self) -> Result<i64> {
-        self.check.check_and_throw()?;
+        self.check_and_throw()?;
         self.inner.size()
     }
 
@@ -1502,7 +1629,7 @@ impl PointValues for ExitablePointValues {
     ///
     /// As [`size`](Self::size).
     fn doc_count(&self) -> Result<i32> {
-        self.check.check_and_throw()?;
+        self.check_and_throw()?;
         self.inner.doc_count()
     }
 }
@@ -1515,18 +1642,19 @@ impl PointValues for ExitablePointValues {
 /// visit methods, and routes `visitDocValues` through a single
 /// [`ExitableIntersectVisitor`] it keeps for its own lifetime.
 ///
-/// **Divergence from Lucene 10.5.0.** Java's `ExitablePointTree` also holds the
+/// **Divergence from Lucene 10.5.0.** Java's `ExitablePointTree` holds the
 /// `PointValues` the tree came from (`ExitableDirectoryReader.java:695,703`),
-/// and uses it for one thing only: rendering the object in the
-/// `ExitingReaderException` message. This port has no such field. Lucene's way
-/// could not be used because holding it would mean owning or borrowing the
-/// `PointValues` that owns this tree, which Rust's ownership rules refuse
-/// without reference counting the port has no other use for — and the message
-/// this port raises carries no object rendering to put it in (see
-/// [`exiting_reader_error`]).
+/// and uses it for one thing only: rendering it in the
+/// `ExitingReaderException` message (`", PointValues=" + pointValues`). This
+/// port holds that rendering instead of the object: holding the object would
+/// mean owning or borrowing the `PointValues` that owns this tree, which
+/// Rust's ownership rules refuse without reference counting the port has no
+/// other use for. The message is the same.
 struct ExitablePointTree {
     inner: Box<dyn PointTree>,
     check: ExitableCheck,
+    /// `pointValues.toString()`, the `PointValues=` part of the messages.
+    point_values: Arc<str>,
     /// The call counter of the one `ExitableIntersectVisitor` this tree reuses,
     /// so that its sampling carries across `visit_doc_values` calls exactly as
     /// Java's single instance does.
@@ -1538,16 +1666,57 @@ impl ExitablePointTree {
     ///
     /// Equivalent to `ExitablePointTree(PointValues, PointTree, QueryTimeout)`,
     /// which also builds the `ExitableIntersectVisitor` it will reuse.
-    fn new(point_tree: Box<dyn PointTree>, query_timeout: Arc<dyn QueryTimeout>) -> Self {
+    fn new(
+        point_tree: Box<dyn PointTree>,
+        query_timeout: Arc<dyn QueryTimeout>,
+        point_values: Arc<str>,
+    ) -> Self {
         Self {
             inner: point_tree,
-            check: ExitableCheck::new(Arc::clone(&query_timeout), "intersect point values"),
-            visitor_check: ExitableCheck::new(query_timeout, "intersect point values"),
+            check: ExitableCheck::new(
+                Arc::clone(&query_timeout),
+                "intersect point values",
+                "intersecting point values",
+                "PointValues",
+            ),
+            point_values,
+            visitor_check: ExitableCheck::new(
+                query_timeout,
+                "intersect point values",
+                "intersecting point values",
+                "PointValues",
+            ),
         }
+    }
+
+    /// Equivalent to `ExitablePointTree.checkAndThrow()`, whose timeout
+    /// message names `pointValues` and whose interrupted message names the
+    /// wrapped tree `in` (`ExitableDirectoryReader.java:719-729`).
+    fn check_and_throw(&self) -> Result<()> {
+        self.check
+            .check_and_throw_objects(&|| self.point_values.to_string(), &|| {
+                self.inner.java_to_string()
+            })
+    }
+
+    /// Equivalent to `ExitablePointTree.checkAndThrowWithSampling()`.
+    fn check_and_throw_with_sampling(&self) -> Result<()> {
+        self.check.check_and_throw_objects_with_sampling(
+            MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK,
+            &|| self.point_values.to_string(),
+            &|| self.inner.java_to_string(),
+        )
     }
 }
 
 impl PointTree for ExitablePointTree {
+    /// `ExitableDirectoryReader$ExitablePointTree` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.ExitableDirectoryReader$ExitablePointTree",
+        )
+    }
     /// Equivalent to `ExitablePointTree.clone()`, which checks the timeout and
     /// re-roots a fresh wrapper — with a fresh visitor, as Java's constructor
     /// builds one.
@@ -1557,28 +1726,26 @@ impl PointTree for ExitablePointTree {
     /// Raises the exiting-reader error when the timeout has fired, and
     /// otherwise propagates the delegate's errors.
     fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
-        self.check.check_and_throw()?;
+        self.check_and_throw()?;
         Ok(Box::new(Self::new(
             self.inner.clone_tree()?,
             Arc::clone(self.check.query_timeout()),
+            Arc::clone(&self.point_values),
         )))
     }
 
     fn move_to_child(&mut self) -> Result<bool> {
-        self.check
-            .check_and_throw_with_sampling(MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK)?;
+        self.check_and_throw_with_sampling()?;
         self.inner.move_to_child()
     }
 
     fn move_to_sibling(&mut self) -> Result<bool> {
-        self.check
-            .check_and_throw_with_sampling(MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK)?;
+        self.check_and_throw_with_sampling()?;
         self.inner.move_to_sibling()
     }
 
     fn move_to_parent(&mut self) -> Result<bool> {
-        self.check
-            .check_and_throw_with_sampling(MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK)?;
+        self.check_and_throw_with_sampling()?;
         self.inner.move_to_parent()
     }
 
@@ -1590,8 +1757,7 @@ impl PointTree for ExitablePointTree {
     /// Raises the exiting-reader error on a sampled call once the timeout has
     /// fired, and otherwise propagates the delegate's errors.
     fn min_packed_value(&self) -> Result<&[u8]> {
-        self.check
-            .check_and_throw_with_sampling(MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK)?;
+        self.check_and_throw_with_sampling()?;
         self.inner.min_packed_value()
     }
 
@@ -1602,8 +1768,7 @@ impl PointTree for ExitablePointTree {
     ///
     /// As [`min_packed_value`](Self::min_packed_value).
     fn max_packed_value(&self) -> Result<&[u8]> {
-        self.check
-            .check_and_throw_with_sampling(MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK)?;
+        self.check_and_throw_with_sampling()?;
         self.inner.max_packed_value()
     }
 
@@ -1615,12 +1780,12 @@ impl PointTree for ExitablePointTree {
     /// Raises the exiting-reader error when the timeout has fired, and
     /// otherwise propagates the delegate's errors.
     fn size(&self) -> Result<i64> {
-        self.check.check_and_throw()?;
+        self.check_and_throw()?;
         self.inner.size()
     }
 
     fn visit_doc_ids(&mut self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
-        self.check.check_and_throw()?;
+        self.check_and_throw()?;
         self.inner.visit_doc_ids(visitor)
     }
 
@@ -1628,7 +1793,7 @@ impl PointTree for ExitablePointTree {
     /// which checks the timeout and then hands the delegate its own
     /// [`ExitableIntersectVisitor`] wrapped around `visitor`.
     fn visit_doc_values(&mut self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
-        self.check.check_and_throw()?;
+        self.check_and_throw()?;
         let Self {
             inner,
             visitor_check,
@@ -1660,6 +1825,13 @@ struct ExitableIntersectVisitor<'a> {
 }
 
 impl IntersectVisitor for ExitableIntersectVisitor<'_> {
+    /// `ExitableDirectoryReader$ExitableIntersectVisitor` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.ExitableDirectoryReader$ExitableIntersectVisitor",
+        )
+    }
     /// Equivalent to `ExitableIntersectVisitor.visit(int)`.
     ///
     /// # Errors
@@ -1668,7 +1840,9 @@ impl IntersectVisitor for ExitableIntersectVisitor<'_> {
     /// fired, and otherwise propagates the delegate's errors.
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         self.check
-            .check_and_throw_with_sampling(MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK)?;
+            .check_and_throw_with_sampling(MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK, &|| {
+                self.inner.java_to_string()
+            })?;
         self.inner.visit(doc_id)
     }
 
@@ -1679,7 +1853,9 @@ impl IntersectVisitor for ExitableIntersectVisitor<'_> {
     /// As [`visit`](Self::visit).
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
         self.check
-            .check_and_throw_with_sampling(MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK)?;
+            .check_and_throw_with_sampling(MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK, &|| {
+                self.inner.java_to_string()
+            })?;
         self.inner.visit_with_value(doc_id, packed_value)
     }
 
@@ -1690,7 +1866,8 @@ impl IntersectVisitor for ExitableIntersectVisitor<'_> {
     /// Raises the exiting-reader error when the timeout has fired, and
     /// otherwise propagates the delegate's errors.
     fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
-        self.check.check_and_throw()?;
+        self.check
+            .check_and_throw(&|| self.inner.java_to_string())?;
         self.inner.compare(min_packed_value, max_packed_value)
     }
 
@@ -1701,7 +1878,8 @@ impl IntersectVisitor for ExitableIntersectVisitor<'_> {
     ///
     /// As [`compare`](Self::compare).
     fn grow(&mut self, count: i32) -> Result<()> {
-        self.check.check_and_throw()?;
+        self.check
+            .check_and_throw(&|| self.inner.java_to_string())?;
         self.inner.grow(count)
     }
 }
@@ -1725,23 +1903,32 @@ struct ExitableAcceptDocs<'a> {
     /// none, match-all bits. `None` until `bits()` is first called.
     bits: Option<Arc<dyn Bits>>,
     check: Arc<ExitableCheck>,
+    /// The enclosing reader's delegate (`FilterLeafReader.in`), whose
+    /// `toString()` is the `Reader=` part of the nearest-vector message.
+    reader: Arc<dyn LeafReader>,
 }
 
 impl<'a> ExitableAcceptDocs<'a> {
-    /// Wraps `accept_docs` for a leaf of `max_doc` documents.
+    /// Wraps `accept_docs` for the leaf `reader`.
     ///
     /// Equivalent to `ExitableAcceptDocs(AcceptDocs)`, whose enclosing reader
-    /// supplies `maxDoc()`.
+    /// supplies `maxDoc()` and the `in` its messages render.
     fn new(
         accept_docs: &'a mut dyn AcceptDocs,
-        max_doc: i32,
+        reader: Arc<dyn LeafReader>,
         query_timeout: Arc<dyn QueryTimeout>,
     ) -> Self {
         Self {
             inner: accept_docs,
-            max_doc,
+            max_doc: reader.max_doc(),
             bits: None,
-            check: Arc::new(ExitableCheck::new(query_timeout, "search nearest vectors")),
+            check: Arc::new(ExitableCheck::new(
+                query_timeout,
+                "search nearest vectors",
+                "searching nearest vectors",
+                "Reader",
+            )),
+            reader,
         }
     }
 }
@@ -1764,6 +1951,7 @@ impl AcceptDocs for ExitableAcceptDocs<'_> {
             self.bits = Some(Arc::new(ExitableBits {
                 inner: updated_accept_docs,
                 check: Arc::clone(&self.check),
+                reader: Arc::clone(&self.reader),
             }));
         }
         Ok(self.bits.as_ref().map(Arc::clone))
@@ -1782,6 +1970,8 @@ impl AcceptDocs for ExitableAcceptDocs<'_> {
             check: ExitableCheck::new(
                 Arc::clone(self.check.query_timeout()),
                 "iterate over doc values",
+                "iterating over doc values",
+                "DocValues",
             ),
             doc_to_check: 0,
         }))
@@ -1805,6 +1995,8 @@ impl AcceptDocs for ExitableAcceptDocs<'_> {
 struct ExitableBits {
     inner: Arc<dyn Bits>,
     check: Arc<ExitableCheck>,
+    /// As [`ExitableAcceptDocs::reader`].
+    reader: Arc<dyn LeafReader>,
 }
 
 impl std::fmt::Debug for ExitableBits {
@@ -1832,7 +2024,9 @@ impl Bits for ExitableBits {
     /// fired.
     fn try_get(&self, index: usize) -> Result<bool> {
         self.check
-            .check_and_throw_with_sampling(MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK)?;
+            .check_and_throw_with_sampling(MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK, &|| {
+                self.reader.to_string()
+            })?;
         Ok(self.inner.get(index))
     }
 
@@ -1856,6 +2050,13 @@ struct ExitableAcceptDocsIterator {
 }
 
 impl DocIdSetIterator for ExitableAcceptDocsIterator {
+    /// `ExitableDirectoryReader$ExitableFilterAtomicReader$ExitableAcceptDocs$2` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.ExitableDirectoryReader$ExitableFilterAtomicReader$ExitableAcceptDocs$2",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1863,7 +2064,8 @@ impl DocIdSetIterator for ExitableAcceptDocsIterator {
     fn next_doc(&mut self) -> Result<i32> {
         let next_doc = self.inner.next_doc()?;
         if next_doc >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.inner.java_to_string())?;
             self.doc_to_check = next_doc.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(next_doc)
@@ -1872,7 +2074,8 @@ impl DocIdSetIterator for ExitableAcceptDocsIterator {
     fn advance(&mut self, target: i32) -> Result<i32> {
         let advance = self.inner.advance(target)?;
         if advance >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.inner.java_to_string())?;
             self.doc_to_check = advance.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(advance)
@@ -1935,9 +2138,7 @@ impl KnnVectorValues for ExitableFloatVectorValues {
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "ExitableFloatVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// `ExitableFloatVectorValues` overrides no `getEncoding()`, so
@@ -1970,9 +2171,7 @@ impl FloatVectorValues for ExitableFloatVectorValues {
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "ExitableFloatVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Equivalent to `ExitableFloatVectorValues.scorer(float[])`.
@@ -2032,9 +2231,7 @@ impl KnnVectorValues for ExitableByteVectorValues {
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "ExitableByteVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// `ExitableByteVectorValues` overrides no `getEncoding()`, so
@@ -2067,9 +2264,7 @@ impl ByteVectorValues for ExitableByteVectorValues {
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Err(LuceneError::unsupported_operation(
-            "ExitableByteVectorValues::copy".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Equivalent to `ExitableByteVectorValues.scorer(byte[])`.
@@ -2101,13 +2296,25 @@ impl ExitableNumericDocValues {
     fn new(doc_values: Box<dyn NumericDocValues>, query_timeout: Arc<dyn QueryTimeout>) -> Self {
         Self {
             inner: FilterNumericDocValues::new(doc_values),
-            check: ExitableCheck::new(query_timeout, "iterate over doc values"),
+            check: ExitableCheck::new(
+                query_timeout,
+                "iterate over doc values",
+                "iterating over doc values",
+                "DocValues",
+            ),
             doc_to_check: 0,
         }
     }
 }
 
 impl DocIdSetIterator for ExitableNumericDocValues {
+    /// `ExitableDirectoryReader$ExitableFilterAtomicReader$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.ExitableDirectoryReader$ExitableFilterAtomicReader$1",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -2115,7 +2322,8 @@ impl DocIdSetIterator for ExitableNumericDocValues {
     fn next_doc(&mut self) -> Result<i32> {
         let next_doc = self.inner.next_doc()?;
         if next_doc >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = next_doc.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(next_doc)
@@ -2124,7 +2332,8 @@ impl DocIdSetIterator for ExitableNumericDocValues {
     fn advance(&mut self, target: i32) -> Result<i32> {
         let advance = self.inner.advance(target)?;
         if advance >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = advance.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(advance)
@@ -2139,7 +2348,8 @@ impl DocValuesIterator for ExitableNumericDocValues {
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
         let advance_exact = self.inner.advance_exact(target)?;
         if target >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = target.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(advance_exact)
@@ -2168,13 +2378,25 @@ impl ExitableBinaryDocValues {
     fn new(doc_values: Box<dyn BinaryDocValues>, query_timeout: Arc<dyn QueryTimeout>) -> Self {
         Self {
             inner: FilterBinaryDocValues::new(doc_values),
-            check: ExitableCheck::new(query_timeout, "iterate over doc values"),
+            check: ExitableCheck::new(
+                query_timeout,
+                "iterate over doc values",
+                "iterating over doc values",
+                "DocValues",
+            ),
             doc_to_check: 0,
         }
     }
 }
 
 impl DocIdSetIterator for ExitableBinaryDocValues {
+    /// `ExitableDirectoryReader$ExitableFilterAtomicReader$2` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.ExitableDirectoryReader$ExitableFilterAtomicReader$2",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -2182,7 +2404,8 @@ impl DocIdSetIterator for ExitableBinaryDocValues {
     fn next_doc(&mut self) -> Result<i32> {
         let next_doc = self.inner.next_doc()?;
         if next_doc >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = next_doc.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(next_doc)
@@ -2195,7 +2418,8 @@ impl DocIdSetIterator for ExitableBinaryDocValues {
     fn advance(&mut self, target: i32) -> Result<i32> {
         let advance = self.inner.advance(target)?;
         if target >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = target.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(advance)
@@ -2210,7 +2434,8 @@ impl DocValuesIterator for ExitableBinaryDocValues {
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
         let advance_exact = self.inner.advance_exact(target)?;
         if target >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = target.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(advance_exact)
@@ -2239,13 +2464,25 @@ impl ExitableSortedDocValues {
     fn new(doc_values: Box<dyn SortedDocValues>, query_timeout: Arc<dyn QueryTimeout>) -> Self {
         Self {
             inner: FilterSortedDocValues::new(doc_values),
-            check: ExitableCheck::new(query_timeout, "iterate over doc values"),
+            check: ExitableCheck::new(
+                query_timeout,
+                "iterate over doc values",
+                "iterating over doc values",
+                "DocValues",
+            ),
             doc_to_check: 0,
         }
     }
 }
 
 impl DocIdSetIterator for ExitableSortedDocValues {
+    /// `ExitableDirectoryReader$ExitableFilterAtomicReader$3` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.ExitableDirectoryReader$ExitableFilterAtomicReader$3",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -2253,7 +2490,8 @@ impl DocIdSetIterator for ExitableSortedDocValues {
     fn next_doc(&mut self) -> Result<i32> {
         let next_doc = self.inner.next_doc()?;
         if next_doc >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = next_doc.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(next_doc)
@@ -2262,7 +2500,8 @@ impl DocIdSetIterator for ExitableSortedDocValues {
     fn advance(&mut self, target: i32) -> Result<i32> {
         let advance = self.inner.advance(target)?;
         if advance >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = advance.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(advance)
@@ -2277,7 +2516,8 @@ impl DocValuesIterator for ExitableSortedDocValues {
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
         let advance_exact = self.inner.advance_exact(target)?;
         if target >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = target.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(advance_exact)
@@ -2336,13 +2576,25 @@ impl ExitableSortedNumericDocValues {
     ) -> Self {
         Self {
             inner: FilterSortedNumericDocValues::new(doc_values),
-            check: ExitableCheck::new(query_timeout, "iterate over doc values"),
+            check: ExitableCheck::new(
+                query_timeout,
+                "iterate over doc values",
+                "iterating over doc values",
+                "DocValues",
+            ),
             doc_to_check: 0,
         }
     }
 }
 
 impl DocIdSetIterator for ExitableSortedNumericDocValues {
+    /// `ExitableDirectoryReader$ExitableFilterAtomicReader$4` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.ExitableDirectoryReader$ExitableFilterAtomicReader$4",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -2350,7 +2602,8 @@ impl DocIdSetIterator for ExitableSortedNumericDocValues {
     fn next_doc(&mut self) -> Result<i32> {
         let next_doc = self.inner.next_doc()?;
         if next_doc >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = next_doc.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(next_doc)
@@ -2359,7 +2612,8 @@ impl DocIdSetIterator for ExitableSortedNumericDocValues {
     fn advance(&mut self, target: i32) -> Result<i32> {
         let advance = self.inner.advance(target)?;
         if advance >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = advance.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(advance)
@@ -2374,7 +2628,8 @@ impl DocValuesIterator for ExitableSortedNumericDocValues {
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
         let advance_exact = self.inner.advance_exact(target)?;
         if target >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = target.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(advance_exact)
@@ -2407,13 +2662,25 @@ impl ExitableSortedSetDocValues {
     fn new(doc_values: Box<dyn SortedSetDocValues>, query_timeout: Arc<dyn QueryTimeout>) -> Self {
         Self {
             inner: FilterSortedSetDocValues::new(doc_values),
-            check: ExitableCheck::new(query_timeout, "iterate over doc values"),
+            check: ExitableCheck::new(
+                query_timeout,
+                "iterate over doc values",
+                "iterating over doc values",
+                "DocValues",
+            ),
             doc_to_check: 0,
         }
     }
 }
 
 impl DocIdSetIterator for ExitableSortedSetDocValues {
+    /// `ExitableDirectoryReader$ExitableFilterAtomicReader$5` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.ExitableDirectoryReader$ExitableFilterAtomicReader$5",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -2421,7 +2688,8 @@ impl DocIdSetIterator for ExitableSortedSetDocValues {
     fn next_doc(&mut self) -> Result<i32> {
         let next_doc = self.inner.next_doc()?;
         if next_doc >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = next_doc.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(next_doc)
@@ -2430,7 +2698,8 @@ impl DocIdSetIterator for ExitableSortedSetDocValues {
     fn advance(&mut self, target: i32) -> Result<i32> {
         let advance = self.inner.advance(target)?;
         if advance >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = advance.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(advance)
@@ -2445,7 +2714,8 @@ impl DocValuesIterator for ExitableSortedSetDocValues {
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
         let advance_exact = self.inner.advance_exact(target)?;
         if target >= self.doc_to_check {
-            self.check.check_and_throw()?;
+            self.check
+                .check_and_throw(&|| self.inner.get_inner().java_to_string())?;
             self.doc_to_check = target.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
         }
         Ok(advance_exact)
@@ -2527,14 +2797,24 @@ impl ExitableDocIndexIterator {
     /// Equivalent to the private `checkAndThrow` of
     /// `ExitableDirectoryReader.createExitableIterator`.
     fn check_and_throw(&self) -> Result<()> {
-        if self.query_timeout.should_exit() {
-            return Err(exiting_reader_error("knn vector values"));
-        }
-        Ok(())
+        let delegate = || self.delegate.java_to_string();
+        check_timeout_then_interrupt(
+            &*self.query_timeout,
+            "KnnVectorValues",
+            ("iterate over knn vector values", &delegate),
+            ("iterating over knn vector values", &delegate),
+        )
     }
 }
 
 impl crate::search::DocIdSetIterator for ExitableDocIndexIterator {
+    /// `ExitableDirectoryReader$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.ExitableDirectoryReader$1",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.delegate.doc_id()
     }
@@ -2969,23 +3249,27 @@ impl KnnVectorsReader for SlowKnnVectorsReader {
         }))
     }
 
-    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
-        // Java unwraps the reader down to its SegmentReader and asks its own
-        // vectors reader, going through PerFieldKnnVectorsFormat when one is in
-        // the way. `segmentReader(LeafReader)` (`SlowCodecReaderWrapper.java:
-        // 207-216`) steps through `FilterLeafReader.unwrap` and tests for a
-        // `SegmentReader` (`as_segment_reader`). Its `FilterCodecReader` branch
-        // has no counterpart: a `dyn LeafReader` cannot be asked whether it is a
-        // `FilterCodecReader`, so such a reader reaches the fallback below,
-        // which answers an empty map where Java throws `AssertionError`.
-        let reader = crate::index::filter_reader::FilterLeafReader::unwrap(&self.reader);
-        match reader.as_segment_reader() {
-            Some(segment_reader) => match segment_reader.get_vector_reader() {
-                Ok(Some(vectors_reader)) => vectors_reader.get_off_heap_byte_size(field_info),
-                _ => HashMap::new(),
-            },
-            None => HashMap::new(),
-        }
+    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> Result<HashMap<String, i64>> {
+        Ok({
+            // Java unwraps the reader down to its SegmentReader and asks its own
+            // vectors reader, going through PerFieldKnnVectorsFormat when one is in
+            // the way. `segmentReader(LeafReader)` (`SlowCodecReaderWrapper.java:
+            // 207-216`) steps through `FilterLeafReader.unwrap` and tests for a
+            // `SegmentReader` (`as_segment_reader`). Its `FilterCodecReader` branch
+            // has no counterpart: a `dyn LeafReader` cannot be asked whether it is a
+            // `FilterCodecReader`, so such a reader reaches the fallback below,
+            // which answers an empty map where Java throws `AssertionError`.
+            let reader = crate::index::filter_reader::FilterLeafReader::unwrap(&self.reader);
+            match reader.as_segment_reader() {
+                Some(segment_reader) => match segment_reader.get_vector_reader() {
+                    Ok(Some(vectors_reader)) => {
+                        vectors_reader.get_off_heap_byte_size(field_info)?
+                    }
+                    _ => HashMap::new(),
+                },
+                None => HashMap::new(),
+            }
+        })
     }
 
     fn close(&self) -> Result<()> {
@@ -3920,8 +4204,10 @@ impl DirectoryReaderWrapper for SoftDeletesDirectoryReaderWrapper {
                 helper
                     .unwrap_or_else(|| {
                         panic!(
-                            "NullPointerException: getReaderCacheHelper() of the wrapped reader \
-                             is null while the wrapper's is not"
+                            "java.lang.NullPointerException: Cannot invoke \
+                             \"org.apache.lucene.index.IndexReader$CacheHelper.getKey()\" because \
+                             the return value of \
+                             \"org.apache.lucene.index.LeafReader.getReaderCacheHelper()\" is null"
                         )
                     })
                     .get_key()
@@ -4101,6 +4387,66 @@ mod tests {
             (1..1024).contains(&visitor.visited),
             "the traversal must stop mid-iteration, having visited {} of 1024 points",
             visitor.visited
+        );
+    }
+
+    fn exiting_message(error: &LuceneError) -> &str {
+        match &error.kind {
+            LuceneErrorKind::ExitingReader(message) => message,
+            other => panic!("expected ExitingReaderException, got {other:?}"),
+        }
+    }
+
+    /// G-028: the messages append `". Timeout: " + queryTimeout` and the
+    /// iterated object (`ExitableDirectoryReader.java:629-637, 719-727,
+    /// 814-822`); `ExitablePointTree` names the `PointValues` it came from and
+    /// `ExitableIntersectVisitor` the visitor it wraps (`in`).
+    #[test]
+    fn exiting_reader_messages_name_the_timeout_and_the_object() {
+        use crate::index::index_reader::java_object_to_string_stand_in as object;
+        let values_name = object(std::any::type_name::<InMemoryPointValues>());
+        let error = ExitablePointValues::new(Box::new(point_values()), Arc::new(AlwaysTimesOut))
+            .err()
+            .unwrap();
+        assert_eq!(
+            exiting_message(&error),
+            format!(
+                "The request took too long to iterate over point values. Timeout: {}, \
+                 PointValues={values_name}",
+                object(std::any::type_name::<AlwaysTimesOut>())
+            )
+        );
+
+        let timeout = Arc::new(TimeoutAfter::new(FIRES_AFTER));
+        let values = ExitablePointValues::new(Box::new(point_values()), timeout).unwrap();
+        let mut visitor = CountingVisitor { visited: 0 };
+        let error = values.intersect(&mut visitor).err().unwrap();
+        let prefix = format!(
+            "The request took too long to intersect point values. Timeout: {}, PointValues=",
+            object(std::any::type_name::<TimeoutAfter>())
+        );
+        let message = exiting_message(&error);
+        let rendered = message
+            .strip_prefix(&prefix)
+            .unwrap_or_else(|| panic!("{message}"));
+        assert!(
+            rendered == values_name || rendered == object(std::any::type_name::<CountingVisitor>()),
+            "{message}"
+        );
+
+        // `QueryTimeoutImpl` renders itself as `QueryTimeoutImpl.toString()`.
+        let fired = Arc::new(crate::index::QueryTimeoutImpl::new(0));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let error = ExitablePointValues::new(Box::new(point_values()), fired)
+            .err()
+            .unwrap();
+        let message = exiting_message(&error);
+        assert!(
+            message.starts_with(
+                "The request took too long to iterate over point values. Timeout: timeoutAt: "
+            ) && message.contains(" (System.nanoTime(): ")
+                && message.ends_with(&format!("), PointValues={values_name}")),
+            "{message}"
         );
     }
 

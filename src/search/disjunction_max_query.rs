@@ -484,16 +484,23 @@ impl Query for DisjunctionMaxQuery {
             && self.disjuncts == other.disjuncts
     }
 
-    fn query_hash(&self) -> u64 {
+    /// `getClass().getName()` of `org.apache.lucene.search.DisjunctionMaxQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.DisjunctionMaxQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `DisjunctionMaxQuery.hashCode()`: `classHash()`,
+        // `Float.floatToIntBits(tieBreakerMultiplier)` and
+        // `Objects.hashCode(disjuncts)`, the `Multiset`'s hash code (see
+        // `Multiset::java_hash_code` for its identity-hash stand-in).
         let mut h = self.class_hash();
         h = h
             .wrapping_mul(31)
-            .wrapping_add(u64::from(self.tie_breaker_multiplier.to_bits()));
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&self.disjuncts, &mut hasher);
-        h = h
-            .wrapping_mul(31)
-            .wrapping_add(std::hash::Hasher::finish(&hasher));
-        h
+            .wrapping_add(crate::util::java_collections::java_float_hash_code(
+                self.tie_breaker_multiplier,
+            ));
+        h.wrapping_mul(31)
+            .wrapping_add(self.disjuncts.java_hash_code())
     }
 }

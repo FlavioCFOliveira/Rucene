@@ -179,7 +179,7 @@ impl LongBitSet {
         let num_words = Self::bits2words(num_bits)?;
         if (num_words as usize) > stored_bits.len() {
             return Err(LuceneError::illegal_argument(format!(
-                "The given long array is too small to hold {} bits",
+                "The given long array is too small  to hold {} bits",
                 num_bits
             )));
         }
@@ -232,7 +232,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn get(&self, index: i64) -> bool {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index}, numBits={}",
             self.num_bits
@@ -248,7 +248,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn set(&mut self, index: i64) {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index} numBits={}",
             self.num_bits
@@ -264,7 +264,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn get_and_set(&mut self, index: i64) -> bool {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index}, numBits={}",
             self.num_bits
@@ -282,7 +282,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn clear(&mut self, index: i64) {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index}, numBits={}",
             self.num_bits
@@ -298,7 +298,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn get_and_clear(&mut self, index: i64) -> bool {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index}, numBits={}",
             self.num_bits
@@ -316,7 +316,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn next_set_bit(&self, index: i64) -> i64 {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index}, numBits={}",
             self.num_bits
@@ -343,7 +343,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn prev_set_bit(&self, index: i64) -> i64 {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index} numBits={}",
             self.num_bits
@@ -371,7 +371,7 @@ impl LongBitSet {
     ///
     /// Panics if `other` has more words than `self`.
     pub fn or(&mut self, other: &LongBitSet) {
-        assert!(
+        debug_assert!(
             other.num_words <= self.num_words,
             "numWords={}, other.numWords={}",
             self.num_words,
@@ -389,7 +389,7 @@ impl LongBitSet {
     ///
     /// Panics if `other` has more words than `self`.
     pub fn xor(&mut self, other: &LongBitSet) {
-        assert!(
+        debug_assert!(
             other.num_words <= self.num_words,
             "numWords={}, other.numWords={}",
             self.num_words,
@@ -445,12 +445,11 @@ impl LongBitSet {
 
     /// Flips bits in the range `[start_index, end_index)`.
     ///
-    /// # Panics
-    ///
-    /// Panics if the range is out of bounds or reversed.
+    /// The range is only asserted, as in `LongBitSet.flip(long, long)`
+    /// (`LongBitSet.java:310-312`).
     pub fn flip_range(&mut self, start_index: i64, end_index: i64) {
-        assert!(start_index >= 0 && start_index < self.num_bits);
-        assert!(end_index >= 0 && end_index <= self.num_bits);
+        debug_assert!(start_index >= 0 && start_index < self.num_bits);
+        debug_assert!(end_index >= 0 && end_index <= self.num_bits);
         if end_index <= start_index {
             return;
         }
@@ -475,7 +474,7 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn flip(&mut self, index: i64) {
-        assert!(
+        debug_assert!(
             index >= 0 && index < self.num_bits,
             "index={index} numBits={}",
             self.num_bits
@@ -491,12 +490,12 @@ impl LongBitSet {
     ///
     /// Panics if the range is out of bounds or reversed.
     pub fn set_range(&mut self, start_index: i64, end_index: i64) {
-        assert!(
+        debug_assert!(
             start_index >= 0 && start_index < self.num_bits,
             "startIndex={start_index}, numBits={}",
             self.num_bits
         );
-        assert!(
+        debug_assert!(
             end_index >= 0 && end_index <= self.num_bits,
             "endIndex={end_index}, numBits={}",
             self.num_bits
@@ -525,12 +524,12 @@ impl LongBitSet {
     ///
     /// Panics if the range is out of bounds or reversed.
     pub fn clear_range(&mut self, start_index: i64, end_index: i64) {
-        assert!(
+        debug_assert!(
             start_index >= 0 && start_index < self.num_bits,
             "startIndex={start_index}, numBits={}",
             self.num_bits
         );
-        assert!(
+        debug_assert!(
             end_index >= 0 && end_index <= self.num_bits,
             "endIndex={end_index}, numBits={}",
             self.num_bits
@@ -886,6 +885,36 @@ impl<T, C: PriorityQueueComparator<T>> PriorityQueue<T, C> {
     pub fn comparator_mut(&mut self) -> &mut C {
         &mut self.comparator
     }
+
+    /// Creates a queue pre-populated with `max_size` sentinel objects, so that
+    /// `size() == max_size` after construction.
+    ///
+    /// Equivalent to `PriorityQueue(int maxSize, Supplier<T> sentinelObjectSupplier)`
+    /// (`PriorityQueue.java:79-112`); a supplier returning `None` for its first
+    /// call (Java's `null`) leaves the queue empty.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn with_sentinels(
+        max_size: usize,
+        comparator: C,
+        mut sentinel_object_supplier: impl FnMut() -> Option<T>,
+    ) -> Result<Self, LuceneError> {
+        let mut queue = Self::new(max_size, comparator)?;
+        // If sentinel objects are supported, populate the queue with them
+        // (`PriorityQueue.java:103-111`): every slot of the heap array from 1
+        // on, including the spare slot of a zero-size queue, while `size`
+        // becomes `maxSize`. A later `None` (Java's `null`) is stored as is.
+        if let Some(sentinel) = sentinel_object_supplier() {
+            queue.heap[1] = Some(sentinel);
+            for i in 2..queue.heap.len() {
+                queue.heap[i] = sentinel_object_supplier();
+            }
+            queue.size = max_size;
+        }
+        Ok(queue)
+    }
 }
 
 impl<T, C: PriorityQueueComparator<T>> IntoIterator for PriorityQueue<T, C> {
@@ -1058,7 +1087,8 @@ impl<'a, T: JavaComparable> MergedIterator<'a, T> {
     }
 
     fn pull_top(&mut self) {
-        assert!(self.top.is_empty());
+        // `assert numTop == 0` (`MergedIterator.java:111`).
+        debug_assert!(self.top.is_empty());
         if let Some(top) = self.queue.pop() {
             let value = top.current;
             self.top.push(TopState {
@@ -1214,15 +1244,6 @@ impl Version {
             prerelease,
             encoded,
         }
-    }
-
-    fn new(major: u8, minor: u8, bugfix: u8, prerelease: u8) -> Result<Self, LuceneError> {
-        Self::from_ints(
-            i32::from(major),
-            i32::from(minor),
-            i32::from(bugfix),
-            i32::from(prerelease),
-        )
     }
 
     /// Equivalent to the private constructor `Version(int, int, int, int)`
@@ -1421,8 +1442,17 @@ impl Version {
     }
 
     /// Creates a version from raw numeric components.
-    pub fn from_bits(major: u8, minor: u8, bugfix: u8) -> Result<Self, LuceneError> {
-        Self::new(major, minor, bugfix, 0)
+    ///
+    /// Equivalent to `Version.fromBits(int, int, int)` (`Version.java:427-429`):
+    /// the components are Java `int`s, checked by the constructor.
+    ///
+    /// # Errors
+    ///
+    /// Returns Java's `IllegalArgumentException` (`Illegal major version: <n>`,
+    /// and likewise for the minor and bugfix components) for a component
+    /// outside `0..=255`.
+    pub fn from_bits(major: i32, minor: i32, bugfix: i32) -> Result<Self, LuceneError> {
+        Self::from_ints(major, minor, bugfix, 0)
     }
 
     /// Returns true if this version is the same or after `other`.
@@ -1561,11 +1591,20 @@ pub fn java_parse_int(s: &str) -> Option<i32> {
 /// `NumberFormatException`: the same grammar as [`java_parse_int`], with a
 /// result that fits a `long`.
 pub fn java_parse_long(s: &str) -> Option<i64> {
-    const RADIX: i64 = 10;
+    java_parse_long_radix(s, 10)
+}
+
+/// `Long.parseLong(String, int)` for a radix in `2..=36`, or `None` where it
+/// throws `NumberFormatException`: an optional leading `+` or `-`, then at
+/// least one digit as `Character.digit` reads it in `radix`, with a result
+/// that fits a `long` (`Long.java:688-740`).
+pub fn java_parse_long_radix(s: &str, radix: u32) -> Option<i64> {
+    debug_assert!((2..=36).contains(&radix));
+    let radix_long = i64::from(radix);
     let units: Vec<u16> = s.encode_utf16().collect();
     let digit = |unit: u16| {
         char::from_u32(u32::from(unit))
-            .and_then(|c| crate::util::java_character_digit(c, RADIX as u32))
+            .and_then(|c| crate::util::java_character_digit(c, radix))
             .map(i64::from)
     };
     let first = *units.first()?;
@@ -1585,7 +1624,7 @@ pub fn java_parse_long(s: &str) -> Option<i64> {
         }
         i += 1;
     }
-    let multmin = limit / RADIX;
+    let multmin = limit / radix_long;
     let mut result = 0i64;
     while i < units.len() {
         let d = digit(units[i])?;
@@ -1593,7 +1632,7 @@ pub fn java_parse_long(s: &str) -> Option<i64> {
         if result < multmin {
             return None;
         }
-        result *= RADIX;
+        result *= radix_long;
         if result < limit + d {
             return None;
         }

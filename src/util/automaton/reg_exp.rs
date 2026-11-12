@@ -156,6 +156,34 @@ impl Drop for RegExp {
     }
 }
 
+/// Parses a signed decimal `int` as `java.lang.Integer.parseInt(String)` does:
+/// an optional `+` or `-`, then digits of any Unicode `Nd` block
+/// (`Character.digit(ch, 10)`).
+///
+/// # Errors
+///
+/// `java.lang.NumberFormatException` (`For input string: "<s>"`) for an empty,
+/// malformed or out-of-range string.
+fn java_parse_int(s: &str) -> Result<i32> {
+    crate::util::extra::java_parse_int(s).ok_or_else(|| {
+        LuceneError::unchecked(
+            "java.lang.NumberFormatException",
+            format!("For input string: \"{s}\""),
+        )
+    })
+}
+
+/// `new NumberFormatException()`: the message-less exception
+/// `RegExp.parseSimpleExp` throws itself for a misplaced `-` in an interval
+/// (`RegExp.java:1497-1498`).
+fn number_format_exception_without_message() -> LuceneError {
+    LuceneError::from(crate::error::LuceneErrorKind::Unchecked {
+        class: "java.lang.NumberFormatException",
+        message: None,
+        cause: None,
+    })
+}
+
 impl RegExp {
     /// Syntax flag, enables intersection (`&`).
     pub const INTERSECTION: i32 = 0x0001;
@@ -1254,7 +1282,9 @@ impl Parser {
                         self.pos
                     )));
                 }
-                let n = parse_int(&self.substring(start, self.pos))?;
+                // `Integer.parseInt(originalString.substring(start, pos))`
+                // (`RegExp.java:1295`).
+                let n = java_parse_int(&self.substring(start, self.pos))?;
                 let mut m = -1i32;
                 if self.match_ch(',' as i32) {
                     start = self.pos;
@@ -1262,7 +1292,7 @@ impl Parser {
                         self.next()?;
                     }
                     if start != self.pos {
-                        m = parse_int(&self.substring(start, self.pos))?;
+                        m = java_parse_int(&self.substring(start, self.pos))?;
                     }
                 } else {
                     m = n;
@@ -1552,15 +1582,21 @@ impl Parser {
                     };
                     if i == 0 || i == s.len() - 1 || Some(i) != s.rfind('-') {
                         // `throw new NumberFormatException()`, which has no
-                        // message (`getMessage()` is `null`): an empty one here.
-                        return Err(interval_error(LuceneError::illegal_argument(String::new())));
+                        // message (`getMessage()` is `null`).
+                        return Err(interval_error(number_format_exception_without_message()));
                     }
                     let smin = &s[0..i];
                     let smax = &s[i + 1..];
-                    let mut imin = parse_int(smin).map_err(interval_error)?;
-                    let mut imax = parse_int(smax).map_err(interval_error)?;
-                    let digits = if smin.len() == smax.len() {
-                        smin.len() as i32
+                    // `Integer.parseInt` reads the digits of every Unicode `Nd`
+                    // block (`RegExp.java:1501-1502`).
+                    let mut imin = java_parse_int(smin).map_err(interval_error)?;
+                    let mut imax = java_parse_int(smax).map_err(interval_error)?;
+                    // `smin.length()`: UTF-16 code units, not UTF-8 bytes
+                    // (`RegExp.java:1504-1505`).
+                    let smin_length = smin.encode_utf16().count();
+                    let smax_length = smax.encode_utf16().count();
+                    let digits = if smin_length == smax_length {
+                        smin_length as i32
                     } else {
                         0
                     };
@@ -1583,15 +1619,6 @@ impl Parser {
         self.match_ch('\\' as i32);
         self.next()
     }
-}
-
-/// Parses a decimal integer the way `Integer.parseInt` does; a `NumberFormatException`
-/// in Java is an `IllegalArgumentException`, so it maps to the same error here,
-/// with the message `Integer.parseInt` gives it, `For input string: "<s>"`
-/// (observed with the 10.5.0 oracle for `x` and `99999999999`).
-fn parse_int(s: &str) -> Result<i32> {
-    s.parse::<i32>()
-        .map_err(|_| LuceneError::illegal_argument(format!("For input string: \"{s}\"")))
 }
 
 #[cfg(test)]
@@ -1666,8 +1693,10 @@ mod tests {
                         message,
                         &format!("interval syntax error at position {position}")
                     );
+                    // The cause is the `NumberFormatException` itself.
+                    let expected_message = (!cause_message.is_empty()).then_some(cause_message);
                     assert!(
-                        matches!(&**cause, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == cause_message),
+                        matches!(&**cause, LuceneError { kind: LuceneErrorKind::Unchecked { class: "java.lang.NumberFormatException", message: m, .. }, .. } if m.as_deref() == expected_message),
                         "{pattern}: {cause:?}"
                     );
                 }

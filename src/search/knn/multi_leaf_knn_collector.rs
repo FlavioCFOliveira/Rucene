@@ -94,7 +94,10 @@ impl MultiLeafKnnCollector {
         global_similarity_queue: Arc<BlockingFloatHeap>,
         sub_collector: Box<dyn AbstractKnnCollector>,
     ) -> Result<Self> {
-        if !(0.0..=1.0).contains(&greediness) {
+        // `greediness < 0 || greediness > 1` (`MultiLeafKnnCollector.java:80`):
+        // `NaN` passes, as in Java.
+        #[allow(clippy::manual_range_contains)]
+        if greediness < 0.0 || greediness > 1.0 {
             return Err(LuceneError::illegal_argument(
                 "greediness must be in [0,1]".to_string(),
             ));
@@ -188,7 +191,7 @@ impl KnnCollector for MultiLeafKnnCollector {
         )
     }
 
-    fn top_docs(&mut self) -> TopDocs {
+    fn top_docs(&mut self) -> Result<TopDocs> {
         self.sub_collector.top_docs()
     }
 

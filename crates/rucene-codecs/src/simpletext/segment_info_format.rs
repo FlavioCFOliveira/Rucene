@@ -212,12 +212,11 @@ impl SegmentInfoFormat for SimpleTextSegmentInfoFormat {
                 debug_assert!(bytes.eof());
             }
 
+            // `indexSort = null` when there are no sort fields.
             let index_sort = if sort_fields.is_empty() {
-                // Java's `null` index sort; the port's "unsorted" is the relevance
-                // sort, as `Lucene99SegmentInfoFormat` reads it.
-                Sort::new()
+                None
             } else {
-                Sort::new_fields(sort_fields)?
+                Some(Sort::new_fields(sort_fields)?)
             };
 
             util::check_footer(input.as_mut())?;
@@ -337,13 +336,10 @@ impl SegmentInfoFormat for SimpleTextSegmentInfoFormat {
             util::write_str(out, &BytesRef::new(si.id().to_vec()).to_string())?;
             util::write_newline(out)?;
 
-            // Java's `getIndexSort()` is `null` for an unsorted segment, which the
-            // port represents as the relevance sort.
-            let index_sort = si.index_sort();
-            let sort_fields: &[rucene::search::SortField] = if *index_sort == Sort::new() {
-                &[]
-            } else {
-                index_sort.fields()
+            // Java's `getIndexSort()` is `null` for an unsorted segment.
+            let sort_fields: &[rucene::search::SortField] = match si.index_sort() {
+                Some(index_sort) if *index_sort != Sort::new() => index_sort.fields(),
+                _ => &[],
             };
             util::write_bytes(out, SI_SORT)?;
             util::write_str(out, &sort_fields.len().to_string())?;

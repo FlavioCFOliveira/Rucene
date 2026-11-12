@@ -152,8 +152,14 @@ impl Query for PrefixQuery {
             && self.inner.term() == other.inner.term()
     }
 
-    fn query_hash(&self) -> u64 {
-        31u64
+    /// `getClass().getName()` of `org.apache.lucene.search.PrefixQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.PrefixQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `31 * super.hashCode() + term.hashCode()` (`PrefixQuery.java`).
+        31i32
             .wrapping_mul(automaton_query_hash(self, &self.inner))
             .wrapping_add(term_hash(self.inner.term()))
     }
@@ -174,10 +180,6 @@ impl MultiTermQuery for PrefixQuery {
         _atts: &mut AttributeSource,
     ) -> Result<Box<dyn TermsEnum>> {
         self.inner.terms_enum(&**terms)
-    }
-
-    fn as_query(&self) -> &dyn Query {
-        self
     }
 
     fn to_multi_term_query_arc(&self) -> Arc<dyn MultiTermQuery> {

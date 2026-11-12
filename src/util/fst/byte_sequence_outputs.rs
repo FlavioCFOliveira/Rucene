@@ -117,12 +117,9 @@ impl Outputs for ByteSequenceOutputs {
         if len == 0 {
             Ok(self.no_output())
         } else {
-            let len = usize::try_from(len).map_err(|_| {
-                crate::error::LuceneError::from(crate::error::LuceneErrorKind::CorruptIndex(
-                    format!("invalid output length {len}"),
-                ))
-            })?;
-            let mut bytes = vec![0u8; len];
+            // `new BytesRef(len)`: `new byte[len]`.
+            let mut bytes = super::java_new_array::<u8>(len)?;
+            let len = bytes.len();
             input.read_bytes(Some(&mut bytes), 0, len)?;
             Ok(BytesRef::new(bytes))
         }

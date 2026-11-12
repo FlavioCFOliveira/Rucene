@@ -432,6 +432,15 @@ impl Debug for DefaultAttributeFactory {
 }
 
 impl AttributeFactory for DefaultAttributeFactory {
+    /// Equivalent to `DefaultAttributeFactory.createAttributeInstance`, whose
+    /// missing implementation surfaces as `new IllegalArgumentException("Cannot
+    /// find implementing class for: " + attClass.getName(), cnfe)`
+    /// (`AttributeFactory.java:79-87`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** The message names the attribute by
+    /// its [`TypeId`] (its `Debug` form) instead of the Java class name: the
+    /// factory receives only a `TypeId`, and Rust has no reflection that maps
+    /// a `TypeId` back to a type name. The message prefix is Java's.
     fn create_attribute_instance(
         &self,
         attribute_type: TypeId,
@@ -441,8 +450,7 @@ impl AttributeFactory for DefaultAttributeFactory {
             .map(|ctor| ctor())
             .ok_or_else(|| {
                 LuceneError::illegal_argument(format!(
-                    "no AttributeImpl registered for TypeId {:?}",
-                    attribute_type
+                    "Cannot find implementing class for: {attribute_type:?}"
                 ))
             })
     }
@@ -792,6 +800,12 @@ impl AttributeSource {
         }
     }
 
+    /// Returns whether `self` and `other` share their attribute maps, the
+    /// identity a cloned source keeps with its original.
+    pub(crate) fn shares_attributes_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
     /// Returns the factory used by this source.
     ///
     /// Equivalent to `org.apache.lucene.util.AttributeSource#getAttributeFactory`.
@@ -886,7 +900,7 @@ impl AttributeSource {
         Ok(AtomicRef::map(rc.borrow(), |att| {
             att.as_any()
                 .downcast_ref::<A>()
-                .expect("attribute type mismatch")
+                .expect("INVARIANT: the attribute registered under a TypeId has that type")
         }))
     }
 
@@ -1006,7 +1020,7 @@ impl AttributeSource {
         Some(AtomicRef::map(rc.borrow(), |att| {
             att.as_any()
                 .downcast_ref::<A>()
-                .expect("attribute type mismatch")
+                .expect("INVARIANT: the attribute registered under a TypeId has that type")
         }))
     }
 
@@ -1074,7 +1088,7 @@ impl AttributeSource {
         Some(AtomicRefMut::map(rc.borrow_mut(), |att| {
             att.as_any_mut()
                 .downcast_mut::<A>()
-                .expect("attribute type mismatch")
+                .expect("INVARIANT: the attribute registered under a TypeId has that type")
         }))
     }
 
@@ -1409,7 +1423,7 @@ impl<T: 'static> CloseableThreadLocal<T> {
             });
             boxed
                 .downcast_ref::<Rc<RefCell<T>>>()
-                .expect("CloseableThreadLocal type mismatch")
+                .expect("INVARIANT: a CloseableThreadLocal id is bound to one value type")
                 .clone()
         })
     }
@@ -1988,5 +2002,29 @@ impl std::fmt::Display for AttributeSource {
             crate::util::java_fmt::to_hex_string(self as *const Self as usize as i32),
             self.reflect_as_string(false)
         )
+    }
+}
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+
+    /// G-109: `AttributeFactory.DefaultAttributeFactory` names the interface
+    /// it has no implementation for: `"Cannot find implementing class for: "
+    /// + attClass.getName()` (`AttributeFactory.java:83-87`); the port names
+    /// the `TypeId` (declared divergence).
+    #[test]
+    fn gap_g109_attribute_factory_unknown_interface_message() {
+        let error = DefaultAttributeFactory::new()
+            .create_attribute_instance(std::any::TypeId::of::<u8>())
+            .expect_err("no implementation for u8");
+        assert!(
+            matches!(
+                &error.kind,
+                crate::error::LuceneErrorKind::IllegalArgument { message, .. }
+                    if message.starts_with("Cannot find implementing class for: ")
+            ),
+            "{error:?}"
+        );
     }
 }

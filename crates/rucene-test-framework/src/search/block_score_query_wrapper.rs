@@ -72,11 +72,15 @@ impl Query for BlockScoreQueryWrapper {
             })
     }
 
-    fn query_hash(&self) -> u64 {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.tests.search.BlockScoreQueryWrapper"
+    }
+
+    /// `BlockScoreQueryWrapper.hashCode()`.
+    fn query_hash(&self) -> i32 {
         let mut h = self.class_hash();
         h = h.wrapping_mul(31).wrapping_add(self.query.query_hash());
-        h = h.wrapping_mul(31).wrapping_add(self.block_length as u64);
-        h
+        h.wrapping_mul(31).wrapping_add(self.block_length)
     }
 
     fn rewrite(&self, searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {

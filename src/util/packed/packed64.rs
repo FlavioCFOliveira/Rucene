@@ -49,15 +49,12 @@ impl Packed64 {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `value_count` is negative
-    /// (Java's `NegativeArraySizeException`); the width is only asserted, as in
-    /// Lucene's `MutableImpl` constructor.
+    /// Returns the JVM's `NegativeArraySizeException` or `OutOfMemoryError`
+    /// (`Java heap space`) of `new long[longCount]` (`Packed64.java:57-64`)
+    /// when the long count computed from `value_count` is negative or cannot
+    /// be allocated; the width is only asserted, as in Lucene's `MutableImpl`
+    /// constructor.
     pub fn new(value_count: i32, bits_per_value: i32) -> Result<Self> {
-        if value_count < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "valueCount must be non-negative, got {value_count}"
-            )));
-        }
         // `PackedInts.MutableImpl(int, int)` (`PackedInts.java:522-526`).
         debug_assert!(
             bits_per_value > 0 && bits_per_value <= 64,
@@ -68,7 +65,7 @@ impl Packed64 {
         Ok(Self {
             value_count,
             bits_per_value,
-            blocks: vec![0i64; long_count as usize],
+            blocks: new_long_array(long_count)?,
             mask_right: (u64::MAX << (BLOCK_SIZE - bits_per_value))
                 >> (BLOCK_SIZE - bits_per_value),
             bpv_minus_block_size: bits_per_value - BLOCK_SIZE,
@@ -339,14 +336,6 @@ impl PackedIntsMutable for Packed64 {
     fn clear(&mut self) {
         self.blocks.fill(0);
     }
-
-    fn as_packed_ints_reader(&self) -> &dyn PackedIntsReader {
-        self
-    }
-
-    fn into_packed_ints_reader(self: Box<Self>) -> Box<dyn PackedIntsReader + Send + Sync> {
-        self
-    }
 }
 
 impl Accountable for Packed64 {
@@ -435,14 +424,10 @@ impl Packed64SingleBlock {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `value_count` is negative
-    /// or `bits_per_value` is not a supported width.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `bits_per_value` is not
+    /// a supported width, then the JVM's `NegativeArraySizeException` or
+    /// `OutOfMemoryError` of `new long[requiredCapacity(...)]`.
     pub fn create(value_count: i32, bits_per_value: i32) -> Result<Self> {
-        if value_count < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "valueCount must be non-negative, got {value_count}"
-            )));
-        }
         if !Self::is_supported(bits_per_value) {
             return Err(LuceneError::illegal_argument(format!(
                 "Unsupported number of bits per value: {bits_per_value}"
@@ -454,7 +439,7 @@ impl Packed64SingleBlock {
             bits_per_value,
             values_per_block,
             mask: !(u64::MAX << bits_per_value),
-            blocks: vec![0i64; Self::required_capacity(value_count, values_per_block) as usize],
+            blocks: new_long_array(Self::required_capacity(value_count, values_per_block))?,
         })
     }
 }
@@ -653,14 +638,6 @@ impl PackedIntsMutable for Packed64SingleBlock {
     fn clear(&mut self) {
         self.blocks.fill(0);
     }
-
-    fn as_packed_ints_reader(&self) -> &dyn PackedIntsReader {
-        self
-    }
-
-    fn into_packed_ints_reader(self: Box<Self>) -> Box<dyn PackedIntsReader + Send + Sync> {
-        self
-    }
 }
 
 impl Accountable for Packed64SingleBlock {
@@ -731,4 +708,23 @@ impl PackedInts {
             Format::Packed => Ok(Box::new(Packed64::new(value_count, bits_per_value)?)),
         }
     }
+}
+
+/// Java's `new long[length]`: the JVM's `NegativeArraySizeException`
+/// (message: the length) for a negative length, and its `OutOfMemoryError`
+/// (`Java heap space`) when the allocation cannot be made.
+fn new_long_array(length: i32) -> Result<Vec<i64>> {
+    if length < 0 {
+        return Err(LuceneError::unchecked(
+            "java.lang.NegativeArraySizeException",
+            length.to_string(),
+        ));
+    }
+    // The probe keeps Java's `OutOfMemoryError`; the array itself is a zeroed
+    // allocation (`vec![0; n]`) whose pages stay untouched until written, as
+    // the JVM's zeroed heap arrays are, rather than a fill of every element.
+    Vec::<i64>::new()
+        .try_reserve_exact(length as usize)
+        .map_err(|_| LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space"))?;
+    Ok(vec![0; length as usize])
 }

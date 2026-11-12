@@ -701,7 +701,7 @@ impl BlockReader {
         if self.read_line_in_block()?.is_none() {
             // No more line in the current block.
             // Read the next block starting at the current file pointer in the block file.
-            let fp = self.input()?.file_pointer();
+            let fp = self.input()?.file_pointer()?;
             self.initialize_header(None, fp)?;
             if self.block_header.is_none() {
                 // No more block for the field.
@@ -830,7 +830,7 @@ impl BlockReader {
     ///
     /// `CorruptIndexException` for a bad header; I/O errors.
     pub fn base_read_header(&mut self) -> Result<Option<BlockHeader>> {
-        if self.input()?.file_pointer() > self.field_metadata.get_last_block_start_fp() {
+        if self.input()?.file_pointer()? > self.field_metadata.get_last_block_start_fp() {
             self.block_header = None;
             return Ok(None);
         }

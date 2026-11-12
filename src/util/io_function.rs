@@ -176,9 +176,8 @@ where
     ///
     /// Equivalent to `org.apache.lucene.util.FilterIterator#remove`.
     pub fn remove(&mut self) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "FilterIterator does not support remove()".to_string(),
-        ))
+        // `throw new UnsupportedOperationException()`.
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// Returns whether `object` passes the filter.
