@@ -306,12 +306,11 @@ impl SegmentMerger {
             &*self.context,
         )?;
         // try-with-resources (`SegmentMerger.java:246-251`): the writer is
-        // closed on every exit, and a failed merge keeps its own error.
+        // closed on every exit; a failed merge keeps its own error, with the
+        // close's failure suppressed into it.
         let merged = writer.merge(self.merge_state());
         let closed = writer.close();
-        let merged = merged?;
-        closed?;
-        Ok(merged)
+        try_with_resources(merged, closed)
     }
 
     /// Copies the term vectors of every document into the merged segment.
@@ -324,15 +323,14 @@ impl SegmentMerger {
             &*self.context,
         )?;
         // try-with-resources (`SegmentMerger.java:259-266`): the writer is
-        // closed on every exit, and a failed merge keeps its own error.
+        // closed on every exit; a failed merge keeps its own error, with the
+        // close's failure suppressed into it.
         let merged = writer.merge(self.merge_state());
         if let Ok(merged) = &merged {
             debug_assert_eq!(Some(*merged), self.segment_info().max_doc().ok());
         }
         let closed = writer.close();
-        let merged = merged?;
-        closed?;
-        Ok(merged)
+        try_with_resources(merged, closed)
     }
 
     /// Merges the norms.
@@ -344,8 +342,7 @@ impl SegmentMerger {
         // try-with-resources (`SegmentMerger.java:202-207`).
         let merged = consumer.merge(self.merge_state());
         let closed = consumer.close();
-        merged?;
-        closed
+        try_with_resources(merged, closed)
     }
 
     /// Merges the doc values.
@@ -357,8 +354,7 @@ impl SegmentMerger {
         // try-with-resources (`SegmentMerger.java:186-191`).
         let merged = consumer.merge(self.merge_state());
         let closed = consumer.close();
-        merged?;
-        closed
+        try_with_resources(merged, closed)
     }
 
     /// Merges the points.
@@ -370,8 +366,7 @@ impl SegmentMerger {
         // try-with-resources (`SegmentMerger.java:194-199`).
         let merged = writer.merge(self.merge_state());
         let closed = writer.close();
-        merged?;
-        closed
+        try_with_resources(merged, closed)
     }
 
     /// Merges the KNN vectors.
@@ -393,8 +388,7 @@ impl SegmentMerger {
         // try-with-resources (`SegmentMerger.java:269-274`).
         let merged = writer.merge(self.merge_state());
         let closed = writer.close();
-        merged?;
-        closed
+        try_with_resources(merged, closed)
     }
 
     /// Runs one merge phase and reports how long it took.
@@ -475,14 +469,12 @@ impl SegmentMerger {
                 let mut consumer = self.codec.postings_format().fields_consumer(&state)?;
                 let merged = consumer.merge(self.merge_state(), norms_merge_instance.as_deref());
                 let closed = consumer.close();
-                merged?;
-                closed?;
+                try_with_resources(merged, closed)?;
             }
             Ok(())
         })();
         let closed = norms.as_mut().map_or(Ok(()), |norms| norms.close());
-        merged?;
-        closed
+        try_with_resources(merged, closed)
     }
 
     /// Consumes the merger and returns the merged segment's info, carrying
@@ -537,6 +529,24 @@ impl SegmentMerger {
             &self.merge_state.merge_field_infos,
             &*self.context,
         )
+    }
+}
+
+/// The outcome of a Java try-with-resources statement whose body produced
+/// `body` and whose resource's `close()` then produced `closed`.
+///
+/// Equivalent to the bytecode `javac` emits for `try (R r = ...) { body }`
+/// (JLS 14.20.3.1): when the body throws, a failing `close()` is attached to
+/// that exception with `Throwable.addSuppressed` and the body's exception is
+/// thrown; when the body completes, a failing `close()` is thrown alone.
+fn try_with_resources<T>(body: Result<T>, closed: Result<()>) -> Result<T> {
+    match (body, closed) {
+        (Err(mut error), Err(suppressed)) => {
+            error.add_suppressed(suppressed);
+            Err(error)
+        }
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
     }
 }
 
@@ -630,6 +640,18 @@ mod tests {
         info_stream: Arc<dyn InfoStream>,
     ) -> Result<SegmentMerger> {
         let codec = crate::codecs::for_name("Lucene104").unwrap();
+        merger_with_codec(readers, target, context, index_sort, info_stream, codec)
+    }
+
+    /// [`merger_with`] writing through `codec`.
+    fn merger_with_codec(
+        readers: &[Arc<dyn CodecReader>],
+        target: &Arc<dyn Directory>,
+        context: Arc<dyn IOContext>,
+        index_sort: Option<Sort>,
+        info_stream: Arc<dyn InfoStream>,
+        codec: Arc<dyn Codec>,
+    ) -> Result<SegmentMerger> {
         // `maxDoc` unset: `MergeState` stamps it (`MergeState.java:173`).
         let segment_info = SegmentInfo::new(
             Arc::clone(target),
@@ -657,6 +679,132 @@ mod tests {
             None,
             None,
         )
+    }
+
+    /// A norms format whose consumer fails its merge when `merge_fails` and
+    /// its close when `close_fails`, each with its own message.
+    #[derive(Debug)]
+    struct FailingNormsFormat {
+        merge_fails: bool,
+        close_fails: bool,
+    }
+
+    #[derive(Debug)]
+    struct FailingNormsConsumer {
+        merge_fails: bool,
+        close_fails: bool,
+    }
+
+    impl crate::codecs::NormsConsumer for FailingNormsConsumer {
+        fn add_norms_field(
+            &mut self,
+            _field: &crate::index::FieldInfo,
+            _values: &dyn crate::codecs::NormsProducer,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn merge(&mut self, _merge_state: &MergeState) -> Result<()> {
+            if self.merge_fails {
+                Err(LuceneError::illegal_state("merge failed"))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn close(&mut self) -> Result<()> {
+            if self.close_fails {
+                Err(LuceneError::illegal_state("close failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl crate::codecs::NormsFormat for FailingNormsFormat {
+        fn name(&self) -> &str {
+            "FailingNorms"
+        }
+
+        fn norms_consumer(
+            &self,
+            _state: &SegmentWriteState,
+        ) -> Result<Box<dyn crate::codecs::NormsConsumer>> {
+            Ok(Box::new(FailingNormsConsumer {
+                merge_fails: self.merge_fails,
+                close_fails: self.close_fails,
+            }))
+        }
+
+        fn norms_producer(
+            &self,
+            _state: &SegmentReadState,
+        ) -> Result<Box<dyn crate::codecs::NormsProducer>> {
+            Err(LuceneError::illegal_state("not read"))
+        }
+    }
+
+    fn illegal_state_message(error: &LuceneError) -> &str {
+        match error.kind() {
+            LuceneErrorKind::IllegalState { message, .. } => message,
+            other => panic!("expected an IllegalStateException, got {other:?}"),
+        }
+    }
+
+    /// Regression (#437): every consumer the merger opens is closed as by
+    /// Java's try-with-resources (`SegmentMerger.java:202-207`, JLS 14.20.3.1).
+    /// A failed merge is thrown with the close's failure suppressed into it,
+    /// instead of the close failure being dropped; a close failure after a
+    /// successful merge is thrown alone.
+    #[test]
+    fn a_close_failure_is_suppressed_into_the_merge_failure() {
+        let (_dir, infos) = stored_only_segments(1);
+        let readers: Vec<Arc<dyn CodecReader>> = infos
+            .iter()
+            .map(|info| reader_with_min_version(info, Some(Version::LATEST), 10))
+            .collect();
+        let merge_with = |merge_fails: bool, close_fails: bool| {
+            let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+            let codec: Arc<dyn Codec> = Arc::new(
+                crate::codecs::FilterCodec::new(
+                    "Lucene104",
+                    crate::codecs::for_name("Lucene104").unwrap(),
+                )
+                .with_norms_format(FailingNormsFormat {
+                    merge_fails,
+                    close_fails,
+                }),
+            );
+            let context = Arc::from(crate::store::merge_io_context(
+                crate::store::MergeInfo::new(1, -1, false, -1),
+            ));
+            let mut merger = merger_with_codec(
+                &readers,
+                &target,
+                context,
+                None,
+                Arc::new(crate::util::NoOutputInfoStream),
+                codec,
+            )
+            .unwrap();
+            merger.merge_norms()
+        };
+
+        let error = merge_with(true, true).unwrap_err();
+        assert_eq!(illegal_state_message(&error), "merge failed");
+        let suppressed = error.get_suppressed();
+        assert_eq!(suppressed.len(), 1);
+        assert_eq!(illegal_state_message(&suppressed[0]), "close failed");
+
+        let error = merge_with(false, true).unwrap_err();
+        assert_eq!(illegal_state_message(&error), "close failed");
+        assert!(error.get_suppressed().is_empty());
+
+        let error = merge_with(true, false).unwrap_err();
+        assert_eq!(illegal_state_message(&error), "merge failed");
+        assert!(error.get_suppressed().is_empty());
+
+        merge_with(false, false).unwrap();
     }
 
     /// Records the messages of the components it is enabled for.

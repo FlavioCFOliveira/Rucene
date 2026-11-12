@@ -413,6 +413,11 @@ pub trait AcceptDocs {
 #[derive(Clone)]
 pub struct BitsAcceptDocs {
     bits: Option<Arc<dyn Bits>>,
+    /// `bits` narrowed to a `BitSet`, when it is one: Java's
+    /// `bits instanceof BitSet bitSet` (`AcceptDocs.java:130, 144`).
+    bit_set: Option<Arc<dyn BitSet>>,
+    /// Java's `maxDoc` field: the segment's `maxDoc`, or the cardinality of
+    /// `bits` when it is a `BitSet` (`AcceptDocs.java:130-134`).
     max_doc: i32,
 }
 
@@ -444,8 +449,19 @@ impl BitsAcceptDocs {
                 )));
             }
         }
+        let bits: Option<Arc<dyn Bits>> = bits.map(Arc::from);
+        let bit_set = bits
+            .as_ref()
+            .and_then(|bits| Arc::clone(bits).as_shared_bit_set());
+        // `this.maxDoc = Objects.requireNonNull(bitSet).cardinality()` for a
+        // `BitSet`, `maxDoc` otherwise (`AcceptDocs.java:130-134`).
+        let max_doc = match bit_set.as_ref() {
+            Some(bit_set) => bit_set.cardinality() as i32,
+            None => max_doc,
+        };
         Ok(Self {
-            bits: bits.map(Arc::from),
+            bits,
+            bit_set,
             max_doc,
         })
     }
@@ -464,6 +480,15 @@ impl AcceptDocs for BitsAcceptDocs {
     }
 
     fn iterator(&mut self) -> Result<Box<dyn DocIdSetIterator>> {
+        // `if (bits instanceof BitSet bitSet) return new BitSetIterator(bitSet,
+        // maxDoc);` (`AcceptDocs.java:144-146`), `maxDoc` being the
+        // cardinality here.
+        if let Some(bit_set) = self.bit_set.as_ref() {
+            return Ok(Box::new(BitSetIterator::new(
+                Arc::clone(bit_set),
+                self.max_doc as i64,
+            )?));
+        }
         let base = Box::new(AllDocIdSetIterator::new(self.max_doc)?);
         match self.predicate() {
             None => Ok(base),
@@ -476,9 +501,8 @@ impl AcceptDocs for BitsAcceptDocs {
     }
 
     fn cost(&mut self) -> Result<i64> {
-        // Java estimates maxDoc for the general Bits path. We use the same
-        // conservative estimate regardless of whether the bits are dense or
-        // sparse.
+        // `return maxDoc;` (`AcceptDocs.java:151-155`): the segment's maxDoc,
+        // or the cardinality of a `BitSet`.
         Ok(self.max_doc as i64)
     }
 }
@@ -971,6 +995,56 @@ mod tests {
             assert_eq!(it.next_doc().unwrap(), expected);
         }
         assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
+    }
+
+    /// Regression (#436): `BitsAcceptDocs` over a `BitSet` takes Java's
+    /// `BitSet` branch (`AcceptDocs.java:130-134, 143-146, 151-155`): its
+    /// `maxDoc` is the cardinality, its iterator is a `BitSetIterator` over
+    /// that bit set costing the cardinality, and its cost is the cardinality.
+    /// Bits that are not a `BitSet` keep the filtered all-docs iterator.
+    #[test]
+    fn bits_accept_docs_over_a_bit_set_iterates_a_bit_set_iterator() {
+        for sparse in [false, true] {
+            let bits: Box<dyn Bits> = if sparse {
+                let mut set = crate::util::SparseFixedBitSet::new(10).unwrap();
+                for doc in [1, 4, 9] {
+                    set.set(doc);
+                }
+                Box::new(set)
+            } else {
+                let mut set = FixedBitSet::new(10);
+                for doc in [1, 4, 9] {
+                    set.set(doc);
+                }
+                Box::new(set)
+            };
+            let mut accept = from_live_docs(Some(bits), 10).unwrap();
+            assert_eq!(accept.cost().unwrap(), 3);
+            let mut it = accept.iterator().unwrap();
+            assert_eq!(
+                it.java_to_string(),
+                crate::index::index_reader::java_object_to_string_stand_in(
+                    "org.apache.lucene.util.BitSetIterator"
+                )
+            );
+            assert!(it
+                .disi_as_any()
+                .is_some_and(|any| any.is::<BitSetIterator>()));
+            assert_eq!(it.cost(), 3);
+            for expected in [1, 4, 9] {
+                assert_eq!(it.next_doc().unwrap(), expected);
+            }
+            assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
+        }
+
+        let bits: Box<dyn Bits> = Box::new(EvenBits { max_doc: 8 });
+        let mut accept = from_live_docs(Some(bits), 8).unwrap();
+        assert_eq!(accept.cost().unwrap(), 8);
+        let it = accept.iterator().unwrap();
+        assert!(!it
+            .disi_as_any()
+            .is_some_and(|any| any.is::<BitSetIterator>()));
+        assert_eq!(it.cost(), 8);
     }
 
     #[test]

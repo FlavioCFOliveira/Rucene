@@ -829,6 +829,12 @@ impl Bits for SparseFixedBitSet {
         Some(self)
     }
 
+    fn as_shared_bit_set(
+        self: std::sync::Arc<Self>,
+    ) -> Option<std::sync::Arc<dyn crate::util::bit_set::BitSet>> {
+        Some(self)
+    }
+
     fn length(&self) -> usize {
         self.length()
     }
