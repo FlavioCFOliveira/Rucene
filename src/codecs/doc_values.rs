@@ -369,9 +369,10 @@ impl DocValuesFormatRegistry {
         let name = name.into();
         super::validate_service_name(&name)?;
 
-        let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::illegal_state("doc-values format registry lock was poisoned".to_string())
-        })?;
+        let mut formats = self
+            .formats
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         if formats.lookup(&name).is_ok() {
             return Err(LuceneError::illegal_state(format!(
@@ -388,12 +389,7 @@ impl DocValuesFormatRegistry {
     pub fn for_name(&self, name: &str) -> Option<Arc<dyn DocValuesFormat>> {
         self.formats
             .read()
-            .map_err(|_| {
-                LuceneError::illegal_state(
-                    "doc-values format registry lock was poisoned".to_string(),
-                )
-            })
-            .ok()?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .lookup(name)
             .ok()
     }
@@ -407,15 +403,11 @@ impl DocValuesFormatRegistry {
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message,
     /// listing the available names, when no format is registered under
-    /// `name`, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is poisoned.
+    /// `name`.
     pub fn lookup(&self, name: &str) -> Result<Arc<dyn DocValuesFormat>> {
         self.formats
             .read()
-            .map_err(|_| {
-                LuceneError::illegal_state(
-                    "doc-values format registry lock was poisoned".to_string(),
-                )
-            })?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .lookup(name)
     }
 
@@ -424,9 +416,10 @@ impl DocValuesFormatRegistry {
     /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
     /// Java's insertion-ordered `LinkedHashMap`.
     pub fn available_doc_values_formats(&self) -> Vec<String> {
-        let Ok(formats) = self.formats.read() else {
-            return Vec::new();
-        };
+        let formats = self
+            .formats
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         formats
             .available_services()
             .into_iter()
@@ -446,17 +439,14 @@ impl DocValuesFormatRegistry {
 /// # Errors
 ///
 /// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
-/// returns, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is
-/// poisoned.
+/// returns.
 pub fn reload_doc_values_formats(
     classloader: &Arc<crate::util::resource_loader::ClassLoader>,
 ) -> Result<()> {
     GLOBAL_DOC_VALUES_REGISTRY
         .formats
         .write()
-        .map_err(|_| {
-            LuceneError::illegal_state("doc-values format registry lock was poisoned".to_string())
-        })?
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .reload(classloader)
 }
 

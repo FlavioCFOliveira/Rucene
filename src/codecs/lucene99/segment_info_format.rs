@@ -107,19 +107,15 @@ fn parse_segment_info(
 ) -> Result<SegmentInfo> {
     // `Lucene99SegmentInfoFormat.java:112`: no check of the major version on
     // read; only `write` rejects one below 7.
-    let version = Version::from_bits(
-        input.read_int()? as u8,
-        input.read_int()? as u8,
-        input.read_int()? as u8,
-    )?;
+    let version = Version::from_bits(input.read_int()?, input.read_int()?, input.read_int()?)?;
 
     let has_min_version = input.read_byte()?;
     let min_version = match has_min_version {
         0 => None,
         1 => Some(Version::from_bits(
-            input.read_int()? as u8,
-            input.read_int()? as u8,
-            input.read_int()? as u8,
+            input.read_int()?,
+            input.read_int()?,
+            input.read_int()?,
         )?),
         _ => {
             // `Lucene99SegmentInfoFormat.java:122-123`.
@@ -148,7 +144,7 @@ fn parse_segment_info(
 
     let id: [u8; 16] = segment_id
         .try_into()
-        .map_err(|_| LuceneError::illegal_argument("segment id must be 16 bytes".to_string()))?;
+        .expect("INVARIANT: the index header check matched the segment id against 16 bytes");
 
     let info = SegmentInfo::new_without_codec(
         directory,

@@ -723,9 +723,9 @@ impl SegmentInfos {
             codec_util::check_index_header_suffix(input, &radix_36(generation as u64))?;
 
             let lucene_version = Version::from_bits(
-                input.read_v_int()? as u8,
-                input.read_v_int()? as u8,
-                input.read_v_int()? as u8,
+                input.read_v_int()?,
+                input.read_v_int()?,
+                input.read_v_int()?,
             )?;
             let index_created_version = input.read_v_int()?;
             if (lucene_version.major as i32) > index_created_version {
@@ -803,9 +803,9 @@ impl SegmentInfos {
 
         if num_segments > 0 {
             infos.min_segment_lucene_version = Some(Version::from_bits(
-                input.read_v_int()? as u8,
-                input.read_v_int()? as u8,
-                input.read_v_int()? as u8,
+                input.read_v_int()?,
+                input.read_v_int()?,
+                input.read_v_int()?,
             )?);
         }
 
@@ -1019,7 +1019,10 @@ impl SegmentInfos {
     /// argument is a `PrintStream`; see the note on [`INFO_STREAM`] for why this
     /// port takes an [`InfoStream`] instead. Pass `None` for Java's `null`.
     pub fn set_info_stream(info_stream: Option<Arc<dyn InfoStream>>) {
-        if let Ok(mut guard) = INFO_STREAM.write() {
+        {
+            let mut guard = INFO_STREAM
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *guard = info_stream;
         }
     }
@@ -1028,7 +1031,10 @@ impl SegmentInfos {
     ///
     /// Equivalent to `org.apache.lucene.index.SegmentInfos#getInfoStream`.
     pub fn get_info_stream() -> Option<Arc<dyn InfoStream>> {
-        INFO_STREAM.read().ok().and_then(|guard| guard.clone())
+        INFO_STREAM
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Prints `message` to the installed info stream.

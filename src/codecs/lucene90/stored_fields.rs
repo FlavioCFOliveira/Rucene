@@ -914,6 +914,10 @@ impl FieldsIndexWriter {
         Ok(())
     }
 
+    /// **Divergence from Lucene 10.5.0.** Java keeps writing to (or closing
+    /// again) its temporary outputs after `finish` closed them, with whatever
+    /// that output then does; this port hands each output's ownership to the
+    /// close, so a later use finds none and raises `AlreadyClosed`.
     fn open_output(
         output: &mut Option<Box<dyn IndexOutput>>,
     ) -> Result<&mut (dyn IndexOutput + 'static)> {
@@ -1218,9 +1222,9 @@ fn next_stored_fields_step(
     if merger.next_sub()?.is_none() {
         return Ok(None);
     }
-    let sub_index = merger.current_index().ok_or_else(|| {
-        LuceneError::illegal_state("DocIDMerger returned a sub it cannot locate".to_string())
-    })?;
+    let sub_index = merger
+        .current_index()
+        .expect("INVARIANT: the sub DocIDMerger just returned is one of its subs");
     let sub = merger.sub(sub_index);
     Ok(Some(StoredFieldsMergeStep {
         sub_index,
@@ -1551,11 +1555,10 @@ impl Lucene90CompressingStoredFieldsWriter {
             .as_ref()
             .and_then(|reader| reader.as_any())
             .and_then(|any| any.downcast_ref::<Lucene90CompressingStoredFieldsReader>())
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "bulk merge needs a Lucene90CompressingStoredFieldsReader".to_string(),
-                )
-            })?;
+            // `(Lucene90CompressingStoredFieldsReader) readers[readerIndex]`: only a segment
+            // `canPerformBulkMerge` accepted reaches here, and that check
+            // already required this class.
+            .expect("INVARIANT: a bulk-merged segment has a Lucene90CompressingStoredFieldsReader");
         debug_assert_eq!(reader.version(), DATA_VERSION_CURRENT);
         debug_assert_eq!(reader.chunk_size(), self.chunk_size);
         debug_assert!(compressing::same_mode(
@@ -1820,12 +1823,6 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
         value: &mut StoredFieldDataInput<'_>,
     ) -> Result<()> {
         let length = value.length();
-        if length < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "stored binary field \"{}\" has a negative length: {length}",
-                info.name
-            )));
-        }
         self.num_stored_fields_in_doc += 1;
         self.write_field_header(info, TYPE_BYTE_ARR)?;
         self.buffered_docs.write_v_int(length)?;
@@ -1968,26 +1965,23 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
                         .as_ref()
                         .and_then(|reader| reader.as_any())
                         .and_then(|any| any.downcast_ref::<Lucene90CompressingStoredFieldsReader>())
-                        .ok_or_else(|| {
-                            LuceneError::illegal_state(
-                                "document-by-document merge needs a \
-                                 Lucene90CompressingStoredFieldsReader"
-                                    .to_string(),
-                            )
-                        })?;
+                        // `(Lucene90CompressingStoredFieldsReader)
+                        // storedFieldsReaders[readerIndex]`: the strategy is
+                        // only chosen for a reader of this class.
+                        .expect(
+                            "INVARIANT: a document-by-document merge reads a \
+                             Lucene90CompressingStoredFieldsReader",
+                        );
                     self.copy_one_doc(reader, current.doc_id)?;
                     doc_count += 1;
                     step = next_stored_fields_step(&mut merger)?;
                 }
                 MergeStrategy::Visitor => {
-                    let Some(reader) =
-                        merge_state.stored_fields_readers[current.reader_index].as_ref()
-                    else {
-                        return Err(LuceneError::illegal_state(format!(
-                            "segment {} of the merge has no stored-fields reader",
-                            current.reader_index
-                        )));
-                    };
+                    // Every reader was dereferenced when the subs were built
+                    // (`reader.checkIntegrity()`), so none is missing here.
+                    let reader = merge_state.stored_fields_readers[current.reader_index]
+                        .as_ref()
+                        .expect("INVARIANT: every merged segment has a stored-fields reader");
                     self.start_document()?;
                     let mut visitor = MergeVisitor {
                         writer: self,
@@ -2294,11 +2288,13 @@ impl BlockState {
         let length = to_int_exact(self.offsets[index + 1])?.wrapping_sub(offset);
         let total_length = to_int_exact(self.offsets[self.chunk_docs as usize])?;
         let num_stored_fields = to_int_exact(self.num_stored_fields[index])?;
-        // The offsets are a running sum decoded from the chunk header, so a
-        // corrupt header can also make them go backwards. The negative length,
-        // or negative offset, that this produces trips Java's array bounds
-        // further down; both surface as an exception, so both are reported
-        // here rather than turning into a wild slice index.
+        // **Divergence from Lucene 10.5.0.** The offsets are a running sum
+        // decoded from the chunk header, so a corrupt header can make them go
+        // backwards. Java builds a `ByteArrayDataInput` (or decompresses) over
+        // the negative window and fails only when the visitor reads from it,
+        // with whatever exception that read raises; this port copies the
+        // window up front, so a negative offset or length is reported here,
+        // before the copy would index out of the buffer.
         if offset < 0 || length < 0 {
             return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
                 format!(
@@ -2322,8 +2318,8 @@ impl BlockState {
         let data: Vec<u8> = if merging {
             self.bytes[offset..offset + length].to_vec()
         } else {
-            let input = fields_stream
-                .ok_or_else(|| LuceneError::illegal_state("missing fields input".to_string()))?;
+            let input =
+                fields_stream.expect("INVARIANT: a non-merging read is given the fields stream");
             input.seek(self.start_pointer)?;
             // A known deviation, tracked as its own task: Java returns a lazy
             // `DataInput` that starts inflating at the document's own offset
@@ -2648,7 +2644,11 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
 
     fn check_integrity(&self) -> Result<()> {
         self.index_reader.check_integrity()?;
-        let mut input = self.fields_stream.lock().unwrap().clone_input()?;
+        let mut input = self
+            .fields_stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone_input()?;
         input.seek(0)?;
         checksum_entire_file(input.as_mut())?;
         Ok(())
@@ -2671,7 +2671,12 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             num_chunks: self.num_chunks,
             num_dirty_chunks: self.num_dirty_chunks,
             num_dirty_docs: self.num_dirty_docs,
-            fields_stream: Mutex::new(self.fields_stream.lock().unwrap().clone_input()?),
+            fields_stream: Mutex::new(
+                self.fields_stream
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone_input()?,
+            ),
             merging: false,
             state: Mutex::new(BlockState::new()),
             prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
@@ -2696,7 +2701,12 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             num_chunks: self.num_chunks,
             num_dirty_chunks: self.num_dirty_chunks,
             num_dirty_docs: self.num_dirty_docs,
-            fields_stream: Mutex::new(self.fields_stream.lock().unwrap().clone_input()?),
+            fields_stream: Mutex::new(
+                self.fields_stream
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone_input()?,
+            ),
             merging: true,
             state: Mutex::new(BlockState::new()),
             prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
@@ -2740,7 +2750,10 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
     fn prefetch(&self, doc_id: i32) -> Result<()> {
         let block_id = self.index_reader.get_block_id(doc_id)?;
 
-        let mut prefetched_block_id_cache = self.prefetched_block_id_cache.lock().unwrap();
+        let mut prefetched_block_id_cache = self
+            .prefetched_block_id_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for &prefetched_block_id in prefetched_block_id_cache.iter() {
             if prefetched_block_id == block_id {
                 return Ok(());
@@ -2751,7 +2764,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
         let block_length = self.index_reader.get_block_length(block_id)?;
         self.fields_stream
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .prefetch(block_start_pointer, block_length)?;
 
         let index = self
@@ -2862,7 +2875,10 @@ impl Lucene90CompressingStoredFieldsReader {
     ///
     /// Propagates the I/O error raised while cloning the input.
     fn fields_stream(&self) -> Result<Box<dyn IndexInput>> {
-        self.fields_stream.lock().unwrap().clone_input()
+        self.fields_stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone_input()
     }
 
     /// Returns whether the chunk that holds `doc_id` is the one already
@@ -2890,7 +2906,11 @@ impl Lucene90CompressingStoredFieldsReader {
                     .to_string(),
             ));
         }
-        Ok(self.state.lock().unwrap().contains(doc_id))
+        Ok(self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(doc_id))
     }
 
     /// Returns one document as it sits inside its decompressed chunk: the raw
@@ -2904,8 +2924,14 @@ impl Lucene90CompressingStoredFieldsReader {
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingStoredFieldsReader#serializedDocument`.
     fn serialized_document(&self, doc_id: i32) -> Result<SerializedDocument> {
-        let mut state = self.state.lock().unwrap();
-        let mut fields_stream = self.fields_stream.lock().unwrap();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut fields_stream = self
+            .fields_stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.contains(doc_id) {
             let start_pointer = self.index_reader.get_start_pointer(doc_id)?;
             fields_stream.seek(start_pointer)?;
@@ -2914,13 +2940,19 @@ impl Lucene90CompressingStoredFieldsReader {
                 fields_stream.as_mut(),
                 self.num_docs,
                 self.chunk_size,
-                &mut **self.decompressor.lock().unwrap(),
+                &mut **self
+                    .decompressor
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
                 self.merging,
             )?;
         }
         debug_assert!(state.contains(doc_id));
 
-        let mut decompressor = self.decompressor.lock().unwrap();
+        let mut decompressor = self
+            .decompressor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.merging {
             state.document(doc_id, None, self.chunk_size, &mut **decompressor, true)
         } else {

@@ -2199,7 +2199,10 @@ mod sorted_search_dispatch_tests {
 
     impl Recording {
         fn record(&self, call: String) {
-            self.calls.lock().unwrap().push(call);
+            self.calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(call);
         }
     }
 
@@ -2286,7 +2289,10 @@ mod sorted_search_dispatch_tests {
             .search_after_with_sort_and_scores(None, query(), 6, &sort, false)
             .unwrap();
         assert_eq!(
-            *recording.calls.lock().unwrap(),
+            *recording
+                .calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             [
                 "search(3)",
                 "searchAfter(false, 3, false)",
@@ -2319,7 +2325,10 @@ mod shard_search_dispatch_tests {
 
     impl Recording {
         fn record(&self, call: String) {
-            self.calls.lock().unwrap().push(call);
+            self.calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(call);
         }
     }
 
@@ -2391,7 +2400,10 @@ mod shard_search_dispatch_tests {
         assert_eq!((stats.doc_freq(), stats.total_term_freq()), (6, 15));
         assert!(searcher.collection_statistics("body").unwrap().is_none());
         assert_eq!(
-            *recording.calls.lock().unwrap(),
+            *recording
+                .calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             [
                 "search(3)",
                 "searchAfter(false, 3)",

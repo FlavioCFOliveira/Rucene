@@ -196,6 +196,16 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
                     position = position.wrapping_add(((code as u32) >> 1) as i32);
                     if code & 1 != 0 {
                         let length = input.read_v_int()?;
+                        // `payload.grow(payloadLength)` reaches `ArrayUtil.grow`,
+                        // whose `assert minSize >= 0` rejects a negative length.
+                        debug_assert!(
+                            length >= 0,
+                            "size must be positive (got {length}): likely integer overflow?"
+                        );
+                        // **Divergence from Lucene 10.5.0.** Without assertions
+                        // Java passes the negative length on to `readBytes`,
+                        // whose failure depends on the input; this port sizes
+                        // a buffer from it, so it is reported here.
                         let length = usize::try_from(length).map_err(|_| {
                             LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                                 "negative term-vector payload length: {length}"

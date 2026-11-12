@@ -349,17 +349,19 @@ impl Lucene99FlatVectorsWriter {
         field_info: &FieldInfo,
         max_doc: i32,
     ) -> Result<()> {
-        let vector_data = self.vector_data.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
-        })?;
+        let vector_data = self
+            .vector_data
+            .as_mut()
+            .expect("INVARIANT: the writer holds its outputs for its whole life");
         let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::FLOAT32)?;
         Self::write_float32_vectors(vector_data.as_mut(), field_writer, field_info)?;
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
         let docs_with_field = field_writer.docs_with_field_set().into_owned();
 
-        let meta = self.meta.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
-        })?;
+        let meta = self
+            .meta
+            .as_mut()
+            .expect("INVARIANT: the writer holds its outputs for its whole life");
         write_meta(
             meta.as_mut(),
             vector_data.as_mut(),
@@ -389,16 +391,18 @@ impl Lucene99FlatVectorsWriter {
             crate::codecs::knn_vectors::map_old_ord_to_new_ord(&old_doc_ids, sort_map)?;
         let new_docs_with_field = new_docs_with_field(&old_doc_ids, sort_map)?;
 
-        let vector_data = self.vector_data.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
-        })?;
+        let vector_data = self
+            .vector_data
+            .as_mut()
+            .expect("INVARIANT: the writer holds its outputs for its whole life");
         let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::FLOAT32)?;
         Self::write_sorted_float32_vectors(vector_data.as_mut(), field_writer, &ord_map)?;
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
 
-        let meta = self.meta.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
-        })?;
+        let meta = self
+            .meta
+            .as_mut()
+            .expect("INVARIANT: the writer holds its outputs for its whole life");
         write_meta(
             meta.as_mut(),
             vector_data.as_mut(),
@@ -426,16 +430,18 @@ impl Lucene99FlatVectorsWriter {
             crate::codecs::knn_vectors::map_old_ord_to_new_ord(&old_doc_ids, sort_map)?;
         let new_docs_with_field = new_docs_with_field(&old_doc_ids, sort_map)?;
 
-        let vector_data = self.vector_data.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
-        })?;
+        let vector_data = self
+            .vector_data
+            .as_mut()
+            .expect("INVARIANT: the writer holds its outputs for its whole life");
         let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::BYTE)?;
         Self::write_sorted_byte_vectors(vector_data.as_mut(), field_writer, &ord_map)?;
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
 
-        let meta = self.meta.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
-        })?;
+        let meta = self
+            .meta
+            .as_mut()
+            .expect("INVARIANT: the writer holds its outputs for its whole life");
         write_meta(
             meta.as_mut(),
             vector_data.as_mut(),
@@ -590,17 +596,19 @@ impl Lucene99FlatVectorsWriter {
         field_info: &FieldInfo,
         max_doc: i32,
     ) -> Result<()> {
-        let vector_data = self.vector_data.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
-        })?;
+        let vector_data = self
+            .vector_data
+            .as_mut()
+            .expect("INVARIANT: the writer holds its outputs for its whole life");
         let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::BYTE)?;
         Self::write_byte_vectors(vector_data.as_mut(), field_writer)?;
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
         let docs_with_field = field_writer.docs_with_field_set().into_owned();
 
-        let meta = self.meta.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
-        })?;
+        let meta = self
+            .meta
+            .as_mut()
+            .expect("INVARIANT: the writer holds its outputs for its whole life");
         write_meta(
             meta.as_mut(),
             vector_data.as_mut(),
@@ -625,11 +633,9 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
         for entry in entries {
             match entry {
                 FieldWriterEntry::Float(writer, info) => {
-                    let mut guard = writer.lock().map_err(|_| {
-                        LuceneError::illegal_state(
-                            "FlatFieldVectorsWriter mutex was poisoned".to_string(),
-                        )
-                    })?;
+                    let mut guard = writer
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     match sort_map {
                         Some(sort_map) => {
                             self.write_sorting_field_float(&mut *guard, &info, max_doc, sort_map)?
@@ -639,11 +645,9 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
                     guard.finish()?;
                 }
                 FieldWriterEntry::Byte(writer, info) => {
-                    let mut guard = writer.lock().map_err(|_| {
-                        LuceneError::illegal_state(
-                            "FlatFieldVectorsWriter mutex was poisoned".to_string(),
-                        )
-                    })?;
+                    let mut guard = writer
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     match sort_map {
                         Some(sort_map) => {
                             self.write_sorting_field_byte(&mut *guard, &info, max_doc, sort_map)?
@@ -682,8 +686,17 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
         Ok(None)
     }
 
+    /// Equivalent to `Lucene99FlatVectorsWriter.close()`: `IOUtils.close(meta,
+    /// vectorData)`. The outputs stay in place, as Java's fields do.
     fn close(&mut self) -> Result<()> {
-        close_outputs(&mut self.meta, &mut self.vector_data)
+        IOUtils::close([
+            self.meta
+                .as_mut()
+                .and_then(|o| IOUtils::closeable(move || o.close())),
+            self.vector_data
+                .as_mut()
+                .and_then(|o| IOUtils::closeable(move || o.close())),
+        ])
     }
 
     /// Equivalent to `Lucene99FlatVectorsWriter.ramBytesUsed()`
@@ -750,9 +763,10 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
         field_info: &FieldInfo,
         merge_state: &MergeState,
     ) -> Result<()> {
-        let vector_data = self.vector_data.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
-        })?;
+        let vector_data = self
+            .vector_data
+            .as_mut()
+            .expect("INVARIANT: the writer holds its outputs for its whole life");
         let encoding = field_info.vector_encoding;
         let vector_data_offset = align_output(vector_data.as_mut(), encoding)?;
         // No need to use temporary file as we don't have to re-open for reading
@@ -767,9 +781,10 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
             )?,
         };
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
-        let meta = self.meta.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
-        })?;
+        let meta = self
+            .meta
+            .as_mut()
+            .expect("INVARIANT: the writer holds its outputs for its whole life");
         // Java reads `segmentWriteState.segmentInfo.maxDoc()` here, which
         // raises `IllegalStateException("maxDoc isn't set yet")` when it was
         // never set; this reproduces that error at the same place.
@@ -1513,11 +1528,7 @@ impl OffHeapFloatVectorValues {
         let slice = Mutex::new(
             self.slice
                 .lock()
-                .map_err(|_| {
-                    LuceneError::illegal_state(
-                        "off-heap vector slice mutex was poisoned".to_string(),
-                    )
-                })?
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone_input()?,
         );
         match (&self.config, &self.data_input) {
@@ -1632,16 +1643,16 @@ impl OffHeapFloatVectorValues {
     /// the slice behind a `Mutex`; the accessor therefore hands back the lock
     /// guard, which derefs to the very same `IndexInput` Java returns.
     ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneErrorKind::IllegalState`] when the mutex was poisoned.
+    /// Java has no lock poisoning, so a poisoned mutex continues with the
+    /// slice it guards.
     ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene95.OffHeapFloatVectorValues#getSlice`.
     fn get_slice(&self) -> Result<MutexGuard<'_, Box<dyn IndexInput>>> {
-        self.slice.lock().map_err(|_| {
-            LuceneError::illegal_state("off-heap vector slice mutex was poisoned".to_string())
-        })
+        Ok(self
+            .slice
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 }
 
@@ -1838,11 +1849,7 @@ impl OffHeapByteVectorValues {
         let slice = Mutex::new(
             self.slice
                 .lock()
-                .map_err(|_| {
-                    LuceneError::illegal_state(
-                        "off-heap vector slice mutex was poisoned".to_string(),
-                    )
-                })?
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone_input()?,
         );
         match (&self.config, &self.data_input) {
@@ -1957,16 +1964,16 @@ impl OffHeapByteVectorValues {
     /// the slice behind a `Mutex`; the accessor therefore hands back the lock
     /// guard, which derefs to the very same `IndexInput` Java returns.
     ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneErrorKind::IllegalState`] when the mutex was poisoned.
+    /// Java has no lock poisoning, so a poisoned mutex continues with the
+    /// slice it guards.
     ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene95.OffHeapByteVectorValues#getSlice`.
     fn get_slice(&self) -> Result<MutexGuard<'_, Box<dyn IndexInput>>> {
-        self.slice.lock().map_err(|_| {
-            LuceneError::illegal_state("off-heap vector slice mutex was poisoned".to_string())
-        })
+        Ok(self
+            .slice
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 
     /// Reads the vector at `target_ord` into `value`.
@@ -1980,8 +1987,7 @@ impl OffHeapByteVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns whatever seeking or reading the slice raises, and
-    /// [`LuceneErrorKind::IllegalState`] when the slice mutex was poisoned.
+    /// Returns whatever seeking or reading the slice raises.
     fn read_value(&self, target_ord: i32, value: &mut [u8]) -> Result<()> {
         let mut slice = self.get_slice()?;
         slice.seek((target_ord as i64) * self.byte_size as i64)?;
@@ -2211,7 +2217,7 @@ pub(crate) mod tests {
         pub(crate) fn events(&self, suffix: &str, event: &str) -> Vec<Vec<String>> {
             self.log
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
                 .filter(|(name, kind, _)| name.ends_with(suffix) && *kind == event)
                 .map(|(_, _, hints)| {
@@ -2272,7 +2278,7 @@ pub(crate) mod tests {
         ) -> Result<Box<dyn IndexInput>> {
             self.log
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((name.to_string(), "open", hint_names(context)));
             Ok(Box::new(RecordingInput {
                 name: name.to_string(),
@@ -2361,7 +2367,7 @@ pub(crate) mod tests {
         fn update_io_context(&self, context: &dyn crate::store::IOContext) -> Result<()> {
             self.log
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((self.name.clone(), "update", hint_names(context)));
             self.inner.update_io_context(context)
         }

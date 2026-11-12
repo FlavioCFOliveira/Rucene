@@ -182,7 +182,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     pub fn is_closed(&self) -> bool {
         self.current
             .read()
-            .expect("current lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_none()
     }
 
@@ -201,7 +201,10 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     pub fn acquire(&self) -> Result<Arc<G>> {
         loop {
             let ref_arc = {
-                let guard = self.current.read().expect("current lock poisoned");
+                let guard = self
+                    .current
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 match guard.as_ref() {
                     Some(r) => Arc::clone(r),
                     None => {
@@ -219,7 +222,10 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
             // illegal state (someone decremented outside the manager).
             if ref_arc.ref_count() == 0 {
                 let still_current = {
-                    let guard = self.current.read().expect("current lock poisoned");
+                    let guard = self
+                        .current
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     guard.as_ref().is_some_and(|c| Arc::ptr_eq(c, &ref_arc))
                 };
                 if still_current {
@@ -311,7 +317,10 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     /// if the manager is closed.
     pub fn maybe_refresh_blocking(&self) -> Result<()> {
         self.ensure_open()?;
-        let _guard = self.refresh_lock.lock().expect("refresh lock poisoned");
+        let _guard = self
+            .refresh_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.do_maybe_refresh()
     }
 
@@ -342,7 +351,10 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     ///
     /// Equivalent to `ReferenceManager.addListener(RefreshListener)`.
     pub fn add_listener(&self, listener: Arc<dyn RefreshListener>) {
-        let mut listeners = self.listeners.write().expect("listeners lock poisoned");
+        let mut listeners = self
+            .listeners
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         listeners.push(listener);
     }
 
@@ -352,7 +364,10 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     ///
     /// [`add_listener`]: ReferenceManager::add_listener
     pub fn remove_listener(&self, listener: &Arc<dyn RefreshListener>) {
-        let mut listeners = self.listeners.write().expect("listeners lock poisoned");
+        let mut listeners = self
+            .listeners
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         listeners.retain(|x| !Arc::ptr_eq(x, listener));
     }
 
@@ -363,7 +378,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
         if self
             .current
             .read()
-            .expect("current lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_none()
         {
             Err(LuceneError::already_closed(
@@ -383,7 +398,10 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     /// Equivalent to `ReferenceManager.swapReference(G)`.
     fn swap_reference(&self, new_ref: Option<Arc<G>>) -> Result<()> {
         let old = {
-            let mut current = self.current.write().expect("current lock poisoned");
+            let mut current = self
+                .current
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if current.is_none() {
                 // `new_ref` is dropped here.
                 return Err(LuceneError::already_closed(
@@ -461,7 +479,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
         let snapshot: Vec<Arc<dyn RefreshListener>> = self
             .listeners
             .read()
-            .expect("listeners lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         for listener in &snapshot {
             listener.before_refresh()?;
@@ -479,7 +497,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
         let snapshot: Vec<Arc<dyn RefreshListener>> = self
             .listeners
             .read()
-            .expect("listeners lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         for listener in &snapshot {
             listener.after_refresh(did_refresh)?;
@@ -498,7 +516,11 @@ impl<G: ManagedReference + ?Sized + 'static> Drop for ReferenceManager<G> {
     /// to); callers should invoke [`close`](Self::close) explicitly to observe
     /// errors.
     fn drop(&mut self) {
-        let old = self.current.write().expect("current lock poisoned").take();
+        let old = self
+            .current
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         if let Some(old) = old {
             let _ = old.release_ref();
         }

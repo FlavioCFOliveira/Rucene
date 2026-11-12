@@ -642,14 +642,17 @@ pub(crate) mod merge_path_probe {
     static PATHS: Mutex<Vec<(String, &'static str)>> = Mutex::new(Vec::new());
 
     pub(crate) fn record(field: &str, path: &'static str) {
-        PATHS.lock().unwrap().push((field.to_string(), path));
+        PATHS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((field.to_string(), path));
     }
 
     /// The paths recorded for `field`, in order.
     pub(crate) fn paths_of(field: &str) -> Vec<&'static str> {
         PATHS
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter(|(name, _)| name == field)
             .map(|&(_, path)| path)
@@ -919,19 +922,33 @@ impl BkdPointValues {
 
 impl PointValues for BkdPointValues {
     fn point_tree(&self) -> Result<Box<dyn crate::index::point_values::PointTree>> {
-        self.reader.lock().unwrap().point_tree()
+        self.reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .point_tree()
     }
 
     fn size(&self) -> Result<i64> {
-        Ok(self.reader.lock().unwrap().point_count())
+        Ok(self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .point_count())
     }
 
     fn doc_count(&self) -> Result<i32> {
-        Ok(self.reader.lock().unwrap().doc_count())
+        Ok(self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .doc_count())
     }
 
     fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if reader.point_count() == 0 {
             Ok(None)
         } else {
@@ -940,7 +957,10 @@ impl PointValues for BkdPointValues {
     }
 
     fn max_packed_value(&self) -> Result<Option<Vec<u8>>> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if reader.point_count() == 0 {
             Ok(None)
         } else {
@@ -949,15 +969,27 @@ impl PointValues for BkdPointValues {
     }
 
     fn num_dimensions(&self) -> Result<i32> {
-        Ok(self.reader.lock().unwrap().num_dims())
+        Ok(self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .num_dims())
     }
 
     fn num_index_dimensions(&self) -> Result<i32> {
-        Ok(self.reader.lock().unwrap().num_index_dims())
+        Ok(self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .num_index_dims())
     }
 
     fn bytes_per_dimension(&self) -> Result<i32> {
-        Ok(self.reader.lock().unwrap().bytes_per_dim())
+        Ok(self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bytes_per_dim())
     }
 }
 

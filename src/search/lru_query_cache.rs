@@ -1899,7 +1899,11 @@ mod child_resources_tests {
         let cache = LRUQueryCache::new(10, 1 << 20).unwrap();
         let keys = [CacheKey::new(), CacheKey::new()];
         {
-            let mut leaves = cache.state.cache.write().unwrap();
+            let mut leaves = cache
+                .state
+                .cache
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for (key, ram) in keys.iter().zip([152, 40]) {
                 let mut leaf = LeafCache::new();
                 leaf.ram_bytes_used = ram;

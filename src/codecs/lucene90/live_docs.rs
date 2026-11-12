@@ -46,12 +46,9 @@ impl LiveDocsFormat for Lucene90LiveDocsFormat {
     ) -> Result<Box<dyn Bits>> {
         let gen = info.get_del_gen();
         let name = file_name_from_generation(&info.info.name, LIVE_DOCS_EXTENSION, gen)
-            .ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "missing live docs generation for segment: {}",
-                    info.info.name
-                ))
-            })?;
+            // `fileNameFromGeneration` returns `null` for generation -1, and
+            // the directory dereferences it: the JVM's `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)?;
         let max_doc = info.info.max_doc()?;
         let del_count = info.get_del_count();
         let deletion_rate = del_count as f64 / max_doc as f64;
@@ -89,12 +86,9 @@ impl LiveDocsFormat for Lucene90LiveDocsFormat {
     ) -> Result<()> {
         let gen = info.get_next_del_gen();
         let name = file_name_from_generation(&info.info.name, LIVE_DOCS_EXTENSION, gen)
-            .ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "missing live docs generation for segment: {}",
-                    info.info.name
-                ))
-            })?;
+            // `fileNameFromGeneration` returns `null` for generation -1, and
+            // the directory dereferences it: the JVM's `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)?;
         // `try (IndexOutput output = dir.createOutput(name, context))`
         // (`Lucene90LiveDocsFormat.java:171-183`): the output is closed
         // whether or not the body throws; a failure of the body wins, and the

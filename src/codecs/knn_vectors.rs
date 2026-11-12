@@ -171,10 +171,14 @@ pub trait KnnVectorsWriter: Send + Sync + fmt::Debug {
         match field_info.vector_encoding {
             VectorEncoding::BYTE => {
                 let FieldVectorWriter::Byte(mut byte_writer) = self.add_field(field_info)? else {
-                    return Err(LuceneError::illegal_state(format!(
-                        "the writer for byte vector field \"{}\" does not accept byte vectors",
-                        field_info.name
-                    )));
+                    // Java's cast of `addField`'s result is unchecked; the
+                    // `ClassCastException` comes from the writer's `addValue`
+                    // bridge, handed a `byte[]` it casts to `float[]`.
+                    return Err(LuceneError::unchecked(
+                        "java.lang.ClassCastException",
+                        "class [B cannot be cast to class [F ([B and [F are in module java.base of \
+                         loader 'bootstrap')",
+                    ));
                 };
                 let merged_bytes =
                     MergedVectorValues::merge_byte_vector_values(field_info, merge_state)?;
@@ -187,10 +191,12 @@ pub trait KnnVectorsWriter: Send + Sync + fmt::Debug {
             }
             VectorEncoding::FLOAT32 => {
                 let FieldVectorWriter::Float(mut float_writer) = self.add_field(field_info)? else {
-                    return Err(LuceneError::illegal_state(format!(
-                        "the writer for float vector field \"{}\" does not accept float vectors",
-                        field_info.name
-                    )));
+                    // As above, with a `float[]` handed to a `byte[]` writer.
+                    return Err(LuceneError::unchecked(
+                        "java.lang.ClassCastException",
+                        "class [F cannot be cast to class [B ([F and [B are in module java.base of \
+                         loader 'bootstrap')",
+                    ));
                 };
                 let merged_floats =
                     MergedVectorValues::merge_float_vector_values(field_info, merge_state)?;
@@ -302,15 +308,14 @@ pub trait IORunnable: Send + Sync {
 
 /// Locks the iteration state a merged view and its iterator share.
 ///
-/// The state is only ever touched by the one thread that merges; a poisoned
-/// lock means that thread already panicked inside it, and is reported as an
-/// error rather than propagated as a second panic.
+/// The state is only ever touched by the one thread that merges. Java has no
+/// lock poisoning, so a poisoned lock continues with the state it guards.
 fn lock_merged<S: DocIDMergerSub>(
     state: &std::sync::Mutex<MergedIterationState<S>>,
 ) -> Result<std::sync::MutexGuard<'_, MergedIterationState<S>>> {
-    state.lock().map_err(|_| {
-        LuceneError::illegal_state("merged vector values state lock poisoned".to_string())
-    })
+    Ok(state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner))
 }
 
 /// Tracks the state of one sub-reader of float vectors that is being merged.
@@ -1079,15 +1084,14 @@ enum BufferingFieldWriter {
 }
 
 /// Locks a field writer shared with the indexing chain. The writer is only
-/// touched by the one thread that indexes or flushes its segment; a poisoned
-/// lock means that thread already panicked inside it, and is reported as an
-/// error rather than propagated as a second panic.
+/// touched by the one thread that indexes or flushes its segment. Java has no
+/// lock poisoning, so a poisoned lock continues with the writer it guards.
 fn lock_field_writer<T: BufferedVector>(
     writer: &Mutex<FieldWriter<T>>,
 ) -> Result<MutexGuard<'_, FieldWriter<T>>> {
-    writer.lock().map_err(|_| {
-        LuceneError::illegal_state("buffering vectors field writer lock poisoned".to_string())
-    })
+    Ok(writer
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner))
 }
 
 impl<I: BufferingKnnVectorsWriterImpl> BufferingKnnVectorsWriter<I> {
@@ -1374,11 +1378,14 @@ impl<T: BufferedVector> KnnFieldVectorsWriter<T> for FieldWriter<T> {
         let dim = self.dim.max(0) as usize;
         if value.len() < dim {
             // `System.arraycopy` inside `ArrayUtil.copyOfSubArray`.
-            return Err(LuceneError::illegal_argument(format!(
-                "arraycopy: last source index {dim} out of bounds for {}[{}]",
-                T::JAVA_ARRAY,
-                value.len()
-            )));
+            return Err(LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!(
+                    "arraycopy: last source index {dim} out of bounds for {}[{}]",
+                    T::JAVA_ARRAY,
+                    value.len()
+                ),
+            ));
         }
         let copy = self.copy_value(value);
         Arc::make_mut(&mut self.vectors).push(copy);
@@ -1448,9 +1455,10 @@ struct SharedDocIndexIterator(Arc<Mutex<FromDisiDocIndexIterator>>);
 
 impl SharedDocIndexIterator {
     fn lock(&self) -> Result<MutexGuard<'_, FromDisiDocIndexIterator>> {
-        self.0.lock().map_err(|_| {
-            LuceneError::illegal_state("buffered vector values iterator lock poisoned".to_string())
-        })
+        Ok(self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 }
 
@@ -2049,9 +2057,10 @@ impl KnnVectorsFormatRegistry {
         let name = name.into();
         super::validate_service_name(&name)?;
 
-        let mut formats = self.formats.write().map_err(|_| {
-            LuceneError::illegal_state("KNN-vectors format registry lock was poisoned".to_string())
-        })?;
+        let mut formats = self
+            .formats
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         if formats.lookup(&name).is_ok() {
             return Err(LuceneError::illegal_state(format!(
@@ -2068,12 +2077,7 @@ impl KnnVectorsFormatRegistry {
     pub fn for_name(&self, name: &str) -> Option<Arc<dyn KnnVectorsFormat>> {
         self.formats
             .read()
-            .map_err(|_| {
-                LuceneError::illegal_state(
-                    "KNN-vectors format registry lock was poisoned".to_string(),
-                )
-            })
-            .ok()?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .lookup(name)
             .ok()
     }
@@ -2087,15 +2091,11 @@ impl KnnVectorsFormatRegistry {
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message,
     /// listing the available names, when no format is registered under
-    /// `name`, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is poisoned.
+    /// `name`.
     pub fn lookup(&self, name: &str) -> Result<Arc<dyn KnnVectorsFormat>> {
         self.formats
             .read()
-            .map_err(|_| {
-                LuceneError::illegal_state(
-                    "KNN-vectors format registry lock was poisoned".to_string(),
-                )
-            })?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .lookup(name)
     }
 
@@ -2104,9 +2104,10 @@ impl KnnVectorsFormatRegistry {
     /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
     /// Java's insertion-ordered `LinkedHashMap`.
     pub fn available_knn_vectors_formats(&self) -> Vec<String> {
-        let Ok(formats) = self.formats.read() else {
-            return Vec::new();
-        };
+        let formats = self
+            .formats
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         formats
             .available_services()
             .into_iter()
@@ -2126,17 +2127,14 @@ impl KnnVectorsFormatRegistry {
 /// # Errors
 ///
 /// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
-/// returns, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is
-/// poisoned.
+/// returns.
 pub fn reload_knn_vectors_format(
     classloader: &Arc<crate::util::resource_loader::ClassLoader>,
 ) -> Result<()> {
     GLOBAL_KNN_VECTORS_REGISTRY
         .formats
         .write()
-        .map_err(|_| {
-            LuceneError::illegal_state("KNN vectors format registry lock was poisoned".to_string())
-        })?
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .reload(classloader)
 }
 
@@ -3388,6 +3386,16 @@ mod tests {
                 Ok(()) => format!("add {doc} ok"),
                 Err(LuceneError {
                     kind: LuceneErrorKind::IllegalArgument { message, .. },
+                    ..
+                }) => format!("add {doc} {message}"),
+                // `System.arraycopy`'s `ArrayIndexOutOfBoundsException`.
+                Err(LuceneError {
+                    kind:
+                        LuceneErrorKind::Unchecked {
+                            class: "java.lang.ArrayIndexOutOfBoundsException",
+                            message: Some(message),
+                            ..
+                        },
                     ..
                 }) => format!("add {doc} {message}"),
                 Err(other) => panic!("unexpected error {other:?}"),

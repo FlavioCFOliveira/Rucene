@@ -87,16 +87,21 @@ impl DataOutput for SkipBuffer {
     }
 
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
-        let end = offset
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
-        if end > b.len() {
-            return Err(LuceneError::illegal_argument(format!(
-                "source buffer too small: offset={offset}, len={len}, buf.len()={}",
-                b.len()
-            )));
+        // Java's `ByteBuffersDataOutput.writeBytes` puts the bytes through
+        // `ByteBuffer.put(src, offset, length)`, whose
+        // `Objects.checkFromIndexSize` raises `IndexOutOfBoundsException` for a
+        // range the source does not hold.
+        let end = offset as u64 + len as u64;
+        if end > b.len() as u64 {
+            return Err(LuceneError::unchecked(
+                "java.lang.IndexOutOfBoundsException",
+                format!(
+                    "Range [{offset}, {offset} + {len}) out of bounds for length {}",
+                    b.len()
+                ),
+            ));
         }
-        self.bytes.extend_from_slice(&b[offset..end]);
+        self.bytes.extend_from_slice(&b[offset..offset + len]);
         Ok(())
     }
 }

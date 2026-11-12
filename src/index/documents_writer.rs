@@ -1016,11 +1016,13 @@ impl FrozenBufferedUpdates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`] when the lock is poisoned.
+    /// None: Java has no lock poisoning, so a poisoned lock is entered as Java
+    /// enters its monitor.
     pub fn lock_apply(&self) -> Result<MutexGuard<'_, ()>> {
-        self.apply_lock.lock().map_err(|_| {
-            LuceneError::illegal_state("frozen buffered updates apply lock poisoned".to_string())
-        })
+        Ok(self
+            .apply_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 
     /// Returns whether this packet has already been resolved.

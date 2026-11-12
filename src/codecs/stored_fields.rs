@@ -156,22 +156,28 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::LuceneErrorKind::IllegalArgument`] when the declared
-    /// length is negative, and propagates any I/O error.
+    /// Returns Java's `NegativeArraySizeException` when the declared length is
+    /// negative, and propagates any I/O error.
     fn write_field_data_input(
         &mut self,
         info: &FieldInfo,
         value: &mut StoredFieldDataInput<'_>,
     ) -> Result<()> {
         let length = value.length();
+        // `new byte[length]`: the JVM's `NegativeArraySizeException` for a
+        // negative length, its `OutOfMemoryError` for one the heap cannot hold.
         if length < 0 {
-            return Err(crate::error::LuceneError::illegal_argument(format!(
-                "stored binary field \"{}\" has a negative length: {length}",
-                info.name
-            )));
+            return Err(crate::error::LuceneError::unchecked(
+                "java.lang.NegativeArraySizeException",
+                length.to_string(),
+            ));
         }
         let length = length as usize;
-        let mut bytes = vec![0u8; length];
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.try_reserve_exact(length).map_err(|_| {
+            crate::error::LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space")
+        })?;
+        bytes.resize(length, 0);
         value.data_input().read_bytes(Some(&mut bytes), 0, length)?;
         self.write_field_bytes(info, &bytes)
     }

@@ -69,7 +69,7 @@ pub trait IndexWriter: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Propagates a poisoned writer state.
+    /// Propagates what reading the writer's state raises.
     fn segment_infos(&self) -> Result<SegmentInfos>;
 
     /// Returns the directory the writer is indexing into.
@@ -1124,9 +1124,10 @@ impl CompositeTermVectors {
         body: impl FnOnce(&mut dyn TermVectors, i32) -> Result<T>,
     ) -> Result<T> {
         let index = self.reader_index(doc_id)?;
-        let mut cache = self.sub_vectors.lock().map_err(|_| {
-            LuceneError::illegal_state("term vectors lock was poisoned".to_string())
-        })?;
+        let mut cache = self
+            .sub_vectors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cache[index].is_none() {
             cache[index] = Some(LeafReader::term_vectors(self.sub_readers[index].as_ref())?);
         }
@@ -1180,9 +1181,10 @@ impl CompositeStoredFields {
         body: impl FnOnce(&mut dyn StoredFields, i32) -> Result<T>,
     ) -> Result<T> {
         let index = self.reader_index(doc_id)?;
-        let mut cache = self.sub_fields.lock().map_err(|_| {
-            LuceneError::illegal_state("stored fields lock was poisoned".to_string())
-        })?;
+        let mut cache = self
+            .sub_fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cache[index].is_none() {
             cache[index] = Some(LeafReader::stored_fields(self.sub_readers[index].as_ref())?);
         }
@@ -1632,9 +1634,10 @@ impl DirectoryReaderCacheHelper {
     }
 
     fn notify_closed_listeners(&self) -> Result<()> {
-        let guard = self.listeners.lock().map_err(|_| {
-            LuceneError::illegal_state("reader closed listeners lock poisoned".to_string())
-        })?;
+        let guard = self
+            .listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // `IOUtils.applyToAll(readerClosedListeners, l -> l.onClose(cacheHelper.getKey()))`
         // (`StandardDirectoryReader.java:670-674`): every listener runs; the
         // first error is returned with the later ones suppressed into it.

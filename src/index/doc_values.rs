@@ -104,8 +104,10 @@ pub trait NumericDocValues: DocValuesIterator {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneErrorKind::IllegalArgument` if `size` is negative or if the
-    /// provided slices are too short for the requested offsets and size.
+    /// Returns the I/O error of a read, and the JVM's
+    /// `ArrayIndexOutOfBoundsException` where Java's `docs[di]` or
+    /// `values[vi]` runs outside its array. A negative `size` reads nothing,
+    /// as Java's loop does.
     fn long_values(
         &mut self,
         size: i32,
@@ -115,35 +117,33 @@ pub trait NumericDocValues: DocValuesIterator {
         values_offset: i32,
         default_value: i64,
     ) -> Result<()> {
-        if size < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "size must be >= 0, got {size}"
-            )));
-        }
-        let size = size as usize;
-        if docs.len() < docs_offset as usize + size {
-            return Err(LuceneError::illegal_argument(
-                "docs buffer too small for requested size/offset".to_string(),
-            ));
-        }
-        if values.len() < values_offset as usize + size {
-            return Err(LuceneError::illegal_argument(
-                "values buffer too small for requested size/offset".to_string(),
-            ));
-        }
-        for (di, &doc) in docs
-            .iter()
-            .enumerate()
-            .skip(docs_offset as usize)
-            .take(size)
-        {
-            let vi = values_offset as usize + (di - docs_offset as usize);
+        let aioobe = |index: i32, length: usize| {
+            LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!("Index {index} out of bounds for length {length}"),
+            )
+        };
+        // `for (int di = docsOffset, vi = valuesOffset, end = docsOffset + size;
+        // di < end; di++, vi++)`: `int` arithmetic, which wraps.
+        let end = docs_offset.wrapping_add(size);
+        let (mut di, mut vi) = (docs_offset, values_offset);
+        while di < end {
+            let doc = usize::try_from(di)
+                .ok()
+                .and_then(|i| docs.get(i).copied())
+                .ok_or_else(|| aioobe(di, docs.len()))?;
             let value = if self.advance_exact(doc)? {
                 self.long_value()?
             } else {
                 default_value
             };
-            values[vi] = value;
+            let length = values.len();
+            *usize::try_from(vi)
+                .ok()
+                .and_then(|i| values.get_mut(i))
+                .ok_or_else(|| aioobe(vi, length))? = value;
+            di += 1;
+            vi = vi.wrapping_add(1);
         }
         Ok(())
     }

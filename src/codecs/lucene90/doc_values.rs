@@ -1635,22 +1635,52 @@ impl Lucene90DocValuesConsumer<'_> {
 // Producer
 // -----------------------------------------------------------------------------
 
-/// Allocates a zeroed buffer, reporting a length the process cannot satisfy
-/// instead of aborting on it.
+/// Java's `new byte[length]`.
 ///
-/// Java sizes the same buffers from the same metadata and answers an impossible
-/// length with an `OutOfMemoryError`, which the caller can catch; Rust aborts
-/// the process when an allocation fails. `try_reserve_exact` restores Java's
-/// outcome without introducing a bound Lucene does not have.
-fn try_zeroed(length: usize) -> Result<Vec<u8>> {
+/// A negative length raises the JVM's `NegativeArraySizeException`, and a
+/// length the heap cannot hold its `OutOfMemoryError` (`Java heap space`);
+/// Rust would abort the process on the failed allocation instead, so the
+/// allocation is attempted with `try_reserve_exact` and its failure raised as
+/// that `OutOfMemoryError`.
+fn new_byte_array(length: i32) -> Result<Vec<u8>> {
+    if length < 0 {
+        return Err(LuceneError::unchecked(
+            "java.lang.NegativeArraySizeException",
+            length.to_string(),
+        ));
+    }
     let mut buffer: Vec<u8> = Vec::new();
-    buffer.try_reserve_exact(length).map_err(|_| {
-        LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-            "cannot allocate {length} bytes"
-        )))
-    })?;
-    buffer.resize(length, 0);
+    buffer
+        .try_reserve_exact(length as usize)
+        .map_err(|_| LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space"))?;
+    buffer.resize(length as usize, 0);
     Ok(buffer)
+}
+
+/// The JVM's `ArrayIndexOutOfBoundsException` for `array[index]` on an array
+/// of `length` elements: `Index <index> out of bounds for length <length>`.
+fn array_index_out_of_bounds(index: i64, length: usize) -> LuceneError {
+    LuceneError::unchecked(
+        "java.lang.ArrayIndexOutOfBoundsException",
+        format!("Index {index} out of bounds for length {length}"),
+    )
+}
+
+/// Java's `array[index]` read on an `int[]`.
+fn int_array_get(array: &[i32], index: i32) -> Result<i32> {
+    usize::try_from(index)
+        .ok()
+        .and_then(|i| array.get(i).copied())
+        .ok_or_else(|| array_index_out_of_bounds(i64::from(index), array.len()))
+}
+
+/// Java's `array[index]` slot on a `long[]`, for a store.
+fn long_array_slot(array: &mut [i64], index: i32) -> Result<&mut i64> {
+    let length = array.len();
+    usize::try_from(index)
+        .ok()
+        .and_then(|i| array.get_mut(i))
+        .ok_or_else(|| array_index_out_of_bounds(i64::from(index), length))
 }
 
 /// `throw new CorruptIndexException(message, in)`
@@ -1729,6 +1759,10 @@ struct TermsDictEntry {
     terms_index_length: i64,
     terms_index_addresses_offset: i64,
     terms_index_addresses_length: i64,
+    /// `maxTermLength`: the size of the enum's term buffer.
+    max_term_length: i32,
+    /// `maxBlockLength`: with `maxTermLength`, the size of its block buffer.
+    max_block_length: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -2292,8 +2326,12 @@ impl Lucene90DocValuesProducer {
     /// Equivalent to `Lucene90DocValuesProducer.isContiguous(int, int[], int)`.
     /// Only a contiguous run maps onto a contiguous byte range, which is what
     /// makes a bulk read possible.
-    fn is_contiguous(size: usize, docs: &[i32], docs_offset: usize) -> bool {
-        size == 0 || docs[docs_offset + size - 1] - docs[docs_offset] == size as i32 - 1
+    fn is_contiguous(size: i32, docs: &[i32], docs_offset: i32) -> Result<bool> {
+        // `int` arithmetic, which wraps, and Java's array reads.
+        Ok(size == 0
+            || int_array_get(docs, docs_offset.wrapping_add(size).wrapping_sub(1))?
+                .wrapping_sub(int_array_get(docs, docs_offset)?)
+                == size.wrapping_sub(1))
     }
 
     /// Returns how many bytes past the values a bulk decode may read.
@@ -2313,10 +2351,20 @@ impl Lucene90DocValuesProducer {
     ///
     /// Equivalent to `Lucene90DocValuesProducer.applyTable(long[], int, long[], int)`,
     /// the last step of reading a table-compressed numeric field.
-    fn apply_table(values: &mut [i64], values_offset: usize, table: &[i64], size: usize) {
-        for value in values.iter_mut().skip(values_offset).take(size) {
-            *value = table[*value as usize];
+    fn apply_table(values: &mut [i64], values_offset: i32, table: &[i64], size: i32) -> Result<()> {
+        let end = values_offset.wrapping_add(size);
+        let mut i = values_offset;
+        while i < end {
+            let slot = long_array_slot(values, i)?;
+            // `table[(int) values[i]]`.
+            let ordinal = *slot as i32;
+            *slot = usize::try_from(ordinal)
+                .ok()
+                .and_then(|ordinal| table.get(ordinal).copied())
+                .ok_or_else(|| array_index_out_of_bounds(i64::from(ordinal), table.len()))?;
+            i += 1;
         }
+        Ok(())
     }
 
     /// Undoes the GCD and minimum-value compression of a numeric field.
@@ -2324,14 +2372,19 @@ impl Lucene90DocValuesProducer {
     /// Equivalent to `Lucene90DocValuesProducer.applyGcdDelta(long[], int, long, long, int)`.
     fn apply_gcd_delta(
         values: &mut [i64],
-        values_offset: usize,
+        values_offset: i32,
         mul: i64,
         delta: i64,
-        size: usize,
-    ) {
-        for value in values.iter_mut().skip(values_offset).take(size) {
-            *value = mul.wrapping_mul(*value).wrapping_add(delta);
+        size: i32,
+    ) -> Result<()> {
+        let end = values_offset.wrapping_add(size);
+        let mut i = values_offset;
+        while i < end {
+            let slot = long_array_slot(values, i)?;
+            *slot = mul.wrapping_mul(*slot).wrapping_add(delta);
+            i += 1;
         }
+        Ok(())
     }
 
     /// Returns the fixed number of values every document of a sorted-numeric
@@ -2458,42 +2511,50 @@ impl Lucene90DocValuesProducer {
         slice: &mut dyn RandomAccessInput,
         bits_per_value: i32,
         block_shift: i32,
-        size: usize,
+        size: i32,
         docs: &[i32],
-        docs_offset: usize,
+        docs_offset: i32,
         values: &mut [i64],
-        values_offset: usize,
+        values_offset: i32,
         bytes: &mut Vec<u8>,
     ) -> Result<bool> {
         if !Self::can_bulk_decode_byte_aligned(block_shift, bits_per_value)
-            || !Self::is_contiguous(size, docs, docs_offset)
+            || !Self::is_contiguous(size, docs, docs_offset)?
         {
             return Ok(false);
         }
-        let bytes_per_value = (bits_per_value / 8) as i64;
-        let byte_count_long = size as i64 * bytes_per_value;
+        let bytes_per_value = bits_per_value / 8;
+        let byte_count_long = i64::from(size) * i64::from(bytes_per_value);
         if byte_count_long > i64::from(i32::MAX) {
             return Ok(false);
         }
-        let byte_count = byte_count_long as usize;
+        let byte_count = byte_count_long as i32;
         let read_byte_count = if byte_count == 0 {
             0
         } else {
-            byte_count + Self::padding_bytes_needed_for_bulk_decode(bits_per_value) as usize
+            byte_count.wrapping_add(Self::padding_bytes_needed_for_bulk_decode(bits_per_value))
         };
         let offset = if byte_count == 0 {
             0
         } else {
-            i64::from(docs[docs_offset]) * bytes_per_value
+            i64::from(int_array_get(docs, docs_offset)?) * i64::from(bytes_per_value)
         };
-        if offset + read_byte_count as i64 > slice.length() {
+        if offset.wrapping_add(i64::from(read_byte_count)) > slice.length() {
             return Ok(false);
         }
-        if bytes.len() < read_byte_count {
-            bytes.resize(read_byte_count, 0);
+        if (bytes.len() as i64) < i64::from(read_byte_count) {
+            *bytes = new_byte_array(read_byte_count)?;
         }
         if byte_count != 0 {
-            slice.read_bytes_at(offset, bytes, 0, read_byte_count)?;
+            // A negative count reaches the read as Java passes it; the input
+            // rejects the range it does not hold.
+            slice.read_bytes_at(offset, bytes, 0, read_byte_count as usize)?;
+            if values_offset < 0 {
+                return Err(array_index_out_of_bounds(
+                    i64::from(values_offset),
+                    values.len(),
+                ));
+            }
             crate::internal::vectorization::get_instance()
                 .get_doc_values_bulk_decode_support()
                 .decode_byte_aligned(
@@ -2501,8 +2562,8 @@ impl Lucene90DocValuesProducer {
                     0,
                     bits_per_value as u32,
                     values,
-                    values_offset,
-                    size,
+                    values_offset as usize,
+                    size as usize,
                 )?;
         }
         Ok(true)
@@ -2640,8 +2701,8 @@ impl Lucene90DocValuesProducer {
         let block_shift = meta.read_int()?;
         let addresses_size = shift_up_round(terms_dict_size, TERMS_DICT_BLOCK_LZ4_SHIFT as u32);
         let terms_addresses_meta = DirectMonotonicMeta::load(meta, addresses_size, block_shift)?;
-        let _max_term_length = meta.read_int()?;
-        let _max_block_length = meta.read_int()?;
+        let max_term_length = meta.read_int()?;
+        let max_block_length = meta.read_int()?;
         let terms_data_offset = meta.read_long()?;
         let terms_data_length = meta.read_long()?;
         let terms_addresses_offset = meta.read_long()?;
@@ -2667,6 +2728,8 @@ impl Lucene90DocValuesProducer {
             terms_index_length,
             terms_index_addresses_offset,
             terms_index_addresses_length,
+            max_term_length,
+            max_block_length,
         })
     }
 }
@@ -2683,40 +2746,16 @@ fn shift_up_round(value: i64, shift: u32) -> i64 {
     (value.wrapping_add(1u64 << shift).wrapping_sub(1) >> shift) as i64
 }
 
-/// Checks a region against the data file before slicing it.
-///
-/// `IndexInput.slice` throws `IllegalArgumentException` for a region the file
-/// does not hold; both numbers here come off disk, so the same check has to
-/// happen before the slice is built.
-fn check_region(data: &dyn IndexInput, offset: i64, length: i64) -> Result<()> {
-    let file_length = data.length();
-    if offset < 0 || length < 0 || offset > file_length || length > file_length - offset {
-        return corrupt(format!(
-            "doc-values region [{offset}, {offset}+{length}) lies outside the \
-             {file_length}-byte data file"
-        ));
-    }
-    Ok(())
-}
-
-fn checked_slice(
-    data: &dyn IndexInput,
-    description: &str,
-    offset: i64,
-    length: i64,
-) -> Result<Box<dyn IndexInput>> {
-    check_region(data, offset, length)?;
-    data.slice(description, offset, length)
-}
-
 type SharedRandomAccess = crate::util::packed::SharedRandomAccessInput;
 
-fn checked_random_access(
+/// `data.randomAccessSlice(offset, length)`, shared by the readers that decode
+/// it. The slice itself rejects a region the file does not hold, with
+/// `IndexInput.slice`'s `IllegalArgumentException`, as in Java.
+fn shared_random_access(
     data: &dyn IndexInput,
     offset: i64,
     length: i64,
 ) -> Result<SharedRandomAccess> {
-    check_region(data, offset, length)?;
     Ok(crate::util::packed::shared_random_access_input(
         data.random_access_slice(offset, length)?,
     ))
@@ -2774,7 +2813,6 @@ impl DocsCursor {
         if offset == -1 {
             return Ok(Self::Dense { max_doc, doc: -1 });
         }
-        check_region(data, offset, length)?;
         Ok(Self::Sparse {
             disi: IndexedDISI::new(
                 data,
@@ -2918,7 +2956,7 @@ impl NumericValueSource {
         if entry.bits_per_value == 0 {
             return Ok(Self::Constant(entry.min_value));
         }
-        let slice = checked_random_access(data, entry.values_offset, entry.values_length)?;
+        let slice = shared_random_access(data, entry.values_offset, entry.values_length)?;
         if entry.block_shift >= 0 {
             // Dense or sparse, "split into blocks of different bits per value"
             // (`Lucene90DocValuesProducer.java:819-823, 1003-1007, 1063-1065`).
@@ -2967,23 +3005,14 @@ impl NumericValueSource {
             Self::Constant(value) => Ok(*value),
             Self::Varying(reader) => reader.borrow_mut().get_long_value(index),
             Self::Table { reader, table, .. } => {
-                let ordinal = reader.get_checked(index)?;
-                // The ordinal is `bitsPerValue` wide and the table at most 256
-                // long: a corrupt width makes the two disagree, and Java
-                // answers that with an `ArrayIndexOutOfBoundsException` rather
-                // than a value from somewhere else.
+                // `table[(int) values.get(index)]`: the JVM's
+                // `ArrayIndexOutOfBoundsException` for an ordinal the table
+                // does not hold.
+                let ordinal = reader.get_checked(index)? as i32;
                 usize::try_from(ordinal)
                     .ok()
                     .and_then(|ordinal| table.get(ordinal).copied())
-                    .map_or_else(
-                        || {
-                            corrupt(format!(
-                                "table ordinal {ordinal} is outside the {}-entry table",
-                                table.len()
-                            ))
-                        },
-                        Ok,
-                    )
+                    .ok_or_else(|| array_index_out_of_bounds(i64::from(ordinal), table.len()))
             }
             // Java's arithmetic wraps here; a corrupt `min` or `gcd` must
             // produce the value Java would produce, not an overflow panic.
@@ -3061,7 +3090,7 @@ impl VaryingBpvReader {
         let rank_slice = if entry.value_jump_table_offset == -1 {
             None
         } else {
-            Some(checked_random_access(
+            Some(shared_random_access(
                 data,
                 entry.value_jump_table_offset,
                 data.length().wrapping_sub(entry.value_jump_table_offset),
@@ -3203,24 +3232,19 @@ impl LazyNumericDocValues {
         values_offset: i32,
         default_value: i64,
     ) -> Result<()> {
-        let size = size as usize;
-        if docs.len() < docs_offset as usize + size {
-            return Err(LuceneError::illegal_argument(
-                "docs buffer too small for requested size/offset".to_string(),
-            ));
-        }
-        if values.len() < values_offset as usize + size {
-            return Err(LuceneError::illegal_argument(
-                "values buffer too small for requested size/offset".to_string(),
-            ));
-        }
-        for i in 0..size {
-            let doc = docs[docs_offset as usize + i];
-            values[values_offset as usize + i] = if self.advance_exact(doc)? {
+        // `NumericDocValues.longValues(int, int[], int, long[], int, long)`:
+        // `int` indices, which wrap, and Java's array accesses.
+        let end = docs_offset.wrapping_add(size);
+        let (mut di, mut vi) = (docs_offset, values_offset);
+        while di < end {
+            let value = if self.advance_exact(int_array_get(docs, di)?)? {
                 self.long_value()?
             } else {
                 default_value
             };
+            *long_array_slot(values, vi)? = value;
+            di += 1;
+            vi = vi.wrapping_add(1);
         }
         Ok(())
     }
@@ -3267,11 +3291,6 @@ impl NumericDocValues for LazyNumericDocValues {
         values_offset: i32,
         default_value: i64,
     ) -> Result<()> {
-        if size < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "size must be >= 0, got {size}"
-            )));
-        }
         // The bulk path only applies to a dense field: a sparse one has no
         // value for every document in the run.
         if !self.docs.is_dense() {
@@ -3284,7 +3303,6 @@ impl NumericDocValues for LazyNumericDocValues {
                 default_value,
             );
         }
-        let size_usize = size as usize;
         let mut bulk_bytes = std::mem::take(&mut self.bulk_bytes);
         let decoded = match &self.values {
             NumericValueSource::Table {
@@ -3299,20 +3317,15 @@ impl NumericDocValues for LazyNumericDocValues {
                     borrowed.as_mut(),
                     *bits_per_value,
                     *block_shift,
-                    size_usize,
+                    size,
                     docs,
-                    docs_offset as usize,
+                    docs_offset,
                     values,
-                    values_offset as usize,
+                    values_offset,
                     &mut bulk_bytes,
                 )?;
                 if done {
-                    Lucene90DocValuesProducer::apply_table(
-                        values,
-                        values_offset as usize,
-                        table,
-                        size_usize,
-                    );
+                    Lucene90DocValuesProducer::apply_table(values, values_offset, table, size)?;
                 }
                 done
             }
@@ -3329,21 +3342,21 @@ impl NumericDocValues for LazyNumericDocValues {
                     borrowed.as_mut(),
                     *bits_per_value,
                     *block_shift,
-                    size_usize,
+                    size,
                     docs,
-                    docs_offset as usize,
+                    docs_offset,
                     values,
-                    values_offset as usize,
+                    values_offset,
                     &mut bulk_bytes,
                 )?;
                 if done && !(*gcd == 1 && *min == 0) {
                     Lucene90DocValuesProducer::apply_gcd_delta(
                         values,
-                        values_offset as usize,
+                        values_offset,
                         *gcd,
                         *min,
-                        size_usize,
-                    );
+                        size,
+                    )?;
                 }
                 done
             }
@@ -3351,11 +3364,13 @@ impl NumericDocValues for LazyNumericDocValues {
         };
         self.bulk_bytes = bulk_bytes;
         if decoded {
-            if size_usize != 0 {
+            if size != 0 {
                 // The cursor is left on the last document of the run, as
-                // Lucene's override leaves it.
-                self.docs
-                    .set_doc_id(docs[docs_offset as usize + size_usize - 1]);
+                // Lucene's override leaves it: `doc = docs[docsOffset + size - 1]`.
+                self.docs.set_doc_id(int_array_get(
+                    docs,
+                    docs_offset.wrapping_add(size).wrapping_sub(1),
+                )?);
             }
             return Ok(());
         }
@@ -3440,9 +3455,11 @@ impl NumericDocValues for LazyNumericDocValues {
 struct LazyBinaryDocValues {
     docs: DocsCursor,
     bytes: RefCell<Box<dyn RandomAccessInput>>,
-    region_length: i64,
     addresses: Option<DirectMonotonicReader>,
     fixed_length: i32,
+    /// `bytes.bytes`: the `new byte[entry.maxLength]` each of Java's binary
+    /// views reads its values into.
+    buffer: RefCell<Vec<u8>>,
     cost: i64,
 }
 
@@ -3457,19 +3474,11 @@ impl LazyBinaryDocValues {
             entry.dense_rank_power,
             i64::from(entry.num_docs_with_field),
         )?;
-        if entry.min_length < 0 || entry.max_length < entry.min_length {
-            return corrupt(format!(
-                "binary lengths must be non-negative and ordered, got \
-                 min={} max={}",
-                entry.min_length, entry.max_length
-            ));
-        }
-        check_region(data, entry.data_offset, entry.data_length)?;
         let bytes = data.random_access_slice(entry.data_offset, entry.data_length)?;
         let addresses = match entry.addresses_meta {
             Some(ref meta) => {
                 let slice =
-                    checked_random_access(data, entry.addresses_offset, entry.addresses_length)?;
+                    shared_random_access(data, entry.addresses_offset, entry.addresses_length)?;
                 Some(DirectMonotonicReader::with_random_access(
                     meta.clone(),
                     slice,
@@ -3477,12 +3486,16 @@ impl LazyBinaryDocValues {
             }
             None => None,
         };
+        // `new BytesRef(new byte[length], 0, length)` for a fixed length,
+        // `new byte[entry.maxLength]` otherwise; the two lengths are equal in
+        // the former case.
+        let buffer = RefCell::new(new_byte_array(entry.max_length)?);
         Ok(Self {
             docs,
             bytes: RefCell::new(bytes),
-            region_length: entry.data_length,
             addresses,
             fixed_length: entry.min_length,
+            buffer,
             cost: i64::from(entry.num_docs_with_field),
         })
     }
@@ -3513,37 +3526,33 @@ impl DocValuesIterator for LazyBinaryDocValues {
 }
 
 impl BinaryDocValues for LazyBinaryDocValues {
+    /// Equivalent to the `binaryValue()` of the four binary views of
+    /// `getBinary` (`Lucene90DocValuesProducer.java:1233-1305`): a fixed
+    /// length reads `length` bytes at `(long) index * length`, a variable one
+    /// reads `(int) (addresses.get(index + 1) - start)` bytes at
+    /// `start = addresses.get(index)`, both into the `byte[maxLength]` buffer
+    /// through `RandomAccessInput.readBytes`, which raises what Java raises for
+    /// a region the slice or the buffer does not hold.
     fn binary_value(&self) -> Result<BytesRef> {
         let index = self.docs.index();
-        if index < 0 {
-            return corrupt("the cursor is not positioned on a document".to_string());
-        }
-        let (start, end) = match self.addresses {
-            Some(ref addresses) => (
-                addresses.get_checked(index)?,
-                addresses.get_checked(index.wrapping_add(1))?,
-            ),
-            None => {
-                let start = index.saturating_mul(i64::from(self.fixed_length));
-                (start, start.saturating_add(i64::from(self.fixed_length)))
+        let (start, length) = match self.addresses {
+            Some(ref addresses) => {
+                let start = addresses.get_checked(index)?;
+                let end = addresses.get_checked(index.wrapping_add(1))?;
+                (start, end.wrapping_sub(start) as i32)
             }
+            None => (
+                index.wrapping_mul(i64::from(self.fixed_length)),
+                self.fixed_length,
+            ),
         };
-        // Every bound here is decoded from the file, so the region is checked
-        // before a byte of it is read: Java raises rather than handing back
-        // bytes that belong to another document.
-        if start < 0 || end < start || end > self.region_length {
-            return corrupt(format!(
-                "binary value spans [{start}, {end}), which the \
-                 {}-byte region does not hold",
-                self.region_length
-            ));
-        }
-        let length = (end - start) as usize;
-        let mut value = try_zeroed(length)?;
+        let mut buffer = self.buffer.borrow_mut();
+        // A negative `int` length reaches the read as Java passes it; the
+        // input rejects the range it does not hold.
         self.bytes
             .borrow_mut()
-            .read_bytes_at(start, &mut value, 0, length)?;
-        Ok(BytesRef::new(value))
+            .read_bytes_at(start, &mut buffer, 0, length as usize)?;
+        Ok(BytesRef::new(buffer[..length as usize].to_vec()))
     }
 }
 
@@ -3567,17 +3576,37 @@ struct TermsDict {
     size: i64,
     data_length: i64,
     ord: i64,
+    /// `term.bytes`: `new BytesRef(entry.maxTermLength)`.
     term: Vec<u8>,
-    /// The block's first term followed by its decompressed suffixes.
-    block: Vec<u8>,
-    block_pos: usize,
+    /// `term.length`.
+    term_length: i32,
+    /// `blockBuffer.bytes`: `entry.maxBlockLength + entry.maxTermLength +
+    /// LZ4_DECOMPRESSOR_PADDING` bytes.
+    block_buffer: Vec<u8>,
+    /// `blockBuffer.offset`.
+    block_offset: i32,
+    /// `blockBuffer.length`.
+    block_length: i32,
+    /// `blockInput.pos`.
+    block_pos: i32,
+    /// Whether `blockInput` reads `blockBuffer.bytes`; until its first
+    /// `reset` it reads `BytesRef.EMPTY_BYTES`, as `new ByteArrayDataInput()`
+    /// does.
+    block_input_reset: bool,
+    current_compressed_block_start: i64,
+    current_compressed_block_end: i64,
     /// `BaseTermsEnum`'s attribute source.
     atts: crate::util::AttributeSource,
 }
 
 impl TermsDict {
+    /// `TermsDict.LZ4_DECOMPRESSOR_PADDING`.
+    const LZ4_DECOMPRESSOR_PADDING: i32 = 7;
+
+    /// Equivalent to `TermsDict(TermsDictEntry, IndexInput)`
+    /// (`Lucene90DocValuesProducer.java:1589-1609`).
     fn new(data: &dyn IndexInput, entry: &TermsDictEntry) -> Result<Self> {
-        let addresses = checked_random_access(
+        let addresses = shared_random_access(
             data,
             entry.terms_addresses_offset,
             entry.terms_addresses_length,
@@ -3586,13 +3615,8 @@ impl TermsDict {
             entry.terms_addresses_meta.clone(),
             addresses,
         )?;
-        let bytes = checked_slice(
-            data,
-            "terms",
-            entry.terms_data_offset,
-            entry.terms_data_length,
-        )?;
-        let index_addresses_slice = checked_random_access(
+        let bytes = data.slice("terms", entry.terms_data_offset, entry.terms_data_length)?;
+        let index_addresses_slice = shared_random_access(
             data,
             entry.terms_index_addresses_offset,
             entry.terms_index_addresses_length,
@@ -3602,7 +3626,14 @@ impl TermsDict {
             index_addresses_slice,
         )?;
         let index_bytes =
-            checked_random_access(data, entry.terms_index_offset, entry.terms_index_length)?;
+            shared_random_access(data, entry.terms_index_offset, entry.terms_index_length)?;
+        let term = new_byte_array(entry.max_term_length)?;
+        // `int` arithmetic, which wraps.
+        let buffer_size = entry
+            .max_block_length
+            .wrapping_add(entry.max_term_length)
+            .wrapping_add(Self::LZ4_DECOMPRESSOR_PADDING);
+        let block_buffer = new_byte_array(buffer_size)?;
         Ok(Self {
             bytes,
             block_addresses,
@@ -3612,11 +3643,63 @@ impl TermsDict {
             size: entry.terms_dict_size,
             data_length: entry.terms_data_length,
             ord: -1,
-            term: Vec::new(),
-            block: Vec::new(),
+            term,
+            term_length: 0,
+            block_buffer,
+            block_offset: 0,
+            block_length: buffer_size,
             block_pos: 0,
+            block_input_reset: false,
+            current_compressed_block_start: -1,
+            current_compressed_block_end: -1,
             atts: crate::util::AttributeSource::new(),
         })
+    }
+
+    /// The current term: `term.bytes[0, term.length)`.
+    fn term_bytes(&self) -> &[u8] {
+        &self.term[..self.term_length as usize]
+    }
+
+    /// Reads `length` bytes from `bytes` into `term.bytes[0, length)` and
+    /// makes them the term: `term.length = length; bytes.readBytes(term.bytes,
+    /// 0, term.length)`. The input rejects a length the buffer does not hold.
+    fn read_term_from_bytes(&mut self, length: i32) -> Result<()> {
+        self.bytes
+            .read_bytes(Some(&mut self.term), 0, length as usize)?;
+        self.term_length = length;
+        Ok(())
+    }
+
+    /// `blockInput.readByte()`: `bytes[pos++]`, which raises the JVM's
+    /// `ArrayIndexOutOfBoundsException` past the end of the array (not of the
+    /// input's limit, which `ByteArrayDataInput.readByte` does not check).
+    fn block_read_byte(&mut self) -> Result<u8> {
+        let pos = self.block_pos;
+        self.block_pos = pos.wrapping_add(1);
+        let array: &[u8] = if self.block_input_reset {
+            &self.block_buffer
+        } else {
+            &[]
+        };
+        usize::try_from(pos)
+            .ok()
+            .and_then(|i| array.get(i).copied())
+            .ok_or_else(|| array_index_out_of_bounds(i64::from(pos), array.len()))
+    }
+
+    /// `blockInput.readVInt()`: `DataInput.readVInt`, whose shifts are Java's
+    /// `int` shifts.
+    fn block_read_v_int(&mut self) -> Result<i32> {
+        let mut b = self.block_read_byte()?;
+        let mut i = i32::from(b & 0x7F);
+        let mut shift = 7u32;
+        while b & 0x80 != 0 {
+            b = self.block_read_byte()?;
+            i |= i32::from(b & 0x7F).wrapping_shl(shift);
+            shift = shift.wrapping_add(7);
+        }
+        Ok(i)
     }
 
     /// Reads the `index`-th term of the reverse index into `term`.
@@ -3632,19 +3715,15 @@ impl TermsDict {
         );
         let start = self.index_addresses.get_checked(index)?;
         let end = self.index_addresses.get_checked(index.wrapping_add(1))?;
-        // `(int) (indexAddresses.get(index + 1) - start)`.
+        // `term.length = (int) (indexAddresses.get(index + 1) - start)`.
         let length = end.wrapping_sub(start) as i32;
-        if length < 0 {
-            return corrupt(format!("negative reverse-index term length {length}"));
-        }
-        let mut term = try_zeroed(length as usize)?;
         lock_random_access_input(&self.index_bytes).read_bytes_at(
             start,
-            &mut term,
+            &mut self.term,
             0,
             length as usize,
         )?;
-        self.term = term;
+        self.term_length = length;
         Ok(())
     }
 
@@ -3662,7 +3741,7 @@ impl TermsDict {
         while lo <= hi {
             let mid = ((lo.wrapping_add(hi) as u64) >> 1) as i64;
             self.get_term_from_index(mid)?;
-            if self.term.as_slice() <= text {
+            if self.term_bytes() <= text {
                 lo = mid + 1;
             } else {
                 hi = mid - 1;
@@ -3673,7 +3752,7 @@ impl TermsDict {
         debug_assert!(
             hi < 0 || {
                 self.get_term_from_index(hi)?;
-                self.term.as_slice() <= text
+                self.term_bytes() <= text
             }
         );
         debug_assert!(
@@ -3683,7 +3762,7 @@ impl TermsDict {
                 .wrapping_shr(self.index_shift as u32)
                 || {
                     self.get_term_from_index(hi + 1)?;
-                    self.term.as_slice() > text
+                    self.term_bytes() > text
                 }
         );
         debug_assert!((hi < 0) ^ (self.size > 0)); // return -1 iff empty term dict
@@ -3700,9 +3779,10 @@ impl TermsDict {
                 && block
                     <= ((self.size.wrapping_sub(1) as u64) >> TERMS_DICT_BLOCK_LZ4_SHIFT) as i64
         );
-        self.seek_block_address(block)?;
-        self.term = self.read_raw_term()?;
-        Ok(())
+        let block_address = self.block_addresses.get_checked(block)?;
+        self.bytes.seek(block_address)?;
+        let length = self.bytes.read_v_int()?;
+        self.read_term_from_bytes(length)
     }
 
     /// Positions the enum on the first term of the block whose first term is
@@ -3736,7 +3816,7 @@ impl TermsDict {
         while block_lo <= block_hi {
             let block_mid = ((block_lo.wrapping_add(block_hi) as u64) >> 1) as i64;
             self.get_first_term_from_block(block_mid)?;
-            if self.term.as_slice() <= text {
+            if self.term_bytes() <= text {
                 block_lo = block_mid + 1;
             } else {
                 block_hi = block_mid - 1;
@@ -3748,14 +3828,14 @@ impl TermsDict {
         debug_assert!(
             block_hi < 0 || {
                 self.get_first_term_from_block(block_hi)?;
-                self.term.as_slice() <= text
+                self.term_bytes() <= text
             }
         );
         debug_assert!(
             block_hi == ((self.size.wrapping_sub(1) as u64) >> TERMS_DICT_BLOCK_LZ4_SHIFT) as i64
                 || {
                     self.get_first_term_from_block(block_hi + 1)?;
-                    self.term.as_slice() > text
+                    self.term_bytes() > text
                 }
         );
 
@@ -3765,36 +3845,12 @@ impl TermsDict {
         // reset ord and bytes to the ceiling block even if
         // text is before the first term (blockHi == -1)
         let block = std::cmp::max(block_hi, 0);
+        let block_address = self.block_addresses.get_checked(block)?;
         self.ord = block << TERMS_DICT_BLOCK_LZ4_SHIFT;
-        self.seek_block_address(block)?;
+        self.bytes.seek(block_address)?;
         self.decompress_block()?;
 
         Ok(block_hi)
-    }
-
-    /// Positions `bytes` on the start of `block`.
-    fn seek_block_address(&mut self, block: i64) -> Result<()> {
-        let address = self.block_addresses.get_checked(block)?;
-        if address < 0 || address > self.data_length {
-            return corrupt(format!(
-                "terms block {block} starts at {address}, outside the {}-byte dictionary",
-                self.data_length
-            ));
-        }
-        self.bytes.seek(address)
-    }
-
-    /// Reads a block's first term, which is stored raw: its `VInt` length and
-    /// its bytes.
-    fn read_raw_term(&mut self) -> Result<Vec<u8>> {
-        let term_length = self.bytes.read_v_int()?;
-        if term_length < 0 {
-            return corrupt(format!("negative term length {term_length}"));
-        }
-        let term_length = term_length as usize;
-        let mut term = try_zeroed(term_length)?;
-        self.bytes.read_bytes(Some(&mut term), 0, term_length)?;
-        Ok(term)
     }
 
     /// Positions the enum on the smallest term at least `text`.
@@ -3814,7 +3870,7 @@ impl TermsDict {
         }
 
         loop {
-            match self.term.as_slice().cmp(text) {
+            match self.term_bytes().cmp(text) {
                 std::cmp::Ordering::Equal => return Ok(SeekStatus::FOUND),
                 std::cmp::Ordering::Greater => return Ok(SeekStatus::NOT_FOUND),
                 std::cmp::Ordering::Less => {}
@@ -3825,59 +3881,46 @@ impl TermsDict {
         }
     }
 
-    fn block_byte(&mut self) -> Result<u8> {
-        let byte = *self.block.get(self.block_pos).ok_or_else(|| {
-            LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                "a terms block ended before its terms did".to_string(),
-            ))
-        })?;
-        self.block_pos += 1;
-        Ok(byte)
-    }
-
-    fn block_v_int(&mut self) -> Result<i32> {
-        let mut value = 0i32;
-        let mut shift = 0u32;
-        loop {
-            let byte = self.block_byte()?;
-            value |= i32::from(byte & 0x7F).wrapping_shl(shift);
-            if byte & 0x80 == 0 {
-                return Ok(value);
-            }
-            shift = shift.wrapping_add(7);
-            if shift > 28 {
-                return corrupt("a terms block holds a malformed VInt".to_string());
-            }
-        }
-    }
-
     /// Reads the first term of the block the cursor sits on and decompresses
     /// the rest of it against that term.
+    ///
+    /// Equivalent to `TermsDict.decompressBlock()`
+    /// (`Lucene90DocValuesProducer.java:1763-1787`).
     fn decompress_block(&mut self) -> Result<()> {
-        self.term = self.read_raw_term()?;
-        let term_length = self.term.len();
-        self.block_pos = 0;
-        self.block.clear();
-
-        // The final block of a dictionary whose last block holds one term has
-        // nothing compressed after it (`TermsDict.decompressBlock`).
+        // The first term is kept uncompressed, so no need to decompress block if only
+        // look up the first term when doing seek block.
+        let length = self.bytes.read_v_int()?;
+        self.read_term_from_bytes(length)?;
         let offset = self.bytes.file_pointer()?;
-        if offset < self.data_length - 1 {
-            let uncompressed_length = self.bytes.read_v_int()?;
-            if uncompressed_length < 0 {
-                return corrupt(format!("negative terms block length {uncompressed_length}"));
+        if offset < self.data_length.wrapping_sub(1) {
+            // Avoid decompress again if we are reading a same block.
+            if self.current_compressed_block_start != offset {
+                self.block_offset = self.term_length;
+                self.block_length = self.bytes.read_v_int()?;
+                // Decompress the remaining of current block, using the first term as a dictionary
+                crate::util::java_byte_arraycopy(
+                    &self.term,
+                    0,
+                    &mut self.block_buffer,
+                    0,
+                    self.block_offset,
+                )?;
+                Lz4::decompress(
+                    &mut *self.bytes,
+                    self.block_length as usize,
+                    &mut self.block_buffer,
+                    self.block_offset as usize,
+                )?;
+                self.current_compressed_block_start = offset;
+                self.current_compressed_block_end = self.bytes.file_pointer()?;
+            } else {
+                // Skip decompression but need to re-seek to block end.
+                self.bytes.seek(self.current_compressed_block_end)?;
             }
-            let uncompressed_length = uncompressed_length as usize;
-            let mut block = try_zeroed(term_length + uncompressed_length)?;
-            block[..term_length].copy_from_slice(&self.term);
-            Lz4::decompress(
-                &mut *self.bytes,
-                uncompressed_length,
-                &mut block,
-                term_length,
-            )?;
-            self.block = block;
-            self.block_pos = term_length;
+
+            // Reset the buffer.
+            self.block_input_reset = true;
+            self.block_pos = self.block_offset;
         }
         Ok(())
     }
@@ -3893,33 +3936,31 @@ impl TermsDict {
             self.decompress_block()?;
             return Ok(true);
         }
-        let token = usize::from(self.block_byte()?);
+        let token = i32::from(self.block_read_byte()?);
         let mut prefix_length = token & 0x0F;
         let mut suffix_length = 1 + (token >> 4);
         if prefix_length == 15 {
-            prefix_length += self.block_v_int()? as usize;
+            prefix_length = prefix_length.wrapping_add(self.block_read_v_int()?);
         }
         if suffix_length == 16 {
-            suffix_length += self.block_v_int()? as usize;
+            suffix_length = suffix_length.wrapping_add(self.block_read_v_int()?);
         }
-        // The prefix is shared with the term before it, so a prefix longer than
-        // that term names bytes the block never wrote.
-        if prefix_length > self.term.len() {
-            return corrupt(format!(
-                "a term shares a {prefix_length}-byte prefix with a term of {} bytes",
-                self.term.len()
-            ));
-        }
-        let available = self.block.len().saturating_sub(self.block_pos);
-        if suffix_length > available {
-            return corrupt(format!(
-                "a term suffix of {suffix_length} bytes runs past the {available} the block holds"
-            ));
-        }
-        self.term.truncate(prefix_length);
-        self.term
-            .extend_from_slice(&self.block[self.block_pos..self.block_pos + suffix_length]);
-        self.block_pos += suffix_length;
+        // `input.readBytes(term.bytes, prefixLength, suffixLength)`:
+        // `ByteArrayDataInput.readBytes`, a `System.arraycopy` from the block.
+        let array: &[u8] = if self.block_input_reset {
+            &self.block_buffer
+        } else {
+            &[]
+        };
+        crate::util::java_byte_arraycopy(
+            array,
+            self.block_pos,
+            &mut self.term,
+            prefix_length,
+            suffix_length,
+        )?;
+        self.block_pos = self.block_pos.wrapping_add(suffix_length);
+        self.term_length = prefix_length.wrapping_add(suffix_length);
         Ok(true)
     }
 
@@ -3938,13 +3979,15 @@ impl TermsDict {
         let current_block = self.ord >> TERMS_DICT_BLOCK_LZ4_SHIFT;
         let block = ord >> TERMS_DICT_BLOCK_LZ4_SHIFT;
         if ord < self.ord || block != current_block {
-            self.seek_block_address(block)?;
+            // The looked up ord is before the current ord or belongs to a different block, seek again
+            let block_address = self.block_addresses.get_checked(block)?;
+            self.bytes.seek(block_address)?;
             self.ord = (block << TERMS_DICT_BLOCK_LZ4_SHIFT) - 1;
         }
         while self.ord < ord {
             self.next()?;
         }
-        Ok(&self.term)
+        Ok(self.term_bytes())
     }
 }
 
@@ -3977,7 +4020,7 @@ impl crate::index::TermsEnum for TermsDict {
     }
 
     fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(BytesRef::new(self.term.clone())))
+        Ok(Some(BytesRef::new(self.term_bytes().to_vec())))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -4006,7 +4049,7 @@ impl crate::index::TermsEnum for TermsDict {
 
     fn next(&mut self) -> Result<Option<BytesRef>> {
         if TermsDict::next(self)? {
-            Ok(Some(BytesRef::new(self.term.clone())))
+            Ok(Some(BytesRef::new(self.term_bytes().to_vec())))
         } else {
             Ok(None)
         }
@@ -4178,7 +4221,7 @@ impl LazySortedNumericDocValues {
         let addresses = match entry.addresses_meta {
             Some(ref meta) => {
                 let slice =
-                    checked_random_access(data, entry.addresses_offset, entry.addresses_length)?;
+                    shared_random_access(data, entry.addresses_offset, entry.addresses_length)?;
                 Some(DirectMonotonicReader::with_random_access(
                     meta.clone(),
                     slice,
@@ -4217,12 +4260,6 @@ impl LazySortedNumericDocValues {
                 self.start = index;
                 self.end = index.wrapping_add(1);
             }
-        }
-        if self.end < self.start {
-            return corrupt(format!(
-                "a document claims values [{}, {})",
-                self.start, self.end
-            ));
         }
         self.cursor = self.start;
         Ok(())
@@ -4266,15 +4303,11 @@ impl DocValuesIterator for LazySortedNumericDocValues {
 }
 
 impl SortedNumericDocValues for LazySortedNumericDocValues {
+    /// `values.get(start++)`: Java reads past the document's values, without a
+    /// check, when called more than `docValueCount()` times.
     fn next_value(&mut self) -> Result<i64> {
-        if self.cursor >= self.end {
-            return corrupt(format!(
-                "the document holds values [{}, {}) and one more was asked for",
-                self.start, self.end
-            ));
-        }
         let value = self.values.value(self.cursor)?;
-        self.cursor += 1;
+        self.cursor = self.cursor.wrapping_add(1);
         Ok(value)
     }
 
@@ -4688,10 +4721,9 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
     /// The port fails the same call, with an error instead of a panic.
     fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
         let Some(entry) = self.skippers.get(&field.number).copied() else {
-            return Err(LuceneError::null_pointer_with_message(format!(
-                "field \"{}\" has no doc-values skip-index entry",
-                field.name
-            )));
+            return Err(LuceneError::null_pointer_with_message(
+                "Cannot read field \"offset\" because \"entry\" is null",
+            ));
         };
         let input = match &self.skip_index_data {
             Some(skip_index_data) => {

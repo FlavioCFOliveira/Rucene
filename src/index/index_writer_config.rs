@@ -1477,7 +1477,10 @@ mod set_info_stream_print_stream_tests {
 
     impl std::io::Write for Sink {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
             Ok(buf.len())
         }
 
@@ -1507,7 +1510,13 @@ mod set_info_stream_print_stream_tests {
         );
         assert!(info_stream.is_enabled("IW"));
         info_stream.message("IW", "hello");
-        let written = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        let written = String::from_utf8(
+            sink.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+        )
+        .unwrap();
         assert!(written.starts_with("IW "), "{written}");
         assert!(written.ends_with("]: hello\n"), "{written}");
     }

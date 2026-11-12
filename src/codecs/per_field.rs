@@ -134,7 +134,7 @@ fn format_identity<T: ?Sized>(format: &Arc<T>) -> usize {
     Arc::as_ptr(format) as *const () as usize
 }
 
-fn get_suffix(format_name: &str, suffix: i32) -> String {
+fn get_suffix(format_name: &str, suffix: impl std::fmt::Display) -> String {
     format!("{}_{}", format_name, suffix)
 }
 
@@ -449,13 +449,7 @@ impl FieldsReader {
                     // `PostingsFormat.forName(formatName)`: the loader's
                     // `IllegalArgumentException` for an unknown name.
                     let format = postings_lookup(&format_name)?;
-                    let suffix_num = suffix.parse::<i32>().map_err(|_| {
-                        LuceneError::illegal_state(format!(
-                            "invalid postings suffix for field \"{}\": {suffix}",
-                            fi.name
-                        ))
-                    })?;
-                    let segment_suffix = get_suffix(&format_name, suffix_num);
+                    let segment_suffix = get_suffix(&format_name, &suffix);
                     if !formats.contains_key(&segment_suffix) {
                         let state = read_state.with_new_suffix(segment_suffix.clone());
                         formats.insert(segment_suffix.clone(), format.fields_producer(&state)?);
@@ -503,10 +497,8 @@ impl Fields for FieldsReader {
         };
         self.formats
             .get(suffix)
-            .ok_or_else(|| {
-                LuceneError::illegal_state(format!("missing producer for suffix {suffix}"))
-            })
-            .and_then(|p| p.terms(field))
+            .expect("INVARIANT: every field maps to the suffix of an opened format")
+            .terms(field)
     }
 
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
@@ -942,15 +934,9 @@ impl DvFieldsReader {
                     // `DocValuesFormat.forName(formatName)`: the loader's
                     // `IllegalArgumentException` for an unknown name.
                     let format = doc_values_lookup(&format_name)?;
-                    let suffix_num = suffix.parse::<i32>().map_err(|_| {
-                        LuceneError::illegal_state(format!(
-                            "invalid doc-values suffix for field \"{}\": {suffix}",
-                            fi.name
-                        ))
-                    })?;
                     let segment_suffix = get_full_segment_suffix(
                         &read_state.segment_suffix,
-                        &get_suffix(&format_name, suffix_num),
+                        &get_suffix(&format_name, &suffix),
                     );
                     if !formats.contains_key(&segment_suffix) {
                         let state = read_state.with_new_suffix(segment_suffix.clone());
@@ -975,15 +961,17 @@ impl DvFieldsReader {
     }
 
     fn producer_for(&self, field: &FieldInfo) -> Result<&(dyn DocValuesProducer + '_)> {
-        let suffix = self.fields.get(&field.number).ok_or_else(|| {
-            LuceneError::illegal_argument(format!(
-                "field \"{}\" has no doc-values producer",
-                field.name
-            ))
-        })?;
-        self.formats.get(suffix).map(|b| b.as_ref()).ok_or_else(|| {
-            LuceneError::illegal_state(format!("missing doc-values producer for suffix {suffix}"))
-        })
+        // Every caller has checked `fields.get(field.number) != null` first,
+        // as Java's `producer == null ? null : ...` does.
+        let suffix = self
+            .fields
+            .get(&field.number)
+            .expect("INVARIANT: the caller checked that a producer serves the field");
+        Ok(self
+            .formats
+            .get(suffix)
+            .map(|b| b.as_ref())
+            .expect("INVARIANT: every field maps to the suffix of an opened format"))
     }
 }
 
@@ -1425,15 +1413,9 @@ impl KnnFieldsReader {
                     // `KnnVectorsFormat.forName(formatName)`: the loader's
                     // `IllegalArgumentException` for an unknown name.
                     let format = knn_vectors_lookup(&format_name)?;
-                    let suffix_num = suffix.parse::<i32>().map_err(|_| {
-                        LuceneError::illegal_state(format!(
-                            "invalid KNN-vectors suffix for field \"{}\": {suffix}",
-                            fi.name
-                        ))
-                    })?;
                     let segment_suffix = get_full_segment_suffix(
                         &read_state.segment_suffix,
-                        &get_suffix(&format_name, suffix_num),
+                        &get_suffix(&format_name, &suffix),
                     );
                     if !formats.contains_key(&segment_suffix) {
                         let state = read_state.with_new_suffix(segment_suffix.clone());
@@ -1600,11 +1582,10 @@ impl KnnVectorsReader for KnnFieldsReader {
             let Some(suffix) = self.fields.get(number) else {
                 continue;
             };
-            let reader = self.formats.get(suffix).ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "missing KNN-vectors reader for suffix {suffix}"
-                ))
-            })?;
+            let reader = self
+                .formats
+                .get(suffix)
+                .expect("INVARIANT: every field maps to the suffix of an opened format");
             formats.insert(name.clone(), reader.get_merge_instance()?);
             fields.put(number, name.clone());
             field_names.insert(name.clone(), name.clone());

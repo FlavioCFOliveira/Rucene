@@ -59,14 +59,21 @@ impl QueryTimeoutImpl {
     ///
     /// Equivalent to `QueryTimeoutImpl.getTimeoutAt()`.
     pub fn get_timeout_at(&self) -> Option<Instant> {
-        self.timeout_at.read().ok().and_then(|guard| *guard)
+        *self
+            .timeout_at
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Clears the deadline, so the timeout never fires again.
     ///
     /// Equivalent to `QueryTimeoutImpl.reset()`.
     pub fn reset(&self) {
-        if let Ok(mut guard) = self.timeout_at.write() {
+        {
+            let mut guard = self
+                .timeout_at
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *guard = None;
         }
     }
@@ -74,12 +81,13 @@ impl QueryTimeoutImpl {
 
 impl QueryTimeout for QueryTimeoutImpl {
     fn should_exit(&self) -> bool {
-        match self.timeout_at.read() {
-            Ok(guard) => match *guard {
-                Some(deadline) => Instant::now() > deadline,
-                None => false,
-            },
-            Err(_) => false,
+        match *self
+            .timeout_at
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            Some(deadline) => Instant::now() > deadline,
+            None => false,
         }
     }
 }
@@ -316,7 +324,10 @@ impl<T> ConcurrentApproximatePriorityQueue<T> {
             }
         }
         let index = seed % n;
-        if let Ok(mut queue) = self.queues[index].lock() {
+        {
+            let mut queue = self.queues[index]
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             queue.add(entry, weight);
         }
     }
@@ -336,7 +347,10 @@ impl<T> ConcurrentApproximatePriorityQueue<T> {
         }
         for i in 0..n {
             let index = (seed + i) % n;
-            if let Ok(mut queue) = self.queues[index].lock() {
+            {
+                let mut queue = self.queues[index]
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(entry) = queue.poll(&mut predicate) {
                     return Some(entry);
                 }
@@ -357,15 +371,21 @@ impl<T: PartialEq> ConcurrentApproximatePriorityQueue<T> {
         if !cfg!(debug_assertions) {
             panic!("contains should only be used for assertions");
         }
-        self.queues
-            .iter()
-            .any(|queue| queue.lock().map(|q| q.contains(entry)).unwrap_or(false))
+        self.queues.iter().any(|queue| {
+            queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(entry)
+        })
     }
 
     /// Removes `entry` from whichever shard holds it.
     pub fn remove(&self, entry: &T) -> bool {
         for queue in &self.queues {
-            if let Ok(mut queue) = queue.lock() {
+            {
+                let mut queue = queue
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if queue.remove(entry) {
                     return true;
                 }
@@ -495,7 +515,10 @@ impl std::fmt::Display for QueryTimeoutImpl {
     /// reading as `0`. Neither number is stable between runs in Java either —
     /// `nanoTime()`'s origin is arbitrary — so nothing may parse them.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let deadline = self.timeout_at.read().expect("timeout_at lock poisoned");
+        let deadline = self
+            .timeout_at
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match deadline.as_ref() {
             Some(instant) => {
                 let now = std::time::Instant::now();

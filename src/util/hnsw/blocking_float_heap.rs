@@ -46,10 +46,6 @@ impl BlockingFloatHeap {
     /// full.
     ///
     /// Returns the new top element of the queue.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
     pub fn offer(&self, value: f32) -> f32 {
         let mut inner = self.lock();
         if inner.size < self.max_size {
@@ -67,10 +63,6 @@ impl BlockingFloatHeap {
     ///
     /// The values must be sorted in ascending order; only the first `len` are
     /// inserted. Returns the new top element of the queue.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
     pub fn offer_all(&self, values: &[f32], len: usize) -> f32 {
         let mut inner = self.lock();
         for i in (0..len).rev() {
@@ -89,8 +81,7 @@ impl BlockingFloatHeap {
     ///
     /// # Panics
     ///
-    /// Panics if the heap is empty, matching Java's `IllegalStateException`, or if
-    /// the lock is poisoned.
+    /// Panics if the heap is empty, matching Java's `IllegalStateException`.
     pub fn poll(&self) -> f32 {
         let mut inner = self.lock();
         assert!(inner.size > 0, "The heap is empty");
@@ -102,19 +93,11 @@ impl BlockingFloatHeap {
     }
 
     /// Retrieves, but does not remove, the head of this heap, the smallest value.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
     pub fn peek(&self) -> f32 {
         self.lock().heap[1]
     }
 
     /// Returns the number of elements in this heap.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
     pub fn size(&self) -> usize {
         self.lock().size
     }
@@ -122,7 +105,7 @@ impl BlockingFloatHeap {
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner
             .lock()
-            .expect("INVARIANT: the heap is only mutated by infallible code, so it cannot be left inconsistent by a panic")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

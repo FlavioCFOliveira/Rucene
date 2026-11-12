@@ -848,9 +848,10 @@ impl Lucene99HnswVectorsWriter {
 
     /// Locks the writer's state for one operation.
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, HnswWriterState>> {
-        self.state.lock().map_err(|_| {
-            LuceneError::illegal_state("Lucene99HnswVectorsWriter state lock poisoned".to_string())
-        })
+        Ok(self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 }
 
@@ -1006,9 +1007,10 @@ impl HnswWriterState {
         levels: &[Vec<i32>],
         graph_level_node_offsets: &[Vec<i32>],
     ) -> Result<()> {
-        let meta = self.meta.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("Lucene99HnswVectorsWriter is already closed".to_string())
-        })?;
+        let meta = self
+            .meta
+            .as_mut()
+            .expect("INVARIANT: the writer holds its outputs for its whole life");
         meta.write_int(field_info.number)?;
         meta.write_int(vector_encoding_ordinal(field_info.vector_encoding))?;
         meta.write_int(dist_func_to_ord(field_info.vector_similarity_function))?;
@@ -1044,11 +1046,10 @@ impl HnswWriterState {
                 }
             }
 
-            let vector_index = self.vector_index.as_mut().ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "Lucene99HnswVectorsWriter is already closed".to_string(),
-                )
-            })?;
+            let vector_index = self
+                .vector_index
+                .as_mut()
+                .expect("INVARIANT: the writer holds its outputs for its whole life");
             let start = vector_index.file_pointer();
             meta.write_long(start)?;
             meta.write_v_int(DIRECT_MONOTONIC_BLOCK_SHIFT)?;
@@ -1091,21 +1092,19 @@ impl HnswWriterState {
             crate::codecs::knn_vectors::map_old_ord_to_new_ord(ord_to_doc, sort_map)?;
 
         let vector_index_offset = {
-            let vector_index = self.vector_index.as_ref().ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "Lucene99HnswVectorsWriter is already closed".to_string(),
-                )
-            })?;
+            let vector_index = self
+                .vector_index
+                .as_ref()
+                .expect("INVARIANT: the writer holds its outputs for its whole life");
             vector_index.file_pointer()
         };
         let (levels, graph_level_node_offsets) =
             self.reconstruct_and_write_graph(graph, &new_to_old_map, &old_to_new_map)?;
         let vector_index_length = {
-            let vector_index = self.vector_index.as_ref().ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "Lucene99HnswVectorsWriter is already closed".to_string(),
-                )
-            })?;
+            let vector_index = self
+                .vector_index
+                .as_ref()
+                .expect("INVARIANT: the writer holds its outputs for its whole life");
             vector_index.file_pointer() - vector_index_offset
         };
 
@@ -1222,9 +1221,10 @@ impl HnswWriterState {
         }
 
         let version = self.version;
-        let vector_index = self.vector_index.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("Lucene99HnswVectorsWriter is already closed".to_string())
-        })?;
+        let vector_index = self
+            .vector_index
+            .as_mut()
+            .expect("INVARIANT: the writer holds its outputs for its whole life");
         let start = vector_index.file_pointer();
         vector_index.write_v_int(scratch.len() as i32)?;
         if version >= VERSION_GROUPVARINT {
@@ -1268,11 +1268,7 @@ impl HnswWriterState {
         let vector_index_offset = self
             .vector_index
             .as_ref()
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "Lucene99HnswVectorsWriter is already closed".to_string(),
-                )
-            })?
+            .expect("INVARIANT: the writer holds its outputs for its whole life")
             .file_pointer();
         let mut merger =
             // `Lucene99HnswVectorsWriter.java:474-480`.
@@ -1306,11 +1302,7 @@ impl HnswWriterState {
         let vector_index_length = self
             .vector_index
             .as_ref()
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "Lucene99HnswVectorsWriter is already closed".to_string(),
-                )
-            })?
+            .expect("INVARIANT: the writer holds its outputs for its whole life")
             .file_pointer()
             - vector_index_offset;
         self.write_meta(
@@ -1416,11 +1408,10 @@ impl HnswWriterState {
             while sorted_nodes.has_next() {
                 let node = sorted_nodes.next_int();
                 let neighbors = graph.get_neighbors(level, node)?;
-                let vector_index = self.vector_index.as_mut().ok_or_else(|| {
-                    LuceneError::illegal_state(
-                        "Lucene99HnswVectorsWriter is already closed".to_string(),
-                    )
-                })?;
+                let vector_index = self
+                    .vector_index
+                    .as_mut()
+                    .expect("INVARIANT: the writer holds its outputs for its whole life");
                 let offset_start = vector_index.file_pointer();
                 write_neighbors(
                     vector_index.as_mut(),
@@ -1531,11 +1522,7 @@ impl HnswWriterState {
         let vector_index_offset = self
             .vector_index
             .as_ref()
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "Lucene99HnswVectorsWriter is already closed".to_string(),
-                )
-            })?
+            .expect("INVARIANT: the writer holds its outputs for its whole life")
             .file_pointer();
         let graph_level_offsets = match graph {
             Some(graph) => self.write_graph(graph)?,
@@ -1544,11 +1531,7 @@ impl HnswWriterState {
         let vector_index_length = self
             .vector_index
             .as_ref()
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "Lucene99HnswVectorsWriter is already closed".to_string(),
-                )
-            })?
+            .expect("INVARIANT: the writer holds its outputs for its whole life")
             .file_pointer()
             - vector_index_offset;
         self.write_meta(
@@ -1637,12 +1620,9 @@ impl HnswWriterState {
                             field_info,
                             &self.segment_write_state.borrow(),
                         )?
-                        .ok_or_else(|| {
-                            LuceneError::illegal_state(format!(
-                                "the quantized reader has no vectors for merged field \"{}\"",
-                                field_info.name
-                            ))
-                        })?,
+                        // A `null` supplier dereferenced: the JVM's
+                        // `NullPointerException`.
+                        .ok_or_else(LuceneError::null_pointer)?,
                 );
                 let built = self.build_and_write_graph(
                     field_info,
@@ -1695,11 +1675,7 @@ impl HnswWriterState {
             let vector_index_offset = self
                 .vector_index
                 .as_ref()
-                .ok_or_else(|| {
-                    LuceneError::illegal_state(
-                        "Lucene99HnswVectorsWriter is already closed".to_string(),
-                    )
-                })?
+                .expect("INVARIANT: the writer holds its outputs for its whole life")
                 .file_pointer();
             self.write_meta(
                 field_info,
@@ -1754,12 +1730,9 @@ impl HnswWriterState {
 }
 
 /// The error for flat vectors that vanished between counting them and scoring
-/// them, where Java would dereference `null`.
-fn missing_vectors(field_info: &FieldInfo) -> LuceneError {
-    LuceneError::illegal_state(format!(
-        "the merged flat vectors of field \"{}\" are missing",
-        field_info.name
-    ))
+/// them, where Java dereferences `null`: the JVM's `NullPointerException`.
+fn missing_vectors(_field_info: &FieldInfo) -> LuceneError {
+    LuceneError::null_pointer()
 }
 
 impl KnnVectorsWriter for Lucene99HnswVectorsWriter {
@@ -1824,11 +1797,7 @@ impl crate::codecs::knn_vectors::IORunnable for HnswDeferredMerge<'_> {
     fn run(&mut self) -> Result<()> {
         self.state
             .lock()
-            .map_err(|_| {
-                LuceneError::illegal_state(
-                    "Lucene99HnswVectorsWriter state lock poisoned".to_string(),
-                )
-            })?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .merge_one_field_deferred(&self.field_info, self.merge_state)
     }
 }
@@ -2471,9 +2440,9 @@ impl Lucene99HnswVectorsReader {
                 .get_byte_vector_values(field)?
                 .map(|values| values as Box<dyn crate::index::vector_values::KnnVectorValues>),
         };
-        values.ok_or_else(|| {
-            LuceneError::illegal_state(format!("field=\"{field}\" has no vector values"))
-        })
+        // `vectorValues::ordToDoc` on a `null` receiver: the JVM's
+        // `NullPointerException`.
+        values.ok_or_else(LuceneError::null_pointer)
     }
 }
 

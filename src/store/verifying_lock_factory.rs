@@ -84,7 +84,7 @@ impl CheckedLock {
     fn new(lock: Box<dyn Lock>, channel: Arc<Mutex<VerifyChannel>>) -> Result<Self> {
         channel
             .lock()
-            .map_err(|_| LuceneError::illegal_state("verify channel mutex poisoned".to_string()))?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .verify(MSG_LOCK_ACQUIRED)?;
         Ok(Self {
             lock: Mutex::new(Some(lock)),
@@ -98,7 +98,7 @@ impl Lock for CheckedLock {
         let guard = self
             .lock
             .lock()
-            .map_err(|_| LuceneError::illegal_state("checked lock mutex poisoned".to_string()))?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match guard.as_ref() {
             Some(lock) => lock.ensure_valid(),
             None => Err(LuceneError::already_closed(
@@ -111,7 +111,7 @@ impl Lock for CheckedLock {
         let taken = self
             .lock
             .lock()
-            .map_err(|_| LuceneError::illegal_state("checked lock mutex poisoned".to_string()))?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         let Some(lock) = taken else {
             return Ok(());
@@ -123,9 +123,7 @@ impl Lock for CheckedLock {
             lock.ensure_valid()?;
             self.channel
                 .lock()
-                .map_err(|_| {
-                    LuceneError::illegal_state("verify channel mutex poisoned".to_string())
-                })?
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .verify(MSG_LOCK_RELEASED)
         })();
         let closed = lock.close();

@@ -389,9 +389,13 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
                 for vector in vectors {
                     let vector = (vector as &dyn std::any::Any)
                         .downcast_ref::<Vec<f32>>()
+                        // Java's unchecked cast fails where a `byte[]` is
+                        // read as a `float[]`.
                         .ok_or_else(|| {
-                            LuceneError::illegal_argument(
-                                "buffered vectors are not float32 vectors".to_string(),
+                            LuceneError::unchecked(
+                                "java.lang.ClassCastException",
+                                "class [B cannot be cast to class [F ([B and [F are in module \
+                                 java.base of loader 'bootstrap')",
                             )
                         })?;
                     floats.push(vector.clone());
@@ -403,9 +407,12 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
                 for vector in vectors {
                     let vector = (vector as &dyn std::any::Any)
                         .downcast_ref::<Vec<u8>>()
+                        // As above, with a `float[]` read as a `byte[]`.
                         .ok_or_else(|| {
-                            LuceneError::illegal_argument(
-                                "buffered vectors are not byte vectors".to_string(),
+                            LuceneError::unchecked(
+                                "java.lang.ClassCastException",
+                                "class [F cannot be cast to class [B ([F and [B are in module \
+                                 java.base of loader 'bootstrap')",
                             )
                         })?;
                     bytes.push(vector.clone());
@@ -497,9 +504,7 @@ impl From<FlatFieldVectorWriter> for FieldVectorWriter {
 impl<T: Send + 'static> KnnFieldVectorsWriter<T> for SharedFlatFieldVectorsWriter<T> {
     fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
         self.lock()
-            .map_err(|_| {
-                LuceneError::illegal_state("FlatFieldVectorsWriter mutex was poisoned".to_string())
-            })?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .add_value(doc_id, vector_value)
     }
 

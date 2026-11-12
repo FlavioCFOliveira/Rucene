@@ -287,10 +287,11 @@ impl ReaderLink {
     fn report_close_to_parents(&self) {
         // The lock is released before recursing so a cycle in the (weakly
         // linked) reader tree cannot deadlock on a re-entrant lock.
-        let parents: Vec<Weak<ReaderLink>> = match self.parents.lock() {
-            Ok(parents) => parents.clone(),
-            Err(_) => return,
-        };
+        let parents: Vec<Weak<ReaderLink>> = self
+            .parents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         for parent in parents {
             if let Some(parent) = parent.upgrade() {
                 if !parent.closed_by_child.swap(true, Ordering::SeqCst) {
@@ -546,7 +547,12 @@ impl IndexReaderCore {
     /// parent (`IndexReader.java:162-165`).
     pub fn register_parent_core(&self, parent: &IndexReaderCore) -> Result<()> {
         self.ensure_open()?;
-        if let Ok(mut parents) = self.link.parents.lock() {
+        {
+            let mut parents = self
+                .link
+                .parents
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             parents.push(Arc::downgrade(&parent.link));
         }
         Ok(())

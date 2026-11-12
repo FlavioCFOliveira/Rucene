@@ -739,7 +739,7 @@ mod legacy_values_tests {
         fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
             self.prefetched
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(ords_to_prefetch.unwrap_or_default()[..num_ords as usize].to_vec());
             Ok(())
         }
@@ -777,7 +777,12 @@ mod legacy_values_tests {
         assert_eq!(values.ord_to_doc(2), 2);
         assert_eq!(values.vector_byte_length(), 2);
         values.prefetch(Some(&[2, 0, 1]), 2).unwrap();
-        assert_eq!(&*prefetched.lock().unwrap(), &[vec![2, 0]]);
+        assert_eq!(
+            &*prefetched
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            &[vec![2, 0]]
+        );
 
         let copy = values.copy().unwrap();
         assert_eq!(copy.size(), 3);

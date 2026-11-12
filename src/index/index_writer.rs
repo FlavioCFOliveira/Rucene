@@ -1512,7 +1512,10 @@ impl IndexWriter {
     /// the `AlreadyClosed` and `IllegalState` errors that carry it as their
     /// cause.
     pub fn get_tragic_exception(&self) -> Option<Arc<LuceneError>> {
-        self.tragedy.lock().ok().and_then(|guard| guard.clone())
+        self.tragedy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Records a tragic error, closing the writer to further work.
@@ -1626,8 +1629,8 @@ impl IndexWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`] when the writer's state lock is
-    /// poisoned.
+    /// None in practice: the writer's state lock recovers from poisoning, as a
+    /// Java monitor is never poisoned.
     pub fn is_deleter_closed(&self) -> Result<bool> {
         let state = self.state()?;
         Ok(state.deleter.is_closed(self))
@@ -2851,7 +2854,8 @@ impl IndexWriter {
     ///
     /// # Errors
     ///
-    /// Fails when the writer's state lock is poisoned.
+    /// None in practice: the writer's state lock recovers from poisoning, as a
+    /// Java monitor is never poisoned.
     pub fn set_live_commit_data<I>(&self, data: I) -> Result<()>
     where
         I: IntoIterator<Item = (String, String)> + Clone + Send + Sync + 'static,
@@ -2870,7 +2874,8 @@ impl IndexWriter {
     ///
     /// # Errors
     ///
-    /// Fails when the writer's state lock is poisoned.
+    /// None in practice: the writer's state lock recovers from poisoning, as a
+    /// Java monitor is never poisoned.
     pub fn set_live_commit_data_with_increment<I>(
         &self,
         data: I,
@@ -3111,7 +3116,7 @@ impl IndexWriter {
         // have changed if any merges did complete (`IndexWriter.java:3884-3889`).
         let to_commit = to_commit
             .lock()
-            .map_err(|_| LuceneError::illegal_state("toCommit mutex poisoned".to_string()))?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         {
             let mut state = self.state()?;
@@ -3738,7 +3743,7 @@ impl IndexWriter {
         let taken = self
             .write_lock
             .lock()
-            .map_err(|_| LuceneError::illegal_state("write lock mutex poisoned".to_string()))?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         // The writer's handle goes, as `writeLock = null` does; the
         // lock-validating directory keeps its own and, the lock now being
@@ -10114,13 +10119,14 @@ impl GetReaderState {
 /// Locks one of the maps `get_reader` shares between its closures.
 ///
 /// Equivalent to reading a `HashMap` Java's `getReader` captures in a lambda;
-/// Rust needs the sharing spelled out, and a poisoned lock reported.
-fn lock_reader_map<'a>(
-    map: &'a Mutex<HashMap<String, Arc<SegmentReader>>>,
-    name: &str,
-) -> Result<MutexGuard<'a, HashMap<String, Arc<SegmentReader>>>> {
-    map.lock()
-        .map_err(|_| LuceneError::illegal_state(format!("{name} mutex poisoned")))
+/// Rust needs the sharing spelled out. Java has no lock poisoning, so a
+/// poisoned lock continues with the map it guards.
+fn lock_reader_map(
+    map: &Mutex<HashMap<String, Arc<SegmentReader>>>,
+) -> Result<MutexGuard<'_, HashMap<String, Arc<SegmentReader>>>> {
+    Ok(map
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner))
 }
 
 impl IndexWriter {
@@ -10196,7 +10202,7 @@ impl IndexWriter {
             let segment_reader = rld.get_read_only_clone(&*DEFAULT_IO_CONTEXT)?;
             // Only track this if we actually do fullFlush merges.
             if max_full_flush_merge_wait_millis > 0 {
-                lock_reader_map(opened_read_only_clones, "openedReadOnlyClones")?
+                lock_reader_map(opened_read_only_clones)?
                     .insert(sci.info.name.clone(), Arc::clone(&segment_reader));
             }
             Ok(segment_reader)
@@ -10316,8 +10322,7 @@ impl IndexWriter {
                     };
                     let apply =
                         writer.nrt_reader_factory(sci, max_wait, &opened_read_only_clones)?;
-                    lock_reader_map(&merged_readers, "mergedReaders")?
-                        .insert(sci.info.name.clone(), apply);
+                    lock_reader_map(&merged_readers)?.insert(sci.info.name.clone(), apply);
                     // We need to incRef the files of the opened SR otherwise
                     // it's possible that another merge removes the segment
                     // before we pass it on to the SDR.
@@ -10367,9 +10372,7 @@ impl IndexWriter {
         stop_collecting_merged_readers.store(true, Ordering::Release);
         let infos = opening_segment_infos
             .lock()
-            .map_err(|_| {
-                LuceneError::illegal_state("openingSegmentInfos mutex poisoned".to_string())
-            })?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let reader = self.maybe_reopen_merged_nrt_reader_with(
             &mut state,
@@ -10383,16 +10386,14 @@ impl IndexWriter {
         // (`IndexWriter.java:752-753`): the map is cleared only once every
         // reader closed, so when a close fails the readers stay for
         // `onGetReaderMergeResources` to release.
-        let leftover: Vec<Arc<SegmentReader>> = lock_reader_map(merged_readers, "mergedReaders")?
-            .values()
-            .cloned()
-            .collect();
+        let leftover: Vec<Arc<SegmentReader>> =
+            lock_reader_map(merged_readers)?.values().cloned().collect();
         crate::util::IOUtils::close(
             leftover
                 .iter()
                 .map(|merged| Some(|| IndexReader::close(merged.as_ref()))),
         )?;
-        lock_reader_map(merged_readers, "mergedReaders")?.clear();
+        lock_reader_map(merged_readers)?.clear();
         Ok(reader)
     }
 
@@ -10418,7 +10419,7 @@ impl IndexWriter {
         apply_all_deletes: bool,
         write_all_deletes: bool,
     ) -> Result<Option<Arc<StandardDirectoryReader>>> {
-        if lock_reader_map(merged_readers, "mergedReaders")?.is_empty() {
+        if lock_reader_map(merged_readers)?.is_empty() {
             return Ok(None);
         }
         let files: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -10431,24 +10432,18 @@ impl IndexWriter {
                 // StandardDirectoryReader#open will take care of closing it. We
                 // only need to handle the readers that remain in the
                 // mergedReaders map and close them.
-                let removed =
-                    lock_reader_map(merged_readers, "mergedReaders")?.remove(&sci.info.name);
+                let removed = lock_reader_map(merged_readers)?.remove(&sci.info.name);
                 match removed {
                     Some(reader) => {
                         files
                             .lock()
-                            .map_err(|_| {
-                                LuceneError::illegal_state(
-                                    "merged files mutex poisoned".to_string(),
-                                )
-                            })?
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .extend(reader.get_segment_info().files()?);
                         Ok(reader)
                     }
                     None => {
                         let reader =
-                            lock_reader_map(opened_read_only_clones, "openedReadOnlyClones")?
-                                .remove(&sci.info.name);
+                            lock_reader_map(opened_read_only_clones)?.remove(&sci.info.name);
                         debug_assert!(reader.is_some());
                         // Without assertions Java dereferences the null
                         // `remove` (`IndexWriter.java:781`).
@@ -10474,7 +10469,7 @@ impl IndexWriter {
         // Now the SDR#open call has incRef'd the files so we can let them go.
         let files = files
             .into_inner()
-            .map_err(|_| LuceneError::illegal_state("merged files mutex poisoned".to_string()))?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // `finally { deleter.decRef(files); }` (`IndexWriter.java:790-793`):
         // an exception of the release replaces the open's outcome.
         held.into_inner().deleter.dec_ref_files(files.iter())?;
@@ -10501,7 +10496,7 @@ impl IndexWriter {
         // This only happens for readers that haven't been removed from the
         // mergedReaders and released elsewhere; draining the map is how a
         // second call is made harmless.
-        let readers: Vec<Arc<SegmentReader>> = lock_reader_map(merged_readers, "mergedReaders")?
+        let readers: Vec<Arc<SegmentReader>> = lock_reader_map(merged_readers)?
             .drain()
             .map(|(_, reader)| reader)
             .collect();
@@ -10547,7 +10542,7 @@ impl IndexWriter {
         // Make sure onMergeComplete really was called.
         let orig_info = orig_info
             .lock()
-            .map_err(|_| LuceneError::illegal_state("origInfo mutex poisoned".to_string()))?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         debug_assert!(orig_info.is_some());
 
@@ -10570,9 +10565,9 @@ impl IndexWriter {
             })
         })?;
 
-        let mut infos = merging_segment_infos.lock().map_err(|_| {
-            LuceneError::illegal_state("mergingSegmentInfos mutex poisoned".to_string())
-        })?;
+        let mut infos = merging_segment_infos
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let merged_segment_names: HashSet<&str> = merge
             .segments
@@ -10699,9 +10694,10 @@ impl IndexWriter {
                             // Clone the target info to make sure we have the
                             // original info without the updated del and update
                             // gens.
-                            *orig_info.lock().map_err(|_| {
-                                LuceneError::illegal_state("origInfo mutex poisoned".to_string())
-                            })? = Some(info.java_clone());
+                            *orig_info
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                Some(info.java_clone());
                         }
                     }
                     if let Some(to_wrap_on_merge_complete) = to_wrap_on_merge_complete.as_ref() {

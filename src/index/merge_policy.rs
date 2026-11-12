@@ -1042,8 +1042,9 @@ impl OneMerge {
     pub fn get_error(&self) -> Option<String> {
         self.error
             .lock()
-            .ok()
-            .and_then(|g| g.as_ref().map(ToString::to_string))
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(ToString::to_string)
     }
 
     /// Returns the error that stopped this merge, if any.
@@ -1053,8 +1054,9 @@ impl OneMerge {
     pub fn get_exception(&self) -> Option<crate::error::LuceneError> {
         self.error
             .lock()
-            .ok()
-            .and_then(|g| g.as_ref().map(crate::error::LuceneError::duplicate))
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(crate::error::LuceneError::duplicate)
     }
 
     /// Completes the merge with its success flag, and returns whether this
@@ -1213,7 +1215,9 @@ impl OneMerge {
     /// Public so that a [`SetMergeInfoHook`] can change the merged segment it
     /// has just set, as Java's override changes the shared `info` object.
     pub fn info(&self) -> std::sync::MutexGuard<'_, Option<SegmentCommitInfo>> {
-        self.info.lock().expect("OneMerge info mutex poisoned")
+        self.info
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Returns how many documents the merged segment will hold, before deletes
@@ -6960,7 +6964,10 @@ mod tiered_merge_policy_selection_tests {
         }
         fn message(&self, component: &str, message: &str) {
             if component == "MP" {
-                self.0.lock().unwrap().push(message.to_string());
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(message.to_string());
             }
         }
         fn is_enabled(&self, _component: &str) -> bool {
@@ -7054,7 +7061,11 @@ mod tiered_merge_policy_selection_tests {
                 &Context(Arc::clone(&stream)),
             )
             .unwrap();
-        let lines = stream.0.lock().unwrap().clone();
+        let lines = stream
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert!(
             lines
                 .iter()
@@ -7085,7 +7096,11 @@ mod tiered_merge_policy_selection_tests {
             )
             .unwrap()
             .expect("twelve equal segments over a tier of 8 merge");
-        let lines = stream.0.lock().unwrap().clone();
+        let lines = stream
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(lines.iter().filter(|l| l.starts_with("  seg=")).count(), 12);
         assert!(lines.iter().any(|l| l == "findMerges: 12 segments"));
         assert!(lines.iter().any(|l| l.starts_with("  maybe=")));
@@ -7124,7 +7139,11 @@ mod tiered_merge_policy_selection_tests {
             names(&spec),
             vec![vec!["_0"], vec!["_1"], vec!["_2"], vec!["_3"]]
         );
-        let lines = stream.0.lock().unwrap().clone();
+        let lines = stream
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(
             lines
                 .iter()

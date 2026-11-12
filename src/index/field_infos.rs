@@ -139,7 +139,12 @@ impl Clone for FieldInfo {
             store_term_vector: self.store_term_vector,
             omit_norms: self.omit_norms,
             store_payloads: self.store_payloads,
-            attributes: RwLock::new(self.attributes.read().unwrap().clone()),
+            attributes: RwLock::new(
+                self.attributes
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+            ),
         }
     }
 }
@@ -158,7 +163,13 @@ impl std::fmt::Debug for FieldInfo {
             .field("store_term_vector", &self.store_term_vector)
             .field("omit_norms", &self.omit_norms)
             .field("store_payloads", &self.store_payloads)
-            .field("attributes", &self.attributes.read().unwrap())
+            .field(
+                "attributes",
+                &self
+                    .attributes
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
             .field("doc_values_gen", &self.doc_values_gen)
             .field("point_dimension_count", &self.point_dimension_count)
             .field(
@@ -188,7 +199,14 @@ impl PartialEq for FieldInfo {
             && self.store_term_vector == other.store_term_vector
             && self.omit_norms == other.omit_norms
             && self.store_payloads == other.store_payloads
-            && *self.attributes.read().unwrap() == *other.attributes.read().unwrap()
+            && *self
+                .attributes
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                == *other
+                    .attributes
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
             && self.doc_values_gen == other.doc_values_gen
             && self.point_dimension_count == other.point_dimension_count
             && self.point_index_dimension_count == other.point_index_dimension_count
@@ -549,7 +567,11 @@ impl FieldInfo {
 
     /// Returns a codec attribute value, or `None` if absent.
     pub fn get_attribute(&self, key: &str) -> Option<String> {
-        self.attributes.read().unwrap().get(key).cloned()
+        self.attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
     }
 
     /// Stores a codec attribute value, returning the previous value if any.
@@ -568,7 +590,10 @@ impl FieldInfo {
         key: impl Into<String>,
         value: impl Into<String>,
     ) -> Option<String> {
-        let mut guard = self.attributes.write().unwrap();
+        let mut guard = self
+            .attributes
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut new_map = guard.to_java_hash_map();
         let old_value = new_map.insert(key.into(), value.into());
         *guard = JavaStringMap::Hash(new_map);
@@ -586,7 +611,10 @@ impl FieldInfo {
     /// (`FieldInfos.java:775-776, 801`). This port returns a copy because the
     /// map is behind a lock.
     pub fn attributes(&self) -> JavaStringMap {
-        self.attributes.read().unwrap().clone()
+        self.attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Verifies that the combination of field options is internally consistent.

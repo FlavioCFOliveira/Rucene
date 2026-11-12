@@ -326,7 +326,11 @@ impl SegmentInfo {
 
     /// Returns a codec attribute, if present.
     pub fn get_attribute(&self, key: &str) -> Option<String> {
-        self.attributes.read().unwrap().get(key).cloned()
+        self.attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
     }
 
     /// Stores a codec attribute, returning the previous value if any.
@@ -339,7 +343,10 @@ impl SegmentInfo {
         // map rather than mutating it: `new HashMap<>(attributes)`, put, then
         // swap in an unmodifiable view of the copy. The copy constructor's
         // pre-sizing is what fixes the resulting iteration order.
-        let mut guard = self.attributes.write().unwrap();
+        let mut guard = self
+            .attributes
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut new_map = guard.to_java_hash_map();
         let old_value = new_map.insert(key.into(), value.into());
         *guard = JavaStringMap::Hash(new_map);
@@ -348,7 +355,10 @@ impl SegmentInfo {
 
     /// Returns a copy of the codec attributes map, without its iteration order.
     pub fn get_attributes(&self) -> HashMap<String, String> {
-        self.attributes.read().unwrap().to_std()
+        self.attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .to_std()
     }
 
     /// Returns a copy of the codec attributes map, iteration order included.
@@ -356,7 +366,10 @@ impl SegmentInfo {
     /// Equivalent to `SegmentInfo.getAttributes()`, which returns the internal
     /// map itself (`SegmentInfo.java:384-386`).
     pub fn get_attributes_ordered(&self) -> JavaStringMap {
-        self.attributes.read().unwrap().clone()
+        self.attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Returns the index sort for this segment, `None` when it is unsorted.
@@ -393,7 +406,10 @@ impl SegmentInfo {
     /// Returns `LuceneErrorKind::IllegalState` if the file set has not been
     /// computed.
     pub fn files_ordered(&self) -> Result<JavaHashSet> {
-        let files = self.files.read().unwrap();
+        let files = self
+            .files
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match files.as_ref() {
             Some(f) => Ok(f.clone()),
             None => Err(LuceneError::illegal_state(format!(
@@ -423,7 +439,10 @@ impl SegmentInfo {
     {
         let files: Vec<String> = files.into_iter().collect();
         // `setFiles = new HashSet<>()`.
-        *self.files.write().unwrap() = Some(JavaHashSet::new());
+        *self
+            .files
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(JavaHashSet::new());
         // `addFiles(files)`.
         self.add_files(&files)
     }
@@ -468,7 +487,10 @@ impl SegmentInfo {
     /// [`check_file_names`](Self::check_file_names), which is where Java throws.
     pub fn add_files(&self, files: &[String]) -> Result<()> {
         Self::check_file_names(files)?;
-        let mut guard = self.files.write().unwrap();
+        let mut guard = self
+            .files
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match guard.as_mut() {
             Some(set) => {
                 for f in files {
@@ -553,7 +575,10 @@ impl SegmentInfo {
             s.push_str(&self.diagnostics.to_string());
             s.push(']');
         }
-        let attributes = self.attributes.read().unwrap();
+        let attributes = self
+            .attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !attributes.is_empty() {
             s.push_str(":[attributes=");
             s.push_str(&attributes.to_string());

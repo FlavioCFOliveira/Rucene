@@ -1158,7 +1158,10 @@ mod interrupt_tests {
         let monitor = Arc::clone(monitor);
         std::thread::spawn(move || {
             handle_tx.send(InterruptHandle::current()).unwrap();
-            let guard = monitor.lock.lock().unwrap();
+            let guard = monitor
+                .lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (_guard, outcome) = wait_interruptibly(&monitor.condvar, guard, None).unwrap();
             let _ = outcome_tx.send((outcome, InterruptHandle::current().is_interrupted()));
         });
@@ -1194,7 +1197,10 @@ mod interrupt_tests {
         let monitor = monitor();
         InterruptHandle::current().interrupt();
         assert!(InterruptHandle::current().is_interrupted());
-        let guard = monitor.lock.lock().unwrap();
+        let guard = monitor
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let started = Instant::now();
         let (_guard, outcome) =
             wait_interruptibly(&monitor.condvar, guard, Some(Duration::from_secs(5))).unwrap();
@@ -1209,7 +1215,10 @@ mod interrupt_tests {
         let (handle, outcome) = start_waiter(&monitor);
         wait_until_waiting(&handle);
         {
-            let _guard = monitor.lock.lock().unwrap();
+            let _guard = monitor
+                .lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             monitor.condvar.notify_all();
         }
         let (outcome, interrupted_after) = outcome
@@ -1222,7 +1231,10 @@ mod interrupt_tests {
     #[test]
     fn a_timed_wait_returns_normally_after_its_timeout() {
         let monitor = monitor();
-        let guard = monitor.lock.lock().unwrap();
+        let guard = monitor
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let started = Instant::now();
         let (_guard, outcome) =
             wait_interruptibly(&monitor.condvar, guard, Some(Duration::from_millis(50))).unwrap();
@@ -1247,7 +1259,10 @@ mod interrupt_tests {
         let (handle, outcome) = start_waiter(&monitor);
         wait_until_waiting(&handle);
         {
-            let _guard = monitor.lock.lock().unwrap();
+            let _guard = monitor
+                .lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             handle.interrupt();
         }
         let (outcome, _) = outcome

@@ -784,9 +784,8 @@ impl IntersectTermsEnum {
         };
 
         // Walk the trie down the bytes this sub-block added to the prefix.
-        let mut node = parent_node.ok_or_else(|| {
-            LuceneError::illegal_state("parent frame has no trie node".to_string())
-        })?;
+        // A `null` `parent.node` dereferenced: the JVM's `NullPointerException`.
+        let mut node = parent_node.ok_or_else(LuceneError::null_pointer)?;
         let mut idx = parent_prefix;
         debug_assert!(self.stack[cur].suffix > 0);
         while idx < prefix {

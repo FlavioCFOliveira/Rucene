@@ -404,10 +404,7 @@ impl PostingsFormatRegistry {
     pub fn for_name(&self, name: &str) -> Option<Arc<dyn PostingsFormat>> {
         self.formats
             .read()
-            .map_err(|_| {
-                LuceneError::illegal_state("postings format registry lock was poisoned".to_string())
-            })
-            .ok()?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .lookup(name)
             .ok()
     }
@@ -421,13 +418,11 @@ impl PostingsFormatRegistry {
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message,
     /// listing the available names, when no format is registered under
-    /// `name`, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is poisoned.
+    /// `name`.
     pub fn lookup(&self, name: &str) -> Result<Arc<dyn PostingsFormat>> {
         self.formats
             .read()
-            .map_err(|_| {
-                LuceneError::illegal_state("postings format registry lock was poisoned".to_string())
-            })?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .lookup(name)
     }
 
@@ -436,9 +431,10 @@ impl PostingsFormatRegistry {
     /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
     /// Java's insertion-ordered `LinkedHashMap`.
     pub fn available_postings_formats(&self) -> Vec<String> {
-        let Ok(formats) = self.formats.read() else {
-            return Vec::new();
-        };
+        let formats = self
+            .formats
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         formats
             .available_services()
             .into_iter()
@@ -458,17 +454,14 @@ impl PostingsFormatRegistry {
 /// # Errors
 ///
 /// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
-/// returns, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is
-/// poisoned.
+/// returns.
 pub fn reload_postings_formats(
     classloader: &Arc<crate::util::resource_loader::ClassLoader>,
 ) -> Result<()> {
     GLOBAL_POSTINGS_REGISTRY
         .formats
         .write()
-        .map_err(|_| {
-            LuceneError::illegal_state("postings format registry lock was poisoned".to_string())
-        })?
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .reload(classloader)
 }
 
@@ -843,7 +836,13 @@ pub trait PushPostingsWriterBase {
             .push_state()
             .field_info
             .as_ref()
-            .ok_or_else(|| LuceneError::illegal_state("set_field not called".to_string()))?
+            // `fieldInfo.hasNorms()` before `setField`: the JVM's
+            // `NullPointerException`.
+            .ok_or_else(|| {
+                LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"org.apache.lucene.index.FieldInfo.hasNorms()\" because \"this.fieldInfo\" is null",
+                )
+            })?
             .clone();
 
         // A fresh, forward-only iterator over the field's norms for every term
@@ -852,11 +851,12 @@ pub trait PushPostingsWriterBase {
         let norm_values = if !field_info.has_norms() {
             None
         } else {
+            // `norms.getNorms(fieldInfo)` on a `null` producer: the JVM's
+            // `NullPointerException`.
             let norms = norms.ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "field \"{}\" has norms, but no norms producer was given",
-                    field_info.name
-                ))
+                LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"org.apache.lucene.codecs.NormsProducer.getNorms(org.apache.lucene.index.FieldInfo)\" because \"norms\" is null",
+                )
             })?;
             norms.get_norms(&field_info)?
         };

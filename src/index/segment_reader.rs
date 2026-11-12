@@ -129,9 +129,10 @@ impl SegmentCoreReaders {
         };
 
         let result: Result<()> = (|| {
-            let cfs_dir_guard = core.cfs_reader.read().map_err(|_| {
-                LuceneError::illegal_state("compound file reader lock poisoned".to_string())
-            })?;
+            let cfs_dir_guard = core
+                .cfs_reader
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let cfs_dir: &dyn Directory = if let Some(cfs) = cfs_dir_guard.as_ref() {
                 cfs.as_ref()
             } else {
@@ -150,9 +151,10 @@ impl SegmentCoreReaders {
             );
 
             if core.core_field_infos.has_postings() {
-                *core.fields.write().map_err(|_| {
-                    LuceneError::illegal_state("fields producer lock poisoned".to_string())
-                })? = Some(Arc::from(
+                *core
+                    .fields
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::from(
                     codec
                         .postings_format()
                         .fields_producer(&segment_read_state)?,
@@ -160,45 +162,52 @@ impl SegmentCoreReaders {
             }
 
             if core.core_field_infos.has_norms() {
-                *core.norms_producer.write().map_err(|_| {
-                    LuceneError::illegal_state("norms producer lock poisoned".to_string())
-                })? = Some(Arc::from(
+                *core
+                    .norms_producer
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::from(
                     codec.norms_format().norms_producer(&segment_read_state)?,
                 ));
             }
 
-            *core.fields_reader_orig.write().map_err(|_| {
-                LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
-            })? = Some(codec.stored_fields_format().fields_reader(
-                cfs_dir,
-                &si.info,
-                &core.core_field_infos,
-                context,
-            )?);
-
-            if core.core_field_infos.has_term_vectors() {
-                *core.term_vectors_reader_orig.write().map_err(|_| {
-                    LuceneError::illegal_state("term vectors reader lock poisoned".to_string())
-                })? = Some(codec.term_vectors_format().vectors_reader(
+            *core
+                .fields_reader_orig
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(codec.stored_fields_format().fields_reader(
                     cfs_dir,
                     &si.info,
                     &core.core_field_infos,
                     context,
                 )?);
+
+            if core.core_field_infos.has_term_vectors() {
+                *core
+                    .term_vectors_reader_orig
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(codec.term_vectors_format().vectors_reader(
+                        cfs_dir,
+                        &si.info,
+                        &core.core_field_infos,
+                        context,
+                    )?);
             }
 
             if core.core_field_infos.has_point_values() {
-                *core.points_reader.write().map_err(|_| {
-                    LuceneError::illegal_state("points reader lock poisoned".to_string())
-                })? = Some(Arc::from(
+                *core
+                    .points_reader
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::from(
                     codec.points_format().fields_reader(&segment_read_state)?,
                 ));
             }
 
             if core.core_field_infos.has_vector_values() {
-                *core.knn_vectors_reader.write().map_err(|_| {
-                    LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
-                })? = Some(Arc::from(
+                *core
+                    .knn_vectors_reader
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::from(
                     codec
                         .knn_vectors_format()
                         .fields_reader(&segment_read_state)?,
@@ -354,9 +363,10 @@ impl SegmentCoreReaders {
     }
 
     fn notify_core_closed_listeners(&self) -> Result<()> {
-        let guard = self.core_closed_listeners.lock().map_err(|_| {
-            LuceneError::illegal_state("core closed listeners lock poisoned".to_string())
-        })?;
+        let guard = self
+            .core_closed_listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // `IOUtils.applyToAll(coreClosedListeners, l -> l.onClose(cacheHelper.getKey()))`
         // (`SegmentCoreReaders.java:203-207`): every listener runs; the first
         // error is returned with the later ones suppressed into it.
@@ -378,7 +388,7 @@ fn close_lock<T>(
 ) -> Result<()> {
     let mut guard = lock
         .write()
-        .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(value) = guard.as_mut() {
         close(value)?;
     }
@@ -394,7 +404,7 @@ fn close_lock_shared<T: ?Sized>(
 ) -> Result<()> {
     let guard = lock
         .read()
-        .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match guard.as_deref() {
         Some(inner) => close(inner),
         None => Ok(()),
@@ -427,7 +437,11 @@ impl CacheHelper for SegmentCoreReaders {
     /// The `addClosedListener` of the same anonymous `CacheHelper`, which
     /// adds to the `coreClosedListeners` set (`SegmentCoreReaders.java:194-196`).
     fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>) {
-        if let Ok(mut listeners) = self.core_closed_listeners.lock() {
+        {
+            let mut listeners = self
+                .core_closed_listeners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             add_closed_listener_to_set(&mut listeners, listener);
         }
     }
@@ -665,9 +679,10 @@ impl SharedDocValuesProducer {
 impl DocValuesProducer for SharedDocValuesProducer {
     fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         {
-            let guard = self.producer.read().map_err(|_| {
-                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
-            })?;
+            let guard = self
+                .producer
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(producer) = guard.as_ref() {
                 producer.get_numeric(field)
             } else {
@@ -680,9 +695,10 @@ impl DocValuesProducer for SharedDocValuesProducer {
 
     fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
         {
-            let guard = self.producer.read().map_err(|_| {
-                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
-            })?;
+            let guard = self
+                .producer
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(producer) = guard.as_ref() {
                 producer.get_binary(field)
             } else {
@@ -695,9 +711,10 @@ impl DocValuesProducer for SharedDocValuesProducer {
 
     fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
         {
-            let guard = self.producer.read().map_err(|_| {
-                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
-            })?;
+            let guard = self
+                .producer
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(producer) = guard.as_ref() {
                 producer.get_sorted(field)
             } else {
@@ -713,9 +730,10 @@ impl DocValuesProducer for SharedDocValuesProducer {
         field: &FieldInfo,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
         {
-            let guard = self.producer.read().map_err(|_| {
-                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
-            })?;
+            let guard = self
+                .producer
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(producer) = guard.as_ref() {
                 producer.get_sorted_numeric(field)
             } else {
@@ -728,9 +746,10 @@ impl DocValuesProducer for SharedDocValuesProducer {
 
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         {
-            let guard = self.producer.read().map_err(|_| {
-                LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
-            })?;
+            let guard = self
+                .producer
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(producer) = guard.as_ref() {
                 producer.get_sorted_set(field)
             } else {
@@ -742,9 +761,10 @@ impl DocValuesProducer for SharedDocValuesProducer {
     }
 
     fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        let guard = self.producer.read().map_err(|_| {
-            LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
-        })?;
+        let guard = self
+            .producer
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(producer) = guard.as_ref() {
             producer.get_skipper(field)
         } else {
@@ -755,9 +775,10 @@ impl DocValuesProducer for SharedDocValuesProducer {
     }
 
     fn check_integrity(&self) -> Result<()> {
-        let guard = self.producer.read().map_err(|_| {
-            LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
-        })?;
+        let guard = self
+            .producer
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(producer) = guard.as_ref() {
             producer.check_integrity()
         } else {
@@ -768,9 +789,10 @@ impl DocValuesProducer for SharedDocValuesProducer {
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        let guard = self.producer.read().map_err(|_| {
-            LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
-        })?;
+        let guard = self
+            .producer
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(producer) = guard.as_ref() {
             producer.get_merge_instance()
         } else {
@@ -781,9 +803,10 @@ impl DocValuesProducer for SharedDocValuesProducer {
     }
 
     fn close(&self) -> Result<()> {
-        let mut guard = self.producer.write().map_err(|_| {
-            LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
-        })?;
+        let mut guard = self
+            .producer
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(producer) = guard.take() {
             producer.close()?;
         }
@@ -1323,9 +1346,10 @@ impl SegmentReader {
                     live_docs.as_ref()
                 ));
 
-                let cfs_dir_guard = core_readers.cfs_reader.read().map_err(|_| {
-                    LuceneError::illegal_state("compound file reader lock poisoned".to_string())
-                })?;
+                let cfs_dir_guard = core_readers
+                    .cfs_reader
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let cfs_dir: &dyn Directory = if let Some(cfs) = cfs_dir_guard.as_ref() {
                     cfs.as_ref()
                 } else {
@@ -1466,9 +1490,10 @@ impl SegmentReader {
                 )?;
 
                 let dir: &dyn Directory = &*original_si_for_closure.info.directory;
-                let cfs_dir_guard = core_readers.cfs_reader.read().map_err(|_| {
-                    LuceneError::illegal_state("compound file reader lock poisoned".to_string())
-                })?;
+                let cfs_dir_guard = core_readers
+                    .cfs_reader
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let cfs_dir: &dyn Directory = if let Some(cfs) = cfs_dir_guard.as_ref() {
                     cfs.as_ref()
                 } else {
@@ -1635,19 +1660,22 @@ impl SegmentReader {
     /// Returns the underlying postings reader.
     pub fn get_postings_reader(&self) -> Result<Option<Arc<dyn FieldsProducer>>> {
         self.ensure_open()?;
-        let guard =
-            self.core_readers.fields.read().map_err(|_| {
-                LuceneError::illegal_state("fields producer lock poisoned".to_string())
-            })?;
+        let guard = self
+            .core_readers
+            .fields
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(guard.as_ref().map(Arc::clone))
     }
 
     /// Returns the underlying stored-fields reader.
     pub fn get_fields_reader(&self) -> Result<Option<Box<dyn StoredFieldsReader>>> {
         self.ensure_open()?;
-        let guard = self.core_readers.fields_reader_orig.read().map_err(|_| {
-            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
-        })?;
+        let guard = self
+            .core_readers
+            .fields_reader_orig
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard
             .as_ref()
             .map(|reader| reader.clone_reader())
@@ -1661,9 +1689,7 @@ impl SegmentReader {
             .core_readers
             .term_vectors_reader_orig
             .read()
-            .map_err(|_| {
-                LuceneError::illegal_state("term vectors reader lock poisoned".to_string())
-            })?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard
             .as_ref()
             .map(|reader| reader.clone_reader())
@@ -1673,10 +1699,11 @@ impl SegmentReader {
     /// Returns the underlying norms producer.
     pub fn get_norms_reader(&self) -> Result<Option<Arc<dyn NormsProducer>>> {
         self.ensure_open()?;
-        let guard =
-            self.core_readers.norms_producer.read().map_err(|_| {
-                LuceneError::illegal_state("norms producer lock poisoned".to_string())
-            })?;
+        let guard = self
+            .core_readers
+            .norms_producer
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(guard.as_ref().map(Arc::clone))
     }
 
@@ -1689,10 +1716,11 @@ impl SegmentReader {
     /// Returns the underlying points reader.
     pub fn get_points_reader(&self) -> Result<Option<Arc<dyn PointsReader>>> {
         self.ensure_open()?;
-        let guard =
-            self.core_readers.points_reader.read().map_err(|_| {
-                LuceneError::illegal_state("points reader lock poisoned".to_string())
-            })?;
+        let guard = self
+            .core_readers
+            .points_reader
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(guard.as_ref().map(Arc::clone))
     }
 
@@ -1702,9 +1730,11 @@ impl SegmentReader {
     /// the one producer accessor of the class that does not call
     /// `ensureOpen()`.
     pub fn get_vector_reader(&self) -> Result<Option<Arc<dyn KnnVectorsReader>>> {
-        let guard = self.core_readers.knn_vectors_reader.read().map_err(|_| {
-            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
-        })?;
+        let guard = self
+            .core_readers
+            .knn_vectors_reader
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(guard.as_ref().map(Arc::clone))
     }
 }
@@ -1732,9 +1762,7 @@ impl LeafReader for SegmentReader {
             .core_readers
             .term_vectors_reader_orig
             .read()
-            .map_err(|_| {
-                LuceneError::illegal_state("term vectors reader lock poisoned".to_string())
-            })?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(reader) = guard.as_ref() {
             // `TermVectorsReader` extends `TermVectors`, so the codec reader
             // itself is the caller's `TermVectors` (`CodecReader.java:107-114`).
@@ -1797,10 +1825,11 @@ impl LeafReader for SegmentReader {
         if fi.is_none() || fi.unwrap().index_options == crate::index::IndexOptions::NONE {
             return Ok(None);
         }
-        let guard =
-            self.core_readers.fields.read().map_err(|_| {
-                LuceneError::illegal_state("fields producer lock poisoned".to_string())
-            })?;
+        let guard = self
+            .core_readers
+            .fields
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(fields) = guard.as_ref() {
             fields.terms(field)
         } else {
@@ -1888,10 +1917,11 @@ impl LeafReader for SegmentReader {
         if fi.is_none() || !fi.unwrap().has_norms() {
             return Ok(None);
         }
-        let guard =
-            self.core_readers.norms_producer.read().map_err(|_| {
-                LuceneError::illegal_state("norms producer lock poisoned".to_string())
-            })?;
+        let guard = self
+            .core_readers
+            .norms_producer
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(producer) = guard.as_ref() {
             producer.get_norms(fi.unwrap())
         } else {
@@ -1926,9 +1956,11 @@ impl LeafReader for SegmentReader {
         {
             return Ok(None);
         }
-        let guard = self.core_readers.knn_vectors_reader.read().map_err(|_| {
-            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
-        })?;
+        let guard = self
+            .core_readers
+            .knn_vectors_reader
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(reader) = guard.as_ref() {
             reader.get_float_vector_values(field)
         } else {
@@ -1945,9 +1977,11 @@ impl LeafReader for SegmentReader {
         {
             return Ok(None);
         }
-        let guard = self.core_readers.knn_vectors_reader.read().map_err(|_| {
-            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
-        })?;
+        let guard = self
+            .core_readers
+            .knn_vectors_reader
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(reader) = guard.as_ref() {
             reader.get_byte_vector_values(field)
         } else {
@@ -1970,9 +2004,11 @@ impl LeafReader for SegmentReader {
         {
             return Ok(());
         }
-        let mut guard = self.core_readers.knn_vectors_reader.write().map_err(|_| {
-            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
-        })?;
+        let mut guard = self
+            .core_readers
+            .knn_vectors_reader
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(reader) = guard.as_mut() {
             reader.search(field, target, collector, accept_docs)
         } else {
@@ -1995,9 +2031,11 @@ impl LeafReader for SegmentReader {
         {
             return Ok(());
         }
-        let mut guard = self.core_readers.knn_vectors_reader.write().map_err(|_| {
-            LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
-        })?;
+        let mut guard = self
+            .core_readers
+            .knn_vectors_reader
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(reader) = guard.as_mut() {
             reader.search_byte(field, target, collector, accept_docs)
         } else {
@@ -2059,7 +2097,12 @@ impl LeafReader for SegmentReader {
     /// this reader's own accessors, in Java's order, then the compound file.
     fn check_integrity(&self) -> Result<()> {
         crate::index::codec_reader::final_members::check_integrity(self)?;
-        if let Ok(guard) = self.core_readers.cfs_reader.read() {
+        {
+            let guard = self
+                .core_readers
+                .cfs_reader
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(reader) = guard.as_ref() {
                 reader.check_integrity()?;
             }
@@ -2355,9 +2398,10 @@ impl SegmentReaderCacheHelper {
         if self.closed.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
-        let guard = self.listeners.lock().map_err(|_| {
-            LuceneError::illegal_state("reader closed listeners lock poisoned".to_string())
-        })?;
+        let guard = self
+            .listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // `IOUtils.applyToAll(readerClosedListeners, l -> l.onClose(readerCacheHelper.getKey()))`
         // (`SegmentReader.java:323-327`): every listener runs; the first error
         // is returned with the later ones suppressed into it.
@@ -2381,7 +2425,11 @@ impl CacheHelper for SegmentReaderCacheHelper {
     /// The unchecked `AlreadyClosedException` once the reader is closed.
     fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>) {
         self.reader.ensure_open_unchecked();
-        if let Ok(mut listeners) = self.listeners.lock() {
+        {
+            let mut listeners = self
+                .listeners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             add_closed_listener_to_set(&mut listeners, listener);
         }
     }

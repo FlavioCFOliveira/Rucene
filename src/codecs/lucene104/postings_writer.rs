@@ -421,9 +421,11 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         if self.push_state.write_freqs {
             // `Lucene104PostingsWriter.java:282-299`.
             let norm = if self.field_has_norms {
+                // `norms.advanceExact(docID)` on a `null` iterator: the JVM's
+                // `NullPointerException`.
                 let norms = self.norms.as_mut().ok_or_else(|| {
-                    LuceneError::illegal_state(
-                        "a field with norms started a term without them".to_string(),
+                    LuceneError::null_pointer_with_message(
+                        "Cannot invoke \"org.apache.lucene.index.NumericDocValues.advanceExact(int)\" because \"this.norms\" is null",
                     )
                 })?;
                 if norms.advance_exact(doc_id)? {

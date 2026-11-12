@@ -540,12 +540,9 @@ impl Compressor for Lz4WithPresetDictCompressor {
         let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
         self.buffer.clear();
         self.buffer.resize(dict_length + block_length, 0);
-        out.write_v_int(i32::try_from(dict_length).map_err(|_| {
-            LuceneError::illegal_state(format!("dictionary too large: {dict_length}"))
-        })?)?;
-        out.write_v_int(i32::try_from(block_length).map_err(|_| {
-            LuceneError::illegal_state(format!("block too large: {block_length}"))
-        })?)?;
+        // `int` lengths in Java, which never exceed a chunk.
+        out.write_v_int(dict_length as i32)?;
+        out.write_v_int(block_length as i32)?;
 
         self.compressed.reset()?;
         // The dictionary first, compressed against nothing.
@@ -592,20 +589,33 @@ impl Lz4WithPresetDictDecompressor {
         block_length: usize,
     ) -> Result<usize> {
         input.read_v_int()?; // compressed length of the dictionary, unused
+                             // `originalLength / blockLength`: the JVM's `ArithmeticException`
+                             // for a zero block length.
         if block_length == 0 {
-            return Ok(0);
+            return Err(LuceneError::from(LuceneErrorKind::Arithmetic(
+                "/ by zero".to_string(),
+            )));
         }
         let mut total_length = dict_length;
         let mut count = 0;
+        // `ArrayUtil.growNoCopy(compressedLengths, originalLength / blockLength
+        // + 1)`, which over-allocates as `ArrayUtil.oversize` does.
         let capacity = original_length / block_length + 1;
         if self.compressed_lengths.len() < capacity {
-            self.compressed_lengths.resize(capacity, 0);
+            self.compressed_lengths
+                .resize(crate::util::ArrayUtil::oversize(capacity, 4), 0);
         }
         while total_length < original_length {
+            // `compressedLengths[i++]`: the JVM's
+            // `ArrayIndexOutOfBoundsException` past the array.
             if count >= self.compressed_lengths.len() {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                    "more compressed sub blocks than the chunk can hold".to_string(),
-                )));
+                return Err(LuceneError::unchecked(
+                    "java.lang.ArrayIndexOutOfBoundsException",
+                    format!(
+                        "Index {count} out of bounds for length {}",
+                        self.compressed_lengths.len()
+                    ),
+                ));
             }
             self.compressed_lengths[count] = input.read_v_int()?;
             count += 1;
@@ -638,6 +648,11 @@ impl Decompressor for Lz4WithPresetDictDecompressor {
             return Ok(());
         }
 
+        // **Divergence from Lucene 10.5.0.** Java keeps the two lengths as
+        // `int`s and a negative one fails later, in `ArrayUtil.grow*` or as the
+        // decompressor's own "dict length" `CorruptIndexException`; this
+        // decompressor works in `usize`, so a negative length is reported here
+        // as corruption.
         let dict_length = usize::try_from(input.read_v_int()?).map_err(|_| {
             LuceneError::from(LuceneErrorKind::corrupt_index_message(
                 "negative dictionary length".to_string(),
@@ -804,10 +819,8 @@ fn write_deflate_block(
         return out.write_v_int(0);
     }
     deflate_to(compressor, input, scratch)?;
-    let length = i32::try_from(scratch.len()).map_err(|_| {
-        LuceneError::illegal_state(format!("compressed block too large: {}", scratch.len()))
-    })?;
-    out.write_v_int(length)?;
+    // `out.writeVInt(compressedLength)`, an `int` in Java.
+    out.write_v_int(scratch.len() as i32)?;
     out.write_bytes(scratch, 0, scratch.len())
 }
 
@@ -821,6 +834,11 @@ fn read_compressed_block(
     compressed: &mut Vec<u8>,
     compressed_length: i32,
 ) -> Result<usize> {
+    // **Divergence from Lucene 10.5.0.** Java grows its buffer to
+    // `compressedLength + 1` and reads `compressedLength` bytes, so a negative
+    // length fails inside `ArrayUtil.growNoCopy` or the input's `readBytes`,
+    // with whatever that raises; this port sizes a `Vec` from it, so a negative
+    // length is reported here as corruption.
     if compressed_length < 0 {
         return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
             format!("negative compressed block length: {compressed_length}"),
@@ -1032,12 +1050,9 @@ impl Compressor for DeflateWithPresetDictCompressor {
         input.read_bytes(Some(&mut bytes), 0, len)?;
         let dict_length = len / (NUM_SUB_BLOCKS * DEFLATE_DICT_SIZE_FACTOR);
         let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
-        out.write_v_int(i32::try_from(dict_length).map_err(|_| {
-            LuceneError::illegal_state(format!("dictionary too large: {dict_length}"))
-        })?)?;
-        out.write_v_int(i32::try_from(block_length).map_err(|_| {
-            LuceneError::illegal_state(format!("block too large: {block_length}"))
-        })?)?;
+        // `int` lengths in Java, which never exceed a chunk.
+        out.write_v_int(dict_length as i32)?;
+        out.write_v_int(block_length as i32)?;
 
         self.buffer.clear();
         self.buffer.resize(dict_length + block_length, 0);
@@ -1119,6 +1134,11 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
             return Ok(());
         }
 
+        // **Divergence from Lucene 10.5.0.** Java keeps the two lengths as
+        // `int`s and a negative one fails later, in `ArrayUtil.grow*` or as the
+        // decompressor's own "dict length" `CorruptIndexException`; this
+        // decompressor works in `usize`, so a negative length is reported here
+        // as corruption.
         let dict_length = usize::try_from(input.read_v_int()?).map_err(|_| {
             LuceneError::from(LuceneErrorKind::corrupt_index_message(
                 "negative dictionary length".to_string(),
@@ -1129,13 +1149,6 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
                 "negative block length".to_string(),
             ))
         })?;
-        if block_length == 0 {
-            // Only a zero-length chunk can have zero-length blocks, and that
-            // case returned above; a zero here would loop forever.
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                "a non-empty chunk cannot have zero-length sub blocks".to_string(),
-            )));
-        }
 
         // `DeflateWithPresetDictCompressionMode.java:116-150`: the
         // dictionary first, then every block that intersects the interval,

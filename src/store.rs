@@ -717,12 +717,9 @@ pub trait DataOutput {
     /// Returns `LuceneErrorKind::IllegalArgument` when `num_bytes` is negative, and
     /// propagates whatever reading or writing raises.
     fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
+        // `assert numBytes >= 0 : "numBytes=" + numBytes`; a negative count
+        // copies nothing, as Java's loop does.
         debug_assert!(num_bytes >= 0, "numBytes={}", num_bytes);
-        if num_bytes < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
-            )));
-        }
         let mut buffer = vec![0u8; COPY_BUFFER_SIZE];
         while num_bytes > 0 {
             let to_copy = (num_bytes as usize).min(COPY_BUFFER_SIZE);
@@ -4216,7 +4213,7 @@ impl LockFactory for SingleInstanceLockFactory {
         let mut locks = self
             .locks
             .lock()
-            .expect("single-instance locks mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !locks.insert(lock_name.to_string()) {
             // `"lock instance already obtained: (dir=" + dir + ", lockName=" +
             // lockName + ")"` (`SingleInstanceLockFactory.java:41-42`): `dir`
@@ -4283,7 +4280,7 @@ impl Lock for SingleInstanceLock {
         let removed = self
             .locks
             .lock()
-            .expect("single-instance locks mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.lock_name);
         self.closed.store(true, Ordering::SeqCst);
         if !removed {
@@ -4307,7 +4304,7 @@ impl Lock for SingleInstanceLock {
         let locks = self
             .locks
             .lock()
-            .expect("single-instance locks mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !locks.contains(&self.lock_name) {
             return Err(LuceneError::already_closed(format!(
                 "Lock instance was invalidated from map: {self}"
@@ -4359,7 +4356,7 @@ impl NativeFSLockFactory {
     fn clear_lock_held(path: &str) -> Result<()> {
         let removed = NATIVE_HELD_LOCKS
             .lock()
-            .expect("native held locks mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(path);
         if !removed {
             return Err(LuceneError::already_closed(format!(
@@ -4421,7 +4418,7 @@ impl FSLockFactory for NativeFSLockFactory {
         let real_path_str = real_path.to_string();
         let added = NATIVE_HELD_LOCKS
             .lock()
-            .expect("native held locks mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(real_path_str.clone());
         if !added {
             return Err(LuceneError::lock_obtain_failed(format!(
@@ -4770,7 +4767,10 @@ impl Lock for NativeFSLock {
     /// replaces any failure to release. "we don't validate, as unlike
     /// SimpleFSLockFactory, we can't break others locks".
     fn close(&self) -> Result<()> {
-        let mut channel = self.channel.lock().expect("native lock mutex poisoned");
+        let mut channel = self
+            .channel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.closed.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -4802,7 +4802,7 @@ impl Lock for NativeFSLock {
         // crazy didn't remove us).
         let held = NATIVE_HELD_LOCKS
             .lock()
-            .expect("native held locks mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !held.contains(&self.path_str) {
             return Err(LuceneError::already_closed(format!(
                 "Lock path unexpectedly cleared from map: {self}"
@@ -4820,7 +4820,10 @@ impl Lock for NativeFSLock {
         // Try to validate the underlying file descriptor: `channel.size()`
         // throws if something is wrong.
         let size = {
-            let channel = self.channel.lock().expect("native lock mutex poisoned");
+            let channel = self
+                .channel
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match channel.as_ref() {
                 Some(channel) => channel.size(),
                 None => Err(nio::closed_channel_exception()),
@@ -6167,7 +6170,10 @@ impl RateLimiter for SimpleRateLimiter {
 
         // Sync'd to read + write lastNS:
         let target_ns = {
-            let mut last = self.last_ns.lock().expect("last_ns mutex poisoned");
+            let mut last = self
+                .last_ns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             // Time we should sleep until; this is purely instantaneous rate
             // (just adds seconds onto the last time we had paused to).
             let target = last.wrapping_add((1_000_000_000f64 * seconds_to_pause) as i64);
@@ -6253,7 +6259,7 @@ impl TrackingDirectoryWrapper {
         let files = self
             .created_files
             .lock()
-            .expect("created_files mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         files.to_std()
     }
 
@@ -6266,7 +6272,7 @@ impl TrackingDirectoryWrapper {
         let files = self
             .created_files
             .lock()
-            .expect("created_files mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         JavaHashSet::from_collection(files.clone())
     }
 
@@ -6275,7 +6281,7 @@ impl TrackingDirectoryWrapper {
         let mut files = self
             .created_files
             .lock()
-            .expect("created_files mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         files.clear();
     }
 }
@@ -6290,7 +6296,7 @@ impl Directory for TrackingDirectoryWrapper {
         let mut files = self
             .created_files
             .lock()
-            .expect("created_files mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         files.remove(name);
         Ok(())
     }
@@ -6304,7 +6310,7 @@ impl Directory for TrackingDirectoryWrapper {
         let mut files = self
             .created_files
             .lock()
-            .expect("created_files mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         files.insert(name.to_string());
         Ok(out)
     }
@@ -6320,7 +6326,7 @@ impl Directory for TrackingDirectoryWrapper {
         let mut files = self
             .created_files
             .lock()
-            .expect("created_files mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         files.insert(name);
         Ok(out)
     }
@@ -6338,7 +6344,7 @@ impl Directory for TrackingDirectoryWrapper {
         let mut files = self
             .created_files
             .lock()
-            .expect("created_files mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // `createdFileNames.add(dest)` before `remove(source)`.
         files.insert(dest.to_string());
         files.remove(source);
@@ -8573,12 +8579,9 @@ impl DataOutput for ByteBuffersDataOutput {
     }
 
     fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
+        // `assert numBytes >= 0 : "numBytes=" + numBytes`; a negative count
+        // copies nothing, as Java's loop does.
         debug_assert!(num_bytes >= 0, "numBytes={}", num_bytes);
-        if num_bytes < 0 {
-            return Err(LuceneError::illegal_argument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
-            )));
-        }
         while num_bytes > 0 {
             if self.current.len() == self.current.capacity() {
                 self.append_block()?;
@@ -8686,7 +8689,7 @@ impl FileEntry {
                 let mut content = entry_for_close
                     .content
                     .lock()
-                    .expect("content mutex poisoned");
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 *content = input;
                 entry_for_close
                     .cached_length
@@ -8707,7 +8710,10 @@ impl FileEntry {
     }
 
     fn open_input(&self) -> Result<Box<dyn IndexInput>> {
-        let content = self.content.lock().expect("content mutex poisoned");
+        let content = self
+            .content
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let input = content.as_ref().ok_or_else(|| {
             // `new AccessDeniedException("Can't open a file still open for
             // writing: " + fileName)` (`ByteBuffersDirectory.java:244`).
@@ -8761,7 +8767,10 @@ impl ByteBuffersDirectory {
     /// Returns `true` if the named file exists in this directory.
     pub fn file_exists(&self, name: &str) -> Result<bool> {
         self.ensure_open()?;
-        let files = self.files.lock().expect("files mutex poisoned");
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(files.contains_key(name))
     }
 
@@ -8781,7 +8790,10 @@ impl Default for ByteBuffersDirectory {
 impl Directory for ByteBuffersDirectory {
     fn list_all(&self) -> Result<Vec<String>> {
         self.ensure_open()?;
-        let files = self.files.lock().expect("files mutex poisoned");
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut names: Vec<String> = files.keys().cloned().collect();
         names.sort();
         Ok(names)
@@ -8789,7 +8801,10 @@ impl Directory for ByteBuffersDirectory {
 
     fn delete_file(&self, name: &str) -> Result<()> {
         self.ensure_open()?;
-        let mut files = self.files.lock().expect("files mutex poisoned");
+        let mut files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if files.remove(name).is_none() {
             // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:134`).
             return Err(LuceneError::from(LuceneErrorKind::Io(
@@ -8801,7 +8816,10 @@ impl Directory for ByteBuffersDirectory {
 
     fn file_length(&self, name: &str) -> Result<i64> {
         self.ensure_open()?;
-        let files = self.files.lock().expect("files mutex poisoned");
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:143`).
         let entry = files.get(name).ok_or_else(|| {
             LuceneError::from(LuceneErrorKind::Io(nio::no_such_file_exception(name)))
@@ -8813,7 +8831,10 @@ impl Directory for ByteBuffersDirectory {
         self.ensure_open()?;
         let entry = Arc::new(FileEntry::new(name.to_string()));
         {
-            let mut files = self.files.lock().expect("files mutex poisoned");
+            let mut files = self
+                .files
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if files.contains_key(name) {
                 // `new FileAlreadyExistsException("File already exists: " +
                 // name)` (`ByteBuffersDirectory.java:159`).
@@ -8841,7 +8862,10 @@ impl Directory for ByteBuffersDirectory {
             let counter = self.temp_counter.fetch_add(1, Ordering::SeqCst);
             let name = Self::get_temp_file_name(prefix, suffix, counter);
             let entry = Arc::new(FileEntry::new(name.clone()));
-            let mut files = self.files.lock().expect("files mutex poisoned");
+            let mut files = self
+                .files
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if files.insert(name.clone(), Arc::clone(&entry)).is_none() {
                 return Ok(Box::new(FileEntry::create_output(
                     entry,
@@ -8864,7 +8888,10 @@ impl Directory for ByteBuffersDirectory {
 
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
         self.ensure_open()?;
-        let mut files = self.files.lock().expect("files mutex poisoned");
+        let mut files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // `new NoSuchFileException(source)` and `new
         // FileAlreadyExistsException(dest)` (`ByteBuffersDirectory.java:183-186`).
         let source_entry = files.get(source).cloned().ok_or_else(|| {
@@ -8886,7 +8913,10 @@ impl Directory for ByteBuffersDirectory {
 
     fn open_input(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
         self.ensure_open()?;
-        let files = self.files.lock().expect("files mutex poisoned");
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:209`).
         let entry = files.get(name).ok_or_else(|| {
             LuceneError::from(LuceneErrorKind::Io(nio::no_such_file_exception(name)))
@@ -8905,7 +8935,10 @@ impl Directory for ByteBuffersDirectory {
     /// files.clear();`.
     fn close(&self) -> Result<()> {
         self.base.set_open(false);
-        self.files.lock().expect("files mutex poisoned").clear();
+        self.files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         Ok(())
     }
 
@@ -10009,14 +10042,14 @@ impl FSDirectory {
     fn is_pending(&self, name: &str) -> bool {
         self.pending_deletes
             .lock()
-            .expect("pending deletes mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(name)
     }
 
     fn remove_pending(&self, name: &str) -> bool {
         self.pending_deletes
             .lock()
-            .expect("pending deletes mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(name)
     }
 
@@ -10077,7 +10110,7 @@ impl FSDirectory {
             Err(_) => {
                 self.pending_deletes
                     .lock()
-                    .expect("pending deletes mutex poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert(name.to_string());
                 Ok(())
             }
@@ -10094,7 +10127,7 @@ impl FSDirectory {
             let pending = self
                 .pending_deletes
                 .lock()
-                .expect("pending deletes mutex poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if pending.is_empty() {
                 return Ok(());
             }
@@ -10114,7 +10147,7 @@ impl FSDirectory {
             let pending = self
                 .pending_deletes
                 .lock()
-                .expect("pending deletes mutex poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if pending.is_empty() {
                 false
             } else {
@@ -10143,7 +10176,7 @@ impl Directory for FSDirectory {
         let pending = self
             .pending_deletes
             .lock()
-            .expect("pending deletes mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         Self::list_all_skipping(&self.directory, Some(&pending))
     }
@@ -10307,7 +10340,7 @@ impl Directory for FSDirectory {
         let pending = self
             .pending_deletes
             .lock()
-            .expect("pending deletes mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(pending.clone())
     }
 

@@ -232,6 +232,58 @@ pub(crate) fn java_array_element_type<T>() -> &'static str {
     }
 }
 
+/// Java's `System.arraycopy(src, srcPos, dest, destPos, length)` between two
+/// distinct `byte[]`, with the checks and messages of HotSpot's
+/// `TypeArrayKlass::copy_array`: a negative position or length first, then a
+/// range past the end of either array, each an
+/// `ArrayIndexOutOfBoundsException`.
+pub(crate) fn java_byte_arraycopy(
+    src: &[u8],
+    src_pos: i32,
+    dest: &mut [u8],
+    dest_pos: i32,
+    length: i32,
+) -> crate::error::Result<()> {
+    let aioobe = |message: String| {
+        Err(crate::error::LuceneError::unchecked(
+            "java.lang.ArrayIndexOutOfBoundsException",
+            message,
+        ))
+    };
+    if src_pos < 0 {
+        return aioobe(format!(
+            "arraycopy: source index {src_pos} out of bounds for byte[{}]",
+            src.len()
+        ));
+    }
+    if dest_pos < 0 {
+        return aioobe(format!(
+            "arraycopy: destination index {dest_pos} out of bounds for byte[{}]",
+            dest.len()
+        ));
+    }
+    if length < 0 {
+        return aioobe(format!("arraycopy: length {length} is negative"));
+    }
+    let src_end = src_pos as u64 + length as u64;
+    if src_end > src.len() as u64 {
+        return aioobe(format!(
+            "arraycopy: last source index {src_end} out of bounds for byte[{}]",
+            src.len()
+        ));
+    }
+    let dest_end = dest_pos as u64 + length as u64;
+    if dest_end > dest.len() as u64 {
+        return aioobe(format!(
+            "arraycopy: last destination index {dest_end} out of bounds for byte[{}]",
+            dest.len()
+        ));
+    }
+    let (src_pos, dest_pos, length) = (src_pos as usize, dest_pos as usize, length as usize);
+    dest[dest_pos..dest_pos + length].copy_from_slice(&src[src_pos..src_pos + length]);
+    Ok(())
+}
+
 /// `ArrayUtil.copyOfSubArray(array, offset, offset + length)` for the
 /// `deepCopyOf` methods of the `*Ref` classes (`ArrayUtil.java:654-658` and
 /// its overloads): `System.arraycopy` throws `ArrayIndexOutOfBoundsException`

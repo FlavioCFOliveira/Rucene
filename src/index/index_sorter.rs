@@ -1450,7 +1450,7 @@ static SORT_FIELD_PROVIDERS: std::sync::LazyLock<
 pub fn sort_field_provider_for_name(name: &str) -> Result<Arc<dyn SortFieldProvider>> {
     SORT_FIELD_PROVIDERS
         .read()
-        .expect("INVARIANT: the sort-field provider lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .lookup(name)
 }
 
@@ -1461,7 +1461,7 @@ pub fn sort_field_provider_for_name(name: &str) -> Result<Arc<dyn SortFieldProvi
 pub fn available_sort_field_providers() -> Vec<String> {
     SORT_FIELD_PROVIDERS
         .read()
-        .expect("INVARIANT: the sort-field provider lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .available_services()
         .into_iter()
         .map(str::to_string)
@@ -1483,7 +1483,7 @@ pub fn reload_sort_field_providers(
 ) -> Result<()> {
     SORT_FIELD_PROVIDERS
         .write()
-        .expect("INVARIANT: the sort-field provider lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .reload(classloader)
 }
 

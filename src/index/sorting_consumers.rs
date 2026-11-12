@@ -66,7 +66,7 @@ impl TrackingTmpOutputDirectoryWrapper {
     pub(crate) fn temporary_files(&self) -> Vec<String> {
         self.file_names
             .lock()
-            .expect("temporary file names mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .cloned()
             .collect()
@@ -121,7 +121,7 @@ impl Directory for TrackingTmpOutputDirectoryWrapper {
         let output = self.inner.create_temp_output(name, "", context)?;
         self.file_names
             .lock()
-            .expect("temporary file names mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(name.to_string(), output.name().to_string());
         Ok(output)
     }
@@ -153,7 +153,7 @@ impl Directory for TrackingTmpOutputDirectoryWrapper {
         let temporary = self
             .file_names
             .lock()
-            .expect("temporary file names mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(name)
             .cloned();
         self.inner

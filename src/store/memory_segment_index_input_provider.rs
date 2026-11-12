@@ -259,9 +259,9 @@ impl MemorySegmentIndexInputProvider {
             return Ok(Arc::new(SharedArena::new()));
         };
 
-        let mut map = arenas.lock().map_err(|_| {
-            LuceneError::illegal_state("shared arena map mutex poisoned".to_string())
-        })?;
+        let mut map = arenas
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // `computeIfAbsent`.
         let arena = match map.get(key) {
@@ -308,7 +308,10 @@ impl MemorySegmentIndexInputProvider {
         let owned_key = key.to_string();
         let on_close = Box::new(move || {
             if let Some(map) = weak.upgrade() {
-                if let Ok(mut guard) = map.lock() {
+                {
+                    let mut guard = map
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     guard.remove(&owned_key);
                 }
             }

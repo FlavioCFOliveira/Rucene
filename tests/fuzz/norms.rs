@@ -757,8 +757,15 @@ fn a_document_id_outside_the_segment_is_never_answered_with_a_value() {
             .norms_format()
             .norms_producer(&read_state)
             .expect("norms producer");
-        for (number, _) in &fixture.fields {
+        for (number, values) in &fixture.fields {
             let field = infos.field_info_by_number(*number).expect("field info");
+            // A field whose documents all share one norm is written with
+            // `bytesPerNorm == 0`, and Java's `longValue()` then returns that
+            // norm (`entry.normsOffset`) wherever the iterator stands.
+            let constant = values
+                .first()
+                .map(|(_, first)| *first)
+                .filter(|first| values.iter().all(|(_, value)| value == first));
             for doc in [fixture.max_doc, fixture.max_doc + 1, i32::MAX - 1] {
                 let mut norms = producer.get_norms(field).expect("norms").unwrap();
                 // Out of range is `NO_MORE_DOCS` or an error, never a value
@@ -775,11 +782,19 @@ fn a_document_id_outside_the_segment_is_never_answered_with_a_value() {
                     if let Some(value) =
                         lucene_assertion::survive_lucene_assertions(|| norms.long_value())
                     {
-                        assert!(
-                            value.is_err(),
-                            "[{}] an exhausted iterator must not answer with a value",
-                            fixture.name
-                        );
+                        match constant {
+                            Some(norm) => assert_eq!(
+                                value.ok(),
+                                Some(norm),
+                                "[{}] a constant field answers its norm everywhere",
+                                fixture.name
+                            ),
+                            None => assert!(
+                                value.is_err(),
+                                "[{}] an exhausted iterator must not answer with a value",
+                                fixture.name
+                            ),
+                        }
                     }
                 }
             }

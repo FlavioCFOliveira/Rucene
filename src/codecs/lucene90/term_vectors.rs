@@ -37,15 +37,13 @@ use crate::codecs::term_vectors::{TermVectorsFormat, TermVectorsReader, TermVect
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::leaf_reader::TermVectors;
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
-use crate::index::terms::{Fields, SeekStatus, TermState, Terms, TermsEnum};
+use crate::index::terms::{Fields, SeekStatus, Terms, TermsEnum};
 use crate::index::{segment_file_name, DocIDMerger, DocIDMergerSub, DocMap, MergeState};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{
-    ByteArrayDataInput, ByteBuffersDataOutput, DataInput, DataOutput, Directory, IOContext,
-    IndexInput, IndexOutput,
+    ByteBuffersDataOutput, DataInput, DataOutput, Directory, IOContext, IndexInput, IndexOutput,
 };
 use crate::util::attribute::AttributeSource;
-use crate::util::byte_block_pool::MAX_TERM_LENGTH;
 use crate::util::packed::{
     BlockPackedReaderIterator, BlockPackedWriter, DirectReader, DirectWriter, Format, PackedInts,
     PackedIntsReaderIterator, PackedIntsWriter,
@@ -511,9 +509,9 @@ fn next_term_vectors_step(
     if merger.next_sub()?.is_none() {
         return Ok(None);
     }
-    let sub_index = merger.current_index().ok_or_else(|| {
-        LuceneError::illegal_state("DocIDMerger returned a sub it cannot locate".to_string())
-    })?;
+    let sub_index = merger
+        .current_index()
+        .expect("INVARIANT: the sub DocIDMerger just returned is one of its subs");
     let sub = merger.sub(sub_index);
     Ok(Some(TermVectorsMergeStep {
         sub_index,
@@ -791,11 +789,10 @@ impl Lucene90CompressingTermVectorsWriter {
             .as_ref()
             .and_then(|reader| reader.as_any())
             .and_then(|any| any.downcast_ref::<Lucene90CompressingTermVectorsReader>())
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "bulk merge needs a Lucene90CompressingTermVectorsReader".to_string(),
-                )
-            })?;
+            // `(Lucene90CompressingTermVectorsReader) termVectorsReaders[...]`:
+            // only a segment `canPerformBulkMerge` accepted reaches here, and
+            // that check already required this class.
+            .expect("INVARIANT: a bulk-merged segment has a Lucene90CompressingTermVectorsReader");
         debug_assert_eq!(reader.version(), VERSION_CURRENT);
         debug_assert_eq!(reader.chunk_size(), self.chunk_size as i32);
         debug_assert!(compressing::same_mode(
@@ -1362,8 +1359,12 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
         offsets: bool,
         payloads: bool,
     ) -> Result<()> {
+        // `curDoc.addField(...)`: the JVM's `NullPointerException` outside a
+        // document.
         let doc = self.cur_doc.as_mut().ok_or_else(|| {
-            LuceneError::illegal_state("start_field called without active document".to_string())
+            LuceneError::null_pointer_with_message(
+                "Cannot invoke \"org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingTermVectorsWriter$DocData.addField(int, int, boolean, boolean, boolean)\" because \"this.curDoc\" is null",
+            )
         })?;
         let _field = doc.add_field(field_info.number, num_terms, positions, offsets, payloads);
         self.cur_field = Some(doc.fields.len() - 1);
@@ -1378,10 +1379,17 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
 
     fn start_term(&mut self, term: &BytesRef, freq: i32) -> Result<()> {
         debug_assert!(freq >= 1);
+        // `curField.addTerm(...)`: the JVM's `NullPointerException` outside a
+        // field.
         let cur_field_idx = self.cur_field.ok_or_else(|| {
-            LuceneError::illegal_state("start_term called without active field".to_string())
+            LuceneError::null_pointer_with_message(
+                "Cannot invoke \"org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingTermVectorsWriter$FieldData.addTerm(int, int, int)\" because \"this.curField\" is null",
+            )
         })?;
-        let doc = self.cur_doc.as_mut().unwrap();
+        let doc = self
+            .cur_doc
+            .as_mut()
+            .expect("INVARIANT: a current field belongs to the current document");
         let field = &mut doc.fields[cur_field_idx];
 
         let prefix = if self.last_term.length == 0 {
@@ -1415,24 +1423,35 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
         end_offset: i32,
         payload: Option<&BytesRef>,
     ) -> Result<()> {
+        // `assert curField.flags != 0`, then `curField.addPosition(...)`: the
+        // JVM's `NullPointerException` outside a field, from whichever of the
+        // two dereferences runs first.
         let cur_field_idx = self.cur_field.ok_or_else(|| {
-            LuceneError::illegal_state("add_position called without active field".to_string())
+            LuceneError::null_pointer_with_message(if cfg!(debug_assertions) {
+                "Cannot read field \"flags\" because \"this.curField\" is null"
+            } else {
+                "Cannot invoke \"org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingTermVectorsWriter$FieldData.addPosition(int, int, int, int)\" because \"this.curField\" is null"
+            })
         })?;
-        let doc = self.cur_doc.as_mut().unwrap();
+        let doc = self
+            .cur_doc
+            .as_mut()
+            .expect("INVARIANT: a current field belongs to the current document");
         let field = &doc.fields[cur_field_idx];
         debug_assert!(field.flags != 0);
 
-        let payload_length = if let Some(p) = payload {
-            if !field.has_payloads {
-                return Err(LuceneError::illegal_state(
-                    "payload provided but field does not store payloads".to_string(),
-                ));
+        // `payload == null ? 0 : payload.length`; the bytes are kept only
+        // when the field stores payloads (`curField.hasPayloads && payload !=
+        // null`).
+        let payload_length = match payload {
+            Some(p) => {
+                if field.has_payloads {
+                    self.payload_bytes
+                        .write_bytes(&p.bytes, p.offset, p.length)?;
+                }
+                p.length as i32
             }
-            self.payload_bytes
-                .write_bytes(&p.bytes, p.offset, p.length)?;
-            p.length as i32
-        } else {
-            0
+            None => 0,
         };
 
         if field.has_positions {
@@ -1470,16 +1489,12 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
     }
 
     fn finish(&mut self, num_docs: i32) -> Result<()> {
-        if self.finished {
-            return Err(LuceneError::illegal_state(
-                "Lucene90CompressingTermVectorsWriter already finished".to_string(),
-            ));
+        // Java's `curDoc` already sits in `pendingDocs` (`addDocData`), so a
+        // document still open is flushed with the others, without counting.
+        if let Some(doc) = self.cur_doc.take() {
+            self.pending_docs.push(doc);
         }
-        if !self.pending_docs.is_empty() || self.cur_doc.is_some() {
-            // Finish any in-progress document first.
-            if self.cur_doc.is_some() {
-                self.finish_document()?;
-            }
+        if !self.pending_docs.is_empty() {
             self.flush(true)?;
         }
         if num_docs != self.num_docs {
@@ -1611,93 +1626,68 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
     }
 }
 
-/// Upper bound on how many packed values one byte of a term-vector chunk can
-/// possibly encode.
-///
-/// `BlockPackedWriter` spends at least one header byte per block of
-/// [`PACKED_BLOCK_SIZE`] values, and `DirectWriter`/`PackedInts` spend at least
-/// one bit per value, so no encoding this format uses can pack more than 64
-/// values into a byte. A count read off disk that exceeds the remaining bytes
-/// times this factor cannot be honest, and honouring it would mean allocating
-/// gigabytes for a file that holds none.
-const MAX_VALUES_PER_BYTE: i64 = PACKED_BLOCK_SIZE as i64;
-
-/// Returns how many bytes of `input` are still unread.
-fn remaining(input: &dyn IndexInput) -> Result<i64> {
-    Ok((input.length() - input.file_pointer()?).max(0))
-}
-
-/// Validates a length that came off disk before it is used to allocate.
-///
-/// Java would answer a negative length with a `NegativeArraySizeException` and
-/// an absurd one with an `OutOfMemoryError`, both of which a caller can catch.
-/// Rust cannot catch an allocation failure, so a length no honest file could
-/// carry is rejected up front.
-fn checked_block_len(what: &str, length: i64, input: &dyn IndexInput) -> Result<usize> {
-    let available = remaining(input)?;
-    if length < 0 || length > available {
-        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-            format!(
-            "{what} claims {length} bytes, but only {available} remain in the term-vectors stream"
-        ),
-        )));
+/// The length of Java's `new int[length]` (or `new byte[length]`): the JVM's
+/// `NegativeArraySizeException` for a negative length.
+fn java_array_length(length: i64) -> Result<usize> {
+    if length < 0 {
+        return Err(LuceneError::unchecked(
+            "java.lang.NegativeArraySizeException",
+            length.to_string(),
+        ));
     }
     Ok(length as usize)
 }
 
-/// Validates a value count that came off disk before it is used to allocate.
-///
-/// `available` is how many bytes of the stream are still unread; it is taken
-/// before the caller borrows the stream to decode, because the reader that
-/// produces `count` holds that borrow.
-fn checked_count(what: &str, count: i64, available: i64) -> Result<usize> {
-    // Every count in this format is a Java `int`, so it is also capped there.
-    let ceiling = available
-        .saturating_mul(MAX_VALUES_PER_BYTE)
-        .min(i64::from(i32::MAX));
-    if count < 0 || count > ceiling {
-        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-            format!(
-                "{what} claims {count} values, which the {available} remaining bytes of the \
-             term-vectors stream cannot encode"
-            ),
-        )));
-    }
-    Ok(count as usize)
+/// Reserves room for `length` elements, raising the JVM's `OutOfMemoryError`
+/// (`Java heap space`) where Rust would abort the process on the failed
+/// allocation.
+fn java_reserve<T>(vec: &mut Vec<T>, length: usize) -> Result<()> {
+    vec.try_reserve_exact(length)
+        .map_err(|_| LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space"))
 }
 
-/// Reads `length` bytes into a fresh buffer, refusing a length the stream
-/// cannot satisfy.
+/// A zeroed `new int[length]`.
+fn new_int_array(length: i64) -> Result<Vec<i32>> {
+    let length = java_array_length(length)?;
+    let mut array = Vec::new();
+    java_reserve(&mut array, length)?;
+    array.resize(length, 0);
+    Ok(array)
+}
+
+/// Java's `array[index]` read on an `int[]`: the JVM's
+/// `ArrayIndexOutOfBoundsException` for an index outside the array.
+fn int_array_get(array: &[i32], index: i32) -> Result<i32> {
+    usize::try_from(index)
+        .ok()
+        .and_then(|i| array.get(i).copied())
+        .ok_or_else(|| {
+            LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!("Index {index} out of bounds for length {}", array.len()),
+            )
+        })
+}
+
 /// Reads `length` bytes out of `input` into an owned buffer, which the packed
 /// readers then index at random.
 ///
 /// Equivalent to the private
 /// `Lucene90CompressingTermVectorsReader.slice(IndexInput)`, minus the length:
-/// Java's helper reads the block length itself with `readVInt()` and wraps the
-/// bytes in a `ByteBuffersDataInput`, whereas the callers here read the length
-/// (the first of them as a `vLong`, which is what the writer emits at
-/// `Lucene90CompressingTermVectorsWriter.java:497`) and hand it in, because
-/// `DirectReader::new` takes the bytes by value rather than a
+/// Java's helper reads the block length itself with `readVInt()`, allocates
+/// `new byte[length]` (`NegativeArraySizeException`, `OutOfMemoryError`), reads
+/// the bytes and wraps them in a `ByteBuffersDataInput`, whereas the callers
+/// here read the length (the first of them as a `vLong`, which is what the
+/// writer emits at `Lucene90CompressingTermVectorsWriter.java:497`) and hand
+/// it in, because `DirectReader::new` takes the bytes by value rather than a
 /// `RandomAccessInput`.
-fn read_block(what: &str, input: &mut dyn IndexInput, length: i64) -> Result<Vec<u8>> {
-    let length = checked_block_len(what, length, input)?;
-    let mut bytes = vec![0u8; length];
+fn read_block(input: &mut dyn IndexInput, length: i64) -> Result<Vec<u8>> {
+    let length = java_array_length(length)?;
+    let mut bytes = Vec::new();
+    java_reserve(&mut bytes, length)?;
+    bytes.resize(length, 0);
     input.read_bytes(Some(&mut bytes), 0, length)?;
     Ok(bytes)
-}
-
-/// Returns `values[index]`, reporting an index the file invented rather than
-/// panicking.
-fn at(what: &str, values: &[i32], index: i32) -> Result<i32> {
-    usize::try_from(index)
-        .ok()
-        .and_then(|index| values.get(index).copied())
-        .ok_or_else(|| {
-            LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                "{what} index {index} is outside the {} values the chunk holds",
-                values.len()
-            )))
-        })
 }
 
 // -----------------------------------------------------------------------------
@@ -2096,7 +2086,10 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
         // seek to the right place
         let start_pointer = if self.is_loaded(doc) {
             // avoid searching the start pointer
-            self.block_state.lock().unwrap().start_pointer
+            self.block_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .start_pointer
         } else {
             self.index_reader.get_start_pointer(doc)?
         };
@@ -2114,14 +2107,14 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
                 self.vectors_stream.to_java_string(),
             ));
         }
-        *self.block_state.lock().unwrap() = BlockState {
+        *self
+            .block_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = BlockState {
             start_pointer,
             doc_base,
             chunk_docs,
         };
-        // Taken before the block-packed reader borrows the stream, because
-        // every count it decodes is bounded by what is still left to read.
-        let available = remaining(input.as_ref())?;
         // Java's `reader` is one `BlockPackedReaderIterator` over
         // `vectorsStream`, built with the reader (`:118`) and reset before
         // each block-packed section. Each `get` here reads its own clone of the
@@ -2142,36 +2135,23 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
             total_fields = num_fields;
         } else {
             reader.reset(i64::from(chunk_docs));
-            // The per-document field counts are summed in 64 bits and validated
-            // once, rather than accumulated in a wrapping `int` as Java does.
-            // A corrupt block can decode to any `i64` at all, so the running
-            // sum saturates rather than overflowing; `checked_count` then
-            // rejects it.
-            let mut sum = 0i64;
+            // `int sum; sum += reader.next()`: Java's compound assignment
+            // narrows the `long` sum to an `int`, which wraps.
+            let mut sum = 0i32;
             for _ in doc_base..doc {
-                sum = sum.saturating_add(reader.next()?);
+                sum = sum.wrapping_add(reader.next()? as i32);
             }
-            skip = checked_count("the fields skipped in the chunk", sum, available)? as i32;
-            let fields_here = reader.next()?;
-            num_fields =
-                checked_count("the fields of the document", fields_here, available)? as i32;
-            sum = sum.saturating_add(fields_here);
-            for _ in doc + 1..doc_base + chunk_docs {
-                sum = sum.saturating_add(reader.next()?);
+            skip = sum;
+            num_fields = reader.next()? as i32;
+            sum = sum.wrapping_add(num_fields);
+            for _ in doc.wrapping_add(1)..doc_base.wrapping_add(chunk_docs) {
+                sum = sum.wrapping_add(reader.next()? as i32);
             }
-            total_fields = checked_count("the fields of the chunk", sum, available)? as i32;
+            total_fields = sum;
         }
 
         if num_fields == 0 {
             return Ok(None);
-        }
-        if num_fields < 0 || skip < 0 || total_fields < skip + num_fields {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "the chunk claims {total_fields} fields but the document at {doc} needs \
-                 {skip} + {num_fields}"
-                ),
-            )));
         }
 
         // Read field numbers.
@@ -2179,16 +2159,12 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
         // means no term vectors, cannot happen since we checked for numFields == 0
         debug_assert!(token != 0);
         let bits_per_field_num = token & 0x1F;
-        let mut total_distinct_fields = i64::from(token >> 5);
+        let mut total_distinct_fields = token >> 5;
         if total_distinct_fields == 0x07 {
-            total_distinct_fields += i64::from(reader.input().read_v_int()?);
+            total_distinct_fields =
+                total_distinct_fields.wrapping_add(reader.input().read_v_int()?);
         }
-        total_distinct_fields += 1;
-        let total_distinct_fields = checked_count(
-            "the distinct fields of the chunk",
-            total_distinct_fields,
-            remaining(reader.input())?,
-        )?;
+        total_distinct_fields = total_distinct_fields.wrapping_add(1);
         // `PackedInts.getReaderIteratorNoHeader(vectorsStream, Format.PACKED,
         // packedIntsVersion, totalDistinctFields, bitsPerFieldNum, 1)`, read
         // with one `next()` per field (`Lucene90CompressingTermVectorsReader.java:424-435`).
@@ -2200,41 +2176,46 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
             bits_per_field_num,
             1,
         )?;
-        let mut field_nums: Vec<i32> = Vec::with_capacity(total_distinct_fields);
-        for _ in 0..total_distinct_fields {
-            field_nums.push(it.next()? as i32);
+        // `fieldNums = new int[totalDistinctFields]`.
+        let mut field_nums = new_int_array(i64::from(total_distinct_fields))?;
+        for slot in field_nums.iter_mut() {
+            *slot = it.next()? as i32;
         }
-        if field_nums.is_empty() {
+
+        // `final int[] fieldNumOffs = new int[numFields]`, allocated before the
+        // offsets are read: the JVM's `NegativeArraySizeException` for a
+        // negative count.
+        let mut field_num_offs = new_int_array(i64::from(num_fields))?;
+        // **Divergence from Lucene 10.5.0.** Java reads every per-field value
+        // below through a `DirectReader` over the chunk, so a skip or a total
+        // that disagrees with the document's own count makes a later read run
+        // outside the decoded values, with whatever exception that read
+        // raises. This port materialises the values into vectors it then
+        // indexes, so the disagreement is reported here, as corruption, before
+        // an index could leave a vector.
+        if skip < 0 || total_fields < skip.wrapping_add(num_fields) {
             return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                "a term-vector chunk with fields must name at least one of them".to_string(),
+                format!(
+                    "the chunk claims {total_fields} fields but the document at {doc} needs \
+                 {skip} + {num_fields}"
+                ),
             )));
         }
 
         // Read field num offsets and flags.
         let field_num_offs_len = reader.input().read_v_long()?;
-        let field_num_offs_bytes = read_block(
-            "the field-number offsets",
-            reader.input(),
-            field_num_offs_len,
-        )?;
-        let bits_per_off = DirectWriter::bits_required((field_nums.len() - 1) as i64);
+        let field_num_offs_bytes = read_block(reader.input(), field_num_offs_len)?;
+        // `DirectWriter.bitsRequired(fieldNums.length - 1)`, whose
+        // `PackedInts.bitsRequired` rejects a negative maximum with an
+        // `IllegalArgumentException`.
+        PackedInts::bits_required(field_nums.len() as i64 - 1)?;
+        let bits_per_off = DirectWriter::bits_required(field_nums.len() as i64 - 1);
         let all_field_num_offs_reader = DirectReader::new(field_num_offs_bytes, bits_per_off)?;
-        let mut all_field_num_offs_vec = Vec::with_capacity(total_fields as usize);
-        for i in 0..total_fields as i64 {
-            let off = all_field_num_offs_reader.get_checked(i)?;
-            // `Lucene90CompressingTermVectorsReader.java:451` only asserts the
-            // range; every later use goes through the checked `at`.
-            debug_assert!(off >= 0 && off < field_nums.len() as i64);
-            all_field_num_offs_vec.push(off as i32);
-        }
 
-        let mut field_num_offs = Vec::with_capacity(num_fields as usize);
-        for i in 0..num_fields {
-            field_num_offs.push(at(
-                "the field-number offset",
-                &all_field_num_offs_vec,
-                skip + i,
-            )?);
+        // `fieldNumOffs[i] = (int) allFieldNumOffs.get(skip + i)`.
+        for (i, slot) in field_num_offs.iter_mut().enumerate() {
+            *slot = all_field_num_offs_reader.get_checked(i64::from(skip.wrapping_add(i as i32)))?
+                as i32;
         }
 
         let flags_mode = reader.input().read_v_int()?;
@@ -2242,20 +2223,21 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
         match flags_mode {
             0 => {
                 let flags_len = i64::from(reader.input().read_v_int()?);
-                let flags_bytes = read_block("the per-field flags", reader.input(), flags_len)?;
+                let flags_bytes = read_block(reader.input(), flags_len)?;
                 let field_flags_reader = DirectReader::new(flags_bytes, FLAGS_BITS)?;
-                let mut distinct_flags = Vec::with_capacity(field_nums.len());
-                for idx in 0..field_nums.len() as i64 {
-                    distinct_flags.push(field_flags_reader.get_checked(idx)? as i32);
-                }
                 for i in 0..total_fields as usize {
+                    // `writer.add(fieldFlags.get((int) allFieldNumOffs.get(i)))`.
+                    let field_num_off = all_field_num_offs_reader.get_checked(i as i64)? as i32;
+                    debug_assert!(
+                        field_num_off >= 0 && (field_num_off as usize) < field_nums.len()
+                    );
                     field_flags_values[i] =
-                        at("the flags", &distinct_flags, all_field_num_offs_vec[i])?;
+                        field_flags_reader.get_checked(i64::from(field_num_off))? as i32;
                 }
             }
             1 => {
                 let flags_len = i64::from(reader.input().read_v_int()?);
-                let flags_bytes = read_block("the per-instance flags", reader.input(), flags_len)?;
+                let flags_bytes = read_block(reader.input(), flags_len)?;
                 let all_flags = DirectReader::new(flags_bytes, FLAGS_BITS)?;
                 for i in 0..total_fields as usize {
                     field_flags_values[i] = all_flags.get_checked(i as i64)? as i32;
@@ -2278,25 +2260,27 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
         // Number of terms per field.
         let num_terms_bits = reader.input().read_v_int()?;
         let num_terms_len = i64::from(reader.input().read_v_int()?);
-        let num_terms_bytes = read_block("the term counts", reader.input(), num_terms_len)?;
+        let num_terms_bytes = read_block(reader.input(), num_terms_len)?;
         let num_terms_reader = DirectReader::new(num_terms_bytes, num_terms_bits)?;
         let mut num_terms_per_field = Vec::with_capacity(total_fields as usize);
-        let mut total_terms = 0i64;
+        // `int sum; sum += numTerms.get(i)`, which wraps.
+        let mut total_terms = 0i32;
         for i in 0..total_fields as i64 {
             let count = num_terms_reader.get_checked(i)?;
+            // **Divergence from Lucene 10.5.0.** Java keeps the counts in a
+            // `DirectReader` and narrows each with `(int)` where it is used,
+            // so a count outside `[0, Integer.MAX_VALUE]` fails later, at the
+            // `new int[termCount]` or array access it reaches. This port
+            // indexes vectors sized by these counts, so such a count is
+            // reported here, as corruption.
             if count < 0 || count > i64::from(i32::MAX) {
                 return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
                     format!("field {i} of the chunk claims {count} terms"),
                 )));
             }
             num_terms_per_field.push(count as i32);
-            total_terms = total_terms.saturating_add(count);
+            total_terms = total_terms.wrapping_add(count as i32);
         }
-        let total_terms = checked_count(
-            "the terms of the chunk",
-            total_terms,
-            remaining(reader.input())?,
-        )? as i32;
         let num_terms_at = |index: i64| -> i64 { i64::from(num_terms_per_field[index as usize]) };
 
         // Term lengths (`Lucene90CompressingTermVectorsReader.java:479-536`).
@@ -2345,13 +2329,16 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
         }
 
         // Term freqs.
-        let mut term_freqs = vec![0i32; total_terms as usize];
+        // `final int[] termFreqs = new int[totalTerms]`.
+        let mut term_freqs = new_int_array(i64::from(total_terms))?;
         {
             reader.reset(i64::from(total_terms));
-            // Java stores `1 + next()` and lets a corrupt block produce a
-            // frequency of zero or less, which then walks off the end of the
-            // position arrays. A frequency below one cannot describe a term
-            // that is in the vector at all, so it is rejected here. A
+            // **Divergence from Lucene 10.5.0.** Java stores `1 + next()` and
+            // lets a corrupt block produce a frequency of zero or less, which
+            // then walks off the end of the position arrays with an
+            // `ArrayIndexOutOfBoundsException` (or a `NegativeArraySizeException`)
+            // wherever it first lands. This port indexes vectors sized by the
+            // frequencies, so a frequency below one is rejected here. A
             // frequency is a value, not a count of encoded values: a vector
             // without positions stores only the frequency (a `FeatureField`'s
             // runs to 65535), so it is not bounded by the bytes left, as Java
@@ -2604,8 +2591,11 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
             debug_assert_eq!(term_idx, total_terms);
         }
 
-        // Decompress term and payload bytes. Java asserts
-        // `offset + length <= originalLength` inside the decompressor
+        // Decompress term and payload bytes.
+        //
+        // **Divergence from Lucene 10.5.0.** Java hands the `int` sums to the
+        // decompressor unchecked and asserts
+        // `offset + length <= originalLength` inside it
         // (`CompressionMode.java`), which a production JVM skips; here the three
         // figures are all sums of values that came off disk, so they are checked
         // rather than trusted — a negative one would become an enormous `usize`
@@ -2634,6 +2624,7 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
                 ),
             )));
         }
+        // **Divergence from Lucene 10.5.0**, as above.
         // `doc_len` is a wrapping sum of `field_lengths`, so checking it alone
         // is not enough: a negative entry hidden by a positive sibling keeps the
         // total non-negative and reaches `TVFields::terms`, which walks the
@@ -2648,7 +2639,10 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
             )));
         }
         let mut suffix_bytes = BytesRef::default();
-        let mut decompressor = self.decompressor.lock().unwrap();
+        let mut decompressor = self
+            .decompressor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         decompressor.decompress(
             input.as_mut(),
             original_length as usize,
@@ -2717,7 +2711,10 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
     fn prefetch(&mut self, doc_id: i32) -> Result<()> {
         let block_id = self.index_reader.get_block_id(doc_id)?;
 
-        let mut prefetched_block_id_cache = self.prefetched_block_id_cache.lock().unwrap();
+        let mut prefetched_block_id_cache = self
+            .prefetched_block_id_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for &prefetched_block_id in prefetched_block_id_cache.iter() {
             if prefetched_block_id == block_id {
                 return Ok(());
@@ -2895,7 +2892,10 @@ impl Lucene90CompressingTermVectorsReader {
     ///
     /// Equivalent to `Lucene90CompressingTermVectorsReader.isLoaded`.
     fn is_loaded(&self, doc_id: i32) -> bool {
-        let state = self.block_state.lock().unwrap();
+        let state = self
+            .block_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.doc_base <= doc_id && doc_id < state.doc_base.wrapping_add(state.chunk_docs)
     }
 
@@ -3155,15 +3155,12 @@ struct TVTermsEnum {
     // inside the whole decompressed block
     // (`Lucene90CompressingTermVectorsReader.java:1013`, `:1069`). A struct that
     // holds both a buffer and a view of that buffer is a self-reference Rust
-    // forbids, so the block stays here and the view's fields — position and
-    // limit — sit beside it, with [`ByteArrayDataInput`] rebuilt around them for
-    // each term.
+    // forbids, so the block stays here and the view's read position sits beside
+    // it; Java never consults the view's limit when reading terms.
     /// The whole decompressed suffix block this field's terms live in.
     term_bytes: BytesRef,
     /// Read position inside `term_bytes.bytes`.
     input_pos: usize,
-    /// Where this field's window ends inside `term_bytes.bytes`.
-    input_limit: usize,
     /// Where this field's window starts. Java's `TVTermsEnum.startPos`
     /// (`Lucene90CompressingTermVectorsReader.java:1060`, `:1101`).
     start_pos: usize,
@@ -3188,30 +3185,12 @@ impl TVTermsEnum {
         payload_bytes: BytesRef,
         term_bytes: BytesRef,
     ) -> Result<Self> {
-        // Java constructs the input over the field's own window —
-        // `new ByteArrayDataInput(termBytes.bytes, termBytes.offset, termBytes.length)`
-        // (`Lucene90CompressingTermVectorsReader.java:1013`) — which is exactly
-        // what the position and limit kept below describe. That window is not an
-        // enforced limit in Java: `ByteArrayDataInput.readBytes` is a bare
-        // `System.arraycopy` (`ByteArrayDataInput.java:141-144`) and `limit` is
-        // consulted only by `eof()` and `length()`, so a field that over-reads
-        // silently takes the next field's bytes and throws only at the backing
-        // array's end. This port keeps the window honest in `next()` instead,
-        // where the remaining bytes are checked before the read, so an over-read
-        // is a `CorruptIndexException` rather than a neighbouring field's
-        // contents; the window itself is still validated against the block here.
-        let end = term_bytes
-            .offset
-            .checked_add(term_bytes.length)
-            .filter(|end| *end <= term_bytes.bytes.len())
-            .ok_or_else(|| {
-                LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
-                    "a field window of {} bytes at {} is outside the {}-byte decompressed block",
-                    term_bytes.length,
-                    term_bytes.offset,
-                    term_bytes.bytes.len()
-                )))
-            })?;
+        // `new ByteArrayDataInput(termBytes.bytes, termBytes.offset,
+        // termBytes.length)` (`Lucene90CompressingTermVectorsReader.java:1013`):
+        // the window is not an enforced limit in Java —
+        // `ByteArrayDataInput.readBytes` is a bare `System.arraycopy` from the
+        // backing array (`ByteArrayDataInput.java:141-144`) — so `next()` reads
+        // from the whole decompressed block, as Java does.
         let start_pos = term_bytes.offset;
         Ok(Self {
             num_terms,
@@ -3226,7 +3205,6 @@ impl TVTermsEnum {
             payload_bytes,
             term_bytes,
             input_pos: start_pos,
-            input_limit: end,
             start_pos,
             term: BytesRef::with_capacity(16),
             ord: -1,
@@ -3301,12 +3279,6 @@ impl TermsEnum for TVTermsEnum {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn seek_term_state(&mut self, _text: &BytesRef, _state: &dyn TermState) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "seek_term_state not supported by TVTermsEnum".to_string(),
-        ))
-    }
-
     fn term(&self) -> Result<Option<BytesRef>> {
         Ok(Some(self.term.clone()))
     }
@@ -3319,13 +3291,10 @@ impl TermsEnum for TVTermsEnum {
         Ok(1)
     }
 
+    /// `return termFreqs[ord];`: the JVM's `ArrayIndexOutOfBoundsException`
+    /// on an unpositioned enum.
     fn total_term_freq(&mut self) -> Result<i64> {
-        if self.ord < 0 || self.ord >= self.num_terms {
-            return Err(LuceneError::illegal_state(
-                "total_term_freq called before first term".to_string(),
-            ));
-        }
-        Ok(self.term_freqs[self.ord as usize] as i64)
+        Ok(i64::from(int_array_get(&self.term_freqs, self.ord)?))
     }
 
     fn postings(
@@ -3334,14 +3303,13 @@ impl TermsEnum for TVTermsEnum {
         _flags: i32,
     ) -> Result<Option<Box<dyn PostingsEnum>>> {
         let mut postings = TVPostingsEnum::new();
-        if self.ord < 0 || self.ord >= self.num_terms {
-            return Err(LuceneError::illegal_state(
-                "postings called before first term".to_string(),
-            ));
-        }
+        // `docsEnum.reset(termFreqs[ord], positionIndex[ord], ...)`: the JVM's
+        // `ArrayIndexOutOfBoundsException` on an unpositioned enum.
+        let term_freq = int_array_get(&self.term_freqs, self.ord)?;
+        let position_index = int_array_get(&self.position_index, self.ord)?;
         postings.reset(
-            self.term_freqs[self.ord as usize],
-            self.position_index[self.ord as usize],
+            term_freq,
+            position_index,
             self.positions.clone(),
             self.start_offsets.clone(),
             self.lengths.clone(),
@@ -3362,72 +3330,40 @@ impl TermsEnum for TVTermsEnum {
         Ok(Box::new(crate::index::SlowImpactsEnum::new(postings)))
     }
 
-    fn term_state(&mut self) -> Result<Box<dyn TermState>> {
-        Err(LuceneError::unsupported_operation(
-            "term_state not supported by TVTermsEnum".to_string(),
-        ))
-    }
-
     fn next(&mut self) -> Result<Option<BytesRef>> {
         if self.ord == self.num_terms - 1 {
             return Ok(None);
         }
         debug_assert!(self.ord < self.num_terms);
         self.ord += 1;
-        // Both lengths were decoded from the chunk, so both are untrusted. Java
-        // reaches `ArrayUtil.grow(term.bytes, prefix + suffix)`, which answers a
-        // negative sum with an `IllegalArgumentException` and an absurd one with
-        // an `OutOfMemoryError` — catchable either way. In Rust a negative
-        // `i32` cast to `usize` becomes about 1.8e19 and the `resize` aborts
-        // the process, so the two lengths are validated instead.
-        let prefix = self.prefix_lengths[self.ord as usize];
-        let suffix = self.suffix_lengths[self.ord as usize];
-        if prefix < 0 || suffix < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                    "term {} of the field has a prefix of {prefix} and a suffix of {suffix}",
-                    self.ord
-                ),
-            )));
+        // `term.length = prefixLengths[ord] + suffixLengths[ord]`, an `int`
+        // sum that wraps; `ArrayUtil.grow` when it outgrows the buffer; then
+        // `in.readBytes(term.bytes, prefixLengths[ord], suffixLengths[ord])`,
+        // a `System.arraycopy` from the backing array, which raises the JVM's
+        // `ArrayIndexOutOfBoundsException` for a range either array lacks.
+        let prefix = int_array_get(&self.prefix_lengths, self.ord)?;
+        let suffix = int_array_get(&self.suffix_lengths, self.ord)?;
+        let new_len = prefix.wrapping_add(suffix);
+        if i64::from(new_len) > self.term.bytes.len() as i64 {
+            let grown = ArrayUtil::oversize(new_len as usize, 1);
+            let mut bytes = std::mem::take(&mut self.term.bytes);
+            bytes
+                .try_reserve_exact(grown.saturating_sub(bytes.len()))
+                .map_err(|_| {
+                    LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space")
+                })?;
+            bytes.resize(grown, 0);
+            self.term.bytes = bytes;
         }
-        let prefix = prefix as usize;
-        let suffix = suffix as usize;
-        let new_len = prefix + suffix;
-        // The term bytes are a window into the decompressed suffix block, so no
-        // term can be longer than what is left of it.
-        let available = self.input_limit.saturating_sub(self.input_pos);
-        if suffix > available {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                "term {} of the field claims a {suffix}-byte suffix, but only {available} bytes \
-                 of the decompressed block remain",
-                self.ord
-            ),
-            )));
-        }
-        if new_len > MAX_TERM_LENGTH {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                format!(
-                "term {} of the field is {new_len} bytes, above the {MAX_TERM_LENGTH}-byte maximum",
-                self.ord
-            ),
-            )));
-        }
-        if self.term.bytes.len() < new_len {
-            self.term.bytes.resize(new_len, 0);
-        }
-        let Self {
-            term_bytes,
-            input_pos,
-            input_limit,
-            term,
-            ..
-        } = self;
-        let mut input = ByteArrayDataInput::with_range(&term_bytes.bytes, 0, *input_limit);
-        input.set_position(*input_pos);
-        let read = input.read_bytes(Some(&mut term.bytes), prefix, suffix);
-        *input_pos = input.position();
-        read?;
+        crate::util::java_byte_arraycopy(
+            &self.term_bytes.bytes,
+            self.input_pos as i32,
+            &mut self.term.bytes,
+            prefix,
+            suffix,
+        )?;
+        self.input_pos = (self.input_pos as i32).wrapping_add(suffix) as usize;
+        let new_len = new_len as usize;
         self.term.offset = 0;
         self.term.length = new_len;
         Ok(Some(self.term.clone()))
@@ -3590,21 +3526,16 @@ impl PostingsEnum for TVPostingsEnum {
         }
         self.i += 1;
         if let Some(ref idx) = self.payload_index {
-            // Java assigns `payload.offset`/`payload.length` straight from the
-            // index and hands back a nonsense `BytesRef`; the caller then trips
-            // an `ArrayIndexOutOfBoundsException` when it reads. Rust would
-            // instead panic inside `BytesRef::slice`, so the window is
-            // validated against the buffer here, where the error can still be
-            // reported.
-            let slot = (self.position_index + self.i) as usize;
-            let (Some(&from), Some(&to)) = (idx.get(slot), idx.get(slot + 1)) else {
-                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
-                    format!(
-                        "payload {slot} is outside the {} entries of the payload index",
-                        idx.len()
-                    ),
-                )));
-            };
+            // `payloadIndex[positionIndex + i]` and `[positionIndex + i + 1]`:
+            // the JVM's `ArrayIndexOutOfBoundsException` outside the index.
+            let slot = self.position_index.wrapping_add(self.i);
+            let from = int_array_get(idx, slot)?;
+            let to = int_array_get(idx, slot.wrapping_add(1))?;
+            // **Divergence from Lucene 10.5.0.** Java assigns
+            // `payload.offset`/`payload.length` straight from the index and
+            // hands back a `BytesRef` a caller trips over only when it reads
+            // it. This port's `BytesRef` cannot hold a negative or
+            // out-of-buffer window, so such a window is reported here.
             let base = self.payload_bytes.offset;
             let end = self.payload_bytes.offset + self.payload_bytes.length;
             if from < 0
@@ -3623,7 +3554,7 @@ impl PostingsEnum for TVPostingsEnum {
             self.payload.length = (to - from) as usize;
         }
         match &self.positions {
-            Some(positions) => Ok(positions[(self.position_index + self.i) as usize]),
+            Some(positions) => int_array_get(positions, self.position_index.wrapping_add(self.i)),
             None => Ok(-1),
         }
     }

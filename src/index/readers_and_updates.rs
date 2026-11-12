@@ -1382,7 +1382,10 @@ pub struct ReadersAndUpdates {
 
 impl std::fmt::Debug for ReadersAndUpdates {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state = self.state.lock().expect("state mutex poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f.debug_struct("ReadersAndUpdates")
             .field("seg", &state.info.info.name)
             .field("ref_count", &self.ref_count.load(Ordering::Relaxed))
@@ -1399,7 +1402,10 @@ impl std::fmt::Display for ReadersAndUpdates {
     /// updates were added. It also leaves its parenthesis open, and so does the
     /// `PendingDeletes` it embeds. Measured against `lucene-core-10.5.0.jar`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state = self.state.lock().expect("state mutex poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         write!(
             f,
             "ReadersAndLiveDocs(seg={} pendingDeletes={}",
@@ -1524,7 +1530,10 @@ impl ReadersAndUpdates {
     /// Equivalent to `IndexWriter.publishFlushedSegment`'s assignment
     /// `rld.sortMap = sortMap`.
     pub fn set_sort_map(&self, sort_map: Arc<SorterDocMap>) {
-        self.state.lock().expect("state mutex poisoned").sort_map = Some(sort_map);
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .sort_map = Some(sort_map);
     }
 
     /// Returns the permutation the segment was sorted with on flush, when one
@@ -1534,7 +1543,7 @@ impl ReadersAndUpdates {
     pub fn sort_map(&self) -> Option<Arc<SorterDocMap>> {
         self.state
             .lock()
-            .expect("state mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .sort_map
             .clone()
     }
@@ -1545,7 +1554,10 @@ impl ReadersAndUpdates {
     /// resolved an update to, which no file shows.
     #[cfg(test)]
     pub(crate) fn pending_dv_updates_single_valued(&self, field: &str) -> Vec<bool> {
-        let state = self.state.lock().expect("state mutex poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .pending_dv_updates
             .get(field)
@@ -1569,7 +1581,7 @@ impl ReadersAndUpdates {
     pub fn info(&self) -> SegmentCommitInfo {
         self.state
             .lock()
-            .expect("state mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .info
             .clone()
     }
@@ -1578,7 +1590,7 @@ impl ReadersAndUpdates {
     pub fn segment_name(&self) -> String {
         self.state
             .lock()
-            .expect("state mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .info
             .info
             .name
@@ -1587,7 +1599,10 @@ impl ReadersAndUpdates {
 
     /// Returns the delete count.
     pub fn get_del_count(&self) -> i32 {
-        let state = self.state.lock().expect("state mutex poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.get_del_count(),
             PendingDeletesKind::Soft(pd) => pd.get_del_count(),
@@ -1596,7 +1611,10 @@ impl ReadersAndUpdates {
 
     /// Returns a `SegmentReader`.  The caller must call `release` when done.
     pub fn get_reader(&self, context: &dyn IOContext) -> Result<Arc<SegmentReader>> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Self::get_reader_locked(&mut state, context)
     }
 
@@ -1660,7 +1678,10 @@ impl ReadersAndUpdates {
 
     /// Deletes a document.  Returns `true` if the document was deleted.
     pub fn delete(&self, doc_id: i32) -> Result<bool> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let must_init = match &state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.must_init_on_delete(),
             PendingDeletesKind::Soft(pd) => pd.must_init_on_delete(),
@@ -1678,7 +1699,10 @@ impl ReadersAndUpdates {
 
     /// Drops all readers and decrements the ref count.
     pub fn drop_readers(&self) -> Result<()> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(reader) = state.reader.take() {
             reader.dec_ref()?;
         }
@@ -1689,7 +1713,10 @@ impl ReadersAndUpdates {
 
     /// Returns a read-only clone with the latest live docs.
     pub fn get_read_only_clone(&self, context: &dyn IOContext) -> Result<Arc<SegmentReader>> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.reader.is_none() {
             // `getReader(context).decRef()` (`ReadersAndUpdates.java:221-224`).
             Self::get_reader_locked(&mut state, context)?.dec_ref()?;
@@ -1733,7 +1760,10 @@ impl ReadersAndUpdates {
 
     /// Returns a snapshot of the live docs.
     pub fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &mut state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.get_live_docs(),
             PendingDeletesKind::Soft(pd) => pd.get_live_docs(),
@@ -1742,7 +1772,10 @@ impl ReadersAndUpdates {
 
     /// Returns the hard live docs (excluding soft-deleted docs).
     pub fn get_hard_live_docs(&self) -> Option<Box<dyn Bits>> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &mut state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.get_hard_live_docs(),
             PendingDeletesKind::Soft(pd) => pd.get_hard_live_docs(),
@@ -1754,7 +1787,10 @@ impl ReadersAndUpdates {
     /// `ReadersAndUpdates.getHardLiveDocs()` reference is
     /// (`IndexWriter.java:4642` compares two of them by identity).
     pub(crate) fn get_hard_live_docs_shared(&self) -> Option<Arc<dyn Bits>> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &mut state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.get_hard_live_docs_shared(),
             PendingDeletesKind::Soft(pd) => pd.get_hard_live_docs_shared(),
@@ -1763,7 +1799,10 @@ impl ReadersAndUpdates {
 
     /// Discards pending changes (used after a successful merge).
     pub fn drop_changes(&self) {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &mut state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.drop_changes(),
             PendingDeletesKind::Soft(pd) => pd.drop_changes(),
@@ -1776,7 +1815,10 @@ impl ReadersAndUpdates {
     pub fn write_live_docs(&self, dir: &dyn Directory) -> Result<bool> {
         // The pending deletes write through the segment's shared commit
         // object, `state.info` itself.
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &mut state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.write_live_docs(dir),
             PendingDeletesKind::Soft(pd) => pd.write_live_docs(dir),
@@ -1790,7 +1832,10 @@ impl ReadersAndUpdates {
                 "DocValuesFieldUpdates not finished — call finish() first".to_string(),
             ));
         }
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let field = update.field.clone();
         let ram = update.ram_bytes_used();
 
@@ -1826,7 +1871,10 @@ impl ReadersAndUpdates {
 
     /// Returns the number of buffered DV updates.
     pub fn get_num_dv_updates(&self) -> usize {
-        let state = self.state.lock().expect("state mutex poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.pending_dv_updates.values().map(|v| v.len()).sum()
     }
 
@@ -1837,7 +1885,10 @@ impl ReadersAndUpdates {
 
     /// Sets the merging flag.
     pub fn set_is_merging(&self) {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.is_merging {
             state.is_merging = true;
             // `ReadersAndUpdates.java:830`.
@@ -1847,12 +1898,18 @@ impl ReadersAndUpdates {
 
     /// Returns whether this segment is merging.
     pub fn is_merging(&self) -> bool {
-        self.state.lock().expect("state mutex poisoned").is_merging
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_merging
     }
 
     /// Drops all merging updates.
     pub fn drop_merging_updates(&self) {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.merging_dv_updates.clear();
         state.is_merging = false;
     }
@@ -1866,7 +1923,10 @@ impl ReadersAndUpdates {
     /// clears it; this port returns a copy of each update and leaves the map,
     /// which is equivalent, because the caller only reads it.
     pub fn get_merging_dv_updates(&self) -> JavaHashMap<Vec<DocValuesFieldUpdates>> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.is_merging = false;
         let mut copy = JavaHashMap::new();
         for (field, updates) in state.merging_dv_updates.iter() {
@@ -1894,7 +1954,10 @@ impl ReadersAndUpdates {
         &self,
         policy: &dyn crate::index::merge_policy::MergePolicy,
     ) -> Result<bool> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut reader_supplier = || -> Result<Arc<dyn crate::index::codec_reader::CodecReader>> {
             let reader = Self::get_latest_reader_locked(&mut state, self)?;
             Ok(reader as Arc<dyn crate::index::codec_reader::CodecReader>)
@@ -1918,7 +1981,10 @@ impl ReadersAndUpdates {
     ///
     /// Propagates whatever initialising the soft-delete counts raises.
     pub fn is_fully_deleted(&self) -> Result<bool> {
-        let mut guard = self.state.lock().expect("state mutex poisoned");
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let RauState {
             info,
             index_created_version_major,
@@ -1988,7 +2054,10 @@ impl ReadersAndUpdates {
         max_del_gen: i64,
         info_stream: &dyn InfoStream,
     ) -> Result<bool> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Check if there are any updates to apply.
         let mut any = false;
@@ -2555,7 +2624,10 @@ impl ReadersAndUpdates {
     ///
     /// Propagates whatever opening or refreshing the reader raises.
     pub fn get_latest_reader(&self) -> Result<Arc<SegmentReader>> {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Self::get_latest_reader_locked(&mut state, self)
     }
 
@@ -2631,7 +2703,10 @@ impl ReadersAndUpdates {
         &self,
         policy: &dyn crate::index::merge_policy::MergePolicy,
     ) -> Result<i32> {
-        let mut guard = self.state.lock().expect("state mutex poisoned");
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let RauState {
             info,
             index_created_version_major,
@@ -2677,7 +2752,10 @@ impl ReadersAndUpdates {
     where
         F: FnOnce(&crate::index::merge_policy::MergeReader) -> Result<()>,
     {
-        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // We must carry over any still-pending DV updates because they were not
         // successfully written.
@@ -3128,7 +3206,10 @@ pub struct ReaderPool {
 
 impl std::fmt::Debug for ReaderPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f.debug_struct("ReaderPool")
             .field("pool_size", &map.len())
             .field("pool_readers", &self.pool_readers.load(Ordering::Relaxed))
@@ -3195,7 +3276,10 @@ impl ReaderPool {
             crate::index::index_reader::IndexReader::ensure_open(reader)?;
             let leaves = reader.segment_readers();
             debug_assert_eq!(segment_infos.size(), leaves.len());
-            let mut map = pool.reader_map.lock().expect("reader_map mutex poisoned");
+            let mut map = pool
+                .reader_map
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for (i, seg_reader) in leaves.iter().enumerate() {
                 let new_reader = SegmentReader::new_shared(
                     segment_infos.info(i).clone(),
@@ -3254,7 +3338,10 @@ impl ReaderPool {
             "Reader map is not empty"
         );
         self.ensure_open()?;
-        let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let mut map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(rld) = map.get(&info.info.name) {
             let rld = Arc::clone(rld);
             if create {
@@ -3309,7 +3396,10 @@ impl ReaderPool {
         assert_info_live: bool,
         live_infos: &SegmentInfos,
     ) -> Result<bool> {
-        let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let mut map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut changed = false;
         // Matches incRef in get:
         rld.dec_ref();
@@ -3435,7 +3525,10 @@ impl ReaderPool {
     /// says "in MB" while the body sums bytes; the body is the contract, and
     /// this returns bytes too.
     pub fn ram_bytes_used(&self) -> i64 {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.values().map(|rld| rld.ram_bytes_used()).sum()
     }
 
@@ -3443,7 +3536,10 @@ impl ReaderPool {
     ///
     /// Equivalent to `org.apache.lucene.index.ReaderPool#anyDeletions`.
     pub fn any_deletions(&self) -> bool {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.values().any(|rld| rld.get_del_count() > 0)
     }
 
@@ -3453,7 +3549,10 @@ impl ReaderPool {
     /// Pending deletions are deliberately not consulted: they carry over in RAM
     /// to NRT readers, so they are not a reason to write anything out.
     pub fn any_doc_values_changes(&self) -> bool {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.values().any(|rld| rld.get_num_dv_updates() != 0)
     }
 
@@ -3497,7 +3596,10 @@ impl ReaderPool {
         // `IndexWriter.writeReaderPool` checkpoint when, and only when,
         // something was written, so that the new `.liv` and doc-values
         // generations are the ones the next commit records.
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut at_least_one_change = false;
         for info in infos {
             if let Some(rld) = map.get(&info.info.name) {
@@ -3527,7 +3629,10 @@ impl ReaderPool {
     /// without taking a reference for the caller: the lookup half of
     /// `ReaderPool.get(info, false)` (`ReaderPool.java:390-412`).
     pub fn peek(&self, segment_name: &str) -> Option<Arc<ReadersAndUpdates>> {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.get(segment_name).map(Arc::clone)
     }
 
@@ -3539,7 +3644,10 @@ impl ReaderPool {
     /// suppressed. The decRefs need not close the readers: a near-real-time
     /// reader may still hold them.
     pub fn drop_all(&self) -> Result<()> {
-        let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let mut map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entries: Vec<Arc<ReadersAndUpdates>> = map.drain().map(|(_, rld)| rld).collect();
         drop(map);
         crate::util::IOUtils::close(entries.iter().map(|rld| Some(move || rld.drop_readers())))
@@ -3552,7 +3660,10 @@ impl ReaderPool {
     /// Returns whether any file was written (`ReaderPool.java:240-254`), which
     /// is what tells `IndexWriter.writeReaderPool` to checkpoint.
     pub fn write_all_doc_values_updates(&self) -> Result<bool> {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut any = false;
         for rld in map.values() {
             any |= rld.write_field_updates(
@@ -3577,7 +3688,10 @@ impl ReaderPool {
         &self,
         merging_segments: &[SegmentCommitInfo],
     ) -> Result<bool> {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut any = false;
         for info in merging_segments {
             if let Some(rld) = map.get(&info.info.name) {
@@ -3617,7 +3731,10 @@ impl ReaderPool {
         // `RamRecordingHolder(ReadersAndUpdates)`: the reader and the RAM it
         // used when it was recorded.
         let mut readers_by_ram: Vec<(Arc<ReadersAndUpdates>, i64)> = {
-            let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+            let map = self
+                .reader_map
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if map.is_empty() {
                 return Vec::new();
             }
@@ -3640,7 +3757,10 @@ impl ReaderPool {
     ///
     /// Propagates whatever dropping the readers raises.
     pub fn drop(&self, info: &SegmentCommitInfo) -> Result<bool> {
-        let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let mut map = self
+            .reader_map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match map.remove(&info.info.name) {
             Some(rld) => {
                 rld.drop_readers()?;

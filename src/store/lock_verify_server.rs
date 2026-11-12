@@ -71,11 +71,12 @@ impl StartingGun {
         let mut fired = self
             .fired
             .lock()
-            .map_err(|_| LuceneError::illegal_state("starting gun mutex poisoned".to_string()))?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while !*fired {
-            fired = self.condition.wait(fired).map_err(|_| {
-                LuceneError::illegal_state("starting gun mutex poisoned".to_string())
-            })?;
+            fired = self
+                .condition
+                .wait(fired)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         Ok(())
     }
@@ -85,7 +86,7 @@ impl StartingGun {
         let mut fired = self
             .fired
             .lock()
-            .map_err(|_| LuceneError::illegal_state("starting gun mutex poisoned".to_string()))?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *fired = true;
         self.condition.notify_all();
         Ok(())
@@ -278,7 +279,7 @@ impl LockVerifyServer {
             let mut holder = locked_id
                 .0
                 .lock()
-                .map_err(|_| LuceneError::illegal_state("locked id mutex poisoned".to_string()))?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let current_lock = *holder;
             if current_lock == VIOLATION {
                 return Ok(()); // another thread got an error, so we exit too

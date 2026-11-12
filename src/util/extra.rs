@@ -1246,15 +1246,6 @@ impl Version {
         }
     }
 
-    fn new(major: u8, minor: u8, bugfix: u8, prerelease: u8) -> Result<Self, LuceneError> {
-        Self::from_ints(
-            i32::from(major),
-            i32::from(minor),
-            i32::from(bugfix),
-            i32::from(prerelease),
-        )
-    }
-
     /// Equivalent to the private constructor `Version(int, int, int, int)`
     /// (`Version.java:451-484`), with its range checks in Java's order.
     ///
@@ -1451,8 +1442,17 @@ impl Version {
     }
 
     /// Creates a version from raw numeric components.
-    pub fn from_bits(major: u8, minor: u8, bugfix: u8) -> Result<Self, LuceneError> {
-        Self::new(major, minor, bugfix, 0)
+    ///
+    /// Equivalent to `Version.fromBits(int, int, int)` (`Version.java:427-429`):
+    /// the components are Java `int`s, checked by the constructor.
+    ///
+    /// # Errors
+    ///
+    /// Returns Java's `IllegalArgumentException` (`Illegal major version: <n>`,
+    /// and likewise for the minor and bugfix components) for a component
+    /// outside `0..=255`.
+    pub fn from_bits(major: i32, minor: i32, bugfix: i32) -> Result<Self, LuceneError> {
+        Self::from_ints(major, minor, bugfix, 0)
     }
 
     /// Returns true if this version is the same or after `other`.

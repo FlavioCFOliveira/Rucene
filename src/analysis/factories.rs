@@ -1527,7 +1527,7 @@ pub fn tokenizer_lookup_class(
 ) -> Result<Arc<AnalysisFactoryClass<dyn TokenizerFactory>>> {
     TOKENIZER_LOADER
         .read()
-        .expect("INVARIANT: the tokenizer loader lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .lookup_class(name)
 }
 
@@ -1537,7 +1537,7 @@ pub fn tokenizer_lookup_class(
 pub fn available_tokenizers() -> Vec<String> {
     TOKENIZER_LOADER
         .read()
-        .expect("INVARIANT: the tokenizer loader lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .available_services()
 }
 
@@ -1570,7 +1570,7 @@ pub fn find_tokenizer_spi_name(
 pub fn reload_tokenizers(classloader: &Arc<ClassLoader>) -> Result<()> {
     TOKENIZER_LOADER
         .write()
-        .expect("INVARIANT: the tokenizer loader lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .reload(classloader)
 }
 
@@ -1602,7 +1602,7 @@ pub fn token_filter_lookup_class(
 ) -> Result<Arc<AnalysisFactoryClass<dyn TokenFilterFactory>>> {
     TOKEN_FILTER_LOADER
         .read()
-        .expect("INVARIANT: the token-filter loader lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .lookup_class(name)
 }
 
@@ -1612,7 +1612,7 @@ pub fn token_filter_lookup_class(
 pub fn available_token_filters() -> Vec<String> {
     TOKEN_FILTER_LOADER
         .read()
-        .expect("INVARIANT: the token-filter loader lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .available_services()
 }
 
@@ -1640,7 +1640,7 @@ pub fn find_token_filter_spi_name(
 pub fn reload_token_filters(classloader: &Arc<ClassLoader>) -> Result<()> {
     TOKEN_FILTER_LOADER
         .write()
-        .expect("INVARIANT: the token-filter loader lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .reload(classloader)
 }
 
@@ -1672,7 +1672,7 @@ pub fn char_filter_lookup_class(
 ) -> Result<Arc<AnalysisFactoryClass<dyn CharFilterFactory>>> {
     CHAR_FILTER_LOADER
         .read()
-        .expect("INVARIANT: the char-filter loader lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .lookup_class(name)
 }
 
@@ -1682,7 +1682,7 @@ pub fn char_filter_lookup_class(
 pub fn available_char_filters() -> Vec<String> {
     CHAR_FILTER_LOADER
         .read()
-        .expect("INVARIANT: the char-filter loader lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .available_services()
 }
 
@@ -1710,7 +1710,7 @@ pub fn find_char_filter_spi_name(
 pub fn reload_char_filters(classloader: &Arc<ClassLoader>) -> Result<()> {
     CHAR_FILTER_LOADER
         .write()
-        .expect("INVARIANT: the char-filter loader lock is never poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .reload(classloader)
 }
 

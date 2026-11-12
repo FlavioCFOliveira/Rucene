@@ -29,7 +29,7 @@ use crate::codecs::lucene104::{
 use crate::codecs::postings::{ImpactsEnum, PostingsEnum, PostingsReaderBase};
 use crate::codecs::state::SegmentReadState;
 use crate::codecs::term_state::BlockTermState;
-use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::error::{LuceneError, Result};
 use crate::index::{FieldInfo, IndexOptions};
 use crate::index::{FreqAndNormBuffer, Impacts, ImpactsSource};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
@@ -484,12 +484,7 @@ impl PostingsReaderBase for Lucene104PostingsReader {
         postings
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<BlockPostingsEnum>())
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "INVARIANT: the enum was just checked or built as a BlockPostingsEnum"
-                        .to_string(),
-                )
-            })?
+            .expect("INVARIANT: the enum was just checked or built as a BlockPostingsEnum")
             .reset(state)?;
         Ok(postings)
     }
@@ -886,10 +881,10 @@ impl BlockPostingsEnum {
 
         if self.doc_freq > 1 {
             if self.doc_in.is_none() {
-                // doc_in is lazily initialized by the parent reader in postings().
-                return Err(LuceneError::illegal_state(
-                    "BlockPostingsEnum.doc_in must be initialized by the reader".to_string(),
-                ));
+                // doc_in is lazily initialized by the parent reader in
+                // postings(); a `null` `docIn` dereferenced is the JVM's
+                // `NullPointerException`.
+                return Err(LuceneError::null_pointer());
             }
             let doc_in = self
                 .doc_in
@@ -981,21 +976,24 @@ impl BlockPostingsEnum {
         self.doc_in
             .as_mut()
             .map(|b| b.as_mut() as *mut dyn IndexInput)
-            .ok_or_else(|| LuceneError::illegal_state("doc_in is not open".to_string()))
+            // A `null` `docIn` dereferenced: the JVM\'s `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)
     }
 
     fn pos_in_ptr(&mut self) -> Result<*mut dyn IndexInput> {
         self.pos_in
             .as_mut()
             .map(|b| b.as_mut() as *mut dyn IndexInput)
-            .ok_or_else(|| LuceneError::illegal_state("pos_in is not open".to_string()))
+            // A `null` `posIn` dereferenced: the JVM\'s `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)
     }
 
     fn pay_in_ptr(&mut self) -> Result<*mut dyn IndexInput> {
         self.pay_in
             .as_mut()
             .map(|b| b.as_mut() as *mut dyn IndexInput)
-            .ok_or_else(|| LuceneError::illegal_state("pay_in is not open".to_string()))
+            // A `null` `payIn` dereferenced: the JVM\'s `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)
     }
 
     /// # Safety
@@ -1257,7 +1255,8 @@ impl BlockPostingsEnum {
                 let doc_in = self
                     .doc_in
                     .as_mut()
-                    .ok_or_else(|| LuceneError::illegal_state("doc_in is not open".to_string()))?;
+                    // A `null` `docIn` dereferenced: the JVM\'s `NullPointerException`.
+                    .ok_or_else(LuceneError::null_pointer)?;
                 let level0_num_bytes = doc_in.read_v_long()?;
                 let level0_end = doc_in.file_pointer()? + level0_num_bytes;
                 let doc_delta = read_v_int15(doc_in.as_mut())?;
@@ -1282,7 +1281,8 @@ impl BlockPostingsEnum {
         let doc_in = self
             .doc_in
             .as_mut()
-            .ok_or_else(|| LuceneError::illegal_state("doc_in is not open".to_string()))?;
+            // A `null` `docIn` dereferenced: the JVM\'s `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)?;
         let pos_delta = doc_in.read_v_long()?;
         let block_pos_upto = i32::from(doc_in.read_byte()?);
         let pay = if index_has_offsets_or_payloads {
@@ -1881,15 +1881,15 @@ impl PostingsEnum for BlockPostingsEnum {
     /// values are the same.
     ///
     /// A document position that a corrupt bit-set block put outside the block
-    /// is an error, where Java would throw `ArrayIndexOutOfBoundsException`.
+    /// raises the `ArrayIndexOutOfBoundsException` Java throws.
     fn freq(&self) -> Result<i32> {
         let freq_fp = self.freq_fp.get();
         if freq_fp != -1 {
             let mut freq_in = self.freq_in.borrow_mut();
             if freq_in.is_none() {
-                let doc_in = self.doc_in.as_ref().ok_or_else(|| {
-                    LuceneError::illegal_state("BlockPostingsEnum has no doc input".to_string())
-                })?;
+                // `docIn.clone()` on a `null` input: the JVM's
+                // `NullPointerException`.
+                let doc_in = self.doc_in.as_ref().ok_or_else(LuceneError::null_pointer)?;
                 *freq_in = Some(doc_in.clone_input()?);
             }
             let input = freq_in
@@ -1901,13 +1901,16 @@ impl PostingsEnum for BlockPostingsEnum {
             self.freq_fp.set(-1);
         }
         let upto = self.doc_buffer_upto;
+        // `freqBuffer[docBufferUpto - 1]` on a `long[BLOCK_SIZE]`: the JVM's
+        // `ArrayIndexOutOfBoundsException` outside the block.
         if !(1..=BS_I32).contains(&upto) {
-            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            return Err(LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
                 format!(
-                    "postings block position {} is outside the {BS}-document block",
-                    upto - 1
+                    "Index {} out of bounds for length {BS}",
+                    upto.wrapping_sub(1)
                 ),
-            )));
+            ));
         }
         Ok(self.freq_buffer.borrow()[upto as usize - 1])
     }
@@ -2139,6 +2142,7 @@ mod tests {
     use crate::codecs::lucene104::Lucene104PostingsWriter;
     use crate::codecs::postings::PushPostingsWriterBase;
     use crate::codecs::state::SegmentWriteState;
+    use crate::error::LuceneErrorKind;
     use crate::index::{FieldInfo, FieldInfos, IndexOptions};
     use crate::search::DocIdSetIterator;
     use crate::store::{
@@ -2480,7 +2484,12 @@ mod tests {
             .expect("postings exist");
         match it.next_doc() {
             Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                kind:
+                    LuceneErrorKind::Unchecked {
+                        class: "java.lang.ArrayIndexOutOfBoundsException",
+                        message: Some(message),
+                        ..
+                    },
                 ..
             }) => {
                 assert_eq!(message, "Index 40 out of bounds for length 32")

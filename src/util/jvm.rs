@@ -209,7 +209,7 @@ impl VirtualMethod {
         {
             let mut guard = SINGLETON_SET
                 .lock()
-                .expect("INVARIANT: the singleton set mutex is never poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let set = guard.get_or_insert_with(HashSet::new);
             if !set.insert(key) {
                 return Err(LuceneError::unsupported_operation(
@@ -238,7 +238,7 @@ impl VirtualMethod {
         if let Some(&d) = self
             .distance_of_class
             .lock()
-            .expect("INVARIANT: the distance cache mutex is never poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&key)
         {
             return Ok(d);
@@ -246,7 +246,7 @@ impl VirtualMethod {
         let distance = self.reflect_implementation_distance(subclazz)?;
         self.distance_of_class
             .lock()
-            .expect("INVARIANT: the distance cache mutex is never poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key, distance);
         Ok(distance)
     }

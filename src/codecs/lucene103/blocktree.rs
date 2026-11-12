@@ -888,9 +888,8 @@ impl TrieBuilder {
         while iter.has_next() {
             iter.read_header()?;
             iter.read_body()?;
-            let output = iter.output.as_ref().ok_or_else(|| {
-                LuceneError::illegal_state("trie entry read without an output".to_string())
-            })?;
+            // A `null` output dereferenced: the JVM's `NullPointerException`.
+            let output = iter.output.as_ref().ok_or_else(LuceneError::null_pointer)?;
             consumer(
                 BytesRef::new(iter.key[..iter.key_len as usize].to_vec()),
                 output,
@@ -973,7 +972,8 @@ impl<'a> EntryIterator<'a> {
         let input = self
             .input
             .as_mut()
-            .ok_or_else(|| LuceneError::illegal_state("no more trie entries".to_string()))?;
+            // A `null` input read from: the JVM's `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)?;
         // `TrieBuilder.java:227-228`: read as-is, unclamped.
         self.prefix_len = input.read_v_int()?;
         self.suffix_len = input.read_v_int()?;
@@ -998,7 +998,8 @@ impl<'a> EntryIterator<'a> {
         let input = self
             .input
             .as_mut()
-            .ok_or_else(|| LuceneError::illegal_state("no more trie entries".to_string()))?;
+            // A `null` input read from: the JVM's `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)?;
         // `TrieBuilder.java:248-257`. `ByteBuffersDataInput.readBytes` loops
         // `while (len > 0)` (`ByteBuffersDataInput.java:143-167`), so a
         // suffix length that is not positive reads nothing.
@@ -1919,11 +1920,9 @@ impl<'a> TermsWriter<'a> {
             )?;
 
             let first_term = self.first_pending_term.take().unwrap();
-            let root_index = root.index.ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "the root block of a field must carry a compiled trie index".to_string(),
-                )
-            })?;
+            // `root.index.save(...)` on a `null` index: the JVM's
+            // `NullPointerException`.
+            let root_index = root.index.ok_or_else(LuceneError::null_pointer)?;
             root_index.save(&mut meta, self.index_out)?;
 
             // Keep postings writer in sync.
@@ -2184,9 +2183,9 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
                 .field_info(&field)
                 .cloned()
                 .ok_or_else(|| {
-                    LuceneError::null_pointer_with_message(format!(
-                        "no FieldInfo for field \"{field}\""
-                    ))
+                    LuceneError::null_pointer_with_message(
+                        "Cannot invoke \"org.apache.lucene.index.FieldInfo.getIndexOptions()\" because \"fieldInfo\" is null",
+                    )
                 })?;
             let postings_writer: &mut dyn PostingsWriterBase = self.postings_writer.as_mut();
             postings_writer.set_field(&field_info)?;
