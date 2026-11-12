@@ -4222,6 +4222,19 @@ pub trait Bits: Send + Sync + Debug {
         None
     }
 
+    /// [`as_bit_set`](Self::as_bit_set) of shared bits, keeping the share:
+    /// `Some` of the same object as a `BitSet` for a
+    /// [`BitSet`](crate::util::bit_set::BitSet) implementation, `None` (the
+    /// default) for every other `Bits`.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, for the reason given on
+    /// `as_bit_set`. Needed where Java keeps the narrowed `BitSet`, as
+    /// `AcceptDocs.BitsAcceptDocs.iterator()` wraps it in a `BitSetIterator`
+    /// (`AcceptDocs.java:143-146`).
+    fn as_shared_bit_set(self: Arc<Self>) -> Option<Arc<dyn crate::util::bit_set::BitSet>> {
+        None
+    }
+
     /// Returns the value of the bit at `index`, or the error a wrapper raises
     /// while answering.
     ///
@@ -5696,6 +5709,10 @@ impl Bits for FixedBitSet {
     }
 
     fn as_bit_set(&self) -> Option<&dyn crate::util::bit_set::BitSet> {
+        Some(self)
+    }
+
+    fn as_shared_bit_set(self: Arc<Self>) -> Option<Arc<dyn crate::util::bit_set::BitSet>> {
         Some(self)
     }
 

@@ -271,21 +271,160 @@ def unwind_maps(roadmap, mode, maps, body, label, cap=None):
     return total
 
 
-def unwind(roadmap, mode, rows, body, label, batch=None):
-    """`UNWIND [<rows>] AS row <body>`, in bulk (`unwind_maps`).
+# Index-seeking chains. Measured on rmp 1.21.0 (2026-11-12): a literal
+# identity lookup `(x:L {key: <literal>})` plans `NodeByIndexSeek`, while the
+# same lookup through `UNWIND ... row.key` never does (label scan + hash
+# join). Over 36,550 RustFn, the same writes took: 50 rows 0.022 s chained vs
+# 0.382 s UNWIND; 300 rows 0.080 s vs 0.380 s; 1,000 rows 0.131 s vs 0.429 s;
+# 3,000 rows 0.268 s vs 0.295 s; only at 6,000 rows did UNWIND win (0.278 s vs
+# 0.730 s). A chain costs super-linearly beyond ~300 clauses (2,000 clauses:
+# 2.2 s), so chains hold CHAIN_CLAUSES rows each.
+#
+# Clauses are separated by `WITH count(*) AS _`, which always yields exactly
+# one row: `WITH 1 AS _` silently stops the chain at the first clause whose
+# MATCH finds nothing (measured: 50 of 100 writes, no error). A `CREATE` inside
+# such a chain creates one node only (engine defect, measured), so bodies with
+# a CREATE clause stay on UNWIND -- creation needs no lookup, and UNWIND or one
+# comma-separated CREATE pattern create 300 nodes in ~0.04 s.
+CHAIN_CLAUSES = 200
+CHAIN_MAX_ROWS = 3000
+_ROW_REF = re.compile(r"\brow\.(\w+)")
+_ROW_IN_WITH = re.compile(r",\s*row\b(?!\.)")
+_CREATE_CLAUSE = re.compile(r"(?<!ON )\bCREATE\b")
 
-    `batch` is honoured only at or below `PER_ROW_SCAN_BATCH`, the cap of a
-    statement that scans per row; any larger value was sized for the old cost
-    model and is replaced by the bulk limits. Returns the engine's write
-    counters summed over the chunks. The line it prints gives the rows *sent*
-    and what the engine reports it changed: the row count is the input, never
-    a result.
+
+# A chain only pays when every per-row lookup hits a hash index on a label much
+# larger than the batch: without an index each clause scans its label (a 300-row
+# chain on an unindexed 300-node label took 0.15 s against 0.02 s for UNWIND,
+# measured), and on a small label UNWIND's single scan is cheap. RustFn (36,550
+# nodes) favoured chains up to ~3,000 rows, i.e. a label/rows ratio of ~12.
+CHAIN_LABEL_RATIO = 12
+_LOOKUP = re.compile(r"\(\w*:(\w+)\s*\{([^}]*\brow\.[^}]*)\}\)")
+_PROP = re.compile(r"(\w+)\s*:\s*row\.")
+_index_cache = {}
+_count_cache = {}
+
+
+def _indexed(roadmap):
+    if roadmap not in _index_cache:
+        rows = json.loads(client(roadmap, "SHOW INDEXES", label="indexes"))["rows"]
+        _index_cache[roadmap] = {(r[4][0], p) for r in rows if r[3] == "NODE" for p in r[5]}
+    return _index_cache[roadmap]
+
+
+def _label_count(roadmap, label):
+    key = (roadmap, label)
+    if key not in _count_cache:
+        _count_cache[key] = read(roadmap, f"MATCH (n:{label}) RETURN count(n)")[0][0]
+    return _count_cache[key]
+
+
+def chainable(body: str, roadmap: str = None, nrows: int = 0, sample: dict = None) -> bool:
+    """Whether `body` should run as an index-seeking chain (see above): no
+    RETURN, no CREATE, and every `(x:Label {prop: row.k ...})` lookup has an
+    indexed property on a label at least CHAIN_LABEL_RATIO times the rows,
+    and (given a `sample` row) the plan of one bound clause seeks an index and
+    scans no label (`_plan_seeks_only`)."""
+    if "RETURN" in body or _CREATE_CLAUSE.search(body) or "row" not in body:
+        return False
+    lookups = _LOOKUP.findall(body)
+    if not lookups or roadmap is None:
+        return False
+    idx = _indexed(roadmap)
+    for label, props in lookups:
+        if not any((label, p) in idx for p in _PROP.findall(props)):
+            return False
+        if _label_count(roadmap, label) < CHAIN_LABEL_RATIO * max(nrows, 1):
+            return False
+    return sample is None or _plan_seeks_only(roadmap, body, sample)
+
+
+# The plan decides, not the text: a keyed lookup can still be planned from an
+# unkeyed node of the same pattern. `(:Class)-[e:DECLARES]->(m:Method {qn: v})`
+# started each chained clause with a scan of every Class and its DECLARES edges
+# (57 chains averaged 3.06 s; the UNWIND form had cost one scan per statement --
+# measured 2026-11-12). So one clause bound to a sample row is EXPLAINed per body
+# shape, and a chain is used only if the plan seeks an index and scans nothing.
+_plan_cache = {}
+_SCANS = ("NodeByLabelScan", "AllNodesScan")
+
+
+def _plan_operators(node, out):
+    out.append(node.get("operator", ""))
+    for child in node.get("children", []):
+        _plan_operators(child, out)
+    return out
+
+
+def _plan_seeks_only(roadmap, body, sample):
+    key = (roadmap, body)
+    if key not in _plan_cache:
+        doc = json.loads(client(roadmap, "EXPLAIN " + _bind(body, sample), label="explain"))
+        ops = _plan_operators(doc.get("plan") or {}, [])
+        _plan_cache[key] = (any("IndexSeek" in o for o in ops)
+                            and not any(o in _SCANS for o in ops))
+    return _plan_cache[key]
+
+
+def _bind(body: str, row: dict) -> str:
+    """`body` for one row: `row.k` -> literal, `, row` dropped from WITH lists."""
+    template = _ROW_IN_WITH.sub("", body)
+    # Checked on the template, never on the bound text: a literal value may
+    # itself contain the word "row" (observed in no_caller evidence text).
+    if re.search(r"\brow\b", _ROW_REF.sub("", template)):
+        raise ValueError(f"cannot bind every use of `row` in: {body[:200]}")
+    return _ROW_REF.sub(lambda m: esc(row[m.group(1)]), template)
+
+
+def chain(roadmap, mode, rows, body, label, cap=None):
+    """Run `body` once per row as literal index-seeking clauses, chained.
+
+    Returns the summed write counters. A chain over the 5 s budget wrote
+    nothing and is halved and re-sent, as `unwind_maps` does.
+    """
+    total = {}
+    size = cap if cap is not None and cap > 0 else CHAIN_CLAUSES
+    clauses = [_bind(body, r) for r in rows]
+    i, n = 0, len(clauses)
+    while i < n:
+        j, nbytes = i, 0
+        while j < n and j - i < size and (j == i or nbytes + len(clauses[j]) <= BULK_BYTES):
+            nbytes += len(clauses[j]) + 20
+            j += 1
+        statement = " WITH count(*) AS _ ".join(clauses[i:j])
+        try:
+            out = client(roadmap, statement, label=f"{label} ({mode}, chain rows {i + 1}-{j})")
+        except SystemExit as e:
+            if _BUDGET in str(e) and j - i > 1:
+                size = max(1, (j - i) // 2)
+                print(f"  {label}: budget exceeded at {j - i} clauses, halving to {size}",
+                      file=sys.stderr)
+                continue
+            raise
+        for k, v in counters_of(out).items():
+            total[k] = total.get(k, 0) + v
+        i = j
+    return total
+
+
+def unwind(roadmap, mode, rows, body, label, batch=None):
+    """Run `body` once per row in bulk, by the fastest measured shape.
+
+    Up to `CHAIN_MAX_ROWS` rows of a chainable body (no RETURN, no CREATE) run
+    as index-seeking literal chains (`chain`); otherwise, or for creation,
+    `UNWIND [<rows>] AS row <body>` in bulk (`unwind_maps`). `batch` is
+    honoured only at or below `PER_ROW_SCAN_BATCH`, the cap of a statement that
+    scans per row. Returns the engine's write counters summed. The line it
+    prints gives the rows *sent* and what the engine reports it changed.
     """
     if not rows:
         print(f"  {label}: 0 rows sent", file=sys.stderr)
         return {}
     cap = batch if batch is not None and batch <= PER_ROW_SCAN_BATCH else None
-    total = unwind_maps(roadmap, mode, [serialize(r) for r in rows], body, label, cap)
+    if len(rows) <= CHAIN_MAX_ROWS and chainable(body, roadmap, len(rows), rows[0]):
+        total = chain(roadmap, mode, rows, body, label, cap)
+    else:
+        total = unwind_maps(roadmap, mode, [serialize(r) for r in rows], body, label, cap)
     print(f"  {label}: {len(rows)} rows sent; {format_counters(total)}", file=sys.stderr)
     return total
 
