@@ -99,8 +99,8 @@ impl Query for QueryWrapper {
                 .is_some_and(|o| self.in_.query_eq(&*o.in_))
     }
 
-    fn query_hash(&self) -> u64 {
-        31u64
+    fn query_hash(&self) -> i32 {
+        31i32
             .wrapping_mul(self.class_hash())
             .wrapping_add(self.in_.query_hash())
     }

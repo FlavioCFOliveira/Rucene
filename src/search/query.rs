@@ -15,7 +15,6 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::collections::hash_map::DefaultHasher;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -131,7 +130,37 @@ pub trait Query: Debug + Send + Sync + 'static {
     /// Equivalent to `Query.hashCode()`, which Java leaves abstract. It is
     /// required so that [`QueryCache`](crate::search::QueryCache) works
     /// properly, and must be consistent with [`query_eq`](Self::query_eq).
-    fn query_hash(&self) -> u64;
+    ///
+    /// Every implementation returns the `int` its Java class's `hashCode()`
+    /// returns, so that the `java.util.HashMap` and `HashSet` orders Lucene's
+    /// query code iterates in — the clause sets of
+    /// [`BooleanQuery`](crate::search::BooleanQuery) above all — are
+    /// reproduced by
+    /// [`JavaObjectHashMap`](crate::util::java_collections::JavaObjectHashMap)
+    /// over [`QueryKey`]. Where the Java value depends on a JVM identity hash
+    /// (an enum constant, a `Class`, an object that does not override
+    /// `hashCode()`), it is unreproducible in Java itself and the
+    /// implementation uses
+    /// [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in),
+    /// which declares that divergence; a `BytesRef` hash is seeded from
+    /// `StringHelper.GOOD_FAST_HASH_SEED` and reproducible under a fixed
+    /// `tests.seed`, as in Java.
+    fn query_hash(&self) -> i32;
+
+    /// The Java binary name of this query's class, from which
+    /// [`class_hash`](Self::class_hash) is derived.
+    ///
+    /// Equivalent to `getClass().getName()` (`Query.java:130`). Every query of
+    /// this crate overrides it with the name of its Lucene class — including
+    /// the anonymous subclasses Lucene's factories create, such as
+    /// `org.apache.lucene.document.IntPoint$1`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** The default, which only a query that
+    /// has no Lucene class keeps (a test's local query, for one), answers the
+    /// Rust type path: Java has no class name for a type it does not have.
+    fn java_class_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
 
     /// Checks whether `other` is exactly of the same concrete type as this
     /// query.
@@ -146,14 +175,11 @@ pub trait Query: Debug + Send + Sync + 'static {
 
     /// Provides a constant integer for a given concrete type.
     ///
-    /// Equivalent to `Query.classHash()`. Java derives it from the class name
-    /// rather than from `Class.hashCode()`, so that hashes stay consistent
-    /// across executions and debugging is easier; this port hashes the
-    /// [`std::any::TypeId`], which is likewise stable within a build.
-    fn class_hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.as_any().type_id().hash(&mut hasher);
-        hasher.finish()
+    /// Equivalent to `Query.classHash()`, which returns
+    /// `CLASS_NAME_HASH = getClass().getName().hashCode()` (`Query.java:130-140`):
+    /// the `String.hashCode()` of [`java_class_name`](Self::java_class_name).
+    fn class_hash(&self) -> i32 {
+        crate::util::java_collections::java_string_hash_code(self.java_class_name())
     }
 }
 
@@ -175,7 +201,11 @@ pub fn query_to_string(query: &dyn Query) -> String {
 /// newtype; it forwards to [`Query::query_eq`] and [`Query::query_hash`], which
 /// are the very methods Java's `equals`/`hashCode` are. Wherever Lucene writes
 /// `Set<Query>`, `Map<Query, ?>` or `Multiset<Query>`, this port writes the
-/// same collection over `QueryKey`.
+/// same collection over `QueryKey` — a
+/// [`JavaObjectHashMap`](crate::util::java_collections::JavaObjectHashMap) or
+/// [`JavaObjectHashSet`](crate::util::java_collections::JavaObjectHashSet)
+/// where the iteration order is observable, since [`QueryKey`] implements
+/// [`JavaHashCode`](crate::util::java_collections::JavaHashCode).
 #[derive(Debug, Clone)]
 pub struct QueryKey(pub Arc<dyn Query>);
 
@@ -206,7 +236,14 @@ impl Eq for QueryKey {}
 
 impl Hash for QueryKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(self.0.query_hash());
+        state.write_i32(self.0.query_hash());
+    }
+}
+
+impl crate::util::java_collections::JavaHashCode for QueryKey {
+    /// `Query.hashCode()`.
+    fn java_hash_code(&self) -> i32 {
+        self.0.query_hash()
     }
 }
 
@@ -214,4 +251,13 @@ impl From<Arc<dyn Query>> for QueryKey {
     fn from(query: Arc<dyn Query>) -> Self {
         Self(query)
     }
+}
+
+/// `List.hashCode()` (`AbstractList.hashCode`) of a list of queries:
+/// `31 * h + e.hashCode()` from `1`. `Arrays.hashCode(Query[])` and
+/// `Objects.hash(Query...)` are the same fold.
+pub fn java_query_list_hash_code<'a>(queries: impl IntoIterator<Item = &'a Arc<dyn Query>>) -> i32 {
+    queries
+        .into_iter()
+        .fold(1i32, |h, q| h.wrapping_mul(31).wrapping_add(q.query_hash()))
 }

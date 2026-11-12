@@ -255,22 +255,6 @@ impl IntArrayDocIdSetIterator {
     }
 }
 
-/// Returns the first index in `[from, to)` whose value is `>= target`, or `to`.
-///
-/// **Divergence from Lucene 10.5.0.** Java calls `VectorUtil.findNextGEQ`,
-/// which Rucene's `VectorUtil` port does not expose; this is the same scan,
-/// written out.
-fn find_next_geq(buffer: &[i32], target: i32, from: usize, to: usize) -> usize {
-    let mut i = from;
-    while i < to {
-        if buffer[i] >= target {
-            return i;
-        }
-        i += 1;
-    }
-    to
-}
-
 impl DocIdSetIterator for IntArrayDocIdSetIterator {
     fn doc_id(&self) -> i32 {
         self.doc
@@ -312,7 +296,8 @@ impl DocIdSetIterator for IntArrayDocIdSetIterator {
             "into_bit_set requires a positioned iterator, got i=0"
         );
         let from = self.i - 1;
-        let to = find_next_geq(&self.docs, up_to, from, self.length);
+        // `VectorUtil.findNextGEQ(docs, upTo, from, length)` (`IntArrayDocIdSet.java:100`).
+        let to = crate::util::vector_util::find_next_geq(&self.docs, up_to, from, self.length);
         for i in from..to {
             bit_set.set((self.docs[i] - offset) as usize);
         }

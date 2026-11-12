@@ -60,6 +60,23 @@ pub struct DocValuesLongHashSet {
 }
 
 impl DocValuesLongHashSet {
+    /// Java's `DocValuesLongHashSet.hashCode()`: `Objects.hash(size, minValue,
+    /// maxValue, mask, hasMissingValue, Arrays.hashCode(table))`.
+    pub fn java_hash_code(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_ints, java_arrays_hash_code_longs, java_boolean_hash_code,
+            java_long_hash_code,
+        };
+        java_arrays_hash_code_ints(&[
+            self.size as i32,
+            java_long_hash_code(self.min_value),
+            java_long_hash_code(self.max_value),
+            self.mask as i32,
+            java_boolean_hash_code(self.has_missing_value),
+            java_arrays_hash_code_longs(&self.table),
+        ])
+    }
+
     /// Builds the set from `values`, which must be sorted ascending.
     ///
     /// Equivalent to the `DocValuesLongHashSet(long[])` constructor, which
@@ -876,15 +893,21 @@ impl Query for SortedNumericDocValuesRangeQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.lower_value.hash(&mut hasher);
-        self.upper_value.hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.SortedNumericDocValuesRangeQuery"
+    }
+
+    /// Equivalent to `Objects.hash(classHash(), field, lowerValue, upperValue)`.
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_ints, java_long_hash_code, java_string_hash_code,
+        };
+        java_arrays_hash_code_ints(&[
+            self.class_hash(),
+            java_string_hash_code(&self.field),
+            java_long_hash_code(self.lower_value),
+            java_long_hash_code(self.upper_value),
+        ])
     }
 
     fn create_weight(
@@ -1023,14 +1046,17 @@ impl Query for SortedNumericDocValuesSetQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.values.hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.SortedNumericDocValuesSetQuery"
+    }
+
+    /// Equivalent to `Objects.hash(classHash(), field, numbers)`.
+    fn query_hash(&self) -> i32 {
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            self.class_hash(),
+            crate::util::java_collections::java_string_hash_code(&self.field),
+            self.values.java_hash_code(),
+        ])
     }
 
     fn create_weight(
@@ -1263,23 +1289,24 @@ impl Query for SortedSetDocValuesRangeQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.lower_value
-            .as_ref()
-            .map(|v| v.slice().to_vec())
-            .hash(&mut hasher);
-        self.upper_value
-            .as_ref()
-            .map(|v| v.slice().to_vec())
-            .hash(&mut hasher);
-        self.lower_inclusive.hash(&mut hasher);
-        self.upper_inclusive.hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.SortedSetDocValuesRangeQuery"
+    }
+
+    /// Equivalent to `Objects.hash(classHash(), field, lowerValue, upperValue,
+    /// lowerInclusive, upperInclusive)`; a `null` bound hashes as `0`.
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_ints, java_boolean_hash_code, java_string_hash_code,
+        };
+        java_arrays_hash_code_ints(&[
+            self.class_hash(),
+            java_string_hash_code(&self.field),
+            self.lower_value.as_ref().map_or(0, BytesRef::hash_code),
+            self.upper_value.as_ref().map_or(0, BytesRef::hash_code),
+            java_boolean_hash_code(self.lower_inclusive),
+            java_boolean_hash_code(self.upper_inclusive),
+        ])
     }
 
     fn rewrite(&self, _searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {

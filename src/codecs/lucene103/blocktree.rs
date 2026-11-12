@@ -91,8 +91,9 @@ impl CompressionAlgorithm {
             0 => Ok(Self::NoCompression),
             1 => Ok(Self::LowercaseAscii),
             2 => Ok(Self::Lz4),
+            // `CompressionAlgorithm.byCode` (`CompressionAlgorithm.java:59-64`).
             _ => Err(LuceneError::illegal_argument(format!(
-                "illegal compression algorithm code: {code}"
+                "Illegal code for a compression algorithm: {code}"
             ))),
         }
     }
@@ -3668,7 +3669,9 @@ mod tests {
         let segment_info = test_segment_info("_0", 10);
         let field = three_term_field(&dir, &segment_info);
 
-        let stats = Terms::stats(&field).expect("stats should compute");
+        let stats = Terms::stats(&field)
+            .expect("stats should compute")
+            .to_string();
         assert!(
             stats.starts_with("  index trie:\n"),
             "expected the block-tree statistics, got: {stats}"

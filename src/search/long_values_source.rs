@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crate::error::Result;
 use crate::index::LeafReaderContext;
 use crate::search::double_values::DoubleValues;
-use crate::search::double_values_source::{hash_of, DoubleValuesSource};
+use crate::search::double_values_source::DoubleValuesSource;
 use crate::search::field_comparator::{
     java_long_compare, FieldComparator, SharedFieldComparator, SlotComparator, SortValue,
 };
@@ -74,7 +74,8 @@ pub trait LongValuesSource: SegmentCacheable + Debug + Send + Sync {
     /// Source hash code.
     ///
     /// Equivalent to the abstract `LongValuesSource.hashCode()`.
-    fn source_hash(&self) -> u64;
+    /// Every implementation returns its Java class's `hashCode()`.
+    fn source_hash(&self) -> i32;
 
     /// Renders the source.
     ///
@@ -214,8 +215,11 @@ impl LongValuesSource for ConstantLongValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        hash_of(&self.value)
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(value)` (`LongValuesSource.java:208-210`).
+        31i32.wrapping_add(crate::util::java_collections::java_long_hash_code(
+            self.value,
+        ))
     }
 
     fn to_source_string(&self) -> String {
@@ -348,8 +352,11 @@ impl LongValuesSource for FieldValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        hash_of(&self.field)
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(field)` (`LongValuesSource.java:258-260`).
+        31i32.wrapping_add(crate::util::java_collections::java_string_hash_code(
+            &self.field,
+        ))
     }
 
     fn to_source_string(&self) -> String {
@@ -416,8 +423,9 @@ impl DoubleValuesSource for DoubleLongValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        self.inner.source_hash()
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(inner)` (`LongValuesSource.java:149-151`).
+        31i32.wrapping_add(self.inner.source_hash())
     }
 
     fn to_source_string(&self) -> String {
@@ -431,7 +439,10 @@ impl DoubleValuesSource for DoubleLongValuesSource {
 #[derive(Debug)]
 pub struct LongValuesComparatorSource {
     producer: Arc<dyn LongValuesSource>,
-    missing_value: i64,
+    /// Java's mutable `long missingValue`, which
+    /// `LongValuesSortField.setMissingValue` changes on the source the sort
+    /// field shares (`LongValuesSource.java:340-345`).
+    missing_value: std::sync::atomic::AtomicI64,
 }
 
 impl LongValuesComparatorSource {
@@ -442,8 +453,24 @@ impl LongValuesComparatorSource {
     pub fn new(producer: Arc<dyn LongValuesSource>, missing_value: i64) -> Self {
         Self {
             producer,
-            missing_value,
+            missing_value: std::sync::atomic::AtomicI64::new(missing_value),
         }
+    }
+
+    /// Replaces the missing value of every comparator built from now on.
+    ///
+    /// Equivalent to `LongValuesComparatorSource.setMissingValue(long)`
+    /// (`LongValuesSource.java:343-345`), which
+    /// `LongValuesSortField.setMissingValue(Object)` calls.
+    pub fn set_missing_value(&self, missing_value: i64) {
+        self.missing_value
+            .store(missing_value, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns the current missing value.
+    pub fn missing_value(&self) -> i64 {
+        self.missing_value
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// `LongValuesSortField.rewrite(IndexSearcher)` of `field`, the sort field
@@ -468,7 +495,7 @@ impl LongValuesComparatorSource {
         Ok(std::borrow::Cow::Owned(get_sort_field_with_missing(
             rewritten_source,
             field.reverse(),
-            self.missing_value,
+            self.missing_value(),
         )?))
     }
 }
@@ -495,7 +522,7 @@ impl FieldComparatorSource for LongValuesComparatorSource {
     ) -> Result<Box<dyn FieldComparator>> {
         Ok(Box::new(SharedFieldComparator::new(LongValuesComparator {
             producer: Arc::clone(&self.producer),
-            missing_value: self.missing_value,
+            missing_value: self.missing_value(),
             values: vec![0; num_hits],
             bottom: 0,
             top_value: 0,
@@ -527,6 +554,20 @@ impl DoubleValues for ScoreCellDoubleValues {
 /// `LongValuesComparatorSource.newComparator` returns, which reads its values
 /// from the producer and is built with [`Pruning::NONE`], so none of the
 /// skipping machinery applies.
+///
+/// **Divergence from Lucene 10.5.0.** Java subclasses `LongComparator` and overrides its
+/// leaf comparator's `getNumericDocValues` to return
+/// `asNumericDocValues(holder)` and its `setScorer` to fill the holder with
+/// `producer.getValues(ctx, DoubleValuesSource.fromScorer(scorer))`
+/// (`LongValuesSource.java:347-371`). This port's numeric comparator takes its doc
+/// values from a `Send + Sync` [`NumericDocValuesSource`](crate::search::comparators::numeric_comparator::NumericDocValuesSource)
+/// and never passes the scorer to its value lookups, while the producer's
+/// values here read the score through a thread-confined cell
+/// (`ScoreCellDoubleValues`), so the holder cannot be shared with it. The
+/// comparator therefore reproduces the leaf comparator's `getValueForDoc`,
+/// `compare*`, `copy` and missing-value logic directly; with `Pruning.NONE`
+/// the numeric comparator's skipping state is never used, so the results are
+/// identical.
 struct LongValuesComparator {
     producer: Arc<dyn LongValuesSource>,
     missing_value: i64,

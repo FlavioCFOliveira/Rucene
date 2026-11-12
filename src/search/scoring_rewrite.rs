@@ -17,7 +17,7 @@ use crate::search::boost_attribute::{add_boost_attribute, boost_of};
 use crate::search::boost_query::BoostQuery;
 use crate::search::constant_score_query::ConstantScoreQuery;
 use crate::search::index_searcher::{IndexSearcher, TooManyClauses};
-use crate::search::multi_term_query::{rewrite_method_type_hash, MultiTermQuery, RewriteMethod};
+use crate::search::multi_term_query::{MultiTermQuery, RewriteMethod};
 use crate::search::query::Query;
 use crate::search::term_collecting_rewrite::{
     collect_terms, TermCollectingRewrite, TermCollector, TopLevelBuilder,
@@ -268,8 +268,10 @@ impl RewriteMethod for ScoringBooleanRewrite {
         self
     }
 
-    fn method_hash(&self) -> u64 {
-        rewrite_method_type_hash(self)
+    fn method_hash(&self) -> i32 {
+        crate::util::java_collections::java_identity_hash_code_stand_in(
+            "org.apache.lucene.search.ScoringRewrite.SCORING_BOOLEAN_REWRITE",
+        )
     }
 }
 
@@ -297,7 +299,9 @@ impl RewriteMethod for ConstantScoreBooleanRewrite {
         self
     }
 
-    fn method_hash(&self) -> u64 {
-        rewrite_method_type_hash(self)
+    fn method_hash(&self) -> i32 {
+        crate::util::java_collections::java_identity_hash_code_stand_in(
+            "org.apache.lucene.search.ScoringRewrite.CONSTANT_SCORE_BOOLEAN_REWRITE",
+        )
     }
 }

@@ -1940,13 +1940,13 @@ impl Query for ThrowingBitSetQuery {
                 .is_some_and(|o| *self.docs == *o.docs)
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.docs.hash(&mut hasher);
-        31u64
+        31i32
             .wrapping_mul(self.class_hash())
-            .wrapping_add(hasher.finish())
+            .wrapping_add(hasher.finish() as i32)
     }
 }
 

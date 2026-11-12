@@ -280,7 +280,7 @@ impl Terms for AssertingTerms {
     }
 
     /// `FilterTerms.getStats()`: `in.getStats()`.
-    fn stats(&self) -> Result<String> {
+    fn stats(&self) -> Result<Box<dyn rucene::index::terms::StatsObject>> {
         self.r#in.stats()
     }
 }

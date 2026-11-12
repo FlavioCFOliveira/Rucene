@@ -146,6 +146,37 @@ impl PartialEq for KnnSearchStrategy {
 
 impl Eq for KnnSearchStrategy {}
 
+impl KnnSearchStrategy {
+    /// Java's `KnnSearchStrategy.hashCode()`.
+    ///
+    /// `Hnsw`: `Objects.hashCode(filteredSearchThreshold)`
+    /// (`KnnSearchStrategy.java:94-96`); `Seeded`: `Objects.hash(entryPoints,
+    /// numberOfEntryPoints, originalStrategy)` (`:163-165`); `Patience`:
+    /// `Objects.hash(filteredSearchThreshold, collector)` (`:193-195`). The
+    /// entry-point iterator and the collector do not override `hashCode()`, so
+    /// their Java hashes are identity hashes, replaced by the stable stand-in
+    /// of [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in).
+    pub fn java_hash_code(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_ints, java_identity_hash_code_stand_in,
+        };
+        match self {
+            KnnSearchStrategy::Hnsw(hnsw) => hnsw.filtered_search_threshold,
+            KnnSearchStrategy::Seeded(seeded) => java_arrays_hash_code_ints(&[
+                java_identity_hash_code_stand_in("org.apache.lucene.search.DocIdSetIterator"),
+                seeded.number_of_entry_points,
+                seeded.original_strategy.java_hash_code(),
+            ]),
+            KnnSearchStrategy::Patience(patience) => java_arrays_hash_code_ints(&[
+                patience.hnsw.filtered_search_threshold,
+                java_identity_hash_code_stand_in(
+                    "org.apache.lucene.search.HnswQueueSaturationCollector",
+                ),
+            ]),
+        }
+    }
+}
+
 impl Hash for KnnSearchStrategy {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {

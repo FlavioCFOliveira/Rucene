@@ -417,12 +417,15 @@ impl Query for FieldExistsQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.FieldExistsQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.FieldExistsQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `31 * classHash() + field.hashCode()` (`FieldExistsQuery.java`).
+        31i32.wrapping_mul(self.class_hash()).wrapping_add(
+            crate::util::java_collections::java_string_hash_code(&self.field),
+        )
     }
 }

@@ -203,17 +203,26 @@ impl Query for DocAndScoreQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.context_identity.hash(&mut hasher);
-        self.docs.hash(&mut hasher);
-        for score in self.scores.iter() {
-            score.to_bits().hash(&mut hasher);
-        }
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.DocAndScoreQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.DocAndScoreQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_floats, java_arrays_hash_code_ints,
+            java_identity_hash_code_stand_in,
+        };
+        // `Objects.hash(classHash(), contextIdentity, Arrays.hashCode(docs),
+        // Arrays.hashCode(scores))` (`DocAndScoreQuery.java`). The context
+        // identity is a plain `Object` whose hash is a JVM identity hash,
+        // replaced by the stable stand-in of `java_identity_hash_code_stand_in`.
+        java_arrays_hash_code_ints(&[
+            self.class_hash(),
+            java_identity_hash_code_stand_in("java.lang.Object"),
+            java_arrays_hash_code_ints(&self.docs),
+            java_arrays_hash_code_floats(&self.scores),
+        ])
     }
 }
 

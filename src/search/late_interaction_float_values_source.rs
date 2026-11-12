@@ -210,18 +210,30 @@ impl DoubleValuesSource for LateInteractionFloatValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        let bits: Vec<Vec<u32>> = self
+    fn source_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_floats, java_arrays_hash_code_ints,
+            java_identity_hash_code_stand_in, java_string_hash_code,
+        };
+        // `Objects.hash(fieldName, Arrays.deepHashCode(queryVector),
+        // vectorSimilarityFunction, scoreFunction)`. The enum constant and the
+        // score function do not override `hashCode()`: their JVM identity hashes
+        // are replaced by the stable stand-ins of
+        // `java_identity_hash_code_stand_in`.
+        let rows: Vec<i32> = self
             .query_vector
             .iter()
-            .map(|vector| vector.iter().map(|v| v.to_bits()).collect())
+            .map(|row| java_arrays_hash_code_floats(row))
             .collect();
-        hash_of(&(
-            &self.field_name,
-            bits,
-            self.vector_similarity_function as u8,
-            self.score_function.similarity_hash(),
-        ))
+        java_arrays_hash_code_ints(&[
+            java_string_hash_code(&self.field_name),
+            java_arrays_hash_code_ints(&rows),
+            java_identity_hash_code_stand_in(&format!(
+                "org.apache.lucene.index.VectorSimilarityFunction.{:?}",
+                self.vector_similarity_function
+            )),
+            java_identity_hash_code_stand_in("org.apache.lucene.search.MultiVectorSimilarity"),
+        ])
     }
 
     fn to_source_string(&self) -> String {

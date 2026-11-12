@@ -59,8 +59,7 @@ use rucene::search::weight::{FilterWeight, Weight};
 use rucene::search::{
     min_segment_size_predicate, BooleanQuery, BooleanQueryBuilder, BoostQuery, CacheAndCount,
     CollectionResult, Collector, CollectorManager, LRUQueryCache, LRUQueryCacheOverrides,
-    LeafCollector, Occur, Query, QueryKey, ScoreMode, HASHTABLE_RAM_BYTES_PER_ENTRY,
-    LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY,
+    LeafCollector, Occur, Query, QueryKey, ScoreMode,
 };
 use rucene::util::{Accountable, Bits, BytesRef, RamUsageEstimator};
 use rucene_test_framework::hamcrest::less_than_or_equal_to;
@@ -758,9 +757,9 @@ impl Accumulator for FiltersAndDocIdSetsAccumulator {
             queue.extend(entries.iter().map(|(k, _)| *k));
             queue.extend(entries.iter().map(|(_, v)| *v));
             let size_per_entry = if o.instance_of("java.util.LinkedHashMap") {
-                LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY
+                RamUsageEstimator::LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY
             } else {
-                HASHTABLE_RAM_BYTES_PER_ENTRY
+                RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY
             };
             return size_per_entry * entries.len() as i64;
         }
@@ -925,8 +924,8 @@ impl Query for DummyQuery {
                 .is_some_and(|o| self.id == o.id && self.accountable == o.accountable)
     }
 
-    fn query_hash(&self) -> u64 {
-        self.id as u32 as u64
+    fn query_hash(&self) -> i32 {
+        self.id
     }
 
     fn to_query_string(&self, _field: &str) -> String {
@@ -1072,8 +1071,8 @@ fn test_consistency_with_accountable_queries() -> Result<()> {
     let accountable_ram = accountable_query.ram_bytes_used();
     let accountable_query: Arc<dyn Query> = Arc::new(accountable_query);
     searcher.count(Arc::clone(&accountable_query))?;
-    let expected_ram_bytes_used = HASHTABLE_RAM_BYTES_PER_ENTRY
-        + LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY
+    let expected_ram_bytes_used = RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY
+        + RamUsageEstimator::LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY
         + accountable_ram
         + query_cache.child_resources()[0].ram_bytes_used();
     assert_equals(&expected_ram_bytes_used, &query_cache.ram_bytes_used());
@@ -1081,7 +1080,7 @@ fn test_consistency_with_accountable_queries() -> Result<()> {
 
     query_cache.clear_query(accountable_query);
     assert_equals(
-        &HASHTABLE_RAM_BYTES_PER_ENTRY,
+        &RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY,
         &query_cache.ram_bytes_used(),
     );
     query_cache.assert_consistent()?;
@@ -1488,7 +1487,7 @@ fn test_fine_grained_stats() -> Result<()> {
     // cache
     assert_equals(
         &query_cache.ram_bytes_used(),
-        &((segment_count1 + segment_count2) * HASHTABLE_RAM_BYTES_PER_ENTRY
+        &((segment_count1 + segment_count2) * RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY
             + stats.ram_bytes_usage.load(Ordering::SeqCst)),
     );
     assert_equals(
@@ -1855,8 +1854,8 @@ impl Query for BadQuery {
         self
     }
 
-    fn query_hash(&self) -> u64 {
-        (self.class_hash() as u32 ^ self.i.load(Ordering::SeqCst) as u32) as u64
+    fn query_hash(&self) -> i32 {
+        self.class_hash() ^ self.i.load(Ordering::SeqCst)
     }
 
     fn query_eq(&self, other: &dyn Query) -> bool {
@@ -2851,7 +2850,7 @@ impl Query for NoCacheQuery {
         self.same_class_as(other)
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         0
     }
 }
@@ -2972,7 +2971,7 @@ impl Query for DummyQuery2 {
         self.same_class_as(other)
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         0
     }
 
@@ -3095,7 +3094,7 @@ impl Query for DVCacheQuery {
         self.same_class_as(other)
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         0
     }
 

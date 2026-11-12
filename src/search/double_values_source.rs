@@ -121,8 +121,11 @@ pub trait DoubleValuesSource: SegmentCacheable + Debug + Send + Sync {
 
     /// Source hash code.
     ///
-    /// Equivalent to the abstract `DoubleValuesSource.hashCode()`.
-    fn source_hash(&self) -> u64;
+    /// Equivalent to the abstract `DoubleValuesSource.hashCode()`: every
+    /// implementation returns its Java class's value, with the stable stand-in
+    /// of [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)
+    /// wherever Java's value is an identity hash.
+    fn source_hash(&self) -> i32;
 
     /// Renders the source.
     ///
@@ -318,7 +321,8 @@ impl DoubleValuesSource for ScoresValuesSource {
         other.as_any().is::<ScoresValuesSource>()
     }
 
-    fn source_hash(&self) -> u64 {
+    fn source_hash(&self) -> i32 {
+        // The `SCORES` constant's `hashCode()` is `0` (`DoubleValuesSource.java:342-344`).
         0
     }
 
@@ -400,8 +404,11 @@ impl DoubleValuesSource for ConstantValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        hash_of(&self.value.to_bits())
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(value)` (`DoubleValuesSource.java:414-416`).
+        31i32.wrapping_add(crate::util::java_collections::java_double_hash_code(
+            self.value,
+        ))
     }
 
     fn to_source_string(&self) -> String {
@@ -489,8 +496,23 @@ impl DoubleValuesSource for FieldValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        hash_of(&(self.field.clone(), self.decoder))
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(field, decoder)` (`DoubleValuesSource.java:478-480`). The
+        // decoder is a method reference or lambda, whose hash is a JVM identity
+        // hash: the stable stand-in of `java_identity_hash_code_stand_in` names
+        // the factory that installs it.
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            crate::util::java_collections::java_string_hash_code(&self.field),
+            crate::util::java_collections::java_identity_hash_code_stand_in(match self.decoder {
+                DoubleValueDecoder::DoubleBits => {
+                    "org.apache.lucene.search.DoubleValuesSource.fromDoubleField"
+                }
+                DoubleValueDecoder::FloatBits => {
+                    "org.apache.lucene.search.DoubleValuesSource.fromFloatField"
+                }
+                _ => "org.apache.lucene.search.DoubleValuesSource.fromLongField",
+            }),
+        ])
     }
 
     fn to_source_string(&self) -> String {
@@ -560,8 +582,9 @@ impl DoubleValuesSource for QueryDoubleValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        self.query.query_hash()
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(query)` (`DoubleValuesSource.java:672-674`).
+        31i32.wrapping_add(self.query.query_hash())
     }
 
     fn to_source_string(&self) -> String {
@@ -686,8 +709,15 @@ impl DoubleValuesSource for WeightDoubleValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        Arc::as_ptr(&self.weight) as *const () as u64
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(weight)` (`DoubleValuesSource.java:771-773`); a `Weight`'s
+        // hash is a JVM identity hash, replaced by the stable stand-in of
+        // `java_identity_hash_code_stand_in`.
+        31i32.wrapping_add(
+            crate::util::java_collections::java_identity_hash_code_stand_in(
+                "org.apache.lucene.search.Weight",
+            ),
+        )
     }
 
     fn to_source_string(&self) -> String {
@@ -781,8 +811,9 @@ impl LongValuesSource for LongDoubleValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        self.inner.source_hash()
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(inner)` (`DoubleValuesSource.java:235-237`).
+        31i32.wrapping_add(self.inner.source_hash())
     }
 
     fn to_source_string(&self) -> String {
@@ -836,7 +867,8 @@ impl LongValuesSource for SortableLongDoubleValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
+    fn source_hash(&self) -> i32 {
+        // `inner.hashCode()` (`DoubleValuesSource.java:164-166`).
         self.inner.source_hash()
     }
 
@@ -852,7 +884,10 @@ impl LongValuesSource for SortableLongDoubleValuesSource {
 #[derive(Debug)]
 pub struct DoubleValuesComparatorSource {
     producer: Arc<dyn DoubleValuesSource>,
-    missing_value: f64,
+    /// Java's mutable `double missingValue`, held as its bits, which
+    /// `DoubleValuesSortField.setMissingValue` changes on the source the sort
+    /// field shares (`DoubleValuesSource.java:584-589`).
+    missing_value: std::sync::atomic::AtomicU64,
 }
 
 impl DoubleValuesComparatorSource {
@@ -863,8 +898,27 @@ impl DoubleValuesComparatorSource {
     pub fn new(producer: Arc<dyn DoubleValuesSource>, missing_value: f64) -> Self {
         Self {
             producer,
-            missing_value,
+            missing_value: std::sync::atomic::AtomicU64::new(missing_value.to_bits()),
         }
+    }
+
+    /// Replaces the missing value of every comparator built from now on.
+    ///
+    /// Equivalent to `DoubleValuesComparatorSource.setMissingValue(double)`,
+    /// which `DoubleValuesSortField.setMissingValue(Object)` calls.
+    pub fn set_missing_value(&self, missing_value: f64) {
+        self.missing_value.store(
+            missing_value.to_bits(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Returns the current missing value.
+    pub fn missing_value(&self) -> f64 {
+        f64::from_bits(
+            self.missing_value
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
     }
 
     /// `DoubleValuesSortField.rewrite(IndexSearcher)` of `field`, the sort
@@ -889,7 +943,7 @@ impl DoubleValuesComparatorSource {
         Ok(std::borrow::Cow::Owned(get_sort_field_with_missing(
             rewritten_source,
             field.reverse(),
-            self.missing_value,
+            self.missing_value(),
         )?))
     }
 }
@@ -917,7 +971,7 @@ impl FieldComparatorSource for DoubleValuesComparatorSource {
         Ok(Box::new(SharedFieldComparator::new(
             DoubleValuesComparator {
                 producer: Arc::clone(&self.producer),
-                missing_value: self.missing_value,
+                missing_value: self.missing_value(),
                 values: vec![0.0; num_hits],
                 bottom: 0.0,
                 top_value: 0.0,
@@ -957,6 +1011,20 @@ impl DoubleValues for ScoreCellDoubleValues {
 /// [`Pruning::NONE`], so none of the skipping machinery applies. Reproducing it
 /// directly keeps the values as `double`s instead of round-tripping them
 /// through `Double.doubleToLongBits`, which is the exact same number.
+///
+/// **Divergence from Lucene 10.5.0.** Java subclasses `DoubleComparator` and overrides its
+/// leaf comparator's `getNumericDocValues` to return
+/// `asNumericDocValues(holder)` and its `setScorer` to fill the holder with
+/// `producer.getValues(ctx, DoubleValuesSource.fromScorer(scorer))`
+/// (`DoubleValuesSource.java:591-617`). This port's numeric comparator takes its doc
+/// values from a `Send + Sync` [`NumericDocValuesSource`](crate::search::comparators::numeric_comparator::NumericDocValuesSource)
+/// and never passes the scorer to its value lookups, while the producer's
+/// values here read the score through a thread-confined cell
+/// (`ScoreCellDoubleValues`), so the holder cannot be shared with it. The
+/// comparator therefore reproduces the leaf comparator's `getValueForDoc`,
+/// `compare*`, `copy` and missing-value logic directly; with `Pruning.NONE`
+/// the numeric comparator's skipping state is never used, so the results are
+/// identical.
 struct DoubleValuesComparator {
     producer: Arc<dyn DoubleValuesSource>,
     missing_value: f64,

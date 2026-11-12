@@ -47,7 +47,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rucene::codecs::{register_codec, Lucene104Codec};
 use rucene::document::{Document, Field, FieldType, Store, StringField};
@@ -61,7 +61,7 @@ use rucene::index::merge_scheduler::SerialMergeScheduler;
 use rucene::index::{IndexOptions, IndexReader, SeekStatus, StoredFields, Term, Terms};
 use rucene::search::{IndexSearcher, TermQuery, TotalHits, TotalHitsRelation};
 use rucene::store::{Directory, FSDirectory};
-use rucene::util::{BytesRef, InfoStream};
+use rucene::util::{ByteArrayPrintStream, BytesRef, PrintStream};
 
 // ---------------------------------------------------------------------------
 // Corpus: the formulas of TermsDictFixture
@@ -469,26 +469,6 @@ fn query_report(root: &Path) -> String {
 /// `TermsDictFixture.CHECKED`.
 const CHECKED: [&str; 3] = ["terms", "dirs", "readers"];
 
-/// Collects the lines `CheckIndex` writes, as Java's `PrintStream` would.
-#[derive(Default)]
-struct CollectingInfoStream(Mutex<Vec<String>>);
-
-impl InfoStream for CollectingInfoStream {
-    fn java_class_name(&self) -> &'static str {
-        "org.apache.lucene.util.PrintStreamInfoStream"
-    }
-
-    fn message(&self, _component: &str, message: &str) {
-        self.0.lock().unwrap().push(message.to_string());
-    }
-
-    fn is_enabled(&self, _component: &str) -> bool {
-        true
-    }
-
-    fn close(&self) {}
-}
-
 /// Rucene's `TermsDictFixture check`: per index, the status line and the
 /// verbose text output, each line prefixed with `  | `.
 fn check_report(root: &Path) -> String {
@@ -496,11 +476,12 @@ fn check_report(root: &Path) -> String {
     let mut out = String::new();
     for name in CHECKED {
         let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(root.join(name)).unwrap());
-        let log = Arc::new(CollectingInfoStream::default());
+        // `CheckIndex` writes to a `PrintStream`, here one over a byte buffer.
+        let log = Arc::new(ByteArrayPrintStream::new());
         let mut checker = CheckIndex::new(dir).unwrap();
         checker.set_level(Level::MAX_VALUE).unwrap();
         checker.set_thread_count(1).unwrap();
-        checker.set_info_stream_verbose(Some(log.clone() as Arc<dyn InfoStream>), true);
+        checker.set_info_stream_verbose(Some(log.clone() as Arc<dyn PrintStream>), true);
         let status = checker.check_index().unwrap();
         checker.close().unwrap();
         writeln!(
@@ -509,14 +490,7 @@ fn check_report(root: &Path) -> String {
             status.clean, status.num_segments, status.num_bad_segments, status.tot_lose_doc_count
         )
         .unwrap();
-        // Java's `msg` is a `println` of each message.
-        let printed: String = log
-            .0
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|m| format!("{m}\n"))
-            .collect();
+        let printed = log.to_string_utf8();
         for line in printed.lines() {
             writeln!(out, "  | {line}").unwrap();
         }

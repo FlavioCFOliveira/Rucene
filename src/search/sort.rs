@@ -711,6 +711,36 @@ impl SortField {
             }
             SortFieldKind::Binary { .. } | SortFieldKind::Plain => {}
         }
+        // `DoubleValuesSortField.setMissingValue(Object)` and
+        // `LongValuesSortField.setMissingValue(Object)`: a `Number` is kept and
+        // handed to the shared comparator source as `doubleValue()` /
+        // `longValue()`; anything else goes to `super.setMissingValue`
+        // (`DoubleValuesSource.java:532-541`, `LongValuesSource.java:293-302`).
+        // Both subclasses are recognised by their comparator source.
+        let number = match missing_value {
+            Some(MissingValue::Int(v)) => Some((f64::from(v), i64::from(v))),
+            Some(MissingValue::Long(v)) => Some((v as f64, v)),
+            Some(MissingValue::Float(v)) => Some((f64::from(v), v as i64)),
+            Some(MissingValue::Double(v)) => Some((v, v as i64)),
+            _ => None,
+        };
+        if let Some((double_value, long_value)) = number {
+            let source = self.comparator_source.as_deref().and_then(|s| s.as_any());
+            if let Some(source) = source.and_then(|s| {
+                s.downcast_ref::<crate::search::double_values_source::DoubleValuesComparatorSource>()
+            }) {
+                source.set_missing_value(double_value);
+                self.missing_value = missing_value;
+                return Ok(());
+            }
+            if let Some(source) = source.and_then(|s| {
+                s.downcast_ref::<crate::search::long_values_source::LongValuesComparatorSource>()
+            }) {
+                source.set_missing_value(long_value);
+                self.missing_value = missing_value;
+                return Ok(());
+            }
+        }
         match self.field_type {
             SortFieldType::String | SortFieldType::StringVal => {
                 if !matches!(

@@ -481,7 +481,7 @@ impl Query for BoostingQuery {
                 .is_some_and(|that| multi_term_query_eq(self, that))
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         multi_term_query_hash(self)
     }
 }

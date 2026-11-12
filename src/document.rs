@@ -9090,6 +9090,11 @@ impl crate::search::DimensionFormatter for IntPointFormatter {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    /// The anonymous subclass `org.apache.lucene.document.IntPoint$1`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.IntPoint$1"
+    }
 }
 
 impl crate::search::PointFormatter for IntPointFormatter {
@@ -9100,6 +9105,11 @@ impl crate::search::PointFormatter for IntPointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// The anonymous subclass `org.apache.lucene.document.IntPoint$3`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.IntPoint$3"
     }
 }
 
@@ -9115,6 +9125,11 @@ impl crate::search::DimensionFormatter for LongPointFormatter {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    /// The anonymous subclass `org.apache.lucene.document.LongPoint$1`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.LongPoint$1"
+    }
 }
 
 impl crate::search::PointFormatter for LongPointFormatter {
@@ -9125,6 +9140,11 @@ impl crate::search::PointFormatter for LongPointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// The anonymous subclass `org.apache.lucene.document.LongPoint$3`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.LongPoint$3"
     }
 }
 
@@ -9141,6 +9161,11 @@ impl crate::search::DimensionFormatter for FloatPointFormatter {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    /// The anonymous subclass `org.apache.lucene.document.FloatPoint$1`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.FloatPoint$1"
+    }
 }
 
 impl crate::search::PointFormatter for FloatPointFormatter {
@@ -9152,6 +9177,11 @@ impl crate::search::PointFormatter for FloatPointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// The anonymous subclass `org.apache.lucene.document.FloatPoint$3`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.FloatPoint$3"
     }
 }
 
@@ -9168,6 +9198,11 @@ impl crate::search::DimensionFormatter for DoublePointFormatter {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    /// The anonymous subclass `org.apache.lucene.document.DoublePoint$1`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.DoublePoint$1"
+    }
 }
 
 impl crate::search::PointFormatter for DoublePointFormatter {
@@ -9179,6 +9214,11 @@ impl crate::search::PointFormatter for DoublePointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// The anonymous subclass `org.apache.lucene.document.DoublePoint$3`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.DoublePoint$3"
     }
 }
 
@@ -9221,6 +9261,11 @@ impl crate::search::PointFormatter for BinaryPointSetFormatter {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    /// The anonymous subclass `org.apache.lucene.document.BinaryPoint$3`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.BinaryPoint$3"
+    }
 }
 
 impl crate::search::DimensionFormatter for BinaryPointFormatter {
@@ -9230,6 +9275,11 @@ impl crate::search::DimensionFormatter for BinaryPointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// The anonymous subclass `org.apache.lucene.document.BinaryPoint$1`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.BinaryPoint$1"
     }
 }
 

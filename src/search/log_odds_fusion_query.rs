@@ -372,21 +372,31 @@ impl Query for LogOddsFusionQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        // `Float.floatToIntBits(alpha)`, as Java's `hashCode` writes it. The
-        // constructor rejects a NaN alpha, so this only differs from the raw
-        // bits for a value the query cannot hold; it is spelled this way so
-        // that the hash cannot drift away from `query_eq`.
-        float_to_int_bits(self.alpha).hash(&mut hasher);
-        self.clauses.hash(&mut hasher);
-        hash_float_slice(&self.signal_weights, &mut hasher);
-        hash_float_slice(&self.logit_min, &mut hasher);
-        hash_float_slice(&self.logit_max, &mut hasher);
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.LogOddsFusionQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.LogOddsFusionQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `LogOddsFusionQuery.hashCode()`: `classHash()`,
+        // `Float.floatToIntBits(alpha)`, `Objects.hashCode(clauses)` (the
+        // `Multiset`'s hash code) and `Arrays.hashCode` of the three optional
+        // float arrays.
+        let mut h = self.class_hash();
+        h = h
+            .wrapping_mul(31)
+            .wrapping_add(float_to_int_bits(self.alpha) as i32);
+        h = h
+            .wrapping_mul(31)
+            .wrapping_add(self.clauses.java_hash_code());
+        h = h
+            .wrapping_mul(31)
+            .wrapping_add(java_float_array_hash_code(&self.signal_weights));
+        h = h
+            .wrapping_mul(31)
+            .wrapping_add(java_float_array_hash_code(&self.logit_min));
+        h.wrapping_mul(31)
+            .wrapping_add(java_float_array_hash_code(&self.logit_max))
     }
 }
 
@@ -435,16 +445,11 @@ fn float_arrays_equal(a: &Option<Vec<f32>>, b: &Option<Vec<f32>>) -> bool {
 /// `java.util.Arrays.hashCode(float[])` mixes `Float.hashCode(element)`, which
 /// is `Float.floatToIntBits(element)`, so two arrays that `Arrays.equals`
 /// reports equal always hash alike — including two different NaN payloads.
-fn hash_float_slice<H: std::hash::Hasher>(values: &Option<Vec<f32>>, hasher: &mut H) {
-    use std::hash::Hash;
+fn java_float_array_hash_code(values: &Option<Vec<f32>>) -> i32 {
+    // `Arrays.hashCode(float[])` answers 0 for `null`.
     match values {
-        None => 0u8.hash(hasher),
-        Some(values) => {
-            1u8.hash(hasher);
-            for value in values {
-                float_to_int_bits(*value).hash(hasher);
-            }
-        }
+        None => 0,
+        Some(values) => crate::util::java_collections::java_arrays_hash_code_floats(values),
     }
 }
 

@@ -346,7 +346,13 @@ impl Query for ConstantScoreQuery {
         self.query.query_eq(&*other.query)
     }
 
-    fn query_hash(&self) -> u64 {
+    /// `getClass().getName()` of `org.apache.lucene.search.ConstantScoreQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.ConstantScoreQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `31 * classHash() + query.hashCode()`.
         self.class_hash()
             .wrapping_mul(31)
             .wrapping_add(self.query.query_hash())

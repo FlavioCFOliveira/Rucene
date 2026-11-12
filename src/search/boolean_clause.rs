@@ -41,6 +41,23 @@ pub enum Occur {
     MUST_NOT,
 }
 
+impl Occur {
+    /// Java's `Occur.hashCode()`.
+    ///
+    /// An enum constant does not override `hashCode()`, so Java answers its
+    /// JVM identity hash, which differs between runs; the stable stand-in of
+    /// [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)
+    /// replaces it.
+    pub fn java_hash_code(self) -> i32 {
+        crate::util::java_collections::java_identity_hash_code_stand_in(match self {
+            Occur::MUST => "org.apache.lucene.search.BooleanClause$Occur.MUST",
+            Occur::FILTER => "org.apache.lucene.search.BooleanClause$Occur.FILTER",
+            Occur::SHOULD => "org.apache.lucene.search.BooleanClause$Occur.SHOULD",
+            Occur::MUST_NOT => "org.apache.lucene.search.BooleanClause$Occur.MUST_NOT",
+        })
+    }
+}
+
 impl fmt::Display for Occur {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
@@ -82,6 +99,15 @@ impl BooleanClause {
     /// Equivalent to `BooleanClause.occur()`.
     pub fn occur(&self) -> Occur {
         self.occur
+    }
+
+    /// Java's `BooleanClause.hashCode()`: the record's generated hash,
+    /// `31 * query.hashCode() + occur.hashCode()` (OpenJDK's
+    /// `ObjectMethods`, over the components in declaration order).
+    pub fn java_hash_code(&self) -> i32 {
+        31i32
+            .wrapping_mul(self.query.query_hash())
+            .wrapping_add(self.occur.java_hash_code())
     }
 
     /// Returns `true` if this clause must appear in matching documents.

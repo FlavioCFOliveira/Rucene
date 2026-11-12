@@ -232,16 +232,25 @@ impl Query for BayesianScoreQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.query.query_hash().hash(&mut hasher);
-        self.alpha.to_bits().hash(&mut hasher);
-        self.beta.to_bits().hash(&mut hasher);
-        self.base_rate.to_bits().hash(&mut hasher);
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.BayesianScoreQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.BayesianScoreQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::java_float_hash_code;
+        // `BayesianScoreQuery.hashCode()`: a `31 * h` chain over `classHash()`,
+        // `query.hashCode()` and `Float.floatToIntBits` of the three floats.
+        let mut h = self.class_hash();
+        h = h.wrapping_mul(31).wrapping_add(self.query.query_hash());
+        h = h
+            .wrapping_mul(31)
+            .wrapping_add(java_float_hash_code(self.alpha));
+        h = h
+            .wrapping_mul(31)
+            .wrapping_add(java_float_hash_code(self.beta));
+        h.wrapping_mul(31)
+            .wrapping_add(java_float_hash_code(self.base_rate))
     }
 }
 

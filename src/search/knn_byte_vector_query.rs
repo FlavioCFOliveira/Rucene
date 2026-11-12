@@ -231,12 +231,16 @@ impl Query for KnnByteVectorQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.base.base_hash().hash(&mut hasher);
-        self.target.hash(&mut hasher);
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.KnnByteVectorQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.KnnByteVectorQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `Objects.hash(super.hashCode(), Arrays.hashCode(target))`.
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            self.base.base_hash(),
+            crate::util::java_collections::java_arrays_hash_code_bytes(&self.target),
+        ])
     }
 }

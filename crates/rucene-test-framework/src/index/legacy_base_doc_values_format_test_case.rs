@@ -4087,8 +4087,8 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                         Arc::clone(&starting_gun),
                     );
                     threads.push(Thread::unnamed(move || {
-                        let info_stream =
-                            rucene::util::PrintStreamInfoStream::new(Box::new(Vec::<u8>::new()));
+                        // `new PrintStream(bos, false, UTF_8)`.
+                        let info_stream = rucene::util::ByteArrayPrintStream::new();
                         starting_gun.wait();
                         let run = (|| -> Result<()> {
                             for leaf in Arc::clone(&r).leaves()? {

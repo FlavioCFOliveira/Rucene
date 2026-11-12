@@ -4,9 +4,7 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
@@ -223,15 +221,13 @@ impl MultiPhraseQuery {
     /// Equivalent to the private `MultiPhraseQuery.termArraysHashCode()`, whose
     /// `31 * hashCode + Arrays.hashCode(termArray)` fold is reproduced here over
     /// the hash of each array's terms.
-    fn term_arrays_hash_code(&self) -> u64 {
-        let mut hash_code = 1u64;
+    fn term_arrays_hash_code(&self) -> i32 {
+        let mut hash_code = 1i32;
         for term_array in &self.term_arrays {
-            let mut hasher = DefaultHasher::new();
-            for term in term_array {
-                term.field().hash(&mut hasher);
-                term.bytes().slice().hash(&mut hasher);
-            }
-            hash_code = hash_code.wrapping_mul(31).wrapping_add(hasher.finish());
+            let terms: Vec<i32> = term_array.iter().map(Term::hash_code).collect();
+            hash_code = hash_code.wrapping_mul(31).wrapping_add(
+                crate::util::java_collections::java_arrays_hash_code_ints(&terms),
+            );
         }
         hash_code
     }
@@ -381,14 +377,18 @@ impl Query for MultiPhraseQuery {
             && self.positions == other.positions
     }
 
-    fn query_hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.positions.hash(&mut hasher);
+    /// `getClass().getName()` of `org.apache.lucene.search.MultiPhraseQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.MultiPhraseQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `classHash() ^ slop ^ termArraysHashCode() ^ Arrays.hashCode(positions)`;
+        // equal terms imply an equal field.
         self.class_hash()
-            ^ (self.slop as u64)
-            // Equal terms imply an equal field.
+            ^ self.slop
             ^ self.term_arrays_hash_code()
-            ^ hasher.finish()
+            ^ crate::util::java_collections::java_arrays_hash_code_ints(&self.positions)
     }
 }
 

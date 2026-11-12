@@ -309,15 +309,20 @@ impl Query for PatienceKnnVectorQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.base.base_hash().hash(&mut hasher);
-        self.saturation_threshold.to_bits().hash(&mut hasher);
-        self.patience.hash(&mut hasher);
-        self.delegate.query_hash().hash(&mut hasher);
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.PatienceKnnVectorQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.PatienceKnnVectorQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `Objects.hash(super.hashCode(), saturationThreshold, patience,
+        // delegate)`.
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            self.base.base_hash(),
+            crate::util::java_collections::java_double_hash_code(self.saturation_threshold),
+            self.patience,
+            self.delegate.query_hash(),
+        ])
     }
 }
 

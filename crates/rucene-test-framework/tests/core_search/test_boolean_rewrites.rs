@@ -1470,7 +1470,7 @@ impl Query for TestRewriteQuery {
         other.as_any().is::<TestRewriteQuery>()
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         // `TestRewriteQuery.class.hashCode()`
         self.class_hash()
     }

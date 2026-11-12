@@ -837,16 +837,12 @@ impl Query for MaxScoreWrapperQuery {
             && self.max_score == that.max_score
     }
 
-    fn query_hash(&self) -> u64 {
-        let mut hash = self.class_hash() as i32;
-        hash = hash
-            .wrapping_mul(31)
-            .wrapping_add(self.query.query_hash() as i32);
+    fn query_hash(&self) -> i32 {
+        let mut hash = self.class_hash();
+        hash = hash.wrapping_mul(31).wrapping_add(self.query.query_hash());
         hash = hash.wrapping_mul(31).wrapping_add(self.max_range);
-        hash = hash
-            .wrapping_mul(31)
-            .wrapping_add(self.max_score.to_bits() as i32);
-        hash as u32 as u64
+        hash.wrapping_mul(31)
+            .wrapping_add(self.max_score.to_bits() as i32)
     }
 
     fn rewrite(&self, index_searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
@@ -996,8 +992,8 @@ impl Query for WANDScorerQuery {
                 .is_some_and(|o| self.query.query_eq(&*o.query))
     }
 
-    fn query_hash(&self) -> u64 {
-        (31u64)
+    fn query_hash(&self) -> i32 {
+        31i32
             .wrapping_mul(self.class_hash())
             .wrapping_add(self.query.query_hash())
     }

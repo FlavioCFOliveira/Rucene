@@ -38,23 +38,6 @@ use crate::util::bit_sets::{RoaringDocIdSet, RoaringDocIdSetBuilder};
 use crate::util::doc_id_set::BitDocIdSet;
 use crate::util::{Accountable, BitSet, FixedBitSet, RamUsageEstimator};
 
-/// The estimated per-entry overhead of a hash table.
-///
-/// **Divergence from Lucene 10.5.0.** Java declares this constant on
-/// `org.apache.lucene.util.RamUsageEstimator`. This crate's port of that class
-/// does not carry it yet, and the accounting of this cache depends on it, so it
-/// is declared here with Java's own definition: two references — a key and a
-/// value — doubled, because hash tables are oversized to avoid collisions.
-pub const HASHTABLE_RAM_BYTES_PER_ENTRY: i64 = 2 * RamUsageEstimator::NUM_BYTES_OBJECT_REF * 2;
-
-/// The estimated per-entry overhead of a linked hash table.
-///
-/// See [`HASHTABLE_RAM_BYTES_PER_ENTRY`] for why the constant lives here: this
-/// is Java's `RamUsageEstimator.LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY`, the hash
-/// table entry plus the previous and next references.
-pub const LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY: i64 =
-    HASHTABLE_RAM_BYTES_PER_ENTRY + 2 * RamUsageEstimator::NUM_BYTES_OBJECT_REF;
-
 /// The shallow size of a [`CacheAndCount`].
 ///
 /// Equivalent to `CacheAndCount.BASE_RAM_BYTES_USED`, which is
@@ -639,8 +622,10 @@ impl CacheState {
         if !cache.contains_key(&key) {
             let previous = cache.insert(key.clone(), LeafCache::new());
             debug_assert!(previous.is_none());
-            self.ram_bytes_used
-                .fetch_add(HASHTABLE_RAM_BYTES_PER_ENTRY, Ordering::AcqRel);
+            self.ram_bytes_used.fetch_add(
+                RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY,
+                Ordering::AcqRel,
+            );
             // We just created a new leaf cache, so we need to register a close
             // listener.
             cache_helper.add_closed_listener(Arc::new(ClearCoreCacheKey {
@@ -655,7 +640,7 @@ impl CacheState {
         debug_assert!(!is_constant_score_query(query.as_ref()));
         let query_key = QueryKey::new(query);
         if !leaf_cache.cache.contains_key(&query_key) {
-            let ram = HASHTABLE_RAM_BYTES_PER_ENTRY + cached.ram_bytes_used();
+            let ram = RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY + cached.ram_bytes_used();
             leaf_cache.cache.insert(query_key, cached);
             leaf_cache.ram_bytes_used += ram;
             self.on_doc_id_set_cache(&key, ram);
@@ -693,7 +678,8 @@ impl CacheState {
         let key = QueryKey::new(Arc::clone(singleton));
         for (core_key, leaf_cache) in cache.iter_mut() {
             if let Some(removed) = leaf_cache.cache.remove(&key) {
-                let ram = HASHTABLE_RAM_BYTES_PER_ENTRY + removed.ram_bytes_used();
+                let ram =
+                    RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY + removed.ram_bytes_used();
                 leaf_cache.ram_bytes_used -= ram;
                 self.on_doc_id_set_eviction(core_key, 1, ram);
             }
@@ -737,9 +723,10 @@ impl ClosedListener for ClearCoreCacheKey {
 fn clear_core_cache_key(state: &Arc<CacheState>, core_key: &CacheKey) {
     let mut cache = state.cache.write().unwrap_or_else(PoisonError::into_inner);
     if let Some(leaf_cache) = cache.remove(core_key) {
-        state
-            .ram_bytes_used
-            .fetch_sub(HASHTABLE_RAM_BYTES_PER_ENTRY, Ordering::AcqRel);
+        state.ram_bytes_used.fetch_sub(
+            RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY,
+            Ordering::AcqRel,
+        );
         let num_entries = leaf_cache.cache.len();
         if num_entries > 0 {
             state.on_doc_id_set_eviction(core_key, num_entries as i32, leaf_cache.ram_bytes_used);
@@ -755,7 +742,7 @@ fn clear_core_cache_key(state: &Arc<CacheState>, core_key: &CacheKey) {
 /// query's own footprint when it is `Accountable`
 /// ([`Query::as_accountable`]), `QUERY_DEFAULT_RAM_BYTES_USED` otherwise.
 fn query_ram_bytes_used(query: &dyn Query) -> i64 {
-    LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY
+    RamUsageEstimator::LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY
         + match query.as_accountable() {
             Some(accountable) => accountable.ram_bytes_used(),
             None => RamUsageEstimator::QUERY_DEFAULT_RAM_BYTES_USED,
@@ -1198,13 +1185,14 @@ impl LRUQueryCache {
                 }
             }
         }
-        let mut recomputed_ram_bytes_used = HASHTABLE_RAM_BYTES_PER_ENTRY * cache.len() as i64;
+        let mut recomputed_ram_bytes_used =
+            RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY * cache.len() as i64;
         for query in queries.queries() {
             recomputed_ram_bytes_used += query_ram_bytes_used(query.as_ref());
         }
         for leaf_cache in cache.values() {
             recomputed_ram_bytes_used +=
-                HASHTABLE_RAM_BYTES_PER_ENTRY * leaf_cache.cache.len() as i64;
+                RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY * leaf_cache.cache.len() as i64;
             for cached in leaf_cache.cache.values() {
                 recomputed_ram_bytes_used += cached.ram_bytes_used();
             }

@@ -1264,14 +1264,23 @@ impl Query for LongDistanceFeatureQuery {
             .is_some_and(|other| self == other)
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.origin.hash(&mut hasher);
-        self.pivot_distance.hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.LongDistanceFeatureQuery"
+    }
+
+    /// Equivalent to `LongDistanceFeatureQuery.hashCode()`.
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{java_long_hash_code, java_string_hash_code};
+        let mut h = self.class_hash();
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(java_string_hash_code(&self.field));
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(java_long_hash_code(self.origin));
+        31i32
+            .wrapping_mul(h)
+            .wrapping_add(java_long_hash_code(self.pivot_distance))
     }
 
     fn create_weight(
@@ -1393,18 +1402,26 @@ impl Query for LatLonPointDistanceFeatureQuery {
             .is_some_and(|other| self == other)
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        // Java hashes the three doubles with `Double.hashCode`, which is
-        // derived from their bit pattern; `f64` is not `Hash` in Rust, so the
-        // bits are hashed directly.
-        self.origin_lat.to_bits().hash(&mut hasher);
-        self.origin_lon.to_bits().hash(&mut hasher);
-        self.pivot_distance.to_bits().hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.LatLonPointDistanceFeatureQuery"
+    }
+
+    /// Equivalent to `LatLonPointDistanceFeatureQuery.hashCode()`.
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{java_double_hash_code, java_string_hash_code};
+        let mut h = self.class_hash();
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(java_string_hash_code(&self.field));
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(java_double_hash_code(self.origin_lat));
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(java_double_hash_code(self.origin_lon));
+        31i32
+            .wrapping_mul(h)
+            .wrapping_add(java_double_hash_code(self.pivot_distance))
     }
 
     fn create_weight(

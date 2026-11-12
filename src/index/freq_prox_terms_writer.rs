@@ -2928,7 +2928,7 @@ impl Terms for SortingTerms {
         self.base.has_payloads()
     }
 
-    fn stats(&self) -> Result<String> {
+    fn stats(&self) -> Result<Box<dyn crate::index::terms::StatsObject>> {
         self.base.stats()
     }
 }

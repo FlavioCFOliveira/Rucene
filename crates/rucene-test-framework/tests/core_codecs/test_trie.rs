@@ -272,7 +272,10 @@ fn assert_result(reader: &mut TrieReader, term: &[u8], expected: &Output) -> Res
     match &expected.floor_data {
         None => Assert::assert_false(parent.is_floor()),
         Some(floor_data) => {
-            let bytes = reader.floor_data(&parent, floor_data.length)?;
+            let mut bytes = vec![0u8; floor_data.length];
+            reader
+                .floor_data(&parent)?
+                .read_bytes(Some(&mut bytes), 0, floor_data.length)?;
             assert_array_equals(floor_data.slice(), &bytes);
         }
     }

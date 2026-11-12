@@ -4,8 +4,6 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
@@ -287,19 +285,31 @@ impl Query for SynonymQuery {
                 .all(|(a, b)| a.term == b.term && a.boost.to_bits() == b.boost.to_bits())
     }
 
-    fn query_hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        for t in &self.terms {
-            t.term.slice().hash(&mut hasher);
-            t.boost.to_bits().hash(&mut hasher);
-        }
-        let terms_hash = hasher.finish();
-        let mut hasher = DefaultHasher::new();
-        self.field.hash(&mut hasher);
-        31u64
+    /// `getClass().getName()` of `org.apache.lucene.search.SynonymQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.SynonymQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_ints, java_float_hash_code, java_string_hash_code,
+        };
+        // `31 * classHash() + Arrays.hashCode(terms) + field.hashCode()`; a
+        // `TermAndBoost` record hashes as `31 * term.hashCode() +
+        // Float.hashCode(boost)`.
+        let terms: Vec<i32> = self
+            .terms
+            .iter()
+            .map(|t| {
+                31i32
+                    .wrapping_mul(t.term.hash_code())
+                    .wrapping_add(java_float_hash_code(t.boost))
+            })
+            .collect();
+        31i32
             .wrapping_mul(self.class_hash())
-            .wrapping_add(terms_hash)
-            .wrapping_add(hasher.finish())
+            .wrapping_add(java_arrays_hash_code_ints(&terms))
+            .wrapping_add(java_string_hash_code(&self.field))
     }
 }
 

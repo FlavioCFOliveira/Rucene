@@ -108,6 +108,32 @@ impl Term {
     }
 }
 
+impl Term {
+    /// Java's `hashCode()`, reproduced exactly.
+    ///
+    /// Equivalent to `Term.hashCode()` (`Term.java:160-166`):
+    /// `31 * (31 * 1 + field.hashCode()) + bytes.hashCode()`. `BytesRef.hashCode`
+    /// mixes in `StringHelper.GOOD_FAST_HASH_SEED`, so the value is only
+    /// reproducible across runs under a fixed `tests.seed`, exactly as in Java.
+    pub fn hash_code(&self) -> i32 {
+        const PRIME: i32 = 31;
+        let mut result: i32 = 1;
+        result = PRIME.wrapping_mul(result).wrapping_add(
+            crate::util::java_collections::java_string_hash_code(&self.field),
+        );
+        PRIME
+            .wrapping_mul(result)
+            .wrapping_add(self.bytes.hash_code())
+    }
+}
+
+impl crate::util::java_collections::JavaHashCode for Term {
+    /// `Term.hashCode()`; see [`Term::hash_code`].
+    fn java_hash_code(&self) -> i32 {
+        self.hash_code()
+    }
+}
+
 impl PartialEq for Term {
     fn eq(&self, other: &Self) -> bool {
         self.field == other.field && self.bytes == other.bytes
@@ -840,16 +866,19 @@ pub trait Terms: Send + Sync {
 
     /// Returns additional debug statistics about this terms instance.
     ///
-    /// Equivalent to `Terms.getStats()`, which throws `IOException`
-    /// (`Terms.java:217-226`).
-    fn stats(&self) -> Result<String> {
-        Ok(format!(
+    /// Equivalent to `Terms.getStats()`, which throws `IOException` and returns
+    /// an `Object` (`Terms.java:217-226`): the default a `String`, the
+    /// blocktree terms dictionary its `Stats`. The object is returned as such —
+    /// a [`StatsObject`], whose `Display` is the Java object's `toString()` and
+    /// which [`StatsObject::as_any`] downcasts to its concrete type.
+    fn stats(&self) -> Result<Box<dyn StatsObject>> {
+        Ok(Box::new(format!(
             "impl=Terms,size={},docCount={},sumTotalTermFreq={},sumDocFreq={}",
             self.size()?,
             self.doc_count()?,
             self.sum_total_term_freq()?,
             self.sum_doc_freq()?
-        ))
+        )))
     }
 
     /// This terms instance as [`Any`], for the `instanceof` tests Java code
@@ -929,6 +958,30 @@ impl<T: Fields + ?Sized> Fields for &T {
     }
 }
 
+/// The `Object` [`Terms::stats`] returns: Java's `Terms.getStats()` result.
+///
+/// Its `Display` is the object's `toString()`; [`as_any`](Self::as_any)
+/// recovers its concrete type — a `String` for the default `getStats()`, the
+/// blocktree [`Stats`](crate::codecs::lucene103::blocktree::Stats) for a
+/// `FieldReader` — as Java's caller casts the `Object`.
+pub trait StatsObject: std::fmt::Display + Send + Sync + 'static {
+    /// This object as [`Any`](std::any::Any), for downcasting.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+impl<T: std::fmt::Display + Send + Sync + 'static> StatsObject for T {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl std::fmt::Debug for dyn StatsObject {
+    /// The object's `toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
 // -----------------------------------------------------------------------------
 // PrefixCodedTerms
 // -----------------------------------------------------------------------------
@@ -983,6 +1036,35 @@ impl PrefixCodedTerms {
     /// Records the deletion generation for this packet.
     pub fn set_del_gen(&mut self, del_gen: i64) {
         self.del_gen = del_gen;
+    }
+
+    /// Java's `PrefixCodedTerms.hashCode()` (`PrefixCodedTerms.java:189-199`):
+    /// `h = 1`, `h += 31 * bb.hashCode()` per content block, then
+    /// `31 * h + (int) (delGen ^ (delGen >>> 32))`.
+    ///
+    /// `ByteBuffer.hashCode()` folds `31 * h + b` over the remaining bytes from
+    /// the last to the first, each byte sign-extended; every block is a buffer
+    /// of `ByteBuffersDataOutput.toBufferList()`, positioned at 0 and limited
+    /// at its length.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java caches the value in `lazyHash`
+    /// on first use, so a `setDelGen` after the first `hashCode()` leaves the
+    /// cached value unchanged; the port recomputes it on every call. No Lucene
+    /// caller changes the generation of a packet it has already hashed.
+    pub fn hash_code(&self) -> i32 {
+        let mut h: i32 = 1;
+        for block in &self.content {
+            let mut bb: i32 = 1;
+            for &byte in block.iter().rev() {
+                bb = bb.wrapping_mul(31).wrapping_add(i32::from(byte as i8));
+            }
+            h = h.wrapping_add(31i32.wrapping_mul(bb));
+        }
+        31i32
+            .wrapping_mul(h)
+            .wrapping_add(crate::util::java_collections::java_long_hash_code(
+                self.del_gen,
+            ))
     }
 }
 

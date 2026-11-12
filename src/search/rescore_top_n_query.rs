@@ -223,14 +223,20 @@ impl Query for RescoreTopNQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.values_source.source_hash().hash(&mut hasher);
-        self.query.query_hash().hash(&mut hasher);
-        self.n.hash(&mut hasher);
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.RescoreTopNQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.RescoreTopNQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `valuesSource.hashCode()`, then `31 * result + Objects.hash(query, n)`.
+        let result = self.values_source.source_hash();
+        31i32.wrapping_mul(result).wrapping_add(
+            crate::util::java_collections::java_arrays_hash_code_ints(&[
+                self.query.query_hash(),
+                self.n,
+            ]),
+        )
     }
 }
 

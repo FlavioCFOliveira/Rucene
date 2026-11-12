@@ -268,8 +268,8 @@ impl Query for DummyQuery {
                 .is_some_and(|o| self.id == o.id)
     }
 
-    fn query_hash(&self) -> u64 {
-        self.id as u64
+    fn query_hash(&self) -> i32 {
+        self.id
     }
 }
 

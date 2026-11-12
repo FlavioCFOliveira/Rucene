@@ -547,7 +547,7 @@ impl Query for ThrowingKnnVectorQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         self.inner.query_hash()
     }
 }
@@ -659,7 +659,7 @@ impl Query for CappedResultsThrowingKnnVectorQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         self.inner.query_hash()
     }
 }

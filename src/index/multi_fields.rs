@@ -711,7 +711,7 @@ impl Terms for Arc<MultiTerms> {
         (**self).max()
     }
 
-    fn stats(&self) -> Result<String> {
+    fn stats(&self) -> Result<Box<dyn crate::index::terms::StatsObject>> {
         (**self).stats()
     }
 }

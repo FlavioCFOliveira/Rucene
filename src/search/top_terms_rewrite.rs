@@ -47,8 +47,8 @@ pub trait TopTermsRewrite: TermCollectingRewrite {
 /// The hash code shared by every [`TopTermsRewrite`].
 ///
 /// Equivalent to `TopTermsRewrite.hashCode()`, which is `31 * size`.
-pub fn top_terms_rewrite_hash(rewrite: &dyn TopTermsRewrite) -> u64 {
-    31u64.wrapping_mul(rewrite.get_size() as u64)
+pub fn top_terms_rewrite_hash(rewrite: &dyn TopTermsRewrite) -> i32 {
+    31i32.wrapping_mul(rewrite.get_size())
 }
 
 /// The equality shared by every [`TopTermsRewrite`] of the same concrete type.

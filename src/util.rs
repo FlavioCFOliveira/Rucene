@@ -41,6 +41,7 @@ pub mod mutable;
 pub mod offline_sorter;
 pub mod packed;
 pub mod paged_bytes;
+pub mod print_stream;
 pub mod quantization;
 pub mod query_builder;
 pub mod refs;
@@ -115,6 +116,7 @@ pub use offline_sorter::{
     SortInfo,
 };
 pub use paged_bytes::{PagedBytes, PagedBytesDataInput, PagedBytesDataOutput, PagedBytesReader};
+pub use print_stream::{ByteArrayPrintStream, PrintStream, WriterPrintStream};
 pub use refs::{CharsRefBuilder, IntsRefBuilder, LongsRef, EMPTY_LONGS};
 pub use resource_loader::{
     ClassLoader, ClassLoaderUtils, ClassRegistry, ClasspathResourceLoader, ModuleResourceLoader,
@@ -1543,6 +1545,38 @@ pub struct ArrayUtil;
 impl ArrayUtil {
     /// Maximum length for an array (`i32::MAX` minus an estimated header size).
     pub const MAX_ARRAY_LENGTH: usize = i32::MAX as usize - 16;
+
+    /// `ArrayUtil.oversize(int, int)` over Java's `int` argument, with every
+    /// check Java makes reported as the error Java throws.
+    ///
+    /// Equivalent to `ArrayUtil.oversize(int, int)` (`ArrayUtil.java:134-193`)
+    /// for callers whose size comes off a file and may therefore be negative:
+    /// `minTargetSize < 0` is the `IllegalArgumentException`
+    /// `"invalid array size " + minTargetSize`, and a size past
+    /// [`Self::MAX_ARRAY_LENGTH`] the `"requested array size …"` one.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
+    /// as described above.
+    pub fn oversize_int(
+        min_target_size: i32,
+        bytes_per_element: usize,
+    ) -> crate::error::Result<usize> {
+        if min_target_size < 0 {
+            // catch usage that accidentally overflows int
+            return Err(crate::error::LuceneError::illegal_argument(format!(
+                "invalid array size {min_target_size}"
+            )));
+        }
+        if min_target_size as usize > Self::MAX_ARRAY_LENGTH {
+            return Err(crate::error::LuceneError::illegal_argument(format!(
+                "requested array size {min_target_size} exceeds maximum array in java ({})",
+                Self::MAX_ARRAY_LENGTH
+            )));
+        }
+        Ok(Self::oversize(min_target_size as usize, bytes_per_element))
+    }
 
     /// Returns a size greater than or equal to `min_target_size`, generally
     /// over-allocating exponentially.

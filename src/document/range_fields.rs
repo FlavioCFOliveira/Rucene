@@ -49,6 +49,27 @@ pub enum RangeQueryType {
 }
 
 impl RangeQueryType {
+    /// Java's `QueryType.hashCode()`.
+    ///
+    /// An enum constant does not override `hashCode()`, so Java answers its JVM
+    /// identity hash, which differs between runs; the stable stand-in of
+    /// [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)
+    /// replaces it.
+    pub fn java_hash_code(self) -> i32 {
+        crate::util::java_collections::java_identity_hash_code_stand_in(match self {
+            RangeQueryType::Intersects => {
+                "org.apache.lucene.document.RangeFieldQuery$QueryType.INTERSECTS"
+            }
+            RangeQueryType::Within => "org.apache.lucene.document.RangeFieldQuery$QueryType.WITHIN",
+            RangeQueryType::Contains => {
+                "org.apache.lucene.document.RangeFieldQuery$QueryType.CONTAINS"
+            }
+            RangeQueryType::Crosses => {
+                "org.apache.lucene.document.RangeFieldQuery$QueryType.CROSSES"
+            }
+        })
+    }
+
     /// Returns whether a document range matches the query range under this
     /// relation.
     ///
@@ -1062,14 +1083,23 @@ impl Query for BinaryRangeFieldRangeQuery {
     }
 
     /// Equivalent to `BinaryRangeFieldRangeQuery.hashCode()`.
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.query_ranges.hash(&mut hasher);
-        hasher.finish()
+    /// Java's `BinaryRangeFieldRangeQuery` is abstract; its concrete
+    /// subclasses (`IntRangeSlowRangeQuery` and its siblings) are reached
+    /// through this one type here.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.BinaryRangeFieldRangeQuery"
+    }
+
+    /// Equivalent to `BinaryRangeFieldRangeQuery.hashCode()`: `classHash()`,
+    /// `field.hashCode()` and `Arrays.hashCode(queryPackedValue)`.
+    fn query_hash(&self) -> i32 {
+        let mut h = self.class_hash();
+        h = 31i32.wrapping_mul(h).wrapping_add(
+            crate::util::java_collections::java_string_hash_code(&self.field),
+        );
+        31i32.wrapping_mul(h).wrapping_add(
+            crate::util::java_collections::java_arrays_hash_code_bytes(&self.query_ranges),
+        )
     }
 }
 
@@ -1708,20 +1738,33 @@ impl Query for RangeFieldQuery {
     }
 
     /// Equivalent to `RangeFieldQuery.hashCode()`.
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        // `classHash()` in Java already distinguishes the anonymous subclasses;
-        // this port has one concrete type, so the kind carries that difference
-        // and keeps the hash consistent with `query_eq`.
-        self.value_kind.hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.num_dims.hash(&mut hasher);
-        self.query_type.hash(&mut hasher);
-        self.ranges.hash(&mut hasher);
-        hasher.finish()
+    /// The anonymous `RangeFieldQuery` subclass of the range family that
+    /// built this query (`IntRange$1` and its siblings).
+    fn java_class_name(&self) -> &'static str {
+        match self.value_kind {
+            RangeValueKind::Int => "org.apache.lucene.document.IntRange$1",
+            RangeValueKind::Long => "org.apache.lucene.document.LongRange$1",
+            RangeValueKind::Float => "org.apache.lucene.document.FloatRange$1",
+            RangeValueKind::Double => "org.apache.lucene.document.DoubleRange$1",
+            RangeValueKind::InetAddress => "org.apache.lucene.document.InetAddressRange$1",
+        }
+    }
+
+    /// Equivalent to `RangeFieldQuery.hashCode()`: `classHash()` (the
+    /// anonymous subclass), `field.hashCode()`, `numDims`,
+    /// `queryType.hashCode()` and `Arrays.hashCode(ranges)`.
+    fn query_hash(&self) -> i32 {
+        let mut hash = self.class_hash();
+        hash = 31i32.wrapping_mul(hash).wrapping_add(
+            crate::util::java_collections::java_string_hash_code(&self.field),
+        );
+        hash = 31i32.wrapping_mul(hash).wrapping_add(self.num_dims as i32);
+        hash = 31i32
+            .wrapping_mul(hash)
+            .wrapping_add(self.query_type.java_hash_code());
+        31i32.wrapping_mul(hash).wrapping_add(
+            crate::util::java_collections::java_arrays_hash_code_bytes(&self.ranges),
+        )
     }
 }
 

@@ -104,15 +104,17 @@ impl IndriQuery {
     ///
     /// Equivalent to `IndriQuery.hashCode()`, which replaces a hash of `0` with
     /// `1`.
-    pub fn base_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        for clause in &self.clauses {
-            clause.occur().hash(&mut hasher);
-            clause.query().query_hash().hash(&mut hasher);
-        }
-        let hash_code = hasher.finish();
+    pub fn base_hash(&self) -> i32 {
+        // `Objects.hash(clauses)`: `31 * 1 + clauses.hashCode()`, the list's
+        // hash over each `BooleanClause.hashCode()`.
+        let clauses: Vec<i32> = self
+            .clauses
+            .iter()
+            .map(BooleanClause::java_hash_code)
+            .collect();
+        let hash_code = crate::util::java_collections::java_arrays_hash_code_ints(&[
+            crate::util::java_collections::java_arrays_hash_code_ints(&clauses),
+        ]);
         if hash_code == 0 {
             1
         } else {

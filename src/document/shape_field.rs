@@ -32,6 +32,29 @@ pub enum QueryRelation {
     Contains,
 }
 
+impl QueryRelation {
+    /// Java's `QueryRelation.hashCode()`.
+    ///
+    /// An enum constant does not override `hashCode()`, so Java answers its JVM
+    /// identity hash, which differs between runs; the stable stand-in of
+    /// [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)
+    /// replaces it.
+    pub fn java_hash_code(self) -> i32 {
+        crate::util::java_collections::java_identity_hash_code_stand_in(match self {
+            QueryRelation::Intersects => {
+                "org.apache.lucene.document.ShapeField$QueryRelation.INTERSECTS"
+            }
+            QueryRelation::Within => "org.apache.lucene.document.ShapeField$QueryRelation.WITHIN",
+            QueryRelation::Disjoint => {
+                "org.apache.lucene.document.ShapeField$QueryRelation.DISJOINT"
+            }
+            QueryRelation::Contains => {
+                "org.apache.lucene.document.ShapeField$QueryRelation.CONTAINS"
+            }
+        })
+    }
+}
+
 /// Which degenerate form a decoded triangle takes.
 ///
 /// Equivalent to `ShapeField.DecodedTriangle.TYPE`, declared in the same order:

@@ -7,6 +7,9 @@
 
 use crate::codecs::lucene103::blocktree::CompressionAlgorithm;
 use crate::codecs::lucene103::field_reader::FieldReader;
+use crate::codecs::lucene103::segment_terms_enum::{
+    corrupt_from_by_code, java_grow_buffer, java_read_len,
+};
 use crate::codecs::lucene103::trie_reader::{Node, TrieReader};
 use crate::codecs::term_state::BlockTermState;
 use crate::error::{LuceneError, Result};
@@ -55,7 +58,7 @@ pub struct IntersectTermsEnumFrame {
     // Rust forbids, so the frame keeps the view's two fields — position and
     // limit — beside the buffer instead, and [`ByteArrayDataInput`] is rebuilt
     // around them for each read. The state is exactly Java's, only spelled
-    // inline; the frame already stores `floor_data_pos` this way.
+    // inline.
     suffix_bytes: Vec<u8>,
     /// Read position inside `suffix_bytes`.
     suffixes_pos: usize,
@@ -78,9 +81,11 @@ pub struct IntersectTermsEnumFrame {
     /// Where this block's term metadata ends inside `bytes`.
     bytes_limit: usize,
 
-    /// Floor data, copied out of the term index.
-    floor_data: Vec<u8>,
-    floor_data_pos: usize,
+    /// `IntersectTermsEnumFrame.floorDataPos`: where the unread floor data
+    /// continues inside the trie's floor-data input
+    /// ([`TrieReader::floor_input`]), which stands for Java's
+    /// `floorDataReader` field.
+    floor_data_pos: i64,
 
     /// Length of the prefix every term in this block shares.
     pub prefix: usize,
@@ -131,20 +136,21 @@ impl IntersectTermsEnumFrame {
             transition_count: 0,
             meta_data_upto: 0,
             state_data: BlockTermState::default(),
-            suffix_bytes: Vec::new(),
+            // `new byte[128]`, `new byte[32]`, `new byte[64]` and `new byte[32]`
+            // (`IntersectTermsEnumFrame.java:47`, `:99`, `:54`, `:88`).
+            suffix_bytes: vec![0u8; 128],
             suffixes_pos: 0,
             suffixes_limit: 0,
-            suffix_length_bytes: Vec::new(),
+            suffix_length_bytes: vec![0u8; 32],
             suffix_lengths_pos: 0,
             suffix_lengths_limit: 0,
-            stat_bytes: Vec::new(),
+            stat_bytes: vec![0u8; 64],
             stats_pos: 0,
             stats_limit: 0,
             stats_singleton_run_length: 0,
-            bytes: Vec::new(),
+            bytes: vec![0u8; 32],
             bytes_pos: 0,
             bytes_limit: 0,
-            floor_data: Vec::new(),
             floor_data_pos: 0,
             prefix: 0,
             ent_count: 0,
@@ -228,50 +234,47 @@ impl IntersectTermsEnumFrame {
         out
     }
 
-    /// Records this block's floor data.
-    pub fn set_floor_data(&mut self, floor_data: Vec<u8>) -> Result<()> {
-        let mut reader = ByteArrayDataInput::new(&floor_data);
-        self.num_follow_floor_blocks = reader.read_v_int()?;
-        self.next_floor_label = i32::from(reader.read_byte()?);
-        self.floor_data_pos = reader.position();
-        self.floor_data = floor_data;
-        Ok(())
-    }
-
-    /// Reads this frame's block, which has the same layout as the one
-    /// `SegmentTermsEnumFrame` reads.
-    pub fn load_block(&mut self, terms_in: &mut dyn IndexInput) -> Result<()> {
-        if self.next_ent != -1 {
-            return Ok(());
-        }
+    /// Reads this frame's block at `fp`: the body of
+    /// `IntersectTermsEnumFrame.load(TrieReader.Node)` after the floor-data
+    /// handling (`IntersectTermsEnumFrame.java:172-235`). The block has the
+    /// same layout as the one `SegmentTermsEnumFrame` reads.
+    fn load_block(&mut self, terms_in: &mut dyn IndexInput) -> Result<()> {
         terms_in.seek(self.fp)?;
 
         let code = terms_in.read_v_int()?;
-        self.ent_count = code >> 1;
+        self.ent_count = ((code as u32) >> 1) as i32;
         debug_assert!(self.ent_count > 0);
         self.is_last_in_floor = code & 1 != 0;
 
+        // term suffixes:
         let code_l = terms_in.read_v_long()?;
         self.is_leaf_block = code_l & 0x04 != 0;
-        let num_suffix_bytes = ((code_l as u64) >> 3) as usize;
-        if self.suffix_bytes.len() < num_suffix_bytes {
-            self.suffix_bytes.resize(num_suffix_bytes, 0);
-        }
-        CompressionAlgorithm::by_code((code_l & 0x03) as i32)?.read(
-            terms_in,
-            &mut self.suffix_bytes,
-            num_suffix_bytes,
-        )?;
+        // `(int) (codeL >>> 3)`: a corrupt length wraps negative exactly as in
+        // Java. The frame's buffers are never `null` (they are allocated with
+        // the frame), so only `buf.length < n` decides a reallocation.
+        let num_suffix_bytes = ((code_l as u64) >> 3) as i32;
+        java_grow_buffer(&mut self.suffix_bytes, &mut false, num_suffix_bytes)?;
+        let compression_alg = match CompressionAlgorithm::by_code((code_l as i32) & 0x03) {
+            Ok(alg) => alg,
+            // `catch (IllegalArgumentException e) { throw new
+            // CorruptIndexException(e.getMessage(), ite.in, e); }`
+            // (`IntersectTermsEnumFrame.java:183-187`).
+            Err(e) => return Err(corrupt_from_by_code(e, &*terms_in)),
+        };
+        let n = java_read_len(num_suffix_bytes, self.suffix_bytes.len())?;
+        compression_alg.read(terms_in, &mut self.suffix_bytes, n)?;
         self.suffixes_pos = 0;
-        self.suffixes_limit = num_suffix_bytes;
+        self.suffixes_limit = n;
 
         let mut num_suffix_length_bytes = terms_in.read_v_int()?;
         let all_equal = num_suffix_length_bytes & 0x01 != 0;
-        num_suffix_length_bytes >>= 1;
-        let n = num_suffix_length_bytes.max(0) as usize;
-        if self.suffix_length_bytes.len() < n {
-            self.suffix_length_bytes.resize(n, 0);
-        }
+        num_suffix_length_bytes = ((num_suffix_length_bytes as u32) >> 1) as i32;
+        java_grow_buffer(
+            &mut self.suffix_length_bytes,
+            &mut false,
+            num_suffix_length_bytes,
+        )?;
+        let n = num_suffix_length_bytes as usize;
         if all_equal {
             let b = terms_in.read_byte()?;
             self.suffix_length_bytes[..n].fill(b);
@@ -281,37 +284,70 @@ impl IntersectTermsEnumFrame {
         self.suffix_lengths_pos = 0;
         self.suffix_lengths_limit = n;
 
-        let num_stat_bytes = terms_in.read_v_int()?.max(0) as usize;
-        if self.stat_bytes.len() < num_stat_bytes {
-            self.stat_bytes.resize(num_stat_bytes, 0);
-        }
-        terms_in.read_bytes(Some(&mut self.stat_bytes), 0, num_stat_bytes)?;
+        // stats
+        let num_stat_bytes = terms_in.read_v_int()?;
+        java_grow_buffer(&mut self.stat_bytes, &mut false, num_stat_bytes)?;
+        let n = java_read_len(num_stat_bytes, self.stat_bytes.len())?;
+        terms_in.read_bytes(Some(&mut self.stat_bytes), 0, n)?;
         self.stats_pos = 0;
-        self.stats_limit = num_stat_bytes;
+        self.stats_limit = n;
         self.stats_singleton_run_length = 0;
-
         self.meta_data_upto = 0;
+
         self.state_data.term_block_ord = 0;
         self.next_ent = 0;
-        self.last_sub_fp = -1;
 
-        let num_meta_bytes = terms_in.read_v_int()?.max(0) as usize;
-        if self.bytes.len() < num_meta_bytes {
-            self.bytes.resize(num_meta_bytes, 0);
-        }
-        terms_in.read_bytes(Some(&mut self.bytes), 0, num_meta_bytes)?;
+        // metadata
+        let num_meta_bytes = terms_in.read_v_int()?;
+        java_grow_buffer(&mut self.bytes, &mut false, num_meta_bytes)?;
+        let n = java_read_len(num_meta_bytes, self.bytes.len())?;
+        terms_in.read_bytes(Some(&mut self.bytes), 0, n)?;
         self.bytes_pos = 0;
-        self.bytes_limit = num_meta_bytes;
+        self.bytes_limit = n;
 
-        self.fp_end = terms_in.file_pointer()?;
+        if !self.is_last_in_floor {
+            // Sub-blocks of a single floor block are always written one after
+            // another -- tail recurse:
+            self.fp_end = terms_in.file_pointer()?;
+        }
         Ok(())
     }
 
-    /// Moves to the next floor block of this run.
-    pub fn load_next_floor_block(&mut self, terms_in: &mut dyn IndexInput) -> Result<()> {
-        self.fp = self.fp_end;
-        self.next_ent = -1;
-        self.load_block(terms_in)
+    /// Moves to the next floor block of this run, skipping the floor blocks
+    /// whose labels all sort below the current transition.
+    ///
+    /// Equivalent to `IntersectTermsEnumFrame.loadNextFloorBlock()`
+    /// (`IntersectTermsEnumFrame.java:106-121`); `floor_in` is the trie's
+    /// floor-data input, Java's `floorDataReader`.
+    pub fn load_next_floor_block(
+        &mut self,
+        terms_in: &mut dyn IndexInput,
+        floor_in: &mut dyn IndexInput,
+    ) -> Result<()> {
+        debug_assert!(
+            self.num_follow_floor_blocks > 0,
+            "nextFloorLabel={}",
+            self.next_floor_label
+        );
+
+        floor_in.seek(self.floor_data_pos)?;
+        loop {
+            self.fp = self.fp_orig + ((floor_in.read_v_long()? as u64) >> 1) as i64;
+            self.num_follow_floor_blocks -= 1;
+            if self.num_follow_floor_blocks != 0 {
+                self.next_floor_label = i32::from(floor_in.read_byte()?);
+            } else {
+                self.next_floor_label = 256;
+            }
+            if !(self.num_follow_floor_blocks != 0 && self.next_floor_label <= self.transition.min)
+            {
+                break;
+            }
+        }
+        // `load(null)`: no floor data to read.
+        self.load_block(terms_in)?;
+        self.floor_data_pos = floor_in.file_pointer()?;
+        Ok(())
     }
 
     /// Reads the next entry, returning whether it is a sub-block.
@@ -455,6 +491,8 @@ impl IntersectTermsEnumFrame {
     ///
     /// Propagates the input's I/O errors; an unknown compression code is a
     /// `CorruptIndex` with the cause.
+    ///
+    /// `accept` is `ite.runAutomaton.isAccept(state)` for this frame's state.
     pub fn load(
         &mut self,
         terms_in: &mut dyn IndexInput,
@@ -462,8 +500,41 @@ impl IntersectTermsEnumFrame {
         node: Option<&Node>,
         accept: bool,
     ) -> Result<()> {
-        let _ = (terms_in, trie_reader, node, accept);
-        todo!("PORT G-112")
+        if let Some(node) = node {
+            // This block is the first one in a possible sequence of floor
+            // blocks corresponding to a single seek point from the trie terms
+            // index.
+            if node.is_floor() {
+                let floor_in = trie_reader.floor_data(node)?;
+                // Floor frame
+                self.num_follow_floor_blocks = floor_in.read_v_int()?;
+                self.next_floor_label = i32::from(floor_in.read_byte()?);
+
+                // If current state is not accept, and has transitions, we must
+                // process first block in case it has empty suffix:
+                if !accept && self.transition_count != 0 {
+                    // Maybe skip floor blocks:
+                    debug_assert!(
+                        self.transition_index == 0,
+                        "transitionIndex={}",
+                        self.transition_index
+                    );
+                    while self.num_follow_floor_blocks != 0
+                        && self.next_floor_label <= self.transition.min
+                    {
+                        self.fp = self.fp_orig + ((floor_in.read_v_long()? as u64) >> 1) as i64;
+                        self.num_follow_floor_blocks -= 1;
+                        if self.num_follow_floor_blocks != 0 {
+                            self.next_floor_label = i32::from(floor_in.read_byte()?);
+                        } else {
+                            self.next_floor_label = 256;
+                        }
+                    }
+                }
+                self.floor_data_pos = floor_in.file_pointer()?;
+            }
+        }
+        self.load_block(terms_in)
     }
 }
 
@@ -629,7 +700,8 @@ impl IntersectTermsEnum {
                             if !self.stack[cur].is_last_in_floor {
                                 // Advance to the next floor block.
                                 let terms_in = &mut *self.terms_in;
-                                self.stack[cur].load_next_floor_block(terms_in)?;
+                                let floor_in = self.trie.floor_input();
+                                self.stack[cur].load_next_floor_block(terms_in, floor_in)?;
                                 continue;
                             }
                             return Ok(());
@@ -673,18 +745,12 @@ impl IntersectTermsEnum {
         frame.prefix = 0;
         frame.fp = root.output_fp;
         frame.fp_orig = root.output_fp;
-        frame.next_ent = -1;
-        frame.node = Some(root);
-        if root.is_floor() {
-            let end = self.field.index_end() - self.field.index_start();
-            let len = (end - root.floor_data_fp).max(0) as usize;
-            let floor = self.trie.floor_data(&root, len.min(1 << 16))?;
-            self.stack[0].set_floor_data(floor)?;
-        }
         let automaton = &*self.automaton;
-        self.stack[0].set_state(0, automaton);
+        frame.set_state(0, automaton);
+        frame.node = Some(root);
+        let accept = self.run_automaton.is_accept(0);
         let terms_in = &mut *self.terms_in;
-        self.stack[0].load_block(terms_in)?;
+        self.stack[0].load(terms_in, &mut self.trie, Some(&root), accept)?;
         self.current = Some(0);
         Ok(())
     }
@@ -727,15 +793,6 @@ impl IntersectTermsEnum {
             *self.get_node(1 + idx) = node;
             idx += 1;
         }
-        debug_assert!(node.has_output());
-
-        let floor = if node.is_floor() {
-            let end = self.field.index_end() - self.field.index_start();
-            let len = (end - node.floor_data_fp).max(0) as usize;
-            Some(self.trie.floor_data(&node, len.min(1 << 16))?)
-        } else {
-            None
-        };
 
         let automaton = &*self.automaton;
         let frame = &mut self.stack[ord];
@@ -743,14 +800,12 @@ impl IntersectTermsEnum {
         frame.fp = fp;
         frame.fp_orig = fp;
         frame.prefix = prefix;
-        frame.next_ent = -1;
-        frame.node = Some(node);
         frame.set_state(state, automaton);
-        if let Some(floor) = floor {
-            frame.set_floor_data(floor)?;
-        }
+        frame.node = Some(node);
+        debug_assert!(node.has_output());
+        let accept = self.run_automaton.is_accept(state);
         let terms_in = &mut *self.terms_in;
-        self.stack[ord].load_block(terms_in)?;
+        self.stack[ord].load(terms_in, &mut self.trie, Some(&node), accept)?;
         self.current = Some(ord);
         Ok(())
     }
@@ -776,18 +831,26 @@ impl IntersectTermsEnum {
     /// Java's `NoMoreTermsException`.
     ///
     /// Equivalent to `IntersectTermsEnum.popPushNext`.
+    ///
+    /// # Errors
+    ///
+    /// Once the walk is over the current frame is gone (Java nulls
+    /// `currentFrame` "to provoke NPE if we are (illegally!) called again",
+    /// `IntersectTermsEnum.java:365-373`), so a further call raises the
+    /// `NullPointerException` Java's `currentFrame.nextEnt` does.
     fn pop_push_next(&mut self) -> Result<Option<bool>> {
         loop {
             let cur = match self.current {
                 Some(cur) => cur,
-                None => return Ok(None),
+                None => return Err(LuceneError::null_pointer()),
             };
             if self.stack[cur].next_ent != self.stack[cur].ent_count {
                 break;
             }
             if !self.stack[cur].is_last_in_floor {
                 let terms_in = &mut *self.terms_in;
-                self.stack[cur].load_next_floor_block(terms_in)?;
+                let floor_in = self.trie.floor_input();
+                self.stack[cur].load_next_floor_block(terms_in, floor_in)?;
                 break;
             }
             if self.stack[cur].ord == 0 {
@@ -859,9 +922,14 @@ impl IntersectTermsEnum {
     /// Equivalent to the `currentFrame.decodeMetaData()` call every statistics
     /// and postings accessor of `IntersectTermsEnum` makes before reading
     /// `state`.
+    ///
+    /// # Errors
+    ///
+    /// `NullPointerException` once the walk is over and Java's `currentFrame`
+    /// is `null`.
     fn decode_current_meta_data(&mut self) -> Result<()> {
         let Some(cur) = self.current else {
-            return Ok(());
+            return Err(LuceneError::null_pointer());
         };
         let field_info = self.field.field_info().clone();
         let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
@@ -1022,27 +1090,35 @@ impl TermsEnum for IntersectTermsEnum {
         }
     }
 
-    fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
-        Err(LuceneError::unsupported_operation(
-            "IntersectTermsEnum only walks forward over the terms the automaton accepts"
-                .to_string(),
-        ))
+    /// Equivalent to `IntersectTermsEnum.seekExact(BytesRef)`
+    /// (`IntersectTermsEnum.java:553-556`): `new UnsupportedOperationException()`,
+    /// whose message is `null`.
+    fn seek_exact(&mut self, _text: &BytesRef) -> Result<bool> {
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
+    /// Equivalent to `IntersectTermsEnum.seekCeil(BytesRef)`
+    /// (`IntersectTermsEnum.java:568-571`): a message-less
+    /// `UnsupportedOperationException`.
+    fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Equivalent to `IntersectTermsEnum.seekExact(long)`
+    /// (`IntersectTermsEnum.java:558-561`): a message-less
+    /// `UnsupportedOperationException`.
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "IntersectTermsEnum does not support seeking by ordinal".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn term(&self) -> Result<Option<BytesRef>> {
         Ok(Some(BytesRef::new(self.term.clone())))
     }
 
+    /// Equivalent to `IntersectTermsEnum.ord()` (`IntersectTermsEnum.java:563-566`):
+    /// a message-less `UnsupportedOperationException`.
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "IntersectTermsEnum does not track term ordinals".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
@@ -1050,25 +1126,19 @@ impl TermsEnum for IntersectTermsEnum {
         // reading `state`; without it the frame still holds the zero it was
         // built with.
         self.decode_current_meta_data()?;
-        let cur = self
-            .current
-            .ok_or_else(|| LuceneError::illegal_state("no current term".to_string()))?;
+        let cur = self.current.ok_or_else(LuceneError::null_pointer)?;
         Ok(self.stack[cur].state_data.doc_freq)
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
         self.decode_current_meta_data()?;
-        let cur = self
-            .current
-            .ok_or_else(|| LuceneError::illegal_state("no current term".to_string()))?;
+        let cur = self.current.ok_or_else(LuceneError::null_pointer)?;
         Ok(self.stack[cur].state_data.total_term_freq)
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
         self.decode_current_meta_data()?;
-        let cur = self
-            .current
-            .ok_or_else(|| LuceneError::illegal_state("no current term".to_string()))?;
+        let cur = self.current.ok_or_else(LuceneError::null_pointer)?;
         let field_info = self.field.field_info().clone();
         let state = self.stack[cur].state_data;
         let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
@@ -1081,9 +1151,7 @@ impl TermsEnum for IntersectTermsEnum {
         flags: i32,
     ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.decode_current_meta_data()?;
-        let cur = self
-            .current
-            .ok_or_else(|| LuceneError::illegal_state("no current term".to_string()))?;
+        let cur = self.current.ok_or_else(LuceneError::null_pointer)?;
         let field_info = self.field.field_info().clone();
         let state = self.stack[cur].state_data;
         let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
@@ -1096,9 +1164,7 @@ impl TermsEnum for IntersectTermsEnum {
     /// `termBlockOrd`, which a seek by this state reads back.
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
         self.decode_current_meta_data()?;
-        let cur = self
-            .current
-            .ok_or_else(|| LuceneError::illegal_state("no current term".to_string()))?;
+        let cur = self.current.ok_or_else(LuceneError::null_pointer)?;
         Ok(Box::new(self.stack[cur].state_data.clone()))
     }
 }

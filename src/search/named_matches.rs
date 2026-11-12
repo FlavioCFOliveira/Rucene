@@ -189,14 +189,19 @@ impl Query for NamedQuery {
         self.name == other.name && self.inner.query_eq(&*other.inner)
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.name.hash(&mut hasher);
-        let mut h = self.class_hash();
-        h = h.wrapping_mul(31).wrapping_add(hasher.finish());
-        h = h.wrapping_mul(31).wrapping_add(self.inner.query_hash());
-        h
+    /// `getClass().getName()` of `org.apache.lucene.search.NamedMatches$NamedQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.NamedMatches$NamedQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `Objects.hash(name, in)` (`NamedMatches.java`): `31 * (31 * 1 +
+        // name.hashCode()) + in.hashCode()`; Java's `NamedQuery` does not mix in
+        // `classHash()`.
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            crate::util::java_collections::java_string_hash_code(&self.name),
+            self.inner.query_hash(),
+        ])
     }
 }
 

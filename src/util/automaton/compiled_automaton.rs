@@ -554,6 +554,58 @@ impl PartialEq for CompiledAutomaton {
 
 impl Eq for CompiledAutomaton {}
 
+impl CompiledAutomaton {
+    /// Java's `CompiledAutomaton.hashCode()` (`CompiledAutomaton.java:506-514`):
+    /// a `31 * result` chain from `1` over `runAutomaton.hashCode()`,
+    /// `nfaRunAutomaton.hashCode()`, `term.hashCode()` and `type.hashCode()`,
+    /// each `0` when `null`.
+    ///
+    /// `runAutomaton` and `term` hash as in Java (the `BytesRef` seeded from
+    /// `StringHelper.GOOD_FAST_HASH_SEED`). `NFARunAutomaton` and the
+    /// `AUTOMATON_TYPE` constant do not override `hashCode()`, so their Java
+    /// hashes are JVM identity hashes, unreproducible in Java itself; the
+    /// stable stand-ins of
+    /// [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)
+    /// replace them (consistent with [`PartialEq`], which compares the NFA
+    /// automata by value).
+    pub fn hash_code(&self) -> i32 {
+        use crate::util::java_collections::java_identity_hash_code_stand_in;
+        const PRIME: i32 = 31;
+        let mut result: i32 = 1;
+        result = PRIME.wrapping_mul(result).wrapping_add(
+            self.run_automaton
+                .as_ref()
+                .map_or(0, ByteRunAutomaton::hash_code),
+        );
+        result = PRIME
+            .wrapping_mul(result)
+            .wrapping_add(self.nfa_run_automaton.as_ref().map_or(0, |_| {
+                java_identity_hash_code_stand_in("org.apache.lucene.util.automaton.NFARunAutomaton")
+            }));
+        result = PRIME
+            .wrapping_mul(result)
+            .wrapping_add(self.term.as_ref().map_or(0, BytesRef::hash_code));
+        PRIME
+            .wrapping_mul(result)
+            .wrapping_add(java_identity_hash_code_stand_in(
+                match self.automaton_type {
+                    AutomatonType::None => {
+                        "org.apache.lucene.util.automaton.CompiledAutomaton$AUTOMATON_TYPE.NONE"
+                    }
+                    AutomatonType::All => {
+                        "org.apache.lucene.util.automaton.CompiledAutomaton$AUTOMATON_TYPE.ALL"
+                    }
+                    AutomatonType::Single => {
+                        "org.apache.lucene.util.automaton.CompiledAutomaton$AUTOMATON_TYPE.SINGLE"
+                    }
+                    AutomatonType::Normal => {
+                        "org.apache.lucene.util.automaton.CompiledAutomaton$AUTOMATON_TYPE.NORMAL"
+                    }
+                },
+            ))
+    }
+}
+
 impl std::hash::Hash for CompiledAutomaton {
     /// Hashes exactly the fields [`PartialEq`] compares, so the two agree.
     ///

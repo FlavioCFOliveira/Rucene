@@ -968,12 +968,21 @@ impl Query for IndexSortSortedNumericDocValuesRangeQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.base.hash(&mut hasher);
-        self.fallback_query.query_hash().hash(&mut hasher);
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_ints, java_long_hash_code, java_string_hash_code,
+        };
+        // `Objects.hash(field, lowerValue, upperValue, fallbackQuery)`.
+        java_arrays_hash_code_ints(&[
+            java_string_hash_code(self.base.get_field()),
+            java_long_hash_code(self.base.lower_value()),
+            java_long_hash_code(self.base.upper_value()),
+            self.fallback_query.query_hash(),
+        ])
     }
 }

@@ -51,9 +51,10 @@ use crate::store::{Directory, FSDirectory, Lock, DEFAULT_IO_CONTEXT};
 use crate::util::automaton::ByteRunnable;
 use crate::util::bit_set::BitSet;
 use crate::util::{
-    Automata, Automaton, Bits, ByteRunAutomaton, BytesRef, CommandLineUtil, CompiledAutomaton,
-    FixedBitSet, InfoStream, InterruptHandle, LongBitSet, NamedThreadFactory, Operations,
-    PrintStreamInfoStream, StringHelper, Version, DEFAULT_DETERMINIZE_WORK_LIMIT,
+    Automata, Automaton, Bits, ByteArrayPrintStream, ByteRunAutomaton, BytesRef, CommandLineUtil,
+    CompiledAutomaton, FixedBitSet, InfoStream, InterruptHandle, LongBitSet, NamedThreadFactory,
+    Operations, PrintStream, PrintStreamInfoStream, StringHelper, Version, WriterPrintStream,
+    DEFAULT_DETERMINIZE_WORK_LIMIT,
 };
 
 // ---------------------------------------------------------------------------
@@ -67,10 +68,24 @@ use crate::util::{
 /// Equivalent to the `try { ... } catch (Throwable e)` blocks of
 /// `CheckIndex.testSegment` and the `test*` methods (`CheckIndex.java:1050-1180`
 /// and the per-test bodies).
-#[allow(dead_code)] // Called by the G-205 code pass.
+///
+/// A panic is this crate's carrier of Java's unchecked throwables (a
+/// `RuntimeException` or an `Error` raised by codec code on corrupt data, an
+/// `ArrayIndexOutOfBoundsException` for one); it is caught and turned into the
+/// error Java records ([`panic_to_error`](crate::util::concurrent::panic_to_error)).
+/// With `fail_fast`, Java's `throw IOUtils.rethrowAlways(t)` rethrows the
+/// throwable unchanged, so the panic resumes unwinding. An `Err` is returned as
+/// it is, and the caller applies the same `fail_fast` rule to it.
 fn record_throwable<T>(fail_fast: bool, check: impl FnOnce() -> Result<T>) -> Result<T> {
-    let _ = (fail_fast, check);
-    todo!("PORT G-205")
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(check)) {
+        Ok(outcome) => outcome,
+        Err(payload) => {
+            if fail_fast {
+                std::panic::resume_unwind(payload);
+            }
+            Err(crate::util::concurrent::panic_to_error(&*payload))
+        }
+    }
 }
 
 /// Builds the error `CheckIndex` raises when it detects an integrity failure:
@@ -191,7 +206,15 @@ pub struct TermIndexStatus {
     pub error: Option<LuceneError>,
     /// Per-field details of the block allocations in the terms dictionary, when
     /// the segment's postings format publishes them.
-    pub block_tree_stats: Option<HashMap<String, String>>,
+    ///
+    /// Equivalent to `TermIndexStatus.blockTreeStats` (`CheckIndex.java:317`), a
+    /// `HashMap<String, Object>` of each field's `Terms.getStats()` object —
+    /// the blocktree `Stats` for the default codec, which
+    /// [`StatsObject::as_any`](crate::index::terms::StatsObject::as_any)
+    /// downcasts — iterated in Java's order.
+    pub block_tree_stats: Option<
+        crate::util::java_collections::JavaHashMap<Box<dyn crate::index::terms::StatsObject>>,
+    >,
 }
 
 /// Status from testing stored fields.
@@ -388,22 +411,101 @@ pub struct Status {
 // CheckIndex
 // ---------------------------------------------------------------------------
 
-/// The component name `CheckIndex` logs under.
-const CHECK_INDEX_LOG_PREFIX: &str = "CheckIndex";
-
-/// Writes one progress line, the way Java's `CheckIndex.msg` writes one line to
-/// its `PrintStream`.
+/// Writes one line to the info stream.
 ///
-/// **Divergence from Lucene 10.5.0.** Java's `CheckIndex` reports through a
-/// `java.io.PrintStream` and mixes `print` (no newline) with `println`, so that
-/// a check's label and its `OK [...]` result land on the same line. This port
-/// reports through the crate-wide [`InfoStream`] seam, which is line-oriented
-/// and component-tagged, so each message is emitted whole instead of being
-/// assembled from two writes. The information reported is the same.
-fn msg(info_stream: Option<&dyn InfoStream>, text: &str) {
+/// Equivalent to `CheckIndex.msg(PrintStream, String)` (`CheckIndex.java:520-524`):
+/// `if (out != null) out.println(msg)`.
+fn msg(info_stream: Option<&dyn PrintStream>, text: &str) {
     if let Some(stream) = info_stream {
-        stream.message(CHECK_INDEX_LOG_PREFIX, text);
+        stream.println(text);
     }
+}
+
+/// Writes `text` without a line separator: the `if (infoStream != null)
+/// infoStream.print(...)` with which every check announces itself before it
+/// runs, so that its outcome lands on the same line.
+fn print(info_stream: Option<&dyn PrintStream>, text: &str) {
+    if let Some(stream) = info_stream {
+        stream.print(text);
+    }
+}
+
+/// `e.printStackTrace(infoStream)`: the throwable's `toString()` and its
+/// causes.
+///
+/// **Divergence from Lucene 10.5.0.** Java also prints one `\tat` line per
+/// stack frame of the JVM; a Rust error carries no Java frames, so only the
+/// `Throwable.toString()` line and its `Caused by: ` lines are printed.
+fn print_stack_trace(info_stream: Option<&dyn PrintStream>, error: &LuceneError) {
+    let Some(stream) = info_stream else {
+        return;
+    };
+    stream.println(&crate::util::concurrent::throwable_to_string(error));
+    let mut cause = std::error::Error::source(error);
+    while let Some(current) = cause {
+        stream.println(&format!("Caused by: {current}"));
+        cause = current.source();
+    }
+}
+
+/// `AbstractMap.toString()` of a `Map<String, String>`: `{k1=v1, k2=v2}` in
+/// the map's Java iteration order.
+fn java_map_to_string(map: &crate::util::java_collections::JavaStringMap) -> String {
+    let mut out = String::from("{");
+    for (i, (key, value)) in map.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(key);
+        out.push('=');
+        out.push_str(value);
+    }
+    out.push('}');
+    out
+}
+
+/// `NumberFormat.getInstance(Locale.ROOT).format(value)` for a finite,
+/// non-negative `value`: the `#,##0.###` pattern of the root locale — the
+/// integer part grouped in threes with `,`, at most three fraction digits,
+/// trailing zeros dropped — rounded `HALF_EVEN`.
+///
+/// `DecimalFormat` rounds the shortest decimal representation of the double
+/// (`Double.toString`'s digits), deciding a tie from the exact binary value
+/// (JDK-7131459), which is what this does.
+fn java_root_number_format(value: f64) -> String {
+    let scaled = value * 1000.0;
+    let floor = scaled.floor();
+    let fraction = scaled - floor;
+    let mut units = floor as u128;
+    if fraction > 0.5 {
+        units += 1;
+    } else if fraction == 0.5 {
+        // A tie in the scaled value; decide it on the exact value: a
+        // representable `x.xxx5` either lies exactly on the tie or not.
+        let tie = (floor + 0.5) / 1000.0;
+        if value > tie || (value == tie && units % 2 == 1) {
+            units += 1;
+        }
+    }
+    let int_part = units / 1000;
+    let frac_part = (units % 1000) as u32;
+    let digits = int_part.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    if frac_part != 0 {
+        let mut frac = format!("{frac_part:03}");
+        while frac.ends_with('0') {
+            frac.pop();
+        }
+        grouped.push('.');
+        grouped.push_str(&frac);
+    }
+    grouped
 }
 
 /// Formats an elapsed duration the way Java's `nsToSec` plus `%.3f` does:
@@ -411,7 +513,11 @@ fn msg(info_stream: Option<&dyn InfoStream>, text: &str) {
 /// through `nsToSec` (`CheckIndex.java:909, 1006, 1016, 1230, ...`).
 fn took(start: Instant) -> String {
     let elapsed_ns = i64::try_from(start.elapsed().as_nanos()).unwrap_or(i64::MAX);
-    format!("{:.3} sec", ns_to_sec(elapsed_ns))
+    // `%.3f`, which rounds `HALF_UP` where Rust's `{:.3}` rounds to even.
+    format!(
+        "{} sec",
+        crate::util::java_fmt::format_fixed(ns_to_sec(elapsed_ns), 3)
+    )
 }
 
 /// Returns the number of set bits in `bits`.
@@ -452,7 +558,7 @@ fn bits_cardinality(bits: &dyn Bits) -> Result<i32> {
 pub struct CheckIndex {
     dir: Arc<dyn Directory>,
     write_lock: Option<Box<dyn Lock>>,
-    info_stream: Option<Arc<dyn InfoStream>>,
+    info_stream: Option<Arc<dyn PrintStream>>,
     verbose: bool,
     level: i32,
     fail_fast: bool,
@@ -584,7 +690,7 @@ impl CheckIndex {
     /// Equivalent to `CheckIndex.setInfoStream(PrintStream, boolean)`.
     pub fn set_info_stream_verbose(
         &mut self,
-        info_stream: Option<Arc<dyn InfoStream>>,
+        info_stream: Option<Arc<dyn PrintStream>>,
         verbose: bool,
     ) -> &mut Self {
         self.info_stream = info_stream;
@@ -595,12 +701,12 @@ impl CheckIndex {
     /// Sets where progress messages go.
     ///
     /// Equivalent to `CheckIndex.setInfoStream(PrintStream)`.
-    pub fn set_info_stream(&mut self, info_stream: Arc<dyn InfoStream>) -> &mut Self {
+    pub fn set_info_stream(&mut self, info_stream: Arc<dyn PrintStream>) -> &mut Self {
         self.set_info_stream_verbose(Some(info_stream), false)
     }
 
     /// Borrows the info stream as a trait object, for the free-standing checks.
-    fn info(&self) -> Option<&dyn InfoStream> {
+    fn info(&self) -> Option<&dyn PrintStream> {
         self.info_stream.as_deref()
     }
 }
@@ -618,70 +724,17 @@ impl Drop for CheckIndex {
 // checkIndex / testSegment / exorciseIndex
 // ---------------------------------------------------------------------------
 
-/// Collects the messages of one segment's check so that they can be replayed to
-/// the real info stream once every earlier segment has been reported.
+/// Replays one segment's buffered output to `info_stream`.
 ///
-/// Equivalent to the per-segment `ByteArrayOutputStream` and its `PrintStream`
-/// that `CheckIndex.checkIndex(List, ExecutorService)` builds, which is what
-/// keeps the reports of concurrently checked segments from interleaving.
-struct BufferingInfoStream {
-    messages: Mutex<Vec<String>>,
-}
-
-impl BufferingInfoStream {
-    /// Creates an empty buffer.
-    fn new() -> Self {
-        Self {
-            messages: Mutex::new(Vec::new()),
-        }
-    }
-
-    /// Replays everything buffered so far to `info_stream`, in order, keeping
-    /// the buffer.
-    ///
-    /// Equivalent to Java's `msg(infoStream, output)`
-    /// (`CheckIndex.java:514-518`), `out.println(output.toString(UTF_8))`:
-    /// the whole byte buffer of one segment, whose every line ends with its
-    /// own newline, and then the newline of `println`, which is the blank line
-    /// after each replay. The buffer is a `ByteArrayOutputStream` that is
-    /// never reset, so a second replay prints it all again, as the
-    /// interrupted branch of `checkIndex(List, ExecutorService)` does.
-    fn print_to(&self, info_stream: Option<&dyn InfoStream>) {
-        let buffered = self
-            .messages
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        for line in buffered {
-            msg(info_stream, &line);
-        }
-        msg(info_stream, "");
-    }
-}
-
-impl InfoStream for BufferingInfoStream {
-    fn java_class_name(&self) -> &'static str {
-        // Java has no dedicated class here: `checkIndex` writes into a
-        // `PrintStream` over a `ByteArrayOutputStream`, so that is the class
-        // an instance of this would report.
-        "java.io.PrintStream"
-    }
-
-    fn message(&self, _component: &str, message: &str) {
-        self.messages
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(message.to_string());
-    }
-
-    fn is_enabled(&self, _component: &str) -> bool {
-        true
-    }
-
-    fn close(&self) {
-        // Java's buffer is a `ByteArrayOutputStream`, whose `close()` is a no-op
-        // as well.
-    }
+/// Equivalent to `CheckIndex.msg(PrintStream, ByteArrayOutputStream)`
+/// (`CheckIndex.java:514-518`), `out.println(output.toString(UTF_8))`: the
+/// whole buffer of one segment, whose every line ends with its own line
+/// separator, and then the separator of `println`, which is the blank line
+/// after each replay. The buffer is never reset, so a second replay prints it
+/// all again, as the interrupted branch of `checkIndex(List, ExecutorService)`
+/// does.
+fn msg_buffer(info_stream: Option<&dyn PrintStream>, output: &ByteArrayPrintStream) {
+    msg(info_stream, &output.to_string_utf8());
 }
 
 /// A task the segment-check pool runs.
@@ -1227,8 +1280,12 @@ impl CheckIndex {
             msg(
                 self.info(),
                 &format!(
-                    "{:.2}% total deletions; {max_doc} documents; {del_count} deletions",
-                    100.0 * del_count as f64 / max_doc as f64
+                    "{}% total deletions; {max_doc} documents; {del_count} deletions",
+                    // `%.2f` (`HALF_UP`).
+                    crate::util::java_fmt::format_fixed(
+                        100.0 * del_count as f64 / max_doc as f64,
+                        2
+                    )
                 ),
             );
         }
@@ -1255,10 +1312,12 @@ impl CheckIndex {
         result.segments_file_name = segments_file_name.clone();
         result.num_segments = num_segments;
         result.user_data = last_commit.user_data().to_std();
+        // `" userData=" + lastCommit.getUserData()`: `AbstractMap.toString()`
+        // over the map in its Java iteration order.
         let user_data_string = if result.user_data.is_empty() {
             String::new()
         } else {
-            format!(" userData={:?}", result.user_data)
+            format!(" userData={}", java_map_to_string(last_commit.user_data()))
         };
 
         let version_string = match (oldest, newest) {
@@ -1279,13 +1338,14 @@ impl CheckIndex {
 
         if let Some(only_segments) = only_segments {
             result.partial = true;
-            let mut line = String::from("Checking only these segments:");
+            // `infoStream.print("\nChecking only these segments:")`, one
+            // `print(" " + s)` per segment, then `msg(infoStream, ":")`
+            // (`CheckIndex.java:753-761`).
+            print(self.info(), "\nChecking only these segments:");
             for segment in only_segments {
-                line.push(' ');
-                line.push_str(segment);
+                print(self.info(), &format!(" {segment}"));
             }
-            line.push(':');
-            msg(self.info(), &line);
+            msg(self.info(), ":");
             result
                 .segments_checked
                 .extend(only_segments.iter().cloned());
@@ -1403,27 +1463,39 @@ impl CheckIndex {
         result: &mut Status,
     ) -> Result<()> {
         // Sort the segments by size, as a smaller segment tends to finish
-        // faster and hence its output can be printed out faster.
-        let mut sized: Vec<(i64, usize)> = Vec::with_capacity(num_segments);
-        for (index, info) in last_commit.iter().enumerate() {
-            let size = match info.size_in_bytes_uncached() {
-                Ok(size) => size,
-                Err(error) => {
+        // faster and hence its output can be printed out faster
+        // (`CheckIndex.java:801-815`). The comparator reads each segment's
+        // cached `sizeInBytes()`; a comparison whose sizes cannot be read logs
+        // the failure and answers `0`, once per failing comparison.
+        //
+        // **Divergence from Lucene 10.5.0.** Java sorts with
+        // `java.util.TimSort` (`List.sort`), the port with the standard library's
+        // stable merge sort. With a consistent comparator both are stable sorts
+        // and order the segments identically; only when a size cannot be read
+        // — and the comparator answers `0` for that pair alone — may the two
+        // algorithms compare different pairs, and so differ in the number of
+        // error lines and in the resulting order. `java.util.TimSort` has no
+        // port in this crate.
+        let mut segment_commit_infos: Vec<usize> = (0..num_segments).collect();
+        segment_commit_infos.sort_by(|&a, &b| {
+            match (
+                last_commit.info(a).size_in_bytes(),
+                last_commit.info(b).size_in_bytes(),
+            ) {
+                (Ok(size_a), Ok(size_b)) => size_a.cmp(&size_b),
+                (Err(error), _) | (_, Err(error)) => {
                     msg(
                         self.info(),
                         "ERROR: IOException occurred when comparing SegmentCommitInfo file \
                          sizes",
                     );
-                    msg(self.info(), &format!("{error}"));
-                    0
+                    print_stack_trace(self.info(), &error);
+                    std::cmp::Ordering::Equal
                 }
-            };
-            sized.push((size, index));
-        }
-        sized.sort_by_key(|(size, _)| *size);
-        let segment_commit_infos: Vec<usize> = sized.into_iter().map(|(_, index)| index).collect();
+            }
+        });
 
-        let mut buffers: Vec<Option<Arc<BufferingInfoStream>>> =
+        let mut buffers: Vec<Option<Arc<ByteArrayPrintStream>>> =
             (0..num_segments).map(|_| None).collect();
         let mut futures: Vec<Option<Arc<SegmentCheckFuture>>> =
             (0..num_segments).map(|_| None).collect();
@@ -1436,9 +1508,11 @@ impl CheckIndex {
                 continue;
             }
 
-            let buffer = Arc::new(BufferingInfoStream::new());
+            // `new PrintStream(output, true, UTF_8)` over a fresh
+            // `ByteArrayOutputStream` (`CheckIndex.java:827-828`).
+            let buffer = Arc::new(ByteArrayPrintStream::new());
             msg(
-                Some(buffer.as_ref() as &dyn InfoStream),
+                Some(buffer.as_ref() as &dyn PrintStream),
                 &format!(
                     "{} of {num_segments}: name={} maxDoc={}",
                     1 + i,
@@ -1462,7 +1536,7 @@ impl CheckIndex {
                     self.test_segment(
                         &final_sis,
                         final_sis.info(index),
-                        Some(task_buffer.as_ref() as &dyn InfoStream),
+                        Some(task_buffer.as_ref() as &dyn PrintStream),
                     )
                 },
                 pool,
@@ -1483,28 +1557,34 @@ impl CheckIndex {
                 Ok(Ok(Err(error))) => {
                     // The check only fails instead of recording the failure
                     // when `fail_fast` is set, which is Java's `assert
-                    // failFast` on this path.
-                    buffer.print_to(self.info());
+                    // failFast` on this path; Java prints
+                    // `output.toString(UTF_8)` here (`CheckIndex.java:867`),
+                    // which is the same `println` as `msg(infoStream, output)`.
+                    debug_assert!(self.fail_fast);
+                    msg(self.info(), &buffer.to_string_utf8());
                     return Err(check_index_error_with_cause(
                         &format!("Segment {} check failed.", info.info.name),
                         &error,
                     ));
                 }
-                Ok(Err(_)) => {
-                    // Java has no counterpart: a `CompletableFuture` reports a
-                    // `RuntimeException` as an `ExecutionException` like any
-                    // other failure, while a Rust panic is caught as a payload.
-                    buffer.print_to(self.info());
-                    return Err(check_index_error(format!(
-                        "Segment {} check panicked.",
-                        info.info.name
-                    )));
+                Ok(Err(payload)) => {
+                    // A panic — Java's unchecked throwable — only escapes the
+                    // check with `fail_fast` (`record_throwable` records it
+                    // otherwise); the `CompletableFuture` reports it as an
+                    // `ExecutionException` like any other failure, whose cause
+                    // the `CheckIndexException` keeps.
+                    msg(self.info(), &buffer.to_string_utf8());
+                    let error = crate::util::concurrent::panic_to_error(&*payload);
+                    return Err(check_index_error_with_cause(
+                        &format!("Segment {} check failed.", info.info.name),
+                        &error,
+                    ));
                 }
                 Err(interrupted) => {
                     // The segment test output should come before the
                     // interrupted exception message that follows, hence it is
                     // not emitted from a `finally` clause.
-                    buffer.print_to(self.info());
+                    msg_buffer(self.info(), &buffer);
                     msg(
                         self.info(),
                         &format!(
@@ -1519,7 +1599,7 @@ impl CheckIndex {
                 }
             };
 
-            buffer.print_to(self.info());
+            msg_buffer(self.info(), &buffer);
 
             // `processSegmentInfoStatusResult(result, info, segmentInfoStatus)`
             // reads `segmentInfoStatus.error` (`CheckIndex.java:924`), which a
@@ -1600,7 +1680,7 @@ impl CheckIndex {
         &self,
         sis: &SegmentInfos,
         info: &SegmentCommitInfo,
-        info_stream: Option<&dyn InfoStream>,
+        info_stream: Option<&dyn PrintStream>,
     ) -> Result<SegmentInfoStatus> {
         let max_doc = info.info.max_doc()?;
         let mut seg_info_stat = SegmentInfoStatus {
@@ -1623,7 +1703,7 @@ impl CheckIndex {
         // kept here to be closed after it, on both the success and the
         // failure path.
         let mut opened: Option<Arc<SegmentReader>> = None;
-        let outcome = (|| -> Result<()> {
+        let outcome = record_throwable(self.fail_fast, || -> Result<()> {
             msg(info_stream, &format!("    version={version}"));
             let id = info.info.id();
             msg(
@@ -1655,20 +1735,27 @@ impl CheckIndex {
                 msg(info_stream, &format!("    sort={index_sort}"));
             }
             seg_info_stat.num_files = num_files;
-            seg_info_stat.size_mb = info.size_in_bytes_uncached()? as f64 / (1024.0 * 1024.0);
-            // Java renders the size through a `NumberFormat`, which groups the
-            // integer part and keeps up to three fraction digits; this port has
-            // no locale-aware formatter, so it keeps the three fraction digits
-            // without the grouping separators.
+            // `info.sizeInBytes()`, the cached size (`CheckIndex.java:978`).
+            seg_info_stat.size_mb = info.size_in_bytes()? as f64 / (1024.0 * 1024.0);
+            // `nf.format(segInfoStat.sizeMB)` with
+            // `NumberFormat.getInstance(Locale.ROOT)` (`CheckIndex.java:110`, `:983`).
             msg(
                 info_stream,
-                &format!("    size (MB)={:.3}", seg_info_stat.size_mb),
+                &format!(
+                    "    size (MB)={}",
+                    java_root_number_format(seg_info_stat.size_mb)
+                ),
             );
-            let diagnostics = info.info.get_diagnostics().to_std();
-            if !diagnostics.is_empty() {
-                msg(info_stream, &format!("    diagnostics = {diagnostics:?}"));
+            // `"    diagnostics = " + diagnostics`: `Map.toString()` in the map's
+            // Java iteration order.
+            let java_diagnostics = info.info.get_diagnostics();
+            if !java_diagnostics.is_empty() {
+                msg(
+                    info_stream,
+                    &format!("    diagnostics = {}", java_map_to_string(java_diagnostics)),
+                );
             }
-            seg_info_stat.diagnostics = diagnostics;
+            seg_info_stat.diagnostics = java_diagnostics.to_std();
 
             if !info.has_deletions() {
                 msg(info_stream, "    no deletions");
@@ -1683,6 +1770,7 @@ impl CheckIndex {
             }
 
             let start_open_reader = Instant::now();
+            print(info_stream, "    test: open reader.........");
             let reader = Arc::new(SegmentReader::new(
                 info.clone(),
                 sis.index_created_version_major(),
@@ -1691,23 +1779,15 @@ impl CheckIndex {
             opened = Some(Arc::clone(&reader));
             msg(
                 info_stream,
-                &format!(
-                    "    test: open reader.........OK [took {}]",
-                    took(start_open_reader)
-                ),
+                &format!("OK [took {}]", took(start_open_reader)),
             );
 
             seg_info_stat.open_reader_passed = true;
 
             let start_integrity = Instant::now();
+            print(info_stream, "    test: check integrity.....");
             reader.check_integrity()?;
-            msg(
-                info_stream,
-                &format!(
-                    "    test: check integrity.....OK [took {}]",
-                    took(start_integrity)
-                ),
-            );
+            msg(info_stream, &format!("OK [took {}]", took(start_integrity)));
 
             if reader.max_doc() != max_doc {
                 return Err(check_index_error(format!(
@@ -1921,19 +2001,19 @@ impl CheckIndex {
 
             msg(info_stream, "");
             Ok(())
-        })();
+        });
 
         let result = match outcome {
             Err(error) if self.fail_fast => Err(error),
             Err(error) => {
                 seg_info_stat.to_lose_doc_count = to_lose_doc_count;
                 msg(info_stream, "FAILED");
+                let comment = "exorciseIndex() would remove reference to this segment";
                 msg(
                     info_stream,
-                    "    WARNING: exorcise_index() would remove reference to this segment; full \
-                     exception:",
+                    &format!("    WARNING: {comment}; full exception:"),
                 );
-                msg(info_stream, &format!("{error}"));
+                print_stack_trace(info_stream, &error);
                 seg_info_stat.error = Some(error);
                 msg(info_stream, "");
                 Ok(())
@@ -2005,7 +2085,7 @@ impl CheckIndex {
     /// range level or thread count, and propagates whatever
     /// [`CheckIndex::check_index_segments`] and [`CheckIndex::exorcise_index`]
     /// raise.
-    pub fn do_check(&mut self, opts: &Options, out: Arc<dyn InfoStream>) -> Result<i32> {
+    pub fn do_check(&mut self, opts: &Options, out: Arc<dyn PrintStream>) -> Result<i32> {
         self.set_level(opts.level)?;
         self.set_info_stream_verbose(Some(Arc::clone(&out)), opts.verbose);
         // A thread count given on the command line overrides the default.
@@ -2021,7 +2101,7 @@ impl CheckIndex {
             Some(opts.only_segments.as_slice())
         };
         let mut result = self.check_index_segments(only_segments)?;
-        let out = Some(out.as_ref() as &dyn InfoStream);
+        let out = Some(out.as_ref() as &dyn PrintStream);
 
         if result.missing_segments {
             return Ok(1);
@@ -2102,13 +2182,14 @@ fn is_skipped_segment(only_segments: Option<&[String]>, name: &str) -> bool {
 /// recorded in the returned status and `Ok` is returned.
 pub fn test_live_docs(
     reader: &dyn CodecReader,
-    info_stream: Option<&dyn InfoStream>,
+    info_stream: Option<&dyn PrintStream>,
     fail_fast: bool,
 ) -> Result<LiveDocStatus> {
     let start = Instant::now();
     let mut status = LiveDocStatus::default();
 
-    let outcome = (|| -> Result<()> {
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        print(info_stream, "    test: check live docs.....");
         let num_docs = reader.num_docs();
         // `LeafReader` in this crate does not inherit `IndexReader`, so the two
         // derived quantities are computed here exactly as Java's
@@ -2132,7 +2213,7 @@ pub fn test_live_docs(
             msg(
                 info_stream,
                 &format!(
-                    "test: check live docs.....OK [{} deleted docs] [took {}]",
+                    "OK [{} deleted docs] [took {}]",
                     status.num_deleted,
                     took(start)
                 ),
@@ -2148,22 +2229,17 @@ pub fn test_live_docs(
                     }
                 }
             }
-            msg(
-                info_stream,
-                &format!("test: check live docs.....OK [took {}]", took(start)),
-            );
+            msg(info_stream, &format!("OK [took {}]", took(start)));
         }
         Ok(())
-    })();
+    });
 
     if let Err(e) = outcome {
         if fail_fast {
             return Err(e);
         }
-        msg(
-            info_stream,
-            &format!("test: check live docs.....ERROR [{e}]"),
-        );
+        msg(info_stream, &format!("ERROR [{e}]"));
+        print_stack_trace(info_stream, &e);
         status.error = Some(e);
     }
 
@@ -2179,37 +2255,33 @@ pub fn test_live_docs(
 /// Propagates the failure when `fail_fast` is set.
 pub fn test_field_infos(
     reader: &dyn CodecReader,
-    info_stream: Option<&dyn InfoStream>,
+    info_stream: Option<&dyn PrintStream>,
     fail_fast: bool,
 ) -> Result<FieldInfoStatus> {
     let start = Instant::now();
     let mut status = FieldInfoStatus::default();
 
-    let outcome = (|| -> Result<()> {
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        // Test Field Infos
+        print(info_stream, "    test: field infos.........");
         let field_infos = reader.get_field_infos();
         for f in field_infos.iter() {
             f.check_consistency()?;
         }
         msg(
             info_stream,
-            &format!(
-                "test: field infos.........OK [{} fields] [took {}]",
-                field_infos.size(),
-                took(start)
-            ),
+            &format!("OK [{} fields] [took {}]", field_infos.size(), took(start)),
         );
         status.tot_fields = field_infos.size() as i64;
         Ok(())
-    })();
+    });
 
     if let Err(e) = outcome {
         if fail_fast {
             return Err(e);
         }
-        msg(
-            info_stream,
-            &format!("test: field infos.........ERROR [{e}]"),
-        );
+        msg(info_stream, &format!("ERROR [{e}]"));
+        print_stack_trace(info_stream, &e);
         status.error = Some(e);
     }
 
@@ -3062,13 +3134,14 @@ fn check_doc_values(
 /// Propagates the failure when `fail_fast` is set.
 pub fn test_doc_values(
     reader: &dyn CodecReader,
-    info_stream: Option<&dyn InfoStream>,
+    info_stream: Option<&dyn PrintStream>,
     fail_fast: bool,
 ) -> Result<DocValuesStatus> {
     let start = Instant::now();
     let mut status = DocValuesStatus::default();
 
-    let outcome = (|| -> Result<()> {
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        print(info_stream, "    test: docvalues...........");
         let dv_reader = match reader.get_doc_values_reader()? {
             Some(producer) => Some(producer.get_merge_instance()?),
             None => None,
@@ -3094,7 +3167,7 @@ pub fn test_doc_values(
         msg(
             info_stream,
             &format!(
-                "test: docvalues...........OK [{} docvalues fields; {} BINARY; {} NUMERIC; {} SORTED; {} SORTED_NUMERIC; {} SORTED_SET; {} SKIPPING INDEX] [took {}]",
+                "OK [{} docvalues fields; {} BINARY; {} NUMERIC; {} SORTED; {} SORTED_NUMERIC; {} SORTED_SET; {} SKIPPING INDEX] [took {}]",
                 status.total_value_fields,
                 status.total_binary_fields,
                 status.total_numeric_fields,
@@ -3106,17 +3179,17 @@ pub fn test_doc_values(
             ),
         );
         Ok(())
-    })();
+    });
 
     if let Err(e) = outcome {
         if fail_fast {
             return Err(e);
         }
-        msg(
-            info_stream,
-            &format!("test: docvalues...........ERROR [{e}]"),
-        );
+        msg(info_stream, &format!("ERROR [{e}]"));
         status.error = Some(e);
+        if let Some(e) = status.error.as_ref() {
+            print_stack_trace(info_stream, e);
+        }
     }
 
     Ok(status)
@@ -3131,13 +3204,15 @@ pub fn test_doc_values(
 /// Propagates the failure when `fail_fast` is set.
 pub fn test_field_norms(
     reader: &dyn CodecReader,
-    info_stream: Option<&dyn InfoStream>,
+    info_stream: Option<&dyn PrintStream>,
     fail_fast: bool,
 ) -> Result<FieldNormStatus> {
     let start = Instant::now();
     let mut status = FieldNormStatus::default();
 
-    let outcome = (|| -> Result<()> {
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        // Test Field Norms
+        print(info_stream, "    test: field norms.........");
         let norms_reader = match reader.get_norms_reader()? {
             Some(producer) => Some(producer.get_merge_instance()?),
             None => None,
@@ -3166,23 +3241,17 @@ pub fn test_field_norms(
         }
         msg(
             info_stream,
-            &format!(
-                "test: field norms.........OK [{} fields] [took {}]",
-                status.tot_fields,
-                took(start)
-            ),
+            &format!("OK [{} fields] [took {}]", status.tot_fields, took(start)),
         );
         Ok(())
-    })();
+    });
 
     if let Err(e) = outcome {
         if fail_fast {
             return Err(e);
         }
-        msg(
-            info_stream,
-            &format!("test: field norms.........ERROR [{e}]"),
-        );
+        msg(info_stream, &format!("ERROR [{e}]"));
+        print_stack_trace(info_stream, &e);
         status.error = Some(e);
     }
 
@@ -3286,7 +3355,7 @@ fn check_fields(
     norms_producer: Option<&dyn NormsProducer>,
     do_print: bool,
     is_vectors: bool,
-    info_stream: Option<&dyn InfoStream>,
+    info_stream: Option<&dyn PrintStream>,
     verbose: bool,
     level: i32,
 ) -> Result<TermIndexStatus> {
@@ -4019,10 +4088,12 @@ fn check_fields(
         if let Some(field_terms) = fields.terms(&field)? {
             let field_term_count = (status.del_term_count + status.term_count) - term_count_start;
 
+            // `final Object stats = fieldTerms.getStats(); ...
+            // status.blockTreeStats.put(field, stats)` (`CheckIndex.java:2198-2204`).
             let stats = field_terms.stats()?;
             status
                 .block_tree_stats
-                .get_or_insert_with(HashMap::new)
+                .get_or_insert_with(crate::util::java_collections::JavaHashMap::new)
                 .insert(field.clone(), stats);
 
             let actual_sum_doc_freq = field_terms.sum_doc_freq()?;
@@ -4256,7 +4327,7 @@ fn check_fields(
         msg(
             info_stream,
             &format!(
-                "test: terms, freq, prox...OK [{} terms; {} terms/docs pairs; {} tokens] [took {}]",
+                "OK [{} terms; {} terms/docs pairs; {} tokens] [took {}]",
                 status.term_count,
                 status.tot_freq,
                 status.tot_pos,
@@ -4267,11 +4338,12 @@ fn check_fields(
 
     if verbose && status.term_count > 0 {
         if let Some(stats) = &status.block_tree_stats {
-            for (field, stat) in stats {
+            // `status.blockTreeStats.entrySet()`, in `HashMap` order.
+            for (field, stat) in stats.iter() {
                 msg(info_stream, &format!("      field \"{field}\":"));
                 msg(
                     info_stream,
-                    &format!("      {}", stat.replace('\n', "\n      ")),
+                    &format!("      {}", stat.to_string().replace('\n', "\n      ")),
                 );
             }
         }
@@ -4300,14 +4372,15 @@ fn java_string_hash_code(s: &str) -> i32 {
 /// Propagates the failure when `fail_fast` is set.
 pub fn test_postings(
     reader: &dyn CodecReader,
-    info_stream: Option<&dyn InfoStream>,
+    info_stream: Option<&dyn PrintStream>,
     verbose: bool,
     level: i32,
     fail_fast: bool,
 ) -> Result<TermIndexStatus> {
     let max_doc = reader.max_doc();
 
-    let outcome = (|| -> Result<TermIndexStatus> {
+    let outcome = record_throwable(fail_fast, || -> Result<TermIndexStatus> {
+        print(info_stream, "    test: terms, freq, prox...");
         let fields = match reader.get_postings_reader()? {
             Some(producer) => producer.get_merge_instance()?,
             None => return Ok(TermIndexStatus::default()),
@@ -4330,7 +4403,7 @@ pub fn test_postings(
             verbose,
             level,
         )
-    })();
+    });
 
     match outcome {
         Ok(status) => Ok(status),
@@ -4338,10 +4411,15 @@ pub fn test_postings(
             if fail_fast {
                 return Err(e);
             }
+            // `msg(infoStream, "ERROR: " + e)`: `Throwable.toString()`.
             msg(
                 info_stream,
-                &format!("test: terms, freq, prox...ERROR: {e}"),
+                &format!(
+                    "ERROR: {}",
+                    crate::util::concurrent::throwable_to_string(&e)
+                ),
             );
+            print_stack_trace(info_stream, &e);
             Ok(TermIndexStatus {
                 error: Some(e),
                 ..Default::default()
@@ -4415,7 +4493,7 @@ impl Options {
 /// Equivalent to the message built in `CheckIndex.parseOptions`.
 pub const USAGE: &str = concat!(
     "\nERROR: index path not specified",
-    "\nUsage: rucene check-index pathToIndex [-exorcise] [-level X] [-segment X] [-segment Y] [-threadCount X] [-dir-impl X]\n",
+    "\nUsage: java org.apache.lucene.index.CheckIndex pathToIndex [-exorcise] [-level X] [-segment X] [-segment Y] [-threadCount X] [-dir-impl X]\n",
     "\n",
     "  -exorcise: actually write a new segments_N file, removing any problematic segments\n",
     "  -level X: sets the detail level of the check. The higher the value, the more checks are done.\n",
@@ -4430,7 +4508,8 @@ pub const USAGE: &str = concat!(
     "  -threadCount X: number of threads used to check index concurrently.\n",
     "                  When not specified, this will default to the number of CPU cores.\n",
     "                  When '-threadCount 1' is used, index checking will be performed sequentially.\n",
-    "  -dir-impl X: use a specific FSDirectory implementation.\n",
+    // `FSDirectory.class.getSimpleName()` and `FSDirectory.class.getPackage().getName()`.
+    "  -dir-impl X: use a specific FSDirectory implementation. If no package is specified the org.apache.lucene.store package will be used.\n",
     "CheckIndex only verifies file checksums as default.\n",
     "Use -level with value of '2' or higher if you also want to check segment file contents.\n\n",
     "**WARNING**: -exorcise *LOSES DATA*. This should only be used on an emergency basis as it will cause\n",
@@ -4447,6 +4526,31 @@ pub const USAGE: &str = concat!(
     "This tool exits with exit code 1 if the index cannot be opened or has any\n",
     "corruption, else 0.\n",
 );
+
+/// `Integer.parseInt(s)`, failing with its `NumberFormatException`
+/// (`For input string: "<s>"`).
+fn java_parse_int_or_number_format_exception(s: &str) -> Result<i32> {
+    crate::util::extra::java_parse_int(s).ok_or_else(|| {
+        LuceneError::unchecked(
+            "java.lang.NumberFormatException",
+            format!("For input string: \"{s}\""),
+        )
+    })
+}
+
+/// `Throwable.getMessage()` of the exceptions `doMain` catches: the message of
+/// an `IllegalArgumentException` or of an unchecked exception such as
+/// `NumberFormatException` (`"null"` when it has none, as `println(String)`
+/// prints a `null`), and the error's rendering otherwise.
+fn java_get_message(error: &LuceneError) -> String {
+    match error.kind() {
+        LuceneErrorKind::IllegalArgument { message, .. } => message.clone(),
+        LuceneErrorKind::Unchecked { message, .. } => {
+            message.clone().unwrap_or_else(|| "null".to_string())
+        }
+        _ => error.to_string(),
+    }
+}
 
 /// Parses command line arguments into an [`Options`].
 ///
@@ -4470,29 +4574,27 @@ pub fn parse_options<S: AsRef<str>>(args: &[S]) -> Result<Options> {
                     ));
                 }
                 i += 1;
-                let level: i32 = args[i].as_ref().parse().map_err(|_| {
-                    LuceneError::illegal_argument(format!(
-                        "ERROR: could not parse -level value '{}'",
-                        args[i].as_ref()
-                    ))
-                })?;
+                // `Integer.parseInt(args[i])`, whose `NumberFormatException`
+                // (an `IllegalArgumentException`) propagates.
+                let level = java_parse_int_or_number_format_exception(args[i].as_ref())?;
                 Level::check_if_level_in_bounds(level)?;
                 opts.level = level;
             }
-            // Deprecated in Lucene 10.5.0; removed in Lucene 11. Kept so that
-            // existing command lines keep working, with the same warning.
+            // Deprecated. Remove in Lucene 11. The warnings go to `System.err`.
             "-fast" => {
-                log::warn!(
-                    "-fast is deprecated, use '-level 1' for explicitly verifying file checksums only. This is also now the default behaviour!"
+                WriterPrintStream::stderr().println(
+                    "-fast is deprecated, use '-level 1' for explicitly verifying file checksums only. This is also now the default behaviour!",
                 );
             }
             "-slow" => {
-                log::warn!("-slow is deprecated, use '-level 3' instead for slow checks");
+                WriterPrintStream::stderr()
+                    .println("-slow is deprecated, use '-level 3' instead for slow checks");
                 opts.level = Level::MIN_LEVEL_FOR_SLOW_CHECKS;
             }
             "-exorcise" => opts.do_exorcise = true,
             "-crossCheckTermVectors" => {
-                log::warn!("-crossCheckTermVectors is deprecated, use '-level 3' instead");
+                WriterPrintStream::stderr()
+                    .println("-crossCheckTermVectors is deprecated, use '-level 3' instead");
                 opts.level = Level::MAX_VALUE;
             }
             "-verbose" => opts.verbose = true,
@@ -4521,12 +4623,8 @@ pub fn parse_options<S: AsRef<str>>(args: &[S]) -> Result<Options> {
                     ));
                 }
                 i += 1;
-                let thread_count: i32 = args[i].as_ref().parse().map_err(|_| {
-                    LuceneError::illegal_argument(format!(
-                        "-threadCount requires a following number, but got: {}",
-                        args[i].as_ref()
-                    ))
-                })?;
+                // `Integer.parseInt(args[i])`.
+                let thread_count = java_parse_int_or_number_format_exception(args[i].as_ref())?;
                 if thread_count <= 0 {
                     return Err(LuceneError::illegal_argument(format!(
                         "-threadCount requires a number larger than 0, but got: {thread_count}"
@@ -4567,14 +4665,9 @@ pub fn parse_options<S: AsRef<str>>(args: &[S]) -> Result<Options> {
 /// so that it can be tested. `0` means the index is clean, `1` that it could not
 /// be opened or that it is corrupt.
 ///
-/// **Divergences from Lucene 10.5.0.**
-///
-/// * Java's `doMain` is package-private and reached only through `main`; this
-///   crate is a library and has no `main`, so this is the entry point a binary
-///   wraps, and it is public.
-/// * Java reports on `System.out` through a `PrintStream`; this port reports
-///   through a [`PrintStreamInfoStream`] over standard output, which is the
-///   crate's [`InfoStream`] seam over the same sink.
+/// **Divergence from Lucene 10.5.0.** Java's `doMain` is package-private and
+/// reached only through `main`; this crate is a library and has no `main`, so
+/// this is the entry point a binary wraps, and it is public.
 ///
 /// # Errors
 ///
@@ -4583,14 +4676,15 @@ pub fn parse_options<S: AsRef<str>>(args: &[S]) -> Result<Options> {
 /// cannot be opened, and a corrupt index are all reported as exit code `1`
 /// rather than as an error, exactly as in Java.
 pub fn do_main<S: AsRef<str>>(args: &[S]) -> Result<i32> {
-    let out: Arc<dyn InfoStream> =
-        Arc::new(PrintStreamInfoStream::system(Box::new(std::io::stdout())));
-    let stream = Some(out.as_ref() as &dyn InfoStream);
+    // `System.out`.
+    let out: Arc<dyn PrintStream> = Arc::new(WriterPrintStream::stdout());
+    let stream = Some(out.as_ref() as &dyn PrintStream);
 
     let opts = match parse_options(args) {
         Ok(opts) => opts,
+        // `catch (IllegalArgumentException e) { System.out.println(e.getMessage()); }`.
         Err(error) => {
-            msg(stream, &format!("{error}"));
+            msg(stream, &java_get_message(&error));
             return Ok(1);
         }
     };
@@ -4598,8 +4692,7 @@ pub fn do_main<S: AsRef<str>>(args: &[S]) -> Result<i32> {
     if !asserts_on() {
         msg(
             stream,
-            "\nNOTE: testing will be more thorough in a debug build, where debug assertions are \
-             enabled",
+            "\nNOTE: testing will be more thorough if you run java with '-ea:org.apache.lucene...', so assertions are enabled",
         );
     }
 
@@ -4617,7 +4710,7 @@ pub fn do_main<S: AsRef<str>>(args: &[S]) -> Result<i32> {
                     stream,
                     &format!("ERROR: could not open directory \"{index_path}\"; exiting"),
                 );
-                msg(stream, &format!("{error}"));
+                print_stack_trace(stream, &error);
                 return Ok(1);
             }
         },
@@ -4628,7 +4721,7 @@ pub fn do_main<S: AsRef<str>>(args: &[S]) -> Result<i32> {
                     stream,
                     &format!("ERROR: could not open directory \"{index_path}\"; exiting"),
                 );
-                msg(stream, &format!("{error}"));
+                print_stack_trace(stream, &error);
                 return Ok(1);
             }
         },
@@ -4958,13 +5051,14 @@ pub fn asserts_on() -> bool {
 /// search would ever return it.
 pub fn test_stored_fields(
     reader: &dyn CodecReader,
-    info_stream: Option<&dyn InfoStream>,
+    info_stream: Option<&dyn PrintStream>,
     fail_fast: bool,
 ) -> Result<StoredFieldStatus> {
     let start = Instant::now();
     let mut status = StoredFieldStatus::default();
 
-    let outcome = (|| -> Result<()> {
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        print(info_stream, "    test: stored fields.......");
         let live_docs = reader.get_live_docs();
         let Some(stored_fields) = reader.get_fields_reader()? else {
             return Ok(());
@@ -4993,31 +5087,27 @@ pub fn test_stored_fields(
             )));
         }
 
-        let avg = if status.doc_count == 0 {
-            0.0
-        } else {
-            status.tot_fields as f64 / f64::from(status.doc_count)
-        };
+        // `((float) status.totFields) / status.docCount`, a `float` division:
+        // `NaN` for an empty segment, as Java prints it.
+        let avg = f64::from(status.tot_fields as f32 / status.doc_count as f32);
         msg(
             info_stream,
             &format!(
-                "    test: stored fields.......OK [{} total field count; avg {:.1} fields per doc] [took {}]",
+                "OK [{} total field count; avg {} fields per doc] [took {}]",
                 status.tot_fields,
-                avg,
+                crate::util::java_fmt::format_fixed(avg, 1),
                 took(start)
             ),
         );
         Ok(())
-    })();
+    });
 
     if let Err(error) = outcome {
         if fail_fast {
             return Err(error);
         }
-        msg(
-            info_stream,
-            &format!("    test: stored fields.......ERROR [{error}]"),
-        );
+        msg(info_stream, &format!("ERROR [{error}]"));
+        print_stack_trace(info_stream, &error);
         status.error = Some(error);
     }
     Ok(status)
@@ -5369,15 +5459,27 @@ impl crate::index::point_values::IntersectVisitor for VerifyPointsVisitor {
 /// all-inside query at least all of them, and an all-outside query none.
 pub fn test_points(
     reader: &dyn CodecReader,
-    info_stream: Option<&dyn InfoStream>,
+    info_stream: Option<&dyn PrintStream>,
     fail_fast: bool,
 ) -> Result<PointsStatus> {
+    print(info_stream, "    test: points..............");
     let start = Instant::now();
     let mut status = PointsStatus::default();
 
-    let outcome = (|| -> Result<()> {
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
         let field_infos = reader.get_field_infos();
         if !field_infos.has_point_values() {
+            // Java skips the per-field checks and still reports `OK`
+            // (`CheckIndex.java` `testPoints`).
+            msg(
+                info_stream,
+                &format!(
+                    "OK [{} fields, {} points] [took {}]",
+                    status.total_value_fields,
+                    status.total_value_points,
+                    took(start)
+                ),
+            );
             return Ok(());
         }
         let Some(points_reader) = reader.get_points_reader()? else {
@@ -5448,23 +5550,28 @@ pub fn test_points(
         msg(
             info_stream,
             &format!(
-                "    test: points..............OK [{} fields, {} points] [took {}]",
+                "OK [{} fields, {} points] [took {}]",
                 status.total_value_fields,
                 status.total_value_points,
                 took(start)
             ),
         );
         Ok(())
-    })();
+    });
 
     if let Err(error) = outcome {
         if fail_fast {
             return Err(error);
         }
+        // `msg(infoStream, "ERROR: " + e)`: `Throwable.toString()`.
         msg(
             info_stream,
-            &format!("    test: points..............ERROR: {error}"),
+            &format!(
+                "ERROR: {}",
+                crate::util::concurrent::throwable_to_string(&error)
+            ),
         );
+        print_stack_trace(info_stream, &error);
         status.error = Some(error);
     }
     Ok(status)
@@ -5475,15 +5582,27 @@ pub fn test_points(
 /// Equivalent to `CheckIndex.testVectors(CodecReader, PrintStream, boolean)`.
 pub fn test_vectors(
     reader: &dyn CodecReader,
-    info_stream: Option<&dyn InfoStream>,
+    info_stream: Option<&dyn PrintStream>,
     fail_fast: bool,
 ) -> Result<VectorValuesStatus> {
+    print(info_stream, "    test: vectors.............");
     let start = Instant::now();
     let mut status = VectorValuesStatus::default();
 
-    let outcome = (|| -> Result<()> {
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
         let field_infos = reader.get_field_infos();
         if !field_infos.has_vector_values() {
+            // Java skips the per-field checks and still reports `OK`
+            // (`CheckIndex.java` `testVectors`).
+            msg(
+                info_stream,
+                &format!(
+                    "OK [{} fields, {} vectors] [took {}]",
+                    status.total_knn_vector_fields,
+                    status.total_vector_values,
+                    took(start)
+                ),
+            );
             return Ok(());
         }
         for field_info in field_infos.iter() {
@@ -5527,23 +5646,28 @@ pub fn test_vectors(
         msg(
             info_stream,
             &format!(
-                "    test: vectors.............OK [{} fields, {} vectors] [took {}]",
+                "OK [{} fields, {} vectors] [took {}]",
                 status.total_knn_vector_fields,
                 status.total_vector_values,
                 took(start)
             ),
         );
         Ok(())
-    })();
+    });
 
     if let Err(error) = outcome {
         if fail_fast {
             return Err(error);
         }
+        // `msg(infoStream, "ERROR: " + e)`: `Throwable.toString()`.
         msg(
             info_stream,
-            &format!("    test: vectors.............ERROR: {error}"),
+            &format!(
+                "ERROR: {}",
+                crate::util::concurrent::throwable_to_string(&error)
+            ),
         );
+        print_stack_trace(info_stream, &error);
         status.error = Some(error);
     }
     Ok(status)
@@ -5728,7 +5852,7 @@ fn check_byte_vector_values(
 pub fn test_sort(
     reader: &Arc<dyn CodecReader>,
     sort: Option<&Sort>,
-    info_stream: Option<&dyn InfoStream>,
+    info_stream: Option<&dyn PrintStream>,
     fail_fast: bool,
 ) -> Result<IndexSortStatus> {
     // This segment claims its documents are sorted according to the incoming
@@ -5738,6 +5862,7 @@ pub fn test_sort(
     let Some(sort) = sort else {
         return Ok(status);
     };
+    print(info_stream, "    test: index sort..........");
 
     let fields = sort.fields();
     let mut reverse_mul: Vec<i32> = Vec::with_capacity(fields.len());
@@ -5764,7 +5889,7 @@ pub fn test_sort(
         field_comparators.push(comparator);
     }
 
-    let outcome = (|| -> Result<()> {
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
         let meta_data = reader.get_meta_data();
         let field_infos = reader.get_field_infos();
         if meta_data.has_blocks()
@@ -5816,21 +5941,16 @@ pub fn test_sort(
             }
             prev_doc = next_doc;
         }
-        msg(
-            info_stream,
-            &format!("    test: index sort..........OK [took {}]", took(start)),
-        );
+        msg(info_stream, &format!("OK [took {}]", took(start)));
         Ok(())
-    })();
+    });
 
     if let Err(error) = outcome {
         if fail_fast {
             return Err(error);
         }
-        msg(
-            info_stream,
-            &format!("    test: index sort..........ERROR [{error}]"),
-        );
+        msg(info_stream, &format!("ERROR [{error}]"));
+        print_stack_trace(info_stream, &error);
         status.error = Some(error);
     }
     Ok(status)
@@ -5857,12 +5977,15 @@ pub fn check_soft_deletes(
     soft_deletes_field: &str,
     expected_soft_del_count: i32,
     reader: &dyn LeafReader,
-    info_stream: Option<&dyn InfoStream>,
+    info_stream: Option<&dyn PrintStream>,
     fail_fast: bool,
 ) -> Result<SoftDeletesStatus> {
     let mut status = SoftDeletesStatus::default();
+    print(info_stream, "    test: check soft deletes.....");
 
-    let outcome = (|| -> Result<()> {
+    // Java catches `Exception`, not `Throwable` (`CheckIndex.java:4629`): a
+    // panic standing for a `java.lang.Error` propagates.
+    let outcome = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
         let live_docs = reader.get_live_docs();
         let mut soft_deletes = 0i32;
         if let Some(mut iterator) =
@@ -5890,21 +6013,24 @@ pub fn check_soft_deletes(
             )));
         }
         Ok(())
-    })();
+    })) {
+        Ok(outcome) => outcome,
+        Err(payload) => {
+            if fail_fast || crate::util::concurrent::panic_is_java_error(&*payload) {
+                std::panic::resume_unwind(payload);
+            }
+            Err(crate::util::concurrent::panic_to_error(&*payload))
+        }
+    };
 
     // Java prints the header and nothing after it on success
     // (`CheckIndex.java:4619`).
-    if outcome.is_ok() {
-        msg(info_stream, "    test: check soft deletes.....");
-    }
     if let Err(error) = outcome {
         if fail_fast {
             return Err(error);
         }
-        msg(
-            info_stream,
-            &format!("    test: check soft deletes.....ERROR [{error}]"),
-        );
+        msg(info_stream, &format!("ERROR [{error}]"));
+        print_stack_trace(info_stream, &error);
         status.error = Some(error);
     }
     Ok(status)
@@ -5918,7 +6044,7 @@ pub fn check_soft_deletes(
 /// are not counted in the statistics.
 pub fn test_term_vectors(
     reader: &dyn CodecReader,
-    info_stream: Option<&dyn InfoStream>,
+    info_stream: Option<&dyn PrintStream>,
     verbose: bool,
     level: i32,
     fail_fast: bool,
@@ -5928,13 +6054,18 @@ pub fn test_term_vectors(
     let field_infos = reader.get_field_infos();
     let field_infos = &field_infos;
 
-    let outcome = (|| -> Result<()> {
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        print(info_stream, "    test: term vectors........");
         let live_docs = reader.get_live_docs();
 
         // The postings are only opened at the level that includes the slow
-        // cross-check against the inverted index.
+        // cross-check against the inverted index, through their merge instance
+        // (`postingsFields.getMergeInstance()`, `CheckIndex.java:3976-3979`).
         let postings_fields = if level >= Level::MIN_LEVEL_FOR_SLOW_CHECKS {
-            reader.get_postings_reader()?
+            match reader.get_postings_reader()? {
+                Some(producer) => Some(producer.get_merge_instance()?),
+                None => None,
+            }
         } else {
             None
         };
@@ -5943,7 +6074,7 @@ pub fn test_term_vectors(
             msg(
                 info_stream,
                 &format!(
-                    "    test: term vectors........OK [{} total term vector count; avg 0.0 term/freq vector fields per doc] \
+                    "OK [{} total term vector count; avg 0.0 term/freq vector fields per doc] \
                      [took {}]",
                     status.tot_vectors,
                     took(start)
@@ -6001,14 +6132,9 @@ pub fn test_term_vectors(
                 if level < Level::MIN_LEVEL_FOR_SLOW_CHECKS {
                     continue;
                 }
-                let Some(postings_fields) = postings_fields.as_ref() else {
-                    return Err(check_index_error(format!(
-                        "vector field={field} does not exist in postings; doc={j}"
-                    )));
-                };
                 cross_check_vector_field_against_postings(
                     tfv.as_ref(),
-                    postings_fields.as_ref(),
+                    postings_fields.as_deref(),
                     field_info,
                     &field,
                     j,
@@ -6016,32 +6142,38 @@ pub fn test_term_vectors(
             }
         }
 
+        // `status.docCount == 0 ? 0 : status.totVectors / (float) status.docCount`.
         let avg = if status.doc_count == 0 {
             0.0
         } else {
-            status.tot_vectors as f64 / f64::from(status.doc_count)
+            f64::from(status.tot_vectors as f32 / status.doc_count as f32)
         };
         msg(
             info_stream,
             &format!(
-                "    test: term vectors........OK [{} total term vector count; avg {:.1} term/freq vector fields per doc] \
+                "OK [{} total term vector count; avg {} term/freq vector fields per doc] \
                  [took {}]",
                 status.tot_vectors,
-                avg,
+                crate::util::java_fmt::format_fixed(avg, 1),
                 took(start)
             ),
         );
         Ok(())
-    })();
+    });
 
     if let Err(error) = outcome {
         if fail_fast {
             return Err(error);
         }
+        // `msg(infoStream, "ERROR: " + e)`: `Throwable.toString()`.
         msg(
             info_stream,
-            &format!("    test: term vectors........ERROR: {error}"),
+            &format!(
+                "ERROR: {}",
+                crate::util::concurrent::throwable_to_string(&error)
+            ),
         );
+        print_stack_trace(info_stream, &error);
         status.error = Some(error);
     }
     Ok(status)
@@ -6056,13 +6188,22 @@ pub fn test_term_vectors(
 /// payloads.
 fn cross_check_vector_field_against_postings(
     tfv: &dyn Fields,
-    postings_fields: &dyn Fields,
+    postings_fields: Option<&dyn crate::codecs::postings::FieldsProducer>,
     field_info: &FieldInfo,
     field: &str,
     doc: i32,
 ) -> Result<()> {
+    // `Terms terms = tfv.terms(field); TermsEnum termsEnum = terms.iterator();`
+    // (`CheckIndex.java:4028-4029`): a vector field the vectors list but whose
+    // `Terms` is `null` is the `NullPointerException` Java records as the
+    // check's error.
     let Some(terms) = tfv.terms(field)? else {
-        return Ok(());
+        return Err(LuceneError::null_pointer());
+    };
+    let Some(postings_fields) = postings_fields else {
+        return Err(check_index_error(format!(
+            "vector field={field} does not exist in postings; doc={doc}"
+        )));
     };
     let Some(postings_terms) = postings_fields.terms(field)? else {
         return Err(check_index_error(format!(
@@ -6371,12 +6512,13 @@ mod tests {
         )
         .unwrap()])
         .unwrap();
-        let stream = BufferingInfoStream::new();
+        let stream = ByteArrayPrintStream::new();
         let status = test_sort(&reader, Some(&descending), Some(&stream), false).unwrap();
         assert!(status.error.is_none(), "{:?}", status.error);
         // `infoStream.print("    test: index sort..........")`, then the result on
         // the same line (`CheckIndex.java:1172-1174`).
-        let messages = stream.messages.lock().unwrap().clone();
+        let output = stream.to_string_utf8();
+        let messages: Vec<&str> = output.lines().collect();
         assert_eq!(messages.len(), 1, "{messages:?}");
         assert!(
             messages[0].starts_with("    test: index sort..........OK [took "),
@@ -6468,32 +6610,30 @@ mod segment_check_pool_tests {
     /// thread when it reports a line starting with `interrupt_on`.
     struct InterruptingLines {
         lines: Mutex<Vec<String>>,
+        /// The text printed since the last line separator.
+        pending: Mutex<String>,
         interrupt_on: Option<&'static str>,
     }
 
-    impl InfoStream for InterruptingLines {
-        fn java_class_name(&self) -> &'static str {
-            "java.io.PrintStream"
-        }
-
-        fn message(&self, _component: &str, message: &str) {
-            self.lines
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(message.to_string());
-            if self
-                .interrupt_on
-                .is_some_and(|prefix| message.starts_with(prefix))
-            {
-                crate::util::InterruptHandle::current().interrupt();
+    impl PrintStream for InterruptingLines {
+        fn print(&self, s: &str) {
+            let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            pending.push_str(s);
+            while let Some(end) = pending.find('\n') {
+                let line: String = pending.drain(..=end).collect();
+                let line = line.trim_end_matches('\n').to_string();
+                let interrupt = self
+                    .interrupt_on
+                    .is_some_and(|prefix| line.starts_with(prefix));
+                self.lines
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(line);
+                if interrupt {
+                    crate::util::InterruptHandle::current().interrupt();
+                }
             }
         }
-
-        fn is_enabled(&self, _component: &str) -> bool {
-            true
-        }
-
-        fn close(&self) {}
     }
 
     /// Runs `check_index()` with two threads over three one-document
@@ -6510,10 +6650,11 @@ mod segment_check_pool_tests {
         std::thread::spawn(move || {
             let stream = Arc::new(InterruptingLines {
                 lines: Mutex::new(Vec::new()),
+                pending: Mutex::new(String::new()),
                 interrupt_on,
             });
             let mut checker = CheckIndex::new(dir).unwrap();
-            checker.set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>);
+            checker.set_info_stream(Arc::clone(&stream) as Arc<dyn PrintStream>);
             checker.set_thread_count(2).unwrap();
             if interrupt_first {
                 crate::util::InterruptHandle::current().interrupt();

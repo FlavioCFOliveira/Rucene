@@ -311,18 +311,26 @@ impl Query for SeededKnnVectorQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.base.base_hash().hash(&mut hasher);
-        self.seed.query_hash().hash(&mut hasher);
-        self.seed_weight
-            .as_ref()
-            .map(|weight| Arc::as_ptr(weight) as *const () as usize)
-            .hash(&mut hasher);
-        self.delegate.query_hash().hash(&mut hasher);
-        hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.SeededKnnVectorQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.SeededKnnVectorQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `Objects.hash(super.hashCode(), seed, seedWeight, delegate)`. A
+        // `Weight` does not override `hashCode()`: its Java hash is an identity
+        // hash, replaced by the stable stand-in of
+        // `java_identity_hash_code_stand_in` (0 for `null`).
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            self.base.base_hash(),
+            self.seed.query_hash(),
+            self.seed_weight.as_ref().map_or(0, |_| {
+                crate::util::java_collections::java_identity_hash_code_stand_in(
+                    "org.apache.lucene.search.Weight",
+                )
+            }),
+            self.delegate.query_hash(),
+        ])
     }
 }
 

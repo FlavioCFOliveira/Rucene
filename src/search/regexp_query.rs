@@ -271,7 +271,12 @@ impl Query for RegexpQuery {
         automaton_query_eq(self, &self.inner, other, &other.inner)
     }
 
-    fn query_hash(&self) -> u64 {
+    /// `getClass().getName()` of `org.apache.lucene.search.RegexpQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.RegexpQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
         automaton_query_hash(self, &self.inner)
     }
 }

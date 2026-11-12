@@ -1131,13 +1131,20 @@ impl Query for XYPointInGeometryQuery {
             .is_some_and(|other| self == other)
     }
 
-    /// Equivalent to `XYPointInGeometryQuery.hashCode()`.
-    fn query_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.field.hash(&mut hasher);
-        format!("{:?}", self.xy_geometries).hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.XYPointInGeometryQuery"
+    }
+
+    /// Equivalent to `XYPointInGeometryQuery.hashCode()`: `classHash()`,
+    /// `field.hashCode()` and `Arrays.hashCode(xyGeometries)`.
+    fn query_hash(&self) -> i32 {
+        let mut result = self.class_hash();
+        result = 31i32.wrapping_mul(result).wrapping_add(
+            crate::util::java_collections::java_string_hash_code(&self.field),
+        );
+        31i32.wrapping_mul(result).wrapping_add(
+            crate::document::spatial_query::xy_geometries_hash_code(&self.xy_geometries),
+        )
     }
 }
 
@@ -1670,13 +1677,22 @@ impl Query for LatLonPointQuery {
             .is_some_and(|other| self.query == other.query && self.geometries == other.geometries)
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.query.get_field().hash(&mut hasher);
-        format!("{:?}", self.query.get_query_relation()).hash(&mut hasher);
-        format!("{:?}", self.geometries).hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.LatLonPointQuery"
+    }
+
+    /// Equivalent to `LatLonPointQuery.hashCode()`: `super.hashCode()` (the
+    /// `SpatialQuery` hash, whose geometries are this query's), then
+    /// `31 * hash + Arrays.hashCode(geometries)`.
+    fn query_hash(&self) -> i32 {
+        let geometries =
+            crate::document::spatial_query::lat_lon_geometries_hash_code(&self.geometries);
+        let hash = crate::document::spatial_query::spatial_query_hash_code(
+            self.class_hash(),
+            &self.query,
+            geometries,
+        );
+        31i32.wrapping_mul(hash).wrapping_add(geometries)
     }
 }
 
@@ -1730,14 +1746,28 @@ impl Query for LatLonPointDistanceQuery {
             .is_some_and(|o| self == o)
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.field.hash(&mut hasher);
-        self.latitude.to_bits().hash(&mut hasher);
-        self.longitude.to_bits().hash(&mut hasher);
-        self.radius_meters.to_bits().hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.LatLonPointDistanceQuery"
+    }
+
+    /// Equivalent to `LatLonPointDistanceQuery.hashCode()`: `classHash()`,
+    /// `field.hashCode()` and the `doubleToLongBits` fold of the latitude,
+    /// longitude and radius.
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{java_double_hash_code, java_string_hash_code};
+        let mut result = self.class_hash();
+        result = 31i32
+            .wrapping_mul(result)
+            .wrapping_add(java_string_hash_code(&self.field));
+        result = 31i32
+            .wrapping_mul(result)
+            .wrapping_add(java_double_hash_code(self.latitude));
+        result = 31i32
+            .wrapping_mul(result)
+            .wrapping_add(java_double_hash_code(self.longitude));
+        31i32
+            .wrapping_mul(result)
+            .wrapping_add(java_double_hash_code(self.radius_meters))
     }
 }
 
@@ -1792,17 +1822,32 @@ impl Query for LatLonDocValuesBoxQuery {
             .is_some_and(|other| self == other)
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.matcher_min_latitude.hash(&mut hasher);
-        self.matcher_max_latitude.hash(&mut hasher);
-        self.matcher_min_longitude.hash(&mut hasher);
-        self.matcher_max_longitude.hash(&mut hasher);
-        self.crosses_dateline.hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.LatLonDocValuesBoxQuery"
+    }
+
+    /// Equivalent to `LatLonDocValuesBoxQuery.hashCode()`.
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{java_boolean_hash_code, java_string_hash_code};
+        let mut h = self.class_hash();
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(java_string_hash_code(&self.field));
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(java_boolean_hash_code(self.crosses_dateline));
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(self.matcher_min_latitude);
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(self.matcher_max_latitude);
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(self.matcher_min_longitude);
+        31i32
+            .wrapping_mul(h)
+            .wrapping_add(self.matcher_max_longitude)
     }
 
     fn create_weight(
@@ -1859,14 +1904,24 @@ impl Query for LatLonDocValuesQuery {
         })
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        format!("{:?}", self.query_relation).hash(&mut hasher);
-        format!("{:?}", self.geometries).hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.LatLonDocValuesQuery"
+    }
+
+    /// Equivalent to `LatLonDocValuesQuery.hashCode()`: `classHash()`,
+    /// `field.hashCode()`, `queryRelation.hashCode()` and
+    /// `Arrays.hashCode(geometries)`.
+    fn query_hash(&self) -> i32 {
+        let mut h = self.class_hash();
+        h = 31i32.wrapping_mul(h).wrapping_add(
+            crate::util::java_collections::java_string_hash_code(&self.field),
+        );
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(self.query_relation.java_hash_code());
+        31i32.wrapping_mul(h).wrapping_add(
+            crate::document::spatial_query::lat_lon_geometries_hash_code(&self.geometries),
+        )
     }
 
     fn create_weight(
@@ -1922,13 +1977,21 @@ impl Query for XYDocValuesPointInGeometryQuery {
             .is_some_and(|other| self.field == other.field && self.geometries == other.geometries)
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        format!("{:?}", self.geometries).hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.XYDocValuesPointInGeometryQuery"
+    }
+
+    /// Equivalent to `XYDocValuesPointInGeometryQuery.hashCode()`.
+    fn query_hash(&self) -> i32 {
+        let mut h = self.class_hash();
+        h = 31i32.wrapping_mul(h).wrapping_add(
+            crate::util::java_collections::java_string_hash_code(&self.field),
+        );
+        31i32
+            .wrapping_mul(h)
+            .wrapping_add(crate::document::spatial_query::xy_geometries_hash_code(
+                &self.geometries,
+            ))
     }
 
     fn create_weight(

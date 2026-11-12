@@ -107,7 +107,7 @@ impl Query for ReadAheadMatchAllDocsQuery {
         self.same_class_as(other)
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         self.class_hash()
     }
 

@@ -73,6 +73,17 @@ pub enum LatLonGeometryValue {
 }
 
 impl LatLonGeometryValue {
+    /// Java's `hashCode()` of the geometry this value holds.
+    pub fn hash_code(&self) -> i32 {
+        match self {
+            LatLonGeometryValue::Point(g) => g.hash_code(),
+            LatLonGeometryValue::Rectangle(g) => g.hash_code(),
+            LatLonGeometryValue::Line(g) => g.hash_code(),
+            LatLonGeometryValue::Polygon(g) => g.hash_code(),
+            LatLonGeometryValue::Circle(g) => g.hash_code(),
+        }
+    }
+
     /// Returns the [`Component2D`] this geometry relates against.
     ///
     /// Equivalent to `Geometry.toComponent2D()`.
@@ -134,6 +145,17 @@ pub enum XYGeometryValue {
 }
 
 impl XYGeometryValue {
+    /// Java's `hashCode()` of the geometry this value holds.
+    pub fn hash_code(&self) -> i32 {
+        match self {
+            XYGeometryValue::Point(g) => g.hash_code(),
+            XYGeometryValue::Rectangle(g) => g.hash_code(),
+            XYGeometryValue::Line(g) => g.hash_code(),
+            XYGeometryValue::Polygon(g) => g.hash_code(),
+            XYGeometryValue::Circle(g) => g.hash_code(),
+        }
+    }
+
     /// Returns the [`Component2D`] this geometry relates against.
     ///
     /// Equivalent to `Geometry.toComponent2D()`.
@@ -3425,16 +3447,22 @@ macro_rules! impl_shape_query_exec {
                 })
             }
 
-            /// Equivalent to `SpatialQuery.hashCode()` over the field, the
-            /// relation and the geometries.
-            fn query_hash(&self) -> u64 {
-                use std::hash::{Hash, Hasher};
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                stringify!($ty).hash(&mut hasher);
-                self.$($sq).+.get_field().hash(&mut hasher);
-                format!("{:?}", self.$($sq).+.get_query_relation()).hash(&mut hasher);
-                format!("{:?}", self.$geoms).hash(&mut hasher);
-                hasher.finish()
+            /// The Lucene class of the same name in `org.apache.lucene.document`.
+            fn java_class_name(&self) -> &'static str {
+                concat!("org.apache.lucene.document.", stringify!($ty))
+            }
+
+            /// Equivalent to `SpatialQuery.hashCode()` (`SpatialQuery.java`):
+            /// `classHash()`, `field.hashCode()`, `queryRelation.hashCode()`
+            /// and `Arrays.hashCode(geometries)`, followed by the subclass's
+            /// own additions ([`ShapeQueryHashTail`]).
+            fn query_hash(&self) -> i32 {
+                let hash = spatial_query_hash_code(
+                    self.class_hash(),
+                    &self.$($sq).+,
+                    GeometriesHashCode::geometries_hash_code(&self.$geoms),
+                );
+                ShapeQueryHashTail::hash_tail(self, hash)
             }
         }
     };
@@ -3451,6 +3479,73 @@ fn shape_tree_cost(
         return Ok(0);
     };
     query.cost(values.as_ref(), visitor)
+}
+
+/// `SpatialQuery.hashCode()` (`SpatialQuery.java`) over an already computed
+/// `Arrays.hashCode(geometries)`.
+pub(crate) fn spatial_query_hash_code(
+    class_hash: i32,
+    query: &SpatialQuery,
+    geometries_hash: i32,
+) -> i32 {
+    let mut hash = class_hash;
+    hash = 31i32.wrapping_mul(hash).wrapping_add(
+        crate::util::java_collections::java_string_hash_code(query.get_field()),
+    );
+    hash = 31i32
+        .wrapping_mul(hash)
+        .wrapping_add(query.get_query_relation().java_hash_code());
+    31i32.wrapping_mul(hash).wrapping_add(geometries_hash)
+}
+
+/// `Arrays.hashCode(geometries)` over the geometries a spatial query holds.
+pub(crate) trait GeometriesHashCode {
+    /// `Arrays.hashCode(Geometry[])`.
+    fn geometries_hash_code(&self) -> i32;
+}
+
+impl GeometriesHashCode for Vec<LatLonGeometryValue> {
+    fn geometries_hash_code(&self) -> i32 {
+        lat_lon_geometries_hash_code(self)
+    }
+}
+
+impl GeometriesHashCode for Vec<XYGeometryValue> {
+    fn geometries_hash_code(&self) -> i32 {
+        xy_geometries_hash_code(self)
+    }
+}
+
+impl GeometriesHashCode for Rectangle {
+    /// `LatLonShapeBoundingBoxQuery` passes `super(field, queryRelation,
+    /// rectangle)`, so `SpatialQuery.geometries` is the one-element array
+    /// `{rectangle}`.
+    fn geometries_hash_code(&self) -> i32 {
+        31i32.wrapping_add(self.hash_code())
+    }
+}
+
+/// What a spatial query's `hashCode()` adds after `super.hashCode()`.
+pub(crate) trait ShapeQueryHashTail {
+    /// Returns `hash`, extended with the subclass's own fields.
+    fn hash_tail(&self, hash: i32) -> i32 {
+        hash
+    }
+}
+
+impl ShapeQueryHashTail for LatLonShapeQuery {}
+impl ShapeQueryHashTail for XYShapeQuery {}
+impl ShapeQueryHashTail for LatLonShapeDocValuesQuery {}
+impl ShapeQueryHashTail for XYShapeDocValuesQuery {}
+
+impl ShapeQueryHashTail for LatLonShapeBoundingBoxQuery {
+    /// `31 * super.hashCode() + rectangle.hashCode()`
+    /// (`LatLonShapeBoundingBoxQuery.java:215-219`).
+    fn hash_tail(&self, hash: i32) -> i32 {
+        31i32
+            .wrapping_mul(hash)
+            .wrapping_add(self.rectangle.hash_code())
+    }
 }
 
 impl_shape_query_exec!(LatLonShapeQuery, [query], geometries, |q, reader| {
@@ -3710,4 +3805,18 @@ mod supplier_bulk_scorer_tests {
         assert_eq!(collector.docs, [0, 1, 2]);
         assert_eq!(collector.batches, 0);
     }
+}
+
+/// `Arrays.hashCode(LatLonGeometry[])` over a non-`null` array.
+pub(crate) fn lat_lon_geometries_hash_code(geometries: &[LatLonGeometryValue]) -> i32 {
+    geometries
+        .iter()
+        .fold(1i32, |h, g| h.wrapping_mul(31).wrapping_add(g.hash_code()))
+}
+
+/// `Arrays.hashCode(XYGeometry[])` over a non-`null` array.
+pub(crate) fn xy_geometries_hash_code(geometries: &[XYGeometryValue]) -> i32 {
+    geometries
+        .iter()
+        .fold(1i32, |h, g| h.wrapping_mul(31).wrapping_add(g.hash_code()))
 }

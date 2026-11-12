@@ -140,17 +140,13 @@ impl AbstractKnnVectorQuery {
     ///
     /// Equivalent to `AbstractKnnVectorQuery.hashCode()`, which — unlike
     /// `equals` — deliberately leaves the search strategy out.
-    pub fn base_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.field.hash(&mut hasher);
-        self.k.hash(&mut hasher);
-        self.filter
-            .as_ref()
-            .map(|filter| filter.query_hash())
-            .hash(&mut hasher);
-        hasher.finish()
+    pub fn base_hash(&self) -> i32 {
+        // `Objects.hash(field, k, filter)`; a `null` filter hashes as 0.
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            crate::util::java_collections::java_string_hash_code(&self.field),
+            self.k,
+            self.filter.as_ref().map_or(0, |filter| filter.query_hash()),
+        ])
     }
 }
 

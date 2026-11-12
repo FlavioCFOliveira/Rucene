@@ -127,7 +127,7 @@ impl Query for BrokenExplainTermQuery {
     }
 
     /// `TermQuery.hashCode`: `classHash() ^ term.hashCode()`.
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         self.class_hash() ^ self.inner.query_hash() ^ self.inner.class_hash()
     }
 }

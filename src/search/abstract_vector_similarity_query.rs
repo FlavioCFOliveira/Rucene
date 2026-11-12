@@ -20,7 +20,8 @@ use crate::error::{LuceneError, Result};
 use crate::index::{LeafReaderContext, QueryTimeout};
 use crate::search::conjunction_utils::ConjunctionUtils;
 use crate::search::doc_id_set_iterator::{
-    empty, from_iterator_supplier, from_live_docs, AcceptDocs, DocIdSetIterator, NO_MORE_DOCS,
+    empty, from_iterator_supplier, from_live_docs, AcceptDocs, DocIdSetIterator,
+    FilteredDocIdSetIterator, NO_MORE_DOCS,
 };
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::knn::knn_collector_manager::KnnCollectorManager;
@@ -171,19 +172,18 @@ impl AbstractVectorSimilarityQuery {
     /// Query hash over the base fields.
     ///
     /// Equivalent to `AbstractVectorSimilarityQuery.hashCode()`.
-    pub fn base_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.field.hash(&mut hasher);
-        self.result_similarity.to_bits().hash(&mut hasher);
-        self.decay.to_bits().hash(&mut hasher);
-        self.filter
-            .as_ref()
-            .map(|filter| filter.query_hash())
-            .hash(&mut hasher);
-        self.search_strategy.hash(&mut hasher);
-        hasher.finish()
+    pub fn base_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_ints, java_float_hash_code, java_string_hash_code,
+        };
+        // `Objects.hash(field, resultSimilarity, decay, filter, searchStrategy)`.
+        java_arrays_hash_code_ints(&[
+            java_string_hash_code(&self.field),
+            java_float_hash_code(self.result_similarity),
+            java_float_hash_code(self.decay),
+            self.filter.as_ref().map_or(0, |filter| filter.query_hash()),
+            self.search_strategy.java_hash_code(),
+        ])
     }
 }
 
@@ -591,15 +591,20 @@ fn from_accept_docs(
             .into_doc_id_set_iterator();
     let cost = conjunction.cost();
     let vector_iterator = scorer.iterator();
-    let iterator = ThresholdFilteredIterator {
-        inner: conjunction,
-        doc: -1,
-        vector_iterator,
-        scorer,
-        boost,
-        threshold,
-        cached_score: Rc::clone(&cached_score),
-    };
+    let score_cache = Rc::clone(&cached_score);
+    // `new FilteredDocIdSetIterator(conjunction) { protected boolean match(int
+    // doc) { ... } }` (`AbstractVectorSimilarityQuery.java:354-365`).
+    let iterator = FilteredDocIdSetIterator::new(
+        conjunction,
+        Box::new(move |doc: i32| {
+            // Advance the scorer
+            debug_assert!(doc == vector_iterator.doc_id());
+            // Compute the dot product
+            let score = scorer.score()?;
+            score_cache.set(score * boost);
+            Ok(score >= threshold)
+        }),
+    );
     Ok(Some(VectorSimilarityScorerSupplier {
         iterator: Some(Box::new(iterator)),
         cost,
@@ -655,71 +660,6 @@ impl DocIdSetIterator for ScoreDocIterator {
 
     fn cost(&self) -> i64 {
         self.score_docs.len() as i64
-    }
-}
-
-/// Confirms the candidates of a conjunction against the similarity threshold.
-///
-/// Equivalent to the anonymous `FilteredDocIdSetIterator` of
-/// `VectorSimilarityScorerSupplier.fromAcceptDocs`, whose `match(int)` computes
-/// the vector score, caches it and compares it with the threshold.
-///
-/// **Divergence from Lucene 10.5.0.** `FilteredDocIdSetIterator` itself is not
-/// part of this port yet, so its two-line `nextDoc`/`advance` loop is inlined
-/// here.
-struct ThresholdFilteredIterator {
-    inner: Box<dyn DocIdSetIterator>,
-    doc: i32,
-    /// Java's `vectorIterator`, the scorer's iterator the conjunction drives;
-    /// read only by `match`'s assertion.
-    vector_iterator: crate::search::vector_scorer::SharedVectorScorerIterator,
-    scorer: SharedVectorScorer,
-    boost: f32,
-    threshold: f32,
-    cached_score: Rc<Cell<f32>>,
-}
-
-impl ThresholdFilteredIterator {
-    fn matches(&mut self) -> Result<bool> {
-        // Advance the scorer
-        debug_assert!(self.doc == self.vector_iterator.doc_id());
-        // Compute the dot product.
-        let score = self.scorer.score()?;
-        self.cached_score.set(score * self.boost);
-        Ok(score >= self.threshold)
-    }
-}
-
-impl DocIdSetIterator for ThresholdFilteredIterator {
-    fn doc_id(&self) -> i32 {
-        self.doc
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        loop {
-            self.doc = self.inner.next_doc()?;
-            if self.doc == NO_MORE_DOCS {
-                return Ok(self.doc);
-            }
-            if self.matches()? {
-                return Ok(self.doc);
-            }
-        }
-    }
-
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        self.doc = self.inner.advance(target)?;
-        if self.doc == NO_MORE_DOCS {
-            return Ok(self.doc);
-        }
-        if self.matches()? {
-            return Ok(self.doc);
-        }
-        self.next_doc()
-    }
-
-    fn cost(&self) -> i64 {
-        self.inner.cost()
     }
 }
 

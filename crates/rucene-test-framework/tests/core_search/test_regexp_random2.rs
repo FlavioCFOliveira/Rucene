@@ -249,7 +249,7 @@ impl Query for DumbRegexpQuery {
         Arc::ptr_eq(&self.automaton, &that.automaton)
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         multi_term_query_hash(self)
     }
 }

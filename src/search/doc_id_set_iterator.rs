@@ -424,10 +424,10 @@ impl BitsAcceptDocs {
         })
     }
 
-    fn predicate(&self) -> Option<Box<dyn Fn(i32) -> bool>> {
+    fn predicate(&self) -> Option<FilterPredicate> {
         self.bits.as_ref().map(|bits| {
             let bits = Arc::clone(bits);
-            Box::new(move |doc: i32| bits.get(doc as usize)) as Box<dyn Fn(i32) -> bool>
+            Box::new(move |doc: i32| Ok(bits.get(doc as usize))) as FilterPredicate
         })
     }
 }
@@ -629,17 +629,23 @@ fn create_bit_set(
 // Internal helpers
 // -----------------------------------------------------------------------------
 
+/// The `match(int)` body of a [`FilteredDocIdSetIterator`]: Java's
+/// `protected abstract boolean match(int doc) throws IOException`.
+pub(crate) type FilterPredicate = Box<dyn FnMut(i32) -> Result<bool>>;
+
 /// Port of `org.apache.lucene.search.FilteredDocIdSetIterator`.
 ///
 /// Iterator that wraps another iterator and only returns doc IDs satisfying a
 /// predicate.
-struct FilteredDocIdSetIterator {
+pub(crate) struct FilteredDocIdSetIterator {
     inner: Box<dyn DocIdSetIterator>,
-    predicate: Box<dyn Fn(i32) -> bool>,
+    predicate: FilterPredicate,
 }
 
 impl FilteredDocIdSetIterator {
-    fn new(inner: Box<dyn DocIdSetIterator>, predicate: Box<dyn Fn(i32) -> bool>) -> Self {
+    /// Equivalent to `FilteredDocIdSetIterator(DocIdSetIterator)`, with the
+    /// subclass's `match(int)` as `predicate`.
+    pub(crate) fn new(inner: Box<dyn DocIdSetIterator>, predicate: FilterPredicate) -> Self {
         Self { inner, predicate }
     }
 
@@ -660,7 +666,7 @@ impl FilteredDocIdSetIterator {
     /// expects a subclass to implement it. Rust has no inheritance, so this
     /// port takes the test as the `predicate` the iterator is built with and
     /// this method applies it, which is what every subclass body amounts to.
-    fn matches(&self, doc: i32) -> bool {
+    fn matches(&mut self, doc: i32) -> Result<bool> {
         (self.predicate)(doc)
     }
 
@@ -669,7 +675,7 @@ impl FilteredDocIdSetIterator {
             if doc == NO_MORE_DOCS {
                 return Ok(NO_MORE_DOCS);
             }
-            if self.matches(doc) {
+            if self.matches(doc)? {
                 return Ok(doc);
             }
             doc = self.inner.next_doc()?;
@@ -990,7 +996,7 @@ pub fn get_filtered_doc_id_set_iterator(
     match live_docs {
         None => iterator,
         Some(bits) => {
-            let predicate = Box::new(move |doc: i32| bits.get(doc as usize));
+            let predicate: FilterPredicate = Box::new(move |doc: i32| Ok(bits.get(doc as usize)));
             Box::new(FilteredDocIdSetIterator::new(iterator, predicate))
         }
     }

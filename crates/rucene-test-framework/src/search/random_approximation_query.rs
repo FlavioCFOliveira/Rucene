@@ -102,7 +102,12 @@ impl Query for RandomApproximationQuery {
     }
 
     /// `31 * classHash() + query.hashCode()`.
-    fn query_hash(&self) -> u64 {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.tests.search.RandomApproximationQuery"
+    }
+
+    /// `31 * classHash() + query.hashCode()`.
+    fn query_hash(&self) -> i32 {
         self.class_hash()
             .wrapping_mul(31)
             .wrapping_add(self.query.query_hash())

@@ -4,8 +4,6 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
@@ -140,13 +138,14 @@ impl Query for TermQuery {
         self.term == other.term
     }
 
-    fn query_hash(&self) -> u64 {
-        // Java is `classHash() ^ term.hashCode()`; `Term` has no `Hash`
-        // implementation in this port, so its two components are hashed here.
-        let mut hasher = DefaultHasher::new();
-        self.term.field().hash(&mut hasher);
-        self.term.bytes().slice().hash(&mut hasher);
-        self.class_hash() ^ hasher.finish()
+    /// `getClass().getName()` of `org.apache.lucene.search.TermQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.TermQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `classHash() ^ term.hashCode()`.
+        self.class_hash() ^ self.term.hash_code()
     }
 }
 

@@ -526,7 +526,7 @@ impl Query for AssertingSeededKnnVectorQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         self.inner.query_hash()
     }
 }

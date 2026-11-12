@@ -768,7 +768,7 @@ impl Query for FixedScoreQuery {
                 .is_some_and(|o| self.reverse == o.reverse && self.id_to_num == o.id_to_num)
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         let mut hash = self.class_hash() as u32;
         hash = 31u32
             .wrapping_mul(hash)
@@ -779,6 +779,6 @@ impl Query for FixedScoreQuery {
             array_hash = 31u32.wrapping_mul(array_hash).wrapping_add(*v as u32);
         }
         hash = 31u32.wrapping_mul(hash).wrapping_add(array_hash);
-        hash as u64
+        hash as i32
     }
 }

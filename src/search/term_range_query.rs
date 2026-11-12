@@ -4,8 +4,6 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::Result;
@@ -311,8 +309,15 @@ impl Query for TermRangeQuery {
             && self.upper_term == other.upper_term
     }
 
-    fn query_hash(&self) -> u64 {
-        let prime = 31u64;
+    /// `getClass().getName()` of `org.apache.lucene.search.TermRangeQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.TermRangeQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `TermRangeQuery.hashCode()`: `super.hashCode()`, the two flags as
+        // `1231`/`1237`, and the bounds' `BytesRef.hashCode()` (`0` for `null`).
+        let prime = 31i32;
         let mut result = automaton_query_hash(self, &self.inner);
         result = prime
             .wrapping_mul(result)
@@ -320,18 +325,16 @@ impl Query for TermRangeQuery {
         result = prime
             .wrapping_mul(result)
             .wrapping_add(if self.include_upper { 1231 } else { 1237 });
-        let mut hasher = DefaultHasher::new();
-        match self.lower_term.as_ref() {
-            None => 0usize.hash(&mut hasher),
-            Some(term) => term.slice().hash(&mut hasher),
-        }
-        result = prime.wrapping_mul(result).wrapping_add(hasher.finish());
-        let mut hasher = DefaultHasher::new();
-        match self.upper_term.as_ref() {
-            None => 0usize.hash(&mut hasher),
-            Some(term) => term.slice().hash(&mut hasher),
-        }
-        prime.wrapping_mul(result).wrapping_add(hasher.finish())
+        result = prime.wrapping_mul(result).wrapping_add(
+            self.lower_term
+                .as_ref()
+                .map_or(0, crate::util::BytesRef::hash_code),
+        );
+        prime.wrapping_mul(result).wrapping_add(
+            self.upper_term
+                .as_ref()
+                .map_or(0, crate::util::BytesRef::hash_code),
+        )
     }
 }
 

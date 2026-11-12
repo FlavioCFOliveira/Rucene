@@ -50,6 +50,17 @@ pub trait PointFormatter: Debug + Send + Sync {
     ///
     /// Every implementation writes `self`.
     fn as_any(&self) -> &dyn Any;
+
+    /// The Java binary name of the anonymous `PointInSetQuery` subclass this
+    /// formatter stands for — `org.apache.lucene.document.IntPoint$3` for
+    /// `IntPoint.newSetQuery`, for one — which is the set query's
+    /// [`Query::java_class_name`] and so the source of its `classHash()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** The default answers the Rust type
+    /// path of a formatter that has no Lucene class (a test's own subclass).
+    fn java_class_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
 }
 
 /// Abstract query class to find all documents whose single or multi-dimensional
@@ -69,7 +80,7 @@ pub struct PointInSetQuery {
     /// A little bit overkill, since all of these "terms" are always in the same
     /// field.
     sorted_packed_points: Arc<PrefixCodedTerms>,
-    sorted_packed_points_hash_code: u64,
+    sorted_packed_points_hash_code: i32,
     field: String,
     num_dims: i32,
     bytes_per_dim: usize,
@@ -131,7 +142,6 @@ impl PointInSetQuery {
         let mut previous: Option<BytesRef> = None;
         let mut lower_point: Option<Vec<u8>> = None;
         let mut content_bytes: i64 = 0;
-        let mut hasher_input: Vec<u8> = Vec::new();
         while let Some(current) = packed_points.next()? {
             if current.length != point_len {
                 return Err(LuceneError::illegal_argument(format!(
@@ -156,12 +166,13 @@ impl PointInSetQuery {
             }
             builder.add_bytes(field, &current)?;
             content_bytes += current.length as i64;
-            hasher_input.extend_from_slice(current.slice());
             previous = Some(BytesRef::deep_copy_of(&current));
         }
         let upper_point = previous.as_ref().map(|max| max.slice().to_vec());
         let sorted_packed_points = Arc::new(builder.finish());
-        let sorted_packed_points_hash_code = hash_bytes(&hasher_input);
+        // `sortedPackedPointsHashCode = sortedPackedPoints.hashCode()`
+        // (`PointInSetQuery.java:129`).
+        let sorted_packed_points_hash_code = sorted_packed_points.hash_code();
 
         Ok(Self {
             sorted_packed_points,
@@ -213,16 +224,6 @@ impl PointInSetQuery {
     pub fn get_bytes_per_dim(&self) -> i32 {
         self.bytes_per_dim as i32
     }
-}
-
-/// Hashes a byte sequence, standing in for `Arrays.hashCode(byte[])` over the
-/// encoded points.
-fn hash_bytes(bytes: &[u8]) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    hasher.finish()
 }
 
 impl Accountable for PointInSetQuery {
@@ -764,15 +765,25 @@ impl Query for PointInSetQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.formatter.as_any().type_id().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.sorted_packed_points_hash_code.hash(&mut hasher);
-        self.num_dims.hash(&mut hasher);
-        self.bytes_per_dim.hash(&mut hasher);
-        hasher.finish()
+    /// The anonymous subclass the formatter stands for; see
+    /// [`PointFormatter::java_class_name`].
+    fn java_class_name(&self) -> &'static str {
+        self.formatter.java_class_name()
+    }
+
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::java_string_hash_code;
+        // `PointInSetQuery.hashCode()` (`PointInSetQuery.java:521-528`).
+        let mut hash = self.class_hash();
+        hash = 31i32
+            .wrapping_mul(hash)
+            .wrapping_add(java_string_hash_code(&self.field));
+        hash = 31i32
+            .wrapping_mul(hash)
+            .wrapping_add(self.sorted_packed_points_hash_code);
+        hash = 31i32.wrapping_mul(hash).wrapping_add(self.num_dims);
+        31i32
+            .wrapping_mul(hash)
+            .wrapping_add(self.bytes_per_dim as i32)
     }
 }

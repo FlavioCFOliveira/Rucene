@@ -158,7 +158,7 @@ impl Query for DumbPrefixQuery {
         self.prefix == that.prefix
     }
 
-    fn query_hash(&self) -> u64 {
+    fn query_hash(&self) -> i32 {
         multi_term_query_hash(self)
     }
 }

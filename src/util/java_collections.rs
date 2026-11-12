@@ -2546,3 +2546,499 @@ mod tests {
         assert!(!set.contains("_9.tim"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// java.lang.Object.hashCode() and the java.util hash helpers
+// ---------------------------------------------------------------------------
+
+/// A value with a Java `hashCode()`: the `int` the Java object it stands for
+/// returns, reproduced exactly so that a `java.util.HashMap` keyed by it
+/// iterates in Java's order.
+///
+/// Equality is the type's [`Eq`], which stands for Java's `equals(Object)`
+/// and must be consistent with [`java_hash_code`](Self::java_hash_code).
+pub trait JavaHashCode {
+    /// `Object.hashCode()` of the Java object this value stands for.
+    fn java_hash_code(&self) -> i32;
+}
+
+/// `Boolean.hashCode(boolean)`: `1231` for `true`, `1237` for `false`.
+pub fn java_boolean_hash_code(value: bool) -> i32 {
+    if value {
+        1231
+    } else {
+        1237
+    }
+}
+
+/// `Float.hashCode(float)`: `Float.floatToIntBits`, which collapses every NaN
+/// to the canonical `0x7fc00000`.
+pub fn java_float_hash_code(value: f32) -> i32 {
+    if value.is_nan() {
+        0x7fc0_0000
+    } else {
+        value.to_bits() as i32
+    }
+}
+
+/// `Double.hashCode(double)`: `(int) (bits ^ (bits >>> 32))` over
+/// `Double.doubleToLongBits`, which collapses every NaN to
+/// `0x7ff8000000000000`.
+pub fn java_double_hash_code(value: f64) -> i32 {
+    let bits = if value.is_nan() {
+        0x7ff8_0000_0000_0000u64
+    } else {
+        value.to_bits()
+    };
+    (bits ^ (bits >> 32)) as i32
+}
+
+/// `Long.hashCode(long)`: `(int) (value ^ (value >>> 32))`.
+pub fn java_long_hash_code(value: i64) -> i32 {
+    (value ^ ((value as u64) >> 32) as i64) as i32
+}
+
+/// `Arrays.hashCode(int[])` over a non-`null` array: `31 * h + e` from `1`.
+/// `Objects.hash(Object...)` is the same fold over its arguments' hash codes.
+pub fn java_arrays_hash_code_ints(values: &[i32]) -> i32 {
+    values
+        .iter()
+        .fold(1i32, |h, &e| h.wrapping_mul(31).wrapping_add(e))
+}
+
+/// `Arrays.hashCode(byte[])` over a non-`null` array: `31 * h + e` from `1`,
+/// each byte sign-extended as Java's `byte` is.
+pub fn java_arrays_hash_code_bytes(values: &[u8]) -> i32 {
+    values.iter().fold(1i32, |h, &e| {
+        h.wrapping_mul(31).wrapping_add(i32::from(e as i8))
+    })
+}
+
+/// `Arrays.hashCode(float[])` over a non-`null` array.
+pub fn java_arrays_hash_code_floats(values: &[f32]) -> i32 {
+    values.iter().fold(1i32, |h, &e| {
+        h.wrapping_mul(31).wrapping_add(java_float_hash_code(e))
+    })
+}
+
+/// `Arrays.hashCode(double[])` over a non-`null` array.
+pub fn java_arrays_hash_code_doubles(values: &[f64]) -> i32 {
+    values.iter().fold(1i32, |h, &e| {
+        h.wrapping_mul(31).wrapping_add(java_double_hash_code(e))
+    })
+}
+
+/// `Arrays.hashCode(long[])` over a non-`null` array.
+pub fn java_arrays_hash_code_longs(values: &[i64]) -> i32 {
+    values.iter().fold(1i32, |h, &e| {
+        h.wrapping_mul(31).wrapping_add(java_long_hash_code(e))
+    })
+}
+
+/// The stand-in this port uses for a Java hash code that is an *identity*
+/// hash: `Object.hashCode()` of an enum constant, of a `Class`, of a
+/// singleton or of any object that does not override `hashCode()`.
+///
+/// **Divergence from Lucene 10.5.0.** The JVM draws an identity hash at
+/// random the first time it is asked for one, so the value differs from one
+/// JVM run to the next and no port can reproduce it. Everything that depends
+/// on it — `Enum.hashCode()`, `getClass().hashCode()`, the hash code of a
+/// stateless singleton — is therefore unreproducible in Java itself. This port
+/// substitutes `String.hashCode()` of a stable name of the object (its Java
+/// binary class name, or `Class$CONSTANT` for an enum constant), which keeps
+/// the two properties a hash code must have — stable for one object, and
+/// consistent with `equals` — and is the same in every run.
+pub fn java_identity_hash_code_stand_in(stable_name: &str) -> i32 {
+    java_string_hash_code(stable_name)
+}
+
+impl JavaHashCode for String {
+    /// `String.hashCode()`.
+    fn java_hash_code(&self) -> i32 {
+        java_string_hash_code(self)
+    }
+}
+
+impl JavaHashCode for i32 {
+    /// `Integer.hashCode(int)`: the value itself.
+    fn java_hash_code(&self) -> i32 {
+        *self
+    }
+}
+
+impl JavaHashCode for i64 {
+    /// `Long.hashCode(long)`.
+    fn java_hash_code(&self) -> i32 {
+        java_long_hash_code(*self)
+    }
+}
+
+/// `HashMap.hash(Object)` over an already computed `hashCode()`:
+/// `h ^ (h >>> 16)`.
+pub fn spread_hash(h: i32) -> i32 {
+    h ^ ((h as u32) >> 16) as i32
+}
+
+/// One `HashMap.Node` of a [`JavaObjectHashMap`].
+#[derive(Clone, Debug)]
+struct ObjectEntry<K, V> {
+    hash: i32,
+    key: K,
+    value: V,
+}
+
+/// A `java.util.HashMap<K, V>` with Java's iteration order, for any key with a
+/// Java [`hashCode()`](JavaHashCode).
+///
+/// Equivalent to `java.util.HashMap` for the operations Lucene performs on
+/// maps keyed by its own value objects — `Query`, `Term` — whose iteration
+/// order reaches a result: the bucket index `(h ^ (h >>> 16)) & (n - 1)`,
+/// insertion-ordered chains appended at the tail, the lazily allocated
+/// 16-slot table, the doubling resize at a load factor of 0.75 that keeps each
+/// chain's order, and the extra resize `treeifyBin` performs while the table
+/// is shorter than [`MIN_TREEIFY_CAPACITY`].
+///
+/// **Divergence from Lucene 10.5.0.** A bucket that reaches
+/// `TREEIFY_THRESHOLD + 1` keys once the table is [`MIN_TREEIFY_CAPACITY`]
+/// long becomes a red-black tree in Java, ordered by `compareTo` when the keys
+/// are `Comparable` and otherwise by `System.identityHashCode` — an identity
+/// hash no port can reproduce. This map keeps the chain, as
+/// [`JavaHashMap`] does (see the module docs);
+/// [`is_treeified`](Self::is_treeified) reports when that shape is reached.
+#[derive(Clone)]
+pub struct JavaObjectHashMap<K, V> {
+    table: Vec<Vec<ObjectEntry<K, V>>>,
+    size: usize,
+    threshold: i32,
+    treeified: bool,
+}
+
+impl<K, V> Default for JavaObjectHashMap<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for JavaObjectHashMap<K, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
+    }
+}
+
+impl<K, V> JavaObjectHashMap<K, V> {
+    /// `new HashMap<>()`.
+    pub fn new() -> Self {
+        Self {
+            table: Vec::new(),
+            size: 0,
+            threshold: 0,
+            treeified: false,
+        }
+    }
+
+    /// `new HashMap<>(int initialCapacity)`.
+    pub fn with_initial_capacity(initial_capacity: i32) -> Self {
+        assert!(
+            initial_capacity >= 0,
+            "illegal initial capacity: {initial_capacity}"
+        );
+        Self {
+            table: Vec::new(),
+            size: 0,
+            threshold: table_size_for(initial_capacity),
+            treeified: false,
+        }
+    }
+
+    /// `HashMap.size()`.
+    pub fn len(&self) -> usize {
+        self.size
+    }
+
+    /// `HashMap.isEmpty()`.
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
+    }
+
+    /// Whether a bucket reached the shape Java would have turned into a tree.
+    pub fn is_treeified(&self) -> bool {
+        self.treeified
+    }
+
+    /// `HashMap.clear()`, which keeps the table.
+    pub fn clear(&mut self) {
+        for bucket in self.table.iter_mut() {
+            bucket.clear();
+        }
+        self.size = 0;
+        self.treeified = false;
+    }
+
+    /// Iterates the entries in `HashMap.entrySet()` order.
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.table
+            .iter()
+            .flat_map(|bucket| bucket.iter().map(|e| (&e.key, &e.value)))
+    }
+
+    /// Iterates the entries in `HashMap.entrySet()` order, values mutable.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> {
+        self.table
+            .iter_mut()
+            .flat_map(|bucket| bucket.iter_mut().map(|e| (&e.key, &mut e.value)))
+    }
+
+    /// Iterates the keys in `HashMap.keySet()` order.
+    pub fn keys(&self) -> impl Iterator<Item = &K> {
+        self.iter().map(|(k, _)| k)
+    }
+
+    /// Iterates the values in `HashMap.values()` order.
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.iter().map(|(_, v)| v)
+    }
+
+    /// Consumes the map, yielding its entries in iteration order.
+    pub fn into_entries(self) -> impl Iterator<Item = (K, V)> {
+        self.table
+            .into_iter()
+            .flat_map(|bucket| bucket.into_iter().map(|e| (e.key, e.value)))
+    }
+
+    /// `HashMap.resize()`; see [`JavaHashMap`] for why walking the old table
+    /// in order and appending reproduces Java's split.
+    fn resize(&mut self) {
+        let old_cap = self.table.len();
+        let old_thr = self.threshold;
+        let new_cap: usize;
+        let mut new_thr: i32 = 0;
+        if old_cap > 0 {
+            if old_cap >= MAXIMUM_CAPACITY {
+                self.threshold = i32::MAX;
+                return;
+            }
+            new_cap = old_cap << 1;
+            if new_cap < MAXIMUM_CAPACITY && old_cap >= DEFAULT_INITIAL_CAPACITY {
+                new_thr = old_thr << 1;
+            }
+        } else if old_thr > 0 {
+            new_cap = old_thr as usize;
+        } else {
+            new_cap = DEFAULT_INITIAL_CAPACITY;
+            new_thr = (DEFAULT_LOAD_FACTOR * DEFAULT_INITIAL_CAPACITY as f32) as i32;
+        }
+        if new_thr == 0 {
+            let ft = new_cap as f32 * DEFAULT_LOAD_FACTOR;
+            new_thr = if new_cap < MAXIMUM_CAPACITY && ft < MAXIMUM_CAPACITY as f32 {
+                ft as i32
+            } else {
+                i32::MAX
+            };
+        }
+        self.threshold = new_thr;
+        let old_table = std::mem::take(&mut self.table);
+        let mut new_table: Vec<Vec<ObjectEntry<K, V>>> = Vec::with_capacity(new_cap);
+        new_table.resize_with(new_cap, Vec::new);
+        for bucket in old_table {
+            for entry in bucket {
+                let index = index_for(entry.hash, new_cap);
+                new_table[index].push(entry);
+            }
+        }
+        self.table = new_table;
+    }
+}
+
+impl<K: JavaHashCode + Eq, V> JavaObjectHashMap<K, V> {
+    /// `HashMap.get(Object)`.
+    pub fn get(&self, key: &K) -> Option<&V> {
+        if self.table.is_empty() {
+            return None;
+        }
+        let hash = spread_hash(key.java_hash_code());
+        self.table[index_for(hash, self.table.len())]
+            .iter()
+            .find(|e| e.hash == hash && e.key == *key)
+            .map(|e| &e.value)
+    }
+
+    /// `HashMap.get(Object)`, for in-place change.
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        if self.table.is_empty() {
+            return None;
+        }
+        let hash = spread_hash(key.java_hash_code());
+        let n = self.table.len();
+        self.table[index_for(hash, n)]
+            .iter_mut()
+            .find(|e| e.hash == hash && e.key == *key)
+            .map(|e| &mut e.value)
+    }
+
+    /// `HashMap.containsKey(Object)`.
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// `HashMap.put(K, V)`, returning the previous value. As in Java, an
+    /// existing key keeps its original key object and only the value changes.
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        if self.table.is_empty() {
+            self.resize();
+        }
+        let hash = spread_hash(key.java_hash_code());
+        let n = self.table.len();
+        let bucket = &mut self.table[index_for(hash, n)];
+        for entry in bucket.iter_mut() {
+            if entry.hash == hash && entry.key == key {
+                return Some(std::mem::replace(&mut entry.value, value));
+            }
+        }
+        bucket.push(ObjectEntry { hash, key, value });
+        if bucket.len() > TREEIFY_THRESHOLD {
+            if n < MIN_TREEIFY_CAPACITY {
+                self.resize();
+            } else {
+                self.treeified = true;
+            }
+        }
+        self.size += 1;
+        if self.size as i32 > self.threshold {
+            self.resize();
+        }
+        None
+    }
+
+    /// `HashMap.remove(Object)`.
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        if self.table.is_empty() {
+            return None;
+        }
+        let hash = spread_hash(key.java_hash_code());
+        let n = self.table.len();
+        let bucket = &mut self.table[index_for(hash, n)];
+        let position = bucket
+            .iter()
+            .position(|e| e.hash == hash && e.key == *key)?;
+        let removed = bucket.remove(position);
+        self.size -= 1;
+        Some(removed.value)
+    }
+
+    /// `HashMap.hashCode()` (`AbstractMap.hashCode`): the sum over the entries
+    /// of `key.hashCode() ^ value.hashCode()`, given the values' hash codes.
+    pub fn java_hash_code_with(&self, value_hash: impl Fn(&V) -> i32) -> i32 {
+        self.iter().fold(0i32, |h, (k, v)| {
+            h.wrapping_add(k.java_hash_code() ^ value_hash(v))
+        })
+    }
+}
+
+/// A `java.util.HashSet<E>` with Java's iteration order: a
+/// [`JavaObjectHashMap`] whose values are all `HashSet.PRESENT`.
+#[derive(Clone)]
+pub struct JavaObjectHashSet<K> {
+    map: JavaObjectHashMap<K, ()>,
+}
+
+impl<K> Default for JavaObjectHashSet<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K: fmt::Debug> fmt::Debug for JavaObjectHashSet<K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_set().entries(self.iter()).finish()
+    }
+}
+
+impl<K> JavaObjectHashSet<K> {
+    /// `new HashSet<>()`.
+    pub fn new() -> Self {
+        Self {
+            map: JavaObjectHashMap::new(),
+        }
+    }
+
+    /// `new HashSet<>(int initialCapacity)`.
+    pub fn with_initial_capacity(initial_capacity: i32) -> Self {
+        Self {
+            map: JavaObjectHashMap::with_initial_capacity(initial_capacity),
+        }
+    }
+
+    /// `HashSet.size()`.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// `HashSet.isEmpty()`.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// `HashSet.clear()`.
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
+
+    /// Iterates the elements in `HashSet.iterator()` order.
+    pub fn iter(&self) -> impl Iterator<Item = &K> {
+        self.map.keys()
+    }
+
+    /// Consumes the set, yielding its elements in iteration order.
+    pub fn into_elements(self) -> impl Iterator<Item = K> {
+        self.map.into_entries().map(|(k, ())| k)
+    }
+}
+
+impl<K: JavaHashCode + Eq> JavaObjectHashSet<K> {
+    /// `HashSet.add(E)`, returning whether the set changed.
+    pub fn insert(&mut self, value: K) -> bool {
+        self.map.insert(value, ()).is_none()
+    }
+
+    /// `HashSet.remove(Object)`, returning whether the set changed.
+    pub fn remove(&mut self, value: &K) -> bool {
+        self.map.remove(value).is_some()
+    }
+
+    /// `HashSet.contains(Object)`.
+    pub fn contains(&self, value: &K) -> bool {
+        self.map.contains_key(value)
+    }
+
+    /// `HashSet.hashCode()` (`AbstractSet.hashCode`): the sum of the elements'
+    /// hash codes.
+    pub fn java_hash_code(&self) -> i32 {
+        self.iter()
+            .fold(0i32, |h, k| h.wrapping_add(k.java_hash_code()))
+    }
+}
+
+impl<K: JavaHashCode + Eq> PartialEq for JavaObjectHashSet<K> {
+    /// `AbstractSet.equals`: the same size and every element contained.
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.iter().all(|k| other.contains(k))
+    }
+}
+
+impl<K: JavaHashCode + Eq> Eq for JavaObjectHashSet<K> {}
+
+impl<K: JavaHashCode + Eq> Extend<K> for JavaObjectHashSet<K> {
+    fn extend<I: IntoIterator<Item = K>>(&mut self, iter: I) {
+        for k in iter {
+            self.insert(k);
+        }
+    }
+}
+
+impl<K: JavaHashCode + Eq> FromIterator<K> for JavaObjectHashSet<K> {
+    fn from_iter<I: IntoIterator<Item = K>>(iter: I) -> Self {
+        let mut set = Self::new();
+        set.extend(iter);
+        set
+    }
+}

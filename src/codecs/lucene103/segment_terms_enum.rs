@@ -16,6 +16,74 @@ use crate::store::{ByteArrayDataInput, DataInput, IndexInput};
 use crate::util::{AttributeSource, BytesRef, IOBooleanSupplier};
 use std::sync::Arc;
 
+/// `if (buf == null || buf.length < n) buf = new byte[ArrayUtil.oversize(n, 1)];`,
+/// the allocation every blocktree frame performs for each of its block
+/// buffers (`SegmentTermsEnumFrame.java:194-196`,
+/// `IntersectTermsEnumFrame.java:179-181`).
+///
+/// `is_null` stands for Java's `buf == null`. A corrupt negative `n` only
+/// reaches `ArrayUtil.oversize`, and its `IllegalArgumentException`, while the
+/// buffer is still `null`; otherwise `buf.length < n` is false and the buffer
+/// is kept, exactly as in Java.
+pub(crate) fn java_grow_buffer(buf: &mut Vec<u8>, is_null: &mut bool, n: i32) -> Result<()> {
+    if *is_null || (buf.len() as i64) < i64::from(n) {
+        *buf = vec![0u8; crate::util::ArrayUtil::oversize_int(n, 1)?];
+        *is_null = false;
+    }
+    Ok(())
+}
+
+/// The length a blocktree frame passes to `readBytes(byte[], 0, len)` over a
+/// buffer of `array_len` bytes.
+///
+/// A negative `len`, read off a corrupt block, fails the bounds check of the
+/// JDK's array copy: `java.lang.IndexOutOfBoundsException` with
+/// `Objects.checkFromIndexSize`'s message
+/// `Range [0, 0 + <len>) out of bounds for length <array_len>`, which is what
+/// `MemorySegmentIndexInput.readBytes` throws.
+///
+/// **Divergence from Lucene 10.5.0.** For the suffix bytes of a block
+/// compressed with `LOWERCASE_ASCII` or `LZ4`, Java hands the negative length
+/// to the decompressor, which fails (or not) later and differently; the port
+/// raises the uncompressed read's exception for every algorithm, because its
+/// decompressors take an unsigned length.
+pub(crate) fn java_read_len(len: i32, array_len: usize) -> Result<usize> {
+    if len < 0 {
+        return Err(LuceneError::unchecked(
+            "java.lang.IndexOutOfBoundsException",
+            format!("Range [0, 0 + {len}) out of bounds for length {array_len}"),
+        ));
+    }
+    Ok(len as usize)
+}
+
+/// `new CorruptIndexException(e.getMessage(), in, e)` around the
+/// `IllegalArgumentException` of `CompressionAlgorithm.byCode`
+/// (`SegmentTermsEnumFrame.java:197-201`, `IntersectTermsEnumFrame.java:182-187`).
+pub(crate) fn corrupt_from_by_code(error: LuceneError, input: &dyn IndexInput) -> LuceneError {
+    let message = match error.kind() {
+        crate::error::LuceneErrorKind::IllegalArgument { message, .. } => message.clone(),
+        _ => error.to_string(),
+    };
+    LuceneError::corrupt_index_with_cause(message, input.to_java_string(), error)
+}
+
+/// `System.arraycopy`'s rejection of a negative length:
+/// `java.lang.ArrayIndexOutOfBoundsException: arraycopy: length <len> is negative`.
+pub(crate) fn arraycopy_negative_length(len: i32) -> LuceneError {
+    LuceneError::unchecked(
+        "java.lang.ArrayIndexOutOfBoundsException",
+        format!("arraycopy: length {len} is negative"),
+    )
+}
+
+/// `Arrays.compareUnsigned(a, from, to, …)`'s rejection of `from > to`:
+/// `java.lang.IllegalArgumentException: fromIndex(<from>) > toIndex(<to>)`
+/// (`Arrays.rangeCheck`).
+pub(crate) fn range_check_from_after_to(from: i32, to: i32) -> LuceneError {
+    LuceneError::illegal_argument(format!("fromIndex({from}) > toIndex({to})"))
+}
+
 /// One decoded block of the terms dictionary.
 ///
 /// Equivalent to
@@ -54,8 +122,17 @@ pub struct SegmentTermsEnumFrame {
     // Rust forbids, so the frame keeps the view's two fields — position and
     // limit — beside the buffer instead, and [`ByteArrayDataInput`] is rebuilt
     // around them for each read. The state is exactly Java's, only spelled
-    // inline; the frame already stores `floor_data_pos` this way.
+    // inline.
+    //
+    // Java's four buffers start `null` and are allocated by the first
+    // `loadBlock` (`SegmentTermsEnumFrame.java:194-196`, `:212-214`,
+    // `:229-231`, `:252-254`); `buffers_null` records that state, because
+    // `ArrayUtil.oversize` only sees a corrupt negative length while it is.
     suffix_bytes: Vec<u8>,
+    /// Whether each of Java's four block buffers — `suffixBytes`,
+    /// `suffixLengthBytes`, `statBytes` and `bytes`, in that order — is still
+    /// `null`.
+    buffers_null: [bool; 4],
     /// Read position inside `suffix_bytes`.
     suffixes_pos: usize,
     /// Where this block's suffix bytes end inside `suffix_bytes`. This is what
@@ -79,10 +156,14 @@ pub struct SegmentTermsEnumFrame {
     /// Which algorithm compressed this block's suffix bytes.
     pub compression_alg: CompressionAlgorithm,
 
-    /// Floor data, copied out of the `.tip` file.
-    floor_data: Vec<u8>,
-    /// Read position inside `floor_data`.
-    floor_data_pos: usize,
+    /// `SegmentTermsEnumFrame.floorDataPos`: where the unread floor data
+    /// continues inside the trie's floor-data input
+    /// ([`TrieReader::floor_input`](crate::codecs::lucene103::trie_reader::TrieReader::floor_input)),
+    /// which stands for Java's `floorDataReader` field.
+    floor_data_pos: i64,
+    /// `SegmentTermsEnumFrame.rewindPos`: where this frame's floor data
+    /// starts.
+    rewind_pos: i64,
 
     /// Length of the prefix every term in this block shares.
     pub prefix_length: usize,
@@ -196,6 +277,7 @@ impl SegmentTermsEnumFrame {
             fp_orig: 0,
             fp_end: 0,
             suffix_bytes: Vec::new(),
+            buffers_null: [true; 4],
             suffixes_pos: 0,
             suffixes_limit: 0,
             suffix_length_bytes: Vec::new(),
@@ -207,8 +289,8 @@ impl SegmentTermsEnumFrame {
             stats_singleton_run_length: 0,
             total_suffix_bytes: 0,
             compression_alg: CompressionAlgorithm::NoCompression,
-            floor_data: Vec::new(),
             floor_data_pos: 0,
+            rewind_pos: 0,
             prefix_length: 0,
             ent_count: 0,
             next_ent: -1,
@@ -229,15 +311,16 @@ impl SegmentTermsEnumFrame {
         }
     }
 
-    /// Records this block's floor data, read out of the term index.
+    /// Records this block's floor data, read from `floor_in`, which is
+    /// positioned at its start.
     ///
-    /// Equivalent to `SegmentTermsEnumFrame.setFloorData`.
-    pub fn set_floor_data(&mut self, floor_data: Vec<u8>) -> Result<()> {
-        let mut reader = ByteArrayDataInput::new(&floor_data);
-        self.num_follow_floor_blocks = reader.read_v_int()?;
-        self.next_floor_label = i32::from(reader.read_byte()?);
-        self.floor_data_pos = reader.position();
-        self.floor_data = floor_data;
+    /// Equivalent to `SegmentTermsEnumFrame.setFloorData(IndexInput)`
+    /// (`SegmentTermsEnumFrame.java:111-117`).
+    pub fn set_floor_data(&mut self, floor_in: &mut dyn IndexInput) -> Result<()> {
+        self.rewind_pos = floor_in.file_pointer()?;
+        self.num_follow_floor_blocks = floor_in.read_v_int()?;
+        self.next_floor_label = i32::from(floor_in.read_byte()?);
+        self.floor_data_pos = floor_in.file_pointer()?;
         Ok(())
     }
 
@@ -277,25 +360,38 @@ impl SegmentTermsEnumFrame {
         );
 
         let start_suffix_fp = terms_in.file_pointer()?;
+        // term suffixes:
         let code_l = terms_in.read_v_long()?;
         self.is_leaf_block = code_l & 0x04 != 0;
-        let num_suffix_bytes = ((code_l as u64) >> 3) as usize;
-        if self.suffix_bytes.len() < num_suffix_bytes {
-            self.suffix_bytes.resize(num_suffix_bytes, 0);
-        }
-        let compression = CompressionAlgorithm::by_code((code_l & 0x03) as i32)?;
+        // `(int) (codeL >>> 3)`, which wraps negative on a corrupt block.
+        let num_suffix_bytes = ((code_l as u64) >> 3) as i32;
+        java_grow_buffer(
+            &mut self.suffix_bytes,
+            &mut self.buffers_null[0],
+            num_suffix_bytes,
+        )?;
+        let compression = match CompressionAlgorithm::by_code((code_l as i32) & 0x03) {
+            Ok(compression) => compression,
+            // `catch (IllegalArgumentException e) { throw new
+            // CorruptIndexException(e.getMessage(), ste.in, e); }`
+            // (`SegmentTermsEnumFrame.java:197-201`).
+            Err(e) => return Err(corrupt_from_by_code(e, &*terms_in)),
+        };
         self.compression_alg = compression;
-        compression.read(terms_in, &mut self.suffix_bytes, num_suffix_bytes)?;
+        let n = java_read_len(num_suffix_bytes, self.suffix_bytes.len())?;
+        compression.read(terms_in, &mut self.suffix_bytes, n)?;
         self.suffixes_pos = 0;
-        self.suffixes_limit = num_suffix_bytes;
+        self.suffixes_limit = n;
 
         let mut num_suffix_length_bytes = terms_in.read_v_int()?;
         self.all_equal = num_suffix_length_bytes & 0x01 != 0;
-        num_suffix_length_bytes >>= 1;
-        let n = num_suffix_length_bytes.max(0) as usize;
-        if self.suffix_length_bytes.len() < n {
-            self.suffix_length_bytes.resize(n, 0);
-        }
+        num_suffix_length_bytes = ((num_suffix_length_bytes as u32) >> 1) as i32;
+        java_grow_buffer(
+            &mut self.suffix_length_bytes,
+            &mut self.buffers_null[1],
+            num_suffix_length_bytes,
+        )?;
+        let n = num_suffix_length_bytes as usize;
         if self.all_equal {
             let b = terms_in.read_byte()?;
             self.suffix_length_bytes[..n].fill(b);
@@ -306,13 +402,17 @@ impl SegmentTermsEnumFrame {
         self.suffix_lengths_limit = n;
         self.total_suffix_bytes = terms_in.file_pointer()? - start_suffix_fp;
 
-        let num_stat_bytes = terms_in.read_v_int()?.max(0) as usize;
-        if self.stat_bytes.len() < num_stat_bytes {
-            self.stat_bytes.resize(num_stat_bytes, 0);
-        }
-        terms_in.read_bytes(Some(&mut self.stat_bytes), 0, num_stat_bytes)?;
+        // stats
+        let num_stat_bytes = terms_in.read_v_int()?;
+        java_grow_buffer(
+            &mut self.stat_bytes,
+            &mut self.buffers_null[2],
+            num_stat_bytes,
+        )?;
+        let n = java_read_len(num_stat_bytes, self.stat_bytes.len())?;
+        terms_in.read_bytes(Some(&mut self.stat_bytes), 0, n)?;
         self.stats_pos = 0;
-        self.stats_limit = num_stat_bytes;
+        self.stats_limit = n;
         self.stats_singleton_run_length = 0;
 
         self.meta_data_upto = 0;
@@ -320,13 +420,13 @@ impl SegmentTermsEnumFrame {
         self.next_ent = 0;
         self.last_sub_fp = -1;
 
-        let num_meta_bytes = terms_in.read_v_int()?.max(0) as usize;
-        if self.bytes.len() < num_meta_bytes {
-            self.bytes.resize(num_meta_bytes, 0);
-        }
-        terms_in.read_bytes(Some(&mut self.bytes), 0, num_meta_bytes)?;
+        // metadata
+        let num_meta_bytes = terms_in.read_v_int()?;
+        java_grow_buffer(&mut self.bytes, &mut self.buffers_null[3], num_meta_bytes)?;
+        let n = java_read_len(num_meta_bytes, self.bytes.len())?;
+        terms_in.read_bytes(Some(&mut self.bytes), 0, n)?;
         self.bytes_pos = 0;
-        self.bytes_limit = num_meta_bytes;
+        self.bytes_limit = n;
 
         self.fp_end = terms_in.file_pointer()?;
         Ok(())
@@ -350,14 +450,18 @@ impl SegmentTermsEnumFrame {
     /// Rewinds this frame to the start of its block.
     ///
     /// Equivalent to `SegmentTermsEnumFrame.rewind`.
-    pub fn rewind(&mut self) -> Result<()> {
+    ///
+    /// `floor_in` is the trie's floor-data input, Java's `floorDataReader`.
+    pub fn rewind(&mut self, floor_in: &mut dyn IndexInput) -> Result<()> {
         self.fp = self.fp_orig;
         self.next_ent = -1;
         self.has_terms = self.has_terms_orig;
         if self.is_floor {
-            let floor_data = std::mem::take(&mut self.floor_data);
-            self.set_floor_data(floor_data)?;
+            floor_in.seek(self.rewind_pos)?;
+            self.num_follow_floor_blocks = floor_in.read_v_int()?;
             debug_assert!(self.num_follow_floor_blocks > 0);
+            self.next_floor_label = i32::from(floor_in.read_byte()?);
+            self.floor_data_pos = floor_in.file_pointer()?;
         }
         Ok(())
     }
@@ -365,7 +469,13 @@ impl SegmentTermsEnumFrame {
     /// Advances within a floor run until the block that could hold `target`.
     ///
     /// Equivalent to `SegmentTermsEnumFrame.scanToFloorFrame`.
-    pub fn scan_to_floor_frame(&mut self, target: &[u8]) -> Result<()> {
+    ///
+    /// `floor_in` is the trie's floor-data input, Java's `floorDataReader`.
+    pub fn scan_to_floor_frame(
+        &mut self,
+        target: &[u8],
+        floor_in: &mut dyn IndexInput,
+    ) -> Result<()> {
         if !self.is_floor || target.len() <= self.prefix_length {
             return Ok(());
         }
@@ -376,38 +486,24 @@ impl SegmentTermsEnumFrame {
 
         debug_assert!(self.num_follow_floor_blocks != 0);
 
-        // The reader borrows `floor_data`, so the fields it writes are taken
-        // apart from it here; Java simply aliases the frame's own array.
-        let Self {
-            floor_data,
-            floor_data_pos,
-            fp_orig,
-            has_terms,
-            is_last_in_floor,
-            num_follow_floor_blocks,
-            next_floor_label,
-            ..
-        } = self;
         let mut new_fp;
-        let mut reader = ByteArrayDataInput::new(floor_data);
-        reader.set_position(*floor_data_pos);
+        floor_in.seek(self.floor_data_pos)?;
         loop {
-            let code = reader.read_v_long()?;
-            new_fp = *fp_orig + ((code as u64) >> 1) as i64;
-            *has_terms = code & 1 != 0;
-            *is_last_in_floor = *num_follow_floor_blocks == 1;
-            *num_follow_floor_blocks -= 1;
-            if *is_last_in_floor {
-                *next_floor_label = 256;
+            let code = floor_in.read_v_long()?;
+            new_fp = self.fp_orig + ((code as u64) >> 1) as i64;
+            self.has_terms = code & 1 != 0;
+            self.is_last_in_floor = self.num_follow_floor_blocks == 1;
+            self.num_follow_floor_blocks -= 1;
+            if self.is_last_in_floor {
+                self.next_floor_label = 256;
                 break;
             }
-            *next_floor_label = i32::from(reader.read_byte()?);
-            if target_label < *next_floor_label {
+            self.next_floor_label = i32::from(floor_in.read_byte()?);
+            if target_label < self.next_floor_label {
                 break;
             }
         }
-        let position = reader.position();
-        self.floor_data_pos = position;
+        self.floor_data_pos = floor_in.file_pointer()?;
 
         if new_fp != self.fp {
             self.next_ent = -1;
@@ -446,7 +542,14 @@ impl SegmentTermsEnumFrame {
             self.fp
         );
         self.next_ent += 1;
-        self.suffix_length = self.with_suffix_lengths(|r| r.read_v_int())?.max(0) as usize;
+        let suffix_length = self.with_suffix_lengths(|r| r.read_v_int())?;
+        if suffix_length < 0 {
+            // `suffixesReader.readBytes(ste.term.bytes(), prefixLength,
+            // suffixLength)` is a `System.arraycopy`, which rejects the corrupt
+            // negative length (`SegmentTermsEnumFrame.java:336-340`).
+            return Err(arraycopy_negative_length(suffix_length));
+        }
+        self.suffix_length = suffix_length as usize;
         self.start_byte_pos = self.suffixes_pos;
         term.truncate(self.prefix_length);
         term.resize(self.prefix_length + self.suffix_length, 0);
@@ -589,7 +692,19 @@ impl SegmentTermsEnumFrame {
         let target_suffix = self.target_suffix(target);
         loop {
             self.next_ent += 1;
-            self.suffix_length = self.with_suffix_lengths(|r| r.read_v_int())?.max(0) as usize;
+            let suffix_length = self.with_suffix_lengths(|r| r.read_v_int())?;
+            if suffix_length < 0 {
+                // `suffixesReader.skipBytes(suffixLength)` accepts it, and the
+                // `Arrays.compareUnsigned(suffixBytes, startBytePos,
+                // startBytePos + suffixLength, …)` that follows rejects the
+                // reversed range (`SegmentTermsEnumFrame.java:603-622`).
+                let from = self.suffixes_pos as i32;
+                return Err(range_check_from_after_to(
+                    from,
+                    from.wrapping_add(suffix_length),
+                ));
+            }
+            self.suffix_length = suffix_length as usize;
             self.start_byte_pos = self.suffixes_pos;
             self.suffixes_pos = self.start_byte_pos + self.suffix_length;
 
@@ -652,10 +767,23 @@ impl SegmentTermsEnumFrame {
 
         debug_assert!(self.prefix_matches(target, term));
 
-        self.suffix_length = self.with_suffix_lengths(|r| r.read_v_int())?.max(0) as usize;
-        let target_suffix = self.target_suffix(target);
+        let suffix_length = self.with_suffix_lengths(|r| r.read_v_int())?;
         let mut start = self.next_ent;
         let mut end = self.ent_count - 1;
+        if suffix_length < 0 {
+            // The first probe, `startBytePos = mid * suffixLength`, hands
+            // `Arrays.compareUnsigned` a reversed range
+            // (`SegmentTermsEnumFrame.java:693-710`); the loop always runs once
+            // because `nextEnt < entCount` here.
+            let mid = ((start as u32 + end as u32) >> 1) as i32;
+            let from = mid.wrapping_mul(suffix_length);
+            return Err(range_check_from_after_to(
+                from,
+                from.wrapping_add(suffix_length),
+            ));
+        }
+        self.suffix_length = suffix_length as usize;
+        let target_suffix = self.target_suffix(target);
         let mut cmp = std::cmp::Ordering::Equal;
         while start <= end {
             let mid = ((start as u32 + end as u32) >> 1) as i32;
@@ -1002,7 +1130,7 @@ impl SegmentTermsEnum {
         if frame.fp_orig == fp && frame.next_ent != -1 {
             // The frame already holds this block; rewind it rather than reload.
             if frame.ord as i64 > self.target_before_current_length {
-                frame.rewind()?;
+                frame.rewind(self.trie.floor_input())?;
             }
             debug_assert!(length == frame.prefix_length);
         } else {
@@ -1023,24 +1151,22 @@ impl SegmentTermsEnum {
     ///
     /// Equivalent to `SegmentTermsEnum.pushFrame(Node, int)`.
     fn push_frame_from_node(&mut self, node: Node, length: usize) -> Result<usize> {
-        let floor_data = if node.is_floor() {
-            // The floor data runs to the end of the field's slice of the index,
-            // which the trie reader addresses from zero.
-            let end = self.field.index_end() - self.field.index_start();
-            let len = (end - node.floor_data_fp).max(0) as usize;
-            Some(self.trie.floor_data(&node, len.min(1 << 16))?)
-        } else {
-            None
-        };
-
-        let ord = self.push_frame(Some(node), node.output_fp, length)?;
+        // `getFrame(1 + currentFrame.ord)` and the floor data are set up before
+        // `pushFrame(node, node.outputFp, length)` (`SegmentTermsEnum.java:191-199`),
+        // so a rewind inside it re-reads this node's floor data.
+        let ord = if self.started { self.current + 1 } else { 0 };
+        self.ensure_frame(ord)?;
         let frame = &mut self.stack[ord];
         frame.has_terms = node.has_terms;
         frame.has_terms_orig = node.has_terms;
         frame.is_floor = node.is_floor();
-        if let Some(floor_data) = floor_data {
-            frame.set_floor_data(floor_data)?;
+        if frame.is_floor {
+            // `f.setFloorData(node.floorData(trieReader))`: the floor data is
+            // read straight from the trie's input, unbounded.
+            frame.set_floor_data(self.trie.floor_data(&node)?)?;
         }
+        let pushed = self.push_frame(Some(node), node.output_fp, length)?;
+        debug_assert_eq!(pushed, ord);
         Ok(ord)
     }
 
@@ -1268,7 +1394,7 @@ impl SegmentTermsEnum {
                     // rewind it, so the scan starts from the block's first entry.
                     self.target_before_current_length = last_frame_ord as i64;
                     self.current = last_frame_ord;
-                    self.stack[self.current].rewind()?;
+                    self.stack[self.current].rewind(self.trie.floor_input())?;
                 }
                 std::cmp::Ordering::Equal => {
                     debug_assert_eq!(self.term.len(), target.len());
@@ -1296,7 +1422,7 @@ impl SegmentTermsEnum {
             let Some(next_node) = next_node else {
                 // The index is exhausted.
                 self.valid_index_prefix = self.stack[self.current].prefix_length;
-                self.stack[self.current].scan_to_floor_frame(target)?;
+                self.stack[self.current].scan_to_floor_frame(target, self.trie.floor_input())?;
 
                 if !self.stack[self.current].has_terms {
                     self.term_exists = false;
@@ -1319,7 +1445,7 @@ impl SegmentTermsEnum {
         }
 
         self.valid_index_prefix = self.stack[self.current].prefix_length;
-        self.stack[self.current].scan_to_floor_frame(target)?;
+        self.stack[self.current].scan_to_floor_frame(target, self.trie.floor_input())?;
 
         // The target term is entirely contained in the index.
         if !self.stack[self.current].has_terms {
@@ -1470,7 +1596,7 @@ impl SegmentTermsEnum {
         let root = self.trie.root;
         *self.get_node(0) = root;
         self.push_frame_from_node(root, 0)?;
-        self.stack[self.current].rewind()?;
+        self.stack[self.current].rewind(self.trie.floor_input())?;
         self.load_current_block()?;
         self.valid_index_prefix = 0;
         self.term.clear();
@@ -1745,7 +1871,7 @@ impl TermsEnum for SegmentTermsEnum {
                     debug_assert!(self.set_eof());
                     self.term.clear();
                     self.valid_index_prefix = 0;
-                    self.stack[self.current].rewind()?;
+                    self.stack[self.current].rewind(self.trie.floor_input())?;
                     self.term_exists = false;
                     return Ok(None);
                 }
@@ -1755,7 +1881,8 @@ impl TermsEnum for SegmentTermsEnum {
                     || self.stack[self.current].last_sub_fp != last_fp
                 {
                     let target = self.term.clone();
-                    self.stack[self.current].scan_to_floor_frame(&target)?;
+                    self.stack[self.current]
+                        .scan_to_floor_frame(&target, self.trie.floor_input())?;
                     self.init_index_input()?;
                     let terms_in = Self::index_input(&mut self.terms_in);
                     self.stack[self.current].load_block(terms_in)?;
@@ -1877,7 +2004,7 @@ impl TermsEnum for SegmentTermsEnum {
                     // rewind it, so the scan starts from the block's first entry.
                     self.target_before_current_length = 0;
                     self.current = last_frame_ord;
-                    self.stack[self.current].rewind()?;
+                    self.stack[self.current].rewind(self.trie.floor_input())?;
                 }
                 std::cmp::Ordering::Equal => {
                     debug_assert_eq!(self.term.len(), target.len());
@@ -1906,7 +2033,7 @@ impl TermsEnum for SegmentTermsEnum {
                 // The index is exhausted; the block we stand on is the one that
                 // would hold the target, so scan it.
                 self.valid_index_prefix = self.stack[self.current].prefix_length;
-                self.stack[self.current].scan_to_floor_frame(target)?;
+                self.stack[self.current].scan_to_floor_frame(target, self.trie.floor_input())?;
                 self.load_current_block()?;
                 let result = self.scan_to_term_current(target, false)?;
                 return self.finish_seek_ceil(result, target);
@@ -1924,16 +2051,17 @@ impl TermsEnum for SegmentTermsEnum {
         }
 
         self.valid_index_prefix = self.stack[self.current].prefix_length;
-        self.stack[self.current].scan_to_floor_frame(target)?;
+        self.stack[self.current].scan_to_floor_frame(target, self.trie.floor_input())?;
         self.load_current_block()?;
         let result = self.scan_to_term_current(target, false)?;
         self.finish_seek_ceil(result, target)
     }
 
+    /// Equivalent to `SegmentTermsEnum.seekExact(long)`
+    /// (`SegmentTermsEnum.java:1046-1049`): `new UnsupportedOperationException()`,
+    /// whose message is `null`.
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::unsupported_operation(
-            "the block-tree terms dictionary does not support seeking by ordinal".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn term(&self) -> Result<Option<BytesRef>> {
@@ -1946,10 +2074,10 @@ impl TermsEnum for SegmentTermsEnum {
         Ok(Some(BytesRef::new(self.term.clone())))
     }
 
+    /// Equivalent to `SegmentTermsEnum.ord()` (`SegmentTermsEnum.java:1051-1054`):
+    /// a message-less `UnsupportedOperationException`.
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::unsupported_operation(
-            "the block-tree terms dictionary does not track term ordinals".to_string(),
-        ))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn doc_freq(&mut self) -> Result<i32> {

@@ -543,8 +543,8 @@ impl Query for BrokenQuery {
 
     /// `classHash() ^ delegate.hashCode()`, the class hash of each variant
     /// distinct.
-    fn query_hash(&self) -> u64 {
-        (self.class_hash() ^ (self.kind as u64 + 1)) ^ self.delegate.query_hash()
+    fn query_hash(&self) -> i32 {
+        (self.class_hash() ^ (self.kind as i32 + 1)) ^ self.delegate.query_hash()
     }
 }
 

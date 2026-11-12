@@ -1130,13 +1130,12 @@ impl DoubleValuesSource for FeatureDoubleValuesSource {
     }
 
     /// Equivalent to `FeatureDoubleValuesSource.hashCode()`.
-    fn source_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.field.hash(&mut hasher);
-        self.feature.hash(&mut hasher);
-        hasher.finish()
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(field, featureName)`.
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            crate::util::java_collections::java_string_hash_code(&self.field),
+            crate::util::java_collections::java_string_hash_code(&self.feature),
+        ])
     }
 
     /// Equivalent to `FeatureDoubleValuesSource.toString()`.
@@ -1336,17 +1335,60 @@ impl Query for FeatureQuery {
         }
     }
 
-    fn query_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.class_hash().hash(&mut hasher);
-        self.field.hash(&mut hasher);
-        self.feature.hash(&mut hasher);
-        // `FeatureFunction` holds floats, which have no `Hash`; their bits do,
-        // and two functions that are equal have equal bits.
-        format!("{:?}", self.function).hash(&mut hasher);
-        hasher.finish()
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.document.FeatureQuery"
+    }
+
+    /// Equivalent to `FeatureQuery.hashCode()`: `getClass().hashCode()`,
+    /// `fieldName.hashCode()`, `featureName.hashCode()` and
+    /// `function.hashCode()`.
+    ///
+    /// `getClass().hashCode()` — not `classHash()` — is a JVM identity hash,
+    /// replaced by the stable stand-in of
+    /// [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in).
+    /// The function's Java hash (`FeatureField.java:312-517`) covers only the
+    /// function's own fields: Java applies the weight as a `BoostQuery` around
+    /// the `FeatureQuery`, so the weight this port keeps in the function does
+    /// not enter it.
+    fn query_hash(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_arrays_hash_code_ints, java_float_hash_code, java_identity_hash_code_stand_in,
+            java_string_hash_code,
+        };
+        let function_hash = match self.function {
+            // `getClass().hashCode()` of `LinearFunction`.
+            FeatureFunction::Linear { .. } => java_identity_hash_code_stand_in(
+                "org.apache.lucene.document.FeatureField$LinearFunction",
+            ),
+            // `Objects.hash(field, feature, pivot)`, `pivot` a `Float` (`null`
+            // while unresolved).
+            FeatureFunction::Saturation { pivot, .. } => java_arrays_hash_code_ints(&[
+                java_string_hash_code(&self.field),
+                java_string_hash_code(&self.feature),
+                java_float_hash_code(pivot),
+            ]),
+            FeatureFunction::SaturationUnresolved { .. } => java_arrays_hash_code_ints(&[
+                java_string_hash_code(&self.field),
+                java_string_hash_code(&self.feature),
+                0,
+            ]),
+            // `Float.hashCode(scalingFactor)`.
+            FeatureFunction::Logarithm { scaling_factor, .. } => {
+                java_float_hash_code(scaling_factor)
+            }
+            // `31 * Float.hashCode(pivot) + Float.hashCode(a)`.
+            FeatureFunction::SigmoidFunction { pivot, exp, .. } => 31i32
+                .wrapping_mul(java_float_hash_code(pivot))
+                .wrapping_add(java_float_hash_code(exp)),
+        };
+        let mut h = java_identity_hash_code_stand_in("org.apache.lucene.document.FeatureQuery");
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(java_string_hash_code(&self.field));
+        h = 31i32
+            .wrapping_mul(h)
+            .wrapping_add(java_string_hash_code(&self.feature));
+        31i32.wrapping_mul(h).wrapping_add(function_hash)
     }
 
     /// Equivalent to `FeatureQuery.rewrite(IndexSearcher)`: a function that

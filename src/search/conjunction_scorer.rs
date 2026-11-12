@@ -5,6 +5,7 @@
 
 use crate::error::Result;
 use crate::search::conjunction_disi::{ConjunctionDISI, ConjunctionMember};
+use crate::search::conjunction_utils::ConjunctionUtils;
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::search::scorable::{ChildScorable, Scorable};
 use crate::search::scorer::Scorer;
@@ -53,12 +54,10 @@ impl ConjunctionScorer {
             scoring.iter().all(|position| *position < required.len()),
             "scorers must be a subset of required"
         );
-        let members = required
-            .into_iter()
-            .map(ConjunctionMember::from_scorer)
-            .collect();
         Ok(Self {
-            disi: ConjunctionDISI::new(members)?,
+            // `this.disi = ConjunctionUtils.intersectScorers(required)`
+            // (`ConjunctionScorer.java:36`).
+            disi: ConjunctionUtils::intersect_scorers_conjunction(required)?,
             scoring,
         })
     }

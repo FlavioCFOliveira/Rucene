@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::error::Result;
 use crate::index::{check_byte_field, LeafReaderContext};
 use crate::search::double_values::DoubleValues;
-use crate::search::double_values_source::{hash_of, DoubleValuesSource};
+use crate::search::double_values_source::DoubleValuesSource;
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::segment_cacheable::SegmentCacheable;
 use crate::search::vector_scorer::VectorScorer;
@@ -98,8 +98,12 @@ impl DoubleValuesSource for ByteVectorSimilarityValuesSource {
         }
     }
 
-    fn source_hash(&self) -> u64 {
-        hash_of(&(&self.field_name, &self.query_vector))
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(fieldName, Arrays.hashCode(queryVector))`.
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            crate::util::java_collections::java_string_hash_code(&self.field_name),
+            crate::util::java_collections::java_arrays_hash_code_bytes(&self.query_vector),
+        ])
     }
 
     fn to_source_string(&self) -> String {

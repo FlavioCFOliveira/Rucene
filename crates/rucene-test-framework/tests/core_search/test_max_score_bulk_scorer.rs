@@ -1177,10 +1177,10 @@ impl Query for CountingFilterQuery {
             .is_some_and(|cfq| self.delegate.query_eq(&*cfq.delegate))
     }
 
-    fn query_hash(&self) -> u64 {
-        (31u32
-            .wrapping_mul(self.class_hash() as u32)
-            .wrapping_add(self.delegate.query_hash() as u32)) as u64
+    fn query_hash(&self) -> i32 {
+        31i32
+            .wrapping_mul(self.class_hash())
+            .wrapping_add(self.delegate.query_hash())
     }
 }
 

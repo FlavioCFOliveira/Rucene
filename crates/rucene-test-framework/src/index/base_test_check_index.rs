@@ -34,7 +34,7 @@ use rucene::index::check_index::{CheckIndex, Level};
 use rucene::index::index_writer::{IndexWriter, MAX_TERM_LENGTH};
 use rucene::index::terms::Term;
 use rucene::store::Directory;
-use rucene::util::{BytesRef, InfoStream, PrintStreamInfoStream};
+use rucene::util::{BytesRef, PrintStream, WriterPrintStream};
 
 use super::base_index_file_format_test_case::{assert_not_null, assert_null, expect_throws_lucene};
 use crate::analysis::MockAnalyzer;
@@ -56,9 +56,9 @@ pub fn class() -> Arc<Class> {
 
 /// `new PrintStream(bos, …, UTF_8)` over a `ByteArrayOutputStream(1024)`,
 /// or `System.out` when `VERBOSE`.
-fn info_stream(bos: &Arc<Mutex<Vec<u8>>>) -> Arc<dyn InfoStream> {
+fn info_stream(bos: &Arc<Mutex<Vec<u8>>>) -> Arc<dyn PrintStream> {
     if *VERBOSE {
-        Arc::new(PrintStreamInfoStream::new(Box::new(std::io::stdout())))
+        Arc::new(WriterPrintStream::stdout())
     } else {
         Arc::new(PrintStreamLines(Arc::clone(bos)))
     }

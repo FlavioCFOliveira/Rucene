@@ -624,8 +624,10 @@ impl AbstractMultiTermQueryConstantScoreWrapper {
     /// Equivalent to
     /// `AbstractMultiTermQueryConstantScoreWrapper.hashCode()`; `wrapper` is
     /// the outer query, whose class hash Java's `classHash()` answers.
-    pub fn query_hash(&self, wrapper: &dyn Query) -> u64 {
-        31u64
+    pub fn query_hash(&self, wrapper: &dyn Query) -> i32 {
+        // `31 * classHash() + query.hashCode()`
+        // (`AbstractMultiTermQueryConstantScoreWrapper.java:91-94`).
+        31i32
             .wrapping_mul(wrapper.class_hash())
             .wrapping_add(self.query.as_query().query_hash())
     }

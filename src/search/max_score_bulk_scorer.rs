@@ -679,7 +679,7 @@ impl MaxScoreBulkScorer {
                 self.max_score_sums[i],
                 self.scorable.min_competitive_score(),
                 num_scorers,
-            );
+            )?;
 
             {
                 let Self {
@@ -692,9 +692,13 @@ impl MaxScoreBulkScorer {
                 // clause; Java holds them in two fields, this port re-borrows
                 // each in turn.
                 if i >= self.first_required_scorer {
-                    apply_required_clause(doc_and_score_acc_buffer, wrapper)?;
+                    // `ScorerUtil.applyRequiredClause(docAndScoreAccBuffer,
+                    // w.iterator, w.scorable)` (`MaxScoreBulkScorer.java:422`).
+                    ScorerUtil::apply_required_clause(doc_and_score_acc_buffer, wrapper)?;
                 } else {
-                    apply_optional_clause(doc_and_score_acc_buffer, wrapper)?;
+                    // `ScorerUtil.applyOptionalClause(...)`
+                    // (`MaxScoreBulkScorer.java:424`).
+                    ScorerUtil::apply_optional_clause(doc_and_score_acc_buffer, wrapper)?;
                 }
             }
             self.wrappers[position].doc = self.wrappers[position].iterator().doc_id();
@@ -825,55 +829,6 @@ impl MaxScoreBulkScorer {
         }
         next
     }
-}
-
-/// Applies a clause as required, re-borrowing the iterator and the scorable of
-/// the same wrapper in turn.
-///
-/// Equivalent to `ScorerUtil.applyRequiredClause(DocAndScoreAccBuffer,
-/// DocIdSetIterator, Scorable)`, which Java can call with two aliases of the
-/// same clause.
-fn apply_required_clause(
-    buffer: &mut DocAndScoreAccBuffer,
-    wrapper: &mut DisiWrapper,
-) -> Result<()> {
-    let mut intersection_size = 0;
-    let mut cur_doc = wrapper.iterator().doc_id();
-    for i in 0..buffer.size {
-        let target_doc = buffer.docs[i];
-        if cur_doc < target_doc {
-            cur_doc = wrapper.iterator().advance(target_doc)?;
-        }
-        if cur_doc == target_doc {
-            buffer.docs[intersection_size] = target_doc;
-            buffer.scores[intersection_size] =
-                buffer.scores[i] + f64::from(wrapper.scorable().score()?);
-            intersection_size += 1;
-        }
-    }
-    buffer.size = intersection_size;
-    Ok(())
-}
-
-/// Applies a clause as optional; see [`apply_required_clause`].
-///
-/// Equivalent to `ScorerUtil.applyOptionalClause(DocAndScoreAccBuffer,
-/// DocIdSetIterator, Scorable)`.
-fn apply_optional_clause(
-    buffer: &mut DocAndScoreAccBuffer,
-    wrapper: &mut DisiWrapper,
-) -> Result<()> {
-    let mut cur_doc = wrapper.iterator().doc_id();
-    for i in 0..buffer.size {
-        let target_doc = buffer.docs[i];
-        if cur_doc < target_doc {
-            cur_doc = wrapper.iterator().advance(target_doc)?;
-        }
-        if cur_doc == target_doc {
-            buffer.scores[i] += f64::from(wrapper.scorable().score()?);
-        }
-    }
-    Ok(())
 }
 
 impl BulkScorer for MaxScoreBulkScorer {

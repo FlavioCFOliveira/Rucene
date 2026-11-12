@@ -17,6 +17,12 @@ pub struct ByteRunAutomaton {
 }
 
 impl ByteRunAutomaton {
+    /// Java's `hashCode()`, which `ByteRunAutomaton` inherits from
+    /// `RunAutomaton` (`RunAutomaton.java`): see [`RunAutomaton::hash_code`].
+    pub fn hash_code(&self) -> i32 {
+        self.inner.hash_code()
+    }
+
     /// Converts the incoming automaton to byte-based (with
     /// [`UTF32ToUTF8`]) first.
     ///

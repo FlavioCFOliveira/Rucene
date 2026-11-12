@@ -4,9 +4,6 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashSet;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
@@ -24,6 +21,9 @@ use crate::search::query_visitor::QueryVisitor;
 use crate::search::score_mode::ScoreMode;
 use crate::search::term_query::TermQuery;
 use crate::search::weight::Weight;
+use crate::util::java_collections::{
+    java_arrays_hash_code_ints, JavaObjectHashMap, JavaObjectHashSet,
+};
 
 /// The four operators, in the order `java.util.EnumMap` iterates them: the
 /// declaration order of `BooleanClause.Occur`.
@@ -33,13 +33,18 @@ const OCCUR_ORDER: [Occur; 4] = [Occur::MUST, Occur::FILTER, Occur::SHOULD, Occu
 ///
 /// Equivalent to the private `Map<Occur, Collection<Query>> clauseSets` field,
 /// an `EnumMap` whose `SHOULD` and `MUST` entries are `Multiset`s — duplicates
-/// matter — and whose `FILTER` and `MUST_NOT` entries are `HashSet`s.
+/// matter — and whose `FILTER` and `MUST_NOT` entries are `HashSet`s. Both
+/// collections iterate in Java's `HashMap` order
+/// ([`Multiset`] and [`JavaObjectHashSet`] over [`QueryKey`], whose hash is
+/// Java's `Query.hashCode()`), so every walk `BooleanQuery.rewrite`,
+/// `getClauses` and `visit` makes over them visits the clauses in Java's
+/// order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ClauseSets {
     must: Multiset<QueryKey>,
-    filter: HashSet<QueryKey>,
+    filter: JavaObjectHashSet<QueryKey>,
     should: Multiset<QueryKey>,
-    must_not: HashSet<QueryKey>,
+    must_not: JavaObjectHashSet<QueryKey>,
 }
 
 impl ClauseSets {
@@ -101,18 +106,16 @@ impl ClauseSets {
     }
 }
 
-/// Hashes a set of queries independently of its iteration order.
-///
-/// Equivalent to `java.util.AbstractSet.hashCode()`, which sums the element
-/// hashes; [`Multiset`] already hashes that way.
-fn hash_query_set(set: &HashSet<QueryKey>) -> u64 {
-    let mut aggregate: u64 = 0;
-    for key in set {
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        aggregate = aggregate.wrapping_add(hasher.finish());
+/// `new HashSet<>(Collection<Query>)` (`HashSet.java:118-121`): a table sized
+/// `Math.max((int) (c.size() / .75f) + 1, 16)`, then `addAll(c)` in the
+/// collection's iteration order.
+fn java_hash_set_copy_of(source: &JavaObjectHashSet<QueryKey>) -> JavaObjectHashSet<QueryKey> {
+    let capacity = ((source.len() as f32 / 0.75f32) as i32 + 1).max(16);
+    let mut copy = JavaObjectHashSet::with_initial_capacity(capacity);
+    for key in source.iter() {
+        copy.insert(key.clone());
     }
-    aggregate
+    copy
 }
 
 /// A builder for boolean queries.
@@ -431,15 +434,27 @@ impl BooleanQuery {
         Some(new_query.build())
     }
 
-    /// Equivalent to the private `BooleanQuery.computeHashCode()`.
-    fn compute_hash_code(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.minimum_number_should_match.hash(&mut hasher);
-        self.clause_sets.must.hash(&mut hasher);
-        hasher.write_u64(hash_query_set(&self.clause_sets.filter));
-        self.clause_sets.should.hash(&mut hasher);
-        hasher.write_u64(hash_query_set(&self.clause_sets.must_not));
-        let hash = hasher.finish();
+    /// Equivalent to the private `BooleanQuery.computeHashCode()`
+    /// (`BooleanQuery.java:735-741`): `Objects.hash(minimumNumberShouldMatch,
+    /// clauseSets)`, `1` instead of `0`.
+    ///
+    /// `clauseSets.hashCode()` is `EnumMap.hashCode()`, the sum over the four
+    /// entries of `occur.hashCode() ^ collection.hashCode()`. An `Occur`'s
+    /// hash and a `Multiset`'s `getClass().hashCode()` are JVM identity hashes,
+    /// so Java's value is not reproducible from one JVM run to the next; the
+    /// stable stand-ins of
+    /// [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)
+    /// replace them.
+    /// The `HashSet` entries hash as `AbstractSet.hashCode()`, the sum of the
+    /// queries' hash codes.
+    fn compute_hash_code(&self) -> i32 {
+        let sets = &self.clause_sets;
+        let clause_sets_hash = (Occur::MUST.java_hash_code() ^ sets.must.java_hash_code())
+            .wrapping_add(Occur::FILTER.java_hash_code() ^ sets.filter.java_hash_code())
+            .wrapping_add(Occur::SHOULD.java_hash_code() ^ sets.should.java_hash_code())
+            .wrapping_add(Occur::MUST_NOT.java_hash_code() ^ sets.must_not.java_hash_code());
+        let hash =
+            java_arrays_hash_code_ints(&[self.minimum_number_should_match, clause_sets_hash]);
         if hash == 0 {
             1
         } else {
@@ -464,27 +479,26 @@ fn unwrap_boosts(query: &Arc<dyn Query>) -> (Arc<dyn Query>, f64) {
     (query, boost)
 }
 
-/// Groups the given queries by their base query, summing the boosts, keeping
-/// the order in which they were first seen.
+/// Groups the given queries by their base query, summing the boosts, in the
+/// iteration order of the map Java builds.
 ///
 /// Equivalent to the `Map<Query, Double>` the two boost-deduplication steps of
-/// `BooleanQuery.rewrite` build. Java uses a `HashMap`, whose iteration order is
-/// unspecified; keeping the first-seen order here removes a source of
-/// non-determinism without changing the resulting query, whose equality ignores
-/// clause order.
+/// `BooleanQuery.rewrite` build (`BooleanQuery.java:428-438`, `:458-468`): a
+/// `java.util.HashMap`, filled with `put(query, getOrDefault(query, 0d) +
+/// boost)` and then walked through `entrySet()`, reproduced by a
+/// [`JavaObjectHashMap`] over [`QueryKey`].
 fn group_by_boost(queries: &[Arc<dyn Query>]) -> Vec<(Arc<dyn Query>, f64)> {
-    let mut grouped: Vec<(Arc<dyn Query>, f64)> = Vec::new();
+    let mut grouped: JavaObjectHashMap<QueryKey, f64> = JavaObjectHashMap::new();
     for query in queries {
         let (base, boost) = unwrap_boosts(query);
-        match grouped
-            .iter_mut()
-            .find(|(existing, _)| existing.query_eq(&*base))
-        {
-            Some((_, total)) => *total += boost,
-            None => grouped.push((base, boost)),
-        }
+        let key = QueryKey::new(base);
+        let total = grouped.get(&key).copied().unwrap_or(0.0) + boost;
+        grouped.insert(key, total);
     }
     grouped
+        .into_entries()
+        .map(|(key, total)| (key.into_query(), total))
+        .collect()
 }
 
 impl BooleanQuery {
@@ -637,7 +651,7 @@ impl Query for BooleanQuery {
         // Check whether some clauses are both required and excluded
         if self.clause_count(Occur::MUST_NOT) > 0 {
             let match_all = QueryKey::new(Arc::new(MatchAllDocsQuery));
-            for key in &self.clause_sets.must_not {
+            for key in self.clause_sets.must_not.iter() {
                 if self.clause_sets.contains(Occur::MUST, key)
                     || self.clause_sets.contains(Occur::FILTER, key)
                 {
@@ -656,7 +670,8 @@ impl Query for BooleanQuery {
         // remove FILTER clauses that are also MUST clauses or that match all
         // documents
         if self.clause_count(Occur::FILTER) > 0 {
-            let mut filters: HashSet<QueryKey> = self.clause_sets.filter.clone();
+            // `new HashSet<>(clauseSets.get(Occur.FILTER))`.
+            let mut filters = java_hash_set_copy_of(&self.clause_sets.filter);
             let mut modified = false;
             if filters.len() > 1 || self.clause_count(Occur::MUST) != 0 {
                 modified = filters.remove(&QueryKey::new(Arc::new(MatchAllDocsQuery)));
@@ -672,7 +687,7 @@ impl Query for BooleanQuery {
                         builder.add_clause(clause.clone())?;
                     }
                 }
-                for filter in filters {
+                for filter in filters.into_elements() {
                     builder.add(filter.into_query(), Occur::FILTER)?;
                 }
                 return Ok(Some(Arc::new(builder.build())));
@@ -681,13 +696,16 @@ impl Query for BooleanQuery {
 
         // convert FILTER clauses that are also SHOULD clauses to MUST clauses
         if self.clause_count(Occur::SHOULD) > 0 && self.clause_count(Occur::FILTER) > 0 {
-            let intersection: HashSet<QueryKey> = self
-                .clause_sets
-                .filter
+            // `new HashSet<>(filters)` and `retainAll(shoulds)`.
+            let mut intersection = java_hash_set_copy_of(&self.clause_sets.filter);
+            let removed: Vec<QueryKey> = intersection
                 .iter()
-                .filter(|key| self.clause_sets.should.contains(key))
+                .filter(|key| !self.clause_sets.should.contains(key))
                 .cloned()
                 .collect();
+            for key in &removed {
+                intersection.remove(key);
+            }
 
             if !intersection.is_empty() {
                 let mut builder = Builder::new();
@@ -1007,7 +1025,12 @@ impl Query for BooleanQuery {
             && self.clause_sets == other.clause_sets
     }
 
-    fn query_hash(&self) -> u64 {
+    /// `getClass().getName()` of `org.apache.lucene.search.BooleanQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.BooleanQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
         // Java caches the code and asserts it is not zero
         // (`BooleanQuery.java:745-752`); the port recomputes it every call.
         let hash_code = self.compute_hash_code();
