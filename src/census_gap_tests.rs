@@ -360,6 +360,245 @@ mod oracle {
         assert_eq!(fma_lines(), java_lines(&run_oracle(&[], &["fma"])));
     }
 
+    /// Environment variable that turns [`gap_g031_hotspot_cpu_options_match_lucene`]
+    /// into the child process printing this process's `Constants` values.
+    const G031_CHILD: &str = "RUCENE_G031_CHILD";
+
+    /// The `constants` oracle case's lines for this process.
+    fn constants_lines() -> Vec<String> {
+        use crate::util::Constants;
+        let mut lines = vec![
+            format!("HAS_FMA={}", Constants::has_fma()),
+            format!("HAS_AVX2={}", Constants::has_avx2()),
+            format!("HAS_SVE={}", Constants::has_sve()),
+            format!("HAS_SSE4A={}", Constants::has_sse4a()),
+            format!("MAX_VECTOR_SIZE={}", Constants::max_vector_size()),
+            format!("HAS_FAST_VECTOR_FMA={}", Constants::has_fast_vector_fma()),
+            format!("HAS_FAST_SCALAR_FMA={}", Constants::has_fast_scalar_fma()),
+        ];
+        lines.extend(fma_lines());
+        lines
+    }
+
+    /// G-031: `Constants.HAS_FMA`, `HAS_AVX2`, `HAS_SVE`, `HAS_SSE4A` and
+    /// `MAX_VECTOR_SIZE` read HotSpot's `UseFMA`, `UseAVX`, `UseSVE`,
+    /// `UseXmmI2F` and `MaxVectorSize` (`Constants.java:89-106`), so with
+    /// `-Dlucene.useScalarFMA=true` the scalar similarity functions fuse their
+    /// accumulation (`DefaultVectorUtilSupport.java:29-36`). The values and the
+    /// score bits equal a default JVM's on this host, with Lucene's default
+    /// (`auto`) and with the flag. `vector_util` reads the flag once per
+    /// process, so each configuration runs in a child process.
+    #[test]
+    fn gap_g031_hotspot_cpu_options_match_lucene() {
+        if std::env::var_os(G031_CHILD).is_some() {
+            for line in constants_lines() {
+                println!("g031 {line}");
+            }
+            return;
+        }
+        let test_name = concat!(
+            module_path!(),
+            "::gap_g031_hotspot_cpu_options_match_lucene"
+        )
+        .split_once("::")
+        .expect("INVARIANT: module_path! starts with the crate name")
+        .1;
+        for flag in [None, Some("true")] {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([test_name, "--exact", "--nocapture", "--test-threads=1"])
+                .env(G031_CHILD, "1")
+                .env_remove("lucene.useScalarFMA");
+            let mut jvm_args = Vec::new();
+            if let Some(flag) = flag {
+                child.env("lucene.useScalarFMA", flag);
+                jvm_args.push("-Dlucene.useScalarFMA=true");
+            }
+            let output = child.output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            // With `--nocapture` the harness may write `test <name> ... `
+            // before the test's own output, on the same line.
+            let rust: Vec<String> = String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .filter_map(|line| line.find("g031 ").map(|at| line[at + 5..].to_string()))
+                .collect();
+            let java = java_lines(&run_oracle(&jvm_args, &["constants"]));
+            assert_eq!(rust, java, "lucene.useScalarFMA={flag:?}");
+        }
+    }
+
+    /// A fired timeout whose `toString()` is `"T"`, as the oracle's.
+    #[derive(Debug)]
+    struct FiredTimeout;
+
+    impl crate::index::QueryTimeout for FiredTimeout {
+        fn should_exit(&self) -> bool {
+            true
+        }
+
+        fn java_to_string(&self) -> String {
+            "T".to_string()
+        }
+    }
+
+    /// `Throwable.toString()` of an `ExitingReaderException`, or `ok`.
+    fn exiting_outcome<T>(result: crate::error::Result<T>) -> String {
+        match result {
+            Ok(_) => "ok".to_string(),
+            Err(error) => match &error.kind {
+                LuceneErrorKind::ExitingReader(message) => format!(
+                    "org.apache.lucene.index.ExitableDirectoryReader$ExitingReaderException: \
+                     {message}"
+                ),
+                other => panic!("expected ExitingReaderException, got {other:?}"),
+            },
+        }
+    }
+
+    /// Drops the identity-hash digits of every `name@hex`, which the JVM draws
+    /// at random.
+    fn without_identity_hashes(line: &str) -> String {
+        let mut out = String::with_capacity(line.len());
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            out.push(c);
+            if c == '@' {
+                while chars.peek().is_some_and(char::is_ascii_hexdigit) {
+                    chars.next();
+                }
+            }
+        }
+        out
+    }
+
+    /// G-028: every `ExitingReaderException` of `ExitableDirectoryReader`
+    /// names the timeout and the iterated object: `". Timeout: " +
+    /// queryTimeout + ", DocValues=" + in` and so on
+    /// (`ExitableDirectoryReader.java:439-914`). The messages equal Lucene's,
+    /// class names included, up to the identity-hash digits of the objects
+    /// that declare no `toString()`; the port's digits are the stable
+    /// stand-in.
+    #[test]
+    fn gap_g028_exiting_reader_messages_match_lucene() {
+        use crate::document::{
+            BinaryDocValuesField, IntPoint, KnnByteVectorField, KnnFloatVectorField,
+            NumericDocValuesField, SortedDocValuesField, SortedNumericDocValuesField,
+            SortedSetDocValuesField, Store, StringField,
+        };
+        use crate::index::filter_directory_reader::{
+            DirectoryReaderWrapper, ExitableDirectoryReaderWrapper,
+        };
+        use crate::index::VectorSimilarityFunction::EUCLIDEAN;
+        use crate::search::knn::TopKnnCollector;
+        use crate::util::BytesRef;
+        let docs = (0..3)
+            .map(|i| {
+                let mut d = Document::new();
+                d.add(Box::new(
+                    StringField::new("s", format!("t{i}"), Store::NO).unwrap(),
+                ));
+                d.add(Box::new(NumericDocValuesField::new("n", i)));
+                let value = || BytesRef::new(format!("v{i}").into_bytes());
+                d.add(Box::new(SortedDocValuesField::new("sd", value())));
+                d.add(Box::new(BinaryDocValuesField::new("b", value())));
+                d.add(Box::new(SortedNumericDocValuesField::new("sn", i)));
+                d.add(Box::new(SortedSetDocValuesField::new("ss", value())));
+                d.add(Box::new(IntPoint::new("p", &[i as i32]).unwrap()));
+                d.add(Box::new(
+                    KnnFloatVectorField::new("fv", &[i as f32, 1.0], EUCLIDEAN).unwrap(),
+                ));
+                d.add(Box::new(
+                    KnnByteVectorField::new("bv", &[i as u8, 1], EUCLIDEAN).unwrap(),
+                ));
+                d
+            })
+            .collect();
+        let index = TestIndex::new(docs);
+        let reader = ExitableDirectoryReaderWrapper::new(Arc::new(FiredTimeout))
+            .wrap(Arc::clone(&index.reader))
+            .unwrap();
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        let leaf = leaves[0].leaf_reader();
+        let mut rust = vec![
+            exiting_outcome(
+                leaf.get_numeric_doc_values("n")
+                    .unwrap()
+                    .unwrap()
+                    .next_doc(),
+            ),
+            exiting_outcome(
+                leaf.get_sorted_doc_values("sd")
+                    .unwrap()
+                    .unwrap()
+                    .next_doc(),
+            ),
+            exiting_outcome(leaf.get_binary_doc_values("b").unwrap().unwrap().next_doc()),
+            exiting_outcome(
+                leaf.get_sorted_numeric_doc_values("sn")
+                    .unwrap()
+                    .unwrap()
+                    .next_doc(),
+            ),
+            exiting_outcome(
+                leaf.get_sorted_set_doc_values("ss")
+                    .unwrap()
+                    .unwrap()
+                    .next_doc(),
+            ),
+            exiting_outcome(
+                leaf.terms("s")
+                    .unwrap()
+                    .unwrap()
+                    .iterator()
+                    .and_then(|mut e| e.next()),
+            ),
+            exiting_outcome(leaf.get_point_values("p")),
+            exiting_outcome(
+                leaf.get_float_vector_values("fv")
+                    .unwrap()
+                    .unwrap()
+                    .iterator()
+                    .unwrap()
+                    .next_doc(),
+            ),
+            exiting_outcome(
+                leaf.get_byte_vector_values("bv")
+                    .unwrap()
+                    .unwrap()
+                    .iterator()
+                    .unwrap()
+                    .next_doc(),
+            ),
+        ];
+        let mut collector = TopKnnCollector::new(2, 100);
+        let mut accept_docs = crate::search::from_live_docs(None, 3).unwrap();
+        rust.push(exiting_outcome(leaf.search_nearest_vectors(
+            "fv",
+            &[1.0, 1.0],
+            &mut collector,
+            &mut accept_docs,
+        )));
+        // The digits of an object without `toString()` are the stand-in's.
+        let numeric = "org.apache.lucene.codecs.lucene90.Lucene90DocValuesProducer$4";
+        assert!(
+            rust[0].ends_with(&format!(
+                "DocValues={numeric}@{:x}",
+                crate::util::java_collections::java_identity_hash_code_stand_in(numeric) as u32
+            )),
+            "{}",
+            rust[0]
+        );
+        let java: Vec<String> = run_oracle(&[], &["exitable"])
+            .lines()
+            .map(without_identity_hashes)
+            .collect();
+        let rust: Vec<String> = rust.iter().map(|l| without_identity_hashes(l)).collect();
+        drop(leaves);
+        let _ = reader.close();
+        assert_eq!(rust, java);
+    }
+
     /// G-032: `SloppyMath` tables are seeded from `StrictMath` (fdlibm), so
     /// `cos`, `sin`, `asin` and `haversinMeters` agree with Lucene bit for bit
     /// (`SloppyMath.java:92-230`).

@@ -75,6 +75,13 @@ impl DenseDocIndexIterator {
 }
 
 impl DocIdSetIterator for DenseDocIndexIterator {
+    /// `KnnVectorValues.createDenseIterator()` returns an anonymous class (`KnnVectorValues$2`) that declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.KnnVectorValues$2",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.doc
     }
@@ -150,6 +157,13 @@ impl FromDisiDocIndexIterator {
 }
 
 impl DocIdSetIterator for FromDisiDocIndexIterator {
+    /// `KnnVectorValues.fromDISI(DocIdSetIterator)` returns an anonymous class (`KnnVectorValues$3`) that declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.KnnVectorValues$3",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.docs.doc_id()
     }
@@ -227,6 +241,13 @@ impl fmt::Debug for SparseDocIndexIterator {
 }
 
 impl DocIdSetIterator for SparseDocIndexIterator {
+    /// `KnnVectorValues.createSparseIterator()` returns an anonymous class (`KnnVectorValues$4`) that declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.KnnVectorValues$4",
+        )
+    }
     fn doc_id(&self) -> i32 {
         if self.ord == -1 {
             return -1;

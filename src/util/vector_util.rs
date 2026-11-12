@@ -25,6 +25,11 @@
 //! of the same name (`Constants.getSysProp`); setting
 //! `lucene.useScalarFMA=false` pins the non-fused form, exactly as the
 //! portability fixtures pin the JVM with `-Dlucene.useScalarFMA=false`.
+//! With the default `auto`, the choice rests on the HotSpot options
+//! `Constants` reads (`UseFMA`, `UseXmmI2F`, `MaxVectorSize`), which
+//! [`HotspotVMOptions::get`](crate::util::jvm::HotspotVMOptions::get) answers
+//! as HotSpot's ergonomics set them on the running CPU; a `-XX:` flag is the
+//! environment variable `XX:<name>` (for example `XX:UseFMA=false`).
 //!
 //! Consequently the loop shapes below are *not* free to change: the number of
 //! accumulators and the order in which partial sums are added are part of the

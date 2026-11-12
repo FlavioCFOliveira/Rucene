@@ -3976,7 +3976,7 @@ impl Constants {
     /// arithmetic.
     ///
     /// Equivalent to the private `Constants.HAS_FMA`.
-    fn has_fma() -> bool {
+    pub(crate) fn has_fma() -> bool {
         !Self::is_client_vm()
             && HotspotVMOptions::get("UseFMA")
                 .and_then(|v| v.parse::<bool>().ok())
@@ -3984,14 +3984,14 @@ impl Constants {
     }
 
     /// Equivalent to the private `Constants.MAX_VECTOR_SIZE`.
-    fn max_vector_size() -> i32 {
+    pub(crate) fn max_vector_size() -> i32 {
         HotspotVMOptions::get("MaxVectorSize")
             .and_then(|v| v.parse::<i32>().ok())
             .unwrap_or(0)
     }
 
     /// Equivalent to the private `Constants.HAS_SSE4A`: an AMD CPU with SSE4a.
-    fn has_sse4a() -> bool {
+    pub(crate) fn has_sse4a() -> bool {
         HotspotVMOptions::get("UseXmmI2F")
             .and_then(|v| v.parse::<bool>().ok())
             .unwrap_or(false)
@@ -3999,7 +3999,7 @@ impl Constants {
 
     /// Equivalent to the private `Constants.HAS_AVX2`: AVX support of at least
     /// AVX2.
-    fn has_avx2() -> bool {
+    pub(crate) fn has_avx2() -> bool {
         HotspotVMOptions::get("UseAVX")
             .and_then(|v| v.parse::<i32>().ok())
             .unwrap_or(0)
@@ -4007,7 +4007,7 @@ impl Constants {
     }
 
     /// Equivalent to the private `Constants.HAS_SVE`: an Arm CPU with SVE.
-    fn has_sve() -> bool {
+    pub(crate) fn has_sve() -> bool {
         HotspotVMOptions::get("UseSVE")
             .and_then(|v| v.parse::<i32>().ok())
             .unwrap_or(0)

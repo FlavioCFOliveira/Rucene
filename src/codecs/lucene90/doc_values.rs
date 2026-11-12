@@ -3187,6 +3187,58 @@ impl VaryingBpvReader {
     }
 }
 
+/// `Object.toString()` of the anonymous `Lucene90DocValuesProducer$n` class
+/// a getter returns; none of them declares a `toString()`. The numbering is
+/// javac's, in source order (`javap` on `lucene-core-10.5.0.jar`).
+fn producer_anonymous_to_string(n: u32) -> String {
+    crate::index::index_reader::java_object_to_string_stand_in(&format!(
+        "org.apache.lucene.codecs.lucene90.Lucene90DocValuesProducer${n}"
+    ))
+}
+
+/// The anonymous class `getNumeric(NumericEntry)` returns for `docs` and
+/// `values` (`Lucene90DocValuesProducer.java:783-976`): `$1`-`$5` dense and
+/// `$6`-`$10` sparse, each in the order constant, blocks, table, plain packed,
+/// `gcd`/`min` packed; an empty entry is `DocValues.emptyNumeric()`.
+fn numeric_to_string(docs: &DocsCursor, values: &NumericValueSource) -> String {
+    let base = match docs {
+        DocsCursor::Empty { .. } => {
+            return crate::index::index_reader::java_object_to_string_stand_in(
+                "org.apache.lucene.index.DocValues$2",
+            )
+        }
+        DocsCursor::Dense { .. } => 1,
+        DocsCursor::Sparse { .. } => 6,
+    };
+    let offset = match values {
+        NumericValueSource::Constant(_) => 0,
+        NumericValueSource::Varying(_) => 1,
+        NumericValueSource::Table { .. } => 2,
+        NumericValueSource::Packed { min: 0, gcd: 1, .. } => 3,
+        NumericValueSource::Packed { .. } => 4,
+    };
+    producer_anonymous_to_string(base + offset)
+}
+
+/// Whether ordinals take the specialised single-block path of `getSorted` and
+/// `getSortedSet` (`ordsEntry.blockShift < 0 && ordsEntry.bitsPerValue > 0`).
+fn single_block_ordinals(values: &NumericValueSource) -> bool {
+    matches!(
+        values,
+        NumericValueSource::Table { .. } | NumericValueSource::Packed { .. }
+    )
+}
+
+/// The anonymous `BaseSortedDocValues` `getSorted(SortedEntry)` returns
+/// (`Lucene90DocValuesProducer.java:1316-1450`): `$20` dense and `$21` sparse
+/// on the single-block path, `$22` otherwise.
+fn sorted_to_string(docs: &DocsCursor, values: &NumericValueSource) -> String {
+    producer_anonymous_to_string(match docs {
+        DocsCursor::Dense { .. } if single_block_ordinals(values) => 20,
+        DocsCursor::Sparse { .. } if single_block_ordinals(values) => 21,
+        _ => 22,
+    })
+}
 /// A `NUMERIC` field, read one value at a time.
 struct LazyNumericDocValues {
     docs: DocsCursor,
@@ -3255,6 +3307,10 @@ impl LazyNumericDocValues {
 }
 
 impl DocIdSetIterator for LazyNumericDocValues {
+    fn java_to_string(&self) -> String {
+        numeric_to_string(&self.docs, &self.values)
+    }
+
     fn doc_id(&self) -> i32 {
         self.docs.doc_id()
     }
@@ -3506,6 +3562,25 @@ impl LazyBinaryDocValues {
 }
 
 impl DocIdSetIterator for LazyBinaryDocValues {
+    /// The anonymous class `getBinary` returns
+    /// (`Lucene90DocValuesProducer.java:1210-1305`): `$16`/`$17` dense fixed
+    /// and variable length, `$18`/`$19` sparse; an empty entry is
+    /// `DocValues.emptyBinary()`.
+    fn java_to_string(&self) -> String {
+        let n = match (&self.docs, self.addresses.is_none()) {
+            (DocsCursor::Empty { .. }, _) => {
+                return crate::index::index_reader::java_object_to_string_stand_in(
+                    "org.apache.lucene.index.DocValues$1",
+                )
+            }
+            (DocsCursor::Dense { .. }, true) => 16,
+            (DocsCursor::Dense { .. }, false) => 17,
+            (DocsCursor::Sparse { .. }, true) => 18,
+            (DocsCursor::Sparse { .. }, false) => 19,
+        };
+        producer_anonymous_to_string(n)
+    }
+
     fn doc_id(&self) -> i32 {
         self.docs.doc_id()
     }
@@ -4118,6 +4193,10 @@ impl LazySortedDocValues {
 }
 
 impl DocIdSetIterator for LazySortedDocValues {
+    fn java_to_string(&self) -> String {
+        sorted_to_string(&self.ords.docs, &self.ords.values)
+    }
+
     fn doc_id(&self) -> i32 {
         self.ords.doc_id()
     }
@@ -4271,6 +4350,20 @@ impl LazySortedNumericDocValues {
 }
 
 impl DocIdSetIterator for LazySortedNumericDocValues {
+    /// The anonymous `SortedNumericDocValues` `getSortedNumeric` returns
+    /// (`$23` dense, `$24` sparse), or — for a single-valued entry, which Java
+    /// serves through `DocValues.singleton(getNumeric(entry))` and every
+    /// wrapper unwraps — the numeric view's class.
+    fn java_to_string(&self) -> String {
+        if self.addresses.is_none() {
+            return numeric_to_string(&self.docs, &self.values);
+        }
+        producer_anonymous_to_string(match self.docs {
+            DocsCursor::Dense { .. } => 23,
+            _ => 24,
+        })
+    }
+
     fn doc_id(&self) -> i32 {
         self.docs.doc_id()
     }
@@ -4503,6 +4596,22 @@ impl LazySortedSetDocValues {
 }
 
 impl DocIdSetIterator for LazySortedSetDocValues {
+    /// The anonymous `BaseSortedSetDocValues` `getSortedSet` returns (`$25`
+    /// dense and `$26` sparse on the single-block path, `$27` otherwise), or —
+    /// for a single-valued entry, served through
+    /// `DocValues.singleton(getSorted(...))` and unwrapped by every wrapper —
+    /// the sorted view's class.
+    fn java_to_string(&self) -> String {
+        if self.single {
+            return sorted_to_string(&self.ords.docs, &self.ords.values);
+        }
+        producer_anonymous_to_string(match self.ords.docs {
+            DocsCursor::Dense { .. } if single_block_ordinals(&self.ords.values) => 25,
+            DocsCursor::Sparse { .. } if single_block_ordinals(&self.ords.values) => 26,
+            _ => 27,
+        })
+    }
+
     fn doc_id(&self) -> i32 {
         self.ords.doc_id()
     }

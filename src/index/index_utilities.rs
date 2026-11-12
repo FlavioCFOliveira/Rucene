@@ -21,6 +21,18 @@ pub trait QueryTimeout: Send + Sync + std::fmt::Debug {
     ///
     /// Equivalent to `QueryTimeout.shouldExit()`.
     fn should_exit(&self) -> bool;
+
+    /// This object's `toString()`, as the `ExitableDirectoryReader` messages
+    /// render it.
+    ///
+    /// The default is `java.lang.Object.toString()`, which applies to every
+    /// Lucene class that declares no `toString()`: see
+    /// [`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in).
+    /// It names the Rust type; an implementation porting a Lucene class
+    /// overrides it with that class's binary name or its own `toString()`.
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(std::any::type_name::<Self>())
+    }
 }
 
 /// A [`QueryTimeout`] that expires a fixed number of milliseconds after it is
@@ -80,6 +92,12 @@ impl QueryTimeoutImpl {
 }
 
 impl QueryTimeout for QueryTimeoutImpl {
+    /// `QueryTimeoutImpl.toString()`; see the [`Display`](std::fmt::Display)
+    /// implementation.
+    fn java_to_string(&self) -> String {
+        self.to_string()
+    }
+
     fn should_exit(&self) -> bool {
         match *self
             .timeout_at

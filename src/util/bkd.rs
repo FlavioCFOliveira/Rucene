@@ -2612,6 +2612,13 @@ impl BKDReader {
 /// [`BKDReader::point_tree`]. This mirrors Java's `BKDReader extends
 /// PointValues`, where only the accessors and `getPointTree` are overridden.
 impl PointValues for BKDReader {
+    /// `BKDReader` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.util.bkd.BKDReader",
+        )
+    }
     fn point_tree(&self) -> Result<Box<dyn PointTree>> {
         self.point_tree()
     }

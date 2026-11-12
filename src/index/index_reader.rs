@@ -946,6 +946,26 @@ pub fn java_object_to_string<T: ?Sized>(class_name: &str, identity: &T) -> Strin
     )
 }
 
+/// Renders an object the way `java.lang.Object.toString()` does, with the
+/// port's stable identity-hash stand-in as the hexadecimal suffix.
+///
+/// Java's default is `getClass().getName() + "@" +
+/// Integer.toHexString(hashCode())`, where `hashCode()` is the identity hash.
+/// `class_name` must be the **binary** Java name (a `$` before a nested or
+/// anonymous class). The suffix is
+/// `Integer.toHexString(`[`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)`(class_name))`.
+///
+/// **Divergence from Lucene 10.5.0.** The JVM draws an identity hash at random,
+/// so the digits differ from one JVM run to the next and no port can reproduce
+/// them; the stand-in keeps the class name and the `name@hex` shape exactly and
+/// is the same in every run. No Lucene format depends on the digits.
+pub fn java_object_to_string_stand_in(class_name: &str) -> String {
+    format!(
+        "{class_name}@{:x}",
+        crate::util::java_collections::java_identity_hash_code_stand_in(class_name) as u32
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

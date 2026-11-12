@@ -75,6 +75,18 @@ pub enum Relation {
 /// and visitors are short-lived adapters that frequently borrow non-shareable
 /// state (a writer, an output buffer) for the duration of one traversal.
 pub trait IntersectVisitor {
+    /// This object's `toString()`, as the `ExitableDirectoryReader` messages
+    /// render it.
+    ///
+    /// The default is `java.lang.Object.toString()`, which applies to every
+    /// Lucene class that declares no `toString()`: see
+    /// [`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in).
+    /// It names the Rust type; an implementation porting a Lucene class
+    /// overrides it with that class's binary name or its own `toString()`.
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(std::any::type_name::<Self>())
+    }
+
     /// Called for all documents in a leaf cell that is fully inside the query.
     ///
     /// The consumer should **blindly accept** the doc ID: the cell has already
@@ -594,6 +606,18 @@ pub fn estimate_doc_count(estimated_point_count: i64, doc_count: i32, point_coun
 /// **must not** be overridden here either: they are the algorithm, not a
 /// customisation point.
 pub trait PointValues: Send + Sync {
+    /// This object's `toString()`, as the `ExitableDirectoryReader` messages
+    /// render it.
+    ///
+    /// The default is `java.lang.Object.toString()`, which applies to every
+    /// Lucene class that declares no `toString()`: see
+    /// [`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in).
+    /// It names the Rust type; an implementation porting a Lucene class
+    /// overrides it with that class's binary name or its own `toString()`.
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(std::any::type_name::<Self>())
+    }
+
     /// Creates a new tree cursor to navigate the index.
     ///
     /// Equivalent to `PointValues.getPointTree()`.

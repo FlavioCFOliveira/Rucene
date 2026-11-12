@@ -29,6 +29,18 @@ pub const NO_MORE_DOCS: i32 = i32::MAX;
 ///   and return the new current doc ID or [`NO_MORE_DOCS`].
 /// - Once exhausted, the iterator must not be used again.
 pub trait DocIdSetIterator {
+    /// This object's `toString()`, as the `ExitableDirectoryReader` messages
+    /// render it.
+    ///
+    /// The default is `java.lang.Object.toString()`, which applies to every
+    /// Lucene class that declares no `toString()`: see
+    /// [`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in).
+    /// It names the Rust type; an implementation porting a Lucene class
+    /// overrides it with that class's binary name or its own `toString()`.
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(std::any::type_name::<Self>())
+    }
+
     /// Whether this iterator is the view of a two-phase iterator that
     /// `TwoPhaseIterator.asDocIdSetIterator` returns, which is when
     /// `TwoPhaseIterator.unwrap(DocIdSetIterator)` (`TwoPhaseIterator.java`)

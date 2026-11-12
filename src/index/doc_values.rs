@@ -873,6 +873,13 @@ impl EmptyNumericDocValues {
 }
 
 impl DocIdSetIterator for EmptyNumericDocValues {
+    /// `DocValues.emptyNumeric()` returns an anonymous class (`DocValues$2`) that declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.DocValues$2",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -918,6 +925,13 @@ impl EmptyBinaryDocValues {
 }
 
 impl DocIdSetIterator for EmptyBinaryDocValues {
+    /// `DocValues.emptyBinary()` returns an anonymous class (`DocValues$1`) that declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.DocValues$1",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -965,6 +979,13 @@ impl EmptySortedDocValues {
 }
 
 impl DocIdSetIterator for EmptySortedDocValues {
+    /// `DocValues.emptySorted()` returns an anonymous class (`DocValues$3`) that declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.DocValues$3",
+        )
+    }
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1353,6 +1374,11 @@ impl SortedSetDocValues for SingletonSortedSetDocValues<'_> {
 /// `dyn Trait` is expected. This mirrors Java's polymorphic references and
 /// avoids manual unboxing at every call site.
 impl<T: DocIdSetIterator + ?Sized> DocIdSetIterator for Box<T> {
+    /// The boxed iterator's `toString()`: a Java reference has no box.
+    fn java_to_string(&self) -> String {
+        (**self).java_to_string()
+    }
+
     /// Forwarded: `TwoPhaseIterator.unwrap` tests the boxed iterator itself
     /// (`ConstantScoreBulkScorer.java:54-56` among its callers).
     fn wraps_two_phase_iterator(&self) -> bool {

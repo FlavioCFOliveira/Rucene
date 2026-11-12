@@ -79,6 +79,8 @@ public final class CensusGapFixture {
       case "fst" -> fst();
       case "termCollector" -> termCollector();
       case "fma" -> fma();
+      case "constants" -> constants();
+      case "exitable" -> exitable();
       case "sloppy" -> sloppy();
       case "mmap" -> mmap(Path.of(args[1]));
       default -> throw new IllegalArgumentException(args[0]);
@@ -263,6 +265,86 @@ public final class CensusGapFixture {
               + Integer.toHexString(Float.floatToRawIntBits(VectorUtil.squareDistance(a, b)))
               + " cosine="
               + Integer.toHexString(Float.floatToRawIntBits(VectorUtil.cosine(a, b))));
+    }
+  }
+
+  /**
+   * G-031: the {@code Constants} fields read from HotSpot VM options ({@code Constants.java:89-106})
+   * and the FMA choices they decide, followed by the {@code fma} case.
+   */
+  static void constants() throws Exception {
+    for (String name :
+        new String[] {
+          "HAS_FMA", "HAS_AVX2", "HAS_SVE", "HAS_SSE4A", "MAX_VECTOR_SIZE",
+          "HAS_FAST_VECTOR_FMA", "HAS_FAST_SCALAR_FMA"
+        }) {
+      java.lang.reflect.Field field = Constants.class.getDeclaredField(name);
+      field.setAccessible(true);
+      System.out.println(name + "=" + field.get(null));
+    }
+    fma();
+  }
+
+  /**
+   * G-028: the {@code ExitingReaderException} messages of an {@code ExitableDirectoryReader}
+   * whose timeout has fired, one per wrapped object ({@code ExitableDirectoryReader.java:439-914}).
+   */
+  static void exitable() throws Exception {
+    Directory dir = new ByteBuffersDirectory();
+    try (org.apache.lucene.index.IndexWriter w =
+        new org.apache.lucene.index.IndexWriter(
+            dir, new org.apache.lucene.index.IndexWriterConfig())) {
+      for (int i = 0; i < 3; i++) {
+        org.apache.lucene.document.Document d = new org.apache.lucene.document.Document();
+        d.add(
+            new org.apache.lucene.document.StringField(
+                "s", "t" + i, org.apache.lucene.document.Field.Store.NO));
+        d.add(new org.apache.lucene.document.NumericDocValuesField("n", i));
+        d.add(new org.apache.lucene.document.SortedDocValuesField("sd", new BytesRef("v" + i)));
+        d.add(new org.apache.lucene.document.BinaryDocValuesField("b", new BytesRef("v" + i)));
+        d.add(new org.apache.lucene.document.SortedNumericDocValuesField("sn", i));
+        d.add(new org.apache.lucene.document.SortedSetDocValuesField("ss", new BytesRef("v" + i)));
+        d.add(new org.apache.lucene.document.IntPoint("p", i));
+        d.add(new org.apache.lucene.document.KnnFloatVectorField("fv", new float[] {i, 1}));
+        d.add(new org.apache.lucene.document.KnnByteVectorField("bv", new byte[] {(byte) i, 1}));
+        w.addDocument(d);
+      }
+      w.forceMerge(1);
+    }
+    org.apache.lucene.index.QueryTimeout timeout =
+        new org.apache.lucene.index.QueryTimeout() {
+          @Override
+          public boolean shouldExit() {
+            return true;
+          }
+
+          @Override
+          public String toString() {
+            return "T";
+          }
+        };
+    try (org.apache.lucene.index.DirectoryReader reader =
+        new org.apache.lucene.index.ExitableDirectoryReader(
+            org.apache.lucene.index.DirectoryReader.open(dir), timeout)) {
+      org.apache.lucene.index.LeafReader leaf = reader.leaves().get(0).reader();
+      System.out.println(outcome(() -> leaf.getNumericDocValues("n").nextDoc()));
+      System.out.println(outcome(() -> leaf.getSortedDocValues("sd").nextDoc()));
+      System.out.println(outcome(() -> leaf.getBinaryDocValues("b").nextDoc()));
+      System.out.println(outcome(() -> leaf.getSortedNumericDocValues("sn").nextDoc()));
+      System.out.println(outcome(() -> leaf.getSortedSetDocValues("ss").nextDoc()));
+      System.out.println(outcome(() -> leaf.terms("s").iterator().next()));
+      System.out.println(outcome(() -> leaf.getPointValues("p")));
+      System.out.println(outcome(() -> leaf.getFloatVectorValues("fv").iterator().nextDoc()));
+      System.out.println(outcome(() -> leaf.getByteVectorValues("bv").iterator().nextDoc()));
+      System.out.println(
+          outcome(
+              () ->
+                  leaf.searchNearestVectors(
+                      "fv",
+                      new float[] {1, 1},
+                      2,
+                      org.apache.lucene.search.AcceptDocs.fromLiveDocs(null, 3),
+                      100)));
     }
   }
 

@@ -100,8 +100,8 @@
 //!
 //! [`lookup`] is a faithful port and returns [`DefaultVectorizationProvider`],
 //! because Lucene's first gate is `Constants.IS_HOTSPOT_VM` and
-//! [`crate::util::jvm::HotspotVMOptions`] — itself a faithful port of Lucene's
-//! non-HotSpot fallback — reports `false` in a Rust binary. The Panama provider
+//! [`crate::util::jvm::HotspotVMOptions::is_hotspot_vm`] reports `false` in a
+//! Rust binary, as Lucene's non-HotSpot fallback does. The Panama provider
 //! is thus unreachable through `lookup` by Lucene's own logic rather than by a
 //! Rucene-specific rule; it is a complete implementation and can be constructed
 //! directly, and it becomes reachable the day that gate changes.
