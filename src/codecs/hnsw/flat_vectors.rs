@@ -18,7 +18,6 @@ use crate::codecs::knn_vectors::{
     ByteVectorValues, FieldVectorWriter, FloatVectorValues, KnnFieldVectorsWriter,
     KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
 };
-use crate::codecs::lucene99::scalar_quantized_scorer::Lucene99ScalarQuantizedVectorScorer;
 use crate::codecs::postings::MergeState;
 use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState};
 use crate::codecs::stub::FieldInfo;
@@ -1364,33 +1363,33 @@ pub trait FlatVectorsWriter: KnnVectorsWriter {
 
 /// Utilities for obtaining a flat-vector scorer.
 ///
-/// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorScorerUtil`.
-///
-/// Rucene does not implement Lucene's vectorization provider, so this always
-/// returns the portable [`DefaultFlatVectorScorer`].
+/// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorScorerUtil`: both
+/// methods ask `IMPL`, the vectorization provider selected for the process
+/// (`FlatVectorScorerUtil.java:29`), so the memory-segment scorers are
+/// returned when the Panama provider is selected and the portable ones
+/// otherwise.
 pub struct FlatVectorScorerUtil;
+
+/// `FlatVectorScorerUtil.IMPL`, looked up once.
+static FLAT_VECTOR_SCORER_UTIL_IMPL: std::sync::LazyLock<
+    Arc<dyn crate::internal::vectorization::VectorizationProvider>,
+> = std::sync::LazyLock::new(|| crate::internal::vectorization::get_instance());
 
 impl FlatVectorScorerUtil {
     /// Returns a scorer suitable for the Lucene99 flat-vectors format.
-    pub fn get_lucene99_flat_vectors_scorer() -> DefaultFlatVectorScorer {
-        DefaultFlatVectorScorer::INSTANCE
+    ///
+    /// Equivalent to `FlatVectorScorerUtil.getLucene99FlatVectorsScorer()`.
+    pub fn get_lucene99_flat_vectors_scorer() -> Arc<dyn FlatVectorsScorer> {
+        FLAT_VECTOR_SCORER_UTIL_IMPL.get_lucene99_flat_vectors_scorer()
     }
 
     /// Returns a scorer suitable for the Lucene99 scalar-quantized vectors
     /// format.
     ///
-    /// Like `DefaultVectorizationProvider.getLucene99ScalarQuantizedVectorsScorer()`
-    /// (`DefaultVectorizationProvider.java:44-47`), this wraps the portable
-    /// [`DefaultFlatVectorScorer`] in a
-    /// [`Lucene99ScalarQuantizedVectorScorer`], which scores quantized fields
-    /// itself and forwards the rest to that delegate.
-    ///
     /// Equivalent to
-    /// `org.apache.lucene.codecs.hnsw.FlatVectorScorerUtil#getLucene99ScalarQuantizedVectorsScorer`.
-    pub fn get_lucene99_scalar_quantized_vectors_scorer() -> Lucene99ScalarQuantizedVectorScorer {
-        Lucene99ScalarQuantizedVectorScorer::new(
-            Arc::new(DefaultFlatVectorScorer::INSTANCE) as Arc<dyn FlatVectorsScorer>
-        )
+    /// `FlatVectorScorerUtil.getLucene99ScalarQuantizedVectorsScorer()`.
+    pub fn get_lucene99_scalar_quantized_vectors_scorer() -> Arc<dyn FlatVectorsScorer> {
+        FLAT_VECTOR_SCORER_UTIL_IMPL.get_lucene99_scalar_quantized_vectors_scorer()
     }
 }
 

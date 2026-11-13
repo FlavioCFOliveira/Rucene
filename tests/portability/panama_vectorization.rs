@@ -33,8 +33,9 @@ use std::sync::Arc;
 
 use rucene::internal::vectorization::panama_vector_util_support::use_vector_fma;
 use rucene::internal::vectorization::{
-    DefaultVectorUtilSupport, DocValuesRangeSupport, MemorySegmentBulkVectorOps,
-    PanamaDocValuesRangeSupport, PanamaVectorConstants, PanamaVectorUtilSupport, VectorUtilSupport,
+    get_instance, lookup, DefaultVectorUtilSupport, DocValuesRangeSupport,
+    MemorySegmentBulkVectorOps, PanamaDocValuesRangeSupport, PanamaVectorConstants,
+    PanamaVectorUtilSupport, VectorUtilSupport, VectorizationProvider, ADD_VECTOR_MODULE_SYSPROP,
 };
 use rucene::store::java_nio_file::{self as nio, FileChannel, FileSystems, OpenOption};
 use rucene::store::memory_segment::SharedArena;
@@ -400,13 +401,141 @@ fn segment_of(data: &[f32], dir: &Path, arena: &SharedArena) -> MemorySegment {
     MemorySegment::map(&*channel, 0, bytes.len(), Arc::clone(arena.scope())).unwrap()
 }
 
+/// Rucene's public `VectorUtil` API, seen as a [`VectorUtilSupport`], so the
+/// corpus runs through the provider `vector_util` selected
+/// (`VectorUtil.IMPL`), with `VectorUtil`'s argument checks and asserts.
+#[derive(Debug)]
+struct VectorUtilApi;
+
+impl VectorUtilSupport for VectorUtilApi {
+    fn dot_product_f32(&self, a: &[f32], b: &[f32]) -> rucene::error::Result<f32> {
+        vector_util::dot_product_f32(a, b)
+    }
+    fn cosine_f32(&self, a: &[f32], b: &[f32]) -> rucene::error::Result<f32> {
+        vector_util::cosine_f32(a, b)
+    }
+    fn square_distance_f32(&self, a: &[f32], b: &[f32]) -> rucene::error::Result<f32> {
+        vector_util::square_distance_f32(a, b)
+    }
+    fn dot_product_bytes(&self, a: &[u8], b: &[u8]) -> rucene::error::Result<i32> {
+        vector_util::dot_product_bytes(a, b)
+    }
+    fn int4_dot_product(&self, a: &[u8], b: &[u8]) -> rucene::error::Result<i32> {
+        vector_util::int4_dot_product(a, b)
+    }
+    fn int4_dot_product_single_packed(&self, u: &[u8], p: &[u8]) -> rucene::error::Result<i32> {
+        vector_util::int4_dot_product_single_packed(u, p)
+    }
+    fn int4_dot_product_both_packed(&self, a: &[u8], b: &[u8]) -> rucene::error::Result<i32> {
+        vector_util::int4_dot_product_both_packed(a, b)
+    }
+    fn uint8_dot_product(&self, a: &[u8], b: &[u8]) -> rucene::error::Result<i32> {
+        vector_util::uint8_dot_product(a, b)
+    }
+    fn cosine_bytes(&self, a: &[u8], b: &[u8]) -> rucene::error::Result<f32> {
+        vector_util::cosine_bytes(a, b)
+    }
+    fn square_distance_bytes(&self, a: &[u8], b: &[u8]) -> rucene::error::Result<i32> {
+        vector_util::square_distance_bytes(a, b)
+    }
+    fn int4_square_distance(&self, a: &[u8], b: &[u8]) -> rucene::error::Result<i32> {
+        vector_util::int4_square_distance(a, b)
+    }
+    fn int4_square_distance_single_packed(&self, u: &[u8], p: &[u8]) -> rucene::error::Result<i32> {
+        vector_util::int4_square_distance_single_packed(u, p)
+    }
+    fn int4_square_distance_both_packed(&self, a: &[u8], b: &[u8]) -> rucene::error::Result<i32> {
+        vector_util::int4_square_distance_both_packed(a, b)
+    }
+    fn uint8_square_distance(&self, a: &[u8], b: &[u8]) -> rucene::error::Result<i32> {
+        vector_util::uint8_square_distance(a, b)
+    }
+    fn find_next_geq(&self, buffer: &[i32], target: i32, from: usize, to: usize) -> usize {
+        vector_util::find_next_geq(buffer, target, from, to)
+    }
+    fn int4_bit_dot_product(&self, q: &[u8], d: &[u8]) -> rucene::error::Result<i64> {
+        vector_util::int4_bit_dot_product(q, d)
+    }
+    fn int4_dibit_dot_product(&self, q: &[u8], d: &[u8]) -> rucene::error::Result<i64> {
+        vector_util::int4_dibit_dot_product(q, d)
+    }
+    fn min_max_scalar_quantize(
+        &self,
+        vector: &[f32],
+        dest: &mut [u8],
+        scale: f32,
+        alpha: f32,
+        min_quantile: f32,
+        max_quantile: f32,
+    ) -> rucene::error::Result<f32> {
+        vector_util::min_max_scalar_quantize(vector, dest, scale, alpha, min_quantile, max_quantile)
+    }
+    fn recalculate_scalar_quantization_offset(
+        &self,
+        vector: &[u8],
+        old_alpha: f32,
+        old_min_quantile: f32,
+        scale: f32,
+        alpha: f32,
+        min_quantile: f32,
+        max_quantile: f32,
+    ) -> f32 {
+        vector_util::recalculate_offset(
+            vector,
+            old_alpha,
+            old_min_quantile,
+            scale,
+            alpha,
+            min_quantile,
+            max_quantile,
+        )
+    }
+    fn filter_by_score(
+        &self,
+        doc_buffer: &mut [i32],
+        score_buffer: &mut [f64],
+        min_score_inclusive: f64,
+        up_to: usize,
+    ) -> usize {
+        vector_util::filter_by_score(doc_buffer, score_buffer, min_score_inclusive, up_to).unwrap()
+    }
+}
+
+/// A float similarity, or `assert` when `VectorUtil`'s
+/// `assert Float.isFinite(r)` (a `debug_assert!` here) fired.
+fn float_or_assert(f: impl FnOnce() -> f32) -> String {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(x) => fx(x),
+        Err(_) => "assert".to_string(),
+    }
+}
+
+/// How the Rucene side reaches the kernels.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Api {
+    /// `PanamaVectorUtilSupport` / `DefaultVectorUtilSupport` constructed directly.
+    Direct,
+    /// The public `vector_util` API and the provider `get_instance` selected.
+    VectorUtil,
+}
+
 /// Runs the corpus through Rucene and returns the report Java prints.
-fn rucene_report(vector: bool, corpus: &str, dir: &Path) -> String {
+fn rucene_report(vector: bool, api: Api, corpus: &str, dir: &Path) -> String {
     let panama = PanamaVectorUtilSupport::new();
     let scalar = DefaultVectorUtilSupport::new();
-    let support: &dyn VectorUtilSupport = if vector { &panama } else { &scalar };
+    let support: &dyn VectorUtilSupport = match (api, vector) {
+        (Api::VectorUtil, _) => &VectorUtilApi,
+        (Api::Direct, true) => &panama,
+        (Api::Direct, false) => &scalar,
+    };
+    let selected_panama =
+        format!("{:?}", get_instance()).starts_with("PanamaVectorizationProvider");
     let mut out = String::new();
-    if vector {
+    let panama_header = match api {
+        Api::Direct => vector,
+        Api::VectorUtil => selected_panama,
+    };
+    if panama_header {
         out.push_str("impl=PanamaVectorUtilSupport\n");
         writeln!(
             out,
@@ -442,9 +571,9 @@ fn rucene_report(vector: bool, corpus: &str, dir: &Path) -> String {
                 write!(
                     out,
                     " {} {} {}",
-                    fx(support.dot_product_f32(&a, &b).unwrap()),
-                    fx(support.cosine_f32(&a, &b).unwrap()),
-                    fx(support.square_distance_f32(&a, &b).unwrap())
+                    float_or_assert(|| support.dot_product_f32(&a, &b).unwrap()),
+                    float_or_assert(|| support.cosine_f32(&a, &b).unwrap()),
+                    float_or_assert(|| support.square_distance_f32(&a, &b).unwrap())
                 )
                 .unwrap();
             }
@@ -587,7 +716,11 @@ fn rucene_report(vector: bool, corpus: &str, dir: &Path) -> String {
                 let num_bits: usize = t[1].parse().unwrap();
                 let values = VecLongValues(parse_list(t[7]));
                 let mut bits = FixedBitSet::new(num_bits);
-                PanamaDocValuesRangeSupport::INSTANCE.range_into_bit_set(
+                let range: &dyn DocValuesRangeSupport = match api {
+                    Api::Direct => &PanamaDocValuesRangeSupport::INSTANCE,
+                    Api::VectorUtil => get_instance().get_doc_values_range_support(),
+                };
+                range.range_into_bit_set(
                     &values,
                     t[2].parse().unwrap(),
                     t[3].parse().unwrap(),
@@ -630,10 +763,30 @@ fn oracle_child() {
     let mode = parts.next().unwrap();
     let corpus_path = PathBuf::from(parts.next().unwrap());
     let out_path = PathBuf::from(parts.next().unwrap());
+    if mode == "lookup" {
+        let class = |p: Arc<dyn VectorizationProvider>| {
+            let name = format!("{p:?}");
+            name.split([' ', '{', '(']).next().unwrap_or("").to_string()
+        };
+        let report = format!(
+            "lookup(false)={}\nlookup(true)={}\ngetInstance()={}\n",
+            class(lookup(false)),
+            class(lookup(true)),
+            class(get_instance())
+        );
+        std::fs::write(out_path, report).unwrap();
+        return;
+    }
     let corpus = std::fs::read_to_string(&corpus_path).unwrap();
     let dir = out_path.with_extension("seg");
     std::fs::create_dir_all(&dir).unwrap();
-    let report = rucene_report(mode == "vector", &corpus, &dir);
+    std::panic::set_hook(Box::new(|_| {}));
+    let api = if mode.starts_with("vu-") {
+        Api::VectorUtil
+    } else {
+        Api::Direct
+    };
+    let report = rucene_report(mode.ends_with("vector"), api, &corpus, &dir);
     std::fs::write(out_path, report).unwrap();
 }
 
@@ -706,10 +859,21 @@ fn run_java(config: Config, corpus: &Path) -> (String, String) {
 }
 
 /// Runs [`oracle_child`] in a child process with the gate properties.
-fn run_rucene(config: Config, corpus: &Path, dir: &Path) -> String {
-    let out = dir.join(format!("{}.rucene", config.name()));
-    let mode = if config.vector { "vector" } else { "scalar" };
-    let status = Command::new(std::env::current_exe().unwrap())
+fn run_rucene(config: Config, api: Api, corpus: &Path, dir: &Path) -> String {
+    let out = dir.join(format!("{}-{api:?}.rucene", config.name()));
+    let mode = match (api, config.vector) {
+        (Api::Direct, true) => "vector",
+        (Api::Direct, false) => "scalar",
+        (Api::VectorUtil, true) => "vu-vector",
+        (Api::VectorUtil, false) => "vu-scalar",
+    };
+    let mut cmd = Command::new(std::env::current_exe().unwrap());
+    // The vector configurations run the public API with the vector module
+    // added (`--add-modules jdk.incubator.vector` on the Java side).
+    if api == Api::VectorUtil && config.vector {
+        cmd.env(ADD_VECTOR_MODULE_SYSPROP, "true");
+    }
+    let status = cmd
         .args([
             "oracle_child",
             "--exact",
@@ -765,6 +929,109 @@ fn diff(name: &str, java: &str, rucene: &str) -> Option<String> {
     Some(out)
 }
 
+/// Replaces each `assert` token of the Rucene report by the Java token at the
+/// same place when that token is a non-finite float — the values for which
+/// Java's `VectorUtil` would fail its `assert Float.isFinite(r)` under `-ea`.
+/// Returns the report and the number of tokens accepted.
+fn accept_asserts(java: &str, rucene: &str) -> (String, usize) {
+    const NON_FINITE: [&str; 3] = ["7f800000", "ff800000", "7fc00000"];
+    let mut accepted = 0;
+    let mut out = String::new();
+    let java_lines: Vec<&str> = java.lines().collect();
+    for (k, line) in rucene.lines().enumerate() {
+        let jt: Vec<&str> = java_lines
+            .get(k)
+            .map_or(Vec::new(), |l| l.split(' ').collect());
+        let tokens: Vec<String> = line
+            .split(' ')
+            .enumerate()
+            .map(|(t, tok)| match jt.get(t) {
+                Some(j) if tok == "assert" && NON_FINITE.contains(j) => {
+                    accepted += 1;
+                    (*j).to_string()
+                }
+                _ => tok.to_string(),
+            })
+            .collect();
+        out.push_str(&tokens.join(" "));
+        out.push('\n');
+    }
+    (out, accepted)
+}
+
+/// The provider [`lookup`] selects in a child process with `env`.
+fn run_lookup(env: &[(&str, &str)], dir: &Path, name: &str) -> String {
+    let out = dir.join(format!("{name}.lookup"));
+    let mut cmd = Command::new(std::env::current_exe().unwrap());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let status = cmd
+        .args([
+            "oracle_child",
+            "--exact",
+            "--include-ignored",
+            "--test-threads=1",
+        ])
+        .env(CHILD_ENV, format!("lookup|-|{}", out.display()))
+        .status()
+        .unwrap();
+    assert!(status.success(), "lookup child {name} failed");
+    std::fs::read_to_string(out).unwrap()
+}
+
+/// `lookup` selects the Panama provider exactly when the vector-module
+/// setting is `true` and Java's remaining gates pass: the client-VM gate
+/// (outside test mode) and the constructor's 128-bit minimum still refuse.
+#[test]
+fn lookup_follows_the_vector_module_setting() {
+    let dir = tempfile::Builder::new()
+        .prefix("panama-lookup")
+        .tempdir()
+        .unwrap();
+    let panama = "PanamaVectorizationProvider";
+    let default = "DefaultVectorizationProvider";
+    let on = (ADD_VECTOR_MODULE_SYSPROP, "true");
+    /// Case name, environment, and the providers expected from `lookup(false)`,
+    /// `lookup(true)` and `get_instance()`.
+    type Case<'a> = (&'a str, Vec<(&'a str, &'a str)>, [&'a str; 3]);
+    let cases: Vec<Case> = vec![
+        ("unset", vec![], [default, default, default]),
+        (
+            "false",
+            vec![(ADD_VECTOR_MODULE_SYSPROP, "false")],
+            [default, default, default],
+        ),
+        ("set", vec![on], [panama, panama, panama]),
+        (
+            "set-ignore-case",
+            vec![(ADD_VECTOR_MODULE_SYSPROP, "TRUE")],
+            [panama, panama, panama],
+        ),
+        (
+            "client-vm",
+            vec![on, ("java.vm.info", "mixed mode, emulated-client")],
+            [default, panama, default],
+        ),
+        (
+            "below-128-bits",
+            vec![on, ("XX:MaxVectorSize", "8")],
+            [default, default, default],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, env, [lookup_false, lookup_true, instance]) in cases {
+        let got = run_lookup(&env, dir.path(), name);
+        let expected = format!(
+            "lookup(false)={lookup_false}\nlookup(true)={lookup_true}\ngetInstance()={instance}\n"
+        );
+        if got != expected {
+            failures.push(format!("{name}: expected\n{expected}got\n{got}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 #[test]
 fn panama_and_scalar_kernels_match_lucene() {
     let dir = tempfile::Builder::new()
@@ -794,7 +1061,7 @@ fn panama_and_scalar_kernels_match_lucene() {
         });
     }
 
-    let results: Vec<(Config, String, String, String)> = std::thread::scope(|s| {
+    let results: Vec<(Config, String, String, String, String)> = std::thread::scope(|s| {
         let handles: Vec<_> = configs
             .iter()
             .map(|&config| {
@@ -806,8 +1073,9 @@ fn panama_and_scalar_kernels_match_lucene() {
                 let dir = dir.path();
                 s.spawn(move || {
                     let (java, cold) = run_java(config, corpus);
-                    let rucene = run_rucene(config, corpus, dir);
-                    (config, java, cold, rucene)
+                    let rucene = run_rucene(config, Api::Direct, corpus, dir);
+                    let public = run_rucene(config, Api::VectorUtil, corpus, dir);
+                    (config, java, cold, rucene, public)
                 })
             })
             .collect();
@@ -815,7 +1083,7 @@ fn panama_and_scalar_kernels_match_lucene() {
     });
 
     let mut failures = Vec::new();
-    for (config, java, cold, rucene) in &results {
+    for (config, java, cold, rucene, public) in &results {
         let lines = java.lines().count();
         eprintln!("{}: {lines} lines; Java {cold}", config.name());
         // The fixture really ran the configuration asked for.
@@ -842,6 +1110,14 @@ fn panama_and_scalar_kernels_match_lucene() {
             );
         }
         if let Some(d) = diff(&config.name(), java, rucene) {
+            failures.push(d);
+        }
+        let (public, asserted) = accept_asserts(java, public);
+        eprintln!(
+            "{} through vector_util: {asserted} similarities hit VectorUtil's finite assert",
+            config.name()
+        );
+        if let Some(d) = diff(&format!("{} (vector_util)", config.name()), java, &public) {
             failures.push(d);
         }
     }

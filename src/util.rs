@@ -3812,7 +3812,7 @@ impl Constants {
     /// Returns the value of a system property, or `None` when it is not set.
     ///
     /// Equivalent to `Constants.getSysProp(String)`.
-    fn get_sys_prop(property: &str) -> Option<String> {
+    pub(crate) fn get_sys_prop(property: &str) -> Option<String> {
         match Self::do_privileged(|| env::var(property)) {
             Ok(value) => Some(value),
             Err(env::VarError::NotPresent) => Self::platform_prop(property),

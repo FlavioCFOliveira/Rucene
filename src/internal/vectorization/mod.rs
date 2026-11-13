@@ -85,14 +85,17 @@
 //!
 //! # Which provider [`lookup`] returns
 //!
-//! [`lookup`] runs Lucene's gates in Lucene's order. Its first gate is
-//! `Constants.IS_HOTSPOT_VM`, and
-//! [`crate::util::jvm::HotspotVMOptions::is_hotspot_vm`] reports `false` in a
-//! Rust binary (a declared divergence of that type), so `lookup` returns
-//! [`DefaultVectorizationProvider`], as Lucene does on a non-HotSpot VM. The
-//! Panama provider is complete and can be constructed directly with
-//! [`PanamaVectorizationProvider::new`], which applies Lucene's own
-//! constructor guard.
+//! [`lookup`] runs Lucene's gates in Lucene's order. A Rust binary is not a
+//! HotSpot VM and has no module layer, so the two gates that stand for a JVM
+//! launched with `--add-modules jdk.incubator.vector` pass only when the
+//! setting [`ADD_VECTOR_MODULE_SYSPROP`] (`rucene.vectorization.addVectorModule`)
+//! is `true` — a declared divergence, see there. Without it `lookup` returns
+//! [`DefaultVectorizationProvider`], as Lucene does on a JVM launched without
+//! the module; with it, the remaining gates decide, as in Lucene. The selected
+//! provider is the process singleton [`get_instance`] returns, and every
+//! consumer Lucene routes through `VectorizationProvider.getInstance()`
+//! (`VectorUtil`, `FlatVectorScorerUtil`, `Lucene90DocValuesProducer`) reads
+//! it.
 
 #![deny(unsafe_code)]
 
@@ -160,6 +163,7 @@ pub use posting_decoding_util::PostingDecodingUtil;
 pub use vector_util_support::VectorUtilSupport;
 pub use vectorization_provider::{
     ensure_caller, get_instance, get_upper_java_feature_version, lookup, lookup_vector_module,
-    VectorizationProvider, DEFAULT_UPPER_JAVA_FEATURE_VERSION, UPPER_JAVA_FEATURE_VERSION_SYSPROP,
-    VALID_CALLERS, VALID_CALLER_FILES,
+    vector_module_added, VectorizationProvider, ADD_VECTOR_MODULE_SYSPROP,
+    DEFAULT_UPPER_JAVA_FEATURE_VERSION, UPPER_JAVA_FEATURE_VERSION_SYSPROP, VALID_CALLERS,
+    VALID_CALLER_FILES,
 };

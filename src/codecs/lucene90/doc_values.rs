@@ -53,6 +53,22 @@ use crate::util::{ArrayUtil, BytesRef, BytesRefBuilder, IOUtils, MathUtil, Strin
 // Format constants
 // -----------------------------------------------------------------------------
 
+/// `Lucene90DocValuesProducer.DOC_VALUES_RANGE_SUPPORT`: the selected
+/// provider's range support, looked up once (`Lucene90DocValuesProducer.java:465-468`).
+static DOC_VALUES_RANGE_SUPPORT: std::sync::LazyLock<
+    &'static dyn crate::internal::vectorization::DocValuesRangeSupport,
+> = std::sync::LazyLock::new(|| {
+    crate::internal::vectorization::get_instance().get_doc_values_range_support()
+});
+
+/// `Lucene90DocValuesProducer.DOC_VALUES_BULK_DECODE_SUPPORT`: the selected
+/// provider's bulk decoder, looked up once (`Lucene90DocValuesProducer.java:469-472`).
+static DOC_VALUES_BULK_DECODE_SUPPORT: std::sync::LazyLock<
+    &'static dyn crate::internal::vectorization::DocValuesBulkDecodeSupport,
+> = std::sync::LazyLock::new(|| {
+    crate::internal::vectorization::get_instance().get_doc_values_bulk_decode_support()
+});
+
 const DATA_CODEC: &str = "Lucene90DocValuesData";
 const META_CODEC: &str = "Lucene90DocValuesMetadata";
 const SKIP_INDEX_CODEC: &str = "Lucene90DocValuesSkipIndex";
@@ -2478,12 +2494,17 @@ impl Lucene90DocValuesProducer {
     /// falls in `[min_value, max_value]`.
     ///
     /// Equivalent to `Lucene90DocValuesProducer.rangeIntoBitSet(LongValues, int, int, long, long, FixedBitSet, int)`,
-    /// which Java forwards to the vectorised `DocValuesRangeSupport`.
+    /// which Java forwards to the `DocValuesRangeSupport` of the selected
+    /// vectorization provider (`DOC_VALUES_RANGE_SUPPORT`,
+    /// `Lucene90DocValuesProducer.java:465-468`).
     ///
-    /// **Divergence from Lucene 10.5.0.** That support has a Panama path over
-    /// vector lanes; stable Rust has no portable SIMD, so the scalar loop —
-    /// which is what Java's own fallback runs — is the whole of it here. The
-    /// bits set are identical either way.
+    /// **Divergence from Lucene 10.5.0, declared.** Java's values are a
+    /// `LongValues` whose `get` cannot declare an `IOException`; a read failure
+    /// escapes as an unchecked exception and aborts the evaluation. Here the
+    /// reads are fallible: the first failure is kept, the remaining reads of
+    /// the call answer 0, and the failure is returned when the support
+    /// returns. The bit set is in an unspecified state after an error in both
+    /// implementations, and a caller receiving the error does not use it.
     #[allow(clippy::too_many_arguments)]
     fn range_into_bit_set(
         values: &dyn Fn(i64) -> Result<i64>,
@@ -2494,13 +2515,35 @@ impl Lucene90DocValuesProducer {
         bit_set: &mut crate::util::FixedBitSet,
         offset: i32,
     ) -> Result<()> {
-        for doc in from_doc..to_doc {
-            let value = values(i64::from(doc))?;
-            if value >= min_value && value <= max_value {
-                bit_set.set((doc - offset) as usize);
+        struct Fallible<'a> {
+            values: &'a dyn Fn(i64) -> Result<i64>,
+            error: std::cell::RefCell<Option<LuceneError>>,
+        }
+        impl crate::util::LongValues for Fallible<'_> {
+            fn get(&self, index: i64) -> i64 {
+                if self.error.borrow().is_some() {
+                    return 0;
+                }
+                match (self.values)(index) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        *self.error.borrow_mut() = Some(error);
+                        0
+                    }
+                }
             }
         }
-        Ok(())
+        let adapter = Fallible {
+            values,
+            error: std::cell::RefCell::new(None),
+        };
+        DOC_VALUES_RANGE_SUPPORT.range_into_bit_set(
+            &adapter, from_doc, to_doc, min_value, max_value, bit_set, offset,
+        );
+        match adapter.error.into_inner() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Reads a contiguous run of byte-aligned values in one go, decoding them
@@ -2559,16 +2602,14 @@ impl Lucene90DocValuesProducer {
                     values.len(),
                 ));
             }
-            crate::internal::vectorization::get_instance()
-                .get_doc_values_bulk_decode_support()
-                .decode_byte_aligned(
-                    bytes,
-                    0,
-                    bits_per_value as u32,
-                    values,
-                    values_offset as usize,
-                    size as usize,
-                )?;
+            DOC_VALUES_BULK_DECODE_SUPPORT.decode_byte_aligned(
+                bytes,
+                0,
+                bits_per_value as u32,
+                values,
+                values_offset as usize,
+                size as usize,
+            )?;
         }
         Ok(true)
     }
