@@ -13,6 +13,13 @@ the committed file, and rerunning it must leave that file unchanged.
   are `#[rustfmt::skip]`) and the string tables of `KStemmer.java` into the region between the
   `GENERATED` markers of `crates/rucene-analysis-common/src/analysis/en/kstemmer.rs`, then runs
   `rustfmt` on that file. Rerun: `python3 tools/translate/kstem_data.py [/tmp/lucene1050]`.
+* `snowball_java_to_rust.py` — translates the 30 generated Snowball stemmers of Lucene
+  (`lucene/analysis/common/src/java/org/tartarus/snowball/ext/*Stemmer.java`, Snowball 2.2.0
+  output with Lucene's edits) into `crates/rucene-analysis-common/src/tartarus/snowball/ext/*_stemmer.rs`,
+  statement for statement, then runs `rustfmt`. It accepts only the constructs those files use
+  and fails, naming the file and line, on any other. Rerun:
+  `python3 tools/translate/snowball_java_to_rust.py [/tmp/lucene1050]` (`--coverage` prints the
+  count of each construct translated).
 * `JdkCharacterTypeData.java` — writes `crates/rucene-analysis-common/src/jdk/character_type_data.rs`
   (`Character.getType(int)` runs and the Latin-1 `isLowerCase`/`isUpperCase` sets) from the
   running JDK. Rerun with JDK 25: `java tools/translate/JdkCharacterTypeData.java > crates/rucene-analysis-common/src/jdk/character_type_data.rs`.

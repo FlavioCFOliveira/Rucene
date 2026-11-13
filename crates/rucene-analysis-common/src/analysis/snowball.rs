@@ -15,7 +15,9 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.snowball`.
+//! The Java package `org.apache.lucene.analysis.snowball`:
+//! `TokenFilter` and `Analyzer` implementations that use a modified version
+//! of Snowball stemmers.
 
 pub mod snowball_filter;
 pub mod snowball_porter_filter_factory;

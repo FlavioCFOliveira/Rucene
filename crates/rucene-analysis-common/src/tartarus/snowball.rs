@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.tartarus.snowball`.
+//! The Java package `org.tartarus.snowball`: the runtime of the programs
+//! the Snowball compiler generates (its stemmers are in [`ext`]).
 
 pub mod among;
 pub mod ext;

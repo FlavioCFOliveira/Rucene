@@ -100,6 +100,7 @@ use crate::analysis::miscellaneous::truncate_token_filter_factory::TruncateToken
 use crate::analysis::miscellaneous::type_as_synonym_filter_factory::TypeAsSynonymFilterFactory;
 use crate::analysis::miscellaneous::word_delimiter_filter_factory::WordDelimiterFilterFactory;
 use crate::analysis::miscellaneous::word_delimiter_graph_filter_factory::WordDelimiterGraphFilterFactory;
+use crate::analysis::snowball::snowball_porter_filter_factory::SnowballPorterFilterFactory;
 use crate::analysis::synonym::solr_synonym_parser::SolrSynonymParser;
 use crate::analysis::synonym::synonym_filter_factory::SynonymFilterFactory;
 use crate::analysis::synonym::synonym_graph_filter_factory::SynonymGraphFilterFactory;
@@ -107,6 +108,37 @@ use crate::analysis::synonym::synonym_map::Parser;
 use crate::analysis::synonym::word2vec::word2vec_synonym_filter_factory::Word2VecSynonymFilterFactory;
 use crate::analysis::synonym::wordnet_synonym_parser::WordnetSynonymParser;
 use crate::analysis::util::elision_filter_factory::ElisionFilterFactory;
+use crate::tartarus::snowball::ext::arabic_stemmer::ArabicStemmer;
+use crate::tartarus::snowball::ext::armenian_stemmer::ArmenianStemmer;
+use crate::tartarus::snowball::ext::basque_stemmer::BasqueStemmer;
+use crate::tartarus::snowball::ext::catalan_stemmer::CatalanStemmer;
+use crate::tartarus::snowball::ext::danish_stemmer::DanishStemmer;
+use crate::tartarus::snowball::ext::dutch_stemmer::DutchStemmer;
+use crate::tartarus::snowball::ext::english_stemmer::EnglishStemmer;
+use crate::tartarus::snowball::ext::estonian_stemmer::EstonianStemmer;
+use crate::tartarus::snowball::ext::finnish_stemmer::FinnishStemmer;
+use crate::tartarus::snowball::ext::french_stemmer::FrenchStemmer;
+use crate::tartarus::snowball::ext::german_stemmer::GermanStemmer;
+use crate::tartarus::snowball::ext::greek_stemmer::GreekStemmer;
+use crate::tartarus::snowball::ext::hindi_stemmer::HindiStemmer;
+use crate::tartarus::snowball::ext::hungarian_stemmer::HungarianStemmer;
+use crate::tartarus::snowball::ext::indonesian_stemmer::IndonesianStemmer;
+use crate::tartarus::snowball::ext::irish_stemmer::IrishStemmer;
+use crate::tartarus::snowball::ext::italian_stemmer::ItalianStemmer;
+use crate::tartarus::snowball::ext::lithuanian_stemmer::LithuanianStemmer;
+use crate::tartarus::snowball::ext::nepali_stemmer::NepaliStemmer;
+use crate::tartarus::snowball::ext::norwegian_stemmer::NorwegianStemmer;
+use crate::tartarus::snowball::ext::porter_stemmer::PorterStemmer;
+use crate::tartarus::snowball::ext::portuguese_stemmer::PortugueseStemmer;
+use crate::tartarus::snowball::ext::romanian_stemmer::RomanianStemmer;
+use crate::tartarus::snowball::ext::russian_stemmer::RussianStemmer;
+use crate::tartarus::snowball::ext::serbian_stemmer::SerbianStemmer;
+use crate::tartarus::snowball::ext::spanish_stemmer::SpanishStemmer;
+use crate::tartarus::snowball::ext::swedish_stemmer::SwedishStemmer;
+use crate::tartarus::snowball::ext::tamil_stemmer::TamilStemmer;
+use crate::tartarus::snowball::ext::turkish_stemmer::TurkishStemmer;
+use crate::tartarus::snowball::ext::yiddish_stemmer::YiddishStemmer;
+use crate::tartarus::snowball::snowball_stemmer::SnowballStemmer;
 
 /// The binary name of the char filter factory service, the name of its file.
 const CHAR_FILTER_FACTORY: &str = "org.apache.lucene.analysis.CharFilterFactory";
@@ -178,6 +210,7 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(WordDelimiterGraphFilterFactory::class()),
         token_filter(ScandinavianFoldingFilterFactory::class()),
         token_filter(ScandinavianNormalizationFilterFactory::class()),
+        token_filter(SnowballPorterFilterFactory::class()),
         token_filter(SynonymFilterFactory::class()),
         token_filter(SynonymGraphFilterFactory::class()),
         token_filter(Word2VecSynonymFilterFactory::class()),
@@ -361,4 +394,153 @@ pub fn tokenizer_factory_classes(
         }
     }
     classes
+}
+
+/// The public no-argument constructor of a `SnowballStemmer` class: what
+/// `getConstructor().newInstance()` calls on the class `SnowballFilter` and
+/// `SnowballPorterFilterFactory` load by name.
+pub type SnowballStemmerConstructor = fn() -> Box<dyn SnowballStemmer>;
+
+/// `new S()`, the constructor [`snowball_stemmer_classes`] registers for the
+/// stemmer class `S`.
+fn new_stemmer<S: SnowballStemmer + Default + 'static>() -> Box<dyn SnowballStemmer> {
+    Box::new(S::default())
+}
+
+/// The `SnowballStemmer` classes of `org.tartarus.snowball.ext`, keyed by
+/// binary name, each standing for its public no-argument constructor: what
+/// `SnowballFilter(TokenStream, String)` finds with `Class.forName` and
+/// `SnowballPorterFilterFactory.inform` with
+/// `ResourceLoader.newInstance(className, SnowballStemmer.class)`.
+///
+/// **Divergence from Lucene 10.5.0.** As for [`synonym_parser_classes`]:
+/// Java loads any class of the class path by name; the table holds the 30
+/// stemmers of this module and what an application registers.
+pub fn snowball_stemmer_classes() -> &'static RwLock<ClassRegistry<SnowballStemmerConstructor>> {
+    static CLASSES: LazyLock<RwLock<ClassRegistry<SnowballStemmerConstructor>>> =
+        LazyLock::new(|| {
+            let mut classes = ClassRegistry::new("org.tartarus.snowball.SnowballStemmer");
+            classes.register(
+                "org.tartarus.snowball.ext.ArabicStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<ArabicStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.ArmenianStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<ArmenianStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.BasqueStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<BasqueStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.CatalanStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<CatalanStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.DanishStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<DanishStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.DutchStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<DutchStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.EnglishStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<EnglishStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.EstonianStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<EstonianStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.FinnishStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<FinnishStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.FrenchStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<FrenchStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.GermanStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<GermanStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.GreekStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<GreekStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.HindiStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<HindiStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.HungarianStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<HungarianStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.IndonesianStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<IndonesianStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.IrishStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<IrishStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.ItalianStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<ItalianStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.LithuanianStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<LithuanianStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.NepaliStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<NepaliStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.NorwegianStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<NorwegianStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.PorterStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<PorterStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.PortugueseStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<PortugueseStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.RomanianStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<RomanianStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.RussianStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<RussianStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.SerbianStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<SerbianStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.SpanishStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<SpanishStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.SwedishStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<SwedishStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.TamilStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<TamilStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.TurkishStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<TurkishStemmer> }),
+            );
+            classes.register(
+                "org.tartarus.snowball.ext.YiddishStemmer",
+                Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<YiddishStemmer> }),
+            );
+            RwLock::new(classes)
+        });
+    &CLASSES
 }
