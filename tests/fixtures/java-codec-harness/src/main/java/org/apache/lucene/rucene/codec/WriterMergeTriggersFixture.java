@@ -126,6 +126,16 @@ import org.apache.lucene.util.InfoStream;
  *       {@code getSegmentCount()}, read by reflection: the segments a flush
  *       triggered by {@code addDocument} produces are published at once
  *       ({@code afterSegmentsFlushed}) and may trigger a merge.
+ *   <li>{@code flush-merge-names}: {@code maxBufferedDocs=2}, a {@link
+ *       LogDocMergePolicy} of merge factor 3, a {@link SerialMergeScheduler}
+ *       and {@code maxFullFlushMergeWaitMillis} 0; ten documents, an update
+ *       of {@code id3}, a commit, six more documents, a delete of {@code
+ *       id12}, a commit. Every merge runs on the thread whose flush triggered
+ *       it, so the order in which the flushes and merges take names from
+ *       {@code IndexWriter.newSegmentName()} is fixed. Prints, per commit
+ *       point, every segment as {@code name:maxDoc:source:delCount}, where
+ *       {@code source} is the {@code source} diagnostic ({@code flush} or
+ *       {@code merge}).
  * </ul>
  */
 public final class WriterMergeTriggersFixture {
@@ -405,6 +415,48 @@ public final class WriterMergeTriggersFixture {
     }
   }
 
+  static String namedSegments(Directory dir) throws IOException {
+    SegmentInfos infos = SegmentInfos.readLatestCommit(dir);
+    List<String> parts = new ArrayList<>();
+    for (SegmentCommitInfo info : infos) {
+      parts.add(
+          info.info.name
+              + ":"
+              + info.info.maxDoc()
+              + ":"
+              + info.info.getDiagnostics().get("source")
+              + ":"
+              + info.getDelCount());
+    }
+    return String.join(",", parts);
+  }
+
+  static void flushMergeNames() throws IOException {
+    try (Directory dir = new ByteBuffersDirectory()) {
+      IndexWriterConfig config = new IndexWriterConfig();
+      config.setMaxBufferedDocs(2);
+      config.setMaxFullFlushMergeWaitMillis(0);
+      config.setMergeScheduler(new SerialMergeScheduler());
+      LogDocMergePolicy policy = new LogDocMergePolicy();
+      policy.setMergeFactor(3);
+      config.setMergePolicy(policy);
+      try (IndexWriter writer = new IndexWriter(dir, config)) {
+        for (int i = 0; i < 10; i++) {
+          writer.addDocument(idDoc(i));
+        }
+        writer.updateDocument(new Term("id", "id3"), idDoc(3));
+        writer.commit();
+        System.out.println("flush-merge-names commit 1 segments=" + namedSegments(dir));
+        for (int i = 10; i < 16; i++) {
+          writer.addDocument(idDoc(i));
+        }
+        writer.deleteDocuments(new Term("id", "id12"));
+        writer.commit();
+        System.out.println("flush-merge-names commit 2 segments=" + namedSegments(dir));
+      }
+    }
+  }
+
   static void mergeAbort() throws Exception {
     try (Directory dir = new ByteBuffersDirectory()) {
       List<String> phases = new ArrayList<>();
@@ -509,6 +561,7 @@ public final class WriterMergeTriggersFixture {
       case "force-merge" -> forceMerge();
       case "counts" -> counts();
       case "flush-publish" -> flushPublish();
+      case "flush-merge-names" -> flushMergeNames();
       case "deletes-applied" -> deletesApplied();
       case "log-packing" -> logMerge("log-packing", 2, new int[] {400, 400, 400, 400});
       case "log-levels" -> logMerge("log-levels", 4, new int[] {24, 3, 3, 3});
