@@ -25,7 +25,9 @@
 //! where the emulation differs.
 
 pub mod base64;
+pub mod break_dictionary;
 pub mod break_iterator;
+pub mod break_iterator_rules;
 pub mod character;
 pub mod charset;
 pub mod charset_multibyte;

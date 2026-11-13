@@ -18,23 +18,30 @@
 //! A `CharacterIterator` over a `char[]` region, ported from
 //! `org.apache.lucene.analysis.util.CharArrayIterator`.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use rucene::error::{LuceneError, Result};
 
+use crate::jdk::break_iterator::get_sentence_instance;
 use crate::jdk::character_iterator::{CharacterIterator, DONE};
+use crate::jdk::locale::Locale;
 
 /// True if this JRE has a buggy `BreakIterator` implementation.
 ///
-/// Equivalent to `CharArrayIterator.HAS_BUGGY_BREAKITERATORS`.
-///
-/// **Divergence from Lucene 10.5.0.** Java computes it in a static
-/// initializer, by asking `BreakIterator.getSentenceInstance(Locale.US)` to
-/// break `"\udb40\udc53"` and recording whether `next()` threw. That
-/// factory is the JDK's, which the `BreakIterator` emulation (rmp task #447)
-/// delivers; this port holds the value JDK 25 computes, which a JDK 25.0.5
-/// oracle printed: `HAS_BUGGY_BREAKITERATORS=false`.
-pub const HAS_BUGGY_BREAKITERATORS: bool = false;
+/// Equivalent to `CharArrayIterator.HAS_BUGGY_BREAKITERATORS`, computed, as
+/// Java's static initializer computes it, by asking
+/// `BreakIterator.getSentenceInstance(Locale.US)` to break `"\udb40\udc53"`
+/// and recording whether `next()` threw. The emulated iterator
+/// ([`crate::jdk::break_iterator`]) never throws there, as JDK 25's does
+/// not (a JDK 25.0.5 oracle printed `HAS_BUGGY_BREAKITERATORS=false`).
+pub static HAS_BUGGY_BREAKITERATORS: LazyLock<bool> = LazyLock::new(|| {
+    let mut bi = get_sentence_instance(&Locale::us());
+    bi.set_text_units(&[0xDB40, 0xDC53]);
+    bi.next();
+    // `next()` cannot throw here: the `catch (Exception)` branch, `v =
+    // true`, has no counterpart
+    false
+});
 
 /// A `CharacterIterator` used internally for use with `BreakIterator`.
 ///
@@ -117,7 +124,7 @@ impl CharArrayIterator {
     ///
     /// Equivalent to `CharArrayIterator.newSentenceInstance()`.
     pub fn new_sentence_instance() -> Self {
-        if HAS_BUGGY_BREAKITERATORS {
+        if *HAS_BUGGY_BREAKITERATORS {
             // work around this for now by lying about all surrogates to
             // the sentence tokenizer, instead we treat them all as
             // SContinue so we won't break around them.
@@ -139,7 +146,7 @@ impl CharArrayIterator {
     ///
     /// Equivalent to `CharArrayIterator.newWordInstance()`.
     pub fn new_word_instance() -> Self {
-        if HAS_BUGGY_BREAKITERATORS {
+        if *HAS_BUGGY_BREAKITERATORS {
             // work around this for now by lying about all surrogates to the
             // word, instead we treat them all as ALetter so we won't break
             // around them.

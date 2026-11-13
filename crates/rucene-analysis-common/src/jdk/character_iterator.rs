@@ -83,3 +83,107 @@ pub trait CharacterIterator: Debug + Send + Sync {
     /// Returns a copy of this iterator: `CharacterIterator.clone()`.
     fn clone_box(&self) -> Box<dyn CharacterIterator>;
 }
+
+/// A [`CharacterIterator`] over a whole string of UTF-16 units.
+///
+/// Equivalent to `java.text.StringCharacterIterator` of JDK 25 as
+/// `StringCharacterIterator(String)` builds it: begin index 0, end index the
+/// length, position 0.
+#[derive(Debug, Clone)]
+pub struct StringCharacterIterator {
+    text: Vec<u16>,
+    begin: i32,
+    end: i32,
+    pos: i32,
+}
+
+impl StringCharacterIterator {
+    /// Constructs an iterator with an initial index of 0.
+    ///
+    /// Equivalent to `StringCharacterIterator(String)`; `text` is the
+    /// string's UTF-16 units.
+    pub fn new(text: Vec<u16>) -> Self {
+        let end = text.len() as i32;
+        Self {
+            text,
+            begin: 0,
+            end,
+            pos: 0,
+        }
+    }
+}
+
+impl CharacterIterator for StringCharacterIterator {
+    fn first(&mut self) -> u16 {
+        self.pos = self.begin;
+        self.current()
+    }
+
+    fn last(&mut self) -> u16 {
+        self.pos = if self.end > self.begin {
+            self.end - 1
+        } else {
+            self.end
+        };
+        self.current()
+    }
+
+    fn current(&self) -> u16 {
+        if self.pos >= self.begin && self.pos < self.end {
+            self.text[self.pos as usize]
+        } else {
+            DONE
+        }
+    }
+
+    fn next(&mut self) -> u16 {
+        if self.pos < self.end - 1 {
+            self.pos += 1;
+            self.text[self.pos as usize]
+        } else {
+            self.pos = self.end;
+            DONE
+        }
+    }
+
+    fn previous(&mut self) -> u16 {
+        if self.pos > self.begin {
+            self.pos -= 1;
+            self.text[self.pos as usize]
+        } else {
+            DONE
+        }
+    }
+
+    /// Equivalent to `StringCharacterIterator.setIndex(int)`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException("Invalid index")` outside
+    /// `getBeginIndex()..=getEndIndex()`.
+    fn set_index(&mut self, position: i32) -> Result<u16> {
+        if position < self.begin || position > self.end {
+            return Err(rucene::error::LuceneError::illegal_argument(
+                "Invalid index".to_string(),
+            ));
+        }
+        self.pos = position;
+        Ok(self.current())
+    }
+
+    fn get_begin_index(&self) -> i32 {
+        self.begin
+    }
+
+    fn get_end_index(&self) -> i32 {
+        self.end
+    }
+
+    fn get_index(&self) -> i32 {
+        self.pos
+    }
+
+    fn clone_box(&self) -> Box<dyn CharacterIterator> {
+        Box::new(self.clone())
+    }
+}

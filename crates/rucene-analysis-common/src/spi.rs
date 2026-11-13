@@ -148,6 +148,8 @@ use crate::analysis::synonym::synonym_graph_filter_factory::SynonymGraphFilterFa
 use crate::analysis::synonym::synonym_map::Parser;
 use crate::analysis::synonym::word2vec::word2vec_synonym_filter_factory::Word2VecSynonymFilterFactory;
 use crate::analysis::synonym::wordnet_synonym_parser::WordnetSynonymParser;
+use crate::analysis::th::thai_analyzer::ThaiAnalyzer;
+use crate::analysis::th::thai_tokenizer_factory::ThaiTokenizerFactory;
 use crate::analysis::util::elision_filter_factory::ElisionFilterFactory;
 use crate::analysis::wikipedia::wikipedia_tokenizer_factory::WikipediaTokenizerFactory;
 use crate::tartarus::snowball::ext::arabic_stemmer::ArabicStemmer;
@@ -294,6 +296,7 @@ fn services() -> Vec<ServiceProvider> {
         tokenizer(PatternTokenizerFactory::class()),
         tokenizer(SimplePatternSplitTokenizerFactory::class()),
         tokenizer(SimplePatternTokenizerFactory::class()),
+        tokenizer(ThaiTokenizerFactory::class()),
         tokenizer(WikipediaTokenizerFactory::class()),
     ]
 }
@@ -456,6 +459,10 @@ pub fn analyzer_classes() -> &'static RwLock<ClassRegistry<Arc<dyn Analyzer>>> {
         classes.register(
             "org.apache.lucene.analysis.classic.ClassicAnalyzer",
             Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(ClassicAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.th.ThaiAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(ThaiAnalyzer::new()) }),
         );
         classes.register(
             "org.apache.lucene.analysis.email.UAX29URLEmailAnalyzer",

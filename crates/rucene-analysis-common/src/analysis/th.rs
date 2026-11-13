@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.th`.
+//! The Java package `org.apache.lucene.analysis.th`: analyzer for Thai.
 
 pub mod thai_analyzer;
 pub mod thai_tokenizer;
