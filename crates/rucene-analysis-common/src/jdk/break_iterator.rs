@@ -33,19 +33,8 @@
 //! `DictionaryBasedBreakIterator.divideUpDictionaryRange` over
 //! `BreakDictionary`.
 //!
-//! **Divergences.**
-//!
-//! * The Thai dictionary is ICU's word list, not the JDK's `thai_dict` (see
-//!   [`break_dictionary`](super::break_dictionary); approved on rmp task
-//!   #447).
-//! * The JDK moves backwards (`previous`, `following`, `preceding`,
-//!   `isBoundary`) with a backwards state table that rewinds to a "safe"
-//!   position, from which it runs forward again; this emulation has no
-//!   backwards table and rewinds to the start of the text, always a
-//!   boundary (see `handle_previous`). Both then run `handleNext` forward,
-//!   so they answer the same boundaries wherever the JDK's safe position is a
-//!   boundary of the forward iteration from the start, which is what the
-//!   backward rules exist to guarantee.
+//! **Divergence.** The Thai dictionary is ICU's word list, not the JDK's
+//! `thai_dict` (see `break_dictionary`; approved on rmp task #447).
 
 use std::cell::RefCell;
 use std::fmt::{self, Debug};
@@ -426,17 +415,49 @@ impl RuleBasedBreakIterator {
         result
     }
 
-    /// `handlePrevious()`.
-    ///
-    /// **Divergence from JDK 25.** The JDK runs its backwards state table
-    /// from the current position to a "safe" position to restart from; this
-    /// emulation has no backwards table and restarts from the beginning of
-    /// the text, a boundary of every forward iteration (see the module
-    /// documentation).
+    /// `handlePrevious()`: from the current position, runs the backwards
+    /// state table leftward until it stops (or the text begins), and moves
+    /// to the position after the pair of characters it stopped on, a
+    /// position the rules always break at.
     fn handle_previous(&mut self) -> i32 {
-        let begin = self.text().get_begin_index();
-        set_index(self.text(), begin);
-        begin
+        let table = self.table;
+        let mut state = START_STATE;
+        let mut category = 0;
+        let mut last_category = 0;
+        let mut c = get_current(self.text());
+
+        // loop until we reach the beginning of the text or transition to
+        // state 0
+        while c != i32::from(CHAR_DONE) && state != STOP_STATE {
+            // save the last character's category and look up the current
+            // character's category
+            last_category = category;
+            category = self.lookup_category(c);
+
+            // if the current character isn't an ignore character, look up a
+            // state transition in the backwards state table
+            if category != IGNORE {
+                state = table.lookup_backward_state(state, category);
+            }
+
+            // then advance one character backwards
+            c = get_previous(self.text());
+        }
+
+        // if we didn't march off the beginning of the text, we're either
+        // one or two positions away from the real break position.
+        // (One because of the call to previous() at the end of the loop
+        // above, and another because the character that takes us into the
+        // stop state will always be the character BEFORE the break position.)
+        if c != i32::from(CHAR_DONE) {
+            if last_category != IGNORE {
+                get_next(self.text());
+                get_next(self.text());
+            } else {
+                get_next(self.text());
+            }
+        }
+        self.text().get_index()
     }
 
     /// `handleNext()`: [`rule_handle_next`](Self::rule_handle_next), or, for

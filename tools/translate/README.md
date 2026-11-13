@@ -80,3 +80,18 @@ the committed file, and rerunning it must leave that file unchanged.
   locale, so the data holds the names a JVM gives when that locale is the
   first it formats, as of the generation date; a rerun after a time-zone
   rule change can differ there.
+* `BrkCheck.java`, `DbbiCheck.java`, `BrkBackCheck.java` — not translators: Java models of the
+  JDK 25 break iterators that `crates/rucene-analysis-common/src/jdk/break_iterator.rs`,
+  `break_iterator_rules.rs` and `break_dictionary.rs` implement, checked against the running JDK on
+  pseudo-random strings. `BrkCheck` compares the forward tables with `handleNext` (root word, Thai
+  word ranges, sentence); `DbbiCheck` the Thai dictionary splitting, run on the JDK's own `thai_dict`;
+  `BrkBackCheck` random sequences of `first`, `last`, `next`, `previous`, `following`, `preceding`
+  and `isBoundary` (backward tables and `handlePrevious`) on all three iterators. Each prints every
+  difference and `mismatches=0` when it finds none; they validate the derivation the Rust code
+  follows, not the Rust code. Run with JDK 25 (the last two read `thai_dict` by reflection):
+
+  ```sh
+  java tools/translate/BrkCheck.java [seed] [maxLength]
+  java --add-opens java.base/sun.text=ALL-UNNAMED tools/translate/DbbiCheck.java [seed]
+  java --add-opens java.base/sun.text=ALL-UNNAMED tools/translate/BrkBackCheck.java [seed] [count]
+  ```

@@ -15,9 +15,10 @@
  * limitations under the License.
  */
 
-//! The forward state tables of JDK 25's rule-based break iterators: the
-//! word iterator of the root locale, the word iterator of Thai (before its
-//! dictionary splits Thai runs) and the sentence iterator.
+//! The state tables of JDK 25's rule-based break iterators: the word
+//! iterator of the root locale, the word iterator of Thai (before its
+//! dictionary splits Thai runs) and the sentence iterator, forward and
+//! backward.
 //!
 //! JDK 25 compiles, when the JDK is built, the rule sets of
 //! `sun.text.resources.BreakIteratorRules` (`WordBreakRules`,
@@ -40,19 +41,28 @@
 //! * the sentence rules, all of the form `.*?…` (shortest match, with the
 //!   builder's "backfilling" of the loop state into the states that follow
 //!   it), are the state machine the JDK's builder produces for them, written
-//!   by hand: `sentence_rules` documents each state.
+//!   by hand: `sentence_rules` documents each state;
+//! * the backward tables, which `handlePrevious` runs from a position back to
+//!   a position the rules always break at, are what the JDK's builder makes
+//!   of the forward table: a machine over pairs of adjacent categories that
+//!   continues while the forward table has some state taking the left
+//!   category into a state with a transition on the right one, and stops at
+//!   the first pair it never continues across (see `pair_table`); for the
+//!   sentence rules, the backward-only (`!`) rules come first (see
+//!   `sentence_rules`).
 //!
 //! Character classes use JDK 25's general categories (`Character.getType`,
 //! Unicode 16.0, the data the JDK's build reads).
 //!
-//! **Verification.** While writing this module, a Java model of these three
-//! tables and of `handleNext` was checked against JDK 25.0.5
-//! (`BreakIterator.getWordInstance(Locale.ROOT)`,
-//! `getSentenceInstance(Locale.ROOT)`, and the rule-based ranges of
-//! `getWordInstance(th)`) on several hundred thousand pseudo-random strings
-//! over the classes' characters, with no difference; that model is not part
-//! of the crate, and the port's own comparison with JDK 25 belongs to its
-//! tests.
+//! **Verification.** Java models of these tables, of `handleNext`,
+//! `handlePrevious` and the movements built on them were checked against
+//! JDK 25.0.5 (`BreakIterator.getWordInstance(Locale.ROOT)`,
+//! `getSentenceInstance(Locale.ROOT)` and `getWordInstance(th)`, the last on
+//! the JDK's own dictionary) on pseudo-random strings with random sequences
+//! of `first`, `last`, `next`, `previous`, `following`, `preceding` and
+//! `isBoundary`, with no difference: `tools/translate/BrkCheck.java`,
+//! `DbbiCheck.java` and `BrkBackCheck.java` (see `tools/translate/README.md`).
+//! The port's own comparison with JDK 25 belongs to its tests.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::LazyLock;
@@ -253,6 +263,9 @@ pub(crate) struct RuleTable {
     end_states: Vec<bool>,
     /// Whether each state is a lookahead state.
     lookahead_states: Vec<bool>,
+    /// The next state by state and category when moving backward
+    /// (`backwardsStateTable`); state 0 stops, state 1 starts.
+    backwards_state_table: Vec<u16>,
     /// Whether each category holds dictionary characters
     /// (`DictionaryBasedBreakIterator.categoryFlags`); empty for a table
     /// without a dictionary.
@@ -281,6 +294,11 @@ impl RuleTable {
     /// `lookaheadStates[state]`.
     pub(crate) fn is_lookahead_state(&self, state: usize) -> bool {
         self.lookahead_states[state]
+    }
+
+    /// `lookupBackwardState(int, int)`.
+    pub(crate) fn lookup_backward_state(&self, state: usize, category: i32) -> usize {
+        usize::from(self.backwards_state_table[state * self.num_categories + category as usize])
     }
 
     /// `categoryFlags[category]`: whether a category holds dictionary
@@ -496,10 +514,12 @@ fn compile(classes: &[Set], ignore: &Set, dictionary: Option<usize>, rules: &[Re
         .iter()
         .map(|set| set.iter().fold(0, |f, &x| f | nfa.flags[x]))
         .collect();
+    let backwards_state_table = pair_table(&state_table, categories.count, None);
     RuleTable {
         ranges: categories.ranges,
         num_categories: categories.count,
         state_table,
+        backwards_state_table,
         end_states: flags.iter().map(|f| f & FLAG_END != 0).collect(),
         lookahead_states: flags.iter().map(|f| f & FLAG_LOOKAHEAD != 0).collect(),
         category_flags: match dictionary {
@@ -509,7 +529,51 @@ fn compile(classes: &[Set], ignore: &Set, dictionary: Option<usize>, rules: &[Re
     }
 }
 
-/// `[々一-龥豈-鶴]`, the rules' `<kanji>`.
+/// The automatic part of a backward table, as the JDK's builder derives it
+/// from the forward table `state_table` (`num_categories` wide).
+///
+/// Row 1 starts: it reads category `k` into row `2 + k`, the row of "the
+/// character just read (moving backward) is of category `k`". Row `2 + x`
+/// continues on category `y`, the character to the left, iff some forward
+/// state takes `y` into a state with a transition on `x` (the forward rules
+/// can read `y` then `x` without stopping): to row `2 + y`, or, where
+/// `rule_start` (the start row of the backward-only rules) has a cell for
+/// `y`, to that cell. A pair the forward table never reads across stops
+/// (row 0): a sure break between `y` and `x`. Rows a caller appends follow
+/// these `2 + num_categories` rows.
+fn pair_table(state_table: &[u16], num_categories: usize, rule_start: Option<&[u16]>) -> Vec<u16> {
+    let n = num_categories;
+    let rows = state_table.len() / n;
+    let mut back = vec![0u16; (2 + n) * n];
+    for k in 0..n {
+        back[n + k] = (2 + k) as u16;
+    }
+    for column in 0..n {
+        for row in 0..rows {
+            let next_row = usize::from(state_table[row * n + column]);
+            if next_row == 0 {
+                continue;
+            }
+            for next_column in 0..n {
+                if state_table[next_row * n + next_column] != 0 {
+                    back[(2 + next_column) * n + column] = (2 + column) as u16;
+                }
+            }
+        }
+    }
+    if let Some(rule_start) = rule_start {
+        for row in 1..2 + n {
+            for k in 0..n {
+                if rule_start[k] != 0 && back[row * n + k] != 0 {
+                    back[row * n + k] = rule_start[k];
+                }
+            }
+        }
+    }
+    back
+}
+
+/// U+3005, U+4E00-U+9FA5 and U+F900-U+FA2D, the rules' `<kanji>`.
 fn kanji() -> Set {
     Set::Union(vec![
         Set::ch(0x3005),
@@ -626,7 +690,7 @@ pub(crate) fn word_rules() -> &'static RuleTable {
     &TABLE
 }
 
-/// `[ก-ฮะ-ฺเ-ไ็-๎]`, the Thai rules'
+/// U+0E01-U+0E2E, U+0E30-U+0E3A, U+0E40-U+0E44 and U+0E47-U+0E4E, the Thai rules'
 /// `<dictionary>` characters.
 fn thai_dictionary_chars() -> Set {
     Set::Union(vec![
@@ -694,9 +758,9 @@ pub(crate) fn thai_word_rules() -> &'static RuleTable {
             Set::Union(vec![Set::Types(ty(ZS)), Set::ch('\t' as u32)]),
             // 12 \r
             Set::ch('\r' as u32),
-            // 13 ล
+            // 13 U+0E25
             Set::ch(0x0E25),
-            // 14 [^[ล<ignore>]]
+            // 14 [^[U+0E25 <ignore>]]
             Set::All.minus(Set::ch(0x0E25)).minus(ignore.clone()),
             // 15 [^[<paiyannoi><ignore>]]
             Set::All.minus(Set::ch(0x0E2F)).minus(ignore.clone()),
@@ -848,7 +912,16 @@ mod sentence_state {
 /// leads to a state that is not backfilled, which stops on anything but more
 /// sentence-starting characters or a letter.
 ///
-/// No backward rules: see the iterator's `handle_previous`.
+/// The backward table holds, besides the pair machine of `pair_table`, the
+/// two backward-only (`!`) rules, read right to left: a sentence-starting
+/// character (or, for the second rule, also a lowercase letter or a digit),
+/// then any starting punctuation, whitespace and ending punctuation, then a
+/// period (first rule only) or a terminator, after which the machine stops.
+/// The rules' start row is the table's start state: on a sentence-starting
+/// character it enters both rules, on a lowercase letter or a digit the
+/// second; every other cell of it, and every cell the rules leave empty in
+/// their states (but the final one), is the pair machine's, whose own cells
+/// on those four categories enter the rules too.
 pub(crate) fn sentence_rules() -> &'static RuleTable {
     use sentence_state::*;
     use SentenceCategory as K;
@@ -977,10 +1050,69 @@ pub(crate) fn sentence_rules() -> &'static RuleTable {
         }
         let end = [LOOP, PARAGRAPH, DANDA, TERM, TERM_SPACE, BREAK];
         let lookahead = [PERIOD, PERIOD_QUOTE, SPACE, SPACES, BREAK];
+
+        // the backward table: the pair rows, then the rows of the `!` rules
+        let n = categories.count;
+        // both rules after their first character (sentence-starting) and any
+        // starting punctuation; after whitespace; after ending punctuation
+        let both_first = 2 + n;
+        let both_space = both_first + 1;
+        let both_end = both_first + 2;
+        // the second rule alone (first character a lowercase letter or a
+        // digit), likewise
+        let second_first = both_first + 3;
+        let second_space = both_first + 4;
+        let second_end = both_first + 5;
+        // a rule matched: stops
+        let matched = both_first + 6;
+        let rows = both_first + 7;
+        let rule_start: Vec<u16> = keys
+            .iter()
+            .map(|&k| match k {
+                K::SentenceStart | K::Danda => both_first as u16,
+                K::Lowercase | K::Digit => second_first as u16,
+                _ => 0,
+            })
+            .collect();
+        let mut backwards_state_table = pair_table(&state_table, n, Some(&rule_start));
+        backwards_state_table.resize(rows * n, 0);
+        for (category, &k) in keys.iter().enumerate() {
+            // the start row: the rules' start, the pair machine's start
+            // where the rules have no cell
+            if rule_start[category] != 0 {
+                backwards_state_table[n + category] = rule_start[category];
+            }
+            let fallback = backwards_state_table[n + category];
+            let both = [both_first, both_space, both_end];
+            let second = [second_first, second_space, second_end];
+            let target = |state: usize| -> u16 {
+                let (first, space, end, ends_on_period) = if both.contains(&state) {
+                    (both_first, both_space, both_end, true)
+                } else {
+                    (second_first, second_space, second_end, false)
+                };
+                let target = match k {
+                    K::Start if state == first => first,
+                    K::Quote if state == first => first,
+                    K::Quote => end,
+                    K::Space if state != end => space,
+                    K::End => end,
+                    K::Term => matched,
+                    K::Period if ends_on_period => matched,
+                    _ => return fallback,
+                };
+                target as u16
+            };
+            for state in both.into_iter().chain(second) {
+                backwards_state_table[state * n + category] = target(state);
+            }
+        }
+
         RuleTable {
             ranges: categories.ranges,
             num_categories: categories.count,
             state_table,
+            backwards_state_table,
             end_states: (0..COUNT).map(|s| end.contains(&s)).collect(),
             lookahead_states: (0..COUNT).map(|s| lookahead.contains(&s)).collect(),
             category_flags: Vec::new(),
