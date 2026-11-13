@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.core`.
+//! The Java package `org.apache.lucene.analysis.core`.
 
 pub mod decimal_digit_filter;
 pub mod decimal_digit_filter_factory;

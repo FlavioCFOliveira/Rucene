@@ -15,10 +15,74 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `WhitespaceAnalyzer.java`, of the Java
-//! package `org.apache.lucene.analysis.core`.
+//! An Analyzer that uses WhitespaceTokenizer, ported from
+//! `org.apache.lucene.analysis.core.WhitespaceAnalyzer`.
 
-/// Java: `public final class`.
+use std::sync::Arc;
+
+use rucene::analysis::{Analyzer, AnalyzerState, GlobalReuseStrategy, TokenStreamComponents};
+use rucene::error::Result;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
+
+use super::whitespace_tokenizer::new_whitespace_tokenizer_with_max_token_len;
+use crate::analysis::util::char_tokenizer::DEFAULT_MAX_WORD_LEN;
+
+/// An Analyzer that uses `WhitespaceTokenizer`.
 ///
-/// Skeleton of `org.apache.lucene.analysis.core.WhitespaceAnalyzer`; ported by rmp task #449.
-pub struct WhitespaceAnalyzer;
+/// Equivalent to `org.apache.lucene.analysis.core.WhitespaceAnalyzer` (since
+/// 3.1).
+#[derive(Debug)]
+pub struct WhitespaceAnalyzer {
+    state: AnalyzerState,
+    max_token_length: i32,
+}
+
+impl Default for WhitespaceAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Analyzer for WhitespaceAnalyzer {
+    fn analyzer_state(&self) -> &AnalyzerState {
+        &self.state
+    }
+
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
+    }
+
+    /// Equivalent to `WhitespaceAnalyzer.createComponents(String)`.
+    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+        Ok(TokenStreamComponents::from_tokenizer(Arc::new(
+            AtomicRefCell::new(new_whitespace_tokenizer_with_max_token_len(
+                self.max_token_length,
+            )?),
+        )))
+    }
+}
+
+impl WhitespaceAnalyzer {
+    /// Creates a new `WhitespaceAnalyzer` with a maximum token length of 255
+    /// chars.
+    ///
+    /// Equivalent to `WhitespaceAnalyzer()`,
+    /// `this(WhitespaceTokenizer.DEFAULT_MAX_WORD_LEN)`.
+    pub fn new() -> Self {
+        Self::with_max_token_length(DEFAULT_MAX_WORD_LEN)
+    }
+
+    /// Creates a new `WhitespaceAnalyzer` with a custom maximum token length:
+    /// `max_token_length` is the maximum token length the analyzer will emit.
+    /// It is checked when the components are created, where Java's
+    /// `new WhitespaceTokenizer(maxTokenLength)` checks it.
+    ///
+    /// Equivalent to `WhitespaceAnalyzer(int)`, whose `Analyzer()` uses
+    /// `GLOBAL_REUSE_STRATEGY`.
+    pub fn with_max_token_length(max_token_length: i32) -> Self {
+        Self {
+            state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
+            max_token_length,
+        }
+    }
+}

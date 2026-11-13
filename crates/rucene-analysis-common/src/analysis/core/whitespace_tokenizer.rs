@@ -15,10 +15,101 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `WhitespaceTokenizer.java`, of the Java
-//! package `org.apache.lucene.analysis.core`.
+//! A tokenizer that divides text at whitespace characters, ported from
+//! `org.apache.lucene.analysis.core.WhitespaceTokenizer`.
 
-/// Java: `public final class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::util::attribute::AttributeFactory;
+
+use crate::analysis::util::char_tokenizer::{
+    new_char_tokenizer, new_char_tokenizer_with_factory,
+    new_char_tokenizer_with_factory_and_max_token_len, CharTokenizer, CharTokenizerLogic,
+};
+use crate::jdk::character::is_whitespace;
+
+/// The `isTokenChar` of [`WhitespaceTokenizer`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WhitespaceTokenizerLogic;
+
+impl CharTokenizerLogic for WhitespaceTokenizerLogic {
+    /// Collects only characters which do not satisfy `Character.isWhitespace(int)`.
+    ///
+    /// Equivalent to `WhitespaceTokenizer.isTokenChar(int)`.
+    fn is_token_char(&self, c: i32) -> bool {
+        !is_whitespace(c)
+    }
+}
+
+/// A tokenizer that divides text at whitespace characters as defined by
+/// `Character.isWhitespace(int)`. Note: That definition explicitly excludes
+/// the non-breaking space. Adjacent sequences of non-Whitespace characters
+/// form tokens.
 ///
-/// Skeleton of `org.apache.lucene.analysis.core.WhitespaceTokenizer`; ported by rmp task #449.
-pub struct WhitespaceTokenizer;
+/// See also `UnicodeWhitespaceTokenizer`.
+///
+/// Equivalent to `org.apache.lucene.analysis.core.WhitespaceTokenizer`, a
+/// `CharTokenizer` whose `isTokenChar` is [`WhitespaceTokenizerLogic`].
+pub type WhitespaceTokenizer = CharTokenizer<WhitespaceTokenizerLogic>;
+
+/// Construct a new WhitespaceTokenizer.
+///
+/// Equivalent to `WhitespaceTokenizer()`.
+pub fn new_whitespace_tokenizer() -> WhitespaceTokenizer {
+    new_char_tokenizer(WhitespaceTokenizerLogic)
+}
+
+/// Construct a new WhitespaceTokenizer using a given `AttributeFactory`.
+///
+/// Equivalent to `WhitespaceTokenizer(AttributeFactory)`.
+///
+/// # Errors
+///
+/// What `factory` raises for an interface it cannot implement, as Java's
+/// `addAttribute` throws.
+pub fn new_whitespace_tokenizer_with_factory(
+    factory: Arc<dyn AttributeFactory>,
+) -> Result<WhitespaceTokenizer> {
+    new_char_tokenizer_with_factory(factory, WhitespaceTokenizerLogic)
+}
+
+/// Construct a new WhitespaceTokenizer using a given `AttributeFactory`: `max_token_len` is
+/// the maximum token length the tokenizer will emit. Must be greater than 0
+/// and less than `MAX_TOKEN_LENGTH_LIMIT` (1024*1024).
+///
+/// Equivalent to `WhitespaceTokenizer(AttributeFactory, int)`.
+///
+/// # Errors
+///
+/// What `factory` raises for an interface it cannot implement, and
+/// `IllegalArgumentException` if `max_token_len` is invalid.
+pub fn new_whitespace_tokenizer_with_factory_and_max_token_len(
+    factory: Arc<dyn AttributeFactory>,
+    max_token_len: i32,
+) -> Result<WhitespaceTokenizer> {
+    new_char_tokenizer_with_factory_and_max_token_len(
+        factory,
+        max_token_len,
+        WhitespaceTokenizerLogic,
+    )
+}
+
+/// Construct a new WhitespaceTokenizer using a given max token length:
+/// `max_token_len` is the maximum token length the tokenizer will emit. Must
+/// be greater than 0 and less than `MAX_TOKEN_LENGTH_LIMIT` (1024*1024).
+///
+/// Equivalent to `WhitespaceTokenizer(int)`,
+/// `super(TokenStream.DEFAULT_TOKEN_ATTRIBUTE_FACTORY, maxTokenLen)`.
+///
+/// # Errors
+///
+/// `IllegalArgumentException` if `max_token_len` is invalid.
+pub fn new_whitespace_tokenizer_with_max_token_len(
+    max_token_len: i32,
+) -> Result<WhitespaceTokenizer> {
+    new_whitespace_tokenizer_with_factory_and_max_token_len(
+        rucene::analysis::default_token_attribute_factory(),
+        max_token_len,
+    )
+}

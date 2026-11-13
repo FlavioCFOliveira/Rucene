@@ -15,10 +15,84 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SimpleAnalyzer.java`, of the Java
-//! package `org.apache.lucene.analysis.core`.
+//! An analyzer that filters `LetterTokenizer` with `LowerCaseFilter`,
+//! ported from `org.apache.lucene.analysis.core.SimpleAnalyzer`.
 
-/// Java: `public final class`.
+use std::sync::Arc;
+
+use rucene::analysis::{
+    Analyzer, AnalyzerState, CharReader, GlobalReuseStrategy, SharedTokenStream, TokenStream,
+    TokenStreamComponents,
+};
+use rucene::error::Result;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
+
+use super::letter_tokenizer::new_letter_tokenizer;
+use super::lower_case_filter::LowerCaseFilter;
+
+/// An `Analyzer` that filters `LetterTokenizer` with `LowerCaseFilter`.
 ///
-/// Skeleton of `org.apache.lucene.analysis.core.SimpleAnalyzer`; ported by rmp task #449.
-pub struct SimpleAnalyzer;
+/// Equivalent to `org.apache.lucene.analysis.core.SimpleAnalyzer` (since
+/// 3.1).
+#[derive(Debug)]
+pub struct SimpleAnalyzer {
+    state: AnalyzerState,
+}
+
+impl SimpleAnalyzer {
+    /// Creates a new [`SimpleAnalyzer`].
+    ///
+    /// Equivalent to `SimpleAnalyzer()`, whose `Analyzer()` uses
+    /// `GLOBAL_REUSE_STRATEGY`.
+    pub fn new() -> Self {
+        Self {
+            state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
+        }
+    }
+}
+
+impl Default for SimpleAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Analyzer for SimpleAnalyzer {
+    fn analyzer_state(&self) -> &AnalyzerState {
+        &self.state
+    }
+
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.core.SimpleAnalyzer"
+    }
+
+    /// Equivalent to `SimpleAnalyzer.createComponents(String)`:
+    /// `new TokenStreamComponents(tokenizer, new LowerCaseFilter(tokenizer))`,
+    /// the tokenizer's `setReader` as the source.
+    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+        let tokenizer = Arc::new(AtomicRefCell::new(new_letter_tokenizer()));
+        let tokenizer_for_source = Arc::clone(&tokenizer);
+        let source = Box::new(move |reader: Box<dyn CharReader>| {
+            tokenizer_for_source.borrow_mut().set_reader(reader)
+        });
+        let filter = LowerCaseFilter::new(Box::new(SharedTokenStream::new(tokenizer)))?;
+        let sink: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(filter));
+        Ok(TokenStreamComponents::new(source, sink))
+    }
+
+    /// Equivalent to `SimpleAnalyzer.normalize(String, TokenStream)`, `new
+    /// LowerCaseFilter(in)`.
+    fn normalize_token_stream(
+        &self,
+        _field_name: &str,
+        input: Box<dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        // `Analyzer.normalize` hands this a `StringTokenStream`, which holds
+        // the `CharTermAttribute` already, so the filter's `addAttribute`
+        // finds it and cannot fail.
+        Box::new(
+            LowerCaseFilter::new(input)
+                .expect("INVARIANT: the normalization input holds the CharTermAttribute"),
+        )
+    }
+}

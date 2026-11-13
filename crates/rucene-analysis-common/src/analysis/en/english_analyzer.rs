@@ -22,3 +22,22 @@
 ///
 /// Skeleton of `org.apache.lucene.analysis.en.EnglishAnalyzer`; ported by rmp task #452.
 pub struct EnglishAnalyzer;
+
+/// An unmodifiable set containing some common English words that are not
+/// usually useful for searching.
+///
+/// The public static field `ENGLISH_STOP_WORDS_SET` of Lucene 10.5.0's
+/// `org.apache.lucene.analysis.en.EnglishAnalyzer`, which its static
+/// initializer builds as `CharArraySet.unmodifiableSet(new
+/// CharArraySet(stopWords, false))`; ported ahead of its class by rmp task
+/// #449, whose `StopFilterFactory` reads it (the class is task #452's).
+pub static ENGLISH_STOP_WORDS_SET: std::sync::LazyLock<rucene::analysis::CharArraySet> =
+    std::sync::LazyLock::new(|| {
+        let stop_words = [
+            "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into",
+            "is", "it", "no", "not", "of", "on", "or", "such", "that", "the", "their", "then",
+            "there", "these", "they", "this", "to", "was", "will", "with",
+        ];
+        let stop_set = rucene::analysis::CharArraySet::from_iter(stop_words, false);
+        rucene::analysis::CharArraySet::unmodifiable_set(Some(stop_set))
+    });

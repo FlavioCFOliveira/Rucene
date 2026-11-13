@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.util`.
+//! The Java package `org.apache.lucene.analysis.util`.
 
 pub mod char_array_iterator;
 pub mod char_tokenizer;

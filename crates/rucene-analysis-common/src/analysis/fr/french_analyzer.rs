@@ -27,3 +27,24 @@ pub struct FrenchAnalyzer;
 ///
 /// Skeleton of `org.apache.lucene.analysis.fr.FrenchAnalyzer.DefaultSetHolder`; ported by rmp task #468.
 pub(crate) struct DefaultSetHolder;
+
+/// Default set of articles for `ElisionFilter`.
+///
+/// The public static field `DEFAULT_ARTICLES` of Lucene 10.5.0's
+/// `org.apache.lucene.analysis.fr.FrenchAnalyzer`,
+/// `CharArraySet.unmodifiableSet(new CharArraySet(Arrays.asList("l", "m", "t",
+/// "qu", "n", "s", "j", "d", "c", "jusqu", "quoiqu", "lorsqu", "puisqu"),
+/// true))`; ported ahead of its class by rmp task #448, whose
+/// `ElisionFilterFactory` reads it (the class is task #468's).
+pub static DEFAULT_ARTICLES: std::sync::LazyLock<rucene::analysis::CharArraySet> =
+    std::sync::LazyLock::new(|| {
+        rucene::analysis::CharArraySet::unmodifiable_set(Some(
+            rucene::analysis::CharArraySet::from_iter(
+                [
+                    "l", "m", "t", "qu", "n", "s", "j", "d", "c", "jusqu", "quoiqu", "lorsqu",
+                    "puisqu",
+                ],
+                true,
+            ),
+        ))
+    });

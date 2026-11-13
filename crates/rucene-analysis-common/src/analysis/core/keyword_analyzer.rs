@@ -15,10 +15,56 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `KeywordAnalyzer.java`, of the Java
-//! package `org.apache.lucene.analysis.core`.
+//! Tokenizes the entire stream as a single token, ported from
+//! `org.apache.lucene.analysis.core.KeywordAnalyzer`.
 
-/// Java: `public final class`.
+use std::sync::Arc;
+
+use rucene::analysis::{Analyzer, AnalyzerState, GlobalReuseStrategy, TokenStreamComponents};
+use rucene::error::Result;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
+
+use super::keyword_tokenizer::new_keyword_tokenizer;
+
+/// "Tokenizes" the entire stream as a single token. This is useful for data
+/// like zip codes, ids, and some product names.
 ///
-/// Skeleton of `org.apache.lucene.analysis.core.KeywordAnalyzer`; ported by rmp task #449.
-pub struct KeywordAnalyzer;
+/// Equivalent to `org.apache.lucene.analysis.core.KeywordAnalyzer` (since
+/// 3.1).
+#[derive(Debug)]
+pub struct KeywordAnalyzer {
+    state: AnalyzerState,
+}
+
+impl Default for KeywordAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Analyzer for KeywordAnalyzer {
+    fn analyzer_state(&self) -> &AnalyzerState {
+        &self.state
+    }
+
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.core.KeywordAnalyzer"
+    }
+
+    /// Equivalent to `KeywordAnalyzer.createComponents(String)`.
+    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+        Ok(TokenStreamComponents::from_tokenizer(Arc::new(
+            AtomicRefCell::new(new_keyword_tokenizer()),
+        )))
+    }
+}
+
+impl KeywordAnalyzer {
+    /// Equivalent to `KeywordAnalyzer()`, whose `Analyzer()` uses
+    /// `GLOBAL_REUSE_STRATEGY`.
+    pub fn new() -> Self {
+        Self {
+            state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
+        }
+    }
+}

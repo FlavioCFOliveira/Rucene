@@ -15,10 +15,57 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `UnicodeWhitespaceAnalyzer.java`, of the Java
-//! package `org.apache.lucene.analysis.core`.
+//! An Analyzer that uses UnicodeWhitespaceTokenizer, ported from
+//! `org.apache.lucene.analysis.core.UnicodeWhitespaceAnalyzer`.
 
-/// Java: `public final class`.
+use std::sync::Arc;
+
+use rucene::analysis::{Analyzer, AnalyzerState, GlobalReuseStrategy, TokenStreamComponents};
+use rucene::error::Result;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
+
+use super::unicode_whitespace_tokenizer::new_unicode_whitespace_tokenizer;
+
+/// An Analyzer that uses `UnicodeWhitespaceTokenizer`.
 ///
-/// Skeleton of `org.apache.lucene.analysis.core.UnicodeWhitespaceAnalyzer`; ported by rmp task #449.
-pub struct UnicodeWhitespaceAnalyzer;
+/// Equivalent to `org.apache.lucene.analysis.core.UnicodeWhitespaceAnalyzer`
+/// (since 5.4.0).
+#[derive(Debug)]
+pub struct UnicodeWhitespaceAnalyzer {
+    state: AnalyzerState,
+}
+
+impl Default for UnicodeWhitespaceAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Analyzer for UnicodeWhitespaceAnalyzer {
+    fn analyzer_state(&self) -> &AnalyzerState {
+        &self.state
+    }
+
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.core.UnicodeWhitespaceAnalyzer"
+    }
+
+    /// Equivalent to `UnicodeWhitespaceAnalyzer.createComponents(String)`.
+    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+        Ok(TokenStreamComponents::from_tokenizer(Arc::new(
+            AtomicRefCell::new(new_unicode_whitespace_tokenizer()),
+        )))
+    }
+}
+
+impl UnicodeWhitespaceAnalyzer {
+    /// Creates a new `UnicodeWhitespaceAnalyzer`.
+    ///
+    /// Equivalent to `UnicodeWhitespaceAnalyzer()`, whose `Analyzer()` uses
+    /// `GLOBAL_REUSE_STRATEGY`.
+    pub fn new() -> Self {
+        Self {
+            state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
+        }
+    }
+}

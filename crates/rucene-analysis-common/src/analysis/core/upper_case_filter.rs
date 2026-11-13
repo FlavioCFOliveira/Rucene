@@ -15,10 +15,63 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `UpperCaseFilter.java`, of the Java
-//! package `org.apache.lucene.analysis.core`.
+//! Normalizes token text to UPPER CASE, ported from
+//! `org.apache.lucene.analysis.core.UpperCaseFilter`.
 
-/// Java: `public final class`.
+use rucene::analysis::character_utils::to_upper_case;
+use rucene::analysis::{CharTermAttribute, TokenFilter, TokenFilterLogic, TokenStream};
+use rucene::error::Result;
+use rucene::util::attribute::AttributeSource;
+
+/// The body of [`UpperCaseFilter`]: what Lucene's `UpperCaseFilter` adds to
+/// `TokenFilter`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UpperCaseFilterLogic;
+
+impl TokenFilterLogic for UpperCaseFilterLogic {
+    /// Equivalent to the final `UpperCaseFilter.incrementToken()`:
+    /// `CharacterUtils.toUpperCase(termAtt.buffer(), 0, termAtt.length())`.
+    fn increment_token(
+        &mut self,
+        source: &mut AttributeSource,
+        input: &mut dyn TokenStream,
+    ) -> Result<bool> {
+        if input.increment_token()? {
+            let mut term_att = source
+                .get_attribute_interface_mut::<dyn CharTermAttribute>()
+                .expect("INVARIANT: the constructor added the CharTermAttribute");
+            let length = term_att.length();
+            to_upper_case(term_att.buffer_mut(), 0, length);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+/// Normalizes token text to UPPER CASE.
 ///
-/// Skeleton of `org.apache.lucene.analysis.core.UpperCaseFilter`; ported by rmp task #449.
-pub struct UpperCaseFilter;
+/// **NOTE:** In Unicode, this transformation may lose information when the
+/// upper case character represents more than one lower case character. Use
+/// this filter when you require uppercase tokens. Use the `LowerCaseFilter`
+/// for general search matching.
+///
+/// Equivalent to `org.apache.lucene.analysis.core.UpperCaseFilter`.
+pub type UpperCaseFilter = TokenFilter<UpperCaseFilterLogic>;
+
+/// Create a new UpperCaseFilter, that normalizes token text to upper case.
+///
+/// Equivalent to `UpperCaseFilter(TokenStream)`, which adds the
+/// `CharTermAttribute`.
+///
+/// # Errors
+///
+/// What the stream's attribute factory raises for an interface it cannot
+/// implement, as Java's `addAttribute` throws.
+pub fn new_upper_case_filter(input: Box<dyn TokenStream>) -> Result<UpperCaseFilter> {
+    let mut filter = TokenFilter::new(input, UpperCaseFilterLogic);
+    filter
+        .attribute_source_mut()
+        .add_attribute_interface::<dyn CharTermAttribute>()?;
+    Ok(filter)
+}
