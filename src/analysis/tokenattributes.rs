@@ -2349,6 +2349,22 @@ fn throw_index_out_of_bounds(message: &str) -> ! {
     )
 }
 
+impl std::fmt::Display for CharTermAttributeImpl {
+    /// Port of `CharTermAttributeImpl.toString()`, which is
+    /// `new String(termBuffer, 0, termLength)` — the term itself, with no
+    /// class name and no delimiters.
+    ///
+    /// Note that this is *not* the reflected `key=value` rendering
+    /// `AttributeImpl.toString()` would give; `CharTermAttributeImpl` overrides
+    /// it precisely to print the bare term.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for c in &self.term_buffer[..self.term_length] {
+            f.write_str(c.encode_utf8(&mut [0u8; 4]))?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2916,21 +2932,5 @@ mod tests {
         assert_eq!(att.get_position_increment(), 2);
         assert_eq!(att.get_position_length(), 2);
         assert_eq!(att.type_value(), "ALPHANUM");
-    }
-}
-
-impl std::fmt::Display for CharTermAttributeImpl {
-    /// Port of `CharTermAttributeImpl.toString()`, which is
-    /// `new String(termBuffer, 0, termLength)` — the term itself, with no
-    /// class name and no delimiters.
-    ///
-    /// Note that this is *not* the reflected `key=value` rendering
-    /// `AttributeImpl.toString()` would give; `CharTermAttributeImpl` overrides
-    /// it precisely to print the bare term.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for c in &self.term_buffer[..self.term_length] {
-            f.write_str(c.encode_utf8(&mut [0u8; 4]))?;
-        }
-        Ok(())
     }
 }

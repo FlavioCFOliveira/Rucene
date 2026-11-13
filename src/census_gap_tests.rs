@@ -2182,7 +2182,7 @@ mod members {
     fn gap_g105_axiomatic_base_constructor_checks() {
         use crate::search::similarities::axiomatic::AxiomaticParams;
         let message = |r: crate::error::Result<AxiomaticParams>| {
-            illegal_argument_message(&r.err().expect("refused")).to_string()
+            illegal_argument_message(&r.expect_err("refused")).to_string()
         };
         assert_eq!(
             message(AxiomaticParams::new(true, 1.5, 1, 0.35)),

@@ -500,6 +500,19 @@ impl Directory for Lucene90CompoundReader {
     }
 }
 
+impl std::fmt::Display for Lucene90CompoundReader {
+    /// Port of `Lucene90CompoundReader.toString()`, which names itself
+    /// `CompoundFileDirectory` rather than after its own class and puts the
+    /// segment name in double quotes.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "CompoundFileDirectory(segment=\"{}\" in dir={})",
+            self.segment_name, self.directory_description
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,18 +800,5 @@ mod tests {
             .unwrap();
 
         assert_eq!(bytes, orig_bytes);
-    }
-}
-
-impl std::fmt::Display for Lucene90CompoundReader {
-    /// Port of `Lucene90CompoundReader.toString()`, which names itself
-    /// `CompoundFileDirectory` rather than after its own class and puts the
-    /// segment name in double quotes.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "CompoundFileDirectory(segment=\"{}\" in dir={})",
-            self.segment_name, self.directory_description
-        )
     }
 }

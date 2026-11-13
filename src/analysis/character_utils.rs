@@ -326,16 +326,15 @@ pub fn fill(
         ));
     }
     buffer.offset = 0;
-    let offset;
 
     // Install the previously saved ending high surrogate:
-    if buffer.last_trailing_high_surrogate != 0 {
+    let offset = if buffer.last_trailing_high_surrogate != 0 {
         buffer.buffer[0] = buffer.last_trailing_high_surrogate;
         buffer.last_trailing_high_surrogate = 0;
-        offset = 1;
+        1
     } else {
-        offset = 0;
-    }
+        0
+    };
 
     let read = read_fully(buffer, reader, offset, num_chars - offset)?;
 

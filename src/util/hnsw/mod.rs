@@ -533,7 +533,7 @@ mod tests {
             vec![0.9, 0.1, 0.0],
             vec![0.0, 1.0, 0.0],
         ];
-        let vectors_b = vec![
+        let vectors_b = [
             vec![0.0, 0.0, 1.0],
             vec![0.0, 0.1, 0.9],
             vec![0.5, 0.5, 0.5],

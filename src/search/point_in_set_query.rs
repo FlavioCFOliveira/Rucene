@@ -121,12 +121,12 @@ impl PointInSetQuery {
         packed_points: &mut dyn BytesRefIterator,
         formatter: Arc<dyn PointFormatter>,
     ) -> Result<Self> {
-        if bytes_per_dim < 1 || bytes_per_dim > MAX_NUM_BYTES {
+        if !(1..=MAX_NUM_BYTES).contains(&bytes_per_dim) {
             return Err(LuceneError::illegal_argument(format!(
                 "bytesPerDim must be > 0 and <= {MAX_NUM_BYTES}; got {bytes_per_dim}"
             )));
         }
-        if num_dims < 1 || num_dims > MAX_INDEX_DIMENSIONS {
+        if !(1..=MAX_INDEX_DIMENSIONS).contains(&num_dims) {
             return Err(LuceneError::illegal_argument(format!(
                 "numDims must be > 0 and <= {MAX_INDEX_DIMENSIONS}; got {num_dims}"
             )));
@@ -286,10 +286,7 @@ impl<'a> MergePointVisitor<'a> {
     /// Equivalent to the private `MergePointVisitor.matches(byte[])`.
     fn matches(&self, packed_value: &[u8]) -> Result<bool> {
         let mut cursor = self.cursor.borrow_mut();
-        loop {
-            let Some(next) = cursor.next_query_point.as_ref() else {
-                break;
-            };
+        while let Some(next) = cursor.next_query_point.as_ref() {
             let cmp = self
                 .comparator
                 .compare(&next.bytes, next.offset, packed_value, 0);
@@ -358,10 +355,7 @@ impl IntersectVisitor for MergePointVisitor<'_> {
     /// [`matches`](Self::matches).
     fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
         let mut cursor = self.cursor.borrow_mut();
-        loop {
-            let Some(next) = cursor.next_query_point.as_ref() else {
-                break;
-            };
+        while let Some(next) = cursor.next_query_point.as_ref() {
             let cmp_min = self
                 .comparator
                 .compare(&next.bytes, next.offset, min_packed_value, 0);
@@ -674,7 +668,7 @@ impl ConstantScoreWeightImpl for PointInSetWeight {
             query: Arc::clone(&self.query),
             values,
             max_doc: reader.max_doc(),
-            score: score,
+            score,
             score_mode: self.score_mode,
             cost: None,
         };

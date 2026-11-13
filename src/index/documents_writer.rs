@@ -3433,15 +3433,20 @@ impl FlushPolicy for FlushByRamOrCountsPolicy {
         let active_ram = control.active_bytes();
         let deletes_ram = control.delete_bytes_used();
 
-        if deletes_ram >= limit && active_ram >= limit && per_thread.is_some() {
-            let per_thread = per_thread.expect("INVARIANT: presence checked above");
-            self.flush_deletes(control, &config, info_stream.as_ref());
-            self.flush_active_bytes(control, &config, info_stream.as_ref(), per_thread);
-        } else if deletes_ram >= limit {
-            self.flush_deletes(control, &config, info_stream.as_ref());
-        } else if active_ram + deletes_ram >= limit && per_thread.is_some() {
-            let per_thread = per_thread.expect("INVARIANT: presence checked above");
-            self.flush_active_bytes(control, &config, info_stream.as_ref(), per_thread);
+        // The arms keep Java's `if`/`else if` order; `perThread != null` is the
+        // `Some` pattern.
+        match per_thread {
+            Some(per_thread) if deletes_ram >= limit && active_ram >= limit => {
+                self.flush_deletes(control, &config, info_stream.as_ref());
+                self.flush_active_bytes(control, &config, info_stream.as_ref(), per_thread);
+            }
+            _ if deletes_ram >= limit => {
+                self.flush_deletes(control, &config, info_stream.as_ref());
+            }
+            Some(per_thread) if active_ram + deletes_ram >= limit => {
+                self.flush_active_bytes(control, &config, info_stream.as_ref(), per_thread);
+            }
+            _ => {}
         }
     }
 
@@ -7123,6 +7128,28 @@ impl Drop for LockAllGuard<'_> {
     }
 }
 
+impl std::fmt::Display for DocumentsWriterDeleteQueue {
+    /// Port of `DocumentsWriterDeleteQueue.toString()`
+    /// (`DocumentsWriterDeleteQueue.java:560-563`). Measured against
+    /// `lucene-core-10.5.0.jar`: a fresh queue renders as
+    /// `DWDQ: [ generation: 0 ]`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DWDQ: [ generation: {} ]", self.generation)
+    }
+}
+
+impl std::fmt::Display for DocumentsWriterFlushControl {
+    /// Port of `DocumentsWriterFlushControl.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "DocumentsWriterFlushControl [activeBytes={}, flushBytes={}]",
+            self.active_bytes(),
+            self.flushing_bytes()
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -8899,27 +8926,5 @@ mod tests {
             "interleaving full flushes with indexing must not lose or duplicate documents"
         );
         assert_eq!(fixture.writer.num_docs(), 0);
-    }
-}
-
-impl std::fmt::Display for DocumentsWriterDeleteQueue {
-    /// Port of `DocumentsWriterDeleteQueue.toString()`
-    /// (`DocumentsWriterDeleteQueue.java:560-563`). Measured against
-    /// `lucene-core-10.5.0.jar`: a fresh queue renders as
-    /// `DWDQ: [ generation: 0 ]`.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DWDQ: [ generation: {} ]", self.generation)
-    }
-}
-
-impl std::fmt::Display for DocumentsWriterFlushControl {
-    /// Port of `DocumentsWriterFlushControl.toString()`.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "DocumentsWriterFlushControl [activeBytes={}, flushBytes={}]",
-            self.active_bytes(),
-            self.flushing_bytes()
-        )
     }
 }

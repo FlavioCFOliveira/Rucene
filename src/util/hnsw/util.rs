@@ -44,6 +44,8 @@ impl Component {
 /// Equivalent to `org.apache.lucene.util.hnsw.HnswUtil`.
 pub struct HnswUtil;
 
+/// Opens the HNSW graph of one leaf for a vector field.
+type GraphOfLeafFn = dyn Fn(&LeafReaderContext, &str) -> Result<Box<dyn HnswGraph>>;
 impl HnswUtil {
     /// Returns true if every node on every level is reachable from the entry
     /// point.
@@ -87,7 +89,7 @@ impl HnswUtil {
     pub fn graph_is_rooted(
         reader: Arc<dyn IndexReader>,
         vector_field: &str,
-        graph_of_leaf: &dyn Fn(&LeafReaderContext, &str) -> Result<Box<dyn HnswGraph>>,
+        graph_of_leaf: &GraphOfLeafFn,
     ) -> Result<bool> {
         for ctx in reader.leaves()? {
             let mut graph = graph_of_leaf(&ctx, vector_field)?;

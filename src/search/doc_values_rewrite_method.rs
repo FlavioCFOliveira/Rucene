@@ -276,7 +276,7 @@ impl ConstantScoreWeightImpl for DocValuesWeightImpl {
             reader,
             field: self.query.get_field().to_string(),
             terms_enum: Some(terms_enum),
-            score: score,
+            score,
             score_mode: self.score_mode,
             cost,
         })))

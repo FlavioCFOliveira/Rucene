@@ -104,9 +104,7 @@ impl SortRescorer {
                     .get_leaf_collector(context)
                     .map_err(collection_error_to_lucene)?;
                 score.set_score(hits[hit_upto].score);
-                leaf_collector
-                    .set_scorer(&mut score)
-                    .map_err(LuceneError::from)?;
+                leaf_collector.set_scorer(&mut score)?;
                 while hit_upto < hits.len() && hits[hit_upto].doc < end_doc {
                     score.set_score(hits[hit_upto].score);
                     leaf_collector

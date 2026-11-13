@@ -5695,7 +5695,7 @@ impl FixedBitSet {
     ///
     /// Equivalent to `org.apache.lucene.util.FixedBitSet#denseWord2Array`.
     fn dense_word_to_array(word: u64, base: i32, docs: &mut [i32], mut offset: usize) -> usize {
-        debug_assert!(docs.len() - offset >= word.count_ones() as usize + 1);
+        debug_assert!(docs.len() - offset > word.count_ones() as usize);
 
         let l_word = word as u32;
         let h_word = (word >> 32) as u32;
@@ -5727,7 +5727,7 @@ impl FixedBitSet {
         while i > 0 {
             i -= 1;
             h ^= self.word(i);
-            h = (h << 1) | (h >> 63); // rotate left
+            h = h.rotate_left(1); // rotate left
         }
         // Fold the leftmost bits into the right and add a constant, so that an
         // empty set does not hash to 0, which is too common.

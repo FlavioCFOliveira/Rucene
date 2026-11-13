@@ -200,28 +200,30 @@ impl TermWeight {
         let term = query.get_term().clone();
         let similarity = Arc::clone(searcher.get_similarity());
 
-        let collection_stats;
-        let term_stats;
-        if score_mode.needs_scores() {
+        let (collection_stats, term_stats) = if score_mode.needs_scores() {
             let states = term_states
                 .as_ref()
                 .expect("INVARIANT: the needs_scores branch just checked termStates is present");
-            collection_stats = searcher.collection_statistics(term.field())?;
-            term_stats = if states.doc_freq()? > 0 {
-                Some(searcher.term_statistics(
-                    &term,
-                    states.doc_freq()?,
-                    states.total_term_freq()?,
-                )?)
-            } else {
-                None
-            };
+            (
+                searcher.collection_statistics(term.field())?,
+                if states.doc_freq()? > 0 {
+                    Some(searcher.term_statistics(
+                        &term,
+                        states.doc_freq()?,
+                        states.total_term_freq()?,
+                    )?)
+                } else {
+                    None
+                },
+            )
         } else {
             // We do not need the actual stats, use fake stats with
             // docFreq=maxDoc=ttf=1.
-            collection_stats = Some(CollectionStatistics::new(term.field(), 1, 1, 1, 1)?);
-            term_stats = Some(TermStatistics::new(term.bytes().clone(), 1, 1)?);
-        }
+            (
+                Some(CollectionStatistics::new(term.field(), 1, 1, 1, 1)?),
+                Some(TermStatistics::new(term.bytes().clone(), 1, 1)?),
+            )
+        };
 
         let sim_scorer: Option<SharedSimScorer> = match term_stats {
             // The term does not exist in any segment, so the similarity is not

@@ -27,15 +27,8 @@ const CLAMP_MAX: f32 = 1.0 - 1e-7;
 /// Equivalent to `LogOddsFusionScorer.clampProbability(float)`, which is
 /// `Math.clamp(p, CLAMP_MIN, CLAMP_MAX)` — and therefore propagates `NaN`.
 pub fn clamp_probability(p: f32) -> f32 {
-    if p.is_nan() {
-        p
-    } else if p < CLAMP_MIN {
-        CLAMP_MIN
-    } else if p > CLAMP_MAX {
-        CLAMP_MAX
-    } else {
-        p
-    }
+    // `f32::clamp` propagates NaN.
+    p.clamp(CLAMP_MIN, CLAMP_MAX)
 }
 
 /// The log-odds of a probability: `log(p / (1 - p))`.
@@ -182,16 +175,8 @@ impl LogOddsFusionScorer {
         if let (Some(min), Some(max)) = (&self.logit_min, &self.logit_max) {
             let range = max[signal_index] - min[signal_index];
             if range > 0.0 {
-                let normalised = (raw_logit - min[signal_index]) / range;
-                return if normalised.is_nan() {
-                    normalised
-                } else if normalised < 0.0 {
-                    0.0
-                } else if normalised > 1.0 {
-                    1.0
-                } else {
-                    normalised
-                };
+                // `f32::clamp` propagates NaN.
+                return ((raw_logit - min[signal_index]) / range).clamp(0.0, 1.0);
             }
             return 0.5;
         }

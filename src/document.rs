@@ -4496,7 +4496,8 @@ impl BinaryPoint {
     /// Propagates whatever [`new_range_query`](Self::new_range_query) raises.
     pub fn new_exact_query(field: &str, value: &[u8]) -> Result<Arc<dyn Query>> {
         let value = BytesRef::new(value.to_vec());
-        Self::new_range_query(field, &[value.clone()], &[value])
+        let value = std::slice::from_ref(&value);
+        Self::new_range_query(field, value, value)
     }
 
     /// Creates a range query over binary points, both bounds inclusive.

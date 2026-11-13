@@ -789,8 +789,9 @@ impl Tessellation {
         let mut node = start;
         loop {
             let next_node = self.nodes[node].next;
-            if !self.is_vertex_equals(node, x0, y0) && !self.is_vertex_equals(node, x1, y1) {
-                if lines_intersect(
+            if !self.is_vertex_equals(node, x0, y0)
+                && !self.is_vertex_equals(node, x1, y1)
+                && lines_intersect(
                     self.x(node),
                     self.y(node),
                     self.x(next_node),
@@ -799,9 +800,9 @@ impl Tessellation {
                     y0,
                     x1,
                     y1,
-                ) {
-                    return true;
-                }
+                )
+            {
+                return true;
             }
             node = next_node;
             if node == start {
@@ -1692,7 +1693,7 @@ impl Tessellation {
     /// `Tessellator.eliminateHoles(List, Map, Node)`.
     fn eliminate_holes(
         &mut self,
-        hole_list: &mut Vec<HoleEntry>,
+        hole_list: &mut [HoleEntry],
         source: &HoleSource<'_>,
         outer_node: usize,
     ) -> Result<Option<usize>> {

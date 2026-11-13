@@ -326,9 +326,9 @@ impl Query for FieldExistsQuery {
                     .get_doc_values_skipper(&self.field)?
                     .map(|skipper| skipper.global_doc_count());
                 let max_doc = leaf.max_doc();
-                if terms_doc_count.map_or(true, |count| count != max_doc)
-                    && points_doc_count.map_or(true, |count| count != max_doc)
-                    && skipper_doc_count.map_or(true, |count| count != max_doc)
+                if terms_doc_count != Some(max_doc)
+                    && points_doc_count != Some(max_doc)
+                    && skipper_doc_count != Some(max_doc)
                 {
                     all_readers_rewritable = false;
                     break;

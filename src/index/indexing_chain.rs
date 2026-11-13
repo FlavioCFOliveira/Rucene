@@ -3590,7 +3590,7 @@ impl DefaultIndexingChain {
                         "field=\"{name}\" declares point dimensions but has no points writer"
                     )));
                 };
-                point_writer.add_packed_value(base_doc_id + batch_doc_id, &value)?;
+                point_writer.add_packed_value(base_doc_id + batch_doc_id, value)?;
             }
             return Ok(());
         }
@@ -3621,7 +3621,7 @@ impl DefaultIndexingChain {
                         "field=\"{name}\" declares point dimensions but has no points writer"
                     )));
                 };
-                point_writer.add_packed_value(seg_doc_id, &value)?;
+                point_writer.add_packed_value(seg_doc_id, value)?;
             }
         }
         Ok(())
@@ -4228,8 +4228,7 @@ impl DefaultIndexingChain {
             (Ok(()), Some(doc)) => Some(doc.iterator()),
             _ => None,
         };
-        let mut doc_field_idx = 0;
-        for item in second_pass.into_iter().flatten() {
+        for (doc_field_idx, item) in second_pass.into_iter().flatten().enumerate() {
             if outcome.is_err() {
                 break;
             }
@@ -4241,7 +4240,6 @@ impl DefaultIndexingChain {
                 }
             };
             let index = doc_fields[doc_field_idx];
-            doc_field_idx += 1;
             // `IndexingChain.invertAndStore` inverts first and stores second,
             // for every field instance, in document order.
             if field.field_type().index_options() != IndexOptions::NONE {
@@ -4937,6 +4935,299 @@ impl IndexingChain for DefaultIndexingChain {
 
     fn take_aborting_error(&mut self) -> Option<LuceneError> {
         self.aborting_error.take()
+    }
+}
+
+/// A [`LeafReader`] over the doc values a chain has buffered but not yet
+/// written.
+///
+/// Equivalent to the anonymous `DocValuesLeafReader` that
+/// `IndexingChain.getDocValuesLeafReader()` returns. It exists so the index
+/// sorter can compare documents at flush time, before any file is written;
+/// everything that is not a doc-values column is unsupported, exactly as in
+/// Java.
+///
+/// **Divergence from Lucene 10.5.0.** Java's reader asks the per-field writer
+/// for a fresh iterator on every call. A `Box<dyn …>` cannot be handed out
+/// twice, so the views are built once and taken out on the first call for each
+/// field; the sorter reads each field once, which is what Lucene's own
+/// comparators do.
+struct BufferedDocValuesReader {
+    max_doc: i32,
+    /// The doc-values writer of each field, with its slot in the chain's
+    /// per-field list and the field info it answers for.
+    writers: std::sync::Mutex<HashMap<String, (usize, FieldInfo, DocValuesWriter)>>,
+    /// The fields the chain knows without a `FieldInfo`: those whose only
+    /// document failed validation. Java's getters dereference `pf.fieldInfo`
+    /// for them and throw `NullPointerException` (`IndexingChain.java:187,
+    /// 199, 211, 223, 235`).
+    without_field_info: std::collections::HashSet<String>,
+    /// What `getFieldInfos()` answers: the flush state's field infos, Java's
+    /// `fieldInfos.finish()` (`IndexingChain.java:242-244`).
+    field_infos: crate::index::FieldInfos,
+    /// The chain's `docValuesBytePool`, which the sorted writers read.
+    pool: Arc<ByteBlockPool>,
+}
+
+impl BufferedDocValuesReader {
+    /// `getPerField(field)`, the doc-values type check, and
+    /// `pf.docValuesWriter.getDocValues()` — which finishes the writer — for
+    /// a field of kind `kind`.
+    fn producer(
+        &self,
+        field: &str,
+        kind: DocValuesType,
+    ) -> Result<
+        Option<(
+            FieldInfo,
+            Arc<dyn crate::codecs::doc_values::DocValuesProducer>,
+        )>,
+    > {
+        if self.without_field_info.contains(field) {
+            // `pf.fieldInfo.getDocValuesType()` on a `PerField` without a
+            // `FieldInfo` throws `NullPointerException` with the JVM's
+            // message; the flush that asked fails, and `DocumentsWriterPerThread.flush` aborts on it.
+            return Err(LuceneError::null_pointer_with_message(
+                "Cannot invoke \"org.apache.lucene.index.FieldInfo.getDocValuesType()\" \
+                 because \"pf.fieldInfo\" is null"
+                    .to_string(),
+            ));
+        }
+        let mut writers = self
+            .writers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some((_, info, writer)) = writers.get_mut(field) else {
+            return Ok(None);
+        };
+        if info.doc_values_type != kind {
+            return Ok(None);
+        }
+        Ok(Some((info.clone(), writer.get_doc_values(&self.pool)?)))
+    }
+}
+
+impl std::fmt::Display for BufferedDocValuesReader {
+    /// `DocValuesLeafReader` declares no `toString()`, and neither does the
+    /// anonymous subclass `IndexingChain.getDocValuesLeafReader()` returns, so
+    /// `java.lang.Object`'s applies.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java renders the anonymous class's
+    /// own binary name, `org.apache.lucene.index.IndexingChain$N`, where `N` is
+    /// the ordinal javac assigns. That ordinal is a compiler artifact, it is
+    /// not reachable from outside the package to be measured, and no Lucene
+    /// format or `toString()` depends on it; this port renders the named base
+    /// class instead. The identity suffix diverges for the reason given on
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.DocValuesLeafReader",
+            self,
+        ))
+    }
+}
+
+impl std::fmt::Debug for BufferedDocValuesReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BufferedDocValuesReader")
+            .field("max_doc", &self.max_doc)
+            .finish_non_exhaustive()
+    }
+}
+
+impl crate::index::LeafReader for BufferedDocValuesReader {
+    fn core(&self) -> &crate::index::index_reader::IndexReaderCore {
+        // A buffered reader is never registered anywhere, so it needs no core
+        // state; the one held here is created once and shared.
+        static CORE: std::sync::LazyLock<crate::index::index_reader::IndexReaderCore> =
+            std::sync::LazyLock::new(crate::index::index_reader::IndexReaderCore::new);
+        &CORE
+    }
+
+    fn term_vectors(&self) -> Result<Box<dyn crate::index::TermVectors>> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader`).
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn num_docs(&self) -> i32 {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
+    }
+
+    fn max_doc(&self) -> i32 {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
+    }
+
+    fn stored_fields(&self) -> Result<Box<dyn crate::index::StoredFields>> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader`).
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn terms(&self, _field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader`).
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn get_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn crate::index::doc_values::NumericDocValues>>> {
+        let Some((info, producer)) = self.producer(field, DocValuesType::NUMERIC)? else {
+            return Ok(None);
+        };
+        producer.get_numeric(&info)
+    }
+
+    fn get_binary_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn crate::index::doc_values::BinaryDocValues>>> {
+        let Some((info, producer)) = self.producer(field, DocValuesType::BINARY)? else {
+            return Ok(None);
+        };
+        producer.get_binary(&info)
+    }
+
+    fn get_sorted_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn crate::index::doc_values::SortedDocValues>>> {
+        let Some((info, producer)) = self.producer(field, DocValuesType::SORTED)? else {
+            return Ok(None);
+        };
+        producer.get_sorted(&info)
+    }
+
+    fn get_sorted_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn crate::index::doc_values::SortedNumericDocValues>>> {
+        let Some((info, producer)) = self.producer(field, DocValuesType::SORTED_NUMERIC)? else {
+            return Ok(None);
+        };
+        producer.get_sorted_numeric(&info)
+    }
+
+    fn get_sorted_set_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn crate::index::doc_values::SortedSetDocValues>>> {
+        let Some((info, producer)) = self.producer(field, DocValuesType::SORTED_SET)? else {
+            return Ok(None);
+        };
+        producer.get_sorted_set(&info)
+    }
+
+    fn get_norm_values(
+        &self,
+        _field: &str,
+    ) -> Result<Option<Box<dyn crate::index::doc_values::NumericDocValues>>> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn get_doc_values_skipper(
+        &self,
+        _field: &str,
+    ) -> Result<Option<Box<dyn crate::index::doc_values::DocValuesSkipper>>> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn get_float_vector_values(
+        &self,
+        _field: &str,
+    ) -> Result<Option<Box<dyn crate::index::vector_values::FloatVectorValues>>> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn get_byte_vector_values(
+        &self,
+        _field: &str,
+    ) -> Result<Option<Box<dyn crate::index::vector_values::ByteVectorValues>>> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn get_field_infos(&self) -> crate::index::FieldInfos {
+        self.field_infos.clone()
+    }
+
+    fn get_live_docs(&self) -> Option<Box<dyn crate::util::Bits>> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
+    }
+
+    fn get_point_values(&self, _field: &str) -> Result<Option<Box<dyn crate::index::PointValues>>> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn get_meta_data(&self) -> crate::index::leaf_reader::LeafMetaData {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
+    }
+
+    fn do_close(&self) -> Result<()> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn get_reader_cache_helper(&self) -> Option<Box<dyn crate::index::index_reader::CacheHelper>> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
+    }
+
+    fn get_core_cache_helper(&self) -> Option<Box<dyn crate::index::index_reader::CacheHelper>> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
+    }
+
+    fn search_nearest_vectors(
+        &self,
+        _field: &str,
+        _target: &[f32],
+        _knn_collector: &mut dyn crate::search::KnnCollector,
+        _accept_docs: &mut dyn crate::search::AcceptDocs,
+    ) -> Result<()> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn search_nearest_vectors_byte(
+        &self,
+        _field: &str,
+        _target: &[u8],
+        _knn_collector: &mut dyn crate::search::KnnCollector,
+        _accept_docs: &mut dyn crate::search::AcceptDocs,
+    ) -> Result<()> {
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 
@@ -7967,298 +8258,5 @@ mod tests {
             vec![3, 0, 1, 2, 4],
             "the stale-mask bug produced [3, 4, 0, 1, 2] here"
         );
-    }
-}
-
-/// A [`LeafReader`] over the doc values a chain has buffered but not yet
-/// written.
-///
-/// Equivalent to the anonymous `DocValuesLeafReader` that
-/// `IndexingChain.getDocValuesLeafReader()` returns. It exists so the index
-/// sorter can compare documents at flush time, before any file is written;
-/// everything that is not a doc-values column is unsupported, exactly as in
-/// Java.
-///
-/// **Divergence from Lucene 10.5.0.** Java's reader asks the per-field writer
-/// for a fresh iterator on every call. A `Box<dyn …>` cannot be handed out
-/// twice, so the views are built once and taken out on the first call for each
-/// field; the sorter reads each field once, which is what Lucene's own
-/// comparators do.
-struct BufferedDocValuesReader {
-    max_doc: i32,
-    /// The doc-values writer of each field, with its slot in the chain's
-    /// per-field list and the field info it answers for.
-    writers: std::sync::Mutex<HashMap<String, (usize, FieldInfo, DocValuesWriter)>>,
-    /// The fields the chain knows without a `FieldInfo`: those whose only
-    /// document failed validation. Java's getters dereference `pf.fieldInfo`
-    /// for them and throw `NullPointerException` (`IndexingChain.java:187,
-    /// 199, 211, 223, 235`).
-    without_field_info: std::collections::HashSet<String>,
-    /// What `getFieldInfos()` answers: the flush state's field infos, Java's
-    /// `fieldInfos.finish()` (`IndexingChain.java:242-244`).
-    field_infos: crate::index::FieldInfos,
-    /// The chain's `docValuesBytePool`, which the sorted writers read.
-    pool: Arc<ByteBlockPool>,
-}
-
-impl BufferedDocValuesReader {
-    /// `getPerField(field)`, the doc-values type check, and
-    /// `pf.docValuesWriter.getDocValues()` — which finishes the writer — for
-    /// a field of kind `kind`.
-    fn producer(
-        &self,
-        field: &str,
-        kind: DocValuesType,
-    ) -> Result<
-        Option<(
-            FieldInfo,
-            Arc<dyn crate::codecs::doc_values::DocValuesProducer>,
-        )>,
-    > {
-        if self.without_field_info.contains(field) {
-            // `pf.fieldInfo.getDocValuesType()` on a `PerField` without a
-            // `FieldInfo` throws `NullPointerException` with the JVM's
-            // message; the flush that asked fails, and `DocumentsWriterPerThread.flush` aborts on it.
-            return Err(LuceneError::null_pointer_with_message(
-                "Cannot invoke \"org.apache.lucene.index.FieldInfo.getDocValuesType()\" \
-                 because \"pf.fieldInfo\" is null"
-                    .to_string(),
-            ));
-        }
-        let mut writers = self
-            .writers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some((_, info, writer)) = writers.get_mut(field) else {
-            return Ok(None);
-        };
-        if info.doc_values_type != kind {
-            return Ok(None);
-        }
-        Ok(Some((info.clone(), writer.get_doc_values(&self.pool)?)))
-    }
-}
-
-impl std::fmt::Display for BufferedDocValuesReader {
-    /// `DocValuesLeafReader` declares no `toString()`, and neither does the
-    /// anonymous subclass `IndexingChain.getDocValuesLeafReader()` returns, so
-    /// `java.lang.Object`'s applies.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java renders the anonymous class's
-    /// own binary name, `org.apache.lucene.index.IndexingChain$N`, where `N` is
-    /// the ordinal javac assigns. That ordinal is a compiler artifact, it is
-    /// not reachable from outside the package to be measured, and no Lucene
-    /// format or `toString()` depends on it; this port renders the named base
-    /// class instead. The identity suffix diverges for the reason given on
-    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string).
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&crate::index::index_reader::java_object_to_string(
-            "org.apache.lucene.index.DocValuesLeafReader",
-            self,
-        ))
-    }
-}
-
-impl std::fmt::Debug for BufferedDocValuesReader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BufferedDocValuesReader")
-            .field("max_doc", &self.max_doc)
-            .finish_non_exhaustive()
-    }
-}
-
-impl crate::index::LeafReader for BufferedDocValuesReader {
-    fn core(&self) -> &crate::index::index_reader::IndexReaderCore {
-        // A buffered reader is never registered anywhere, so it needs no core
-        // state; the one held here is created once and shared.
-        static CORE: std::sync::LazyLock<crate::index::index_reader::IndexReaderCore> =
-            std::sync::LazyLock::new(crate::index::index_reader::IndexReaderCore::new);
-        &CORE
-    }
-
-    fn term_vectors(&self) -> Result<Box<dyn crate::index::TermVectors>> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader`).
-        Err(LuceneError::unsupported_operation(String::new()))
-    }
-
-    fn num_docs(&self) -> i32 {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        crate::store::java_nio_file::throw_unchecked(
-            "java.lang.UnsupportedOperationException",
-            None,
-        )
-    }
-
-    fn max_doc(&self) -> i32 {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        crate::store::java_nio_file::throw_unchecked(
-            "java.lang.UnsupportedOperationException",
-            None,
-        )
-    }
-
-    fn stored_fields(&self) -> Result<Box<dyn crate::index::StoredFields>> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader`).
-        Err(LuceneError::unsupported_operation(String::new()))
-    }
-
-    fn terms(&self, _field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader`).
-        Err(LuceneError::unsupported_operation(String::new()))
-    }
-
-    fn get_numeric_doc_values(
-        &self,
-        field: &str,
-    ) -> Result<Option<Box<dyn crate::index::doc_values::NumericDocValues>>> {
-        let Some((info, producer)) = self.producer(field, DocValuesType::NUMERIC)? else {
-            return Ok(None);
-        };
-        producer.get_numeric(&info)
-    }
-
-    fn get_binary_doc_values(
-        &self,
-        field: &str,
-    ) -> Result<Option<Box<dyn crate::index::doc_values::BinaryDocValues>>> {
-        let Some((info, producer)) = self.producer(field, DocValuesType::BINARY)? else {
-            return Ok(None);
-        };
-        producer.get_binary(&info)
-    }
-
-    fn get_sorted_doc_values(
-        &self,
-        field: &str,
-    ) -> Result<Option<Box<dyn crate::index::doc_values::SortedDocValues>>> {
-        let Some((info, producer)) = self.producer(field, DocValuesType::SORTED)? else {
-            return Ok(None);
-        };
-        producer.get_sorted(&info)
-    }
-
-    fn get_sorted_numeric_doc_values(
-        &self,
-        field: &str,
-    ) -> Result<Option<Box<dyn crate::index::doc_values::SortedNumericDocValues>>> {
-        let Some((info, producer)) = self.producer(field, DocValuesType::SORTED_NUMERIC)? else {
-            return Ok(None);
-        };
-        producer.get_sorted_numeric(&info)
-    }
-
-    fn get_sorted_set_doc_values(
-        &self,
-        field: &str,
-    ) -> Result<Option<Box<dyn crate::index::doc_values::SortedSetDocValues>>> {
-        let Some((info, producer)) = self.producer(field, DocValuesType::SORTED_SET)? else {
-            return Ok(None);
-        };
-        producer.get_sorted_set(&info)
-    }
-
-    fn get_norm_values(
-        &self,
-        _field: &str,
-    ) -> Result<Option<Box<dyn crate::index::doc_values::NumericDocValues>>> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        Err(LuceneError::unsupported_operation(String::new()))
-    }
-
-    fn get_doc_values_skipper(
-        &self,
-        _field: &str,
-    ) -> Result<Option<Box<dyn crate::index::doc_values::DocValuesSkipper>>> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        Err(LuceneError::unsupported_operation(String::new()))
-    }
-
-    fn get_float_vector_values(
-        &self,
-        _field: &str,
-    ) -> Result<Option<Box<dyn crate::index::vector_values::FloatVectorValues>>> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        Err(LuceneError::unsupported_operation(String::new()))
-    }
-
-    fn get_byte_vector_values(
-        &self,
-        _field: &str,
-    ) -> Result<Option<Box<dyn crate::index::vector_values::ByteVectorValues>>> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        Err(LuceneError::unsupported_operation(String::new()))
-    }
-
-    fn get_field_infos(&self) -> crate::index::FieldInfos {
-        self.field_infos.clone()
-    }
-
-    fn get_live_docs(&self) -> Option<Box<dyn crate::util::Bits>> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        crate::store::java_nio_file::throw_unchecked(
-            "java.lang.UnsupportedOperationException",
-            None,
-        )
-    }
-
-    fn get_point_values(&self, _field: &str) -> Result<Option<Box<dyn crate::index::PointValues>>> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        Err(LuceneError::unsupported_operation(String::new()))
-    }
-
-    fn check_integrity(&self) -> Result<()> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        Err(LuceneError::unsupported_operation(String::new()))
-    }
-
-    fn get_meta_data(&self) -> crate::index::leaf_reader::LeafMetaData {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        crate::store::java_nio_file::throw_unchecked(
-            "java.lang.UnsupportedOperationException",
-            None,
-        )
-    }
-
-    fn do_close(&self) -> Result<()> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        Err(LuceneError::unsupported_operation(String::new()))
-    }
-
-    fn get_reader_cache_helper(&self) -> Option<Box<dyn crate::index::index_reader::CacheHelper>> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        crate::store::java_nio_file::throw_unchecked(
-            "java.lang.UnsupportedOperationException",
-            None,
-        )
-    }
-
-    fn get_core_cache_helper(&self) -> Option<Box<dyn crate::index::index_reader::CacheHelper>> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        crate::store::java_nio_file::throw_unchecked(
-            "java.lang.UnsupportedOperationException",
-            None,
-        )
-    }
-
-    fn search_nearest_vectors(
-        &self,
-        _field: &str,
-        _target: &[f32],
-        _knn_collector: &mut dyn crate::search::KnnCollector,
-        _accept_docs: &mut dyn crate::search::AcceptDocs,
-    ) -> Result<()> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        Err(LuceneError::unsupported_operation(String::new()))
-    }
-
-    fn search_nearest_vectors_byte(
-        &self,
-        _field: &str,
-        _target: &[u8],
-        _knn_collector: &mut dyn crate::search::KnnCollector,
-        _accept_docs: &mut dyn crate::search::AcceptDocs,
-    ) -> Result<()> {
-        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
-        Err(LuceneError::unsupported_operation(String::new()))
     }
 }

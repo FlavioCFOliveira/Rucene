@@ -295,6 +295,12 @@ impl BKDConfig {
 /// Equivalent to `org.apache.lucene.util.bkd.BKDUtil`.
 pub struct BKDUtil;
 
+/// The comparator `BKDUtil.getPrefixLengthComparator` returns (Java's
+/// `ArrayUtil.ByteArrayComparator`, applied as a common-prefix length).
+type PrefixLengthComparator = dyn Fn(&[u8], usize, &[u8], usize) -> usize + Send + Sync;
+
+/// Equivalent to `BKDUtil.ByteArrayPredicate`.
+type ByteArrayPredicate = dyn Fn(&[u8], usize, &[u8], usize) -> bool + Send + Sync;
 impl BKDUtil {
     /// Returns the length of the common prefix across the next `num_bytes`
     /// bytes of both arrays.
@@ -380,9 +386,7 @@ impl BKDUtil {
     /// Equivalent to `BKDUtil.getPrefixLengthComparator(int)`, which
     /// specialises on the two widths that dominate — 8 and 4 — so a hot loop
     /// binds the comparison once instead of branching on the width per call.
-    pub fn get_prefix_length_comparator(
-        num_bytes: usize,
-    ) -> Box<dyn Fn(&[u8], usize, &[u8], usize) -> usize + Send + Sync> {
+    pub fn get_prefix_length_comparator(num_bytes: usize) -> Box<PrefixLengthComparator> {
         if num_bytes == 8 {
             // Used by LongPoint, DoublePoint.
             Box::new(Self::common_prefix_length8)
@@ -400,9 +404,7 @@ impl BKDUtil {
     /// bytes.
     ///
     /// Equivalent to `BKDUtil.getEqualsPredicate(int)`.
-    pub fn get_equals_predicate(
-        num_bytes: usize,
-    ) -> Box<dyn Fn(&[u8], usize, &[u8], usize) -> bool + Send + Sync> {
+    pub fn get_equals_predicate(num_bytes: usize) -> Box<ByteArrayPredicate> {
         if num_bytes == 8 {
             // Used by LongPoint, DoublePoint.
             Box::new(Self::equals8)

@@ -327,6 +327,150 @@ impl StoredFieldsWriter for EmptyStoredFieldsWriter {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Merging
+// -----------------------------------------------------------------------------
+
+/// Decides whether a sub-reader's field numbers need remapping.
+///
+/// Equivalent to the loop in `StoredFieldsWriter.MergeVisitor`'s constructor
+/// (`StoredFieldsWriter.java:182-193`): when every field of the sub-reader
+/// keeps its number and name in the merged `FieldInfos`, the numbers are
+/// aligned and each field access can skip the lookup; one mismatch and every
+/// field must be looked up by name instead. Returns the merged `FieldInfos` to
+/// remap through, or `None` when the numbers are aligned.
+///
+/// Shared with the codecs whose own `merge` keeps the visitor route for some
+/// segments, as `Lucene90CompressingStoredFieldsWriter#merge` does
+/// (`Lucene90CompressingStoredFieldsWriter.java:613-615`).
+pub(crate) fn merge_visitor_remapper(
+    merge_state: &MergeState,
+    reader_index: usize,
+) -> Option<FieldInfos> {
+    let reader_field_infos = merge_state.field_infos.get(reader_index)?;
+    for fi in reader_field_infos.iter() {
+        match merge_state
+            .merge_field_infos
+            .field_info_by_number(fi.number)
+        {
+            Some(other) if other.name == fi.name => {}
+            _ => return Some(merge_state.merge_field_infos.clone()),
+        }
+    }
+    None
+}
+
+/// One sub-reader's stored fields, as the merger walks them.
+///
+/// Equivalent to `StoredFieldsWriter.StoredFieldsMergeSub`.
+struct StoredFieldsMergeSub {
+    doc_map: DocMap,
+    /// Index into the merge's reader list, so the reader itself stays outside
+    /// the merger and need not be cloned per document.
+    reader_index: usize,
+    max_doc: i32,
+    doc_id: i32,
+    mapped_doc_id: i32,
+}
+
+impl DocIDMergerSub for StoredFieldsMergeSub {
+    fn next_doc(&mut self) -> Result<i32> {
+        self.doc_id += 1;
+        if self.doc_id == self.max_doc {
+            Ok(NO_MORE_DOCS)
+        } else {
+            Ok(self.doc_id)
+        }
+    }
+
+    fn doc_map(&self) -> &DocMap {
+        &self.doc_map
+    }
+
+    fn mapped_doc_id(&self) -> i32 {
+        self.mapped_doc_id
+    }
+
+    fn set_mapped_doc_id(&mut self, doc_id: i32) {
+        self.mapped_doc_id = doc_id;
+    }
+}
+
+/// Forwards every stored field read from a sub-reader straight to the writer.
+///
+/// Equivalent to `StoredFieldsWriter.MergeVisitor`
+/// (`StoredFieldsWriter.java:176-245`): each typed callback calls the writer's
+/// matching `writeField` overload with the field remapped to the merged
+/// numbering, and `needsField` always answers `YES`.
+///
+/// Java's visitor is an inner class that reaches its writer through the
+/// enclosing instance and is built once per sub-reader; this one borrows the
+/// writer for one document at a time, so callers keep the per-sub-reader state
+/// — the remapper from [`merge_visitor_remapper`] — and rebuild the visitor
+/// around it for each document.
+pub(crate) struct MergeVisitor<'a, W: StoredFieldsWriter + ?Sized> {
+    /// The writer every field is forwarded to; Java's enclosing
+    /// `StoredFieldsWriter` instance.
+    pub(crate) writer: &'a mut W,
+    /// The merged `FieldInfos` to look each field up in by name, or `None`
+    /// when the sub-reader's numbering is aligned; Java's `remapper` field.
+    pub(crate) remapper: Option<&'a FieldInfos>,
+}
+
+impl<W: StoredFieldsWriter + ?Sized> MergeVisitor<'_, W> {
+    /// Returns the field info to write under, remapping by name when the
+    /// numbers are not aligned.
+    ///
+    /// Equivalent to `MergeVisitor.remap(FieldInfo)`.
+    fn remap<'f>(&'f self, field: &'f FieldInfo) -> Result<&'f FieldInfo> {
+        match self.remapper {
+            None => Ok(field),
+            Some(remapper) => remapper.field_info(&field.name).ok_or_else(|| {
+                crate::error::LuceneError::illegal_state(format!(
+                    "field \"{}\" is absent from the merged field infos",
+                    field.name
+                ))
+            }),
+        }
+    }
+}
+
+impl<W: StoredFieldsWriter + ?Sized> StoredFieldVisitor for MergeVisitor<'_, W> {
+    fn binary_field(&mut self, field_info: &FieldInfo, value: &[u8]) -> Result<()> {
+        let remapped = self.remap(field_info)?.clone();
+        self.writer.write_field_bytes(&remapped, value)
+    }
+
+    fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> Result<()> {
+        let remapped = self.remap(field_info)?.clone();
+        self.writer.write_field_string(&remapped, value)
+    }
+
+    fn int_field(&mut self, field_info: &FieldInfo, value: i32) -> Result<()> {
+        let remapped = self.remap(field_info)?.clone();
+        self.writer.write_field_i32(&remapped, value)
+    }
+
+    fn long_field(&mut self, field_info: &FieldInfo, value: i64) -> Result<()> {
+        let remapped = self.remap(field_info)?.clone();
+        self.writer.write_field_i64(&remapped, value)
+    }
+
+    fn float_field(&mut self, field_info: &FieldInfo, value: f32) -> Result<()> {
+        let remapped = self.remap(field_info)?.clone();
+        self.writer.write_field_f32(&remapped, value)
+    }
+
+    fn double_field(&mut self, field_info: &FieldInfo, value: f64) -> Result<()> {
+        let remapped = self.remap(field_info)?.clone();
+        self.writer.write_field_f64(&remapped, value)
+    }
+
+    fn needs_field(&mut self, _field_info: &FieldInfo) -> Result<StoredFieldVisitorStatus> {
+        Ok(StoredFieldVisitorStatus::Yes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -560,151 +704,5 @@ mod tests {
             vec![3, 2],
             "every document is read through the reader the merge state holds"
         );
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Merging
-// -----------------------------------------------------------------------------
-
-/// Decides whether a sub-reader's field numbers need remapping.
-///
-/// Equivalent to the loop in `StoredFieldsWriter.MergeVisitor`'s constructor
-/// (`StoredFieldsWriter.java:182-193`): when every field of the sub-reader
-/// keeps its number and name in the merged `FieldInfos`, the numbers are
-/// aligned and each field access can skip the lookup; one mismatch and every
-/// field must be looked up by name instead. Returns the merged `FieldInfos` to
-/// remap through, or `None` when the numbers are aligned.
-///
-/// Shared with the codecs whose own `merge` keeps the visitor route for some
-/// segments, as `Lucene90CompressingStoredFieldsWriter#merge` does
-/// (`Lucene90CompressingStoredFieldsWriter.java:613-615`).
-pub(crate) fn merge_visitor_remapper(
-    merge_state: &MergeState,
-    reader_index: usize,
-) -> Option<FieldInfos> {
-    let Some(reader_field_infos) = merge_state.field_infos.get(reader_index) else {
-        return None;
-    };
-    for fi in reader_field_infos.iter() {
-        match merge_state
-            .merge_field_infos
-            .field_info_by_number(fi.number)
-        {
-            Some(other) if other.name == fi.name => {}
-            _ => return Some(merge_state.merge_field_infos.clone()),
-        }
-    }
-    None
-}
-
-/// One sub-reader's stored fields, as the merger walks them.
-///
-/// Equivalent to `StoredFieldsWriter.StoredFieldsMergeSub`.
-struct StoredFieldsMergeSub {
-    doc_map: DocMap,
-    /// Index into the merge's reader list, so the reader itself stays outside
-    /// the merger and need not be cloned per document.
-    reader_index: usize,
-    max_doc: i32,
-    doc_id: i32,
-    mapped_doc_id: i32,
-}
-
-impl DocIDMergerSub for StoredFieldsMergeSub {
-    fn next_doc(&mut self) -> Result<i32> {
-        self.doc_id += 1;
-        if self.doc_id == self.max_doc {
-            Ok(NO_MORE_DOCS)
-        } else {
-            Ok(self.doc_id)
-        }
-    }
-
-    fn doc_map(&self) -> &DocMap {
-        &self.doc_map
-    }
-
-    fn mapped_doc_id(&self) -> i32 {
-        self.mapped_doc_id
-    }
-
-    fn set_mapped_doc_id(&mut self, doc_id: i32) {
-        self.mapped_doc_id = doc_id;
-    }
-}
-
-/// Forwards every stored field read from a sub-reader straight to the writer.
-///
-/// Equivalent to `StoredFieldsWriter.MergeVisitor`
-/// (`StoredFieldsWriter.java:176-245`): each typed callback calls the writer's
-/// matching `writeField` overload with the field remapped to the merged
-/// numbering, and `needsField` always answers `YES`.
-///
-/// Java's visitor is an inner class that reaches its writer through the
-/// enclosing instance and is built once per sub-reader; this one borrows the
-/// writer for one document at a time, so callers keep the per-sub-reader state
-/// — the remapper from [`merge_visitor_remapper`] — and rebuild the visitor
-/// around it for each document.
-pub(crate) struct MergeVisitor<'a, W: StoredFieldsWriter + ?Sized> {
-    /// The writer every field is forwarded to; Java's enclosing
-    /// `StoredFieldsWriter` instance.
-    pub(crate) writer: &'a mut W,
-    /// The merged `FieldInfos` to look each field up in by name, or `None`
-    /// when the sub-reader's numbering is aligned; Java's `remapper` field.
-    pub(crate) remapper: Option<&'a FieldInfos>,
-}
-
-impl<W: StoredFieldsWriter + ?Sized> MergeVisitor<'_, W> {
-    /// Returns the field info to write under, remapping by name when the
-    /// numbers are not aligned.
-    ///
-    /// Equivalent to `MergeVisitor.remap(FieldInfo)`.
-    fn remap<'f>(&'f self, field: &'f FieldInfo) -> Result<&'f FieldInfo> {
-        match self.remapper {
-            None => Ok(field),
-            Some(remapper) => remapper.field_info(&field.name).ok_or_else(|| {
-                crate::error::LuceneError::illegal_state(format!(
-                    "field \"{}\" is absent from the merged field infos",
-                    field.name
-                ))
-            }),
-        }
-    }
-}
-
-impl<W: StoredFieldsWriter + ?Sized> StoredFieldVisitor for MergeVisitor<'_, W> {
-    fn binary_field(&mut self, field_info: &FieldInfo, value: &[u8]) -> Result<()> {
-        let remapped = self.remap(field_info)?.clone();
-        self.writer.write_field_bytes(&remapped, value)
-    }
-
-    fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> Result<()> {
-        let remapped = self.remap(field_info)?.clone();
-        self.writer.write_field_string(&remapped, value)
-    }
-
-    fn int_field(&mut self, field_info: &FieldInfo, value: i32) -> Result<()> {
-        let remapped = self.remap(field_info)?.clone();
-        self.writer.write_field_i32(&remapped, value)
-    }
-
-    fn long_field(&mut self, field_info: &FieldInfo, value: i64) -> Result<()> {
-        let remapped = self.remap(field_info)?.clone();
-        self.writer.write_field_i64(&remapped, value)
-    }
-
-    fn float_field(&mut self, field_info: &FieldInfo, value: f32) -> Result<()> {
-        let remapped = self.remap(field_info)?.clone();
-        self.writer.write_field_f32(&remapped, value)
-    }
-
-    fn double_field(&mut self, field_info: &FieldInfo, value: f64) -> Result<()> {
-        let remapped = self.remap(field_info)?.clone();
-        self.writer.write_field_f64(&remapped, value)
-    }
-
-    fn needs_field(&mut self, _field_info: &FieldInfo) -> Result<StoredFieldVisitorStatus> {
-        Ok(StoredFieldVisitorStatus::Yes)
     }
 }

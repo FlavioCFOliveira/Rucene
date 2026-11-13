@@ -471,7 +471,7 @@ struct LogOddsFusionWeight {
 
 impl SegmentCacheable for LogOddsFusionWeight {
     fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
-        if self.weights.len() > BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD as usize {
+        if self.weights.len() > BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD {
             return false;
         }
         self.weights.iter().all(|weight| weight.is_cacheable(ctx))
@@ -511,16 +511,8 @@ impl Weight for LogOddsFusionWeight {
                     (Some(min), Some(max)) => {
                         let range = max[i] - min[i];
                         if range > 0.0 {
-                            let normalised = (raw_logit - min[i]) / range;
-                            if normalised.is_nan() {
-                                normalised
-                            } else if normalised < 0.0 {
-                                0.0
-                            } else if normalised > 1.0 {
-                                1.0
-                            } else {
-                                normalised
-                            }
+                            // `f32::clamp` propagates NaN.
+                            ((raw_logit - min[i]) / range).clamp(0.0, 1.0)
                         } else {
                             0.5
                         }

@@ -1394,6 +1394,13 @@ impl FlatVectorScorerUtil {
     }
 }
 
+impl fmt::Display for DefaultFlatVectorScorer {
+    /// Port of `DefaultFlatVectorScorer.toString()`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DefaultFlatVectorScorer()")
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
@@ -1541,12 +1548,5 @@ mod tests {
         let score_same = scorer.score(0).unwrap();
         let score_other = scorer.score(1).unwrap();
         assert!(score_same > score_other);
-    }
-}
-
-impl fmt::Display for DefaultFlatVectorScorer {
-    /// Port of `DefaultFlatVectorScorer.toString()`.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("DefaultFlatVectorScorer()")
     }
 }

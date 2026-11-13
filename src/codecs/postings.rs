@@ -1079,7 +1079,7 @@ mod tests {
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {
-            Ok(Box::new(StubImpactsEnum::default()))
+            Ok(Box::new(StubImpactsEnum))
         }
 
         fn term_state(&mut self) -> Result<Box<dyn TermState>> {
@@ -1209,7 +1209,7 @@ mod tests {
         }
 
         fn get_impacts(&mut self) -> Result<Box<dyn crate::index::Impacts>> {
-            Ok(Box::new(StubImpacts::default()))
+            Ok(Box::new(StubImpacts))
         }
     }
 

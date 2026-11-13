@@ -76,12 +76,12 @@ impl PForUtil {
         let mut exceptions = vec![0u8; (num_exceptions * 2) as usize];
         if num_exceptions > 0 {
             let mut exception_count = 0;
-            for i in 0..BLOCK_SIZE {
-                if ints[i] as i64 > max_unpatched_value {
+            for (i, int) in ints[..BLOCK_SIZE].iter_mut().enumerate() {
+                if *int as i64 > max_unpatched_value {
                     exceptions[exception_count * 2] = i as u8;
                     exceptions[exception_count * 2 + 1] =
-                        ((ints[i] as u32) >> patched_bits_required) as u8;
-                    ints[i] &= max_unpatched_value as i32;
+                        ((*int as u32) >> patched_bits_required) as u8;
+                    *int &= max_unpatched_value as i32;
                     exception_count += 1;
                 }
             }

@@ -101,8 +101,7 @@ impl LongComparator {
     /// Equivalent to `LongComparator.missingValueAsComparableLong()`, which is
     /// `NumericUtils.the value itself` of the missing value.
     pub fn missing_value_as_comparable_long(&self) -> i64 {
-        let missing_value = self.missing_value;
-        missing_value
+        self.missing_value
     }
 
     /// Returns the shared numeric-comparator state.

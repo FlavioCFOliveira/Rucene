@@ -488,6 +488,42 @@ impl TermVectorsWriter for EmptyTermVectorsWriter {
     }
 }
 
+/// One sub-reader's term vectors, as the merger walks them.
+///
+/// Equivalent to `TermVectorsWriter.TermVectorsMergeSub`. The reader lives in
+/// the merge's own list rather than in the sub, so it need not be cloned per
+/// document.
+struct TermVectorsMergeSub {
+    doc_map: DocMap,
+    reader_index: usize,
+    max_doc: i32,
+    doc_id: i32,
+    mapped_doc_id: i32,
+}
+
+impl DocIDMergerSub for TermVectorsMergeSub {
+    fn next_doc(&mut self) -> Result<i32> {
+        self.doc_id += 1;
+        if self.doc_id == self.max_doc {
+            Ok(NO_MORE_DOCS)
+        } else {
+            Ok(self.doc_id)
+        }
+    }
+
+    fn doc_map(&self) -> &DocMap {
+        &self.doc_map
+    }
+
+    fn mapped_doc_id(&self) -> i32 {
+        self.mapped_doc_id
+    }
+
+    fn set_mapped_doc_id(&mut self, doc_id: i32) {
+        self.mapped_doc_id = doc_id;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -722,41 +758,5 @@ mod tests {
         writer.finish_document().unwrap();
         writer.finish(1).unwrap();
         writer.close().unwrap();
-    }
-}
-
-/// One sub-reader's term vectors, as the merger walks them.
-///
-/// Equivalent to `TermVectorsWriter.TermVectorsMergeSub`. The reader lives in
-/// the merge's own list rather than in the sub, so it need not be cloned per
-/// document.
-struct TermVectorsMergeSub {
-    doc_map: DocMap,
-    reader_index: usize,
-    max_doc: i32,
-    doc_id: i32,
-    mapped_doc_id: i32,
-}
-
-impl DocIDMergerSub for TermVectorsMergeSub {
-    fn next_doc(&mut self) -> Result<i32> {
-        self.doc_id += 1;
-        if self.doc_id == self.max_doc {
-            Ok(NO_MORE_DOCS)
-        } else {
-            Ok(self.doc_id)
-        }
-    }
-
-    fn doc_map(&self) -> &DocMap {
-        &self.doc_map
-    }
-
-    fn mapped_doc_id(&self) -> i32 {
-        self.mapped_doc_id
-    }
-
-    fn set_mapped_doc_id(&mut self, doc_id: i32) {
-        self.mapped_doc_id = doc_id;
     }
 }

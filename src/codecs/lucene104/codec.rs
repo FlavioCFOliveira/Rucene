@@ -70,6 +70,8 @@ pub struct Lucene104Codec {
 
 impl Lucene104Codec {
     /// Creates the codec with the default stored-fields mode (`BestSpeed`).
+    // Lucene: `Lucene104Codec()` is a constructor; Java has no `Default` counterpart.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self::with_mode(Some(Mode::default())).expect("INVARIANT: the default mode is not null")
     }

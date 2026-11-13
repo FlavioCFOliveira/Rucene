@@ -24,7 +24,7 @@ impl GeoUtils {
     /// Largest valid latitude.
     pub const MAX_LAT_INCL: f64 = 90.0;
     /// Mean earth radius, in metres, from the WGS84 ellipsoid.
-    pub const EARTH_MEAN_RADIUS_METERS: f64 = 6_371_008.7714;
+    pub const EARTH_MEAN_RADIUS_METERS: f64 = 6_371_008.771_4;
 
     /// Smallest valid longitude, in radians.
     pub fn min_lon_radians() -> f64 {

@@ -353,6 +353,8 @@ impl IntersectTermsEnumFrame {
     /// Reads the next entry, returning whether it is a sub-block.
     ///
     /// Equivalent to `IntersectTermsEnumFrame.next`.
+    // Lucene: the method is `IntersectTermsEnumFrame.next`; it is not an iterator.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<bool> {
         if self.is_leaf_block {
             self.next_leaf()?;
@@ -974,10 +976,7 @@ impl TermsEnum for IntersectTermsEnum {
                 return Ok(None);
             };
 
-            let state;
-            let last_state;
-
-            if self.stack[cur].suffix != 0 {
+            let (state, last_state) = if self.stack[cur].suffix != 0 {
                 let label = i32::from(self.stack[cur].suffix_byte(self.stack[cur].start_byte_pos));
 
                 // Below the current transition's range: skip entries until one
@@ -1065,12 +1064,10 @@ impl TermsEnum for IntersectTermsEnum {
                     }
                     continue 'next_term;
                 }
-                state = running;
-                last_state = running_last;
+                (running, running_last)
             } else {
-                state = self.stack[cur].state;
-                last_state = self.stack[cur].last_state;
-            }
+                (self.stack[cur].state, self.stack[cur].last_state)
+            };
 
             if is_sub_block {
                 self.copy_term();
@@ -1183,6 +1180,6 @@ impl TermsEnum for IntersectTermsEnum {
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
         self.decode_current_meta_data()?;
         let cur = self.current.ok_or_else(LuceneError::null_pointer)?;
-        Ok(Box::new(self.stack[cur].state_data.clone()))
+        Ok(Box::new(self.stack[cur].state_data))
     }
 }

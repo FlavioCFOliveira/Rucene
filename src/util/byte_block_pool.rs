@@ -942,12 +942,8 @@ mod tests {
         let payload: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
         pool.append(&payload).expect("append");
 
-        for offset in 0..total {
-            assert_eq!(
-                pool.read_byte(offset as i64),
-                payload[offset],
-                "offset={offset}"
-            );
+        for (offset, &expected) in payload.iter().enumerate() {
+            assert_eq!(pool.read_byte(offset as i64), expected, "offset={offset}");
         }
 
         // The same bytes through the bulk reader.

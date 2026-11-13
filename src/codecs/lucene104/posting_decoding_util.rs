@@ -30,6 +30,8 @@ impl<'a> PostingDecodingUtil<'a> {
     /// Reads `count` ints into `c[c_index..]`, then for each shift level
     /// `b_shift - j * dec` writes the masked, shifted value to
     /// `b[count * j..]`. Finally applies `c_mask` to the `c` array.
+    // Lucene: mirrors `PostingDecodingUtil.splitInts`, which takes eight parameters.
+    #[allow(clippy::too_many_arguments)]
     pub fn split_ints(
         &mut self,
         count: i32,

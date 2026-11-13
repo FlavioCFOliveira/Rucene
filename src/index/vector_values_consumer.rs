@@ -282,6 +282,19 @@ impl Accountable for WriterAccountable<'_> {
     }
 }
 
+impl crate::util::Accountable for VectorValuesConsumer {
+    /// Equivalent to the `Accountable` view Lucene exposes for this consumer:
+    /// `StoredFieldsConsumer.accountable` / `TermVectorsConsumer.accountable` /
+    /// `VectorValuesConsumer.getAccountable()`, each of which holds the segment
+    /// writer when there is one and `Accountable.NULL_ACCOUNTABLE` when there is
+    /// not. Implementing the trait on the consumer itself lets
+    /// `IndexingChain.getChildResources()` borrow it, which a `Box<dyn
+    /// Accountable>` view could not offer.
+    fn ram_bytes_used(&self) -> i64 {
+        VectorValuesConsumer::ram_bytes_used(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -483,18 +496,5 @@ mod tests {
         assert!(consumer.has_writer());
         // A second abort must also be quiet.
         consumer.abort().unwrap();
-    }
-}
-
-impl crate::util::Accountable for VectorValuesConsumer {
-    /// Equivalent to the `Accountable` view Lucene exposes for this consumer:
-    /// `StoredFieldsConsumer.accountable` / `TermVectorsConsumer.accountable` /
-    /// `VectorValuesConsumer.getAccountable()`, each of which holds the segment
-    /// writer when there is one and `Accountable.NULL_ACCOUNTABLE` when there is
-    /// not. Implementing the trait on the consumer itself lets
-    /// `IndexingChain.getChildResources()` borrow it, which a `Box<dyn
-    /// Accountable>` view could not offer.
-    fn ram_bytes_used(&self) -> i64 {
-        VectorValuesConsumer::ram_bytes_used(self)
     }
 }
