@@ -45,7 +45,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from kgio import item_labels, kg_target, read as kg_read, unwind, unwind_items
+from kgio import (counters_of, item_labels, kg_target, read as kg_read,  # noqa: E402
+                  rmp as kg_rmp, unwind, unwind_items)
 
 # A Lucene type named in full, and the short Java spelling the crate uses for a
 # *nested* one. `CLAUDE.md` 14.1 asks each item to name its Lucene equivalent; it
@@ -67,9 +68,12 @@ from kgio import item_labels, kg_target, read as kg_read, unwind, unwind_items
 # type. So the short spelling denotes one type or no type, never a guess between
 # two, and never a member mistaken for a type (`CLAUDE.md` 7).
 # The full name of a type of any port module (`port_modules_kg.PORT_MODULES`):
-# Lucene's `org.apache.lucene.` and randomizedtesting's
-# `com.carrotsearch.randomizedtesting.`, which sprint 9's workspace crates claim.
-FQN_FULL = r"(?:org\.apache\.lucene|com\.carrotsearch\.randomizedtesting)\.[A-Za-z0-9_.$]+"
+# Lucene's `org.apache.lucene.`, randomizedtesting's
+# `com.carrotsearch.randomizedtesting.`, which sprint 9's workspace crates claim,
+# and the Snowball runtime's `org.tartarus.snowball.`, which
+# `lucene/analysis/common` declares and sprint 12's crate claims.
+FQN_FULL = (r"(?:org\.apache\.lucene|com\.carrotsearch\.randomizedtesting"
+            r"|org\.tartarus\.snowball)\.[A-Za-z0-9_.$]+")
 NESTED_SHORT = r"[A-Z][A-Za-z0-9_]*(?:[.$][A-Z][A-Za-z0-9_]*)+"
 # The crate often quotes the Java declaration rather than just the name --
 # ``Equivalent to the `final class MultiTermQuery.TopTermsScoringBooleanQueryRewrite`.``
@@ -402,9 +406,91 @@ def _item_paragraph_claims(block, item_name):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Skeletons: a Rust item that stands for a Lucene type before it is ported
+# ---------------------------------------------------------------------------
+#
+# Sprint 12 creates the whole Rust surface of `lucene/analysis/common` before it
+# ports it, one item per Java type, each documented with exactly one paragraph
+#
+#     /// Skeleton of `org.apache.lucene.analysis.ar.ArabicAnalyzer`; ported by rmp task #N.
+#
+# That paragraph states two facts, and neither is a port: this item is where the
+# type's port will live (`SKELETON_OF`), and task #N is the one that ports it
+# (`PLANS_PORT`). It is read here, never as a claim: none of `CLAIM_PATTERNS`
+# is anchored on `Skeleton`, and the clause before the name ("Skeleton of ")
+# carries none of `ITEM_ASSERTIONS`, so the paragraph yields no `PORTS` edge.
+# The form is strict, because it is matched whole: the paragraph is exactly the
+# sentence above (it may wrap over several `///` lines), the name is a fully
+# qualified Java type (`FQN_FULL`; a nested type as `pkg.Outer.Inner`), and the
+# task is one `#<integer>`. A paragraph that deviates is not a skeleton and is
+# reported by the audit as a class still lacking one, never guessed at.
+# Only an item doc (`///`) declares a skeleton; the same sentence in a module doc
+# (`//!`) is extracted with `scope: "skeleton-module"` so the loader reports it
+# instead of dropping it silently.
+SKELETON_RE = re.compile(
+    r"^Skeleton of `(" + FQN_FULL + r")`; ported by rmp task #([0-9]+)\.$")
+
+
+def skeleton_in(paragraph: str):
+    """`(java type, task)` a skeleton paragraph declares, or `None`."""
+    m = SKELETON_RE.match(" ".join(paragraph.split()))
+    return (m.group(1), int(m.group(2))) if m else None
+
+
+def _paragraphs(lines):
+    """`[(first line, joined text)]` of consecutive non-blank doc lines."""
+    out, para, first = [], [], None
+    for ln, text in list(lines) + [(None, "")]:
+        if text.strip():
+            para.append(text.strip())
+            if first is None:
+                first = ln
+            continue
+        if para:
+            out.append((first, " ".join(para)))
+        para, first = [], None
+    return out
+
+
+def scan_skeletons(root: Path, rel: str):
+    """The skeleton declarations of one file, attributed to the item they document."""
+    out = []
+    lines = (root / rel).read_text(encoding="utf-8", errors="ignore").split("\n")
+    inner = [(i + 1, m.group(1)) for i, line in enumerate(lines)
+             if (m := RE_DOC_INNER.match(line))]
+    for ln, text in _paragraphs(inner):
+        hit = skeleton_in(text)
+        if hit:
+            out.append({"file": rel, "line": ln, "target": None, "lucene": hit[0],
+                        "task": hit[1], "scope": "skeleton-module"})
+    block = []
+    for i, line in enumerate(lines):
+        m = RE_DOC_OUTER.match(line)
+        if m:
+            block.append((i + 1, m.group(1)))
+            continue
+        if RE_ATTR.match(line) or not line.strip():
+            if not line.strip():
+                block = []
+            continue
+        if block:
+            item = RE_ITEM.match(line)
+            if item:
+                for ln, text in _paragraphs(block):
+                    hit = skeleton_in(text)
+                    if hit:
+                        out.append({"file": rel, "line": ln, "target": item.group(2),
+                                    "targetKind": item.group(1), "lucene": hit[0],
+                                    "task": hit[1], "scope": "skeleton"})
+            block = []
+    return out
+
+
 def extract(root: Path):
     """The claims of the root crate's `src/` and of every workspace member's
-    `crates/<dir>/src/` (`extract_rucene_kg.WORKSPACE`)."""
+    `crates/<dir>/src/` (`extract_rucene_kg.WORKSPACE`), port claims and
+    skeleton declarations (`scope` `"skeleton"` / `"skeleton-module"`) alike."""
     import extract_rucene_kg as ex
     claims = []
     for base in ("src", *[f"{d}/src" for d in ex.load_workspace(root)]):
@@ -413,7 +499,114 @@ def extract(root: Path):
                 if fn.endswith(".rs"):
                     rel = str(Path(dp, fn).relative_to(root)).replace(os.sep, "/")
                     claims.extend(scan_file(root, rel))
+                    claims.extend(scan_skeletons(root, rel))
     return claims
+
+
+def is_skeleton(claim):
+    return claim["scope"] in ("skeleton", "skeleton-module")
+
+
+def resolve_skeletons(skeletons, classes, scope_of, rust_items, tasks):
+    """Rows for `SKELETON_OF` / `PLANS_PORT`, and what could not be resolved.
+
+    A skeleton resolves when its Java name is exactly a `Class` key (or the
+    dotted spelling of a nested one) whose `portScope` is `in` or `nested`, and
+    its item is a Rust node `(name, file)` the graph holds. The task is recorded
+    on the edge whatever it is; `PLANS_PORT` is written only for a `Task` the
+    graph mirrors. Returns `(rows, problems)`, `problems` a list of
+    `(reason, claim)`.
+    """
+    rows, problems, seen = [], [], set()
+    for c in skeletons:
+        if c["scope"] != "skeleton":
+            problems.append(("module-doc skeleton (only an item doc declares one)", c))
+            continue
+        qn = classes.get(c["lucene"])
+        if qn is None or scope_of.get(qn) not in ("in", "nested"):
+            problems.append(("names no in-scope Class", c))
+            continue
+        if (c["target"], c["file"]) not in rust_items:
+            problems.append(("documents no Rust node of the graph", c))
+            continue
+        if c["task"] not in tasks:
+            problems.append(("names no Task of the graph", c))
+        k = (c["target"], c["file"], qn)
+        if k in seen:
+            continue
+        seen.add(k)
+        rows.append({"name": c["target"], "file": c["file"], "lucene": qn,
+                     "task": c["task"], "line": c["line"],
+                     "hasTask": c["task"] in tasks})
+    return rows, problems
+
+
+def load_skeletons(roadmap, skeletons, commit, date):
+    """Write the declared skeletons: `SKELETON_OF` and `PLANS_PORT`, in full.
+
+    Both edges are owned by this pass and rewritten whole at every sync: every
+    `SKELETON_OF` and `PLANS_PORT` edge is deleted, then the live declarations
+    are written. A skeleton the code no longer declares therefore leaves no
+    edge, and a class whose skeleton went keeps no planned task. The deletes
+    precede every write, so no pair holds a stale edge of either type when a
+    `MERGE` runs. A `PORTS` edge on the same pair is left alone: the port, not
+    the skeleton, decides `portState`.
+    """
+    all_classes = [r[0] for r in q(roadmap, "MATCH (c:Class) RETURN c.qualifiedName")
+                   if r[0]]
+    classes, _short = build_class_index(all_classes)
+    scope_of = dict(q(roadmap, "MATCH (c:Class) RETURN c.qualifiedName, c.portScope"))
+    rust_items = {(r[0], r[1]) for r in q(
+        roadmap,
+        "MATCH (t) WHERE t:RustStruct OR t:RustTrait OR t:RustEnum OR t:RustAlias "
+        "RETURN t.name, t.file")}
+    fn_counts = {}
+    for name, file in q(roadmap, "MATCH (f:RustFn) RETURN f.name, f.file"):
+        fn_counts[(name, file)] = fn_counts.get((name, file), 0) + 1
+    rust_items |= {k for k, n in fn_counts.items() if n == 1}
+    tasks = {r[0] for r in q(roadmap, "MATCH (t:Task) RETURN t.id")}
+    rows, problems = resolve_skeletons(skeletons, classes, scope_of, rust_items, tasks)
+    for reason, c in problems:
+        print(f"  SKELETON UNRESOLVED ({reason}): {c['file']}:{c['line']} "
+              f"{c.get('target')} -> {c['lucene']} task #{c['task']}", file=sys.stderr)
+    print(f"  skeleton declarations: {len(skeletons)}, resolved {len(rows)}, "
+          f"unresolved {len(problems)}", file=sys.stderr)
+
+    for edge, pattern in (("SKELETON_OF", "()-[e:SKELETON_OF]->(:Class)"),
+                          ("PLANS_PORT", "(:Task)-[e:PLANS_PORT]->(:Class)")):
+        out = kg_rmp("delete", roadmap, f"MATCH {pattern} DELETE e")
+        print(f"  {edge} edges cleared: {counters_of(out) or 'none held'}", file=sys.stderr)
+    for r in rows:
+        r.update(commit=commit, date=date)
+    items = item_labels(roadmap)
+    unwind_items(roadmap, "create", rows,
+                 "MATCH (t {name:row.name, file:row.file}) "
+                 "WITH t, row MATCH (c:Class {qualifiedName:row.lucene}) "
+                 "MERGE (t)-[:SKELETON_OF]->(c)",
+                 "SKELETON_OF edges", items)
+    unwind_items(roadmap, "update", rows,
+                 "MATCH (t {name:row.name, file:row.file})-[e:SKELETON_OF]->"
+                 "(c:Class {qualifiedName:row.lucene}) "
+                 "SET e.evidence = 'doc-comment', "
+                 "e.declaredAt = row.file + ':' + toString(row.line), e.task = row.task, "
+                 "e.gitCommit = row.commit, e.gitDate = row.date",
+                 "SKELETON_OF evidence stamped", items)
+    plans, seen = [], set()
+    for r in rows:
+        if r["hasTask"] and (r["task"], r["lucene"]) not in seen:
+            seen.add((r["task"], r["lucene"]))
+            plans.append({"task": r["task"], "lucene": r["lucene"],
+                          "at": f"{r['file']}:{r['line']}", "commit": commit, "date": date})
+    run_unwind(roadmap, "create", plans,
+               "MATCH (t:Task {id:row.task}) MATCH (c:Class {qualifiedName:row.lucene}) "
+               "MERGE (t)-[:PLANS_PORT]->(c)", "PLANS_PORT edges")
+    run_unwind(roadmap, "update", plans,
+               "MATCH (t:Task {id:row.task})-[e:PLANS_PORT]->"
+               "(c:Class {qualifiedName:row.lucene}) "
+               "SET e.evidence = 'skeleton-doc-comment', e.declaredAt = row.at, "
+               "e.gitCommit = row.commit, e.gitDate = row.date",
+               "PLANS_PORT evidence stamped")
+    return rows, problems
 
 
 def q(roadmap, cypher):
@@ -472,6 +665,8 @@ def load(roadmap, claims, commit, date):
     credits the type with the declared item alone, since a claim about one
     member is not a claim about the file that holds it.
     """
+    # A skeleton declaration is not a port claim (`load_skeletons` reads it).
+    claims = [c for c in claims if not is_skeleton(c)]
     # A nested Lucene type is keyed `pkg.Outer$Inner` in the graph, but a doc
     # comment naturally writes `pkg.Outer.Inner`. Accept both spellings.
     all_classes = [r[0] for r in q(roadmap, "MATCH (c:Class) RETURN c.qualifiedName")
@@ -799,16 +994,25 @@ def main():
         Path(args.out).write_text(json.dumps(claims, indent=1), encoding="utf-8")
     else:
         claims = json.loads(Path(args.out).read_text(encoding="utf-8"))
+    skeletons = [c for c in claims if is_skeleton(c)]
+    claims = [c for c in claims if not is_skeleton(c)]
     item = [c for c in claims if c["scope"] == "item"]
     mod = [c for c in claims if c["scope"] == "module"]
     print(f"claims: {len(claims)} ({len(item)} item-level, {len(mod)} module-level), "
-          f"distinct lucene types: {len({c['lucene'] for c in claims})}",
+          f"distinct lucene types: {len({c['lucene'] for c in claims})}; "
+          f"skeleton declarations: {len(skeletons)}",
           file=sys.stderr)
 
     if args.phase in ("load", "all"):
         if not (args.commit and args.date):
             raise SystemExit("--commit and --date are required to load")
+        if not claims:
+            # As `load` refuses to retire on an empty extraction: a run that
+            # found no port claim at all failed, and must not clear the
+            # skeleton edges either.
+            raise SystemExit("no port claims extracted; refusing to load")
         load(args.roadmap, claims, args.commit, args.date)
+        load_skeletons(args.roadmap, skeletons, args.commit, args.date)
 
     if args.phase in ("depth", "all"):
         if not (args.commit and args.date):

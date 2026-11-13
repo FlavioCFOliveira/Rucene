@@ -10,9 +10,10 @@ one of them" as knowledge outside the graph.
 This tool registers all of them. The modules in scope are the ones
 `port_modules_kg.PORT_MODULES` names: `core` -- `CLAUDE.md` 1 names Apache Lucene
 *Core* as the reference and 16.1 names `lucene/core` as the canonical source
-tree -- and, since the user's decision of 2026-11-03 for sprint 9, `codecs` and
+tree --, since the user's decision of 2026-11-03 for sprint 9, `codecs` and
 `test-framework` (with randomizedtesting 2.8.1, which `port_modules_kg.py`
-registers). Every other module is recorded with `inScope: false` and the
+registers), and, since the user's decision of 2026-11-13 for sprint 12,
+`analysis/common`. Every other module is recorded with `inScope: false` and the
 reason, so the exclusion is auditable instead of silent.
 
 History: until 2026-11-03 `test-framework` was recorded out of scope for the

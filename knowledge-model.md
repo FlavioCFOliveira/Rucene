@@ -6,12 +6,14 @@ The knowledge graph of the **Rucene** project (roadmap `rucene`, reached through
 1. the **Rucene** crate: its files, types and functions, and the references between
    them;
 2. the reference **Apache Lucene Core 10.5.0**: the 35 modules of the distribution,
-   and the **port modules** in depth — `lucene/core`, and the modules sprint 9 adds,
+   and the **port modules** in depth — `lucene/core`, the modules sprint 9 adds,
    `lucene/codecs`, `lucene/test-framework` and **randomizedtesting 2.8.1**
-   (`randomized-runner`): packages, files, types, members, dependencies; for
-   `lucene/core` also bytecode calls and its test surface;
+   (`randomized-runner`), and the module sprint 12 adds, `lucene/analysis/common`:
+   packages, files, types, members, dependencies; for `lucene/core` also bytecode
+   calls and its test surface;
 3. **the port between them**: which Lucene type each Rust item ports and on what
-   evidence, how much of each type exists, which members are absent, the declared
+   evidence, which Rust skeleton stands for a type not yet ported and which task
+   ports it, how much of each type exists, which members are absent, the declared
    divergences, the verdicts on items no production code references, and the `rmp`
    tasks and commits.
 
@@ -43,7 +45,9 @@ Two rules make the graph an answer rather than an impression (`CLAUDE.md` §7, �
   `item <name>`, `refs <qualifiedName>`, `lucene-callers <fn qualifiedName>`,
   `no-caller [--subsystem S] [--unverified]`, `awaits`, `absent`, `tasks`,
   `coverage [--module M] [--list]` (in-scope classes per module and status), `early
-  [--module M]` (members ported early under the cycle rule), and
+  [--module M]` (members ported early under the cycle rule), `plans --class <fqn>` /
+  `plans --task N` (which task ports a class; which classes a task ports),
+  `skeletons [--module M]` (classes with a skeleton and no port), and
   `cypher "<statement>"` for anything else.
 * **Read a property's maintainer before trusting it.** Each label below says which
   tool writes it. A label marked *curated* is written by hand when its fact arises; no
@@ -87,7 +91,7 @@ member crate the survey no longer has is pruned).
 | `project` | The owning `Project.name`. |
 | `javaFiles` | Java source files the module declares at the surveyed tag (its first source tree). |
 | `inScope` | `true` for a module the port covers. |
-| `scopeRule` | The rule that set `inScope`: `"lucene-core-is-the-port-target"`, `"sprint-9-ports-the-module"`, `"outside-the-port-modules"`. |
+| `scopeRule` | The rule that set `inScope`: `"lucene-core-is-the-port-target"`, `"sprint-9-ports-the-module"`, `"sprint-12-ports-the-module"`, `"outside-the-port-modules"`. |
 | `role` | What the module is, in one line. |
 | `crate` / `cratePath` | On a port module: the Cargo package that ports it and its directory (`"."` for `rucene`). |
 | `jpmsName` | On a port module: its JPMS module name (randomizedtesting's is the automatic name of its jar, `randomizedtesting.runner`). |
@@ -100,15 +104,15 @@ A Java package. Identity: `name` (string).
 | `name` | Fully qualified package name, e.g. `"org.apache.lucene.index"`. |
 | `shortName` | Last segment. |
 | `path` | Directory path. |
-| `module` | On a sprint-9 module's package: the owning `Module.name`. |
+| `module` | On the package of a port module beyond `lucene/core`: the owning `Module.name`. |
 
 ### `Class`
 A Java type of a port module (`lucene/core`, `lucene/codecs`, `lucene/test-framework`,
-`randomizedtesting/randomized-runner`) — class, interface, enum, record, exception or
+`randomizedtesting/randomized-runner`, `lucene/analysis/common`) — class, interface, enum, record, exception or
 annotation; `kind` tells them apart. (`Interface`, `Enum`, `Exception` and `Annotation`
 are reserved labels that no loader writes.) Identity: `qualifiedName` (string); a nested
 type is keyed `pkg.Outer$Inner`. Written by the Lucene survey (`extract_lucene_kg.py`,
-`enrich_lucene_kg.py`, `lucene_structure_kg.py`; for the sprint-9 modules the same
+`enrich_lucene_kg.py`, `lucene_structure_kg.py`; for the modules beyond `lucene/core` the same
 extractors run by `port_modules_kg.py --phase structure`); the port properties by the
 port loaders named below.
 
@@ -123,13 +127,13 @@ port loaders named below.
 | `extendsExternal` / `implementsExternal` | External (`java.*`, `javax.*`) super-types not modelled as nodes. |
 | `portScope` | `"in"`, `"nested"`, `"out"` — see below. |
 | `portScopeRule` | The mechanical rule that assigned `portScope`. |
-| `portState` | Top-level: `"ported"`, `"candidate"`, `"unported"`. Nested: `"ported"`, `"absorbed"`, `"unported"`. See below. |
-| `portStateEvidence` | On a nested type, the basis of its `portState`: `"doc-comment"`, `"curated"`, `"not-nameable"`, `"verified-absorption"`, `"verified-absent"`, `"no-port-claim"`. |
+| `portState` | Top-level: `"ported"`, `"skeleton"`, `"candidate"`, `"unported"`. Nested: `"ported"`, `"skeleton"`, `"absorbed"`, `"unported"`. See below. |
+| `portStateEvidence` | On a nested type, the basis of its `portState`: `"doc-comment"`, `"skeleton-doc-comment"`, `"curated"`, `"not-nameable"`, `"verified-absorption"`, `"verified-absent"`, `"no-port-claim"`. |
 | `portStateNote` | Why a hand verification overrode the mechanical `portState`. A type carrying it is skipped by the mechanical pass, so the verification survives the next sync. |
 | `javaVisibility` | Top-level: `"public"` or `"package"`, from the class file's `ACC_PUBLIC` flag (`lucene_calls_kg.py`). Nested: the effective visibility. |
 | `javaPublished` / `javaUsedAcrossFiles` | On a nested type: whether it and every enclosing type are `public`/`protected`; whether another `lucene/core` file names it as `Outer.Inner`. |
 | `nestedHost` / `nestedHostFiles` | On a nested type: the nearest enclosing type that has a port, and the crate files that port it. |
-| `portDestination` | On an `unported` nested type: the crate file its port belongs in (for a sprint-9 module, the crate directory mirroring its package). |
+| `portDestination` | On an `unported` nested type: the crate file its port belongs in (for a module beyond `lucene/core`, the crate directory mirroring its package below the module's package roots). |
 | `memberTotal` / `memberMatched` / `memberCoverage` | The depth floor: Java method names the type declares, those whose name maps to a function the port provides, and the ratio (`port_evidence_kg.py --phase depth`). |
 | `memberEvidence` | Always `"name-mapping"`: the basis of the floor. |
 | `memberAbsent` / `memberRenamed` / `memberNa` | The triage of the names the floor missed: really absent, present under another name, not applicable (`triage_load.py`). **`memberAbsent` is the number to plan from.** A measured type with nothing unmatched carries zeros, never null. |
@@ -141,6 +145,7 @@ port loaders named below.
 |---|---|---|
 | `in` | `lucene-core-top-level` | A top-level type declared by a file of `lucene/core` (`src/java`, `src/java21`). The port target. |
 | `in` | `sprint-9-module-top-level` | A top-level type declared by a file of `lucene/codecs`, `lucene/test-framework` or randomizedtesting's `randomized-runner` (`src/main/java`). |
+| `in` | `sprint-12-module-top-level` | A top-level type declared by a file of `lucene/analysis/common` (`src/java`). |
 | `nested` | `nested-in-enclosing-type` | An inner type; not an independent port unit. Each carries its own measured `portState`. |
 | `out` | `not-a-lucene-core-type` | Anything else carrying the label, such as Rucene's own Java test fixtures. |
 
@@ -153,7 +158,8 @@ The rule keys on the **declaring file**, not on the package name.
 
 | Value | Meaning |
 |---|---|
-| `ported` | A `PORTS` edge asserts that a Rucene item is the port of this type; its `evidence` says on what basis. In a sprint-9 module the edge must be a type-level claim: a claim naming only a member (`claimLevel: "member"`) is the cycle rule's early port of that member and leaves the type missing. |
+| `ported` | A `PORTS` edge asserts that a Rucene item is the port of this type; its `evidence` says on what basis. In a module beyond `lucene/core` the edge must be a type-level claim: a claim naming only a member (`claimLevel: "member"`) is the cycle rule's early port of that member and leaves the type missing. |
+| `skeleton` | No type-level `PORTS`, but a `SKELETON_OF` edge: a Rust item declares itself the skeleton of this type. The item exists; the port is not done. Only a `PORTS` edge moves it to `ported`. |
 | `candidate` | No assertion, but exactly one Rucene type carries the same simple name, recorded as `PORTS_CANDIDATE`. Probable, unverified. |
 | `absorbed` | (nested only) No independent Rust item, and none is owed, on the evidence `portStateEvidence` names. |
 | `unported` | Neither. Real work; a nested one carries `portDestination`. |
@@ -164,10 +170,11 @@ line); `not-nameable` (no client can name it — not `public`/`protected` throug
 enclosing type, and no other file names it — so nothing depends on it except through
 its host; its behaviour is measured by the host's depth, not per type);
 `verified-absorption` (nameable, and the crate shows where its work went);
-`verified-absent` (read and found missing, with destination); `no-port-claim` (a
-sprint-9 module's nested type: `nested_port_kg.py` measures `lucene/core`'s alone, so
-these carry the mechanical state — `ported` with a type-level `PORTS`, else `unported`
-with the crate directory as `portDestination`).
+`verified-absent` (read and found missing, with destination); `skeleton-doc-comment`
+and `no-port-claim` (a nested type of a module beyond `lucene/core`:
+`nested_port_kg.py` measures `lucene/core`'s alone, so these carry the mechanical
+state — `ported` with a type-level `PORTS`, `skeleton` with a `SKELETON_OF`, else
+`unported` with the crate directory as `portDestination`).
 
 #### Depth
 
@@ -219,7 +226,7 @@ A source, build, documentation or configuration file of either side. Identity: `
 | `language` | `"Rust"` for a crate `.rs` file; `"Java"` for a fixture; absent otherwise. |
 | `modulePath` | For a crate file, its Rust module path or test-crate name. |
 | `crate` | `"rucene"`, a member crate's identifier (`"rucene_codecs"`), `"java-codec-harness"`, or the `[[test]]` crate name. |
-| `module` | For a sprint-9 module's Java file: the owning `Module.name`. |
+| `module` | For the Java file of a port module beyond `lucene/core`: the owning `Module.name`. |
 | `loc` | Line count at the surveyed commit. |
 | `package` | For a Java file, its package. |
 | `role` / `moduleName` | For `module-info.java`, the JPMS module name. |
@@ -395,8 +402,10 @@ A test method of a `TestClass`: `public void testXxx()` or a `void` method carry
 | `EXTENDS` | `Class` → `Class`; `TestClass` → `TestClass` (how a test reaches `LuceneTestCase` or a `Base…TestCase`). |
 | `IMPLEMENTS` | Lucene `Class` → interface `Class`; Rust type → `RustTrait` (`impl Trait for Type`, crate traits only); legacy `Feature` → `File`/`Class`, and the reverse in a few early edges. |
 | `PORTS` | Rucene item (`RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn`/`Component`) → Lucene `Class`. **`evidence` is mandatory**: `"doc-comment"` (the item's doc says `Equivalent to \`org.apache.lucene.X\`` or a lead-in of that family, or the module's `\| Rucene \| Apache Lucene Core 10.5.0 \|` table names it) or `"curated"`. `declaredAt` gives `file:line`, or the file alone with `declarationSource: "macro-expansion"`. `claimLevel: "member"` and `declaredMember` mark a claim naming a member. Optional `note`: a partial port or adaptation. |
-| `PORTS_CANDIDATE` | Rust type → `Class`: exactly one Rust type has the same simple name; `evidence: "exact-name-match"`. Unverified; superseded by a `PORTS`. |
-| `PORTS_EARLY` | *Curated.* `Task` → `Method`: under sprint 9's cycle rule, the task ported this member in full before the task that owns its class. `ownerTask` (integer): that later task; `rustItem`: the Rust item's `qualifiedName`; `evidence: "cycle-rule"`. Written by `port_modules_kg.py --phase early`; no sync deletes it. |
+| `PORTS_CANDIDATE` | Rust type → `Class`: exactly one Rust type has the same simple name; `evidence: "exact-name-match"`. Unverified; superseded by a `PORTS`. Never written to a `skeleton` type. |
+| `SKELETON_OF` | Rust item (`RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn`) → Lucene `Class` (top-level or nested): the item's doc holds the paragraph ``Skeleton of `<fully qualified Java type>`; ported by rmp task #N.``, so the item is where the type's port lives, and the port is not done. Not a port: it never yields `PORTS`. `evidence: "doc-comment"`; `declaredAt`: `file:line`; `task` (integer): `N`. Written whole by `port_evidence_kg.py --phase load`. |
+| `PLANS_PORT` | `Task` → `Class`: the task a skeleton names as the one that ports the type. `evidence: "skeleton-doc-comment"`; `declaredAt`: the skeleton's `file:line`. Written whole with `SKELETON_OF`, for a task the graph mirrors. |
+| `PORTS_EARLY` | *Curated.* `Task` → `Method`: under the cycle rule of a module beyond `lucene/core` (sprint 9's), the task ported this member in full before the task that owns its class. `ownerTask` (integer): that later task; `rustItem`: the Rust item's `qualifiedName`; `evidence: "cycle-rule"`. Written by `port_modules_kg.py --phase early`; no sync deletes it. |
 | `PORT_UNIT` | `TestClass` → `Class` of the same `qualifiedName`: the framework type's port-scope node (`port_modules_kg.py`). |
 | `SUPERSEDES` | `Decision` → `Decision` it replaced; `on`: the date of the replacing decision. |
 | `PORTS_MEMBER` | `RustFn` → `Method`: by name, the fn ports that member. `evidence: "name-mapping"`; `via`: `"declared"`, `"owner"`, `"inherited"`, `"free-fn"`. Written whole by `no_caller_kg.py --phase members`. |
@@ -453,10 +462,11 @@ RETURN labels(t)[0] AS label, t.name, t.file, e.evidence, e.declaredAt, e.note
 ### What of each port module is ported, and what is missing
 
 In-scope classes per module and status (`ask.py coverage`; `--module M --list` lists
-the classes; `missing` is every `portState` but `ported`):
+the classes; `skeleton` is a Rust skeleton with no port, `unported` every other
+`portState` but `ported`):
 
 ```cypher
-MATCH (c:Class) WHERE c.portScope = 'in' RETURN c.module AS module, CASE WHEN c.portState = 'ported' THEN 'ported' ELSE 'missing' END AS status, count(c) AS classes ORDER BY module, status
+MATCH (c:Class) WHERE c.portScope = 'in' RETURN c.module AS module, CASE WHEN c.portState = 'ported' THEN 'ported' WHEN c.portState = 'skeleton' THEN 'skeleton' ELSE 'unported' END AS status, count(c) AS classes ORDER BY module, status
 ```
 
 Members ported early under the cycle rule (`ask.py early`):
@@ -469,6 +479,27 @@ How the modules depend on one another:
 
 ```cypher
 MATCH (a:Module)-[e:DEPENDS_ON]->(b:Module) RETURN a.name, b.name, e.declaredAt
+```
+
+### Which task ports a class, and what is still a skeleton
+
+The task(s) whose skeleton plans the port of a class (`ask.py plans --class <fqn>`; a
+nested type is keyed `pkg.Outer$Inner`):
+
+```cypher
+MATCH (t:Task)-[e:PLANS_PORT]->(c:Class {qualifiedName: $class}) RETURN c.qualifiedName AS class, c.portState AS portState, t.id AS task, t.status AS taskStatus, t.name AS taskName, e.declaredAt AS declaredAt
+```
+
+The classes a task ports (`ask.py plans --task N`):
+
+```cypher
+MATCH (t:Task {id: $task})-[e:PLANS_PORT]->(c:Class) RETURN c.qualifiedName AS class, c.portScope AS portScope, c.portState AS portState, e.declaredAt AS declaredAt ORDER BY class
+```
+
+The classes that have a skeleton and no port yet (`ask.py skeletons [--module M]`):
+
+```cypher
+MATCH (c:Class) WHERE c.portState = 'skeleton' MATCH (s)-[e:SKELETON_OF]->(c) RETURN c.module AS module, c.qualifiedName AS class, c.portScope AS portScope, s.name AS item, s.file AS file, e.task AS task ORDER BY module, class
 ```
 
 ### How much of each ported type exists — the member work
@@ -864,7 +895,7 @@ RETURN type(e) AS edge, count(e) AS unstamped ORDER BY unstamped DESC
 what each step reads:
 
 0. `port_modules_kg.py --phase modules`, `--phase structure` — the port modules'
-   scope, JPMS dependencies and scope decision, and the sprint-9 modules' packages,
+   scope, JPMS dependencies and scope decisions, and the packages of every module beyond `lucene/core`,
    files, types and members (needs the randomizedtesting 2.8.1 clone,
    `$RANDOMIZEDTESTING_ROOT`).
 1. `extract_rucene_kg.py --expand` → `load_rucene_kg.py` — the crate survey (the root
@@ -872,7 +903,8 @@ what each step reads:
    confirms.
 2. `port_coverage_kg.py` — `portScope`, `portState`, Lucene `DEPENDS_ON`,
    `PORTS_CANDIDATE`, the `Task` mirror and its prune, `REQUIRES_PORT`.
-3. `port_evidence_kg.py --phase extract`, `--phase load` — the declared `PORTS`;
+3. `port_evidence_kg.py --phase extract`, `--phase load` — the declared `PORTS`, then
+   `SKELETON_OF` and `PLANS_PORT` (after the `Task` mirror of step 2);
    `expanded_evidence_kg.py` — the same for macro-generated items;
    `port_evidence_kg.py --phase depth` — the depth floor (needs both).
 4. `nested_port_kg.py` — the nested types' `portState` (needs step 3).
@@ -901,13 +933,20 @@ check compares the graph with a source it re-derives independently:
   over all of them, top-level and nested types (a brace-depth scanner written
   independently of the extractor); registered modules; the in-scope modules equal
   `PORT_MODULES`; every in-scope or nested `Class` has a `module`; every
-  `PORTS_EARLY` member belongs to a sprint-9 type.
+  `PORTS_EARLY` member belongs to a type of a module beyond `lucene/core`.
 * **Crate:** `.rs` files, types and functions (from the compiler's own expansion), and
   no type the compiler sees that the graph lacks.
 * **Port state:** every `Class` has a `portScope`; every nested type a measured state
   and every unported one a destination; every `PORTS` edge has `evidence`; no type has
   both `PORTS` and `PORTS_CANDIDATE`; no nested `ported` without a `PORTS`; no `PORTS`
   from a node the survey does not confirm.
+* **Skeletons, both ways:** every skeleton paragraph of the crate (re-read from the
+  surveyed tree) is an item doc, names an in-scope or nested `Class` and a `Task`, and
+  has its `SKELETON_OF` and `PLANS_PORT`; every such edge has its paragraph; every
+  `skeleton` class has a `SKELETON_OF`; in a module whose `PORT_MODULES` entry sets
+  `skeletons`, no class has more than one skeleton, and the classes with neither a
+  skeleton nor a port are counted — reported under `"report"`, a failure under
+  `"enforce"`.
 * **Provenance:** at least the surveyed commit's history is mirrored; every node is
   stamped.
 * **Mirrors:** `Task` nodes equal `rmp`'s tasks in both directions; `Divergence` nodes

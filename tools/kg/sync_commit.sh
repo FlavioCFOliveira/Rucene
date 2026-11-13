@@ -26,7 +26,7 @@ K=${RUCENE_KG_TARGET:-$(dirname "$REPO")/.rucene-kg-target}
 S=$K/rucene-survey-$SHORT
 T=$K/triage-$SHORT
 LUCENE=${LUCENE_ROOT:-/tmp/lucene1050}
-# randomizedtesting 2.8.1, the runner sprint 9 ports (`port_modules_kg.py`):
+# randomizedtesting 2.8.1, one of the port modules (`port_modules_kg.py`):
 #   git clone --branch release/2.8.1 --single-branch \
 #       https://github.com/randomizedtesting/randomizedtesting.git "$RT"
 RT=${RANDOMIZEDTESTING_ROOT:-/tmp/randomizedtesting281}
@@ -105,8 +105,8 @@ KG=tools/kg
 {
   echo "sync $FULL ($DATE) roadmap=$R"
   # The port modules first: their Module scope, JPMS dependencies, scope
-  # decision, and the sprint-9 modules' packages, files, types and members,
-  # which port_coverage_kg.py scopes below.
+  # decisions, and the packages, files, types and members of every module
+  # beyond lucene/core, which port_coverage_kg.py scopes below.
   bg survey python3 $KG/extract_rucene_kg.py --source-root "$S" --expand --commit "$FULL" --date "$DATE" --output "$K/rucene_kg/survey.json"
   bg scip python3 $KG/rust_refs_kg.py "$R" --commit "$FULL" --phase scip --scip "$K/no_caller/index_$SHORT.scip"
   run python3 $KG/port_modules_kg.py "$R" --lucene-root "$LUCENE" --rt-root "$RT" --commit "$FULL" --date "$DATE" --phase modules

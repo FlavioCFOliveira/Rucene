@@ -168,10 +168,10 @@ def classify(roadmap, lucene_root):
     named = nameability(types, sources)
 
     nested = {}
-    # `lucene/core`'s nested types only. The sprint-9 modules' nested types are
-    # not measured here -- nameability is scanned over `lucene/core` alone, and
-    # `absorbed` needs a ported host -- so `port_coverage_kg.py --phase scope`
-    # gives them their mechanical state (`phase_sprint9_nested`).
+    # `lucene/core`'s nested types only. The nested types of the modules beyond
+    # it are not measured here -- nameability is scanned over `lucene/core`
+    # alone, and `absorbed` needs a ported host -- so `port_coverage_kg.py
+    # --phase scope` gives them their mechanical state (`phase_added_nested`).
     for qn, name, file in q(roadmap, "MATCH (c:Class) WHERE c.portScope = 'nested' "
                                      "AND c.module = 'lucene/core' "
                                      "RETURN c.qualifiedName, c.name, c.file"):

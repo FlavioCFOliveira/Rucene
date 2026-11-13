@@ -19,6 +19,10 @@ are escaped as Cypher literals.
     python3 tools/kg/ask.py coverage                    # in-scope classes per module and status
     python3 tools/kg/ask.py coverage --module lucene/codecs --list   # each class and its status
     python3 tools/kg/ask.py early --module lucene/test-framework     # cycle-rule early members
+    python3 tools/kg/ask.py plans --class org.apache.lucene.analysis.ar.ArabicAnalyzer
+                                                        # which task ports a class
+    python3 tools/kg/ask.py plans --task 412            # which classes a task ports
+    python3 tools/kg/ask.py skeletons --module lucene/analysis/common  # skeleton-only classes
     python3 tools/kg/ask.py cypher "MATCH (n:Module) RETURN n.name"
 
 Every command needs the graph server (`rmp graph serve -r rucene`). Run
@@ -182,11 +186,62 @@ def cmd_tasks(_a):
 
 
 def q_coverage_list(module):
-    """Each in-scope class of `module` and its status, missing first."""
+    """Each in-scope class of `module` and its status (`ported`, `skeleton`,
+    `unported`), by status."""
     return ("MATCH (c:Class) WHERE c.portScope = 'in' AND c.module = " + esc(module) + " "
             "RETURN c.qualifiedName AS class, "
-            "CASE WHEN c.portState = 'ported' THEN 'ported' ELSE 'missing' END AS status, "
+            "CASE WHEN c.portState = 'ported' THEN 'ported' "
+            "WHEN c.portState = 'skeleton' THEN 'skeleton' ELSE 'unported' END AS status, "
             "c.portState AS portState ORDER BY status, class")
+
+
+# The skeleton relation (`knowledge-model.md`, *Which task ports a class*).
+PLANS_OF_CLASS = (
+    "MATCH (t:Task)-[e:PLANS_PORT]->(c:Class {qualifiedName: $class}) "
+    "RETURN c.qualifiedName AS class, c.portState AS portState, t.id AS task, "
+    "t.status AS taskStatus, t.name AS taskName, e.declaredAt AS declaredAt"
+)
+CLASSES_OF_TASK = (
+    "MATCH (t:Task {id: $task})-[e:PLANS_PORT]->(c:Class) "
+    "RETURN c.qualifiedName AS class, c.portScope AS portScope, c.portState AS portState, "
+    "e.declaredAt AS declaredAt ORDER BY class"
+)
+SKELETON_ONLY = (
+    "MATCH (c:Class) WHERE c.portState = 'skeleton' "
+    "MATCH (s)-[e:SKELETON_OF]->(c) "
+    "RETURN c.module AS module, c.qualifiedName AS class, c.portScope AS portScope, "
+    "s.name AS item, s.file AS file, e.task AS task ORDER BY module, class"
+)
+
+
+def q_plans_of_class(fqn):
+    """The task(s) whose skeleton plans the port of `fqn` (a nested type is
+    keyed `pkg.Outer$Inner`)."""
+    return PLANS_OF_CLASS.replace("$class", esc(fqn))
+
+
+def q_classes_of_task(task):
+    return CLASSES_OF_TASK.replace("$task", str(int(task)))
+
+
+def q_skeleton_only(module=None):
+    if module is None:
+        return SKELETON_ONLY
+    return SKELETON_ONLY.replace("WHERE c.portState = 'skeleton' ",
+                                 f"WHERE c.portState = 'skeleton' AND c.module = {esc(module)} ")
+
+
+def cmd_plans(a):
+    if a.cls:
+        emit(read(R, q_plans_of_class(a.cls)),
+             ["class", "portState", "task", "taskStatus", "taskName", "declaredAt"])
+    else:
+        emit(read(R, q_classes_of_task(a.task)), ["class", "portScope", "portState", "declaredAt"])
+
+
+def cmd_skeletons(a):
+    emit(read(R, q_skeleton_only(a.module)),
+         ["module", "class", "portScope", "item", "file", "task"])
 
 
 def cmd_coverage(a):
@@ -235,6 +290,14 @@ def main(argv=None):
     p = sub.add_parser("early")
     p.add_argument("--module", choices=sorted(pm.BY_NAME))
     p.set_defaults(f=cmd_early)
+    p = sub.add_parser("plans")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--class", dest="cls")
+    g.add_argument("--task", type=int)
+    p.set_defaults(f=cmd_plans)
+    p = sub.add_parser("skeletons")
+    p.add_argument("--module", choices=sorted(pm.BY_NAME))
+    p.set_defaults(f=cmd_skeletons)
     p = sub.add_parser("cypher"); p.add_argument("statement"); p.set_defaults(f=cmd_cypher)
     a = ap.parse_args(argv)
     a.f(a)
