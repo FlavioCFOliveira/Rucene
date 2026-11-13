@@ -63,6 +63,33 @@ use crate::analysis::core::stop_filter_factory::StopFilterFactory;
 use crate::analysis::core::type_token_filter_factory::TypeTokenFilterFactory;
 use crate::analysis::core::upper_case_filter_factory::UpperCaseFilterFactory;
 use crate::analysis::core::whitespace_tokenizer_factory::WhitespaceTokenizerFactory;
+use crate::analysis::miscellaneous::ascii_folding_filter_factory::ASCIIFoldingFilterFactory;
+use crate::analysis::miscellaneous::capitalization_filter_factory::CapitalizationFilterFactory;
+use crate::analysis::miscellaneous::codepoint_count_filter_factory::CodepointCountFilterFactory;
+use crate::analysis::miscellaneous::concatenate_graph_filter_factory::ConcatenateGraphFilterFactory;
+use crate::analysis::miscellaneous::date_recognizer_filter_factory::DateRecognizerFilterFactory;
+use crate::analysis::miscellaneous::delimited_term_frequency_token_filter_factory::DelimitedTermFrequencyTokenFilterFactory;
+use crate::analysis::miscellaneous::drop_if_flagged_filter_factory::DropIfFlaggedFilterFactory;
+use crate::analysis::miscellaneous::fingerprint_filter_factory::FingerprintFilterFactory;
+use crate::analysis::miscellaneous::fix_broken_offsets_filter_factory::FixBrokenOffsetsFilterFactory;
+use crate::analysis::miscellaneous::hyphenated_words_filter_factory::HyphenatedWordsFilterFactory;
+use crate::analysis::miscellaneous::keep_word_filter_factory::KeepWordFilterFactory;
+use crate::analysis::miscellaneous::keyword_marker_filter_factory::KeywordMarkerFilterFactory;
+use crate::analysis::miscellaneous::keyword_repeat_filter_factory::KeywordRepeatFilterFactory;
+use crate::analysis::miscellaneous::length_filter_factory::LengthFilterFactory;
+use crate::analysis::miscellaneous::limit_token_count_filter_factory::LimitTokenCountFilterFactory;
+use crate::analysis::miscellaneous::limit_token_offset_filter_factory::LimitTokenOffsetFilterFactory;
+use crate::analysis::miscellaneous::limit_token_position_filter_factory::LimitTokenPositionFilterFactory;
+use crate::analysis::miscellaneous::protected_term_filter_factory::ProtectedTermFilterFactory;
+use crate::analysis::miscellaneous::remove_duplicates_token_filter_factory::RemoveDuplicatesTokenFilterFactory;
+use crate::analysis::miscellaneous::scandinavian_folding_filter_factory::ScandinavianFoldingFilterFactory;
+use crate::analysis::miscellaneous::scandinavian_normalization_filter_factory::ScandinavianNormalizationFilterFactory;
+use crate::analysis::miscellaneous::stemmer_override_filter_factory::StemmerOverrideFilterFactory;
+use crate::analysis::miscellaneous::trim_filter_factory::TrimFilterFactory;
+use crate::analysis::miscellaneous::truncate_token_filter_factory::TruncateTokenFilterFactory;
+use crate::analysis::miscellaneous::type_as_synonym_filter_factory::TypeAsSynonymFilterFactory;
+use crate::analysis::miscellaneous::word_delimiter_filter_factory::WordDelimiterFilterFactory;
+use crate::analysis::miscellaneous::word_delimiter_graph_filter_factory::WordDelimiterGraphFilterFactory;
 use crate::analysis::util::elision_filter_factory::ElisionFilterFactory;
 
 /// The binary name of the char filter factory service, the name of its file.
@@ -104,6 +131,33 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(StopFilterFactory::class()),
         token_filter(TypeTokenFilterFactory::class()),
         token_filter(UpperCaseFilterFactory::class()),
+        token_filter(ASCIIFoldingFilterFactory::class()),
+        token_filter(CapitalizationFilterFactory::class()),
+        token_filter(CodepointCountFilterFactory::class()),
+        token_filter(ConcatenateGraphFilterFactory::class()),
+        token_filter(DateRecognizerFilterFactory::class()),
+        token_filter(DelimitedTermFrequencyTokenFilterFactory::class()),
+        token_filter(DropIfFlaggedFilterFactory::class()),
+        token_filter(FingerprintFilterFactory::class()),
+        token_filter(FixBrokenOffsetsFilterFactory::class()),
+        token_filter(HyphenatedWordsFilterFactory::class()),
+        token_filter(KeepWordFilterFactory::class()),
+        token_filter(KeywordMarkerFilterFactory::class()),
+        token_filter(KeywordRepeatFilterFactory::class()),
+        token_filter(LengthFilterFactory::class()),
+        token_filter(LimitTokenCountFilterFactory::class()),
+        token_filter(LimitTokenOffsetFilterFactory::class()),
+        token_filter(LimitTokenPositionFilterFactory::class()),
+        token_filter(RemoveDuplicatesTokenFilterFactory::class()),
+        token_filter(StemmerOverrideFilterFactory::class()),
+        token_filter(ProtectedTermFilterFactory::class()),
+        token_filter(TrimFilterFactory::class()),
+        token_filter(TruncateTokenFilterFactory::class()),
+        token_filter(TypeAsSynonymFilterFactory::class()),
+        token_filter(WordDelimiterFilterFactory::class()),
+        token_filter(WordDelimiterGraphFilterFactory::class()),
+        token_filter(ScandinavianFoldingFilterFactory::class()),
+        token_filter(ScandinavianNormalizationFilterFactory::class()),
         token_filter(FlattenGraphFilterFactory::class()),
         token_filter(ElisionFilterFactory::class()),
         // META-INF/services/org.apache.lucene.analysis.TokenizerFactory
@@ -144,6 +198,15 @@ pub(crate) fn check_unknown_parameters(args: &HashMap<String, String>) -> Result
     if args.is_empty() {
         return Ok(());
     }
+    Err(LuceneError::illegal_argument(format!(
+        "Unknown parameters: {}",
+        java_map_to_string(args)
+    )))
+}
+
+/// The `toString()` of the factory's argument map, `{key=value, ...}`, in
+/// the order [`check_unknown_parameters`] declares.
+pub(crate) fn java_map_to_string(args: &HashMap<String, String>) -> String {
     let mut leftovers: Vec<(&String, &String)> = args.iter().collect();
     leftovers.sort();
     let mut map = JavaHashMap::new();
@@ -155,7 +218,5 @@ pub(crate) fn check_unknown_parameters(args: &HashMap<String, String>) -> Result
         .map(|(key, value)| format!("{key}={value}"))
         .collect::<Vec<_>>()
         .join(", ");
-    Err(LuceneError::illegal_argument(format!(
-        "Unknown parameters: {{{rendered}}}"
-    )))
+    format!("{{{rendered}}}")
 }

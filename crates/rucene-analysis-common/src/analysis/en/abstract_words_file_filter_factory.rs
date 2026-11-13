@@ -124,8 +124,8 @@ impl AbstractWordsFileFilterFactory {
     ///
     /// Equivalent to `AbstractWordsFileFilterFactory.inform(ResourceLoader)`;
     /// `create_default_words` is the concrete factory's
-    /// `createDefaultWords()`, the default word set, called when no
-    /// `words` file was named.
+    /// `createDefaultWords()`, the default word set (`None` for Java's
+    /// `null`), called when no `words` file was named.
     ///
     /// # Errors
     ///
@@ -135,7 +135,7 @@ impl AbstractWordsFileFilterFactory {
     pub fn inform(
         &mut self,
         loader: &dyn ResourceLoader,
-        create_default_words: impl FnOnce(&Self) -> CharArraySet,
+        create_default_words: impl FnOnce(&Self) -> Option<CharArraySet>,
     ) -> Result<()> {
         if let Some(word_files) = &self.word_files {
             let format = self.format.as_deref();
@@ -163,7 +163,7 @@ impl AbstractWordsFileFilterFactory {
                     "'format' can not be specified w/o an explicit 'words' file: {format}"
                 )));
             }
-            self.words = Some(create_default_words(self));
+            self.words = create_default_words(self);
         }
         Ok(())
     }

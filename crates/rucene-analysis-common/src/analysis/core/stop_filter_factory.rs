@@ -146,7 +146,8 @@ impl ResourceLoaderAware for StopFilterFactory {
     /// Equivalent to the inherited `AbstractWordsFileFilterFactory.inform`,
     /// over this factory's `createDefaultWords()`.
     fn inform(&mut self, loader: &dyn ResourceLoader) -> Result<()> {
-        self.base.inform(loader, Self::create_default_words)
+        self.base
+            .inform(loader, |base| Some(Self::create_default_words(base)))
     }
 }
 

@@ -13,8 +13,8 @@
 //! The parser is written from the `java.util.regex.Pattern` Javadoc and from
 //! the behaviour the JDK shows on probes: the oracle `RegexOracle.java` of rmp
 //! task #243 runs each construct through `Pattern.compile` and
-//! `Matcher.find`, `DumpData.java` dumps the character data of [`tables`], and
-//! `NameData.java` the character names of [`names`]. OpenJDK's source (GPL
+//! `Matcher.find`, `DumpData.java` dumps the character data of `tables`, and
+//! `NameData.java` the character names of `names`. OpenJDK's source (GPL
 //! with the Classpath Exception) was not copied. The parse follows the order in which the JDK reads a pattern,
 //! because that order is observable: `\Q…\E` is replaced by escapes before
 //! the parse, comments mode skips whitespace and `#` comments wherever the
@@ -35,21 +35,21 @@ use std::fmt::{self, Write as _};
 use std::sync::OnceLock;
 
 /// `Pattern.UNIX_LINES`, `(?d)`.
-const UNIX_LINES: u32 = 0x01;
+pub const UNIX_LINES: u32 = 0x01;
 /// `Pattern.CASE_INSENSITIVE`, `(?i)`.
-const CASE_INSENSITIVE: u32 = 0x02;
+pub const CASE_INSENSITIVE: u32 = 0x02;
 /// `Pattern.COMMENTS`, `(?x)`.
-const COMMENTS: u32 = 0x04;
+pub const COMMENTS: u32 = 0x04;
 /// `Pattern.MULTILINE`, `(?m)`.
-const MULTILINE: u32 = 0x08;
+pub const MULTILINE: u32 = 0x08;
 /// `Pattern.DOTALL`, `(?s)`.
-const DOTALL: u32 = 0x20;
+pub const DOTALL: u32 = 0x20;
 /// `Pattern.UNICODE_CASE`, `(?u)`.
-const UNICODE_CASE: u32 = 0x40;
+pub const UNICODE_CASE: u32 = 0x40;
 /// `Pattern.CANON_EQ`, `(?c)`.
-const CANON_EQ: u32 = 0x80;
+pub const CANON_EQ: u32 = 0x80;
 /// `Pattern.UNICODE_CHARACTER_CLASS`, `(?U)`.
-const UNICODE_CHARACTER_CLASS: u32 = 0x100;
+pub const UNICODE_CHARACTER_CLASS: u32 = 0x100;
 
 /// The largest repetition count, `Pattern`'s `MAX_REPS`.
 const MAX_REPS: u32 = 0x7FFF_FFFF;
@@ -101,6 +101,124 @@ impl fmt::Display for PatternSyntaxError {
 }
 
 impl std::error::Error for PatternSyntaxError {}
+
+impl PatternSyntaxError {
+    /// The error of a pattern the engine refuses after its translation: Java
+    /// compiles it, so the refusal is this port's, at no index.
+    fn engine_refusal(regex: &str, engine: &fancy_regex::Error) -> Self {
+        Self {
+            description: engine.to_string(),
+            index: -1,
+            pattern: regex.to_string(),
+        }
+    }
+}
+
+/// A compiled `java.util.regex.Pattern`, for the `Matcher.matches()` a
+/// caller runs over whole inputs.
+///
+/// Equivalent to `Pattern.compile(String, int)` followed by
+/// `pattern.matcher(input).matches()`: the translation of the pattern (see
+/// `translate_for_engine`) is anchored at both ends of the input, so a
+/// match must span the whole input, as `matches()` requires. The dialect
+/// differences the translation cannot reproduce are declared on
+/// [`AbstractAnalysisFactory::get_pattern`](crate::analysis::factories::AbstractAnalysisFactory::get_pattern).
+#[derive(Debug, Clone)]
+pub struct JavaPattern {
+    regex: String,
+    flags: u32,
+    whole: fancy_regex::Regex,
+    find: fancy_regex::Regex,
+}
+
+impl JavaPattern {
+    /// Compiles `regex` with `flags` (the `Pattern` flag constants of this
+    /// module, such as [`CASE_INSENSITIVE`] and [`UNICODE_CASE`]).
+    ///
+    /// Equivalent to `Pattern.compile(String, int)`; `Pattern.compile(String)`
+    /// is `flags` 0.
+    ///
+    /// # Errors
+    ///
+    /// A [`PatternSyntaxError`] where `Pattern.compile` throws
+    /// `PatternSyntaxException`, or where the pattern needs a construct the
+    /// translation or the engine cannot reproduce.
+    pub fn compile(regex: &str, flags: u32) -> Result<Self, PatternSyntaxError> {
+        let build = |pattern: &str| -> Result<(fancy_regex::Regex, fancy_regex::Regex), fancy_regex::Error> {
+            let whole = fancy_regex::RegexBuilder::new(&format!(r"\A(?:{pattern})\z"))
+                .backtrack_limit(usize::MAX)
+                .build()?;
+            let find = fancy_regex::RegexBuilder::new(pattern)
+                .backtrack_limit(usize::MAX)
+                .build()?;
+            Ok((whole, find))
+        };
+        let translation = translate_for_engine_with_flags(regex, flags, false)?;
+        let (whole, find) = match build(&translation.pattern) {
+            Ok(compiled) => compiled,
+            Err(engine) => {
+                // A counted repetition the engine's automaton cannot hold is
+                // run by its VM instead (see `translate_for_engine`).
+                let counted_in_vm = translate_for_engine_with_flags(regex, flags, true)?.pattern;
+                match build(&counted_in_vm) {
+                    Ok(compiled) if counted_in_vm != translation.pattern => compiled,
+                    _ => return Err(PatternSyntaxError::engine_refusal(regex, &engine)),
+                }
+            }
+        };
+        Ok(Self {
+            regex: regex.to_string(),
+            flags,
+            whole,
+            find,
+        })
+    }
+
+    /// The source of this pattern, `Pattern.pattern()`.
+    pub fn pattern(&self) -> &str {
+        &self.regex
+    }
+
+    /// The flags this pattern was compiled with, `Pattern.flags()`.
+    pub fn flags(&self) -> u32 {
+        self.flags
+    }
+
+    /// Whether the whole of `input` matches this pattern, as
+    /// `pattern.matcher(input).matches()` answers.
+    ///
+    /// # Panics
+    ///
+    /// When the engine fails at run time, which it cannot with no
+    /// backtracking limit; Java's matcher would overflow its stack instead.
+    pub fn matches(&self, input: &str) -> bool {
+        self.whole
+            .is_match(input)
+            .expect("INVARIANT: the engine has no backtracking limit")
+    }
+
+    /// The groups of the first match in `input`, as
+    /// `pattern.matcher(input).find()` followed by `group(i)` for every `i`
+    /// up to `groupCount()` answers: `None` when `find()` returns false;
+    /// otherwise the text of each group (index 0 the whole match), `None` for
+    /// a group that did not participate. The translation keeps every group
+    /// of the Java pattern, in order.
+    ///
+    /// # Panics
+    ///
+    /// As [`matches`](Self::matches).
+    pub fn find_groups(&self, input: &str) -> Option<Vec<Option<String>>> {
+        let captures = self
+            .find
+            .captures(input)
+            .expect("INVARIANT: the engine has no backtracking limit")?;
+        Some(
+            (0..captures.len())
+                .map(|i| captures.get(i).map(|m| m.as_str().to_string()))
+                .collect(),
+        )
+    }
+}
 
 /// A translation: the pattern the engine runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,7 +283,28 @@ pub(crate) fn translate_for_engine(
     regex: &str,
     counts_in_vm: bool,
 ) -> Result<Translation, PatternSyntaxError> {
+    translate_for_engine_with_flags(regex, 0, counts_in_vm)
+}
+
+/// [`translate_for_engine`] for `Pattern.compile(regex, flags)`: the parse
+/// starts with `flags` in effect, as Java's `Pattern(String, int)` sets
+/// `flags0 = flags` before compiling, adding `UNICODE_CASE` when
+/// `UNICODE_CHARACTER_CLASS` is set.
+///
+/// # Errors
+///
+/// As [`translate_for_engine`].
+fn translate_for_engine_with_flags(
+    regex: &str,
+    flags: u32,
+    counts_in_vm: bool,
+) -> Result<Translation, PatternSyntaxError> {
     let mut parser = Parser::new(regex);
+    parser.flags0 = if flags & UNICODE_CHARACTER_CLASS != 0 {
+        flags | UNICODE_CASE
+    } else {
+        flags
+    };
     let mut node = parser.compile()?;
     never_matching_references(&mut node, parser.capturing_group_count - 1);
     let mut referenced = Vec::new();

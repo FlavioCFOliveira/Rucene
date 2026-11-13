@@ -23,6 +23,7 @@
 //! as Java's `int` code point is.
 
 use super::character_data::{DIGIT, LETTER, NUMERIC_VALUE, WHITESPACE};
+use super::character_type_data::{LATIN1_LOWER_CASE, LATIN1_UPPER_CASE, TYPES};
 
 /// `Character.MIN_SUPPLEMENTARY_CODE_POINT`.
 pub const MIN_SUPPLEMENTARY_CODE_POINT: i32 = 0x10000;
@@ -155,4 +156,122 @@ pub fn to_term_char(code_point: i32) -> char {
         .ok()
         .and_then(char::from_u32)
         .unwrap_or(char::REPLACEMENT_CHARACTER)
+}
+
+/// `Character.UPPERCASE_LETTER`, general category `Lu`.
+pub const UPPERCASE_LETTER: u8 = 1;
+/// `Character.LOWERCASE_LETTER`, general category `Ll`.
+pub const LOWERCASE_LETTER: u8 = 2;
+/// `Character.TITLECASE_LETTER`, general category `Lt`.
+pub const TITLECASE_LETTER: u8 = 3;
+/// `Character.MODIFIER_LETTER`, general category `Lm`.
+pub const MODIFIER_LETTER: u8 = 4;
+/// `Character.OTHER_LETTER`, general category `Lo`.
+pub const OTHER_LETTER: u8 = 5;
+/// `Character.NON_SPACING_MARK`, general category `Mn`.
+pub const NON_SPACING_MARK: u8 = 6;
+/// `Character.ENCLOSING_MARK`, general category `Me`.
+pub const ENCLOSING_MARK: u8 = 7;
+/// `Character.COMBINING_SPACING_MARK`, general category `Mc`.
+pub const COMBINING_SPACING_MARK: u8 = 8;
+/// `Character.DECIMAL_DIGIT_NUMBER`, general category `Nd`.
+pub const DECIMAL_DIGIT_NUMBER: u8 = 9;
+/// `Character.LETTER_NUMBER`, general category `Nl`.
+pub const LETTER_NUMBER: u8 = 10;
+/// `Character.OTHER_NUMBER`, general category `No`.
+pub const OTHER_NUMBER: u8 = 11;
+/// `Character.SURROGATE`, general category `Cs`.
+pub const SURROGATE: u8 = 19;
+
+/// `Character.getType(int)`: the general category of `code_point`, as the
+/// value of Java's `Character` category constant, as JDK 25 answers (a
+/// surrogate code unit is [`SURROGATE`]; a value outside the code space is
+/// `UNASSIGNED`, 0).
+pub fn get_type(code_point: i32) -> u8 {
+    let Ok(c) = u32::try_from(code_point) else {
+        return 0;
+    };
+    match TYPES.binary_search_by(|&(first, last, _)| {
+        if last < c {
+            std::cmp::Ordering::Less
+        } else if first > c {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    }) {
+        Ok(index) => TYPES[index].2,
+        Err(_) => 0,
+    }
+}
+
+/// `Character.isLowerCase(int)` for a code point below U+0100, as JDK 25
+/// answers: general category `Ll` or the `Other_Lowercase` property (so
+/// U+00AA and U+00BA too).
+///
+/// # Panics
+///
+/// When `code_point` is not below U+0100, which no caller passes.
+pub fn is_lower_case_latin1(code_point: i32) -> bool {
+    assert!(
+        (0..0x100).contains(&code_point),
+        "only Latin-1 data is held"
+    );
+    LATIN1_LOWER_CASE.contains(&(code_point as u8))
+}
+
+/// `Character.isUpperCase(int)` for a code point below U+0100, as JDK 25
+/// answers.
+///
+/// # Panics
+///
+/// When `code_point` is not below U+0100, which no caller passes.
+pub fn is_upper_case_latin1(code_point: i32) -> bool {
+    assert!(
+        (0..0x100).contains(&code_point),
+        "only Latin-1 data is held"
+    );
+    LATIN1_UPPER_CASE.contains(&(code_point as u8))
+}
+
+/// The UTF-16 units of `chars`, a term buffer of `char`s, as Java's `char[]`
+/// term buffer holds them.
+pub fn chars_to_utf16(chars: &[char]) -> Vec<u16> {
+    let mut units = Vec::with_capacity(chars.len());
+    let mut buf = [0u16; 2];
+    for c in chars {
+        units.extend_from_slice(c.encode_utf16(&mut buf));
+    }
+    units
+}
+
+/// The number of UTF-16 units of `chars`: Java's `CharTermAttribute.length()`
+/// for the same term.
+pub fn utf16_length(chars: &[char]) -> usize {
+    chars.iter().map(|c| c.len_utf16()).sum()
+}
+
+/// The `char`s a term buffer holds for the UTF-16 units `units`.
+///
+/// **Divergence.** A lone surrogate, which Java's `char[]` holds as it is,
+/// cannot be a `char` and becomes U+FFFD, the replacement `rucene` applies
+/// wherever a lone surrogate meets a `char` (see [`to_term_char`]).
+pub fn utf16_to_term_chars(units: &[u16]) -> Vec<char> {
+    char::decode_utf16(units.iter().copied())
+        .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect()
+}
+
+/// `Character.toLowerCase(char)`: the simple lowercase mapping of the UTF-16
+/// unit `unit` (a surrogate maps to itself), `(char)
+/// Character.toLowerCase((int) ch)`.
+pub fn to_lower_case_unit(unit: u16) -> u16 {
+    rucene::util::automaton::case_folding::to_lower_case(i32::from(unit)) as u16
+}
+
+/// `Character.toUpperCase(char)`: the simple uppercase mapping of the UTF-16
+/// unit `unit` (a surrogate maps to itself), `(char)
+/// Character.toUpperCase((int) ch)`.
+pub fn to_upper_case_unit(unit: u16) -> u16 {
+    rucene::util::automaton::case_folding::to_upper_case(i32::from(unit)) as u16
 }

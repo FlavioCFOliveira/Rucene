@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.miscellaneous`.
+//! The Java package `org.apache.lucene.analysis.miscellaneous`.
 
 pub mod ascii_folding_filter;
 pub mod ascii_folding_filter_factory;

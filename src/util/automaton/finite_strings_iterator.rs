@@ -1,5 +1,7 @@
 //! Port of `org.apache.lucene.util.automaton.FiniteStringsIterator`.
 
+use std::sync::Arc;
+
 use crate::error::{LuceneError, Result};
 use crate::util::IntsRef;
 use crate::util::IntsRefBuilder;
@@ -66,7 +68,7 @@ impl PathNode {
 /// possible this iterator will return duplicates.
 pub struct FiniteStringsIterator<'a> {
     /// Automaton to create the finite strings from.
-    a: &'a Automaton,
+    a: AutomatonRef<'a>,
     /// The state where each path should stop, or `-1` if only accepted states should
     /// be final.
     end_state: i32,
@@ -80,6 +82,36 @@ pub struct FiniteStringsIterator<'a> {
     emit_empty_string: bool,
 }
 
+/// The automaton a [`FiniteStringsIterator`] walks: borrowed, or shared by
+/// the iterator's owner.
+///
+/// Java's iterator keeps a reference to an automaton its caller may also
+/// hold; a caller that keeps the iterator in a field next to the automaton
+/// (as `ConcatenateGraphFilter` keeps its `LimitedFiniteStringsIterator`)
+/// cannot lend it a borrow of its own field, so it shares the automaton
+/// instead.
+enum AutomatonRef<'a> {
+    Borrowed(&'a Automaton),
+    Shared(Arc<Automaton>),
+}
+
+impl AutomatonRef<'_> {
+    fn get(&self) -> &Automaton {
+        match self {
+            AutomatonRef::Borrowed(a) => a,
+            AutomatonRef::Shared(a) => a,
+        }
+    }
+}
+
+impl FiniteStringsIterator<'static> {
+    /// [`new`](FiniteStringsIterator::new) over an automaton shared with the
+    /// iterator, which keeps a reference to it as Java's does.
+    pub fn new_shared(a: Arc<Automaton>) -> Self {
+        Self::with_automaton(AutomatonRef::Shared(a), 0, -1)
+    }
+}
+
 impl<'a> FiniteStringsIterator<'a> {
     /// Creates an iterator over all the finite strings of `a`.
     pub fn new(a: &'a Automaton) -> Self {
@@ -90,29 +122,33 @@ impl<'a> FiniteStringsIterator<'a> {
     /// `start_state` and stopping it at `end_state` (or `-1` if only accepted states
     /// should be final).
     pub fn with_bounds(a: &'a Automaton, start_state: i32, end_state: i32) -> Self {
+        Self::with_automaton(AutomatonRef::Borrowed(a), start_state, end_state)
+    }
+
+    /// [`with_bounds`](Self::with_bounds) over a borrowed or shared automaton.
+    fn with_automaton(automaton: AutomatonRef<'a>, start_state: i32, end_state: i32) -> Self {
+        let a = automaton.get();
         let mut nodes = vec![PathNode::default(); 16];
         let mut string = IntsRefBuilder::new();
-        let path_states = vec![false; a.get_num_states() as usize];
+        let mut path_states = vec![false; a.get_num_states() as usize];
         string.set_length(0);
         let emit_empty_string = a.is_accept(0);
 
-        let mut this = Self {
-            a,
+        // Start iteration with node startState.
+        if a.get_num_states() > start_state && a.get_num_transitions(start_state) > 0 {
+            path_states[start_state as usize] = true;
+            nodes[0].reset_state(a, start_state);
+            string.append(start_state);
+        }
+
+        Self {
+            a: automaton,
             end_state,
             path_states,
             string,
-            nodes: Vec::new(),
+            nodes,
             emit_empty_string,
-        };
-
-        // Start iteration with node startState.
-        if a.get_num_states() > start_state && a.get_num_transitions(start_state) > 0 {
-            this.path_states[start_state as usize] = true;
-            nodes[0].reset_state(a, start_state);
-            this.string.append(start_state);
         }
-        this.nodes = nodes;
-        this
     }
 
     /// Generates the next finite string.
@@ -134,12 +170,12 @@ impl<'a> FiniteStringsIterator<'a> {
         let mut depth = self.string.length();
         while depth > 0 {
             // Get next label leaving the current node:
-            let label = self.nodes[depth - 1].next_label(self.a);
+            let label = self.nodes[depth - 1].next_label(self.a.get());
             if label != -1 {
                 self.string.set_int_at(depth - 1, label);
 
                 let to = self.nodes[depth - 1].to;
-                if self.a.get_num_transitions(to) != 0 && to != self.end_state {
+                if self.a.get().get_num_transitions(to) != 0 && to != self.end_state {
                     // Now recurse: the destination of this transition has outgoing
                     // transitions:
                     if self.path_states[to as usize] {
@@ -151,11 +187,11 @@ impl<'a> FiniteStringsIterator<'a> {
 
                     // Push node onto stack:
                     self.grow_stack(depth);
-                    self.nodes[depth].reset_state(self.a, to);
+                    self.nodes[depth].reset_state(self.a.get(), to);
                     depth += 1;
                     self.string.set_length(depth);
                     self.string.grow(depth);
-                } else if self.end_state == to || self.a.is_accept(to) {
+                } else if self.end_state == to || self.a.get().is_accept(to) {
                     // This transition leads to an accept state, so we save the
                     // current string:
                     return Ok(Some(self.string.get()));
@@ -169,7 +205,7 @@ impl<'a> FiniteStringsIterator<'a> {
                 depth -= 1;
                 self.string.set_length(depth);
 
-                if self.a.is_accept(state) {
+                if self.a.get().is_accept(state) {
                     // This transition leads to an accept state, so we save the
                     // current string:
                     return Ok(Some(self.string.get()));

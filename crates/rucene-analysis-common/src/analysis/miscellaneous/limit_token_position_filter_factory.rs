@@ -14,11 +14,108 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+//! Factory for `LimitTokenPositionFilter`, ported from
+//! `org.apache.lucene.analysis.miscellaneous.LimitTokenPositionFilterFactory`.
 
-//! Skeletons of the types declared in `LimitTokenPositionFilterFactory.java`, of the Java
-//! package `org.apache.lucene.analysis.miscellaneous`.
+use std::collections::HashMap;
+use std::sync::Arc;
 
-/// Java: `public class`.
+use rucene::analysis::factories::{
+    AbstractAnalysisFactory, AnalysisFactoryClass, SPINameField, TokenFilterFactory,
+};
+use rucene::analysis::TokenStream;
+use rucene::error::Result;
+
+use super::limit_token_position_filter::new_limit_token_position_filter_consuming;
+use crate::spi::check_unknown_parameters;
+
+/// Factory for `LimitTokenPositionFilter`.
 ///
-/// Skeleton of `org.apache.lucene.analysis.miscellaneous.LimitTokenPositionFilterFactory`; ported by rmp task #450.
-pub struct LimitTokenPositionFilterFactory;
+/// Equivalent to `org.apache.lucene.analysis.miscellaneous.LimitTokenPositionFilterFactory` (since 4.3.0).
+#[derive(Debug)]
+pub struct LimitTokenPositionFilterFactory {
+    base: AbstractAnalysisFactory,
+    max_token_position: i32,
+    consume_all_tokens: bool,
+}
+
+impl LimitTokenPositionFilterFactory {
+    /// SPI name.
+    ///
+    /// Equivalent to `LimitTokenPositionFilterFactory.NAME`.
+    pub const NAME: &'static str = "limitTokenPosition";
+
+    /// Equivalent to `LimitTokenPositionFilterFactory.MAX_TOKEN_POSITION_KEY`.
+    pub const MAX_TOKEN_POSITION_KEY: &'static str = "maxTokenPosition";
+    /// Equivalent to `LimitTokenPositionFilterFactory.CONSUME_ALL_TOKENS_KEY`.
+    pub const CONSUME_ALL_TOKENS_KEY: &'static str = "consumeAllTokens";
+
+    /// Creates a new LimitTokenPositionFilterFactory.
+    ///
+    /// Equivalent to `LimitTokenPositionFilterFactory(Map<String, String>)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`AbstractAnalysisFactory::new`] returns, what a missing or unparsable `maxTokenPosition` raises, and `IllegalArgumentException` for a leftover argument.
+    pub fn new(args: &mut HashMap<String, String>) -> Result<Self> {
+        let base = AbstractAnalysisFactory::new(args)?;
+        let max_token_position =
+            AbstractAnalysisFactory::require_int(args, Self::MAX_TOKEN_POSITION_KEY)?;
+        let consume_all_tokens =
+            AbstractAnalysisFactory::get_boolean(args, Self::CONSUME_ALL_TOKENS_KEY, false);
+        check_unknown_parameters(args)?;
+        Ok(Self {
+            base,
+            max_token_position,
+            consume_all_tokens,
+        })
+    }
+
+    /// Default ctor for compatibility with SPI.
+    ///
+    /// Equivalent to `LimitTokenPositionFilterFactory()`.
+    ///
+    /// # Errors
+    ///
+    /// Always: [`AbstractAnalysisFactory::default_ctor_exception`].
+    pub fn new_without_args() -> Result<Self> {
+        Err(AbstractAnalysisFactory::default_ctor_exception())
+    }
+
+    /// The members this factory inherits from `AbstractAnalysisFactory`.
+    pub fn base(&self) -> &AbstractAnalysisFactory {
+        &self.base
+    }
+
+    /// The factory's class, as `META-INF/services/org.apache.lucene.analysis.TokenFilterFactory`
+    /// names it: `LimitTokenPositionFilterFactory.class`, with its `NAME` field and its
+    /// `Map<String, String>` constructor.
+    pub const fn class() -> AnalysisFactoryClass<dyn TokenFilterFactory> {
+        AnalysisFactoryClass::new(
+            "org.apache.lucene.analysis.miscellaneous.LimitTokenPositionFilterFactory",
+            SPINameField::Declared(Self::NAME),
+            Some(Self::new_from_map),
+        )
+    }
+
+    /// The `Map<String, String>` constructor, as [`class`](Self::class)
+    /// exposes it.
+    fn new_from_map(args: &mut HashMap<String, String>) -> Result<Arc<dyn TokenFilterFactory>> {
+        Ok(Arc::new(Self::new(args)?))
+    }
+}
+
+impl TokenFilterFactory for LimitTokenPositionFilterFactory {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.miscellaneous.LimitTokenPositionFilterFactory"
+    }
+
+    /// Equivalent to `LimitTokenPositionFilterFactory.create(TokenStream)`.
+    fn create(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(new_limit_token_position_filter_consuming(
+            input,
+            self.max_token_position,
+            self.consume_all_tokens,
+        )?))
+    }
+}
