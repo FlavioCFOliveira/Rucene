@@ -805,12 +805,12 @@ impl SortField {
                     )));
                 }
             }
+            // The final `else` (`SortField.java:361-363`) throws for every
+            // other type whatever the value, `null` included.
             _ => {
-                if missing_value.is_some() {
-                    return Err(LuceneError::illegal_argument(
-                        "Missing value only works for numeric or STRING types".to_string(),
-                    ));
-                }
+                return Err(LuceneError::illegal_argument(
+                    "Missing value only works for numeric or STRING types".to_string(),
+                ));
             }
         }
         self.missing_value = missing_value;
@@ -1824,6 +1824,68 @@ mod tests {
         assert!(sort_field
             .set_missing_value(Some(MissingValue::Long(0)))
             .is_err());
+    }
+
+    /// The final `else` of `SortField.setMissingValue` (`SortField.java:361-363`)
+    /// throws for a type that is neither numeric nor a string whatever the
+    /// value, `null` included: `new SortField("f", Type.CUSTOM)
+    /// .setMissingValue(null)` throws `IllegalArgumentException("Missing value
+    /// only works for numeric or STRING types")`. A numeric type accepts
+    /// `null` (`SortField.java:342-360`).
+    #[test]
+    fn set_missing_value_refuses_null_for_a_non_numeric_non_string_type() {
+        let expected =
+            LuceneError::illegal_argument("Missing value only works for numeric or STRING types")
+                .to_string();
+        for mut sort_field in [
+            SortField::FIELD_SCORE.clone(),
+            SortField::FIELD_DOC.clone(),
+            SortField::new(Some("f".to_string()), SortFieldType::Custom).unwrap(),
+        ] {
+            for missing in [None, Some(MissingValue::Int(0))] {
+                let error = sort_field.set_missing_value(missing).unwrap_err();
+                assert_eq!(error.to_string(), expected, "{sort_field} {missing:?}");
+            }
+        }
+        let mut numeric = SortField::new(Some("f".to_string()), SortFieldType::Int).unwrap();
+        numeric.set_missing_value(None).unwrap();
+        assert_eq!(numeric.missing_value(), None);
+    }
+
+    /// `SortedSetSortField(String, boolean, Type, Object)` reaches
+    /// `SortField(field, Type.CUSTOM, reverse, missingValue)`
+    /// (`SortedSetSortField.java:74-81`), whose `validateField` checks only a
+    /// `STRING` missing value, so an `Integer` is accepted at construction;
+    /// the override `SortedSetSortField.setMissingValue`
+    /// (`SortedSetSortField.java:178-184`) accepts only the two sentinels and
+    /// refuses anything else, `null` included.
+    #[test]
+    fn sorted_set_sort_field_missing_value_validation_matches_java() {
+        let mut sort_field = SortedSetSortField::with_missing_value(
+            "f",
+            false,
+            SortedSetSelectorType::MIN,
+            Some(MissingValue::Int(7)),
+        )
+        .expect("the constructor accepts any missing value")
+        .into_sort_field();
+        assert_eq!(sort_field.missing_value(), Some(MissingValue::Int(7)));
+        let expected = LuceneError::illegal_argument(
+            "For SORTED_SET type, missing value must be either STRING_FIRST or STRING_LAST",
+        )
+        .to_string();
+        for missing in [
+            None,
+            Some(MissingValue::Int(7)),
+            Some(MissingValue::Long(7)),
+        ] {
+            let error = sort_field.set_missing_value(missing).unwrap_err();
+            assert_eq!(error.to_string(), expected, "{missing:?}");
+        }
+        for missing in [MissingValue::StringFirst, MissingValue::StringLast] {
+            sort_field.set_missing_value(Some(missing)).unwrap();
+            assert_eq!(sort_field.missing_value(), Some(missing));
+        }
     }
 
     #[test]

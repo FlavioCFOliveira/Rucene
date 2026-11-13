@@ -100,8 +100,9 @@ impl IntComparator {
     /// Returns this comparator's missing value in the comparable long
     /// encoding the numeric comparator uses.
     ///
-    /// Equivalent to `IntComparator.missingValueAsComparableLong()`, which is
-    /// `NumericUtils.the value itself` of the missing value.
+    /// Equivalent to `IntComparator.missingValueAsComparableLong()`
+    /// (`IntComparator.java:57-60`), which returns the missing value itself,
+    /// widened to `long`.
     pub fn missing_value_as_comparable_long(&self) -> i64 {
         let missing_value = self.missing_value;
         i64::from(missing_value)

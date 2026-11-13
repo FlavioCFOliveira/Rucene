@@ -277,8 +277,9 @@ impl MergeState {
             let num_docs: Vec<i32> = readers.iter().map(|reader| reader.num_docs()).collect();
             Self::build_deletion_doc_maps(&live_docs, &max_docs, &num_docs)
         };
-        // `SegmentInfo` spells the absent sort as the empty `Sort`.
-        let Some(index_sort) = index_sort.filter(|sort| !sort.fields().is_empty()) else {
+        // `if (indexSort == null)` (`MergeState.java:216-219`): the absent
+        // index sort is `None`, as `SegmentInfo::index_sort` reports it.
+        let Some(index_sort) = index_sort else {
             // No index sort ... we only must map around deletions, and rebase
             // to the merged segment's docID space.
             return Ok((deletion_doc_maps(), false));

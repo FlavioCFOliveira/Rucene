@@ -671,7 +671,8 @@ impl BytesRefBuilder {
     /// is replaced only when it is shorter than `capacity`.
     pub fn grow_no_copy(&mut self, capacity: usize) {
         if self.inner.bytes.len() < capacity {
-            self.inner.bytes = ArrayUtil::grow_no_copy(&self.inner.bytes, capacity);
+            self.inner.bytes =
+                ArrayUtil::grow_no_copy(std::mem::take(&mut self.inner.bytes), capacity);
         }
     }
 
@@ -1853,12 +1854,21 @@ impl ArrayUtil {
         Self::grow_exact_long(array, new_len)
     }
 
-    /// Grows without copying existing bytes.
-    pub fn grow_no_copy(array: &[u8], min_size: usize) -> Vec<u8> {
-        if array.len() >= min_size {
-            return array.to_vec();
+    /// Returns an array of at least `min_size` bytes, discarding the contents
+    /// of `array` when it has to grow.
+    ///
+    /// Equivalent to `ArrayUtil.growNoCopy(byte[], int)`
+    /// (`ArrayUtil.java:457-462`): an array that is already long enough is
+    /// returned itself, the same allocation, and only a shorter one is
+    /// replaced by a new zeroed array of `oversize(min_size, 1)` bytes. Java
+    /// returns the reference it was given; this takes the array by value so it
+    /// can hand the same allocation back.
+    pub fn grow_no_copy(array: Vec<u8>, min_size: usize) -> Vec<u8> {
+        if array.len() < min_size {
+            vec![0u8; Self::oversize(min_size, 1)]
+        } else {
+            array
         }
-        vec![0u8; Self::oversize(min_size, 1)]
     }
 
     /// Returns a new `Vec<u8>` of exactly `new_length` containing a copy of `array`.
@@ -2008,12 +2018,14 @@ impl ArrayUtil {
     /// Returns an array of at least `min_size` elements, discarding the contents
     /// of `array` when it has to grow.
     ///
-    /// Equivalent to the `ArrayUtil.growNoCopy(T[], int)` overloads.
-    pub fn grow_no_copy_generic<T: Copy + Default>(array: &[T], min_size: usize) -> Vec<T> {
+    /// Equivalent to the `ArrayUtil.growNoCopy(T[], int)` overloads, which
+    /// return the array itself when it is already long enough (as
+    /// [`grow_no_copy`](Self::grow_no_copy) does).
+    pub fn grow_no_copy_generic<T: Copy + Default>(array: Vec<T>, min_size: usize) -> Vec<T> {
         if array.len() < min_size {
             vec![T::default(); Self::oversize(min_size, size_of::<T>())]
         } else {
-            array.to_vec()
+            array
         }
     }
 
@@ -6505,6 +6517,31 @@ mod tests {
 
         let copied = ArrayUtil::copy_of_sub_array(&small, 1, 3);
         assert_eq!(copied, vec![2, 3]);
+    }
+
+    /// `ArrayUtil.growNoCopy(byte[], int)` (`ArrayUtil.java:457-462`) returns
+    /// the very array it was given when it already holds `minSize` elements,
+    /// and a new zeroed array of `oversize(minSize, 1)` otherwise. The same
+    /// allocation is observed through its buffer address.
+    #[test]
+    fn array_util_grow_no_copy_returns_the_same_array_when_long_enough() {
+        let array = vec![7u8; 16];
+        let address = array.as_ptr();
+        let same = ArrayUtil::grow_no_copy(array, 16);
+        assert_eq!(same.as_ptr(), address, "no reallocation at the exact size");
+        assert_eq!(same, vec![7u8; 16], "the contents are kept");
+        let same = ArrayUtil::grow_no_copy(same, 3);
+        assert_eq!(same.as_ptr(), address, "no reallocation below the size");
+
+        let grown = ArrayUtil::grow_no_copy(same, 17);
+        assert_eq!(grown.len(), ArrayUtil::oversize(17, 1));
+        assert!(grown.iter().all(|&b| b == 0), "nothing is copied");
+
+        let ints = vec![5i32; 8];
+        let address = ints.as_ptr();
+        let same = ArrayUtil::grow_no_copy_generic(ints, 8);
+        assert_eq!(same.as_ptr(), address, "the generic overloads keep it too");
+        assert_eq!(same, vec![5i32; 8]);
     }
 
     #[test]

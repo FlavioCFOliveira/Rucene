@@ -30,3 +30,30 @@ impl IntArrayList {
         self.buffer[0..self.size() as usize].iter().copied()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::IntArrayList;
+    use crate::internal::hppc::max_sized_int_array_list::MaxSizedIntArrayList;
+
+    /// `toString()` is `Arrays.toString(this.toArray())`
+    /// (`IntArrayList.java:384-386`), which `MaxSizedIntArrayList` inherits;
+    /// that is `Display`. `Debug` prefixes the type name exactly once.
+    #[test]
+    fn display_is_java_to_string_and_debug_names_the_type_once() {
+        let mut list = IntArrayList::new();
+        list.add(1);
+        list.add(2);
+        assert_eq!(list.to_string(), "[1, 2]");
+        assert_eq!(format!("{list:?}"), "IntArrayList[1, 2]");
+
+        let mut bounded = MaxSizedIntArrayList::new(5);
+        bounded.add(3);
+        bounded.add(4);
+        assert_eq!(bounded.to_string(), "[3, 4]");
+        assert_eq!(
+            format!("{bounded:?}"),
+            "MaxSizedIntArrayList[3, 4], maxSize: 5"
+        );
+    }
+}
