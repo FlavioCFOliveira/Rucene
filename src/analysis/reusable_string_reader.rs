@@ -23,8 +23,14 @@ impl ReusableStringReader {
     }
 
     /// Resets the reader to read from `value`.
-    pub fn set_value(&mut self, value: impl Into<String>) {
-        self.chars = value.into().encode_utf16().collect();
+    ///
+    /// Equivalent to `ReusableStringReader.setValue(String)`, which keeps a
+    /// reference to the string (`ReusableStringReader.java:29-33`): the text
+    /// is encoded straight into the reader's buffer, which is reused, with no
+    /// intermediate copy of the string.
+    pub fn set_value(&mut self, value: impl AsRef<str>) {
+        self.chars.clear();
+        self.chars.extend(value.as_ref().encode_utf16());
         self.size = self.chars.len();
         self.pos = 0;
     }

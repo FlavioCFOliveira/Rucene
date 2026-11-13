@@ -1551,11 +1551,16 @@ impl XYShapeDocValues {
 ///
 /// Equivalent to the static `ShapeDocValuesField.FIELD_TYPE`
 /// (`ShapeDocValuesField.java:46-52`), which every `LatLonShapeDocValuesField`
-/// and `XYShapeDocValuesField` shares. Each field holds a clone, which keeps
-/// the frozen identity, so the fields share one type as Java's share one
-/// object (see [`FieldType`]).
+/// and `XYShapeDocValuesField` shares. Every field holds the one shared
+/// object, as Java's fields do.
 pub fn shape_doc_values_field_type() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    shape_doc_values_field_type_shared()
+}
+
+/// The one shared object behind [`shape_doc_values_field_type`], which every
+/// field of the kind holds, as Java's fields hold the one static `FieldType`.
+fn shape_doc_values_field_type_shared() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let ft = FieldType::new();
         ft.set_doc_values_type(DocValuesType::BINARY)
@@ -1563,7 +1568,7 @@ pub fn shape_doc_values_field_type() -> &'static FieldType {
         ft.set_omit_norms(true)
             .expect("INVARIANT: a new type is mutable");
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
@@ -1581,7 +1586,8 @@ pub fn shape_doc_values_field_type() -> &'static FieldType {
 #[derive(Clone, Debug)]
 pub struct ShapeDocValuesField {
     name: String,
-    field_type: FieldType,
+    /// The one static `FieldType` every Java instance references, shared.
+    field_type: Arc<FieldType>,
     shape_doc_values: ShapeDocValues,
 }
 
@@ -1611,7 +1617,7 @@ impl ShapeDocValuesField {
     pub fn new(name: impl Into<String>, shape_doc_values: ShapeDocValues) -> Result<Self> {
         Ok(Self {
             name: name.into(),
-            field_type: shape_doc_values_field_type().clone(),
+            field_type: Arc::clone(shape_doc_values_field_type_shared()),
             shape_doc_values,
         })
     }

@@ -652,8 +652,15 @@ impl BytesRefBuilder {
     }
 
     /// Ensures the underlying buffer can hold at least `capacity` bytes.
+    ///
+    /// Equivalent to `BytesRefBuilder.grow(int)` (`BytesRefBuilder.java:59-61`):
+    /// `ArrayUtil.grow` returns the same array when it is long enough
+    /// (`ArrayUtil.java:446-451`), so the buffer is replaced only when it
+    /// is shorter than `capacity`.
     pub fn grow(&mut self, capacity: usize) {
-        self.inner.bytes = ArrayUtil::grow(&self.inner.bytes, capacity);
+        if self.inner.bytes.len() < capacity {
+            self.inner.bytes = ArrayUtil::grow(&self.inner.bytes, capacity);
+        }
     }
 
     /// Grows the buffer without copying existing bytes.

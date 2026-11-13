@@ -1151,15 +1151,25 @@ impl AttributeSource {
     }
 
     /// Clears every attribute in this source.
+    ///
+    /// Equivalent to `AttributeSource.clearAttributes()`, which walks the
+    /// cached state chain in place (`AttributeSource.java:272-276`): the
+    /// implementations are walked in the shared list itself, with no copy of
+    /// it. An implementation's `clear` cannot reach the source, so holding
+    /// the shared list for the walk is safe.
     pub fn clear_attributes(&self) {
-        for cell in self.impl_cells() {
+        for (_, cell) in &self.shared.borrow().impls {
             cell.borrow_mut().clear();
         }
     }
 
     /// Calls [`AttributeImpl::end`] on every attribute.
+    ///
+    /// Equivalent to `AttributeSource.endAttributes()`
+    /// (`AttributeSource.java:282-286`), walked in place as
+    /// [`clear_attributes`](Self::clear_attributes) is.
     pub fn end_attributes(&self) {
-        for cell in self.impl_cells() {
+        for (_, cell) in &self.shared.borrow().impls {
             cell.borrow_mut().end();
         }
     }

@@ -13,6 +13,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::{IndexableField, IndexableFieldType};
 use crate::util::atomic_ref_cell::{AtomicRef, AtomicRefCell};
 use crate::util::{BytesRef, NumericUtils};
+use std::sync::Arc;
 
 /// How many bytes one encoded coordinate occupies.
 pub const BYTES: usize = 4;
@@ -238,17 +239,21 @@ impl ShapeField {
     ///
     /// Equivalent to the static `ShapeField.TYPE` (`ShapeField.java:49-54`),
     /// which every `Triangle` of every `LatLonShape` and `XYShape` shares.
-    /// Each triangle holds a clone, which keeps the frozen identity, so the
-    /// triangles share one type as Java's share one object (see
-    /// [`FieldType`]).
+    /// Every triangle holds the one shared object, as Java's triangles do.
     pub fn field_type() -> &'static FieldType {
-        static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+        Self::shared_field_type()
+    }
+
+    /// The one shared object behind [`field_type`](Self::field_type), which
+    /// every triangle holds, as Java's triangles hold the one static `TYPE`.
+    fn shared_field_type() -> &'static Arc<FieldType> {
+        static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
         TYPE.get_or_init(|| {
             let ft = FieldType::new();
             ft.set_dimensions_with_index_count(7, 4, BYTES as i32)
                 .expect("INVARIANT: seven dimensions, four indexed, fit a new, mutable type");
             ft.freeze();
-            ft
+            Arc::new(ft)
         })
     }
 
@@ -546,7 +551,8 @@ impl ShapeField {
 #[derive(Debug)]
 pub struct Triangle {
     name: String,
-    field_type: FieldType,
+    /// The one static `FieldType` every Java instance references, shared.
+    field_type: Arc<FieldType>,
     fields_data: FieldData,
 }
 
@@ -582,7 +588,7 @@ impl Triangle {
         ShapeField::encode_triangle(&mut bytes, a_y, a_x, true, b_y, b_x, true, c_y, c_x, true)?;
         Ok(Self {
             name: name.into(),
-            field_type: ShapeField::field_type().clone(),
+            field_type: Arc::clone(ShapeField::shared_field_type()),
             fields_data: FieldData::Bytes(BytesRef::new(bytes)),
         })
     }
@@ -624,7 +630,7 @@ impl Triangle {
         )?;
         Ok(Self {
             name: name.into(),
-            field_type: ShapeField::field_type().clone(),
+            field_type: Arc::clone(ShapeField::shared_field_type()),
             fields_data: FieldData::Bytes(BytesRef::new(bytes)),
         })
     }
@@ -660,7 +666,7 @@ impl IndexableField for Triangle {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(

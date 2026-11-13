@@ -6,7 +6,9 @@
 use std::any::Any;
 use std::cmp::Ordering;
 use std::fmt::Debug;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
+
+use crate::util::atomic_ref_cell::{AtomicRefCell, AtomicRefMut};
 
 use crate::error::Result;
 use crate::index::{BinaryDocValues, DocValues, LeafReaderContext};
@@ -355,7 +357,7 @@ pub type SlotCompare<'a> = dyn Fn(i32, i32) -> i32 + 'a;
 /// fields and its enclosing instance's. [`SharedFieldComparator`] and
 /// [`SharedLeafComparator`] assemble the two halves into Lucene's two
 /// objects.
-pub trait SlotComparator: Debug + Send + 'static {
+pub trait SlotComparator: Debug + Send + Sync + 'static {
     /// The fields of the leaf comparator created for one segment.
     type Leaf: 'static;
 
@@ -465,28 +467,37 @@ pub trait SlotComparator: Debug + Send + 'static {
     }
 }
 
-/// Locks a comparator's shared state. A panic while it was held leaves the
-/// slots as far as that call got, which is still a valid comparator state.
-fn lock_slots<C>(shared: &Mutex<C>) -> MutexGuard<'_, C> {
-    shared.lock().unwrap_or_else(PoisonError::into_inner)
+/// Borrows a comparator's shared state for one call. A panic during the
+/// call releases the borrow and leaves the slots as far as that call got,
+/// which is still a valid comparator state.
+///
+/// The borrow is exclusive, one atomic read-modify-write to take it and a
+/// plain store to release it, where a `Mutex` costs two read-modify-writes.
+/// Java's inner leaf comparators reach these fields with no synchronisation
+/// at all; a comparator and its leaf comparators are only ever used by the
+/// one thread that collects with them, so the borrow never conflicts. A
+/// conflicting borrow — the two halves used concurrently from two threads,
+/// a data race in Java — panics instead of blocking.
+fn lock_slots<C>(shared: &AtomicRefCell<C>) -> AtomicRefMut<'_, C> {
+    shared.borrow_mut()
 }
 
 /// The outer comparator of a [`SlotComparator`]: what the hit queue holds.
 ///
 /// Its slot state is shared with the [`SharedLeafComparator`] it creates for
 /// each segment, which is what Java's inner leaf comparators reach through
-/// their enclosing instance. The state is behind a [`Mutex`] so that the
-/// comparator is `Send` while a leaf comparator writes into it on the thread
-/// that collects the segment.
+/// their enclosing instance. The state is behind an [`AtomicRefCell`] so that
+/// the comparator is `Send` while a leaf comparator writes into it on the
+/// thread that collects the segment.
 pub struct SharedFieldComparator<C: SlotComparator> {
-    shared: Arc<Mutex<C>>,
+    shared: Arc<AtomicRefCell<C>>,
 }
 
 impl<C: SlotComparator> SharedFieldComparator<C> {
     /// Wraps the outer state `comparator`.
     pub fn new(comparator: C) -> Self {
         Self {
-            shared: Arc::new(Mutex::new(comparator)),
+            shared: Arc::new(AtomicRefCell::new(comparator)),
         }
     }
 
@@ -561,7 +572,7 @@ impl<C: SlotComparator> FieldComparator for SharedFieldComparator<C> {
 /// The leaf comparator of a [`SlotComparator`] for one segment: its own
 /// fields, and the outer comparator's shared state it writes into.
 pub struct SharedLeafComparator<C: SlotComparator> {
-    shared: Arc<Mutex<C>>,
+    shared: Arc<AtomicRefCell<C>>,
     leaf: C::Leaf,
 }
 

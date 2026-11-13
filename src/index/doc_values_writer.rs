@@ -207,7 +207,7 @@ impl DocValuesWriter {
                 writer.add_value(doc_id, java_long_value(&value))
             }
             Self::Binary(writer) => {
-                let Some(value) = field.binary_value() else {
+                let Some(value) = field.binary_value_ref() else {
                     // `BinaryDocValuesWriter.addValue` checks the repeated
                     // document before the null value (`BinaryDocValuesWriter.java:70-80`).
                     if doc_id <= writer.last_doc_id {
@@ -221,7 +221,7 @@ impl DocValuesWriter {
                 writer.add_value(doc_id, value.slice())
             }
             Self::Sorted(writer) => {
-                let Some(value) = field.binary_value() else {
+                let Some(value) = field.binary_value_ref() else {
                     // `SortedDocValuesWriter.addValue` checks the repeated
                     // document before the null value (`SortedDocValuesWriter.java:73-83`).
                     if doc_id <= writer.last_doc_id {
@@ -246,7 +246,7 @@ impl DocValuesWriter {
                 writer.add_value(doc_id, java_long_value(&value))
             }
             Self::SortedSet(writer) => {
-                let Some(value) = field.binary_value() else {
+                let Some(value) = field.binary_value_ref() else {
                     return Err(LuceneError::illegal_argument(format!(
                         "field \"{}\": null value not allowed",
                         field.name()

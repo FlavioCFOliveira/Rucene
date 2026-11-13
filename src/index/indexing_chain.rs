@@ -1071,9 +1071,11 @@ impl TokenAttributeLayout {
 /// One token as read from the attributes of a token stream.
 #[derive(Debug)]
 struct RawToken {
-    /// `invertState.termAttribute.getBytesRef()`; `None` when the stream has
-    /// no `TermToBytesRefAttribute`, whose `getAttribute` gives `null`.
-    term: Option<BytesRef>,
+    /// Whether the stream has a `TermToBytesRefAttribute`: `false` where
+    /// Java's `getAttribute` gives `null`. When it does, the term
+    /// (`invertState.termAttribute.getBytesRef()`) is in the buffer the
+    /// caller passed to [`read_token`].
+    has_term: bool,
     position_increment: i32,
     start_offset: i32,
     end_offset: i32,
@@ -1090,16 +1092,23 @@ struct RawToken {
 /// stream if missing (`FieldInvertState.java:107-109`), which is why the
 /// defaults here (increment one, offsets zero, frequency one) match the
 /// attribute defaults.
-fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result<RawToken> {
+fn read_token(
+    source: &AttributeSource,
+    layout: &TokenAttributeLayout,
+    term: &mut BytesRef,
+) -> Result<RawToken> {
     // `termAttribute = attributeSource.getAttribute(...)` is `null` without
     // the attribute (`FieldInvertState.java:106`); the dereference happens in
-    // `termsHashPerField.add(invertState.termAttribute.getBytesRef(), docID)`.
-    let term = layout.term.then(|| {
+    // `termsHashPerField.add(invertState.termAttribute.getBytesRef(), docID)`
+    // (`IndexingChain.java:2002`), which reads the attribute's own `BytesRef`.
+    // The term is written into `term`, a buffer reused across tokens, instead
+    // of into a new `BytesRef` per token.
+    if layout.term {
         source
             .get_attribute_interface::<dyn TermToBytesRefAttribute>()
             .expect("INVARIANT: presence checked in TokenAttributeLayout::resolve")
-            .get_bytes_ref()
-    });
+            .copy_bytes_ref_to(term);
+    }
 
     let position_increment = if layout.position_increment {
         source
@@ -1139,7 +1148,7 @@ fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result
     };
 
     Ok(RawToken {
-        term,
+        has_term: layout.term,
         position_increment,
         start_offset,
         end_offset,
@@ -2295,7 +2304,9 @@ impl DefaultIndexingChain {
         field: &dyn IndexableField,
         first: bool,
     ) -> Result<()> {
-        let binary_value = field.binary_value().ok_or_else(|| {
+        // `field.binaryValue()` (`IndexingChain.java:2055`), lent by the
+        // field when it holds the value, as Java's reference is.
+        let binary_value = field.binary_value_ref().ok_or_else(|| {
             LuceneError::illegal_argument(format!(
                 "Field {} returns TERM for invertableType() and null for binaryValue(), which is illegal",
                 field.name()
@@ -2598,8 +2609,13 @@ impl DefaultIndexingChain {
             // (`IndexingChain.java:1908-1912`).
             Self::start_vectors(term_vectors.as_deref_mut(), per_field, field, first)?;
 
+            let mut term_bytes = BytesRef::default();
             while stream.increment_token()? {
-                let token = read_token(per_field.invert_state.attribute_source()?, &layout)?;
+                let token = read_token(
+                    per_field.invert_state.attribute_source()?,
+                    &layout,
+                    &mut term_bytes,
+                )?;
                 let state = &mut per_field.invert_state;
 
                 let position_increment = token.position_increment;
@@ -2679,10 +2695,14 @@ impl DefaultIndexingChain {
                 // `invertState.termAttribute.getBytesRef()` on a `null`
                 // attribute throws `NullPointerException` inside the `try`,
                 // whose `catch (Throwable th)` aborts.
-                let term: &[u8] = token.term.as_ref().map_or(&[], BytesRef::slice);
+                let term: &[u8] = if token.has_term {
+                    term_bytes.slice()
+                } else {
+                    &[]
+                };
                 let added = token
-                    .term
-                    .as_ref()
+                    .has_term
+                    .then_some(())
                     .ok_or_else(|| TermsHashAddError::Other(LuceneError::null_pointer()))
                     .and_then(|_| {
                         writer.add_classified(

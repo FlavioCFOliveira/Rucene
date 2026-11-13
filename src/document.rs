@@ -2277,6 +2277,14 @@ impl IndexableField for StringField {
         self.binary_value.borrow().clone()
     }
 
+    /// `binaryValue()` returns the field's own `binaryValue` object
+    /// (`StringField.java:95-97`): lent here, not copied.
+    fn binary_value_ref(&self) -> Option<crate::index::BinaryValueRef<'_>> {
+        AtomicRef::filter_map(self.binary_value.borrow(), Option::as_ref)
+            .ok()
+            .map(crate::index::BinaryValueRef::Borrowed)
+    }
+
     fn string_value(&self) -> Option<String> {
         match &*self.fields_data.borrow() {
             FieldData::String(v) => Some(v.clone()),
@@ -3060,6 +3068,14 @@ impl IndexableField for KeywordField {
 
     fn binary_value(&self) -> Option<BytesRef> {
         self.binary_value.borrow().clone()
+    }
+
+    /// `binaryValue()` returns the field's own `binaryValue` object
+    /// (`KeywordField.java:107-109`): lent here, not copied.
+    fn binary_value_ref(&self) -> Option<crate::index::BinaryValueRef<'_>> {
+        AtomicRef::filter_map(self.binary_value.borrow(), Option::as_ref)
+            .ok()
+            .map(crate::index::BinaryValueRef::Borrowed)
     }
 
     /// `KeywordField` inherits `Field.stringValue()` (`Field.java:264-270`):
@@ -4623,97 +4639,129 @@ impl IndexableField for BinaryPoint {
 // -----------------------------------------------------------------------------
 
 fn numeric_doc_values_field_type() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    numeric_doc_values_field_type_shared()
+}
+
+/// The one shared object behind [`numeric_doc_values_field_type`], which every
+/// field of the kind holds, as Java's fields hold the one static `FieldType`.
+fn numeric_doc_values_field_type_shared() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let ft = FieldType::new();
         ft.set_doc_values_type(DocValuesType::NUMERIC).unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
-fn numeric_doc_values_indexed_field_type() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn numeric_doc_values_indexed_field_type() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let ft = FieldType::new_from(numeric_doc_values_field_type());
         ft.set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)
             .unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
 fn sorted_numeric_doc_values_field_type() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    sorted_numeric_doc_values_field_type_shared()
+}
+
+/// The one shared object behind [`sorted_numeric_doc_values_field_type`], which
+/// every field of the kind holds, as Java's fields hold the one static
+/// `FieldType`.
+fn sorted_numeric_doc_values_field_type_shared() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let ft = FieldType::new();
         ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
             .unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
-fn sorted_numeric_doc_values_indexed_field_type() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn sorted_numeric_doc_values_indexed_field_type() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let ft = FieldType::new_from(sorted_numeric_doc_values_field_type());
         ft.set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)
             .unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
 fn sorted_doc_values_field_type() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    sorted_doc_values_field_type_shared()
+}
+
+/// The one shared object behind [`sorted_doc_values_field_type`], which every
+/// field of the kind holds, as Java's fields hold the one static `FieldType`.
+fn sorted_doc_values_field_type_shared() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let ft = FieldType::new();
         ft.set_doc_values_type(DocValuesType::SORTED).unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
-fn sorted_doc_values_indexed_field_type() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn sorted_doc_values_indexed_field_type() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let ft = FieldType::new_from(sorted_doc_values_field_type());
         ft.set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)
             .unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
 fn sorted_set_doc_values_field_type() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    sorted_set_doc_values_field_type_shared()
+}
+
+/// The one shared object behind [`sorted_set_doc_values_field_type`], which
+/// every field of the kind holds, as Java's fields hold the one static
+/// `FieldType`.
+fn sorted_set_doc_values_field_type_shared() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let ft = FieldType::new();
         ft.set_doc_values_type(DocValuesType::SORTED_SET).unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
-fn sorted_set_doc_values_indexed_field_type() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn sorted_set_doc_values_indexed_field_type() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let ft = FieldType::new_from(sorted_set_doc_values_field_type());
         ft.set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)
             .unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
 pub(crate) fn binary_doc_values_field_type() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    binary_doc_values_field_type_shared()
+}
+
+/// The one shared object behind [`binary_doc_values_field_type`], which every
+/// field of the kind holds, as Java's fields hold the one static `FieldType`.
+fn binary_doc_values_field_type_shared() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let ft = FieldType::new();
         ft.set_doc_values_type(DocValuesType::BINARY).unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
@@ -4723,7 +4771,8 @@ pub(crate) fn binary_doc_values_field_type() -> &'static FieldType {
 #[derive(Debug)]
 pub struct NumericDocValuesField {
     name: String,
-    field_type: FieldType,
+    /// The one static `FieldType` every Java instance references, shared.
+    field_type: Arc<FieldType>,
     /// `fieldsData`: `None` for the `null` value
     /// `NumericDocValuesField(String, Long)` accepts.
     value: AtomicRefCell<Option<i64>>,
@@ -4748,7 +4797,7 @@ impl NumericDocValuesField {
     pub fn new_nullable(name: &str, value: Option<i64>) -> Self {
         Self {
             name: name.to_string(),
-            field_type: numeric_doc_values_field_type().clone(),
+            field_type: Arc::clone(numeric_doc_values_field_type_shared()),
             value: AtomicRefCell::new(value),
         }
     }
@@ -4757,7 +4806,7 @@ impl NumericDocValuesField {
     pub fn indexed_field(name: &str, value: i64) -> Self {
         Self {
             name: name.to_string(),
-            field_type: numeric_doc_values_indexed_field_type().clone(),
+            field_type: Arc::clone(numeric_doc_values_indexed_field_type()),
             value: AtomicRefCell::new(Some(value)),
         }
     }
@@ -4810,7 +4859,7 @@ impl IndexableField for NumericDocValuesField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(
@@ -5020,7 +5069,8 @@ impl IndexableField for DoubleDocValuesField {
 #[derive(Debug)]
 pub struct SortedDocValuesField {
     name: String,
-    field_type: FieldType,
+    /// The one static `FieldType` every Java instance references, shared.
+    field_type: Arc<FieldType>,
     value: AtomicRefCell<BytesRef>,
 }
 
@@ -5034,7 +5084,7 @@ impl SortedDocValuesField {
     pub fn new(name: &str, value: BytesRef) -> Self {
         Self {
             name: name.to_string(),
-            field_type: sorted_doc_values_field_type().clone(),
+            field_type: Arc::clone(sorted_doc_values_field_type_shared()),
             value: AtomicRefCell::new(value),
         }
     }
@@ -5043,7 +5093,7 @@ impl SortedDocValuesField {
     pub fn indexed_field(name: &str, value: BytesRef) -> Self {
         Self {
             name: name.to_string(),
-            field_type: sorted_doc_values_indexed_field_type().clone(),
+            field_type: Arc::clone(sorted_doc_values_indexed_field_type()),
             value: AtomicRefCell::new(value),
         }
     }
@@ -5123,7 +5173,7 @@ impl IndexableField for SortedDocValuesField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(
@@ -5167,7 +5217,8 @@ impl IndexableField for SortedDocValuesField {
 #[derive(Debug)]
 pub struct SortedSetDocValuesField {
     name: String,
-    field_type: FieldType,
+    /// The one static `FieldType` every Java instance references, shared.
+    field_type: Arc<FieldType>,
     value: AtomicRefCell<BytesRef>,
 }
 
@@ -5181,7 +5232,7 @@ impl SortedSetDocValuesField {
     pub fn new(name: &str, value: BytesRef) -> Self {
         Self {
             name: name.to_string(),
-            field_type: sorted_set_doc_values_field_type().clone(),
+            field_type: Arc::clone(sorted_set_doc_values_field_type_shared()),
             value: AtomicRefCell::new(value),
         }
     }
@@ -5190,7 +5241,7 @@ impl SortedSetDocValuesField {
     pub fn indexed_field(name: &str, value: BytesRef) -> Self {
         Self {
             name: name.to_string(),
-            field_type: sorted_set_doc_values_indexed_field_type().clone(),
+            field_type: Arc::clone(sorted_set_doc_values_indexed_field_type()),
             value: AtomicRefCell::new(value),
         }
     }
@@ -5271,7 +5322,7 @@ impl IndexableField for SortedSetDocValuesField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(
@@ -5315,7 +5366,8 @@ impl IndexableField for SortedSetDocValuesField {
 #[derive(Debug)]
 pub struct SortedNumericDocValuesField {
     name: String,
-    field_type: FieldType,
+    /// The one static `FieldType` every Java instance references, shared.
+    field_type: Arc<FieldType>,
     value: AtomicRefCell<i64>,
 }
 
@@ -5329,7 +5381,7 @@ impl SortedNumericDocValuesField {
     pub fn new(name: &str, value: i64) -> Self {
         Self {
             name: name.to_string(),
-            field_type: sorted_numeric_doc_values_field_type().clone(),
+            field_type: Arc::clone(sorted_numeric_doc_values_field_type_shared()),
             value: AtomicRefCell::new(value),
         }
     }
@@ -5347,7 +5399,7 @@ impl SortedNumericDocValuesField {
     pub fn indexed_field(name: &str, value: i64) -> Self {
         Self {
             name: name.to_string(),
-            field_type: sorted_numeric_doc_values_indexed_field_type().clone(),
+            field_type: Arc::clone(sorted_numeric_doc_values_indexed_field_type()),
             value: AtomicRefCell::new(value),
         }
     }
@@ -5395,7 +5447,7 @@ impl IndexableField for SortedNumericDocValuesField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(
@@ -5439,7 +5491,8 @@ impl IndexableField for SortedNumericDocValuesField {
 #[derive(Debug)]
 pub struct BinaryDocValuesField {
     name: String,
-    field_type: FieldType,
+    /// The one static `FieldType` every Java instance references, shared.
+    field_type: Arc<FieldType>,
     /// `fieldsData`: `None` for the `null` value
     /// `BinaryDocValuesField(String, BytesRef)` accepts.
     value: AtomicRefCell<Option<BytesRef>>,
@@ -5465,7 +5518,7 @@ impl BinaryDocValuesField {
     pub fn new_nullable(name: &str, value: Option<BytesRef>) -> Self {
         Self {
             name: name.to_string(),
-            field_type: binary_doc_values_field_type().clone(),
+            field_type: Arc::clone(binary_doc_values_field_type_shared()),
             value: AtomicRefCell::new(value),
         }
     }
@@ -5509,7 +5562,7 @@ impl IndexableField for BinaryDocValuesField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(
