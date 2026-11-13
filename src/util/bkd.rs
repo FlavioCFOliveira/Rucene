@@ -295,6 +295,12 @@ impl BKDConfig {
 /// Equivalent to `org.apache.lucene.util.bkd.BKDUtil`.
 pub struct BKDUtil;
 
+/// The comparator `BKDUtil.getPrefixLengthComparator` returns (Java's
+/// `ArrayUtil.ByteArrayComparator`, applied as a common-prefix length).
+type PrefixLengthComparator = dyn Fn(&[u8], usize, &[u8], usize) -> usize + Send + Sync;
+
+/// Equivalent to `BKDUtil.ByteArrayPredicate`.
+type ByteArrayPredicate = dyn Fn(&[u8], usize, &[u8], usize) -> bool + Send + Sync;
 impl BKDUtil {
     /// Returns the length of the common prefix across the next `num_bytes`
     /// bytes of both arrays.
@@ -380,9 +386,7 @@ impl BKDUtil {
     /// Equivalent to `BKDUtil.getPrefixLengthComparator(int)`, which
     /// specialises on the two widths that dominate — 8 and 4 — so a hot loop
     /// binds the comparison once instead of branching on the width per call.
-    pub fn get_prefix_length_comparator(
-        num_bytes: usize,
-    ) -> Box<dyn Fn(&[u8], usize, &[u8], usize) -> usize + Send + Sync> {
+    pub fn get_prefix_length_comparator(num_bytes: usize) -> Box<PrefixLengthComparator> {
         if num_bytes == 8 {
             // Used by LongPoint, DoublePoint.
             Box::new(Self::common_prefix_length8)
@@ -400,9 +404,7 @@ impl BKDUtil {
     /// bytes.
     ///
     /// Equivalent to `BKDUtil.getEqualsPredicate(int)`.
-    pub fn get_equals_predicate(
-        num_bytes: usize,
-    ) -> Box<dyn Fn(&[u8], usize, &[u8], usize) -> bool + Send + Sync> {
+    pub fn get_equals_predicate(num_bytes: usize) -> Box<ByteArrayPredicate> {
         if num_bytes == 8 {
             // Used by LongPoint, DoublePoint.
             Box::new(Self::equals8)
@@ -4494,10 +4496,10 @@ impl BKDWriter {
             points.copy_packed_value(from, &mut first_value);
             write_common_prefixes(out, &self.common_prefix_lengths, &first_value, &self.config)?;
 
-            let packed_values = |i: usize| -> Vec<u8> {
-                let mut v = vec![0u8; self.config.packed_bytes_length() as usize];
-                points.copy_packed_value(from + i, &mut v);
-                v
+            // `IntFunction<BytesRef> packedValues` filling one scratch
+            // (`BKDWriter.java:1759-1763`): no allocation per value.
+            let packed_values = |i: usize, value: &mut [u8]| {
+                points.copy_packed_value(from + i, value);
             };
             debug_assert!(BKDWriter::values_in_order_and_bounds(
                 &self.config,
@@ -4505,7 +4507,7 @@ impl BKDWriter {
                 sorted_dim,
                 &min_packed_value,
                 &max_packed_value,
-                packed_values,
+                owned_packed_values(&self.config, &packed_values),
                 &doc_ids,
                 0
             ));
@@ -4750,10 +4752,10 @@ impl BKDWriter {
             write_common_prefixes(out, &self.common_prefix_lengths, &first_value, &self.config)?;
 
             // Write the full values.
-            let packed_values = |i: usize| -> Vec<u8> {
-                let mut v = vec![0u8; self.config.packed_bytes_length() as usize];
-                heap_source.copy_packed_value(from + i, &mut v);
-                v
+            // `IntFunction<BytesRef> packedValues` filling one scratch
+            // (`BKDWriter.java:2015-2016`): no allocation per value.
+            let packed_values = |i: usize, value: &mut [u8]| {
+                heap_source.copy_packed_value(from + i, value);
             };
             debug_assert!(BKDWriter::values_in_order_and_bounds(
                 &self.config,
@@ -4761,7 +4763,7 @@ impl BKDWriter {
                 sorted_dim,
                 &min_packed_value,
                 &max_packed_value,
-                packed_values,
+                owned_packed_values(&self.config, &packed_values),
                 &spare_doc_ids[..count],
                 0
             ));
@@ -5674,9 +5676,14 @@ impl OneDimensionBKDWriter {
             &self.config,
         )?;
 
-        let leaf_values = self.leaf_values.clone();
-        let packed_values =
-            |i: usize| -> Vec<u8> { leaf_values[i * packed_len..(i + 1) * packed_len].to_vec() };
+        // `packedValues` is a view of `leafValues` at `packedBytesLength * i`
+        // (`BKDWriter.java:852-859`): each value is copied into the
+        // consumer's scratch, with no allocation per value and no copy of the
+        // leaf.
+        let leaf_values = &self.leaf_values;
+        let packed_values = |i: usize, value: &mut [u8]| {
+            value.copy_from_slice(&leaf_values[i * packed_len..(i + 1) * packed_len]);
+        };
         write_leaf_block_packed_values(
             data_out,
             &self.config,
@@ -6179,13 +6186,34 @@ fn write_common_prefixes(
     Ok(())
 }
 
+/// Java's `IntFunction<BytesRef> packedValues`: writes the packed value of
+/// point `i` into the given buffer of `packedBytesLength` bytes.
+///
+/// Java returns one reused scratch `BytesRef` per call (`BKDWriter.java:852-859,
+/// 1759-1763`); the port fills a buffer the consumer allocates once per leaf,
+/// so reading a value allocates nothing.
+type PackedValues<'a> = dyn Fn(usize, &mut [u8]) + 'a;
+
+/// An owning view of `packed_values`, for the debug-only
+/// [`BKDWriter::values_in_order_and_bounds`] check.
+fn owned_packed_values<'a>(
+    config: &'a BKDConfig,
+    packed_values: &'a PackedValues<'a>,
+) -> impl Fn(usize) -> Vec<u8> + 'a {
+    move |i| {
+        let mut value = vec![0u8; config.packed_bytes_length() as usize];
+        packed_values(i, &mut value);
+        value
+    }
+}
+
 fn write_leaf_block_packed_values(
     out: &mut dyn IndexOutput,
     config: &BKDConfig,
     common_prefix_lengths: &mut [usize],
     count: usize,
     sorted_dim: usize,
-    packed_values: &dyn Fn(usize) -> Vec<u8>,
+    packed_values: &PackedValues<'_>,
     leaf_cardinality: usize,
 ) -> Result<()> {
     let prefix_len_sum: usize = common_prefix_lengths.iter().sum();
@@ -6200,9 +6228,10 @@ fn write_leaf_block_packed_values(
         } else {
             let mut num_run_lens = 0;
             let mut i = 0;
+            let mut scratch = vec![0u8; config.packed_bytes_length() as usize];
             while i < count {
                 let end = (i + 0xff).min(count);
-                let run_len = run_len(packed_values, i, end, compressed_byte_offset);
+                let run_len = run_len(packed_values, i, end, compressed_byte_offset, &mut scratch);
                 debug_assert!(run_len <= 0xff);
                 num_run_lens += 1;
                 i += run_len;
@@ -6244,16 +6273,17 @@ fn write_low_cardinality_leaf_block_packed_values(
     config: &BKDConfig,
     common_prefix_lengths: &[usize],
     count: usize,
-    packed_values: &dyn Fn(usize) -> Vec<u8>,
+    packed_values: &PackedValues<'_>,
 ) -> Result<()> {
     if config.num_index_dims != 1 {
         write_actual_bounds(out, config, common_prefix_lengths, count, packed_values)?;
     }
     let mut scratch = vec![0u8; config.packed_bytes_length() as usize];
-    scratch.copy_from_slice(&packed_values(0));
+    packed_values(0, &mut scratch);
+    let mut value = vec![0u8; config.packed_bytes_length() as usize];
     let mut cardinality = 1;
     for i in 1..count {
-        let value = packed_values(i);
+        packed_values(i, &mut value);
         let mut differs = false;
         for dim in 0..config.num_dims as usize {
             let start = dim * config.bytes_per_dim as usize;
@@ -6301,7 +6331,7 @@ fn write_high_cardinality_leaf_block_packed_values(
     common_prefix_lengths: &mut [usize],
     count: usize,
     sorted_dim: usize,
-    packed_values: &dyn Fn(usize) -> Vec<u8>,
+    packed_values: &PackedValues<'_>,
     compressed_byte_offset: usize,
 ) -> Result<()> {
     if config.num_index_dims != 1 {
@@ -6309,12 +6339,13 @@ fn write_high_cardinality_leaf_block_packed_values(
     }
     common_prefix_lengths[sorted_dim] += 1;
     let mut i = 0;
+    let mut scratch = vec![0u8; config.packed_bytes_length() as usize];
     while i < count {
         let end = (i + 0xff).min(count);
-        let run_len = run_len(packed_values, i, end, compressed_byte_offset);
+        let run_len = run_len(packed_values, i, end, compressed_byte_offset, &mut scratch);
         debug_assert!(run_len <= 0xff);
-        let first = packed_values(i);
-        out.write_byte(first[compressed_byte_offset])?;
+        packed_values(i, &mut scratch);
+        out.write_byte(scratch[compressed_byte_offset])?;
         out.write_byte(run_len as u8)?;
         write_leaf_block_packed_values_range(
             out,
@@ -6335,7 +6366,7 @@ fn write_actual_bounds(
     config: &BKDConfig,
     common_prefix_lengths: &[usize],
     count: usize,
-    packed_values: &dyn Fn(usize) -> Vec<u8>,
+    packed_values: &PackedValues<'_>,
 ) -> Result<()> {
     for (dim, &prefix) in common_prefix_lengths
         .iter()
@@ -6345,7 +6376,7 @@ fn write_actual_bounds(
         let suffix = config.bytes_per_dim as usize - prefix;
         if suffix > 0 {
             let offset = dim * config.bytes_per_dim as usize + prefix;
-            let (min, max) = compute_min_max(count, packed_values, offset, suffix);
+            let (min, max) = compute_min_max(config, count, packed_values, offset, suffix);
             out.write_bytes(&min, 0, min.len())?;
             out.write_bytes(&max, 0, max.len())?;
         }
@@ -6354,22 +6385,24 @@ fn write_actual_bounds(
 }
 
 fn compute_min_max(
+    config: &BKDConfig,
     count: usize,
-    packed_values: &dyn Fn(usize) -> Vec<u8>,
+    packed_values: &PackedValues<'_>,
     offset: usize,
     length: usize,
 ) -> (Vec<u8>, Vec<u8>) {
     debug_assert!(length > 0);
-    let first = packed_values(0);
-    let mut min = first[offset..offset + length].to_vec();
+    let mut candidate = vec![0u8; config.packed_bytes_length() as usize];
+    packed_values(0, &mut candidate);
+    let mut min = candidate[offset..offset + length].to_vec();
     let mut max = min.clone();
     for i in 1..count {
-        let candidate = packed_values(i);
+        packed_values(i, &mut candidate);
         let slice = &candidate[offset..offset + length];
         if slice < &min[..] {
-            min = slice.to_vec();
+            min.copy_from_slice(slice);
         } else if slice > &max[..] {
-            max = slice.to_vec();
+            max.copy_from_slice(slice);
         }
     }
     (min, max)
@@ -6381,11 +6414,11 @@ fn write_leaf_block_packed_values_range(
     common_prefix_lengths: &[usize],
     start: usize,
     end: usize,
-    packed_values: &dyn Fn(usize) -> Vec<u8>,
+    packed_values: &PackedValues<'_>,
 ) -> Result<()> {
+    let mut value = vec![0u8; config.packed_bytes_length() as usize];
     for i in start..end {
-        let value = packed_values(i);
-        debug_assert!(value.len() == config.packed_bytes_length() as usize);
+        packed_values(i, &mut value);
         for (dim, &prefix) in common_prefix_lengths
             .iter()
             .enumerate()
@@ -6399,15 +6432,16 @@ fn write_leaf_block_packed_values_range(
 }
 
 fn run_len(
-    packed_values: &dyn Fn(usize) -> Vec<u8>,
+    packed_values: &PackedValues<'_>,
     start: usize,
     end: usize,
     byte_offset: usize,
+    value: &mut [u8],
 ) -> usize {
-    let first = packed_values(start);
-    let b = first[byte_offset];
+    packed_values(start, value);
+    let b = value[byte_offset];
     for i in (start + 1)..end {
-        let value = packed_values(i);
+        packed_values(i, value);
         debug_assert!(value[byte_offset] >= b);
         if value[byte_offset] != b {
             return i - start;

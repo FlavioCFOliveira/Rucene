@@ -698,7 +698,7 @@ impl Accountable for NFARunAutomaton {
 
         let mut registry =
             RamUsageEstimator::align_object_size(RamUsageEstimator::NUM_BYTES_OBJECT_HEADER);
-        for (hash_code_and_states, _ord) in inner.d_state_to_ord.iter() {
+        for hash_code_and_states in inner.d_state_to_ord.keys() {
             registry += RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY;
             // The key: an `i32` beside a reference to the NFA-state array.
             registry += RamUsageEstimator::align_object_size(

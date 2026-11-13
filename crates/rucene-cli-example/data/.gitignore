@@ -1,0 +1,5 @@
+# Large datasets produced by scripts/fetch_dataset.sh are never committed.
+# The 257-row fixture usgs-2024-01-01-to-2024-01-04-m2.5.csv stays tracked.
+/usgs-2019-2024.csv
+/usgs-2019-2024.csv.tmp
+/parts/

@@ -855,6 +855,8 @@ impl Lucene99HnswVectorsWriter {
     }
 }
 
+/// The nodes of each graph level and their offsets, as `writeMeta` reads them.
+type LevelsAndNodeOffsets = (Vec<Vec<i32>>, Vec<Vec<i32>>);
 impl HnswWriterState {
     /// Opens the writer's two files and writes their headers.
     ///
@@ -1132,7 +1134,7 @@ impl HnswWriterState {
         graph: Option<&OnHeapHnswGraph>,
         new_to_old_map: &[i32],
         old_to_new_map: &[i32],
-    ) -> Result<(Vec<Vec<i32>>, Vec<Vec<i32>>)> {
+    ) -> Result<LevelsAndNodeOffsets> {
         let Some(graph) = graph else {
             return Ok((Vec::new(), Vec::new()));
         };

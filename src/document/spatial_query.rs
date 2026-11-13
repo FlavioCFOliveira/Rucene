@@ -2617,7 +2617,7 @@ impl LatLonShapeBoundingBoxQuery {
         rectangle: Rectangle,
     ) -> Result<Self> {
         let component2d =
-            LatLonGeometryValue::create(&[LatLonGeometryValue::Rectangle(rectangle.clone())])?;
+            LatLonGeometryValue::create(&[LatLonGeometryValue::Rectangle(rectangle)])?;
         Ok(Self {
             query: SpatialQuery::new(field, query_relation, component2d),
             visitor: LatLonShapeBoundingBoxVisitor {

@@ -552,7 +552,7 @@ mod tests {
     fn the_abstract_fs_directory_loads_but_cannot_be_instantiated() {
         let tmp = tempfile::tempdir().unwrap();
         for name in ["FSDirectory", "org.apache.lucene.store.FSDirectory"] {
-            match CommandLineUtil::new_fs_directory(name, &tmp.path().join("c1")) {
+            match CommandLineUtil::new_fs_directory(name, tmp.path().join("c1")) {
                 // The cause is the `NoSuchMethodException` (`PassAOracle`,
                 // section 5).
                 Err(LuceneError {
@@ -588,7 +588,7 @@ mod tests {
         );
         match CommandLineUtil::new_fs_directory_of_kind(
             FSDirectoryKind::FSDirectory,
-            &tmp.path().join("c3"),
+            tmp.path().join("c3"),
             Box::new(NativeFSLockFactory),
         ) {
             Err(LuceneError {
@@ -602,7 +602,7 @@ mod tests {
             other => panic!("expected NoSuchMethodException, got {:?}", other.err()),
         }
 
-        let nio = CommandLineUtil::new_fs_directory("NIOFSDirectory", &tmp.path().join("c4"))
+        let nio = CommandLineUtil::new_fs_directory("NIOFSDirectory", tmp.path().join("c4"))
             .expect("NIOFSDirectory has a public (Path, LockFactory) constructor");
         assert_eq!(nio.directory_type_name(), "NIOFSDirectory");
     }
@@ -722,7 +722,7 @@ mod tests {
     fn an_empty_or_blank_name_is_an_error_creating_the_instance() {
         let tmp = tempfile::tempdir().unwrap();
         for name in ["", "   "] {
-            match CommandLineUtil::new_fs_directory(name, &tmp.path().join("e")) {
+            match CommandLineUtil::new_fs_directory(name, tmp.path().join("e")) {
                 Err(LuceneError {
                     kind:
                         LuceneErrorKind::IllegalArgument {
@@ -755,7 +755,7 @@ mod tests {
             }
         }
         assert_eq!(
-            CommandLineUtil::new_fs_directory("", &tmp.path().join("e"))
+            CommandLineUtil::new_fs_directory("", tmp.path().join("e"))
                 .err()
                 .map(|error| error.to_string()),
             Some("illegal argument: Error creating  instance".to_string())

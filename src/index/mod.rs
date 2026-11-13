@@ -506,6 +506,27 @@ pub trait IndexableFieldType: std::fmt::Display + Send + Sync {
     }
 }
 
+/// A field's binary value as [`IndexableField::binary_value_ref`] gives it:
+/// borrowed from the field, or an owned copy.
+#[derive(Debug)]
+pub enum BinaryValueRef<'a> {
+    /// The value the field holds, borrowed for as long as this lives.
+    Borrowed(crate::util::atomic_ref_cell::AtomicRef<'a, BytesRef>),
+    /// A copy of the value.
+    Owned(BytesRef),
+}
+
+impl std::ops::Deref for BinaryValueRef<'_> {
+    type Target = BytesRef;
+
+    fn deref(&self) -> &BytesRef {
+        match self {
+            Self::Borrowed(value) => value,
+            Self::Owned(value) => value,
+        }
+    }
+}
+
 /// Represents a single field for indexing.
 ///
 /// Equivalent to `org.apache.lucene.index.IndexableField`.
@@ -551,6 +572,20 @@ pub trait IndexableField: std::fmt::Display + Send + Sync {
 
     /// Non-null if this field has a binary value.
     fn binary_value(&self) -> Option<BytesRef>;
+
+    /// The value [`binary_value`](Self::binary_value) returns, borrowed from
+    /// the field when the field can lend it.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, whose `binaryValue()`
+    /// returns the field's own `BytesRef` by reference: `KeywordField` and
+    /// `StringField` hand the indexing chain the object they hold
+    /// (`KeywordField.java:107-109`, `StringField.java:95-97`). The port's
+    /// `binary_value` returns an owned copy; the indexing chain reads the
+    /// value through this method instead, so a field that holds its value
+    /// lends it without that copy. The default is `binary_value()` itself.
+    fn binary_value_ref(&self) -> Option<BinaryValueRef<'_>> {
+        self.binary_value().map(BinaryValueRef::Owned)
+    }
 
     /// Non-null if this field has a string value.
     fn string_value(&self) -> Option<String>;

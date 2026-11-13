@@ -211,15 +211,8 @@ impl BayesianScoreEstimator {
             base_rate += fraction;
         }
         base_rate /= base_rate_fractions.len() as f32;
-        base_rate = if base_rate.is_nan() {
-            base_rate
-        } else if base_rate < BASE_RATE_MIN {
-            BASE_RATE_MIN
-        } else if base_rate > BASE_RATE_MAX {
-            BASE_RATE_MAX
-        } else {
-            base_rate
-        };
+        // `f32::clamp` propagates NaN, as the explicit chain did.
+        base_rate = base_rate.clamp(BASE_RATE_MIN, BASE_RATE_MAX);
 
         Ok(Parameters::new(alpha, beta, base_rate))
     }
@@ -342,7 +335,7 @@ pub struct JavaRandom {
 }
 
 impl JavaRandom {
-    const MULTIPLIER: i64 = 0x5DEEC_E66D;
+    const MULTIPLIER: i64 = 0x5_DEEC_E66D;
     const ADDEND: i64 = 0xB;
     const MASK: i64 = (1 << 48) - 1;
 

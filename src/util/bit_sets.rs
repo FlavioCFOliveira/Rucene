@@ -121,9 +121,7 @@ impl SparseFixedBitSet {
 
     /// Clears every bit in the set.
     pub fn clear_all(&mut self) {
-        for block in &mut self.bits {
-            *block = None;
-        }
+        self.bits.fill(None);
         self.indices.fill(0);
         self.non_zero_long_count = 0;
     }

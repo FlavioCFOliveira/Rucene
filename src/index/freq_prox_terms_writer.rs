@@ -3613,6 +3613,30 @@ fn apply_deletes_to(
     Ok(())
 }
 
+impl PartialEq for TermsHashPerField {
+    fn eq(&self, other: &Self) -> bool {
+        self.field_name == other.field_name
+    }
+}
+
+impl Eq for TermsHashPerField {}
+
+impl PartialOrd for TermsHashPerField {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TermsHashPerField {
+    /// Orders the tables by field name.
+    ///
+    /// Equivalent to `TermsHashPerField.compareTo(TermsHashPerField)`, which is
+    /// what puts the fields of a segment in name order at flush.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::util::compare_utf16(&self.field_name, &other.field_name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5515,29 +5539,5 @@ mod tests {
             .is_some_and(|any| any.is::<SortingPostingsEnum>()));
         assert_eq!(offered.lock().unwrap()[0], Some(docs_enum_identity));
         assert_eq!(drain_sorted(postings.as_mut()), vec![2, 3]);
-    }
-}
-
-impl PartialEq for TermsHashPerField {
-    fn eq(&self, other: &Self) -> bool {
-        self.field_name == other.field_name
-    }
-}
-
-impl Eq for TermsHashPerField {}
-
-impl PartialOrd for TermsHashPerField {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for TermsHashPerField {
-    /// Orders the tables by field name.
-    ///
-    /// Equivalent to `TermsHashPerField.compareTo(TermsHashPerField)`, which is
-    /// what puts the fields of a segment in name order at flush.
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        crate::util::compare_utf16(&self.field_name, &other.field_name)
     }
 }

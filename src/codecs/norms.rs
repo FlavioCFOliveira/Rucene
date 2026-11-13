@@ -205,65 +205,6 @@ impl NormsFormat for EmptyNormsFormat {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Tests
-// -----------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::codecs::stub::BufferedUpdates;
-    use crate::index::FieldInfos;
-    use std::sync::Arc;
-
-    #[test]
-    fn empty_norms_producer_returns_empty_values() {
-        use crate::search::DocIdSetIterator;
-
-        let producer = EmptyNormsProducer;
-        let field = FieldInfo::default();
-        let mut values = producer.get_norms(&field).unwrap().unwrap();
-        assert_eq!(values.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
-        producer.check_integrity().unwrap();
-        let _merge = producer.get_merge_instance().unwrap();
-        producer.close().unwrap();
-    }
-
-    #[test]
-    fn empty_norms_consumer_accepts_field() {
-        let mut consumer = EmptyNormsConsumer;
-        let producer = EmptyNormsProducer;
-        let field = FieldInfo::default();
-        consumer.add_norms_field(&field, &producer).unwrap();
-        consumer.close().unwrap();
-    }
-
-    #[test]
-    fn empty_norms_format_name_and_factories() {
-        let format = EmptyNormsFormat::new("EmptyNorms");
-        assert_eq!(format.name(), "EmptyNorms");
-
-        let dir: Arc<dyn crate::store::Directory> =
-            Arc::new(crate::store::ByteBuffersDirectory::default());
-        let dir_ref: &dyn crate::store::Directory = &*dir;
-        let context = &*crate::store::DEFAULT_IO_CONTEXT;
-        let field_infos = FieldInfos::default();
-        let segment_info = crate::codecs::tests::test_segment_info("test", 10);
-        let write_state = SegmentWriteState::new(
-            &crate::util::NoOutputInfoStream,
-            Arc::clone(&dir),
-            &segment_info,
-            &field_infos,
-            Box::leak(Box::new(BufferedUpdates::default())),
-            context,
-        );
-        let _consumer = format.norms_consumer(&write_state).unwrap();
-
-        let read_state = SegmentReadState::new(dir_ref, &segment_info, &field_infos, context);
-        let _producer = format.norms_producer(&read_state).unwrap();
-    }
-}
-
 /// The producer `mergeNormsField` hands to `addNormsField`.
 ///
 /// Equivalent to the anonymous `NormsProducer` of
@@ -335,5 +276,64 @@ impl NormsProducer for MergedNormsProducer<'_> {
 
     fn close(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codecs::stub::BufferedUpdates;
+    use crate::index::FieldInfos;
+    use std::sync::Arc;
+
+    #[test]
+    fn empty_norms_producer_returns_empty_values() {
+        use crate::search::DocIdSetIterator;
+
+        let producer = EmptyNormsProducer;
+        let field = FieldInfo::default();
+        let mut values = producer.get_norms(&field).unwrap().unwrap();
+        assert_eq!(values.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
+        producer.check_integrity().unwrap();
+        let _merge = producer.get_merge_instance().unwrap();
+        producer.close().unwrap();
+    }
+
+    #[test]
+    fn empty_norms_consumer_accepts_field() {
+        let mut consumer = EmptyNormsConsumer;
+        let producer = EmptyNormsProducer;
+        let field = FieldInfo::default();
+        consumer.add_norms_field(&field, &producer).unwrap();
+        consumer.close().unwrap();
+    }
+
+    #[test]
+    fn empty_norms_format_name_and_factories() {
+        let format = EmptyNormsFormat::new("EmptyNorms");
+        assert_eq!(format.name(), "EmptyNorms");
+
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
+        let dir_ref: &dyn crate::store::Directory = &*dir;
+        let context = &*crate::store::DEFAULT_IO_CONTEXT;
+        let field_infos = FieldInfos::default();
+        let segment_info = crate::codecs::tests::test_segment_info("test", 10);
+        let write_state = SegmentWriteState::new(
+            &crate::util::NoOutputInfoStream,
+            Arc::clone(&dir),
+            &segment_info,
+            &field_infos,
+            Box::leak(Box::new(BufferedUpdates::default())),
+            context,
+        );
+        let _consumer = format.norms_consumer(&write_state).unwrap();
+
+        let read_state = SegmentReadState::new(dir_ref, &segment_info, &field_infos, context);
+        let _producer = format.norms_producer(&read_state).unwrap();
     }
 }

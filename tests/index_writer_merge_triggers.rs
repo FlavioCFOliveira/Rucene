@@ -34,6 +34,12 @@
 //!   once by `afterSegmentsFlushed` (`IndexWriter.java:440-443`,
 //!   `DocumentsWriter.java:579`) and may trigger a merge
 //!   (`maybeProcessEvents`, `IndexWriter.java:5578-5583`).
+//! * `flush-merge-names`: with a `SerialMergeScheduler`, a merge that a
+//!   flush triggers runs on the flushing thread, so flushes and merges take
+//!   their names from `IndexWriter.newSegmentName()`
+//!   (`IndexWriter.java:2129-2142`) in a fixed order; both commit points
+//!   carry the same segment names, document counts, `source` diagnostics and
+//!   deletion counts as Lucene's.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -466,6 +472,77 @@ fn segments_flushed_by_add_document_are_published_and_merged_as_lucene_does() {
         writer.close().unwrap();
     }
     assert_eq!(lines.join("\n"), run_java(&["flush-publish"]).trim());
+}
+
+/// `WriterMergeTriggersFixture.namedSegments(Directory)`: every segment of the
+/// latest commit as `name:maxDoc:source:delCount`.
+fn named_segments(dir: &Arc<dyn Directory>) -> String {
+    let infos = SegmentInfos::read_latest_commit(Arc::clone(dir)).unwrap();
+    infos
+        .iter()
+        .map(|info| {
+            format!(
+                "{}:{}:{}:{}",
+                info.info.name,
+                info.info.max_doc().unwrap(),
+                info.info
+                    .get_diagnostics()
+                    .get("source")
+                    .map_or("null", String::as_str),
+                info.get_del_count()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// `flush-merge-names`: `maxBufferedDocs=2`, a `LogDocMergePolicy` of merge
+/// factor 3, a `SerialMergeScheduler` and `maxFullFlushMergeWaitMillis` 0;
+/// ten documents, an update, a commit, six documents, a delete, a commit.
+/// Flushed and merged segments interleave in name order exactly as Lucene's.
+#[test]
+fn flushes_and_the_merges_they_trigger_take_segment_names_as_lucene_does() {
+    ensure_codec();
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let config = IndexWriterConfig::new();
+    config.set_max_buffered_docs(2).unwrap();
+    config.set_max_full_flush_merge_wait_millis(0);
+    config
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
+        .unwrap();
+    let policy = LogMergePolicy::by_doc_count();
+    policy.set_merge_factor(3).unwrap();
+    config.set_merge_policy(Some(Arc::new(policy))).unwrap();
+    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+    let id = |i: i32| Term::new("id", BytesRef::new(format!("id{i}").into_bytes()));
+    for i in 0..10 {
+        writer.add_document(&id_doc(i)).unwrap();
+    }
+    writer.update_document(id(3), &id_doc(3)).unwrap();
+    writer.commit().unwrap();
+    let mut lines = vec![format!(
+        "flush-merge-names commit 1 segments={}",
+        named_segments(&dir)
+    )];
+    for i in 10..16 {
+        writer.add_document(&id_doc(i)).unwrap();
+    }
+    writer.delete_documents_by_terms(vec![id(12)]).unwrap();
+    writer.commit().unwrap();
+    lines.push(format!(
+        "flush-merge-names commit 2 segments={}",
+        named_segments(&dir)
+    ));
+    writer.close().unwrap();
+    let rucene = lines.join("\n");
+    let lucene = run_java(&["flush-merge-names"]);
+    assert_eq!(rucene, lucene.trim());
+    // Lucene's own output, so a change on either side is visible in review.
+    assert_eq!(
+        lucene.trim(),
+        "flush-merge-names commit 1 segments=_6:10:merge:1,_7:1:flush:0\n\
+         flush-merge-names commit 2 segments=_9:12:merge:0,_a:2:flush:1,_b:2:flush:0"
+    );
 }
 
 /// `WriterMergeTriggersFixture.logMerge`: segments of `sizes` documents written

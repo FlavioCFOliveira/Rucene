@@ -8,9 +8,10 @@
 #![deny(unsafe_code)]
 
 use std::any::{Any, TypeId};
+use std::borrow::Cow;
 use std::fmt::{self, Debug, Formatter, Write};
 use std::hash::{Hash, Hasher};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::util::attribute::{Attribute, AttributeImpl, AttributeReflector};
 use crate::util::byte_block_pool::hash_bytes;
@@ -198,7 +199,12 @@ pub trait CharTermAttribute: Attribute {
 pub struct CharTermAttributeImpl {
     term_buffer: Vec<char>,
     term_length: usize,
-    builder: BytesRefBuilder,
+    /// Java's `private BytesRefBuilder builder`, which `getBytesRef()` refills
+    /// for every term (`CharTermAttributeImpl.java:39,92-95`) so that its
+    /// buffer is reused across terms. `getBytesRef()` takes `&self` here, so
+    /// the builder sits behind a lock (an attribute must be `Sync`); nothing
+    /// else holds it, so the lock is never contended within one token stream.
+    builder: Mutex<BytesRefBuilder>,
 }
 
 const MIN_BUFFER_SIZE: usize = 10;
@@ -210,7 +216,7 @@ impl CharTermAttributeImpl {
         Self {
             term_buffer: vec!['\0'; min_size],
             term_length: 0,
-            builder: BytesRefBuilder::new(),
+            builder: Mutex::new(BytesRefBuilder::new()),
         }
     }
 
@@ -400,11 +406,28 @@ impl CharTermAttribute for CharTermAttributeImpl {
 }
 
 impl TermToBytesRefAttribute for CharTermAttributeImpl {
+    /// Equivalent to `CharTermAttributeImpl.getBytesRef()`
+    /// (`CharTermAttributeImpl.java:92-95`): `builder.copyChars(termBuffer, 0,
+    /// termLength); return builder.get();`, on the attribute's one builder, so
+    /// its buffer only grows when a term needs more room. The `BytesRef` a
+    /// Rust caller receives is an owned copy of what Java's points to.
     fn get_bytes_ref(&self) -> BytesRef {
-        let text: String = self.term_buffer[..self.term_length].iter().collect();
-        let mut builder = BytesRefBuilder::new();
-        builder.copy_chars(&text);
+        let mut builder = self.builder.lock().unwrap_or_else(PoisonError::into_inner);
+        builder.copy_char_array(&self.term_buffer[..self.term_length]);
         builder.get()
+    }
+
+    /// The builder is refilled exactly as by `get_bytes_ref`, and its content
+    /// is copied into `bytes`, whose buffer only grows when a term needs
+    /// more room.
+    fn copy_bytes_ref_to(&self, bytes: &mut BytesRef) {
+        let mut builder = self.builder.lock().unwrap_or_else(PoisonError::into_inner);
+        builder.copy_char_array(&self.term_buffer[..self.term_length]);
+        let length = builder.length();
+        bytes.bytes.clear();
+        bytes.bytes.extend_from_slice(&builder.bytes()[..length]);
+        bytes.offset = 0;
+        bytes.length = length;
     }
 }
 
@@ -413,10 +436,9 @@ impl Clone for CharTermAttributeImpl {
         let mut clone = Self::new();
         clone.copy_buffer(&self.term_buffer, 0, self.term_length);
         let bytes = self.get_bytes_ref();
-        clone.builder = BytesRefBuilder::new();
-        clone
-            .builder
-            .copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
+        let mut builder = BytesRefBuilder::new();
+        builder.copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
+        clone.builder = Mutex::new(builder);
         clone
     }
 }
@@ -489,9 +511,9 @@ impl AttributeImpl for CharTermAttributeImpl {
         if let Some(t) = target.as_any_mut().downcast_mut::<CharTermAttributeImpl>() {
             t.copy_buffer(&self.term_buffer, 0, self.term_length);
             let bytes = self.get_bytes_ref();
-            t.builder = BytesRefBuilder::new();
-            t.builder
-                .copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
+            let mut builder = BytesRefBuilder::new();
+            builder.copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
+            t.builder = Mutex::new(builder);
         }
     }
 
@@ -987,6 +1009,17 @@ pub trait TypeAttribute: Attribute {
 
     /// Sets the lexical type.
     fn set_type(&mut self, type_value: String);
+
+    /// Sets the lexical type to a constant.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, where `setType(String)`
+    /// stores the reference it is given, so a tokenizer setting one of its
+    /// constant type names (`StandardTokenizer.java:168`) copies nothing. The
+    /// implementations of this crate keep such a constant without copying it;
+    /// the default is [`set_type`](Self::set_type) with a copy.
+    fn set_type_static(&mut self, type_value: &'static str) {
+        self.set_type(type_value.to_string());
+    }
 }
 
 /// Port of `org.apache.lucene.analysis.tokenattributes.TypeAttributeImpl`.
@@ -994,7 +1027,9 @@ pub trait TypeAttribute: Attribute {
 /// Default implementation of [`TypeAttribute`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TypeAttributeImpl {
-    type_value: String,
+    /// Java's `String type`: a reference, so the default type and the
+    /// constant names a tokenizer sets are borrowed, not copied.
+    type_value: Cow<'static, str>,
 }
 
 impl Default for TypeAttributeImpl {
@@ -1007,7 +1042,7 @@ impl TypeAttributeImpl {
     /// Creates an attribute with the default type.
     pub fn new() -> Self {
         Self {
-            type_value: DEFAULT_TYPE.to_string(),
+            type_value: Cow::Borrowed(DEFAULT_TYPE),
         }
     }
 
@@ -1015,7 +1050,9 @@ impl TypeAttributeImpl {
     ///
     /// Equivalent to the constructor `TypeAttributeImpl(String)`.
     pub fn with_type(type_value: String) -> Self {
-        Self { type_value }
+        Self {
+            type_value: Cow::Owned(type_value),
+        }
     }
 }
 
@@ -1027,7 +1064,11 @@ impl TypeAttribute for TypeAttributeImpl {
     }
 
     fn set_type(&mut self, type_value: String) {
-        self.type_value = type_value;
+        self.type_value = Cow::Owned(type_value);
+    }
+
+    fn set_type_static(&mut self, type_value: &'static str) {
+        self.type_value = Cow::Borrowed(type_value);
     }
 }
 
@@ -1041,12 +1082,13 @@ impl AttributeImpl for TypeAttributeImpl {
     }
 
     fn clear(&mut self) {
-        self.type_value = DEFAULT_TYPE.to_string();
+        // `type = DEFAULT_TYPE`: the constant, not a copy of it.
+        self.type_value = Cow::Borrowed(DEFAULT_TYPE);
     }
 
     fn copy_to(&self, target: &mut dyn AttributeImpl) {
         if let Some(t) = target.as_any_mut().downcast_mut::<TypeAttributeImpl>() {
-            t.type_value.clone_from(&self.type_value);
+            t.type_value = self.type_value.clone();
         }
     }
 
@@ -1117,7 +1159,8 @@ pub struct PackedTokenAttributeImpl {
     end_offset: i32,
     position_increment: i32,
     position_length: i32,
-    type_value: String,
+    /// Java's `String type`; see [`TypeAttributeImpl`].
+    type_value: Cow<'static, str>,
     term_frequency: i32,
 }
 
@@ -1136,7 +1179,7 @@ impl PackedTokenAttributeImpl {
             end_offset: 0,
             position_increment: 1,
             position_length: 1,
-            type_value: DEFAULT_TYPE.to_string(),
+            type_value: Cow::Borrowed(DEFAULT_TYPE),
             term_frequency: 1,
         }
     }
@@ -1211,6 +1254,13 @@ impl TermToBytesRefAttribute for PackedTokenAttributeImpl {
     fn get_bytes_ref(&self) -> BytesRef {
         self.term.get_bytes_ref()
     }
+
+    /// Delegates to the term, as `get_bytes_ref` does, so the term's own
+    /// buffer-reusing copy applies (`PackedTokenAttributeImpl` extends
+    /// `CharTermAttributeImpl` in Java and inherits its `getBytesRef()`).
+    fn copy_bytes_ref_to(&self, bytes: &mut BytesRef) {
+        self.term.copy_bytes_ref_to(bytes);
+    }
 }
 
 impl OffsetAttribute for PackedTokenAttributeImpl {
@@ -1272,7 +1322,11 @@ impl TypeAttribute for PackedTokenAttributeImpl {
     }
 
     fn set_type(&mut self, type_value: String) {
-        self.type_value = type_value;
+        self.type_value = Cow::Owned(type_value);
+    }
+
+    fn set_type_static(&mut self, type_value: &'static str) {
+        self.type_value = Cow::Borrowed(type_value);
     }
 }
 
@@ -1368,7 +1422,8 @@ impl AttributeImpl for PackedTokenAttributeImpl {
         self.position_increment = 1;
         self.position_length = 1;
         self.term_frequency = 1;
-        self.type_value = DEFAULT_TYPE.to_string();
+        // `type = DEFAULT_TYPE`: the constant, not a copy of it.
+        self.type_value = Cow::Borrowed(DEFAULT_TYPE);
     }
 
     /// Resets every field, then sets the position increment to `0`.
@@ -1391,7 +1446,7 @@ impl AttributeImpl for PackedTokenAttributeImpl {
             t.set_offset(self.start_offset, self.end_offset);
             t.set_position_increment(self.position_increment);
             t.set_position_length(self.position_length);
-            t.type_value.clone_from(&self.type_value);
+            t.type_value = self.type_value.clone();
             t.term_frequency = self.term_frequency;
         }
     }
@@ -2008,6 +2063,19 @@ impl AttributeImpl for PayloadAttributeImpl {
 pub trait TermToBytesRefAttribute: Attribute {
     /// Returns a `BytesRef` for the current term.
     fn get_bytes_ref(&self) -> BytesRef;
+
+    /// Writes what [`get_bytes_ref`](Self::get_bytes_ref) returns into
+    /// `bytes`, reusing its buffer.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, whose `getBytesRef()`
+    /// returns the attribute's own `BytesRef` by reference, so reading the
+    /// term of every token copies nothing (`CharTermAttributeImpl.java:92-95`).
+    /// The port's `get_bytes_ref` returns an owned copy; the indexing chain
+    /// reads each term through this method into one buffer it keeps across
+    /// tokens. The default is `get_bytes_ref()`.
+    fn copy_bytes_ref_to(&self, bytes: &mut BytesRef) {
+        *bytes = self.get_bytes_ref();
+    }
 }
 
 /// Port of `org.apache.lucene.analysis.tokenattributes.BytesTermAttribute`.
@@ -2279,6 +2347,22 @@ fn throw_index_out_of_bounds(message: &str) -> ! {
         "java.lang.IndexOutOfBoundsException",
         Some(message),
     )
+}
+
+impl std::fmt::Display for CharTermAttributeImpl {
+    /// Port of `CharTermAttributeImpl.toString()`, which is
+    /// `new String(termBuffer, 0, termLength)` — the term itself, with no
+    /// class name and no delimiters.
+    ///
+    /// Note that this is *not* the reflected `key=value` rendering
+    /// `AttributeImpl.toString()` would give; `CharTermAttributeImpl` overrides
+    /// it precisely to print the bare term.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for c in &self.term_buffer[..self.term_length] {
+            f.write_str(c.encode_utf8(&mut [0u8; 4]))?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -2848,21 +2932,5 @@ mod tests {
         assert_eq!(att.get_position_increment(), 2);
         assert_eq!(att.get_position_length(), 2);
         assert_eq!(att.type_value(), "ALPHANUM");
-    }
-}
-
-impl std::fmt::Display for CharTermAttributeImpl {
-    /// Port of `CharTermAttributeImpl.toString()`, which is
-    /// `new String(termBuffer, 0, termLength)` — the term itself, with no
-    /// class name and no delimiters.
-    ///
-    /// Note that this is *not* the reflected `key=value` rendering
-    /// `AttributeImpl.toString()` would give; `CharTermAttributeImpl` overrides
-    /// it precisely to print the bare term.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for c in &self.term_buffer[..self.term_length] {
-            f.write_str(c.encode_utf8(&mut [0u8; 4]))?;
-        }
-        Ok(())
     }
 }

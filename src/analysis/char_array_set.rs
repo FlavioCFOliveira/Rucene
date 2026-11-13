@@ -323,6 +323,24 @@ impl<'a> Iterator for Iter<'a> {
     }
 }
 
+impl std::fmt::Display for CharArraySet {
+    /// Port of `CharArraySet.toString()`: the keys, each rendered as its own
+    /// characters, separated by `", "` and wrapped in square brackets.
+    ///
+    /// The order is the set's iteration order, which is the hash-table slot
+    /// order on both sides and is not the insertion order.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[")?;
+        for (i, key) in self.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str(&crate::analysis::character_utils::utf16_to_string(key))?;
+        }
+        f.write_str("]")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,23 +495,5 @@ mod tests {
         assert!(set.add(""));
         assert!(set.contains(Some("")));
         assert_eq!(set.size(), 1);
-    }
-}
-
-impl std::fmt::Display for CharArraySet {
-    /// Port of `CharArraySet.toString()`: the keys, each rendered as its own
-    /// characters, separated by `", "` and wrapped in square brackets.
-    ///
-    /// The order is the set's iteration order, which is the hash-table slot
-    /// order on both sides and is not the insertion order.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("[")?;
-        for (i, key) in self.iter().enumerate() {
-            if i > 0 {
-                f.write_str(", ")?;
-            }
-            f.write_str(&crate::analysis::character_utils::utf16_to_string(key))?;
-        }
-        f.write_str("]")
     }
 }

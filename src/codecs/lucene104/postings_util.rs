@@ -30,8 +30,8 @@ pub fn read_v_int_block(
             freq_buffer[i] = freq;
         }
     } else if index_has_freq {
-        for i in 0..num {
-            doc_buffer[i] = (doc_buffer[i] as u32 >> 1) as i32;
+        for doc in &mut doc_buffer[..num] {
+            *doc = (*doc as u32 >> 1) as i32;
         }
     }
     Ok(())
@@ -56,8 +56,7 @@ pub fn write_v_int_block(
     }
     doc_out.write_group_vints(doc_buffer, num)?;
     if write_freqs {
-        for i in 0..num {
-            let freq = freq_buffer[i];
+        for &freq in &freq_buffer[..num] {
             if freq != 1 {
                 doc_out.write_v_int(freq)?;
             }

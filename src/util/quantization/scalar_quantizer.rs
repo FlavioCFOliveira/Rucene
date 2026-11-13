@@ -551,10 +551,8 @@ impl ScalarQuantizer {
             i += 4;
         }
         // Now search inside the best quadrant.
-        for i in best_quadrant_lower + 1..best_quadrant_lower + 4 {
-            for j in best_quadrant_upper + 1..best_quadrant_upper + 4 {
-                let lower = lower_candidates[i];
-                let upper = upper_candidates[j];
+        for &lower in &lower_candidates[best_quadrant_lower + 1..best_quadrant_lower + 4] {
+            for &upper in &upper_candidates[best_quadrant_upper + 1..best_quadrant_upper + 4] {
                 if !lower.is_finite() || !upper.is_finite() {
                     debug_assert!(false, "Lower or upper candidate is NaN or infinite");
                     continue;
@@ -754,7 +752,7 @@ impl<'a> ScoreErrorCorrelator<'a> {
             // quantized scores this time.
             self.errors.reset();
             for k in 0..self.nearest_neighbors[i].score_docs.len() {
-                let score_doc = self.nearest_neighbors[i].score_docs[k].clone();
+                let score_doc = self.nearest_neighbors[i].score_docs[k];
                 let vector_correction = quantizer.quantize(
                     &self.vectors[score_doc.doc as usize],
                     &mut self.vector,

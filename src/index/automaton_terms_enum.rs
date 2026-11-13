@@ -282,9 +282,7 @@ impl AutomatonTermsEnum {
                 self.cur_gen = self.cur_gen.wrapping_add(1);
                 if self.cur_gen == 0 {
                     // Generation wrapped: clear visited state.
-                    for v in &mut self.visited {
-                        *v = -1;
-                    }
+                    self.visited.fill(-1);
                 }
             }
             self.linear = false;

@@ -11354,6 +11354,76 @@ pub(crate) fn matches_java_text(actual: &str, pattern: &str) -> bool {
     rest.is_empty()
 }
 
+// ---------------------------------------------------------------------------
+// Object contracts: the `toString()` bodies of this module's store types
+// ---------------------------------------------------------------------------
+
+impl std::fmt::Display for ByteBuffersDataInput {
+    /// Port of `ByteBuffersDataInput.toString()`, which is
+    /// `String.format(Locale.ROOT, "%,d bytes, block size: %,d, blocks: %,d,
+    /// position: %,d%s", length(), blockSize(), blocks.length, position(),
+    /// offset == 0 ? "" : ...)`.
+    ///
+    /// Two details of Java's arithmetic survive here:
+    ///
+    /// * the block size comes from [`ByteBuffersDataInput::block_size`], which
+    ///   reports `1` for a one-block input exactly as Java's `blockSize()`
+    ///   does.
+    /// * `%,d` groups the digits in threes under `Locale.ROOT`.
+    ///
+    /// The `offset` suffix is never emitted, because this port's `slice()`
+    /// joins the sliced views into one block whose offset is zero — the
+    /// divergence already documented on [`ByteBuffersDataInput::slice`].
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::util::java_fmt::format_grouped;
+        let block_size = self.block_size() as i64;
+        write!(
+            f,
+            "{} bytes, block size: {}, blocks: {}, position: {}",
+            format_grouped(self.length as i64),
+            format_grouped(block_size),
+            format_grouped(self.blocks.len() as i64),
+            format_grouped(self.pos as i64),
+        )
+    }
+}
+
+impl std::fmt::Display for ByteBuffersDataOutput {
+    /// Port of `ByteBuffersDataOutput.toString()`, which is
+    /// `String.format(Locale.ROOT, "%,d bytes, block size: %,d, blocks: %,d",
+    /// size(), blockSize(), blocks.size())`.
+    ///
+    /// Java's `blocks` deque holds every allocated block, the one being filled
+    /// included, and is empty until the first write; here the filled blocks are
+    /// `completed` and the one being filled is `current`, a zero-capacity vector
+    /// until the first allocation — the same accounting
+    /// [`ByteBuffersDataOutput::ram_bytes_used`] uses.
+    ///
+    /// [`ByteBuffersDataOutput::ram_bytes_used`]: crate::util::Accountable::ram_bytes_used
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::util::java_fmt::format_grouped;
+        let mut blocks = self.completed.len();
+        if self.current.capacity() > 0 {
+            blocks += 1;
+        }
+        write!(
+            f,
+            "{} bytes, block size: {}, blocks: {}",
+            format_grouped(self.size() as i64),
+            format_grouped(self.block_size() as i64),
+            format_grouped(blocks as i64),
+        )
+    }
+}
+
+impl std::fmt::Display for NRTCachingDirectory {
+    /// Port of `NRTCachingDirectory.toString()`, which
+    /// [`Directory::directory_to_string`] renders.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.directory_to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -16217,75 +16287,5 @@ mod tests {
             ),
             "the secondary directory is closed"
         );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Object contracts: the `toString()` bodies of this module's store types
-// ---------------------------------------------------------------------------
-
-impl std::fmt::Display for ByteBuffersDataInput {
-    /// Port of `ByteBuffersDataInput.toString()`, which is
-    /// `String.format(Locale.ROOT, "%,d bytes, block size: %,d, blocks: %,d,
-    /// position: %,d%s", length(), blockSize(), blocks.length, position(),
-    /// offset == 0 ? "" : ...)`.
-    ///
-    /// Two details of Java's arithmetic survive here:
-    ///
-    /// * the block size comes from [`ByteBuffersDataInput::block_size`], which
-    ///   reports `1` for a one-block input exactly as Java's `blockSize()`
-    ///   does.
-    /// * `%,d` groups the digits in threes under `Locale.ROOT`.
-    ///
-    /// The `offset` suffix is never emitted, because this port's `slice()`
-    /// joins the sliced views into one block whose offset is zero — the
-    /// divergence already documented on [`ByteBuffersDataInput::slice`].
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use crate::util::java_fmt::format_grouped;
-        let block_size = self.block_size() as i64;
-        write!(
-            f,
-            "{} bytes, block size: {}, blocks: {}, position: {}",
-            format_grouped(self.length as i64),
-            format_grouped(block_size),
-            format_grouped(self.blocks.len() as i64),
-            format_grouped(self.pos as i64),
-        )
-    }
-}
-
-impl std::fmt::Display for ByteBuffersDataOutput {
-    /// Port of `ByteBuffersDataOutput.toString()`, which is
-    /// `String.format(Locale.ROOT, "%,d bytes, block size: %,d, blocks: %,d",
-    /// size(), blockSize(), blocks.size())`.
-    ///
-    /// Java's `blocks` deque holds every allocated block, the one being filled
-    /// included, and is empty until the first write; here the filled blocks are
-    /// `completed` and the one being filled is `current`, a zero-capacity vector
-    /// until the first allocation — the same accounting
-    /// [`ByteBuffersDataOutput::ram_bytes_used`] uses.
-    ///
-    /// [`ByteBuffersDataOutput::ram_bytes_used`]: crate::util::Accountable::ram_bytes_used
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use crate::util::java_fmt::format_grouped;
-        let mut blocks = self.completed.len();
-        if self.current.capacity() > 0 {
-            blocks += 1;
-        }
-        write!(
-            f,
-            "{} bytes, block size: {}, blocks: {}",
-            format_grouped(self.size() as i64),
-            format_grouped(self.block_size() as i64),
-            format_grouped(blocks as i64),
-        )
-    }
-}
-
-impl std::fmt::Display for NRTCachingDirectory {
-    /// Port of `NRTCachingDirectory.toString()`, which
-    /// [`Directory::directory_to_string`] renders.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.directory_to_string())
     }
 }

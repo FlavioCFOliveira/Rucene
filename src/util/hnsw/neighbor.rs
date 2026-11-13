@@ -785,6 +785,26 @@ impl NeighborQueue {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Object contracts: the `toString()` bodies of the two neighbour containers
+// -----------------------------------------------------------------------------
+
+impl std::fmt::Display for NeighborArray {
+    /// Port of `NeighborArray.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NeighborArray[{}]", self.size())
+    }
+}
+
+impl std::fmt::Display for NeighborQueue {
+    /// Port of `NeighborQueue.toString()`, which names itself `Neighbors`
+    /// rather than after its own class and reports the size of the backing
+    /// heap.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Neighbors[{}]", self.heap.size())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -965,25 +985,5 @@ mod tests {
         assert_eq!((arr.score(0).to_bits(), arr.score(1).to_bits()), (0, 0));
         arr.add_in_order(9, 0.75).unwrap();
         assert_eq!((arr.size(), arr.node(0), arr.node(1)), (1, 9, 0));
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Object contracts: the `toString()` bodies of the two neighbour containers
-// -----------------------------------------------------------------------------
-
-impl std::fmt::Display for NeighborArray {
-    /// Port of `NeighborArray.toString()`.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NeighborArray[{}]", self.size())
-    }
-}
-
-impl std::fmt::Display for NeighborQueue {
-    /// Port of `NeighborQueue.toString()`, which names itself `Neighbors`
-    /// rather than after its own class and reports the size of the backing
-    /// heap.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Neighbors[{}]", self.heap.size())
     }
 }

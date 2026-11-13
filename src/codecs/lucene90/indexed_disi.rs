@@ -55,8 +55,8 @@ fn flush(
         }
     } else {
         let bits = buffer.get_bits();
-        for word_idx in 0..DENSE_BLOCK_LONGS {
-            let word = bits[word_idx].load(std::sync::atomic::Ordering::Relaxed);
+        for (word_idx, bit_word) in bits[..DENSE_BLOCK_LONGS].iter().enumerate() {
+            let word = bit_word.load(std::sync::atomic::Ordering::Relaxed);
             if word == 0 {
                 continue;
             }
@@ -102,7 +102,7 @@ pub fn write_bit_set(
     out: &mut dyn IndexOutput,
     dense_rank_power: i8,
 ) -> Result<i16> {
-    if (dense_rank_power < 7 || dense_rank_power > 15) && dense_rank_power != -1 {
+    if !(7..=15).contains(&dense_rank_power) && dense_rank_power != -1 {
         // `IndexedDISI.java:195-203`; `(int) Math.pow(2, denseRankPower)`
         // truncates and saturates as `as i32` does.
         return Err(LuceneError::illegal_argument(format!(
@@ -339,7 +339,7 @@ impl IndexedDISI {
         dense_rank_power: i8,
         cost: i64,
     ) -> Result<Self> {
-        if (dense_rank_power < 7 || dense_rank_power > 15) && dense_rank_power != -1 {
+        if !(7..=15).contains(&dense_rank_power) && dense_rank_power != -1 {
             // `IndexedDISI.java:332-340`, whose message ends in `". "`.
             return Err(LuceneError::illegal_argument(format!(
                 "Acceptable values for denseRankPower are 7-15 (every 128-32768 docIDs). \
@@ -598,6 +598,8 @@ impl IndexedDISI {
     ///
     /// Equivalent to `Method.intoBitSetWithinBlock(IndexedDISI, int,
     /// FixedBitSet, int)` of each block method (`IndexedDISI.java`).
+    // Lucene: `Method.intoBitSetWithinBlock` advances the iterator, so it takes `&mut self`.
+    #[allow(clippy::wrong_self_convention)]
     fn into_bit_set_within_block(
         &mut self,
         up_to: i32,
@@ -943,7 +945,7 @@ mod tests {
         let mut disi = IndexedDISI::new(
             &input,
             0,
-            input.length() as i64,
+            input.length(),
             jump_count as i32,
             DEFAULT_DENSE_RANK_POWER,
             10,
@@ -968,7 +970,7 @@ mod tests {
         let mut disi = IndexedDISI::new(
             &input,
             0,
-            input.length() as i64,
+            input.length(),
             jump_count as i32,
             DEFAULT_DENSE_RANK_POWER,
             docs.len() as i64,

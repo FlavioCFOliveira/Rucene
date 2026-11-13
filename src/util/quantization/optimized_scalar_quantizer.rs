@@ -403,7 +403,7 @@ impl OptimizedScalarQuantizer {
                 i += 1;
                 j -= 1;
             }
-            let index = ((i + 7) / 8) - 1;
+            let index = i.div_ceil(8) - 1;
             quant_query_byte[index] = lower_byte as u8;
             quant_query_byte[index + quarter] = lower_middle_byte as u8;
             quant_query_byte[index + half] = upper_middle_byte as u8;

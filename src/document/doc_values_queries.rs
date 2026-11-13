@@ -1713,7 +1713,7 @@ mod tests {
             );
             // A free slot always remains, which is what lets `add` terminate.
             assert!(
-                set.table.iter().any(|&slot| slot == MISSING),
+                set.table.contains(&MISSING),
                 "the table for {n} values must keep a free slot"
             );
         }

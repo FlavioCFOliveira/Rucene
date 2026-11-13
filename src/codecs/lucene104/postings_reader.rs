@@ -2183,19 +2183,18 @@ mod tests {
         )
     }
 
+    /// Per document, its `(position, payload, start_offset, end_offset)` entries.
+    type TestPositions = Vec<Vec<(i32, Option<&'static [u8]>, i32, i32)>>;
+
     #[derive(Debug, Clone, Default)]
     struct TestPostingsEnum {
         docs: Vec<i32>,
         freqs: Vec<i32>,
-        positions: Vec<Vec<(i32, Option<&'static [u8]>, i32, i32)>>,
+        positions: TestPositions,
     }
 
     impl TestPostingsEnum {
-        fn new(
-            docs: Vec<i32>,
-            freqs: Vec<i32>,
-            positions: Vec<Vec<(i32, Option<&'static [u8]>, i32, i32)>>,
-        ) -> Self {
+        fn new(docs: Vec<i32>, freqs: Vec<i32>, positions: TestPositions) -> Self {
             Self {
                 docs,
                 freqs,

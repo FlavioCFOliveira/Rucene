@@ -227,7 +227,7 @@ impl ConstantScoreWeightImpl for ConstantScoreQueryWeight {
         };
         Ok(Some(Box::new(ConstantScoreQuerySupplier {
             inner,
-            score: score,
+            score,
             score_mode: self.score_mode,
         })))
     }

@@ -832,6 +832,9 @@ pub trait PushPostingsWriterBase {
         docs_seen: &mut FixedBitSet,
         norms: Option<&dyn NormsProducer>,
     ) -> Result<Option<BlockTermState>> {
+        // `fieldInfo` is a field of Java's writer, read in place
+        // (`PushPostingsWriterBase.java:118-124`); it is borrowed from the push
+        // state for exactly the two reads below, so no per-term copy is made.
         let field_info = self
             .push_state()
             .field_info
@@ -842,8 +845,7 @@ pub trait PushPostingsWriterBase {
                 LuceneError::null_pointer_with_message(
                     "Cannot invoke \"org.apache.lucene.index.FieldInfo.hasNorms()\" because \"this.fieldInfo\" is null",
                 )
-            })?
-            .clone();
+            })?;
 
         // A fresh, forward-only iterator over the field's norms for every term
         // (`PushPostingsWriterBase.java:118-124`): the writer reads only this
@@ -858,7 +860,7 @@ pub trait PushPostingsWriterBase {
                     "Cannot invoke \"org.apache.lucene.codecs.NormsProducer.getNorms(org.apache.lucene.index.FieldInfo)\" because \"norms\" is null",
                 )
             })?;
-            norms.get_norms(&field_info)?
+            norms.get_norms(field_info)?
         };
         self.start_term(norm_values)?;
 
@@ -1077,7 +1079,7 @@ mod tests {
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {
-            Ok(Box::new(StubImpactsEnum::default()))
+            Ok(Box::new(StubImpactsEnum))
         }
 
         fn term_state(&mut self) -> Result<Box<dyn TermState>> {
@@ -1207,7 +1209,7 @@ mod tests {
         }
 
         fn get_impacts(&mut self) -> Result<Box<dyn crate::index::Impacts>> {
-            Ok(Box::new(StubImpacts::default()))
+            Ok(Box::new(StubImpacts))
         }
     }
 

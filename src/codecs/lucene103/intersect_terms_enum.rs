@@ -353,6 +353,8 @@ impl IntersectTermsEnumFrame {
     /// Reads the next entry, returning whether it is a sub-block.
     ///
     /// Equivalent to `IntersectTermsEnumFrame.next`.
+    // Lucene: the method is `IntersectTermsEnumFrame.next`; it is not an iterator.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<bool> {
         if self.is_leaf_block {
             self.next_leaf()?;
@@ -935,9 +937,13 @@ impl IntersectTermsEnum {
         let Some(cur) = self.current else {
             return Err(LuceneError::null_pointer());
         };
-        let field_info = self.field.field_info().clone();
-        let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
-        self.stack[cur].decode_meta_data(&field_info, reader.as_ref())
+        // `currentFrame.decodeMetaData()` reads `fr.fieldInfo` and
+        // `fr.parent.postingsReader` in place
+        // (`IntersectTermsEnumFrame.java:317`): borrowed beside the frame
+        // (disjoint fields), not copied.
+        let field = &self.field;
+        self.stack[cur]
+            .decode_meta_data(field.field_info(), field.shared().postings_reader.as_ref())
     }
 }
 
@@ -970,10 +976,7 @@ impl TermsEnum for IntersectTermsEnum {
                 return Ok(None);
             };
 
-            let state;
-            let last_state;
-
-            if self.stack[cur].suffix != 0 {
+            let (state, last_state) = if self.stack[cur].suffix != 0 {
                 let label = i32::from(self.stack[cur].suffix_byte(self.stack[cur].start_byte_pos));
 
                 // Below the current transition's range: skip entries until one
@@ -1061,12 +1064,10 @@ impl TermsEnum for IntersectTermsEnum {
                     }
                     continue 'next_term;
                 }
-                state = running;
-                last_state = running_last;
+                (running, running_last)
             } else {
-                state = self.stack[cur].state;
-                last_state = self.stack[cur].last_state;
-            }
+                (self.stack[cur].state, self.stack[cur].last_state)
+            };
 
             if is_sub_block {
                 self.copy_term();
@@ -1143,10 +1144,14 @@ impl TermsEnum for IntersectTermsEnum {
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
         self.decode_current_meta_data()?;
         let cur = self.current.ok_or_else(LuceneError::null_pointer)?;
-        let field_info = self.field.field_info().clone();
+        // `fr.parent.postingsReader.impacts(fr.fieldInfo, currentFrame.termState,
+        // flags)` (`IntersectTermsEnum.java:226`): the field info is borrowed, as Java
+        // passes its reference.
         let state = self.stack[cur].state_data;
-        let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
-        reader.impacts(&field_info, &state, flags)
+        self.field
+            .shared()
+            .postings_reader
+            .impacts(self.field.field_info(), &state, flags)
     }
 
     fn postings(
@@ -1156,10 +1161,16 @@ impl TermsEnum for IntersectTermsEnum {
     ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.decode_current_meta_data()?;
         let cur = self.current.ok_or_else(LuceneError::null_pointer)?;
-        let field_info = self.field.field_info().clone();
+        // `fr.parent.postingsReader.postings(fr.fieldInfo,
+        // currentFrame.termState, reuse, flags)` (`IntersectTermsEnum.java:220`): the
+        // field info is borrowed, as Java passes its reference.
         let state = self.stack[cur].state_data;
-        let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
-        Ok(Some(reader.postings(&field_info, &state, reuse, flags)?))
+        Ok(Some(self.field.shared().postings_reader.postings(
+            self.field.field_info(),
+            &state,
+            reuse,
+            flags,
+        )?))
     }
 
     /// Equivalent to `IntersectTermsEnum.termState()`
@@ -1169,6 +1180,6 @@ impl TermsEnum for IntersectTermsEnum {
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
         self.decode_current_meta_data()?;
         let cur = self.current.ok_or_else(LuceneError::null_pointer)?;
-        Ok(Box::new(self.stack[cur].state_data.clone()))
+        Ok(Box::new(self.stack[cur].state_data))
     }
 }

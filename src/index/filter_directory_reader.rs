@@ -4371,8 +4371,7 @@ mod tests {
         let mut visitor = CountingVisitor { visited: 0 };
         let error = values
             .intersect(&mut visitor)
-            .err()
-            .expect("the timeout fires during the traversal");
+            .expect_err("the timeout fires during the traversal");
         println!(
             "point traversal stopped after {} visits with: {error}",
             visitor.visited

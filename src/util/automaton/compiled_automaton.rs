@@ -423,14 +423,9 @@ impl CompiledAutomaton {
                             return Some(output.get());
                         }
                         // pop
-                        match stack.pop() {
-                            None => return None,
-                            Some(popped) => {
-                                state = popped;
-                                idx -= 1;
-                                label = i32::from(input.bytes[input.offset + idx]);
-                            }
-                        }
+                        state = stack.pop()?;
+                        idx -= 1;
+                        label = i32::from(input.bytes[input.offset + idx]);
                     } else {
                         break;
                     }

@@ -1256,6 +1256,8 @@ pub struct Lucene90CompressingStoredFieldsWriter {
 }
 
 impl Lucene90CompressingStoredFieldsWriter {
+    // Lucene: mirrors the nine-parameter `Lucene90CompressingStoredFieldsWriter` constructor.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         directory: &Arc<dyn Directory>,
         segment_info: &SegmentInfo,
@@ -1658,8 +1660,7 @@ impl Lucene90CompressingStoredFieldsWriter {
         let float_bits = value.to_bits();
 
         if value == int_val as f32
-            && int_val >= -1
-            && int_val <= 0x7D
+            && (-1..=0x7D).contains(&int_val)
             && float_bits != NEGATIVE_ZERO_FLOAT_BITS
         {
             out.write_byte((0x80 | (1 + int_val)) as u8)
@@ -1680,8 +1681,7 @@ impl Lucene90CompressingStoredFieldsWriter {
         let double_bits = value.to_bits();
 
         if value == int_val as f64
-            && int_val >= -1
-            && int_val <= 0x7C
+            && (-1..=0x7C).contains(&int_val)
             && double_bits != NEGATIVE_ZERO_DOUBLE_BITS
         {
             out.write_byte((0x80 | (int_val + 1)) as u8)
@@ -3254,18 +3254,13 @@ pub static BEST_SPEED_MODE: std::sync::LazyLock<Arc<dyn CompressionMode>> =
     std::sync::LazyLock::new(|| Arc::new(compressing::LZ4WithPresetDictCompressionMode::new()));
 
 /// Stored-fields mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
     /// LZ4-based compression tuned for speed.
+    #[default]
     BestSpeed,
     /// Deflate-based compression tuned for ratio.
     BestCompression,
-}
-
-impl Default for Mode {
-    fn default() -> Self {
-        Mode::BestSpeed
-    }
 }
 
 impl fmt::Display for Mode {

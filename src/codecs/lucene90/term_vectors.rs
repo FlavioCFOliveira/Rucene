@@ -2148,11 +2148,11 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
         )?;
         let skip;
         let num_fields;
-        let total_fields;
-        if chunk_docs == 1 {
+
+        let total_fields = if chunk_docs == 1 {
             skip = 0;
             num_fields = reader.input().read_v_int()?;
-            total_fields = num_fields;
+            num_fields
         } else {
             reader.reset(i64::from(chunk_docs));
             // `int sum; sum += reader.next()`: Java's compound assignment
@@ -2167,8 +2167,8 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
             for _ in doc.wrapping_add(1)..doc_base.wrapping_add(chunk_docs) {
                 sum = sum.wrapping_add(reader.next()? as i32);
             }
-            total_fields = sum;
-        }
+            sum
+        };
 
         if num_fields == 0 {
             return Ok(None);
@@ -2192,7 +2192,7 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
             reader.input(),
             Format::Packed,
             self.packed_ints_version,
-            total_distinct_fields as i32,
+            total_distinct_fields,
             bits_per_field_num,
             1,
         )?;
@@ -2927,6 +2927,8 @@ impl Lucene90CompressingTermVectorsReader {
     /// (`Lucene90CompressingTermVectorsReader.java:783-829`): the shared
     /// iterator is reset to `total_positions`, skipped past the fields before
     /// the document, read in batches, and skipped to the end of the section.
+    // Lucene: mirrors the eight-parameter `readPositions`; `reader` is Java's field `reader`.
+    #[allow(clippy::too_many_arguments)]
     fn read_positions(
         reader: &mut BlockPackedReaderIterator<'_, dyn IndexInput>,
         skip: i32,
@@ -4634,9 +4636,7 @@ mod tests {
             .iter()
             .map(|name| (*name).to_string())
             .collect();
-        segment_info
-            .set_files(loose.iter().cloned().collect::<Vec<String>>())
-            .unwrap();
+        segment_info.set_files(loose.to_vec()).unwrap();
         let compound_format = crate::codecs::lucene90::compound::Lucene90CompoundFormat;
         compound_format
             .write(directory.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)

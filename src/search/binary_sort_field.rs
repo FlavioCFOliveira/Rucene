@@ -15,6 +15,10 @@ use crate::index::{BinaryDocValues, DocValues, LeafReader};
 use crate::search::sort::{MissingValue, SortField, SortFieldKind, SortFieldType};
 use crate::store::{DataInput, DataOutput};
 
+/// The closure a [`SortKeySource`] holds.
+type SortKeyFn =
+    dyn Fn(&BinarySortField, &dyn LeafReader) -> Result<Box<dyn BinaryDocValues>> + Send + Sync;
+
 /// The body of a subclass's override of the protected
 /// `BinarySortField.getSortKeyDocValues(LeafReader)`.
 ///
@@ -24,11 +28,7 @@ use crate::store::{DataInput, DataOutput};
 /// `BinarySortField.equals` compares the run-time class and the provider
 /// name, and a subclass is identified here by the provider name it passes.
 #[derive(Clone)]
-pub struct SortKeySource(
-    pub  Arc<
-        dyn Fn(&BinarySortField, &dyn LeafReader) -> Result<Box<dyn BinaryDocValues>> + Send + Sync,
-    >,
-);
+pub struct SortKeySource(pub Arc<SortKeyFn>);
 
 impl PartialEq for SortKeySource {
     fn eq(&self, _other: &Self) -> bool {

@@ -546,6 +546,8 @@ impl DocValuesRangeIterator {
     ///
     /// Equivalent to the three `BulkBlockRangeIterator.intoMaybeBlock`
     /// implementations, dispatched on the kind of doc values.
+    // Lucene: `BulkBlockRangeIterator.intoMaybeBlock` advances the iterator, so it takes `&mut self`.
+    #[allow(clippy::wrong_self_convention)]
     fn into_maybe_block(
         &mut self,
         block_start: i32,

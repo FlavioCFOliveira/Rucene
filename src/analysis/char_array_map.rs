@@ -100,9 +100,7 @@ impl<V> CharArrayMap<V> {
     pub fn clear(&mut self) {
         self.assert_modifiable();
         self.count = 0;
-        for key in &mut self.keys {
-            *key = None;
-        }
+        self.keys.fill(None);
         for value in &mut self.values {
             *value = None;
         }
@@ -912,6 +910,49 @@ impl<'a, V> Iterator for Iter<'a, V> {
     }
 }
 
+impl<V: std::fmt::Debug> std::fmt::Display for CharArrayMap<V> {
+    /// Renders the map as `{key=value, …}`.
+    ///
+    /// Equivalent to `CharArrayMap.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{")?;
+        let mut first = true;
+        for (key, value) in self.iter() {
+            if !first {
+                write!(f, ", ")?;
+            }
+            first = false;
+            write!(
+                f,
+                "{}={value:?}",
+                crate::analysis::character_utils::utf16_to_string(key)
+            )?;
+        }
+        write!(f, "}}")
+    }
+}
+
+impl<V: PartialEq> PartialEq for CharArrayMap<V> {
+    /// Two maps are equal when they hold the same keys with the same values.
+    ///
+    /// Equivalent to `AbstractMap.equals(Object)`, which `CharArrayMap`
+    /// inherits.
+    fn eq(&self, other: &Self) -> bool {
+        if self.size() != other.size() {
+            return false;
+        }
+        self.keys
+            .iter()
+            .zip(self.values.iter())
+            .filter_map(|(k, v)| k.as_ref().zip(v.as_ref()))
+            .all(|(key, value)| {
+                other
+                    .get_chars(key, 0, key.len())
+                    .is_some_and(|found| found == value)
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1024,48 +1065,5 @@ mod tests {
         assert_eq!(map.get(""), Some(&"empty"));
         assert!(map.contains_key(""));
         assert_eq!(map.size(), 1);
-    }
-}
-
-impl<V: std::fmt::Debug> std::fmt::Display for CharArrayMap<V> {
-    /// Renders the map as `{key=value, …}`.
-    ///
-    /// Equivalent to `CharArrayMap.toString()`.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{{")?;
-        let mut first = true;
-        for (key, value) in self.iter() {
-            if !first {
-                write!(f, ", ")?;
-            }
-            first = false;
-            write!(
-                f,
-                "{}={value:?}",
-                crate::analysis::character_utils::utf16_to_string(key)
-            )?;
-        }
-        write!(f, "}}")
-    }
-}
-
-impl<V: PartialEq> PartialEq for CharArrayMap<V> {
-    /// Two maps are equal when they hold the same keys with the same values.
-    ///
-    /// Equivalent to `AbstractMap.equals(Object)`, which `CharArrayMap`
-    /// inherits.
-    fn eq(&self, other: &Self) -> bool {
-        if self.size() != other.size() {
-            return false;
-        }
-        self.keys
-            .iter()
-            .zip(self.values.iter())
-            .filter_map(|(k, v)| k.as_ref().zip(v.as_ref()))
-            .all(|(key, value)| {
-                other
-                    .get_chars(key, 0, key.len())
-                    .is_some_and(|found| found == value)
-            })
     }
 }

@@ -10133,6 +10133,8 @@ fn lock_reader_map(
         .unwrap_or_else(std::sync::PoisonError::into_inner))
 }
 
+/// The `mergeFinished` callback of the merges collected for a full flush.
+type MergeFinishedFn = Arc<dyn Fn(&SegmentCommitInfo) -> Result<()> + Send + Sync>;
 impl IndexWriter {
     /// Takes `commit_lock`, which the calling thread may already hold.
     fn lock_commit(&self) -> Result<ReentrantGuard<'_>> {
@@ -10307,28 +10309,26 @@ impl IndexWriter {
             // writer keeps — so it holds a weak handle on the writer rather
             // than borrowing it.
             let writer = Arc::downgrade(&writer_handle);
-            let merge_finished: Arc<dyn Fn(&SegmentCommitInfo) -> Result<()> + Send + Sync> =
-                Arc::new(move |sci: &SegmentCommitInfo| {
-                    debug_assert!(
-                        !stop.load(Ordering::Acquire),
-                        "illegal state  merge reader must be not pulled since we already stopped \
+            let merge_finished: MergeFinishedFn = Arc::new(move |sci: &SegmentCommitInfo| {
+                debug_assert!(
+                    !stop.load(Ordering::Acquire),
+                    "illegal state  merge reader must be not pulled since we already stopped \
                          waiting for merges"
-                    );
-                    // A dropped writer has no reader left to hand out; there is
-                    // nothing to collect and nothing to protect.
-                    let Some(writer) = writer.upgrade() else {
-                        return Ok(());
-                    };
-                    let apply =
-                        writer.nrt_reader_factory(sci, max_wait, &opened_read_only_clones)?;
-                    lock_reader_map(&merged_readers)?.insert(sci.info.name.clone(), apply);
-                    // We need to incRef the files of the opened SR otherwise
-                    // it's possible that another merge removes the segment
-                    // before we pass it on to the SDR.
-                    let mut state = writer.state()?;
-                    state.deleter.inc_ref_files(sci.files()?.iter());
-                    Ok(())
-                });
+                );
+                // A dropped writer has no reader left to hand out; there is
+                // nothing to collect and nothing to protect.
+                let Some(writer) = writer.upgrade() else {
+                    return Ok(());
+                };
+                let apply = writer.nrt_reader_factory(sci, max_wait, &opened_read_only_clones)?;
+                lock_reader_map(&merged_readers)?.insert(sci.info.name.clone(), apply);
+                // We need to incRef the files of the opened SR otherwise
+                // it's possible that another merge removes the segment
+                // before we pass it on to the SDR.
+                let mut state = writer.state()?;
+                state.deleter.inc_ref_files(sci.files()?.iter());
+                Ok(())
+            });
 
             nrt.on_get_reader_merges = self.prepare_point_in_time_merge(
                 &mut guard,
@@ -10661,7 +10661,7 @@ impl IndexWriter {
         merging_segment_infos: Arc<Mutex<SegmentInfos>>,
         stop_collecting_merge_results: Arc<AtomicBool>,
         trigger: MergeTrigger,
-        merge_finished: Arc<dyn Fn(&SegmentCommitInfo) -> Result<()> + Send + Sync>,
+        merge_finished: MergeFinishedFn,
     ) -> Result<Option<MergeSpecification>> {
         debug_assert!(
             matches!(trigger, MergeTrigger::GetReader | MergeTrigger::Commit),

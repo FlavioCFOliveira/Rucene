@@ -1160,7 +1160,7 @@ impl ChildSaveStrategy {
 #[allow(dead_code)]
 enum PendingEntry {
     Term(PendingTerm),
-    Block(PendingBlock),
+    Block(Box<PendingBlock>),
 }
 
 /// A term waiting to be written to a block.
@@ -1585,7 +1585,8 @@ impl<'a> TermsWriter<'a> {
         first_block.index = Some(index);
 
         self.pending.truncate(self.pending.len() - count as usize);
-        self.pending.push(PendingEntry::Block(first_block));
+        self.pending
+            .push(PendingEntry::Block(Box::new(first_block)));
         Ok(())
     }
 
@@ -1593,6 +1594,8 @@ impl<'a> TermsWriter<'a> {
         bytes[start..end].iter().all(|&b| b == value)
     }
 
+    // Lucene: `writeBlock` takes seven parameters; the postings writer is Java's field `postingsWriter`.
+    #[allow(clippy::too_many_arguments)]
     fn write_block(
         &mut self,
         prefix_length: i32,
@@ -1899,7 +1902,7 @@ impl<'a> TermsWriter<'a> {
 
             debug_assert!(self.pending.len() == 1);
             let root = match self.pending.pop() {
-                Some(PendingEntry::Block(b)) => b,
+                Some(PendingEntry::Block(b)) => *b,
                 _ => panic!("expected single root block"),
             };
             debug_assert!(root.prefix.length == 0);
@@ -3428,10 +3431,11 @@ mod tests {
             _norms: Option<&dyn NormsProducer>,
         ) -> Result<Option<BlockTermState>> {
             docs_seen.set(0);
-            let mut state = BlockTermState::default();
-            state.doc_freq = 1;
-            state.total_term_freq = 1;
-            Ok(Some(state))
+            Ok(Some(BlockTermState {
+                doc_freq: 1,
+                total_term_freq: 1,
+                ..BlockTermState::default()
+            }))
         }
 
         fn encode_term(

@@ -424,7 +424,9 @@ pub struct FeatureField {
     name: String,
     feature_name: String,
     feature_value: AtomicRefCell<f32>,
-    field_type: FieldType,
+    /// `FIELD_TYPE` or `FIELD_TYPE_STORE_TERM_VECTORS`, the one static object
+    /// every Java `FeatureField` references (`FeatureField.java:108-109,147`).
+    field_type: Arc<FieldType>,
 }
 
 impl std::fmt::Display for FeatureField {
@@ -445,11 +447,11 @@ impl FeatureField {
     /// (`FeatureField.java:108, 112-114`), which Java never freezes: a field
     /// built on it is therefore validated by `IndexingChain` for every
     /// document, since only a frozen type takes the validated-type shortcut
-    /// (`IndexingChain.java:1819-1825`). Each field holds a clone, which, like
-    /// Java's shared unfrozen object, has no frozen identity.
-    fn field_type_static() -> &'static FieldType {
-        static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
-        TYPE.get_or_init(|| Self::new_field_type(false))
+    /// (`IndexingChain.java:1819-1825`). Every field holds this one object,
+    /// as Java's fields do, so it has no frozen identity either.
+    fn field_type_static() -> &'static Arc<FieldType> {
+        static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
+        TYPE.get_or_init(|| Arc::new(Self::new_field_type(false)))
     }
 
     /// The type every feature field with term vectors is created with.
@@ -457,9 +459,9 @@ impl FeatureField {
     /// Equivalent to the private static
     /// `FeatureField.FIELD_TYPE_STORE_TERM_VECTORS` (`FeatureField.java:109,
     /// 116-119`), never frozen either.
-    fn field_type_store_term_vectors() -> &'static FieldType {
-        static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
-        TYPE.get_or_init(|| Self::new_field_type(true))
+    fn field_type_store_term_vectors() -> &'static Arc<FieldType> {
+        static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
+        TYPE.get_or_init(|| Arc::new(Self::new_field_type(true)))
     }
 
     /// The body of `FeatureField`'s static initialiser for one of its two
@@ -506,11 +508,11 @@ impl FeatureField {
         let feature_name = feature_name.into();
         // `storeTermVectors ? FIELD_TYPE_STORE_TERM_VECTORS : FIELD_TYPE`
         // (`FeatureField.java:147`).
-        let field_type = if store_term_vectors {
-            Self::field_type_store_term_vectors().clone()
+        let field_type = Arc::clone(if store_term_vectors {
+            Self::field_type_store_term_vectors()
         } else {
-            Self::field_type_static().clone()
-        };
+            Self::field_type_static()
+        });
 
         let field = Self {
             name,
@@ -593,7 +595,7 @@ impl IndexableField for FeatureField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(

@@ -647,9 +647,9 @@ impl CacheState {
         debug_assert!(!is_boost_query(query.as_ref()));
         debug_assert!(!is_constant_score_query(query.as_ref()));
         let query_key = QueryKey::new(query);
-        if !leaf_cache.cache.contains_key(&query_key) {
+        if let std::collections::hash_map::Entry::Vacant(e) = leaf_cache.cache.entry(query_key) {
             let ram = RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY + cached.ram_bytes_used();
-            leaf_cache.cache.insert(query_key, cached);
+            e.insert(cached);
             leaf_cache.ram_bytes_used += ram;
             self.on_doc_id_set_cache(&key, ram);
         }
@@ -948,6 +948,8 @@ impl LRUQueryCache {
     ) -> Result<Self> {
         // Spelled as Lucene spells it: `>= 1 == false` lets a NaN through the
         // guard, because every comparison against NaN is false.
+        // Lucene: `skipCacheFactor >= 1 == false` (`LRUQueryCache.java:128`), NaN-admitting.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
         if !(skip_cache_factor >= 1.0) {
             return Err(LuceneError::illegal_argument(format!(
                 "skipCacheFactor must be no less than 1, get {}",

@@ -169,7 +169,7 @@ impl TokenizerLogic for StandardTokenizerLogic {
                 interface_mut::<dyn OffsetAttribute>(source)?
                     .set_offset(correct(start), correct(start + self.scanner.yylength()));
                 interface_mut::<dyn TypeAttribute>(source)?
-                    .set_type(TOKEN_TYPES[token_type as usize].to_string());
+                    .set_type_static(TOKEN_TYPES[token_type as usize]);
                 return Ok(true);
             } else {
                 // When we skip a too-long term, we still increment the

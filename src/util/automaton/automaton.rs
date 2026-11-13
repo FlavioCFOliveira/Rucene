@@ -1108,7 +1108,7 @@ mod ram_bytes_used_tests {
         // Java's terms: BASE_RAM_BYTES 48, a null `commonSuffixRef` and `term`
         // and `nfaRunAutomaton` costing nothing, the `ByteRunAutomaton` costing
         // 1321, and the scratch `Transition` costing 32.
-        let expected: i64 = 48 + 0 + 1321 + 0 + 0 + 32;
+        let expected: i64 = 48 + 1321 + 32;
         assert_eq!(expected, 1401, "the transcription of Java's terms");
         assert_eq!(ca.ram_bytes_used(), 1401);
     }

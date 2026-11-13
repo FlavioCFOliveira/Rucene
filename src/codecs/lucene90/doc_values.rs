@@ -2254,10 +2254,10 @@ impl Lucene90DocValuesProducer {
                         Some(FieldEntry::SortedSet(SortedSetEntry::Single(_))) => {
                             inferred_max_value_count = 1;
                         }
-                        Some(FieldEntry::SortedSet(SortedSetEntry::Multi { ords, .. })) => {
-                            if ords.numeric.num_values == i64::from(ords.num_docs_with_field) {
-                                inferred_max_value_count = 1;
-                            }
+                        Some(FieldEntry::SortedSet(SortedSetEntry::Multi { ords, .. }))
+                            if ords.numeric.num_values == i64::from(ords.num_docs_with_field) =>
+                        {
+                            inferred_max_value_count = 1;
                         }
                         _ => {}
                     },

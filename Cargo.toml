@@ -14,11 +14,14 @@ categories = ["database-implementations", "data-structures", "algorithms"]
 # `rucene` (lucene/core, this package), `rucene-codecs` (lucene/codecs),
 # `randomizedtesting` (com.carrotsearch.randomizedtesting 2.8.1, the runner of
 # Lucene's tests) and `rucene-test-framework` (lucene/test-framework).
+# `rucene-cli-example` is not a Lucene module: it is the command-line example
+# that drives the public `rucene` API end to end (sprint 10).
 [workspace]
 members = [
     "crates/rucene-codecs",
     "crates/randomizedtesting",
     "crates/rucene-test-framework",
+    "crates/rucene-cli-example",
 ]
 
 [features]
