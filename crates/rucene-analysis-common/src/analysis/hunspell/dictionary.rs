@@ -2038,9 +2038,7 @@ fn string_builder_reverse(s: &[u16]) -> Vec<u16> {
 ///
 /// # Errors
 ///
-/// What `Charset.forName` throws, and `UnsupportedOperationException` for a
-/// multi-byte charset whose decoder is not emulated (see
-/// [`crate::jdk::charset`]).
+/// What `Charset.forName` throws.
 fn get_decoder(encoding: &[u16]) -> Result<CharsetDecoder> {
     if equals_str(encoding, "ISO8859-14") {
         return Ok(ISO8859_14Decoder::new_decoder());

@@ -262,14 +262,10 @@ impl<R: Read> InputStreamReader<R> {
     /// Equivalent to `new InputStreamReader(input, charset)`: a decoder of
     /// `charset` that replaces malformed input and unmappable characters.
     ///
-    /// # Panics
-    ///
-    /// For a charset whose decoder is not emulated (see
-    /// [`Charset::new_decoder`]); `UTF-8` and the single-byte charsets are.
     pub fn with_charset(input: R, charset: Charset) -> Self {
         let decoder = charset
             .new_decoder()
-            .expect("INVARIANT: the caller passes an emulated charset")
+            .expect("INVARIANT: every JDK 25 charset has a decoder")
             .on_malformed_input(CodingErrorAction::Replace)
             .on_unmappable_character(CodingErrorAction::Replace);
         Self::with_decoder(input, decoder)
@@ -388,6 +384,10 @@ impl<R: Read> InputStreamReader<R> {
                     ));
                 }
             }
+        }
+        if eof {
+            // ## Need to flush decoder
+            self.decoder.reset();
         }
         if cp == 0 && eof {
             return Ok(None);

@@ -15,7 +15,12 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.cjk`.
+//! The Java package `org.apache.lucene.analysis.cjk`: analyzer for Chinese,
+//! Japanese, and Korean, which indexes bigrams. This analyzer generates
+//! bigram terms, which are overlapping groups of two adjacent Han, Hiragana,
+//! Katakana, or Hangul characters.
+//!
+//! Example phrase: "我是中国人"; `CJKAnalyzer` indexes 我是－是中－中国－国人.
 
 pub mod cjk_analyzer;
 pub mod cjk_bigram_filter;

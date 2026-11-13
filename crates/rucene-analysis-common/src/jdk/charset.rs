@@ -46,26 +46,25 @@
 //!   `Charset.availableCharsets()`, ignoring ASCII case as the JDK's
 //!   providers do, and throws `IllegalCharsetNameException` or
 //!   `UnsupportedCharsetException` where `Charset.forName` does;
-//! * [`CharsetDecoder`] decodes `UTF-8` as `sun.nio.cs.UTF_8` does, and every
-//!   single-byte charset (103 tables, `ISO-8859-1` and `US-ASCII` among them)
-//!   from the JDK's own byte-to-unit table, a byte the charset does not map
-//!   being unmappable or malformed input as the JDK reports it; a module's own
-//!   `CharsetDecoder` subclass supplies its decoding loop through
-//!   [`DecodeLoop`].
-//!
-//! **Divergence.** The 68 multi-byte charsets other than `UTF-8` (the
-//! `UTF-16` and `UTF-32` families, `CESU-8`, the CJK and ISCII charsets)
-//! resolve by name, but [`Charset::new_decoder`] raises
-//! `UnsupportedOperationException` for them instead of decoding: they have no
-//! byte-to-unit table, and no Hunspell dictionary, the only reader that names
-//! a charset at run time, is written in one of them.
+//! * [`CharsetDecoder`] decodes every charset `Charset.forName` resolves:
+//!   `UTF-8` as `sun.nio.cs.UTF_8` does, every single-byte charset (103
+//!   tables, `ISO-8859-1` and `US-ASCII` among them) from the JDK's own
+//!   byte-to-unit table, a byte the charset does not map being unmappable or
+//!   malformed input as the JDK reports it, and the 68 other multi-byte
+//!   charsets as [`charset_multibyte`](super::charset_multibyte) emulates
+//!   them; a module's own `CharsetDecoder` subclass supplies its decoding
+//!   loop through [`DecodeLoop`].
 
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 
 use rucene::error::{LuceneError, Result};
 
-use super::charset_data::CHARSETS;
+use super::charset_data::{CHARSETS, MACHINE_ITEMS};
+use super::charset_multibyte::{
+    cesu8_decode_loop, gb18030_data, gb18030_decode_loop, machine, ByteOrder, Gb18030Data,
+    Iscii91Decoder, JisAutoDetectDecoder, MachineDecoder, Utf16Decoder, Utf32Decoder,
+};
 use super::io::CodingErrorAction;
 
 /// A charset of `java.nio.charset.StandardCharsets`, the charsets every Java
@@ -202,8 +201,24 @@ pub(super) enum DecoderData {
     /// A stateless single-byte decoder: the unit of each byte, or
     /// [`UNMAPPABLE`] or [`MALFORMED`].
     SingleByte(&'static [u32; 256]),
-    /// A multi-byte decoder this emulation does not reproduce.
-    NotEmulated,
+    /// A table-driven multi-byte decoder: the byte-sequence machine of
+    /// `MACHINE_ITEMS[index]`.
+    Machine(usize),
+    /// `sun.nio.cs.UnicodeDecoder` with its expected and default byte orders.
+    Utf16 {
+        expected: ByteOrder,
+        default: ByteOrder,
+    },
+    /// `sun.nio.cs.UTF_32Coder.Decoder` with its expected byte order.
+    Utf32(ByteOrder),
+    /// `sun.nio.cs.CESU_8.Decoder`.
+    Cesu8,
+    /// `sun.nio.cs.GB18030.Decoder`.
+    Gb18030,
+    /// `sun.nio.cs.ext.ISCII91.Decoder`.
+    Iscii91,
+    /// `sun.nio.cs.ext.JISAutoDetect.Decoder`.
+    JisAutoDetect,
 }
 
 /// A single-byte table entry: the byte is unmappable input of length 1.
@@ -335,18 +350,24 @@ impl Charset {
     ///
     /// # Errors
     ///
-    /// `UnsupportedOperationException` for a multi-byte charset other than
-    /// `UTF-8` (see the module documentation).
+    /// None for a JDK 25 charset, every one of which decodes; the `Result` is
+    /// `Charset.newDecoder`'s `UnsupportedOperationException`, which a JDK 25
+    /// charset never throws.
     pub fn new_decoder(&self) -> Result<CharsetDecoder> {
         let engine = match self.entry.decoder {
             DecoderData::Utf8 => DecoderEngine::Utf8,
             DecoderData::SingleByte(table) => DecoderEngine::SingleByte(table),
-            DecoderData::NotEmulated => {
-                return Err(LuceneError::unsupported_operation(format!(
-                    "the decoder of charset {} is not emulated",
-                    self.entry.name
-                )))
+            DecoderData::Machine(index) => {
+                DecoderEngine::Machine(MachineDecoder::new(machine(MACHINE_ITEMS[index])))
             }
+            DecoderData::Utf16 { expected, default } => {
+                DecoderEngine::Utf16(Utf16Decoder::new(expected, default))
+            }
+            DecoderData::Utf32(expected) => DecoderEngine::Utf32(Utf32Decoder::new(expected)),
+            DecoderData::Cesu8 => DecoderEngine::Cesu8,
+            DecoderData::Gb18030 => DecoderEngine::Gb18030(gb18030_data()),
+            DecoderData::Iscii91 => DecoderEngine::Iscii91(Iscii91Decoder::new()),
+            DecoderData::JisAutoDetect => DecoderEngine::JisAutoDetect(JisAutoDetectDecoder::new()),
         };
         Ok(CharsetDecoder {
             charset: *self,
@@ -370,6 +391,14 @@ pub enum CoderResult {
     Unmappable(usize),
 }
 
+impl CoderResult {
+    /// Equivalent to `CoderResult.isError()`: malformed input or an
+    /// unmappable character.
+    pub fn is_error(self) -> bool {
+        matches!(self, CoderResult::Malformed(_) | CoderResult::Unmappable(_))
+    }
+}
+
 /// The `decodeLoop(ByteBuffer, CharBuffer)` of a `CharsetDecoder` subclass:
 /// decodes `src[*sp..]` into `dst[*dp..]`, advancing both positions.
 pub trait DecodeLoop: Debug + Send + Sync {
@@ -383,11 +412,18 @@ pub trait DecodeLoop: Debug + Send + Sync {
     ) -> CoderResult;
 }
 
-/// The decoding loop of a [`CharsetDecoder`].
+/// The decoding loop of a [`CharsetDecoder`], with the decoder's state.
 #[derive(Clone)]
 enum DecoderEngine {
     Utf8,
     SingleByte(&'static [u32; 256]),
+    Machine(MachineDecoder),
+    Utf16(Utf16Decoder),
+    Utf32(Utf32Decoder),
+    Cesu8,
+    Gb18030(&'static Gb18030Data),
+    Iscii91(Iscii91Decoder),
+    JisAutoDetect(JisAutoDetectDecoder),
     Custom(Arc<dyn DecodeLoop>),
 }
 
@@ -453,18 +489,56 @@ impl CharsetDecoder {
         self.unmappable
     }
 
-    /// The decoder's `decodeLoop`.
+    /// The decoder's `decodeLoop`: decodes `src[*sp..]` into `dst[*dp..]`,
+    /// advancing both positions and the decoder's state.
     pub(crate) fn decode_loop(
-        &self,
+        &mut self,
         src: &[u8],
         sp: &mut usize,
         dst: &mut [u16],
         dp: &mut usize,
     ) -> CoderResult {
-        match &self.engine {
+        match &mut self.engine {
             DecoderEngine::Utf8 => super::io::utf8_decode_loop(src, sp, dst, dp),
             DecoderEngine::SingleByte(table) => single_byte_decode_loop(table, src, sp, dst, dp),
+            DecoderEngine::Machine(decoder) => decoder.decode_loop(src, sp, dst, dp),
+            DecoderEngine::Utf16(decoder) => decoder.decode_loop(src, sp, dst, dp),
+            DecoderEngine::Utf32(decoder) => decoder.decode_loop(src, sp, dst, dp),
+            DecoderEngine::Cesu8 => cesu8_decode_loop(src, sp, dst, dp),
+            DecoderEngine::Gb18030(data) => gb18030_decode_loop(data, src, sp, dst, dp),
+            DecoderEngine::Iscii91(decoder) => decoder.decode_loop(src, sp, dst, dp),
+            DecoderEngine::JisAutoDetect(decoder) => decoder.decode_loop(src, sp, dst, dp),
             DecoderEngine::Custom(decode_loop) => decode_loop.decode_loop(src, sp, dst, dp),
+        }
+    }
+
+    /// Resets this decoder, clearing any internal state: the decoder's
+    /// `implReset()`.
+    ///
+    /// Equivalent to `CharsetDecoder.reset()`. As in the JDK, `x-ISCII91`
+    /// does not override `implReset` and keeps its held sign.
+    pub fn reset(&mut self) {
+        match &mut self.engine {
+            DecoderEngine::Machine(decoder) => decoder.reset(),
+            DecoderEngine::Utf16(decoder) => decoder.reset(),
+            DecoderEngine::Utf32(decoder) => decoder.reset(),
+            DecoderEngine::JisAutoDetect(decoder) => decoder.reset(),
+            DecoderEngine::Utf8
+            | DecoderEngine::SingleByte(_)
+            | DecoderEngine::Cesu8
+            | DecoderEngine::Gb18030(_)
+            | DecoderEngine::Iscii91(_)
+            | DecoderEngine::Custom(_) => {}
+        }
+    }
+
+    /// Flushes this decoder into `dst[*dp..]`: the decoder's
+    /// `implFlush(CharBuffer)`, which only `x-ISCII91` overrides (its held
+    /// sign); every other decoder has nothing to flush.
+    pub(crate) fn flush(&mut self, dst: &mut [u16], dp: &mut usize) -> CoderResult {
+        match &mut self.engine {
+            DecoderEngine::Iscii91(decoder) => decoder.flush(dst, dp),
+            _ => CoderResult::Underflow,
         }
     }
 
@@ -472,13 +546,16 @@ impl CharsetDecoder {
     /// characters with U+FFFD whatever this decoder's actions.
     ///
     /// Equivalent to `new String(bytes, charset)`, which decodes with a
-    /// replacing decoder of the charset.
+    /// fresh replacing decoder of the charset (`decode(in, out, true)`, then
+    /// `flush(out)`); here a reset copy of this decoder.
     pub fn decode_replacing(&self, bytes: &[u8]) -> Vec<u16> {
+        let mut decoder = self.clone();
+        decoder.reset();
         let mut out = vec![0u16; bytes.len() * 2 + 2];
         let mut sp = 0;
         let mut dp = 0;
         loop {
-            let mut cr = self.decode_loop(bytes, &mut sp, &mut out, &mut dp);
+            let mut cr = decoder.decode_loop(bytes, &mut sp, &mut out, &mut dp);
             if cr == CoderResult::Underflow && sp < bytes.len() {
                 cr = CoderResult::Malformed(bytes.len() - sp);
             }
@@ -498,6 +575,10 @@ impl CharsetDecoder {
                     sp += length;
                 }
             }
+        }
+        while decoder.flush(&mut out, &mut dp) == CoderResult::Overflow {
+            let len = out.len();
+            out.resize(len * 2, 0);
         }
         out.truncate(dp);
         out

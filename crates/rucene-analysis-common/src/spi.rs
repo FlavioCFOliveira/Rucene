@@ -58,6 +58,10 @@ use rucene::util::spi::lucene_core_class_loader;
 use crate::analysis::boost::delimited_boost_token_filter_factory::DelimitedBoostTokenFilterFactory;
 use crate::analysis::charfilter::html_strip_char_filter_factory::HTMLStripCharFilterFactory;
 use crate::analysis::charfilter::mapping_char_filter_factory::MappingCharFilterFactory;
+use crate::analysis::cjk::cjk_analyzer::CJKAnalyzer;
+use crate::analysis::cjk::cjk_bigram_filter_factory::CJKBigramFilterFactory;
+use crate::analysis::cjk::cjk_width_char_filter_factory::CJKWidthCharFilterFactory;
+use crate::analysis::cjk::cjk_width_filter_factory::CJKWidthFilterFactory;
 use crate::analysis::classic::classic_analyzer::ClassicAnalyzer;
 use crate::analysis::classic::classic_filter_factory::ClassicFilterFactory;
 use crate::analysis::classic::classic_tokenizer_factory::ClassicTokenizerFactory;
@@ -213,9 +217,12 @@ fn services() -> Vec<ServiceProvider> {
         // META-INF/services/org.apache.lucene.analysis.CharFilterFactory
         char_filter(HTMLStripCharFilterFactory::class()),
         char_filter(MappingCharFilterFactory::class()),
+        char_filter(CJKWidthCharFilterFactory::class()),
         char_filter(PatternReplaceCharFilterFactory::class()),
         // META-INF/services/org.apache.lucene.analysis.TokenFilterFactory
         token_filter(DelimitedBoostTokenFilterFactory::class()),
+        token_filter(CJKBigramFilterFactory::class()),
+        token_filter(CJKWidthFilterFactory::class()),
         token_filter(ClassicFilterFactory::class()),
         token_filter(CommonGramsFilterFactory::class()),
         token_filter(CommonGramsQueryFilterFactory::class()),
@@ -441,6 +448,10 @@ pub fn analyzer_classes() -> &'static RwLock<ClassRegistry<Arc<dyn Analyzer>>> {
         classes.register(
             "org.apache.lucene.analysis.en.EnglishAnalyzer",
             Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(EnglishAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.cjk.CJKAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(CJKAnalyzer::new()) }),
         );
         classes.register(
             "org.apache.lucene.analysis.classic.ClassicAnalyzer",

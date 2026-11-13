@@ -36,10 +36,24 @@ the committed file, and rerunning it must leave that file unchanged.
   (`Character.getType(int)` runs, the Latin-1 `isLowerCase`/`isUpperCase` sets, and the
   `isUpperCase`/`isLowerCase` runs of every code point) from the running JDK. Rerun with JDK 25: `java tools/translate/JdkCharacterTypeData.java > crates/rucene-analysis-common/src/jdk/character_type_data.rs`.
 * `JdkCharsetData.java` — writes `crates/rucene-analysis-common/src/jdk/charset_data.rs` (the
-  canonical name and aliases of every charset of `Charset.availableCharsets()`, and the
-  byte-to-unit decoding table of every single-byte charset, each byte's unmappable or malformed
-  input marked) from the running JDK; it fails on any inconsistency it checks. Rerun with JDK 25:
-  `java tools/translate/JdkCharsetData.java > crates/rucene-analysis-common/src/jdk/charset_data.rs`.
+  canonical name, the aliases and the decoder kind of every charset of
+  `Charset.availableCharsets()`, and the byte-to-unit decoding table of every single-byte charset,
+  each byte's unmappable or malformed input marked) and `crates/rucene-analysis-common/src/jdk/charset_multibyte.bin`
+  (zlib items: the byte-sequence machine of every table-driven multi-byte charset, probed from
+  each shift state of the JDK decoder, whose state it reads by reflection; the `GB18030` two-byte
+  and four-byte tables; the `x-ISCII91` byte table) from the running JDK. It checks every machine
+  and table against the JDK decoder (pseudo-random streams fed in random chunks into random small
+  output buffers, compared call for call; every `GB18030` sequence of one, two and four bytes) and
+  fails on any difference; it runs for about two minutes. Rerun with JDK 25:
+
+  ```sh
+  java -Xmx4g \
+    --add-opens java.base/sun.nio.cs=ALL-UNNAMED \
+    --add-opens jdk.charsets/sun.nio.cs.ext=ALL-UNNAMED \
+    tools/translate/JdkCharsetData.java \
+    crates/rucene-analysis-common/src/jdk/charset_data.rs \
+    crates/rucene-analysis-common/src/jdk/charset_multibyte.bin
+  ```
 * `JdkDateParseData.java` — writes `crates/rucene-analysis-common/src/jdk/date_parse_data.bin`
   (zlib), the JDK locale data `SimpleDateFormat` parsing reads: the CLDR resolution metadata
   (language tags, aliases, parent locales, likely scripts), the display names, `DEFAULT` date
