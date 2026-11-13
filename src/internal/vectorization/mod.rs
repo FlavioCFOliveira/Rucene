@@ -83,6 +83,12 @@
 //! inherent method taking the already-narrowed type, which reaches the
 //! memory-segment implementation. The individual items name which is which.
 //!
+//! The exception is `PanamaVectorizationProvider.newPostingDecodingUtil`, whose
+//! `input instanceof MemorySegmentAccessInput` test is asked of the input
+//! itself through
+//! [`IndexInput::as_memory_segment_access_input`](crate::store::IndexInput::as_memory_segment_access_input),
+//! so it takes Lucene's branch as Lucene does.
+//!
 //! # Which provider [`lookup`] returns
 //!
 //! [`lookup`] runs Lucene's gates in Lucene's order. A Rust binary is not a

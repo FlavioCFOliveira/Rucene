@@ -86,6 +86,21 @@ pub trait VectorizationProvider: Send + Sync + Debug {
     fn get_doc_values_bulk_decode_support(&self) -> &'static dyn DocValuesBulkDecodeSupport;
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test instrumentation: how many decoders the providers built on this
+    /// thread through [`VectorizationProvider::new_posting_decoding_util`].
+    pub(crate) static NEW_POSTING_DECODING_UTIL_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Test instrumentation: counts one provider-built decoder.
+#[inline]
+pub(crate) fn note_new_posting_decoding_util() {
+    #[cfg(test)]
+    NEW_POSTING_DECODING_UTIL_CALLS.with(|calls| calls.set(calls.get() + 1));
+}
+
 /// The classes Lucene allows to call `VectorizationProvider.getInstance()`.
 ///
 /// Equivalent to the private `VectorizationProvider.VALID_CALLERS` set. Lucene

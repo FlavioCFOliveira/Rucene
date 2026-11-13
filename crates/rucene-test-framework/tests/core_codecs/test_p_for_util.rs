@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use randomizedtesting::generators::RandomNumbers;
 use randomizedtesting::jdk::reflect::Class;
-use rucene::codecs::lucene104::{PForUtil, PostingDecodingUtil, FOR_BLOCK_SIZE};
+use rucene::codecs::lucene104::postings_reader::Lucene104PostingsReader;
+use rucene::codecs::lucene104::{PForUtil, FOR_BLOCK_SIZE};
 use rucene::error::Result;
 use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT, READONCE_IO_CONTEXT};
 use rucene::util::packed::PackedInts;
@@ -33,13 +34,15 @@ fn test_encode_decode() -> Result<()> {
     let values = create_test_data(iterations, 31);
     let d = ByteBuffersDirectory::new();
     let end_pointer = encode_test_data(iterations, &values, &d)?;
-    let mut r#in = d.open_input("test.bin", &*READONCE_IO_CONTEXT)?;
+    let r#in = d.open_input("test.bin", &*READONCE_IO_CONTEXT)?;
+    let mut pdu;
     {
-        let mut pdu = PostingDecodingUtil::new(&mut *r#in);
+        // `Lucene104PostingsReader.VECTORIZATION_PROVIDER.newPostingDecodingUtil(in)`.
+        pdu = Lucene104PostingsReader::vectorization_provider().new_posting_decoding_util(r#in)?;
         let mut pfor_util = PForUtil::new();
         for i in 0..iterations {
             if random().next_int_bound(5) == 0 {
-                PForUtil::skip(&mut *pdu.input)?;
+                PForUtil::skip(&mut *pdu.r#in)?;
                 continue;
             }
             let mut restored = [0i32; FOR_BLOCK_SIZE];
@@ -52,9 +55,9 @@ fn test_encode_decode() -> Result<()> {
                 &ints,
             );
         }
-        assert_equals(&end_pointer, &pdu.input.file_pointer()?);
+        assert_equals(&end_pointer, &pdu.r#in.file_pointer()?);
     }
-    r#in.close()?;
+    pdu.r#in.close()?;
     d.close()
 }
 

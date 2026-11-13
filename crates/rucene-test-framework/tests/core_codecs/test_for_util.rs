@@ -1,15 +1,15 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/codecs/lucene104/TestForUtil.java`.
 //!
-//! `Lucene104PostingsReader.VECTORIZATION_PROVIDER.newPostingDecodingUtil(in)`
-//! is the scalar [`PostingDecodingUtil`] over `in`, the only implementation
-//! the port has.
+//! The decoder is `Lucene104PostingsReader.VECTORIZATION_PROVIDER
+//! .newPostingDecodingUtil(in)`, from the provider the process selected.
 
 use std::sync::Arc;
 
 use randomizedtesting::generators::RandomNumbers;
 use randomizedtesting::jdk::reflect::Class;
 use rucene::codecs::lucene104::for_util::num_bytes;
-use rucene::codecs::lucene104::{ForUtil, PostingDecodingUtil, FOR_BLOCK_SIZE};
+use rucene::codecs::lucene104::postings_reader::Lucene104PostingsReader;
+use rucene::codecs::lucene104::{ForUtil, FOR_BLOCK_SIZE};
 use rucene::error::Result;
 use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT, READONCE_IO_CONTEXT};
 use rucene::util::packed::PackedInts;
@@ -60,12 +60,14 @@ fn test_encode_decode() -> Result<()> {
     }
     {
         // decode
-        let mut r#in = d.open_input("test.bin", &*READONCE_IO_CONTEXT)?;
-        let mut pdu = PostingDecodingUtil::new(&mut *r#in);
+        let r#in = d.open_input("test.bin", &*READONCE_IO_CONTEXT)?;
+        // `Lucene104PostingsReader.VECTORIZATION_PROVIDER.newPostingDecodingUtil(in)`.
+        let mut pdu =
+            Lucene104PostingsReader::vectorization_provider().new_posting_decoding_util(r#in)?;
         let mut for_util = ForUtil::new();
         for i in 0..iterations {
-            let bits_per_value = pdu.input.read_byte()? as i8 as i32;
-            let current_file_pointer = pdu.input.file_pointer()?;
+            let bits_per_value = pdu.r#in.read_byte()? as i8 as i32;
+            let current_file_pointer = pdu.r#in.file_pointer()?;
             let mut restored = [0i32; FOR_BLOCK_SIZE];
             for_util.decode(bits_per_value, &mut pdu, &mut restored)?;
             let mut ints = [0i32; FOR_BLOCK_SIZE];
@@ -77,11 +79,11 @@ fn test_encode_decode() -> Result<()> {
             );
             assert_equals(
                 &(num_bytes(bits_per_value) as i64),
-                &(pdu.input.file_pointer()? - current_file_pointer),
+                &(pdu.r#in.file_pointer()? - current_file_pointer),
             );
         }
-        assert_equals(&end_pointer, &pdu.input.file_pointer()?);
-        r#in.close()?;
+        assert_equals(&end_pointer, &pdu.r#in.file_pointer()?);
+        pdu.r#in.close()?;
     }
     d.close()
 }

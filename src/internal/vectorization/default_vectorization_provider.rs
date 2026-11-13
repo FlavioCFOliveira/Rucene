@@ -65,6 +65,7 @@ impl VectorizationProvider for DefaultVectorizationProvider {
     }
 
     fn new_posting_decoding_util(&self, input: Box<dyn IndexInput>) -> Result<PostingDecodingUtil> {
+        super::vectorization_provider::note_new_posting_decoding_util();
         Ok(PostingDecodingUtil::new(input))
     }
 

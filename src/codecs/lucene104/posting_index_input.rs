@@ -4,32 +4,52 @@
 //! mostly to mirror the Lucene class structure; it simply forwards to
 //! [`ForUtil::decode`].
 
+use std::sync::{Arc, LazyLock};
+
 use crate::error::Result;
+use crate::internal::vectorization::{get_instance, PostingDecodingUtil, VectorizationProvider};
 use crate::store::IndexInput;
 
 use super::for_util::{ForUtil, BLOCK_SIZE};
-use super::posting_decoding_util::PostingDecodingUtil;
 
-/// Wrapper around an [`IndexInput`] and a [`ForUtil`].
+/// `PostingIndexInput.VECTORIZATION_PROVIDER` (`PostingIndexInput.java:31-32`).
+static VECTORIZATION_PROVIDER: LazyLock<Arc<dyn VectorizationProvider>> =
+    LazyLock::new(|| get_instance());
+
+/// Wrapper around an [`IndexInput`] and a [`ForUtil`] that optionally
+/// optimizes decoding using vectorization.
+///
+/// Equivalent to `org.apache.lucene.codecs.lucene104.PostingIndexInput`. The
+/// decoder is obtained once, from the selected provider, when the wrapper is
+/// built, and owns the input (see [`PostingDecodingUtil`]).
 pub struct PostingIndexInput {
-    input: Box<dyn IndexInput>,
-    for_util: ForUtil,
+    /// `public final ForUtil forUtil`.
+    pub for_util: ForUtil,
+    /// `private final PostingDecodingUtil postingDecodingUtil`.
+    posting_decoding_util: PostingDecodingUtil,
 }
 
 impl PostingIndexInput {
-    /// Creates a new wrapper over `input`.
-    pub fn new(input: Box<dyn IndexInput>) -> Self {
-        Self {
-            input,
-            for_util: ForUtil::new(),
-        }
+    /// Equivalent to `PostingIndexInput(IndexInput, ForUtil)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of
+    /// [`VectorizationProvider::new_posting_decoding_util`].
+    pub fn new(input: Box<dyn IndexInput>, for_util: ForUtil) -> Result<Self> {
+        Ok(Self {
+            for_util,
+            posting_decoding_util: VECTORIZATION_PROVIDER.new_posting_decoding_util(input)?,
+        })
     }
 
     /// Decodes 256 integers stored on `bits_per_value` bits per value into
     /// `ints`.
+    ///
+    /// Equivalent to `PostingIndexInput.decode(int, int[])`.
     pub fn decode(&mut self, bits_per_value: i32, ints: &mut [i32; BLOCK_SIZE]) -> Result<()> {
-        let mut pdu = PostingDecodingUtil::new(&mut *self.input);
-        self.for_util.decode(bits_per_value, &mut pdu, ints)
+        self.for_util
+            .decode(bits_per_value, &mut self.posting_decoding_util, ints)
     }
 }
 
@@ -52,7 +72,7 @@ mod tests {
 
         let data = out.into_inner();
         let input = MockIndexInput::new(data, "posting-index-input");
-        let mut pii = PostingIndexInput::new(Box::new(input));
+        let mut pii = PostingIndexInput::new(Box::new(input), ForUtil::new()).unwrap();
         let mut decoded = [0i32; BLOCK_SIZE];
         pii.decode(16, &mut decoded).unwrap();
 

@@ -8,9 +8,9 @@ use crate::codecs::hnsw::FlatVectorsScorer;
 use crate::error::{LuceneError, Result};
 use crate::internal::vectorization::{
     DocValuesBulkDecodeSupport, DocValuesRangeSupport, Lucene99MemorySegmentFlatVectorsScorer,
-    Lucene99MemorySegmentScalarQuantizedVectorScorer, PanamaDocValuesBulkDecodeSupport,
-    PanamaDocValuesRangeSupport, PanamaVectorConstants, PanamaVectorUtilSupport,
-    PostingDecodingUtil, VectorUtilSupport, VectorizationProvider,
+    Lucene99MemorySegmentScalarQuantizedVectorScorer, MemorySegmentPostingDecodingUtil,
+    PanamaDocValuesBulkDecodeSupport, PanamaDocValuesRangeSupport, PanamaVectorConstants,
+    PanamaVectorUtilSupport, PostingDecodingUtil, VectorUtilSupport, VectorizationProvider,
 };
 use crate::store::IndexInput;
 
@@ -119,15 +119,19 @@ impl VectorizationProvider for PanamaVectorizationProvider {
     }
 
     fn new_posting_decoding_util(&self, input: Box<dyn IndexInput>) -> Result<PostingDecodingUtil> {
-        // Lucene additionally tests `HAS_FAST_INTEGER_VECTORS && input
-        // instanceof MemorySegmentAccessInput` and, when the whole file fits in
-        // one segment, returns a `MemorySegmentPostingDecodingUtil`. The
-        // narrowing is not expressible, since Rust cannot test a
-        // `dyn IndexInput` for another trait (the module's declared run-time
-        // narrowing divergence), so this takes Lucene's fallback branch; both
-        // decoders produce the same integers. A caller that already holds a
-        // narrowed input builds the segment decoder directly with
-        // `MemorySegmentPostingDecodingUtil::new`.
+        super::vectorization_provider::note_new_posting_decoding_util();
+        // `PanamaVectorizationProvider.java:100-109`: `input instanceof
+        // MemorySegmentAccessInput msai` is asked of the input itself
+        // (`IndexInput::as_memory_segment_access_input`).
+        if PanamaVectorConstants::has_fast_integer_vectors() {
+            let segment = match input.as_memory_segment_access_input() {
+                Some(msai) => msai.segment_slice_or_null(0, input.length())?,
+                None => None,
+            };
+            if let Some(ms) = segment {
+                return Ok(MemorySegmentPostingDecodingUtil::new(input, ms));
+            }
+        }
         Ok(PostingDecodingUtil::new(input))
     }
 

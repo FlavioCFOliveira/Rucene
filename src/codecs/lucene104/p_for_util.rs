@@ -8,7 +8,7 @@ use crate::error::{LuceneError, Result};
 use crate::store::{DataInput, DataOutput};
 
 use super::for_util::{ForUtil, BLOCK_SIZE};
-use super::posting_decoding_util::PostingDecodingUtil;
+use crate::internal::vectorization::PostingDecodingUtil;
 
 // `PForUtil.java:41`: Java asserts this in its static initializer; it is a
 // property of a constant, checked here at compile time.
@@ -113,18 +113,18 @@ impl PForUtil {
         pdu: &mut PostingDecodingUtil,
         ints: &mut [i32; BLOCK_SIZE],
     ) -> Result<()> {
-        let token = pdu.input.read_byte()? as i32;
+        let token = pdu.r#in.read_byte()? as i32;
         let bits_per_value = token & 0x1f;
         if bits_per_value == 0 {
-            let value = pdu.input.read_v_int()?;
+            let value = pdu.r#in.read_v_int()?;
             ints.fill(value);
         } else {
             self.for_util.decode(bits_per_value, pdu, ints)?;
         }
         let num_exceptions = (token as u32 >> 5) as i32;
         for _ in 0..num_exceptions {
-            let idx = pdu.input.read_byte()? as usize;
-            let high = pdu.input.read_byte()? as i32;
+            let idx = pdu.r#in.read_byte()? as usize;
+            let high = pdu.r#in.read_byte()? as i32;
             ints[idx] |= high << bits_per_value;
         }
         Ok(())
@@ -180,8 +180,8 @@ mod tests {
         pfor.encode(&mut ints, &mut out).unwrap();
 
         let data = out.into_inner();
-        let mut input = MockIndexInput::new(data, "pfor-roundtrip");
-        let mut pdu = PostingDecodingUtil::new(&mut input);
+        let input = MockIndexInput::new(data, "pfor-roundtrip");
+        let mut pdu = PostingDecodingUtil::new(Box::new(input));
         let mut decoded = [0i32; BLOCK_SIZE];
         pfor.decode(&mut pdu, &mut decoded).unwrap();
 
@@ -200,8 +200,8 @@ mod tests {
         pfor.encode(&mut original, &mut out).unwrap();
 
         let data = out.into_inner();
-        let mut input = MockIndexInput::new(data, "pfor-all-equal");
-        let mut pdu = PostingDecodingUtil::new(&mut input);
+        let input = MockIndexInput::new(data, "pfor-all-equal");
+        let mut pdu = PostingDecodingUtil::new(Box::new(input));
         let mut decoded = [0i32; BLOCK_SIZE];
         pfor.decode(&mut pdu, &mut decoded).unwrap();
 

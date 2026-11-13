@@ -31,15 +31,22 @@ use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use rucene::codecs::{register_codec, Lucene104Codec};
+use rucene::document::{Document, Field, FieldType};
+use rucene::index::index_writer::IndexWriter;
+use rucene::index::index_writer_config::IndexWriterConfig;
+use rucene::index::{directory_reader, IndexOptions, POSTINGS_ENUM_ALL};
 use rucene::internal::vectorization::panama_vector_util_support::use_vector_fma;
 use rucene::internal::vectorization::{
     get_instance, lookup, DefaultVectorUtilSupport, DocValuesRangeSupport,
     MemorySegmentBulkVectorOps, PanamaDocValuesRangeSupport, PanamaVectorConstants,
     PanamaVectorUtilSupport, VectorUtilSupport, VectorizationProvider, ADD_VECTOR_MODULE_SYSPROP,
 };
+use rucene::search::NO_MORE_DOCS;
 use rucene::store::java_nio_file::{self as nio, FileChannel, FileSystems, OpenOption};
 use rucene::store::memory_segment::SharedArena;
-use rucene::store::{Arena, MemorySegment};
+use rucene::store::mmap::MMapDirectory;
+use rucene::store::{Arena, Directory, MemorySegment, DEFAULT_IO_CONTEXT};
 use rucene::util::{vector_util, Constants, FixedBitSet, LongValues};
 
 /// Passes Java runs over the corpus before its results count.
@@ -763,6 +770,10 @@ fn oracle_child() {
     let mode = parts.next().unwrap();
     let corpus_path = PathBuf::from(parts.next().unwrap());
     let out_path = PathBuf::from(parts.next().unwrap());
+    if mode == "postings" {
+        std::fs::write(out_path, postings_dump(&corpus_path)).unwrap();
+        return;
+    }
     if mode == "lookup" {
         let class = |p: Arc<dyn VectorizationProvider>| {
             let name = format!("{p:?}");
@@ -957,6 +968,146 @@ fn accept_asserts(java: &str, rucene: &str) -> (String, usize) {
         out.push('\n');
     }
     (out, accepted)
+}
+
+/// Writes an index whose `f` field has positions and offsets over several
+/// full postings blocks, in an `MMapDirectory` at `path`.
+fn write_postings_index(path: &Path) {
+    let _ = register_codec("Lucene104", Lucene104Codec::new());
+    let dir: Arc<dyn Directory> = Arc::new(MMapDirectory::open(path).unwrap());
+    let field_type = FieldType::new();
+    field_type.set_tokenized(true).unwrap();
+    field_type
+        .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
+        .unwrap();
+    field_type.freeze();
+    let config = IndexWriterConfig::new();
+    config.set_use_compound_file(false).unwrap();
+    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+    let mut rng = Rng(0x9057_1265);
+    for _ in 0..4000 {
+        let words = 1 + rng.below(40);
+        let text: Vec<String> = (0..words)
+            .map(|_| {
+                let r = rng.unit();
+                format!("w{}", (r * r * 300.0) as u32)
+            })
+            .collect();
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            Field::new("f", text.join(" "), field_type.clone()).unwrap(),
+        ));
+        writer.add_document(&doc).unwrap();
+    }
+    writer.force_merge(1).unwrap();
+    writer.close().unwrap();
+}
+
+/// Every posting of `f` — doc, freq, and each position with its offsets —
+/// read back through the reader (and so through the decoders the selected
+/// provider builds), headed by the class of the decoder the provider builds
+/// over the `.doc` file.
+fn postings_dump(path: &Path) -> String {
+    let _ = register_codec("Lucene104", Lucene104Codec::new());
+    let dir: Arc<dyn Directory> = Arc::new(MMapDirectory::open(path).unwrap());
+    let doc_file = dir
+        .list_all()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.ends_with(".doc"))
+        .expect("a .doc file");
+    let input = dir.open_input(&doc_file, &*DEFAULT_IO_CONTEXT).unwrap();
+    let decoder = get_instance().new_posting_decoding_util(input).unwrap();
+    let mut out = format!("decoder={}\n", decoder.class_name());
+    let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
+    for leaf in Arc::clone(&reader).leaves().unwrap() {
+        let mut terms = leaf
+            .leaf_reader()
+            .terms("f")
+            .unwrap()
+            .unwrap()
+            .iterator()
+            .unwrap();
+        let mut reuse = None;
+        while let Some(term) = terms.next().unwrap() {
+            writeln!(out, "term {term:?}").unwrap();
+            let mut pe = terms
+                .postings(reuse.take(), POSTINGS_ENUM_ALL)
+                .unwrap()
+                .unwrap();
+            loop {
+                let doc = pe.next_doc().unwrap();
+                if doc == NO_MORE_DOCS {
+                    break;
+                }
+                let freq = pe.freq().unwrap();
+                write!(out, "{doc}:{freq}").unwrap();
+                for _ in 0..freq {
+                    let p = pe.next_position().unwrap();
+                    write!(out, " {p}/{}/{}", pe.start_offset(), pe.end_offset()).unwrap();
+                }
+                out.push('\n');
+            }
+            reuse = Some(pe);
+        }
+    }
+    out
+}
+
+/// The memory-segment decoder the Panama provider builds over a mapped input
+/// (`PanamaVectorizationProvider.java:100-109`) decodes the postings exactly
+/// as the scalar decoder does: a Rucene index read with the vector-module
+/// setting and without it gives the same postings, and the setting really
+/// selects `MemorySegmentPostingDecodingUtil`.
+#[test]
+fn memory_segment_postings_decode_like_the_default() {
+    let dir = tempfile::Builder::new()
+        .prefix("panama-postings")
+        .tempdir()
+        .unwrap();
+    let index = dir.path().join("index");
+    std::fs::create_dir_all(&index).unwrap();
+    write_postings_index(&index);
+    let run = |vector: bool| {
+        let out = dir.path().join(format!("postings-{vector}.txt"));
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        if vector {
+            cmd.env(ADD_VECTOR_MODULE_SYSPROP, "true");
+        }
+        let status = cmd
+            .args([
+                "oracle_child",
+                "--exact",
+                "--include-ignored",
+                "--test-threads=1",
+            ])
+            .env(
+                CHILD_ENV,
+                format!("postings|{}|{}", index.display(), out.display()),
+            )
+            .status()
+            .unwrap();
+        assert!(status.success(), "postings child (vector={vector}) failed");
+        std::fs::read_to_string(out).unwrap()
+    };
+    let scalar = run(false);
+    let vector = run(true);
+    assert!(
+        scalar.starts_with("decoder=PostingDecodingUtil\n"),
+        "{:.80}",
+        scalar
+    );
+    let expected = if PanamaVectorConstants::has_fast_integer_vectors() {
+        "decoder=MemorySegmentPostingDecodingUtil\n"
+    } else {
+        "decoder=PostingDecodingUtil\n"
+    };
+    assert!(vector.starts_with(expected), "{:.80}", vector);
+    assert!(scalar.lines().count() > 4000, "the corpus has postings");
+    let body = |s: &str| s.split_once('\n').unwrap().1.to_string();
+    if let Some(d) = diff("postings", &body(&scalar), &body(&vector)) {
+        panic!("{d}");
+    }
 }
 
 /// The provider [`lookup`] selects in a child process with `env`.
