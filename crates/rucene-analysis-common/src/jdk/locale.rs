@@ -411,6 +411,131 @@ impl Locale {
         !self.extensions.is_empty()
     }
 
+    /// `Locale.US`: language `en`, country `US`.
+    pub fn us() -> Locale {
+        Locale {
+            language: "en".to_string(),
+            region: "US".to_string(),
+            ..Locale::default()
+        }
+    }
+
+    /// `Locale.getInstance(language, script, country, variant, null)`: a
+    /// locale of these fields, as given, with the compatibility extension
+    /// `Locale.getCompatibilityExtensions` gives `ja_JP_JP` (`u-ca-japanese`)
+    /// and `th_TH_TH` (`u-nu-thai`).
+    pub fn of_parts(language: &str, script: &str, region: &str, variant: &str) -> Locale {
+        let mut extensions = BTreeMap::new();
+        if script.is_empty() {
+            if language == "ja" && region == "JP" && variant == "JP" {
+                extensions.insert('u', "ca-japanese".to_string());
+            } else if language == "th" && region == "TH" && variant == "TH" {
+                extensions.insert('u', "nu-thai".to_string());
+            }
+        }
+        Locale {
+            language: language.to_string(),
+            script: script.to_string(),
+            region: region.to_string(),
+            variant: variant.to_string(),
+            extensions,
+        }
+    }
+
+    /// `equals(Locale.ROOT)`: every field empty, and no extension.
+    pub fn is_root(&self) -> bool {
+        self.language.is_empty()
+            && self.script.is_empty()
+            && self.region.is_empty()
+            && self.variant.is_empty()
+            && self.extensions.is_empty()
+    }
+
+    /// `stripExtensions()`: this locale without its extensions.
+    pub fn strip_extensions(&self) -> Locale {
+        Locale {
+            extensions: BTreeMap::new(),
+            ..self.clone()
+        }
+    }
+
+    /// `getUnicodeLocaleType(key)`: the type of the Unicode locale keyword
+    /// `key` (`""` for a keyword without a type), `None` when the `u`
+    /// extension has no such keyword.
+    pub fn get_unicode_locale_type(&self, key: &str) -> Option<String> {
+        let value = self.extensions.get(&'u')?;
+        let subtags: Vec<&str> = value.split('-').collect();
+        let mut i = 0;
+        while i < subtags.len() {
+            if subtags[i].len() == 2 {
+                let k = subtags[i];
+                let mut j = i + 1;
+                while j < subtags.len() && subtags[j].len() != 2 {
+                    j += 1;
+                }
+                if k == key {
+                    return Some(subtags[i + 1..j].join("-"));
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        None
+    }
+
+    /// `new Locale.Builder().setLocale(this).setRegion(region).build()`, as
+    /// `CalendarDataUtility.findRegionOverride` builds the region override.
+    /// `InternalLocaleBuilder.setLocale` drops the compatibility variant of
+    /// `ja_JP_JP` and `th_TH_TH`, maps `no_NO_NY` to `nn_NO`, and refuses
+    /// any field that is not well-formed; the extensions are kept.
+    ///
+    /// # Errors
+    ///
+    /// The `IllformedLocaleException` (an unchecked exception) Java's
+    /// `setLocale` throws: `Ill-formed language: <language> [at index 0]`,
+    /// likewise for the script and the region, and `Ill-formed variant:
+    /// <variant> [at index <i>]`, `i` the start of the first ill-formed
+    /// subtag.
+    pub fn with_region(&self, region: &str) -> Result<Locale> {
+        let mut language = self.language.clone();
+        let mut variant = self.variant.clone();
+        if (language == "ja" && self.region == "JP" && variant == "JP")
+            || (language == "th" && self.region == "TH" && variant == "TH")
+        {
+            variant.clear();
+        } else if language == "no" && self.region == "NO" && variant == "NY" {
+            language = "nn".to_string();
+            variant.clear();
+        }
+        let ill_formed =
+            |message: String| Err(LuceneError::unchecked(ILLFORMED_LOCALE_EXCEPTION, message));
+        if !language.is_empty() && !is_language(&language) {
+            return ill_formed(format!("Ill-formed language: {language} [at index 0]"));
+        }
+        if !self.script.is_empty() && !is_script(&self.script) {
+            return ill_formed(format!("Ill-formed script: {} [at index 0]", self.script));
+        }
+        if !self.region.is_empty() && !is_region(&self.region) {
+            return ill_formed(format!("Ill-formed region: {} [at index 0]", self.region));
+        }
+        if !variant.is_empty() {
+            let mut index = 0;
+            for subtag in variant.split('_') {
+                if !is_variant(subtag) {
+                    return ill_formed(format!("Ill-formed variant: {variant} [at index {index}]"));
+                }
+                index += subtag.len() + 1;
+            }
+        }
+        Ok(Locale {
+            language,
+            region: region.to_string(),
+            variant,
+            ..self.clone()
+        })
+    }
+
     /// `getLanguage()`.
     pub fn get_language(&self) -> &str {
         &self.language

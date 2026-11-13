@@ -14,3 +14,6 @@ name = "rucene_analysis_common"
 
 [dependencies]
 rucene = { path = "../.." }
+# Inflates the JDK 25 locale data `SimpleDateFormat` parsing reads
+# (`src/jdk/date_parse_data.bin`, zlib), the same backend as the core crate.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }

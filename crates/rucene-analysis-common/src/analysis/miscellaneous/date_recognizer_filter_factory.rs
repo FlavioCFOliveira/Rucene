@@ -72,7 +72,7 @@ impl DateRecognizerFilterFactory {
     ///
     /// # Errors
     ///
-    /// Returns what [`AbstractAnalysisFactory::new`] returns, the `IllformedLocaleException` of an ill-formed `locale` tag, the `IllegalArgumentException` of an invalid `datePattern`, and `IllegalArgumentException` for a leftover argument.
+    /// Returns what [`AbstractAnalysisFactory::new`] returns, the `IllformedLocaleException` of an ill-formed `locale` tag or of its region override (`-u-rg-`), the `IllegalArgumentException` of an invalid `datePattern`, and `IllegalArgumentException` for a leftover argument.
     pub fn new(args: &mut HashMap<String, String>) -> Result<Self> {
         let base = AbstractAnalysisFactory::new(args)?;
         let locale = Self::get_locale(AbstractAnalysisFactory::get(args, Self::LOCALE).as_deref())?;
@@ -119,7 +119,8 @@ impl DateRecognizerFilterFactory {
     ///
     /// # Errors
     ///
-    /// The `IllegalArgumentException` of an invalid pattern.
+    /// The `IllformedLocaleException` of the locale's region override
+    /// (`-u-rg-`), and the `IllegalArgumentException` of an invalid pattern.
     pub fn get_data_format(&self, date_pattern: Option<&str>) -> Result<SimpleDateFormat> {
         Self::get_data_format_for(&self.locale, date_pattern)
     }
@@ -132,7 +133,7 @@ impl DateRecognizerFilterFactory {
     ) -> Result<SimpleDateFormat> {
         match date_pattern {
             Some(date_pattern) => SimpleDateFormat::new(date_pattern, locale),
-            None => Ok(SimpleDateFormat::get_date_instance_default(locale)),
+            None => SimpleDateFormat::get_date_instance_default(locale),
         }
     }
 

@@ -53,7 +53,7 @@ impl FilteringTokenFilterLogic for DateRecognizerFilterLogic {
             term_att.buffer()[..term_att.length()].iter().collect()
         };
         // This term is not a date when it does not parse.
-        Ok(self.date_format.parse(&term).is_ok())
+        Ok(self.date_format.parse(&term)?.is_ok())
     }
 }
 
@@ -89,9 +89,10 @@ pub fn new_date_recognizer_filter_with(
     date_format: Option<Arc<SimpleDateFormat>>,
 ) -> Result<DateRecognizerFilter> {
     let date_format = date_format.unwrap_or_else(|| {
-        Arc::new(SimpleDateFormat::get_date_instance_default(
-            &Locale::english(),
-        ))
+        Arc::new(
+            SimpleDateFormat::get_date_instance_default(&Locale::english())
+                .expect("INVARIANT: Locale.ENGLISH has no region override"),
+        )
     });
     let mut filter = new_filtering_token_filter(input, DateRecognizerFilterLogic { date_format })?;
     filter

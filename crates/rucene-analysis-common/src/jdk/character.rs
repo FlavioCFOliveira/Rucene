@@ -180,6 +180,8 @@ pub const DECIMAL_DIGIT_NUMBER: u8 = 9;
 pub const LETTER_NUMBER: u8 = 10;
 /// `Character.OTHER_NUMBER`, general category `No`.
 pub const OTHER_NUMBER: u8 = 11;
+/// `Character.SPACE_SEPARATOR`, general category `Zs`.
+pub const SPACE_SEPARATOR: u8 = 12;
 /// `Character.SURROGATE`, general category `Cs`.
 pub const SURROGATE: u8 = 19;
 
