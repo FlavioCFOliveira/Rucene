@@ -14,6 +14,7 @@ use crate::internal::vectorization::{
 };
 use crate::store::IndexInput;
 use crate::util::jvm::HotspotVMOptions;
+use crate::util::Constants;
 
 /// A provider of vectorization implementations.
 ///
@@ -269,30 +270,69 @@ pub fn get_instance() -> Arc<dyn VectorizationProvider> {
 
 /// Selects the provider that matches the current runtime.
 ///
-/// Equivalent to the package-private `VectorizationProvider.lookup(boolean)`,
-/// which Lucene exposes for its own tests.
+/// Equivalent to the package-private `VectorizationProvider.lookup(boolean)`
+/// (`VectorizationProvider.java:145-218`), which Lucene exposes for its own
+/// tests. The gates run in Java's order, each falling back to
+/// [`DefaultVectorizationProvider`] with Java's warning:
 ///
-/// Lucene's first gate is `Constants.IS_HOTSPOT_VM`: the Java vector incubator
-/// module only works on HotSpot, and every other case falls back to the scalar
-/// provider with a logged warning. `HotspotVMOptions::is_hotspot_vm()`
-/// reproduces Lucene's own non-HotSpot branch and is permanently `false` in a
-/// Rust binary, so this port always takes that branch and returns
-/// [`DefaultVectorizationProvider`]. Lucene's third gate, the readability of
-/// `jdk.incubator.vector`, is reproduced below through
-/// [`lookup_vector_module`] and would reject the Panama provider on its own;
-/// the gates between and after them — the JVMCI check, the
-/// `tests.vectorsize` / `tests.forceintegervectors` system properties, and the
-/// client-VM check — have no counterpart here (Rust has no JVMCI compiler and
-/// no client VM) and are described in the [module docs](super).
+/// 1. `Constants.IS_HOTSPOT_VM` —
+///    [`HotspotVMOptions::is_hotspot_vm`] (declared `false` in a Rust binary);
+/// 2. `Constants.IS_JVMCI_VM` — [`Constants::is_jvmci_vm`];
+/// 3. the readability of `jdk.incubator.vector` — [`lookup_vector_module`];
+/// 4. outside `test_mode`, `Constants.IS_CLIENT_VM` —
+///    [`Constants::is_client_vm`] (the `tests.vectorsize` /
+///    `tests.forceintegervectors` half of this gate is not ported, see
+///    [`PanamaVectorConstants`](super::PanamaVectorConstants));
+/// 5. the Panama provider's constructor, which refuses a preferred vector
+///    size below 128 bits (`PanamaVectorizationProvider.java:75`).
 ///
-/// `test_mode` is therefore unused: in Lucene it only relaxes two of those
-/// unreachable gates.
+/// Lucene's outer check of the Java feature version against
+/// `UPPER_JAVA_FEATURE_VERSION` has no counterpart: there is no Java runtime
+/// version in a Rust binary. Without the `mmap` feature the crate has no Panama
+/// provider, and the last step returns the scalar one.
 pub fn lookup(test_mode: bool) -> Arc<dyn VectorizationProvider> {
-    let _ = test_mode;
     if !HotspotVMOptions::is_hotspot_vm() {
         log::warn!("{NOT_HOTSPOT_VM_WARNING}");
-    } else if lookup_vector_module().is_none() {
-        log::warn!("{VECTOR_MODULE_NOT_READABLE_WARNING}");
+        return Arc::new(DefaultVectorizationProvider::new());
     }
+    if Constants::is_jvmci_vm() {
+        log::warn!(
+            "Java runtime is using JVMCI Compiler; Java vector incubator API can't be enabled."
+        );
+        return Arc::new(DefaultVectorizationProvider::new());
+    }
+    if lookup_vector_module().is_none() {
+        log::warn!("{VECTOR_MODULE_NOT_READABLE_WARNING}");
+        return Arc::new(DefaultVectorizationProvider::new());
+    }
+    if !test_mode && Constants::is_client_vm() {
+        log::warn!("C2 compiler is disabled; Java vector incubator API can't be enabled");
+        return Arc::new(DefaultVectorizationProvider::new());
+    }
+    new_panama_provider()
+}
+
+/// Constructs the Panama provider, or the scalar one when its constructor
+/// refuses (`UnsupportedOperationException` in Java).
+#[cfg(feature = "mmap")]
+fn new_panama_provider() -> Arc<dyn VectorizationProvider> {
+    match super::PanamaVectorizationProvider::new() {
+        Ok(provider) => Arc::new(provider),
+        Err(error) => {
+            let message = match error.kind() {
+                crate::error::LuceneErrorKind::UnsupportedOperation { message, .. } => {
+                    message.clone()
+                }
+                _ => error.to_string(),
+            };
+            log::warn!("Java vector incubator API was not enabled. {message}");
+            Arc::new(DefaultVectorizationProvider::new())
+        }
+    }
+}
+
+/// Without the `mmap` feature there is no Panama provider.
+#[cfg(not(feature = "mmap"))]
+fn new_panama_provider() -> Arc<dyn VectorizationProvider> {
     Arc::new(DefaultVectorizationProvider::new())
 }

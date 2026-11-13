@@ -163,7 +163,7 @@ fn unsigned(value: u8) -> i32 {
 /// The message is verbatim from `VectorUtil`, which throws
 /// `IllegalArgumentException("vector dimensions differ: " + a.length + "!=" + b.length)`.
 #[inline]
-fn check_same_dimensions(a: &[u8], b: &[u8]) -> Result<()> {
+pub(crate) fn check_same_dimensions(a: &[u8], b: &[u8]) -> Result<()> {
     if a.len() != b.len() {
         return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
@@ -177,7 +177,7 @@ fn check_same_dimensions(a: &[u8], b: &[u8]) -> Result<()> {
 /// Returns an error when `unpacked` cannot hold the two half-byte planes that
 /// `packed` addresses.
 #[inline]
-fn check_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<()> {
+pub(crate) fn check_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<()> {
     if unpacked.len() < packed.len() * 2 {
         return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
@@ -193,7 +193,7 @@ fn check_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<()> {
 /// `f32::min` in Rust returns the non-NaN operand when exactly one operand is
 /// NaN, whereas Java propagates NaN, and Java also prefers `-0.0` over `0.0`.
 #[inline]
-fn java_math_min(a: f32, b: f32) -> f32 {
+pub(crate) fn java_math_min(a: f32, b: f32) -> f32 {
     if a.is_nan() {
         return a;
     }
@@ -211,7 +211,7 @@ fn java_math_min(a: f32, b: f32) -> f32 {
 ///
 /// See [`java_math_min`] for why `f32::max` cannot be used.
 #[inline]
-fn java_math_max(a: f32, b: f32) -> f32 {
+pub(crate) fn java_math_max(a: f32, b: f32) -> f32 {
     if a.is_nan() {
         return a;
     }
@@ -269,7 +269,7 @@ fn java_math_round(a: f32) -> i32 {
 /// Equivalent to the package-private nested class
 /// `DefaultVectorUtilSupport.ScalarQuantizer`.
 #[derive(Debug, Clone, Copy)]
-struct ScalarQuantizer {
+pub(crate) struct ScalarQuantizer {
     alpha: f32,
     scale: f32,
     min_quantile: f32,
@@ -277,7 +277,7 @@ struct ScalarQuantizer {
 }
 
 impl ScalarQuantizer {
-    fn new(alpha: f32, scale: f32, min_quantile: f32, max_quantile: f32) -> Self {
+    pub(crate) fn new(alpha: f32, scale: f32, min_quantile: f32, max_quantile: f32) -> Self {
         Self {
             alpha,
             scale,
@@ -287,7 +287,7 @@ impl ScalarQuantizer {
     }
 
     /// Equivalent to `ScalarQuantizer.quantize(float[], byte[], int)`.
-    fn quantize(&self, vector: &[f32], dest: &mut [u8], start: usize) -> f32 {
+    pub(crate) fn quantize(&self, vector: &[f32], dest: &mut [u8], start: usize) -> f32 {
         debug_assert_eq!(vector.len(), dest.len());
         let mut correction = 0.0f32;
         for (v, d) in vector[start..].iter().zip(dest[start..].iter_mut()) {
@@ -297,7 +297,7 @@ impl ScalarQuantizer {
     }
 
     /// Equivalent to `ScalarQuantizer.recalculateOffset(byte[], int, float, float)`.
-    fn recalculate_offset(
+    pub(crate) fn recalculate_offset(
         &self,
         vector: &[u8],
         start: usize,

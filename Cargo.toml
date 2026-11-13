@@ -312,6 +312,10 @@ name = "portability_inet_address_point"
 path = "tests/portability/inet_address_point.rs"
 
 [[test]]
+name = "portability_panama_vectorization"
+path = "tests/portability/panama_vectorization.rs"
+
+[[test]]
 name = "portability_terms_dictionary"
 path = "tests/portability/terms_dictionary.rs"
 
