@@ -141,10 +141,16 @@ def skeleton_audit(q, check, source_root: Path):
                "OR e.task IS NULL RETURN count(e)")[0][0]
     check("SKELETON_OF edges without evidence or task", unevid, 0)
     # `skeleton` asserts a skeleton exists and no port does.
-    stale = q("MATCH (c:Class) WHERE c.portState = 'skeleton' "
-              "OPTIONAL MATCH (s)-[:SKELETON_OF]->(c) "
-              "WITH c, count(s) AS n WHERE n = 0 RETURN count(c)")[0][0]
-    check("'skeleton' classes without a SKELETON_OF", stale, 0)
+    # Two anchored reads and a set difference: an `OPTIONAL MATCH` from each
+    # `skeleton` class to its source (any label) exceeds the server's 5 s
+    # budget at 614 skeletons (rmp 1.21.0, measured 2026-11-13), while each
+    # read below takes ~0.02 s.
+    skel_cls = {r[0] for r in q(
+        "MATCH (c:Class) WHERE c.portState = 'skeleton' RETURN c.qualifiedName")}
+    with_src = {c for _n, _f, c in have}
+    stale = len(skel_cls - with_src)
+    check("'skeleton' classes without a SKELETON_OF", stale, 0,
+          f"{sorted(skel_cls - with_src)[:3]}" if stale else "")
     # Per skeleton-tracked module: exactly one skeleton per class, and the gap.
     per_class = {}
     for c, n in q("MATCH (t)-[:SKELETON_OF]->(c:Class) RETURN c.qualifiedName, count(t)"):
