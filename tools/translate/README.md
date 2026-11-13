@@ -20,6 +20,18 @@ the committed file, and rerunning it must leave that file unchanged.
   and fails, naming the file and line, on any other. Rerun:
   `python3 tools/translate/snowball_java_to_rust.py [/tmp/lucene1050]` (`--coverage` prints the
   count of each construct translated).
+* `jflex_java_to_rust.py` — translates the four JFlex 1.8.2 scanners of Lucene
+  (`ClassicTokenizerImpl`, `WikipediaTokenizerImpl`, `UAX29URLEmailTokenizerImpl`,
+  `HTMLStripCharFilter`): their DFA tables, unpacked as the Java `zzUnpack*` routines do, into
+  the wholly generated `crates/rucene-analysis-common/src/analysis/<pkg>/<scanner>_tables.rs`,
+  and the JFlex skeleton with its simple actions into the `// @generated begin/end` regions
+  (`constants`, `fields`, `init`, `skeleton`) of the hand-written `<scanner>.rs`, which it
+  then formats with `rustfmt`. It checks every skeleton member token for token against the
+  JFlex 1.8.2 skeleton and fails, naming the scanner, on any other construct; the user code
+  and the actions translated by hand (`fn action_<N>`, `fn eof_code`) are pinned by the
+  SHA-256 of their Java tokens. Rerun: `python3 tools/translate/jflex_java_to_rust.py
+  [/tmp/lucene1050]` (`--check` compares instead of writing, `--only <JavaClass>` limits the
+  run to one scanner, `--hashes` prints the pins).
 * `JdkCharacterTypeData.java` — writes `crates/rucene-analysis-common/src/jdk/character_type_data.rs`
   (`Character.getType(int)` runs and the Latin-1 `isLowerCase`/`isUpperCase` sets) from the
   running JDK. Rerun with JDK 25: `java tools/translate/JdkCharacterTypeData.java > crates/rucene-analysis-common/src/jdk/character_type_data.rs`.

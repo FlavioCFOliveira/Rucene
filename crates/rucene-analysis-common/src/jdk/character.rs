@@ -133,6 +133,88 @@ pub fn code_point_at(a: &[u16], index: usize, limit: usize) -> i32 {
     i32::from(c1)
 }
 
+/// The `java.lang.IndexOutOfBoundsException` (no message) the JDK's
+/// `Character` UTF-16 helpers throw for a range they cannot read.
+fn index_out_of_bounds() -> rucene::error::LuceneError {
+    rucene::error::LuceneError::from(rucene::error::LuceneErrorKind::Unchecked {
+        class: "java.lang.IndexOutOfBoundsException",
+        message: None,
+        cause: None,
+    })
+}
+
+/// `Character.codePointAt(char[], int, int)`, raising Java's exception as an
+/// error rather than a panic: [`code_point_at`] for a caller (a JFlex
+/// scanner) that propagates the JDK's `IndexOutOfBoundsException`.
+///
+/// # Errors
+///
+/// `java.lang.IndexOutOfBoundsException`, without a message, when `index`
+/// is not below `limit` or `limit` is past the end of `a`.
+pub fn checked_code_point_at(a: &[u16], index: usize, limit: usize) -> rucene::error::Result<i32> {
+    if index >= limit || limit > a.len() {
+        return Err(index_out_of_bounds());
+    }
+    Ok(code_point_at(a, index, limit))
+}
+
+/// `Character.offsetByCodePoints(char[] a, int start, int count, int index,
+/// int codePointOffset)`: the index within the subarray `a[start..start +
+/// count]` that is `code_point_offset` code points away from `index`. A
+/// surrogate pair inside the range counts as one code point, an unpaired
+/// surrogate as one code point each.
+///
+/// # Errors
+///
+/// `java.lang.IndexOutOfBoundsException`, without a message, as the JDK
+/// throws it: the subarray past the end of `a`, `index` outside
+/// `start..=start + count`, or fewer code points than `code_point_offset`
+/// asks for between `index` and the matching end of the range.
+pub fn offset_by_code_points(
+    a: &[u16],
+    start: usize,
+    count: usize,
+    index: usize,
+    code_point_offset: i32,
+) -> rucene::error::Result<usize> {
+    if count > a.len().saturating_sub(start)
+        || start > a.len()
+        || index < start
+        || index > start + count
+    {
+        return Err(index_out_of_bounds());
+    }
+    let mut x = index;
+    if code_point_offset >= 0 {
+        let limit = start + count;
+        let mut i = 0;
+        while x < limit && i < code_point_offset {
+            let unit = a[x];
+            x += 1;
+            if is_high_surrogate(unit) && x < limit && is_low_surrogate(a[x]) {
+                x += 1;
+            }
+            i += 1;
+        }
+        if i < code_point_offset {
+            return Err(index_out_of_bounds());
+        }
+    } else {
+        let mut i = code_point_offset;
+        while x > start && i < 0 {
+            x -= 1;
+            if is_low_surrogate(a[x]) && x > start && is_high_surrogate(a[x - 1]) {
+                x -= 1;
+            }
+            i += 1;
+        }
+        if i < 0 {
+            return Err(index_out_of_bounds());
+        }
+    }
+    Ok(x)
+}
+
 /// `Character.charCount(int)`: the number of UTF-16 units `code_point`
 /// takes, 2 for a supplementary character and 1 otherwise.
 pub fn char_count(code_point: i32) -> usize {

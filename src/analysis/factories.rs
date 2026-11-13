@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 
 use crate::analysis::{
-    default_token_attribute_factory, CharFilter, TokenStream, Tokenizer, TokenizerLogic,
+    default_token_attribute_factory, CharReader, TokenStream, Tokenizer, TokenizerLogic,
 };
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::util::attribute::AttributeFactory;
@@ -1057,8 +1057,15 @@ pub trait CharFilterFactory: Send + Sync + std::fmt::Debug {
 
     /// Wraps `input` in the filter.
     ///
-    /// Equivalent to `CharFilterFactory.create(Reader)`.
-    fn create(&self, input: Box<dyn CharFilter>) -> Result<Box<dyn CharFilter>>;
+    /// Equivalent to `CharFilterFactory.create(Reader)`: the reader the
+    /// factory builds over `input`, returned through its `Reader` supertype
+    /// (a factory with nothing to apply may return `input` itself, as
+    /// `MappingCharFilterFactory` does for an empty mapping).
+    ///
+    /// # Errors
+    ///
+    /// Returns what the filter's construction returns.
+    fn create(&self, input: Box<dyn CharReader>) -> Result<Box<dyn CharReader>>;
 
     /// Normalizes `input`.
     ///
@@ -1072,7 +1079,7 @@ pub trait CharFilterFactory: Send + Sync + std::fmt::Debug {
     /// [`create`](Self::create) returns.
     ///
     /// Equivalent to `org.apache.lucene.analysis.CharFilterFactory#normalize`.
-    fn normalize(&self, input: Box<dyn CharFilter>) -> Result<Box<dyn CharFilter>> {
+    fn normalize(&self, input: Box<dyn CharReader>) -> Result<Box<dyn CharReader>> {
         Ok(input)
     }
     /// Returns this factory as a [`ResourceLoaderAware`], or `None` when it is

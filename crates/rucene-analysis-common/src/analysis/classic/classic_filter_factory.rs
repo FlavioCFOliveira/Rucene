@@ -15,10 +15,101 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ClassicFilterFactory.java`, of the Java
-//! package `org.apache.lucene.analysis.classic`.
+//! Factory for `ClassicFilter`, ported from
+//! `org.apache.lucene.analysis.classic.ClassicFilterFactory`.
 
-/// Java: `public class`.
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use rucene::analysis::factories::{
+    AbstractAnalysisFactory, AnalysisFactoryClass, SPINameField, TokenFilterFactory,
+};
+use rucene::analysis::TokenStream;
+use rucene::error::Result;
+
+use super::classic_filter::new_classic_filter;
+use crate::spi::check_unknown_parameters;
+
+/// Factory for `ClassicFilter`.
 ///
-/// Skeleton of `org.apache.lucene.analysis.classic.ClassicFilterFactory`; ported by rmp task #464.
-pub struct ClassicFilterFactory;
+/// ```text
+/// <fieldType name="text_clssc" class="solr.TextField" positionIncrementGap="100">
+///   <analyzer>
+///     <tokenizer class="solr.ClassicTokenizerFactory"/>
+///     <filter class="solr.ClassicFilterFactory"/>
+///   </analyzer>
+/// </fieldType>
+/// ```
+///
+/// Equivalent to `org.apache.lucene.analysis.classic.ClassicFilterFactory`
+/// (since 3.1.0).
+#[derive(Debug)]
+pub struct ClassicFilterFactory {
+    base: AbstractAnalysisFactory,
+}
+
+impl ClassicFilterFactory {
+    /// SPI name
+    ///
+    /// Equivalent to `ClassicFilterFactory.NAME`.
+    pub const NAME: &'static str = "classic";
+
+    /// Creates a new ClassicFilterFactory
+    ///
+    /// Equivalent to `ClassicFilterFactory(Map<String, String>)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`AbstractAnalysisFactory::new`] returns, and
+    /// `IllegalArgumentException` for a leftover argument.
+    pub fn new(args: &mut HashMap<String, String>) -> Result<Self> {
+        let base = AbstractAnalysisFactory::new(args)?;
+        check_unknown_parameters(args)?;
+        Ok(Self { base })
+    }
+
+    /// Default ctor for compatibility with SPI
+    ///
+    /// Equivalent to `ClassicFilterFactory()`.
+    ///
+    /// # Errors
+    ///
+    /// Always: [`AbstractAnalysisFactory::default_ctor_exception`].
+    pub fn new_without_args() -> Result<Self> {
+        Err(AbstractAnalysisFactory::default_ctor_exception())
+    }
+
+    /// The members this factory inherits from `AbstractAnalysisFactory`.
+    pub fn base(&self) -> &AbstractAnalysisFactory {
+        &self.base
+    }
+
+    /// The factory's class, as `META-INF/services/org.apache.lucene.analysis.TokenFilterFactory`
+    /// names it: `ClassicFilterFactory.class`, with its `NAME` field and its
+    /// `Map<String, String>` constructor.
+    pub const fn class() -> AnalysisFactoryClass<dyn TokenFilterFactory> {
+        AnalysisFactoryClass::new(
+            "org.apache.lucene.analysis.classic.ClassicFilterFactory",
+            SPINameField::Declared(Self::NAME),
+            Some(Self::new_from_map),
+        )
+    }
+
+    /// The `Map<String, String>` constructor, as [`class`](Self::class)
+    /// exposes it.
+    fn new_from_map(args: &mut HashMap<String, String>) -> Result<Arc<dyn TokenFilterFactory>> {
+        Ok(Arc::new(Self::new(args)?))
+    }
+}
+
+impl TokenFilterFactory for ClassicFilterFactory {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.classic.ClassicFilterFactory"
+    }
+
+    /// Equivalent to `ClassicFilterFactory.create(TokenStream)`, `new
+    /// ClassicFilter(input)`.
+    fn create(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(new_classic_filter(input)?))
+    }
+}

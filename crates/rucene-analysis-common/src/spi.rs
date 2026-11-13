@@ -55,6 +55,11 @@ use rucene::util::java_collections::JavaHashMap;
 use rucene::util::resource_loader::{ClassLoader, ClassRegistry, ServiceProvider};
 use rucene::util::spi::lucene_core_class_loader;
 
+use crate::analysis::charfilter::html_strip_char_filter_factory::HTMLStripCharFilterFactory;
+use crate::analysis::charfilter::mapping_char_filter_factory::MappingCharFilterFactory;
+use crate::analysis::classic::classic_analyzer::ClassicAnalyzer;
+use crate::analysis::classic::classic_filter_factory::ClassicFilterFactory;
+use crate::analysis::classic::classic_tokenizer_factory::ClassicTokenizerFactory;
 use crate::analysis::core::decimal_digit_filter_factory::DecimalDigitFilterFactory;
 use crate::analysis::core::flatten_graph_filter_factory::FlattenGraphFilterFactory;
 use crate::analysis::core::keyword_analyzer::KeywordAnalyzer;
@@ -68,6 +73,8 @@ use crate::analysis::core::unicode_whitespace_analyzer::UnicodeWhitespaceAnalyze
 use crate::analysis::core::upper_case_filter_factory::UpperCaseFilterFactory;
 use crate::analysis::core::whitespace_analyzer::WhitespaceAnalyzer;
 use crate::analysis::core::whitespace_tokenizer_factory::WhitespaceTokenizerFactory;
+use crate::analysis::email::uax29_url_email_analyzer::UAX29URLEmailAnalyzer;
+use crate::analysis::email::uax29_url_email_tokenizer_factory::UAX29URLEmailTokenizerFactory;
 use crate::analysis::en::english_analyzer::EnglishAnalyzer;
 use crate::analysis::en::english_minimal_stem_filter_factory::EnglishMinimalStemFilterFactory;
 use crate::analysis::en::english_possessive_filter_factory::EnglishPossessiveFilterFactory;
@@ -108,6 +115,7 @@ use crate::analysis::synonym::synonym_map::Parser;
 use crate::analysis::synonym::word2vec::word2vec_synonym_filter_factory::Word2VecSynonymFilterFactory;
 use crate::analysis::synonym::wordnet_synonym_parser::WordnetSynonymParser;
 use crate::analysis::util::elision_filter_factory::ElisionFilterFactory;
+use crate::analysis::wikipedia::wikipedia_tokenizer_factory::WikipediaTokenizerFactory;
 use crate::tartarus::snowball::ext::arabic_stemmer::ArabicStemmer;
 use crate::tartarus::snowball::ext::armenian_stemmer::ArmenianStemmer;
 use crate::tartarus::snowball::ext::basque_stemmer::BasqueStemmer;
@@ -173,7 +181,10 @@ fn tokenizer(class: AnalysisFactoryClass<dyn TokenizerFactory>) -> ServiceProvid
 fn services() -> Vec<ServiceProvider> {
     vec![
         // META-INF/services/org.apache.lucene.analysis.CharFilterFactory
+        char_filter(HTMLStripCharFilterFactory::class()),
+        char_filter(MappingCharFilterFactory::class()),
         // META-INF/services/org.apache.lucene.analysis.TokenFilterFactory
+        token_filter(ClassicFilterFactory::class()),
         token_filter(DecimalDigitFilterFactory::class()),
         token_filter(LowerCaseFilterFactory::class()),
         token_filter(StopFilterFactory::class()),
@@ -217,9 +228,12 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(FlattenGraphFilterFactory::class()),
         token_filter(ElisionFilterFactory::class()),
         // META-INF/services/org.apache.lucene.analysis.TokenizerFactory
+        tokenizer(ClassicTokenizerFactory::class()),
         tokenizer(KeywordTokenizerFactory::class()),
         tokenizer(LetterTokenizerFactory::class()),
         tokenizer(WhitespaceTokenizerFactory::class()),
+        tokenizer(UAX29URLEmailTokenizerFactory::class()),
+        tokenizer(WikipediaTokenizerFactory::class()),
     ]
 }
 
@@ -343,7 +357,8 @@ pub fn synonym_parser_classes() -> &'static RwLock<ClassRegistry<SynonymParserCo
 /// the table holds the analyzers with a public no-argument constructor of
 /// `lucene-core` (`StandardAnalyzer`) and of this module ported so far
 /// (`KeywordAnalyzer`, `SimpleAnalyzer`, `UnicodeWhitespaceAnalyzer`,
-/// `WhitespaceAnalyzer`, `EnglishAnalyzer`), and what an application
+/// `WhitespaceAnalyzer`, `EnglishAnalyzer`, `ClassicAnalyzer`,
+/// `UAX29URLEmailAnalyzer`), and what an application
 /// registers; the module's later analyzers are added as they are ported.
 pub fn analyzer_classes() -> &'static RwLock<ClassRegistry<Arc<dyn Analyzer>>> {
     static CLASSES: LazyLock<RwLock<ClassRegistry<Arc<dyn Analyzer>>>> = LazyLock::new(|| {
@@ -371,6 +386,14 @@ pub fn analyzer_classes() -> &'static RwLock<ClassRegistry<Arc<dyn Analyzer>>> {
         classes.register(
             "org.apache.lucene.analysis.en.EnglishAnalyzer",
             Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(EnglishAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.classic.ClassicAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(ClassicAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.email.UAX29URLEmailAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(UAX29URLEmailAnalyzer::new()) }),
         );
         RwLock::new(classes)
     });

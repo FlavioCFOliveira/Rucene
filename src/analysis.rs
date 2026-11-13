@@ -92,6 +92,23 @@ pub trait CharReader: Debug + Send + Sync {
     /// Closes the reader and releases any resources.
     fn close(&mut self) -> Result<()>;
 
+    /// Resets the stream to its mark.
+    ///
+    /// Equivalent to `Reader.reset()`, whose default throws
+    /// `IOException("reset() not supported")`; a reader that supports it
+    /// (`java.io.StringReader`, `MappingCharFilter` of
+    /// `lucene/analysis/common`) overrides it.
+    ///
+    /// # Errors
+    ///
+    /// The default always returns Java's `IOException`, `reset() not
+    /// supported`.
+    fn reset(&mut self) -> Result<()> {
+        Err(LuceneError::from(crate::error::LuceneErrorKind::Io(
+            std::io::Error::other("reset() not supported"),
+        )))
+    }
+
     /// Returns a view of this reader as a [`CharFilter`], if it is one.
     fn as_char_filter(&self) -> Option<&dyn CharFilter> {
         None
@@ -135,6 +152,13 @@ impl CharReader for StringCharReader {
     }
 
     fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    /// `StringReader.reset()`: back to the mark, which is the start of the
+    /// string, as no `mark(int)` is modelled.
+    fn reset(&mut self) -> Result<()> {
+        self.position = 0;
         Ok(())
     }
 }
