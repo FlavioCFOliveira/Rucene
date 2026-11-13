@@ -55,11 +55,14 @@ use rucene::util::java_collections::JavaHashMap;
 use rucene::util::resource_loader::{ClassLoader, ClassRegistry, ServiceProvider};
 use rucene::util::spi::lucene_core_class_loader;
 
+use crate::analysis::boost::delimited_boost_token_filter_factory::DelimitedBoostTokenFilterFactory;
 use crate::analysis::charfilter::html_strip_char_filter_factory::HTMLStripCharFilterFactory;
 use crate::analysis::charfilter::mapping_char_filter_factory::MappingCharFilterFactory;
 use crate::analysis::classic::classic_analyzer::ClassicAnalyzer;
 use crate::analysis::classic::classic_filter_factory::ClassicFilterFactory;
 use crate::analysis::classic::classic_tokenizer_factory::ClassicTokenizerFactory;
+use crate::analysis::commongrams::common_grams_filter_factory::CommonGramsFilterFactory;
+use crate::analysis::commongrams::common_grams_query_filter_factory::CommonGramsQueryFilterFactory;
 use crate::analysis::core::decimal_digit_filter_factory::DecimalDigitFilterFactory;
 use crate::analysis::core::flatten_graph_filter_factory::FlattenGraphFilterFactory;
 use crate::analysis::core::keyword_analyzer::KeywordAnalyzer;
@@ -80,10 +83,12 @@ use crate::analysis::en::english_minimal_stem_filter_factory::EnglishMinimalStem
 use crate::analysis::en::english_possessive_filter_factory::EnglishPossessiveFilterFactory;
 use crate::analysis::en::kstem_filter_factory::KStemFilterFactory;
 use crate::analysis::en::porter_stem_filter_factory::PorterStemFilterFactory;
+use crate::analysis::minhash::min_hash_filter_factory::MinHashFilterFactory;
 use crate::analysis::miscellaneous::ascii_folding_filter_factory::ASCIIFoldingFilterFactory;
 use crate::analysis::miscellaneous::capitalization_filter_factory::CapitalizationFilterFactory;
 use crate::analysis::miscellaneous::codepoint_count_filter_factory::CodepointCountFilterFactory;
 use crate::analysis::miscellaneous::concatenate_graph_filter_factory::ConcatenateGraphFilterFactory;
+use crate::analysis::miscellaneous::conditional_token_filter_factory::ConditionalTokenFilterFactorySubclass;
 use crate::analysis::miscellaneous::date_recognizer_filter_factory::DateRecognizerFilterFactory;
 use crate::analysis::miscellaneous::delimited_term_frequency_token_filter_factory::DelimitedTermFrequencyTokenFilterFactory;
 use crate::analysis::miscellaneous::drop_if_flagged_filter_factory::DropIfFlaggedFilterFactory;
@@ -107,6 +112,30 @@ use crate::analysis::miscellaneous::truncate_token_filter_factory::TruncateToken
 use crate::analysis::miscellaneous::type_as_synonym_filter_factory::TypeAsSynonymFilterFactory;
 use crate::analysis::miscellaneous::word_delimiter_filter_factory::WordDelimiterFilterFactory;
 use crate::analysis::miscellaneous::word_delimiter_graph_filter_factory::WordDelimiterGraphFilterFactory;
+use crate::analysis::ngram::edge_ngram_filter_factory::EdgeNGramFilterFactory;
+use crate::analysis::ngram::edge_ngram_tokenizer_factory::EdgeNGramTokenizerFactory;
+use crate::analysis::ngram::ngram_filter_factory::NGramFilterFactory;
+use crate::analysis::ngram::ngram_tokenizer_factory::NGramTokenizerFactory;
+use crate::analysis::path::path_hierarchy_tokenizer_factory::PathHierarchyTokenizerFactory;
+use crate::analysis::pattern::pattern_capture_group_filter_factory::PatternCaptureGroupFilterFactory;
+use crate::analysis::pattern::pattern_replace_char_filter_factory::PatternReplaceCharFilterFactory;
+use crate::analysis::pattern::pattern_replace_filter_factory::PatternReplaceFilterFactory;
+use crate::analysis::pattern::pattern_tokenizer_factory::PatternTokenizerFactory;
+use crate::analysis::pattern::pattern_typing_filter_factory::PatternTypingFilterFactory;
+use crate::analysis::pattern::simple_pattern_split_tokenizer_factory::SimplePatternSplitTokenizerFactory;
+use crate::analysis::pattern::simple_pattern_tokenizer_factory::SimplePatternTokenizerFactory;
+use crate::analysis::payloads::delimited_payload_token_filter_factory::DelimitedPayloadTokenFilterFactory;
+use crate::analysis::payloads::float_encoder::FloatEncoder;
+use crate::analysis::payloads::identity_encoder::IdentityEncoder;
+use crate::analysis::payloads::integer_encoder::IntegerEncoder;
+use crate::analysis::payloads::numeric_payload_token_filter_factory::NumericPayloadTokenFilterFactory;
+use crate::analysis::payloads::payload_encoder::PayloadEncoder;
+use crate::analysis::payloads::token_offset_payload_token_filter_factory::TokenOffsetPayloadTokenFilterFactory;
+use crate::analysis::payloads::type_as_payload_token_filter_factory::TypeAsPayloadTokenFilterFactory;
+use crate::analysis::reverse::reverse_string_filter_factory::ReverseStringFilterFactory;
+use crate::analysis::shingle::fixed_shingle_filter_factory::FixedShingleFilterFactory;
+use crate::analysis::shingle::shingle_analyzer_wrapper::ShingleAnalyzerWrapper;
+use crate::analysis::shingle::shingle_filter_factory::ShingleFilterFactory;
 use crate::analysis::snowball::snowball_porter_filter_factory::SnowballPorterFilterFactory;
 use crate::analysis::synonym::solr_synonym_parser::SolrSynonymParser;
 use crate::analysis::synonym::synonym_filter_factory::SynonymFilterFactory;
@@ -183,8 +212,12 @@ fn services() -> Vec<ServiceProvider> {
         // META-INF/services/org.apache.lucene.analysis.CharFilterFactory
         char_filter(HTMLStripCharFilterFactory::class()),
         char_filter(MappingCharFilterFactory::class()),
+        char_filter(PatternReplaceCharFilterFactory::class()),
         // META-INF/services/org.apache.lucene.analysis.TokenFilterFactory
+        token_filter(DelimitedBoostTokenFilterFactory::class()),
         token_filter(ClassicFilterFactory::class()),
+        token_filter(CommonGramsFilterFactory::class()),
+        token_filter(CommonGramsQueryFilterFactory::class()),
         token_filter(DecimalDigitFilterFactory::class()),
         token_filter(LowerCaseFilterFactory::class()),
         token_filter(StopFilterFactory::class()),
@@ -194,6 +227,7 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(EnglishPossessiveFilterFactory::class()),
         token_filter(KStemFilterFactory::class()),
         token_filter(PorterStemFilterFactory::class()),
+        token_filter(MinHashFilterFactory::class()),
         token_filter(ASCIIFoldingFilterFactory::class()),
         token_filter(CapitalizationFilterFactory::class()),
         token_filter(CodepointCountFilterFactory::class()),
@@ -221,6 +255,18 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(WordDelimiterGraphFilterFactory::class()),
         token_filter(ScandinavianFoldingFilterFactory::class()),
         token_filter(ScandinavianNormalizationFilterFactory::class()),
+        token_filter(EdgeNGramFilterFactory::class()),
+        token_filter(NGramFilterFactory::class()),
+        token_filter(PatternReplaceFilterFactory::class()),
+        token_filter(PatternCaptureGroupFilterFactory::class()),
+        token_filter(PatternTypingFilterFactory::class()),
+        token_filter(DelimitedPayloadTokenFilterFactory::class()),
+        token_filter(NumericPayloadTokenFilterFactory::class()),
+        token_filter(TokenOffsetPayloadTokenFilterFactory::class()),
+        token_filter(TypeAsPayloadTokenFilterFactory::class()),
+        token_filter(ReverseStringFilterFactory::class()),
+        token_filter(ShingleFilterFactory::class()),
+        token_filter(FixedShingleFilterFactory::class()),
         token_filter(SnowballPorterFilterFactory::class()),
         token_filter(SynonymFilterFactory::class()),
         token_filter(SynonymGraphFilterFactory::class()),
@@ -233,6 +279,12 @@ fn services() -> Vec<ServiceProvider> {
         tokenizer(LetterTokenizerFactory::class()),
         tokenizer(WhitespaceTokenizerFactory::class()),
         tokenizer(UAX29URLEmailTokenizerFactory::class()),
+        tokenizer(EdgeNGramTokenizerFactory::class()),
+        tokenizer(NGramTokenizerFactory::class()),
+        tokenizer(PathHierarchyTokenizerFactory::class()),
+        tokenizer(PatternTokenizerFactory::class()),
+        tokenizer(SimplePatternSplitTokenizerFactory::class()),
+        tokenizer(SimplePatternTokenizerFactory::class()),
         tokenizer(WikipediaTokenizerFactory::class()),
     ]
 }
@@ -358,8 +410,9 @@ pub fn synonym_parser_classes() -> &'static RwLock<ClassRegistry<SynonymParserCo
 /// `lucene-core` (`StandardAnalyzer`) and of this module ported so far
 /// (`KeywordAnalyzer`, `SimpleAnalyzer`, `UnicodeWhitespaceAnalyzer`,
 /// `WhitespaceAnalyzer`, `EnglishAnalyzer`, `ClassicAnalyzer`,
-/// `UAX29URLEmailAnalyzer`), and what an application
-/// registers; the module's later analyzers are added as they are ported.
+/// `UAX29URLEmailAnalyzer`, `ShingleAnalyzerWrapper`), and what an
+/// application registers; the module's later analyzers are added as they
+/// are ported.
 pub fn analyzer_classes() -> &'static RwLock<ClassRegistry<Arc<dyn Analyzer>>> {
     static CLASSES: LazyLock<RwLock<ClassRegistry<Arc<dyn Analyzer>>>> = LazyLock::new(|| {
         let mut classes = ClassRegistry::new("org.apache.lucene.analysis.Analyzer");
@@ -394,6 +447,10 @@ pub fn analyzer_classes() -> &'static RwLock<ClassRegistry<Arc<dyn Analyzer>>> {
         classes.register(
             "org.apache.lucene.analysis.email.UAX29URLEmailAnalyzer",
             Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(UAX29URLEmailAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.shingle.ShingleAnalyzerWrapper",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(ShingleAnalyzerWrapper::new_standard()) }),
         );
         RwLock::new(classes)
     });
@@ -562,6 +619,74 @@ pub fn snowball_stemmer_classes() -> &'static RwLock<ClassRegistry<SnowballStemm
             classes.register(
                 "org.tartarus.snowball.ext.YiddishStemmer",
                 Arc::new(|| -> SnowballStemmerConstructor { new_stemmer::<YiddishStemmer> }),
+            );
+            RwLock::new(classes)
+        });
+    &CLASSES
+}
+
+/// The `PayloadEncoder` classes `DelimitedPayloadTokenFilterFactory`'s
+/// `encoder` names, each instantiated through its public no-argument
+/// constructor: what `ResourceLoader.newInstance(cname, PayloadEncoder.class)`
+/// finds.
+///
+/// **Divergence from Lucene 10.5.0.** As for [`synonym_parser_classes`]:
+/// Java loads any class of the class path by name; the table holds the
+/// encoders of `org.apache.lucene.analysis.payloads` with a public
+/// no-argument constructor (`FloatEncoder`, `IdentityEncoder`,
+/// `IntegerEncoder`) and what an application registers.
+pub fn payload_encoder_classes() -> &'static RwLock<ClassRegistry<Arc<dyn PayloadEncoder>>> {
+    static CLASSES: LazyLock<RwLock<ClassRegistry<Arc<dyn PayloadEncoder>>>> =
+        LazyLock::new(|| {
+            let mut classes =
+                ClassRegistry::new("org.apache.lucene.analysis.payloads.PayloadEncoder");
+            classes.register(
+                "org.apache.lucene.analysis.payloads.FloatEncoder",
+                Arc::new(|| -> Arc<dyn PayloadEncoder> { Arc::new(FloatEncoder::new()) }),
+            );
+            classes.register(
+                "org.apache.lucene.analysis.payloads.IdentityEncoder",
+                Arc::new(|| -> Arc<dyn PayloadEncoder> { Arc::new(IdentityEncoder::new()) }),
+            );
+            classes.register(
+                "org.apache.lucene.analysis.payloads.IntegerEncoder",
+                Arc::new(|| -> Arc<dyn PayloadEncoder> { Arc::new(IntegerEncoder::new()) }),
+            );
+            RwLock::new(classes)
+        });
+    &CLASSES
+}
+
+/// The `Map<String, String>` constructor of a concrete
+/// `ConditionalTokenFilterFactory` class, returning the factory as Java's
+/// static type `ConditionalTokenFilterFactory` holds it: what
+/// `CustomAnalyzer.Builder.when(Class, Map)` calls through
+/// `AnalysisSPILoader.newFactoryClassInstance`.
+pub type ConditionalTokenFilterFactoryConstructor =
+    fn(&mut HashMap<String, String>) -> Result<Box<dyn ConditionalTokenFilterFactorySubclass>>;
+
+/// The token filter factory classes that extend
+/// `ConditionalTokenFilterFactory`, keyed by binary name, each standing for
+/// its `Map<String, String>` constructor: the classes for which
+/// `ConditionalTokenFilterFactory.class.isAssignableFrom(clazz)` holds in
+/// `CustomAnalyzer.Builder.when(String, Map)`.
+///
+/// **Divergence from Lucene 10.5.0.** Rust has no class hierarchy to query
+/// at run time: the table holds this module's concrete
+/// `ConditionalTokenFilterFactory`, `ProtectedTermFilterFactory`, and what
+/// an application registers.
+pub fn conditional_token_filter_factory_classes(
+) -> &'static RwLock<ClassRegistry<ConditionalTokenFilterFactoryConstructor>> {
+    static CLASSES: LazyLock<RwLock<ClassRegistry<ConditionalTokenFilterFactoryConstructor>>> =
+        LazyLock::new(|| {
+            let mut classes = ClassRegistry::new(
+                "org.apache.lucene.analysis.miscellaneous.ConditionalTokenFilterFactory",
+            );
+            classes.register(
+                "org.apache.lucene.analysis.miscellaneous.ProtectedTermFilterFactory",
+                Arc::new(|| -> ConditionalTokenFilterFactoryConstructor {
+                    |args| Ok(Box::new(ProtectedTermFilterFactory::new(args)?))
+                }),
             );
             RwLock::new(classes)
         });

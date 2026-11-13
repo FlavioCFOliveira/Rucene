@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.query`.
+//! The Java package `org.apache.lucene.analysis.query`: automatically filter
+//! high-frequency stopwords.
 
 pub mod query_auto_stop_word_analyzer;

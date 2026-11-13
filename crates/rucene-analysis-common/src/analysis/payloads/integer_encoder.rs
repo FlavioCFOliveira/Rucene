@@ -15,10 +15,48 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `IntegerEncoder.java`, of the Java
-//! package `org.apache.lucene.analysis.payloads`.
+//! Encodes a character array integer as payload bytes, ported from
+//! `org.apache.lucene.analysis.payloads.IntegerEncoder`.
 
-/// Java: `public class`.
+use rucene::error::Result;
+use rucene::util::{ArrayUtil, BytesRef};
+
+use super::abstract_encoder::AbstractEncoder;
+use super::payload_helper::PayloadHelper;
+
+/// Encode a character array Integer as a `BytesRef`.
 ///
-/// Skeleton of `org.apache.lucene.analysis.payloads.IntegerEncoder`; ported by rmp task #460.
+/// See `PayloadHelper#encodeInt(int, byte[], int)`.
+///
+/// Equivalent to `org.apache.lucene.analysis.payloads.IntegerEncoder`.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct IntegerEncoder;
+
+impl IntegerEncoder {
+    /// Equivalent to the implicit `IntegerEncoder()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl AbstractEncoder for IntegerEncoder {
+    /// Equivalent to `IntegerEncoder.encode(char[], int, int)`:
+    /// `ArrayUtil.parseInt(buffer, offset, length)`, written as
+    /// `PayloadHelper.encodeInt` writes it. `ArrayUtil.parseInt` reads each
+    /// UTF-16 unit with `Character.digit(char, int)`; a surrogate unit,
+    /// never a digit, is read as U+FFFD, which is not one either.
+    ///
+    /// # Errors
+    ///
+    /// The `NumberFormatException` of `ArrayUtil.parseInt`.
+    fn encode_range(&self, buffer: &[u16], offset: usize, length: usize) -> Result<BytesRef> {
+        // TODO: improve this so that we don't have to new Strings
+        let units: Vec<char> = buffer[offset..offset + length]
+            .iter()
+            .map(|&unit| char::from_u32(u32::from(unit)).unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect();
+        let payload = ArrayUtil::parse_int(&units, 0, units.len())?;
+        let bytes = PayloadHelper::encode_int(payload);
+        Ok(BytesRef::new(bytes))
+    }
+}

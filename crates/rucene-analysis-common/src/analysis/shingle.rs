@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.shingle`.
+//! The Java package `org.apache.lucene.analysis.shingle`: word n-gram
+//! filters.
 
 pub mod fixed_shingle_filter;
 pub mod fixed_shingle_filter_factory;

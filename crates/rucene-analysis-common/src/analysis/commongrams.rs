@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.commongrams`.
+//! The Java package `org.apache.lucene.analysis.commongrams`: constructs
+//! n-grams for frequently occurring terms and phrases.
 
 pub mod common_grams_filter;
 pub mod common_grams_filter_factory;

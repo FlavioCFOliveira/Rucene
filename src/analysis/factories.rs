@@ -519,6 +519,37 @@ impl AbstractAnalysisFactory {
         }
     }
 
+    /// [`get_pattern`](Self::get_pattern) for a caller that runs the pattern
+    /// with a `java.util.regex.Matcher`: the same `getPattern(Map, String)`,
+    /// returning the compiled pattern as a
+    /// [`JavaPattern`](crate::analysis::java_regex::JavaPattern), whose
+    /// [`matcher`](crate::analysis::java_regex::JavaPattern::matcher) reports
+    /// groups in UTF-16 indices and expands replacements as Java's does
+    /// (`PatternTokenizerFactory`, `PatternReplaceFilterFactory` and the other
+    /// pattern factories of `lucene/analysis/common`).
+    ///
+    /// Equivalent to `AbstractAnalysisFactory.getPattern(Map, String)`; what
+    /// [`get_pattern`](Self::get_pattern) declares holds here too.
+    ///
+    /// # Errors
+    ///
+    /// As [`get_pattern`](Self::get_pattern): the `IllegalArgumentException`
+    /// `Configuration Error: '<name>' can not be parsed in <factory>`, its
+    /// cause the port's diagnostic.
+    pub fn get_java_pattern(
+        args: &mut HashMap<String, String>,
+        name: &str,
+        factory_simple_name: &str,
+    ) -> Result<crate::analysis::java_regex::JavaPattern> {
+        let value = Self::require(args, name)?;
+        crate::analysis::java_regex::JavaPattern::compile(&value, 0).map_err(|syntax| {
+            LuceneError::illegal_argument_with_cause(
+                format!("Configuration Error: '{name}' can not be parsed in {factory_simple_name}"),
+                std::sync::Arc::new(LuceneError::illegal_argument(syntax.to_string())),
+            )
+        })
+    }
+
     /// Consumes and returns a required argument, checking it against a list.
     ///
     /// Equivalent to `AbstractAnalysisFactory.require(Map, String, Collection, boolean)`

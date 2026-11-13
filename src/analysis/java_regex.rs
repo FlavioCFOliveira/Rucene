@@ -27,8 +27,11 @@
 //! reproduce, is declared on
 //! [`AbstractAnalysisFactory::get_pattern`](crate::analysis::factories::AbstractAnalysisFactory::get_pattern).
 
+mod matcher;
 mod names;
 mod tables;
+
+pub use matcher::JavaMatcher;
 
 use std::collections::HashMap;
 use std::fmt::{self, Write as _};
@@ -129,6 +132,10 @@ pub struct JavaPattern {
     flags: u32,
     whole: fancy_regex::Regex,
     find: fancy_regex::Regex,
+    /// The number of capturing groups, `Matcher.groupCount()`.
+    group_count: usize,
+    /// The named groups and their numbers, `Pattern.namedGroups()`.
+    named_groups: HashMap<String, usize>,
 }
 
 impl JavaPattern {
@@ -171,7 +178,92 @@ impl JavaPattern {
             flags,
             whole,
             find,
+            group_count: translation.group_count,
+            named_groups: translation.named_groups,
         })
+    }
+
+    /// The number of capturing groups of this pattern, what
+    /// `pattern.matcher(input).groupCount()` answers.
+    pub fn group_count(&self) -> usize {
+        self.group_count
+    }
+
+    /// The named capturing groups of this pattern and their numbers,
+    /// `Pattern.namedGroups()`.
+    pub fn named_groups(&self) -> &HashMap<String, usize> {
+        &self.named_groups
+    }
+
+    /// The compiled pattern a [`JavaMatcher`] searches with.
+    pub(crate) fn find_regex(&self) -> &fancy_regex::Regex {
+        &self.find
+    }
+
+    /// Creates a matcher that will match `input` against this pattern.
+    ///
+    /// Equivalent to `Pattern.matcher(CharSequence)`: `input` is the
+    /// character sequence as UTF-16 units, Java's `char`s.
+    pub fn matcher(&self, input: &[u16]) -> JavaMatcher {
+        JavaMatcher::new(self.clone(), input)
+    }
+
+    /// Splits `input` around matches of this pattern.
+    ///
+    /// Equivalent to `Pattern.split(CharSequence, int)` (and so to
+    /// `String.split(String, int)` for a pattern outside that method's
+    /// one-character fast path): the substrings before each match, the
+    /// remainder after the last; a zero-width match at the start of the input
+    /// yields no leading empty substring; `limit > 0` caps the number of
+    /// substrings at `limit`, the last holding the rest of the input; `limit
+    /// == 0` drops the trailing empty substrings; when no match splits the
+    /// input, the input itself is the only substring.
+    pub fn split(&self, input: &[u16], limit: i32) -> Vec<Vec<u16>> {
+        let mut match_count = 0;
+        let mut index = 0usize;
+        let match_limited = limit > 0;
+        let mut match_list: Vec<Vec<u16>> = Vec::new();
+        let mut m = self.matcher(input);
+
+        // Add segments before each match found
+        while m.find() {
+            let (start, end) = (m.match_start(), m.match_end());
+            if !match_limited || match_count < limit - 1 {
+                if index == 0 && index == start && start == end {
+                    // no empty leading substring included for zero-width match
+                    // at the beginning of the input char sequence.
+                    continue;
+                }
+                match_list.push(input[index..start].to_vec());
+                index = end;
+                match_count += 1;
+            } else if match_count == limit - 1 {
+                // last one
+                match_list.push(input[index..].to_vec());
+                index = end;
+                match_count += 1;
+            }
+        }
+
+        // If no match was found, return this
+        if index == 0 {
+            return vec![input.to_vec()];
+        }
+
+        // Add remaining segment
+        if !match_limited || match_count < limit {
+            match_list.push(input[index..].to_vec());
+        }
+
+        // Construct result
+        let mut result_size = match_list.len();
+        if limit == 0 {
+            while result_size > 0 && match_list[result_size - 1].is_empty() {
+                result_size -= 1;
+            }
+        }
+        match_list.truncate(result_size);
+        match_list
     }
 
     /// The source of this pattern, `Pattern.pattern()`.
@@ -225,6 +317,11 @@ impl JavaPattern {
 pub(crate) struct Translation {
     /// The `fancy-regex` pattern.
     pub(crate) pattern: String,
+    /// The number of capturing groups of the Java pattern, which the
+    /// translation keeps in order.
+    pub(crate) group_count: usize,
+    /// The named capturing groups of the Java pattern and their numbers.
+    pub(crate) named_groups: HashMap<String, usize>,
 }
 
 /// The description of a refused counted repetition of a body that can match
@@ -326,6 +423,8 @@ fn translate_for_engine_with_flags(
     emitter.node(&node);
     Ok(Translation {
         pattern: emitter.out,
+        group_count: parser.capturing_group_count - 1,
+        named_groups: parser.named_groups,
     })
 }
 

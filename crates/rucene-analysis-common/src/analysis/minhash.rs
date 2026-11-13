@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.minhash`.
+//! The Java package `org.apache.lucene.analysis.minhash`: MinHash filtering
+//! (for LSH).
 
 pub mod min_hash_filter;
 pub mod min_hash_filter_factory;

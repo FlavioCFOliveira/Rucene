@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.payloads`.
+//! The Java package `org.apache.lucene.analysis.payloads`: provides various
+//! convenience classes for creating payloads on tokens.
 
 pub mod abstract_encoder;
 pub mod delimited_payload_token_filter;

@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.custom`.
+//! The Java package `org.apache.lucene.analysis.custom`: a general-purpose
+//! analyzer that can be created with a builder-style API.
 
 pub mod custom_analyzer;

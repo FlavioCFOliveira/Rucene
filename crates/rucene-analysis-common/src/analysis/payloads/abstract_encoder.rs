@@ -15,10 +15,41 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `AbstractEncoder.java`, of the Java
-//! package `org.apache.lucene.analysis.payloads`.
+//! Base class for payload encoders, ported from
+//! `org.apache.lucene.analysis.payloads.AbstractEncoder`.
 
-/// Java: `public abstract class`.
+use std::fmt::Debug;
+
+use rucene::error::Result;
+use rucene::util::BytesRef;
+
+use super::payload_encoder::PayloadEncoder;
+
+/// Base class for payload encoders.
 ///
-/// Skeleton of `org.apache.lucene.analysis.payloads.AbstractEncoder`; ported by rmp task #460.
-pub struct AbstractEncoder;
+/// Equivalent to `org.apache.lucene.analysis.payloads.AbstractEncoder`, an
+/// abstract class that implements `PayloadEncoder.encode(char[])` as
+/// `encode(buffer, 0, buffer.length)`: an encoder implements this trait's
+/// [`encode_range`](AbstractEncoder::encode_range), and is a
+/// [`PayloadEncoder`] through the blanket implementation that supplies that
+/// `encode`.
+pub trait AbstractEncoder: Debug + Send + Sync {
+    /// The subclass's `encode(char[], int, int)`.
+    ///
+    /// # Errors
+    ///
+    /// What the encoding throws.
+    fn encode_range(&self, buffer: &[u16], offset: usize, length: usize) -> Result<BytesRef>;
+}
+
+impl<T: AbstractEncoder> PayloadEncoder for T {
+    /// Equivalent to `AbstractEncoder.encode(char[])`, `encode(buffer, 0,
+    /// buffer.length)`.
+    fn encode(&self, buffer: &[u16]) -> Result<BytesRef> {
+        AbstractEncoder::encode_range(self, buffer, 0, buffer.len())
+    }
+
+    fn encode_range(&self, buffer: &[u16], offset: usize, length: usize) -> Result<BytesRef> {
+        AbstractEncoder::encode_range(self, buffer, offset, length)
+    }
+}

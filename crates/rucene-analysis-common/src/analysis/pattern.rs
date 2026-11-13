@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.pattern`.
+//! The Java package `org.apache.lucene.analysis.pattern`: set of components
+//! for pattern-based (regex) analysis.
 
 pub mod pattern_capture_group_filter_factory;
 pub mod pattern_capture_group_token_filter;

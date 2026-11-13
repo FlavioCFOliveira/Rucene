@@ -84,7 +84,7 @@ fn parse_int(s: &str) -> Result<i32> {
 /// `Float.parseFloat(String)`, whose `NumberFormatException` says `empty
 /// String` for a string that trims to nothing and `For input string:
 /// "<s>"` otherwise.
-fn parse_float(s: &str) -> Result<f32> {
+pub(crate) fn parse_float(s: &str) -> Result<f32> {
     rucene::util::java_fmt::parse_float(s).ok_or_else(|| {
         if s.trim_matches(|c: char| c <= '\u{20}').is_empty() {
             LuceneError::number_format("empty String")

@@ -860,6 +860,16 @@ impl AttributeSource {
         self.factory.as_ref()
     }
 
+    /// Returns a shared handle to the factory used by this source, for a
+    /// caller that builds another source over it, as Java's `new
+    /// AttributeSource(getAttributeFactory())` does (`ShingleFilter` of
+    /// `lucene/analysis/common`).
+    ///
+    /// Equivalent to `org.apache.lucene.util.AttributeSource#getAttributeFactory`.
+    pub fn attribute_factory(&self) -> Arc<dyn AttributeFactory> {
+        Arc::clone(&self.factory)
+    }
+
     /// Brings this source's view up to date with the shared maps.
     fn sync_view(&mut self) {
         let shared = self.shared.borrow();

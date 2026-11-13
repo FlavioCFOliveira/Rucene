@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.boost`.
+//! The Java package `org.apache.lucene.analysis.boost`: provides various
+//! convenience classes for creating boosts on tokens.
 
 pub mod delimited_boost_token_filter;
 pub mod delimited_boost_token_filter_factory;

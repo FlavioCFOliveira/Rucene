@@ -28,7 +28,9 @@ use rucene::analysis::{CharArraySet, TokenStream};
 use rucene::error::{LuceneError, Result};
 use rucene::util::resource_loader::{ResourceLoader, ResourceLoaderAware};
 
-use super::conditional_token_filter_factory::ConditionalTokenFilterFactory;
+use super::conditional_token_filter_factory::{
+    ConditionalTokenFilterFactory, ConditionalTokenFilterFactorySubclass,
+};
 use super::protected_term_filter::new_protected_term_filter;
 use crate::spi::check_unknown_parameters;
 
@@ -273,6 +275,12 @@ impl ProtectedTermFilterFactory {
     /// exposes it.
     fn new_from_map(args: &mut HashMap<String, String>) -> Result<Arc<dyn TokenFilterFactory>> {
         Ok(Arc::new(Self::new(args)?))
+    }
+}
+
+impl ConditionalTokenFilterFactorySubclass for ProtectedTermFilterFactory {
+    fn conditional_base_mut(&mut self) -> &mut ConditionalTokenFilterFactory {
+        &mut self.base
     }
 }
 

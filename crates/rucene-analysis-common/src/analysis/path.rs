@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.path`.
+//! The Java package `org.apache.lucene.analysis.path`: analysis components
+//! for path-like strings such as filenames.
 
 pub mod path_hierarchy_tokenizer;
 pub mod path_hierarchy_tokenizer_factory;

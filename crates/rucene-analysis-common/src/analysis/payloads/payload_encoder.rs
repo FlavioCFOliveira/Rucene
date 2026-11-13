@@ -15,10 +15,38 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `PayloadEncoder.java`, of the Java
-//! package `org.apache.lucene.analysis.payloads`.
+//! Converts char buffers to payload bytes, ported from
+//! `org.apache.lucene.analysis.payloads.PayloadEncoder`.
 
-/// Java: `public interface`.
+use std::fmt::Debug;
+
+use rucene::error::Result;
+use rucene::util::BytesRef;
+
+/// Mainly for use with the DelimitedPayloadTokenFilter, converts char
+/// buffers to `BytesRef`.
 ///
-/// Skeleton of `org.apache.lucene.analysis.payloads.PayloadEncoder`; ported by rmp task #460.
-pub trait PayloadEncoder {}
+/// NOTE: This interface is subject to change
+///
+/// Equivalent to `org.apache.lucene.analysis.payloads.PayloadEncoder`. The
+/// buffers are Java's `char[]`, UTF-16 units.
+pub trait PayloadEncoder: Debug + Send + Sync {
+    /// Equivalent to `PayloadEncoder.encode(char[])`.
+    ///
+    /// # Errors
+    ///
+    /// What the encoding throws (a `NumberFormatException` for a number
+    /// encoder).
+    fn encode(&self, buffer: &[u16]) -> Result<BytesRef>;
+
+    /// Convert a char array to a `BytesRef`
+    ///
+    /// Returns the encoded `BytesRef`.
+    ///
+    /// Equivalent to `PayloadEncoder.encode(char[], int, int)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`encode`](Self::encode).
+    fn encode_range(&self, buffer: &[u16], offset: usize, length: usize) -> Result<BytesRef>;
+}

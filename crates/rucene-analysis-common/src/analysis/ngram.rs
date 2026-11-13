@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.ngram`.
+//! The Java package `org.apache.lucene.analysis.ngram`: character n-gram
+//! tokenizers and filters.
 
 pub mod edge_ngram_filter_factory;
 pub mod edge_ngram_token_filter;

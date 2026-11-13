@@ -15,10 +15,45 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FloatEncoder.java`, of the Java
-//! package `org.apache.lucene.analysis.payloads`.
+//! Encodes a character array float as payload bytes, ported from
+//! `org.apache.lucene.analysis.payloads.FloatEncoder`.
 
-/// Java: `public class`.
+use rucene::error::Result;
+use rucene::util::BytesRef;
+
+use super::abstract_encoder::AbstractEncoder;
+use super::payload_helper::PayloadHelper;
+use crate::analysis::synonym::word2vec::dl4j_model_reader::parse_float;
+
+/// Encode a character array Float as a `BytesRef`.
 ///
-/// Skeleton of `org.apache.lucene.analysis.payloads.FloatEncoder`; ported by rmp task #460.
+/// See `PayloadHelper#encodeFloat(float, byte[], int)`.
+///
+/// Equivalent to `org.apache.lucene.analysis.payloads.FloatEncoder`.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct FloatEncoder;
+
+impl FloatEncoder {
+    /// Equivalent to the implicit `FloatEncoder()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl AbstractEncoder for FloatEncoder {
+    /// Equivalent to `FloatEncoder.encode(char[], int, int)`:
+    /// `Float.parseFloat(new String(buffer, offset, length))`, written as
+    /// `PayloadHelper.encodeFloat` writes it. An unpaired surrogate of the
+    /// units becomes U+FFFD in the string, which `parseFloat` refuses as
+    /// it refuses the surrogate.
+    ///
+    /// # Errors
+    ///
+    /// The `NumberFormatException` of `Float.parseFloat`.
+    fn encode_range(&self, buffer: &[u16], offset: usize, length: usize) -> Result<BytesRef> {
+        // TODO: improve this so that we don't have to new Strings
+        let payload = parse_float(&String::from_utf16_lossy(&buffer[offset..offset + length]))?;
+        let bytes = PayloadHelper::encode_float(payload);
+        Ok(BytesRef::new(bytes))
+    }
+}

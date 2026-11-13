@@ -15,10 +15,69 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `TypeAsPayloadTokenFilter.java`, of the Java
-//! package `org.apache.lucene.analysis.payloads`.
+//! Stores the token's type as its payload, ported from
+//! `org.apache.lucene.analysis.payloads.TypeAsPayloadTokenFilter`.
 
-/// Java: `public class`.
+use rucene::analysis::{
+    PayloadAttribute, TokenFilter, TokenFilterLogic, TokenStream, TypeAttribute,
+};
+use rucene::error::Result;
+use rucene::util::attribute::AttributeSource;
+use rucene::util::BytesRef;
+
+/// The body of [`TypeAsPayloadTokenFilter`]: what Lucene's
+/// `TypeAsPayloadTokenFilter` adds to `TokenFilter`.
+#[derive(Debug, Default)]
+pub struct TypeAsPayloadTokenFilterLogic;
+
+impl TokenFilterLogic for TypeAsPayloadTokenFilterLogic {
+    /// Equivalent to the final `TypeAsPayloadTokenFilter.incrementToken()`;
+    /// Java's `type != null` test has no counterpart, a type being a string.
+    fn increment_token(
+        &mut self,
+        source: &mut AttributeSource,
+        input: &mut dyn TokenStream,
+    ) -> Result<bool> {
+        if input.increment_token()? {
+            let type_value = source
+                .get_attribute_interface::<dyn TypeAttribute>()
+                .expect("INVARIANT: the constructor added the TypeAttribute")
+                .type_value()
+                .to_string();
+            if !type_value.is_empty() {
+                source
+                    .get_attribute_interface_mut::<dyn PayloadAttribute>()
+                    .expect("INVARIANT: the constructor added the PayloadAttribute")
+                    .set_payload(Some(BytesRef::from_char_sequence(&type_value)));
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+/// Makes the `TypeAttribute` a payload.
 ///
-/// Skeleton of `org.apache.lucene.analysis.payloads.TypeAsPayloadTokenFilter`; ported by rmp task #460.
-pub struct TypeAsPayloadTokenFilter;
+/// Encodes the type using `String#getBytes(String)` with "UTF-8" as the
+/// encoding
+///
+/// Equivalent to `org.apache.lucene.analysis.payloads.TypeAsPayloadTokenFilter`.
+pub type TypeAsPayloadTokenFilter = TokenFilter<TypeAsPayloadTokenFilterLogic>;
+
+/// Equivalent to `TypeAsPayloadTokenFilter(TokenStream)`, which adds the
+/// `PayloadAttribute` and the `TypeAttribute`.
+///
+/// # Errors
+///
+/// What the stream's attribute factory raises for an interface it cannot
+/// implement, as Java's `addAttribute` throws.
+pub fn new_type_as_payload_token_filter(
+    input: Box<dyn TokenStream>,
+) -> Result<TypeAsPayloadTokenFilter> {
+    let mut filter = TokenFilter::new(input, TypeAsPayloadTokenFilterLogic);
+    let source = filter.attribute_source_mut();
+    source.add_attribute_interface::<dyn PayloadAttribute>()?;
+    source.add_attribute_interface::<dyn TypeAttribute>()?;
+    Ok(filter)
+}

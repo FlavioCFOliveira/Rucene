@@ -15,10 +15,398 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SimplePatternSplitTokenizer.java`, of the Java
-//! package `org.apache.lucene.analysis.pattern`.
+//! A tokenizer that splits the input on matches of a Lucene `RegExp`
+//! automaton, ported from
+//! `org.apache.lucene.analysis.pattern.SimplePatternSplitTokenizer`.
 
-/// Java: `public final class`.
+use std::sync::Arc;
+
+use rucene::analysis::{
+    default_token_attribute_factory, CharReader, CharTermAttribute, OffsetAttribute, Tokenizer,
+    TokenizerLogic,
+};
+use rucene::error::{LuceneError, Result};
+use rucene::util::attribute::{AttributeFactory, AttributeSource};
+use rucene::util::automaton::{
+    Automaton, CharacterRunAutomaton, Operations, RegExp, DEFAULT_DETERMINIZE_WORK_LIMIT,
+};
+use rucene::util::ArrayUtil;
+
+use super::simple_pattern_tokenizer::to_code_point;
+use crate::jdk::character::utf16_to_term_chars;
+
+/// The body of [`SimplePatternSplitTokenizer`]: what Lucene's
+/// `SimplePatternSplitTokenizer` adds to `Tokenizer`.
 ///
-/// Skeleton of `org.apache.lucene.analysis.pattern.SimplePatternSplitTokenizer`; ported by rmp task #458.
-pub struct SimplePatternSplitTokenizer;
+/// **Divergence from Lucene 10.5.0.** As for `SimplePatternTokenizer`: the
+/// units Java scans into the term's `char[]` are held by this logic
+/// (`token`) and decoded into the term when a token is emitted, an unpaired
+/// surrogate becoming U+FFFD (`jdk::character::utf16_to_term_chars`).
+#[derive(Debug)]
+pub struct SimplePatternSplitTokenizerLogic {
+    run_dfa: CharacterRunAutomaton,
+    // TODO: this is copied from SimplePatternTokenizer, but there are subtle differences e.g. we
+    // track sepUpto an tokenUpto;
+    // find a clean way to share it:
+
+    // TODO: we could likely use a single rolling buffer instead of two separate char buffers here.
+    // We could also use PushBackReader but I
+    // suspect it's slowish:
+    pending_chars: Vec<u16>,
+    token_upto: i32,
+    pending_limit: i32,
+    pending_upto: i32,
+    offset: i32,
+    sep_upto: i32,
+    buffer: Vec<u16>,
+    buffer_limit: i32,
+    buffer_next_read: i32,
+    /// The units of Java's term buffer.
+    token: Vec<u16>,
+}
+
+impl SimplePatternSplitTokenizerLogic {
+    /// Equivalent to the private `fillToken(int)`.
+    fn fill_token(&self, source: &AttributeSource, input: &dyn CharReader, offset_start: i32) {
+        let chars = utf16_to_term_chars(&self.token[..self.token_upto as usize]);
+        source
+            .get_attribute_interface_mut::<dyn CharTermAttribute>()
+            .expect("INVARIANT: the constructor added the CharTermAttribute")
+            .copy_buffer(&chars, 0, chars.len());
+        let start = Tokenizer::<Self>::correct_offset_of(Some(input), offset_start);
+        let end = Tokenizer::<Self>::correct_offset_of(Some(input), offset_start + self.token_upto);
+        source
+            .get_attribute_interface_mut::<dyn OffsetAttribute>()
+            .expect("INVARIANT: the constructor added the OffsetAttribute")
+            .set_offset(start, end);
+    }
+
+    /// Pushes back the last `count` characters in current token's buffer.
+    ///
+    /// Equivalent to the private `pushBack(int)`.
+    fn push_back(&mut self, count: i32) {
+        self.token_upto -= count;
+        debug_assert!(self.token_upto >= 0);
+        if self.pending_limit == 0 {
+            if self.buffer_limit != -1 && self.buffer_next_read >= count {
+                // optimize common case when the chars we are pushing back are still in the buffer
+                self.buffer_next_read -= count;
+            } else {
+                if count as usize > self.pending_chars.len() {
+                    let new_length = ArrayUtil::oversize(count as usize, 2);
+                    self.pending_chars.resize(new_length, 0);
+                }
+                let from = self.token_upto as usize;
+                self.pending_chars[..count as usize]
+                    .copy_from_slice(&self.token[from..from + count as usize]);
+                self.pending_limit = count;
+            }
+        } else {
+            // we are pushing back what is already in our pending buffer
+            self.pending_upto -= count;
+            debug_assert!(self.pending_upto >= 0);
+        }
+        self.offset -= count;
+    }
+
+    /// Equivalent to the private `appendToToken(char)`.
+    fn append_to_token(&mut self, ch: u16) {
+        if self.token_upto as usize == self.token.len() {
+            // `termAtt.resizeBuffer(tokenUpto + 1)`
+            let new_length = ArrayUtil::oversize(self.token_upto as usize + 1, 2);
+            self.token.resize(new_length, 0);
+        }
+        self.token[self.token_upto as usize] = ch;
+        self.token_upto += 1;
+        self.sep_upto += 1;
+    }
+
+    /// Equivalent to the private `nextCodeUnit()`: `-1` at the end of the
+    /// input.
+    fn next_code_unit(&mut self, input: &mut dyn CharReader) -> Result<i32> {
+        let result;
+        if self.pending_upto < self.pending_limit {
+            result = self.pending_chars[self.pending_upto as usize];
+            self.pending_upto += 1;
+            if self.pending_upto == self.pending_limit {
+                // We used up the pending buffer
+                self.pending_upto = 0;
+                self.pending_limit = 0;
+            }
+            self.append_to_token(result);
+            self.offset += 1;
+        } else if self.buffer_limit == -1 {
+            return Ok(-1);
+        } else {
+            debug_assert!(
+                self.buffer_next_read <= self.buffer_limit,
+                "bufferNextRead={} bufferLimit={}",
+                self.buffer_next_read,
+                self.buffer_limit
+            );
+            if self.buffer_next_read == self.buffer_limit {
+                // `input.read` answers -1 at the end of the input, a
+                // `CharReader` 0.
+                let read = input.read(&mut self.buffer)?;
+                self.buffer_limit = if read == 0 { -1 } else { read as i32 };
+                if self.buffer_limit == -1 {
+                    return Ok(-1);
+                }
+                self.buffer_next_read = 0;
+            }
+            result = self.buffer[self.buffer_next_read as usize];
+            self.buffer_next_read += 1;
+            self.offset += 1;
+            self.append_to_token(result);
+        }
+        Ok(i32::from(result))
+    }
+
+    /// Equivalent to the private `nextCodePoint()`.
+    fn next_code_point(&mut self, input: &mut dyn CharReader) -> Result<i32> {
+        let ch = self.next_code_unit(input)?;
+        if ch == -1 {
+            return Ok(ch);
+        }
+        if (0xD800..0xDC00).contains(&ch) {
+            // `(char) nextCodeUnit()`: `-1` becomes U+FFFF.
+            let low = self.next_code_unit(input)? & 0xFFFF;
+            Ok(to_code_point(ch, low))
+        } else {
+            Ok(ch)
+        }
+    }
+}
+
+impl TokenizerLogic for SimplePatternSplitTokenizerLogic {
+    /// Equivalent to `SimplePatternSplitTokenizer.incrementToken()`.
+    fn increment_token(
+        &mut self,
+        source: &mut AttributeSource,
+        input: &mut dyn CharReader,
+    ) -> Result<bool> {
+        let mut offset_start = self.offset;
+
+        source.clear_attributes();
+
+        self.token_upto = 0;
+
+        loop {
+            self.sep_upto = 0;
+
+            // The runDFA operates in Unicode space, not UTF16 (java's char):
+            let mut ch = self.next_code_point(input)?;
+            if ch == -1 {
+                if self.token_upto > 0 {
+                    self.fill_token(source, &*input, offset_start);
+                    return Ok(true);
+                } else {
+                    return Ok(false);
+                }
+            }
+            let mut state = self.run_dfa.step(0, ch);
+
+            if state != -1 {
+                // a token separator just possibly started; keep scanning to see if the token is accepted:
+                let mut last_accept_length = -1;
+                loop {
+                    if self.run_dfa.is_accept(state) {
+                        // record that the token separator matches here, but keep scanning in case a longer
+                        // match also works (greedy):
+                        last_accept_length = self.sep_upto;
+                    }
+                    ch = self.next_code_point(input)?;
+                    if ch == -1 {
+                        break;
+                    }
+                    state = self.run_dfa.step(state, ch);
+                    if state == -1 {
+                        break;
+                    }
+                }
+
+                if last_accept_length != -1 {
+                    // we found a token separator; strip the trailing separator we just matched from the
+                    // token:
+                    let extra = self.sep_upto - last_accept_length;
+                    if extra != 0 {
+                        self.push_back(extra);
+                    }
+                    self.token_upto -= last_accept_length;
+                    if self.token_upto > 0 {
+                        self.fill_token(source, &*input, offset_start);
+                        return Ok(true);
+                    } else {
+                        // we matched one token separator immediately after another
+                        offset_start = self.offset;
+                    }
+                } else if ch == -1 {
+                    if self.token_upto > 0 {
+                        self.fill_token(source, &*input, offset_start);
+                        return Ok(true);
+                    } else {
+                        return Ok(false);
+                    }
+                } else {
+                    // false alarm: there was no token separator here; push back all but the first character
+                    // we scanned
+                    self.push_back(self.sep_upto - 1);
+                }
+            }
+        }
+    }
+
+    /// Equivalent to `SimplePatternSplitTokenizer.end()`; `Tokenizer::end`
+    /// has run `super.end()`.
+    fn end(&mut self, source: &mut AttributeSource, input: Option<&dyn CharReader>) -> Result<()> {
+        let ofs = Tokenizer::<Self>::correct_offset_of(
+            input,
+            self.offset + self.pending_limit - self.pending_upto,
+        );
+        source
+            .get_attribute_interface_mut::<dyn OffsetAttribute>()
+            .expect("INVARIANT: the constructor added the OffsetAttribute")
+            .set_offset(ofs, ofs);
+        Ok(())
+    }
+
+    /// Equivalent to `SimplePatternSplitTokenizer.reset()`;
+    /// `Tokenizer::reset` has run `super.reset()`.
+    fn reset(&mut self, _source: &mut AttributeSource, _reader: &mut dyn CharReader) -> Result<()> {
+        self.offset = 0;
+        self.pending_upto = 0;
+        self.pending_limit = 0;
+        self.sep_upto = 0;
+        self.buffer_next_read = 0;
+        self.buffer_limit = 0;
+        Ok(())
+    }
+}
+
+/// This tokenizer uses a Lucene `RegExp` or (expert usage) a pre-built
+/// determinized `Automaton`, to locate tokens. The regexp syntax is more
+/// limited than `PatternTokenizer`, but the tokenization is quite a bit
+/// faster. This is just like `SimplePatternTokenizer` except that the
+/// pattern should make valid token separator characters, like
+/// `String.split`. Empty string tokens are never produced.
+///
+/// Equivalent to `org.apache.lucene.analysis.pattern.SimplePatternSplitTokenizer`
+/// (`@lucene.experimental`).
+pub type SimplePatternSplitTokenizer = Tokenizer<SimplePatternSplitTokenizerLogic>;
+
+/// See `RegExp` for the accepted syntax.
+///
+/// Equivalent to `SimplePatternSplitTokenizer(String)`,
+/// `this(DEFAULT_TOKEN_ATTRIBUTE_FACTORY, regexp,
+/// Operations.DEFAULT_DETERMINIZE_WORK_LIMIT)`.
+///
+/// # Errors
+///
+/// As [`new_simple_pattern_split_tokenizer_with_factory`].
+pub fn new_simple_pattern_split_tokenizer(regexp: &str) -> Result<SimplePatternSplitTokenizer> {
+    new_simple_pattern_split_tokenizer_with_factory(
+        default_token_attribute_factory(),
+        regexp,
+        DEFAULT_DETERMINIZE_WORK_LIMIT,
+    )
+}
+
+/// Runs a pre-built automaton.
+///
+/// Equivalent to `SimplePatternSplitTokenizer(Automaton)`.
+///
+/// # Errors
+///
+/// As [`new_simple_pattern_split_tokenizer_with_factory_from_automaton`].
+pub fn new_simple_pattern_split_tokenizer_from_automaton(
+    dfa: Automaton,
+) -> Result<SimplePatternSplitTokenizer> {
+    new_simple_pattern_split_tokenizer_with_factory_from_automaton(
+        default_token_attribute_factory(),
+        dfa,
+    )
+}
+
+/// See `RegExp` for the accepted syntax.
+///
+/// Equivalent to `SimplePatternSplitTokenizer(AttributeFactory, String,
+/// int)`, `this(factory, Operations.determinize(new
+/// RegExp(regexp).toAutomaton(), determinizeWorkLimit))`.
+///
+/// # Errors
+///
+/// What `RegExp` returns for an invalid regular expression,
+/// `TooComplexToDeterminizeException` past the work limit, and as
+/// [`new_simple_pattern_split_tokenizer_with_factory_from_automaton`].
+pub fn new_simple_pattern_split_tokenizer_with_factory(
+    factory: Arc<dyn AttributeFactory>,
+    regexp: &str,
+    determinize_work_limit: i32,
+) -> Result<SimplePatternSplitTokenizer> {
+    let automaton = RegExp::new(regexp)?.to_automaton()?;
+    new_simple_pattern_split_tokenizer_with_factory_from_automaton(
+        factory,
+        Operations::determinize(&automaton, determinize_work_limit)?,
+    )
+}
+
+/// Runs a pre-built automaton.
+///
+/// Equivalent to `SimplePatternSplitTokenizer(AttributeFactory, Automaton)`.
+///
+/// # Errors
+///
+/// What `factory` raises for an interface it cannot implement, as Java's
+/// `addAttribute` throws, and `IllegalArgumentException` "please determinize
+/// the incoming automaton first" for an automaton that is not deterministic.
+pub fn new_simple_pattern_split_tokenizer_with_factory_from_automaton(
+    factory: Arc<dyn AttributeFactory>,
+    dfa: Automaton,
+) -> Result<SimplePatternSplitTokenizer> {
+    let (source, logic) = simple_pattern_split_tokenizer_parts(factory, dfa)?;
+    Ok(Tokenizer::with_source(source, logic))
+}
+
+/// The source and the body of the `SimplePatternSplitTokenizer` that
+/// [`new_simple_pattern_split_tokenizer_with_factory_from_automaton`] builds,
+/// for a caller that holds the body behind a box
+/// (`SimplePatternSplitTokenizerFactory`).
+///
+/// # Errors
+///
+/// As [`new_simple_pattern_split_tokenizer_with_factory_from_automaton`].
+pub(crate) fn simple_pattern_split_tokenizer_parts(
+    factory: Arc<dyn AttributeFactory>,
+    dfa: Automaton,
+) -> Result<(AttributeSource, SimplePatternSplitTokenizerLogic)> {
+    let mut source = AttributeSource::new_with_factory(factory);
+    source.add_attribute_interface::<dyn CharTermAttribute>()?;
+    source.add_attribute_interface::<dyn OffsetAttribute>()?;
+
+    // we require user to do this up front because it is a possibly very costly operation, and user
+    // may be creating us frequently, not
+    // realizing this ctor is otherwise trappy
+    if !dfa.is_deterministic() {
+        return Err(LuceneError::illegal_argument(
+            "please determinize the incoming automaton first",
+        ));
+    }
+
+    let run_dfa = CharacterRunAutomaton::new(dfa)?;
+    Ok((
+        source,
+        SimplePatternSplitTokenizerLogic {
+            run_dfa,
+            pending_chars: vec![0; 8],
+            token_upto: 0,
+            pending_limit: 0,
+            pending_upto: 0,
+            offset: 0,
+            sep_upto: 0,
+            buffer: vec![0; 1024],
+            buffer_limit: 0,
+            buffer_next_read: 0,
+            token: Vec::new(),
+        },
+    ))
+}

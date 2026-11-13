@@ -27,6 +27,7 @@
 pub mod base64;
 pub mod break_iterator;
 pub mod character;
+pub mod charset;
 // Generated from a JDK 25 oracle; its layout is not rustfmt's.
 #[rustfmt::skip]
 mod character_data;

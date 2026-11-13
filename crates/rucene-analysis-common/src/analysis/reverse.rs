@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.reverse`.
+//! The Java package `org.apache.lucene.analysis.reverse`: filter to reverse
+//! token text.
 
 pub mod reverse_string_filter;
 pub mod reverse_string_filter_factory;

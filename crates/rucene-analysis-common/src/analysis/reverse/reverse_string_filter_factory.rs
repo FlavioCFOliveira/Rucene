@@ -15,10 +15,101 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ReverseStringFilterFactory.java`, of the Java
-//! package `org.apache.lucene.analysis.reverse`.
+//! Factory for `ReverseStringFilter`, ported from
+//! `org.apache.lucene.analysis.reverse.ReverseStringFilterFactory`.
 
-/// Java: `public class`.
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use rucene::analysis::factories::{
+    AbstractAnalysisFactory, AnalysisFactoryClass, SPINameField, TokenFilterFactory,
+};
+use rucene::analysis::TokenStream;
+use rucene::error::Result;
+
+use super::reverse_string_filter::new_reverse_string_filter;
+use crate::spi::check_unknown_parameters;
+
+/// Factory for `ReverseStringFilter`.
 ///
-/// Skeleton of `org.apache.lucene.analysis.reverse.ReverseStringFilterFactory`; ported by rmp task #460.
-pub struct ReverseStringFilterFactory;
+/// ```text
+/// <fieldType name="text_rvsstr" class="solr.TextField" positionIncrementGap="100">
+///   <analyzer>
+///     <tokenizer class="solr.WhitespaceTokenizerFactory"/>
+///     <filter class="solr.ReverseStringFilterFactory"/>
+///   </analyzer>
+/// </fieldType>
+/// ```
+///
+/// Equivalent to `org.apache.lucene.analysis.reverse.ReverseStringFilterFactory`
+/// (since solr 1.4).
+#[derive(Debug)]
+pub struct ReverseStringFilterFactory {
+    base: AbstractAnalysisFactory,
+}
+
+impl ReverseStringFilterFactory {
+    /// SPI name.
+    ///
+    /// Equivalent to `ReverseStringFilterFactory.NAME`.
+    pub const NAME: &'static str = "reverseString";
+
+    /// Creates a new ReverseStringFilterFactory.
+    ///
+    /// Equivalent to `ReverseStringFilterFactory(Map<String, String>)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`AbstractAnalysisFactory::new`] returns, and
+    /// `IllegalArgumentException` for a leftover argument.
+    pub fn new(args: &mut HashMap<String, String>) -> Result<Self> {
+        let base = AbstractAnalysisFactory::new(args)?;
+        check_unknown_parameters(args)?;
+        Ok(Self { base })
+    }
+
+    /// Default ctor for compatibility with SPI.
+    ///
+    /// Equivalent to `ReverseStringFilterFactory()`.
+    ///
+    /// # Errors
+    ///
+    /// Always: [`AbstractAnalysisFactory::default_ctor_exception`].
+    pub fn new_without_args() -> Result<Self> {
+        Err(AbstractAnalysisFactory::default_ctor_exception())
+    }
+
+    /// The members this factory inherits from `AbstractAnalysisFactory`.
+    pub fn base(&self) -> &AbstractAnalysisFactory {
+        &self.base
+    }
+
+    /// The factory's class, as `META-INF/services/org.apache.lucene.analysis.TokenFilterFactory`
+    /// names it: `ReverseStringFilterFactory.class`, with its `NAME` field
+    /// and its `Map<String, String>` constructor.
+    pub const fn class() -> AnalysisFactoryClass<dyn TokenFilterFactory> {
+        AnalysisFactoryClass::new(
+            "org.apache.lucene.analysis.reverse.ReverseStringFilterFactory",
+            SPINameField::Declared(Self::NAME),
+            Some(Self::new_from_map),
+        )
+    }
+
+    /// The `Map<String, String>` constructor, as [`class`](Self::class)
+    /// exposes it.
+    fn new_from_map(args: &mut HashMap<String, String>) -> Result<Arc<dyn TokenFilterFactory>> {
+        Ok(Arc::new(Self::new(args)?))
+    }
+}
+
+impl TokenFilterFactory for ReverseStringFilterFactory {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.reverse.ReverseStringFilterFactory"
+    }
+
+    /// Equivalent to `ReverseStringFilterFactory.create(TokenStream)`, `new
+    /// ReverseStringFilter(in)`.
+    fn create(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(new_reverse_string_filter(input)?))
+    }
+}

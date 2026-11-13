@@ -37,8 +37,12 @@ use super::limit_token_count_filter::new_limit_token_count_filter_consuming;
 /// [`AnalyzerState`], so this strategy forwards every call to the
 /// delegate's, with the wrapper's state, which is what the shared object
 /// receives in Java.
+///
+/// Shared with the module's other analyzer wrappers that pass their
+/// delegate's strategy to `super` (`ShingleAnalyzerWrapper`,
+/// `QueryAutoStopWordAnalyzer`).
 #[derive(Debug)]
-struct DelegateReuseStrategy(Arc<dyn Analyzer>);
+pub(crate) struct DelegateReuseStrategy(pub(crate) Arc<dyn Analyzer>);
 
 impl ReuseStrategy for DelegateReuseStrategy {
     fn get_reusable_components(

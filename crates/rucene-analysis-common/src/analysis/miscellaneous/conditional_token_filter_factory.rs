@@ -150,3 +150,17 @@ impl ConditionalTokenFilterFactory {
         do_inform(loader)
     }
 }
+
+/// A concrete subclass of `ConditionalTokenFilterFactory`, as Java's static
+/// type `ConditionalTokenFilterFactory` holds it: a token filter factory
+/// that extends [`ConditionalTokenFilterFactory`], whose inherited
+/// `setInnerFilters` a caller reaches through
+/// [`conditional_base_mut`](Self::conditional_base_mut)
+/// (`CustomAnalyzer.ConditionBuilder.endwhen`).
+///
+/// Rust has no class inheritance: the subclass holds the
+/// [`ConditionalTokenFilterFactory`] state and exposes it here.
+pub trait ConditionalTokenFilterFactorySubclass: TokenFilterFactory {
+    /// The `ConditionalTokenFilterFactory` this factory extends.
+    fn conditional_base_mut(&mut self) -> &mut ConditionalTokenFilterFactory;
+}

@@ -15,6 +15,6 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.sinks`.
+//! The Java package `org.apache.lucene.analysis.sinks`: `TeeSinkTokenFilter`.
 
 pub mod tee_sink_token_filter;
