@@ -8,6 +8,11 @@ the committed file, and rerunning it must leave that file unchanged.
   `ASCIIFoldingFilter.foldToASCII` into the `match` between the `GENERATED`
   markers of `crates/rucene-analysis-common/src/analysis/miscellaneous/ascii_folding_filter.rs`,
   then runs `rustfmt`. Rerun: `python3 tools/translate/ascii_folding_filter.py [/tmp/lucene1050]`.
+* `kstem_data.py` — translates `KStemData1.java`…`KStemData8.java` into
+  `crates/rucene-analysis-common/src/analysis/en/kstem_data{1..8}.rs` (Java layout, the modules
+  are `#[rustfmt::skip]`) and the string tables of `KStemmer.java` into the region between the
+  `GENERATED` markers of `crates/rucene-analysis-common/src/analysis/en/kstemmer.rs`, then runs
+  `rustfmt` on that file. Rerun: `python3 tools/translate/kstem_data.py [/tmp/lucene1050]`.
 * `JdkCharacterTypeData.java` — writes `crates/rucene-analysis-common/src/jdk/character_type_data.rs`
   (`Character.getType(int)` runs and the Latin-1 `isLowerCase`/`isUpperCase` sets) from the
   running JDK. Rerun with JDK 25: `java tools/translate/JdkCharacterTypeData.java > crates/rucene-analysis-common/src/jdk/character_type_data.rs`.

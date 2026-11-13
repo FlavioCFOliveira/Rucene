@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.synonym`.
+//! The Java package `org.apache.lucene.analysis.synonym`: analysis components
+//! for synonyms.
 
 pub mod solr_synonym_parser;
 pub mod synonym_filter;

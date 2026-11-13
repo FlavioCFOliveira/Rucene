@@ -15,10 +15,99 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `KStemFilterFactory.java`, of the Java
-//! package `org.apache.lucene.analysis.en`.
+//! Factory for `KStemFilter`, ported from
+//! `org.apache.lucene.analysis.en.KStemFilterFactory`.
 
-/// Java: `public class`.
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use rucene::analysis::factories::{
+    AbstractAnalysisFactory, AnalysisFactoryClass, SPINameField, TokenFilterFactory,
+};
+use rucene::analysis::TokenStream;
+use rucene::error::Result;
+
+use super::kstem_filter::new_kstem_filter;
+use crate::spi::check_unknown_parameters;
+
+/// Factory for `KStemFilter`.
 ///
-/// Skeleton of `org.apache.lucene.analysis.en.KStemFilterFactory`; ported by rmp task #452.
-pub struct KStemFilterFactory;
+/// ```text
+/// <fieldType name="text_kstem" class="solr.TextField" positionIncrementGap="100">
+///   <analyzer>
+///     <tokenizer class="solr.StandardTokenizerFactory"/>
+///     <filter class="solr.LowerCaseFilterFactory"/>
+///     <filter class="solr.KStemFilterFactory"/>
+///   </analyzer>
+/// </fieldType>
+/// ```
+///
+/// Equivalent to `org.apache.lucene.analysis.en.KStemFilterFactory` (since 3.3.0).
+#[derive(Debug)]
+pub struct KStemFilterFactory {
+    base: AbstractAnalysisFactory,
+}
+
+impl KStemFilterFactory {
+    /// SPI name.
+    ///
+    /// Equivalent to `KStemFilterFactory.NAME`.
+    pub const NAME: &'static str = "kStem";
+
+    /// Creates a new KStemFilterFactory.
+    ///
+    /// Equivalent to `KStemFilterFactory(Map<String, String>)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`AbstractAnalysisFactory::new`] returns, and `IllegalArgumentException` for a leftover argument.
+    pub fn new(args: &mut HashMap<String, String>) -> Result<Self> {
+        let base = AbstractAnalysisFactory::new(args)?;
+        check_unknown_parameters(args)?;
+        Ok(Self { base })
+    }
+
+    /// Default ctor for compatibility with SPI.
+    ///
+    /// Equivalent to `KStemFilterFactory()`.
+    ///
+    /// # Errors
+    ///
+    /// Always: [`AbstractAnalysisFactory::default_ctor_exception`].
+    pub fn new_without_args() -> Result<Self> {
+        Err(AbstractAnalysisFactory::default_ctor_exception())
+    }
+
+    /// The members this factory inherits from `AbstractAnalysisFactory`.
+    pub fn base(&self) -> &AbstractAnalysisFactory {
+        &self.base
+    }
+
+    /// The factory's class, as `META-INF/services/org.apache.lucene.analysis.TokenFilterFactory`
+    /// names it: `KStemFilterFactory.class`, with its `NAME` field and its
+    /// `Map<String, String>` constructor.
+    pub const fn class() -> AnalysisFactoryClass<dyn TokenFilterFactory> {
+        AnalysisFactoryClass::new(
+            "org.apache.lucene.analysis.en.KStemFilterFactory",
+            SPINameField::Declared(Self::NAME),
+            Some(Self::new_from_map),
+        )
+    }
+
+    /// The `Map<String, String>` constructor, as [`class`](Self::class)
+    /// exposes it.
+    fn new_from_map(args: &mut HashMap<String, String>) -> Result<Arc<dyn TokenFilterFactory>> {
+        Ok(Arc::new(Self::new(args)?))
+    }
+}
+
+impl TokenFilterFactory for KStemFilterFactory {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.en.KStemFilterFactory"
+    }
+
+    /// Equivalent to `KStemFilterFactory.create(TokenStream)`, `new KStemFilter(input)`.
+    fn create(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(new_kstem_filter(input)?))
+    }
+}

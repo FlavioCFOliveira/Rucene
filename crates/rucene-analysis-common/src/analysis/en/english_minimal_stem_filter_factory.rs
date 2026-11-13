@@ -15,10 +15,99 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `EnglishMinimalStemFilterFactory.java`, of the Java
-//! package `org.apache.lucene.analysis.en`.
+//! Factory for `EnglishMinimalStemFilter`, ported from
+//! `org.apache.lucene.analysis.en.EnglishMinimalStemFilterFactory`.
 
-/// Java: `public class`.
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use rucene::analysis::factories::{
+    AbstractAnalysisFactory, AnalysisFactoryClass, SPINameField, TokenFilterFactory,
+};
+use rucene::analysis::TokenStream;
+use rucene::error::Result;
+
+use super::english_minimal_stem_filter::new_english_minimal_stem_filter;
+use crate::spi::check_unknown_parameters;
+
+/// Factory for `EnglishMinimalStemFilter`.
 ///
-/// Skeleton of `org.apache.lucene.analysis.en.EnglishMinimalStemFilterFactory`; ported by rmp task #452.
-pub struct EnglishMinimalStemFilterFactory;
+/// ```text
+/// <fieldType name="text_enminstem" class="solr.TextField" positionIncrementGap="100">
+///   <analyzer>
+///     <tokenizer class="solr.StandardTokenizerFactory"/>
+///     <filter class="solr.LowerCaseFilterFactory"/>
+///     <filter class="solr.EnglishMinimalStemFilterFactory"/>
+///   </analyzer>
+/// </fieldType>
+/// ```
+///
+/// Equivalent to `org.apache.lucene.analysis.en.EnglishMinimalStemFilterFactory` (since 3.1.0).
+#[derive(Debug)]
+pub struct EnglishMinimalStemFilterFactory {
+    base: AbstractAnalysisFactory,
+}
+
+impl EnglishMinimalStemFilterFactory {
+    /// SPI name.
+    ///
+    /// Equivalent to `EnglishMinimalStemFilterFactory.NAME`.
+    pub const NAME: &'static str = "englishMinimalStem";
+
+    /// Creates a new EnglishMinimalStemFilterFactory.
+    ///
+    /// Equivalent to `EnglishMinimalStemFilterFactory(Map<String, String>)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`AbstractAnalysisFactory::new`] returns, and `IllegalArgumentException` for a leftover argument.
+    pub fn new(args: &mut HashMap<String, String>) -> Result<Self> {
+        let base = AbstractAnalysisFactory::new(args)?;
+        check_unknown_parameters(args)?;
+        Ok(Self { base })
+    }
+
+    /// Default ctor for compatibility with SPI.
+    ///
+    /// Equivalent to `EnglishMinimalStemFilterFactory()`.
+    ///
+    /// # Errors
+    ///
+    /// Always: [`AbstractAnalysisFactory::default_ctor_exception`].
+    pub fn new_without_args() -> Result<Self> {
+        Err(AbstractAnalysisFactory::default_ctor_exception())
+    }
+
+    /// The members this factory inherits from `AbstractAnalysisFactory`.
+    pub fn base(&self) -> &AbstractAnalysisFactory {
+        &self.base
+    }
+
+    /// The factory's class, as `META-INF/services/org.apache.lucene.analysis.TokenFilterFactory`
+    /// names it: `EnglishMinimalStemFilterFactory.class`, with its `NAME` field and its
+    /// `Map<String, String>` constructor.
+    pub const fn class() -> AnalysisFactoryClass<dyn TokenFilterFactory> {
+        AnalysisFactoryClass::new(
+            "org.apache.lucene.analysis.en.EnglishMinimalStemFilterFactory",
+            SPINameField::Declared(Self::NAME),
+            Some(Self::new_from_map),
+        )
+    }
+
+    /// The `Map<String, String>` constructor, as [`class`](Self::class)
+    /// exposes it.
+    fn new_from_map(args: &mut HashMap<String, String>) -> Result<Arc<dyn TokenFilterFactory>> {
+        Ok(Arc::new(Self::new(args)?))
+    }
+}
+
+impl TokenFilterFactory for EnglishMinimalStemFilterFactory {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.en.EnglishMinimalStemFilterFactory"
+    }
+
+    /// Equivalent to `EnglishMinimalStemFilterFactory.create(TokenStream)`, `new EnglishMinimalStemFilter(input)`.
+    fn create(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(new_english_minimal_stem_filter(input)?))
+    }
+}

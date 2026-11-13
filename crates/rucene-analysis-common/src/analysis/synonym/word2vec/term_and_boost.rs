@@ -15,10 +15,39 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `TermAndBoost.java`, of the Java
-//! package `org.apache.lucene.analysis.synonym.word2vec`.
+//! Wraps a term and boost, ported from
+//! `org.apache.lucene.analysis.synonym.word2vec.TermAndBoost`.
 
-/// Java: `public record`.
+use rucene::util::BytesRef;
+
+/// Wraps a term and boost: `term` the term, `boost` the boost.
 ///
-/// Skeleton of `org.apache.lucene.analysis.synonym.word2vec.TermAndBoost`; ported by rmp task #453.
-pub struct TermAndBoost;
+/// Equivalent to the record `org.apache.lucene.analysis.synonym.word2vec.TermAndBoost`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TermAndBoost {
+    term: BytesRef,
+    boost: f32,
+}
+
+impl TermAndBoost {
+    /// Creates a new TermAndBoost.
+    ///
+    /// Equivalent to the compact constructor, which keeps
+    /// `BytesRef.deepCopyOf(term)`.
+    pub fn new(term: &BytesRef, boost: f32) -> Self {
+        Self {
+            term: BytesRef::deep_copy_of(term),
+            boost,
+        }
+    }
+
+    /// Equivalent to the record accessor `term()`.
+    pub fn term(&self) -> &BytesRef {
+        &self.term
+    }
+
+    /// Equivalent to the record accessor `boost()`.
+    pub fn boost(&self) -> f32 {
+        self.boost
+    }
+}

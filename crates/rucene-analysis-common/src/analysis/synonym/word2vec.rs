@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.synonym.word2vec`.
+//! The Java package `org.apache.lucene.analysis.synonym.word2vec`: analysis
+//! components for synonyms using Word2Vec model.
 
 pub mod dl4j_model_reader;
 pub mod term_and_boost;

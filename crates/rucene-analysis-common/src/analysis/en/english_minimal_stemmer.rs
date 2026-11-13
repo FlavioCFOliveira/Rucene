@@ -15,10 +15,57 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `EnglishMinimalStemmer.java`, of the Java
-//! package `org.apache.lucene.analysis.en`.
+//! Minimal plural stemmer for English, ported from
+//! `org.apache.lucene.analysis.en.EnglishMinimalStemmer`.
 
-/// Java: `class` (package-private).
+/// Minimal plural stemmer for English.
 ///
-/// Skeleton of `org.apache.lucene.analysis.en.EnglishMinimalStemmer`; ported by rmp task #452.
+/// This stemmer implements the "S-Stemmer" from *How Effective Is
+/// Suffixing?* Donna Harman.
+///
+/// Equivalent to `org.apache.lucene.analysis.en.EnglishMinimalStemmer`. The
+/// term it stems is the `char[]` of Java, UTF-16 units.
+#[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct EnglishMinimalStemmer;
+
+impl EnglishMinimalStemmer {
+    /// Equivalent to the implicit `EnglishMinimalStemmer()`.
+    pub(crate) fn new() -> Self {
+        Self
+    }
+
+    /// Stems the first `len` units of `s` in place and returns the new
+    /// length.
+    ///
+    /// Equivalent to `stem(char[], int)`; Java's `case 'e'` falls through to
+    /// `default` when neither of its tests returns.
+    pub(crate) fn stem(&self, s: &mut [u16], len: usize) -> usize {
+        if len < 3 || s[len - 1] != 's' as u16 {
+            return len;
+        }
+
+        match char::from_u32(u32::from(s[len - 2])) {
+            Some('u' | 's') => len,
+            Some('e') => {
+                if len > 3
+                    && s[len - 3] == 'i' as u16
+                    && s[len - 4] != 'a' as u16
+                    && s[len - 4] != 'e' as u16
+                {
+                    s[len - 3] = 'y' as u16;
+                    return len - 2;
+                }
+                if s[len - 3] == 'i' as u16
+                    || s[len - 3] == 'a' as u16
+                    || s[len - 3] == 'o' as u16
+                    || s[len - 3] == 'e' as u16
+                {
+                    return len;
+                }
+                // intentional fallthrough
+                len - 1
+            }
+            _ => len - 1,
+        }
+    }
+}

@@ -903,6 +903,34 @@ impl Util {
         scratch.get()
     }
 
+    /// Decodes the Unicode code points of the UTF-16 units
+    /// `s[offset..offset + length]` into `scratch`.
+    ///
+    /// Equivalent to `Util.toUTF32(char[], int, int, IntsRefBuilder)` over
+    /// Java's `char`s, and to `Util.toUTF32(CharSequence, IntsRefBuilder)`
+    /// for a sequence given as its units: a surrogate pair is one code point
+    /// (`Character.codePointAt` with the limit `offset + length`) and a lone
+    /// surrogate stands for itself.
+    pub fn to_utf32_units(
+        s: &[u16],
+        offset: usize,
+        length: usize,
+        scratch: &mut IntsRefBuilder,
+    ) -> IntsRef {
+        let mut char_idx = offset;
+        let mut int_idx = 0usize;
+        let char_limit = offset + length;
+        while char_idx < char_limit {
+            scratch.grow(int_idx + 1);
+            let utf32 = crate::analysis::character_utils::code_point_at(s, char_idx, char_limit);
+            scratch.set_int_at(int_idx, utf32);
+            char_idx += crate::analysis::character_utils::char_count(utf32);
+            int_idx += 1;
+        }
+        scratch.set_length(int_idx);
+        scratch.get()
+    }
+
     /// Takes the unsigned byte values of `input` and converts them into ints.
     ///
     /// Equivalent to `Util.toIntsRef`.

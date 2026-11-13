@@ -24,6 +24,7 @@
 //! against a JDK 25 oracle. Each states at its point what the JDK does and
 //! where the emulation differs.
 
+pub mod base64;
 pub mod break_iterator;
 pub mod character;
 // Generated from a JDK 25 oracle; its layout is not rustfmt's.
@@ -33,7 +34,9 @@ mod character_data;
 #[rustfmt::skip]
 mod character_type_data;
 pub mod character_iterator;
+pub mod io;
 pub mod locale;
 pub mod locale_data;
 pub mod simple_date_format;
 pub mod time_zone;
+pub mod zip_input_stream;

@@ -44,25 +44,35 @@
 //! Java service file.
 
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, RwLock};
 
 use rucene::analysis::factories::{
     AnalysisFactoryClass, CharFilterFactory, TokenFilterFactory, TokenizerFactory,
 };
+use rucene::analysis::{Analyzer, StandardAnalyzer};
 use rucene::error::{LuceneError, Result};
 use rucene::util::java_collections::JavaHashMap;
-use rucene::util::resource_loader::{ClassLoader, ServiceProvider};
+use rucene::util::resource_loader::{ClassLoader, ClassRegistry, ServiceProvider};
 use rucene::util::spi::lucene_core_class_loader;
 
 use crate::analysis::core::decimal_digit_filter_factory::DecimalDigitFilterFactory;
 use crate::analysis::core::flatten_graph_filter_factory::FlattenGraphFilterFactory;
+use crate::analysis::core::keyword_analyzer::KeywordAnalyzer;
 use crate::analysis::core::keyword_tokenizer_factory::KeywordTokenizerFactory;
 use crate::analysis::core::letter_tokenizer_factory::LetterTokenizerFactory;
 use crate::analysis::core::lower_case_filter_factory::LowerCaseFilterFactory;
+use crate::analysis::core::simple_analyzer::SimpleAnalyzer;
 use crate::analysis::core::stop_filter_factory::StopFilterFactory;
 use crate::analysis::core::type_token_filter_factory::TypeTokenFilterFactory;
+use crate::analysis::core::unicode_whitespace_analyzer::UnicodeWhitespaceAnalyzer;
 use crate::analysis::core::upper_case_filter_factory::UpperCaseFilterFactory;
+use crate::analysis::core::whitespace_analyzer::WhitespaceAnalyzer;
 use crate::analysis::core::whitespace_tokenizer_factory::WhitespaceTokenizerFactory;
+use crate::analysis::en::english_analyzer::EnglishAnalyzer;
+use crate::analysis::en::english_minimal_stem_filter_factory::EnglishMinimalStemFilterFactory;
+use crate::analysis::en::english_possessive_filter_factory::EnglishPossessiveFilterFactory;
+use crate::analysis::en::kstem_filter_factory::KStemFilterFactory;
+use crate::analysis::en::porter_stem_filter_factory::PorterStemFilterFactory;
 use crate::analysis::miscellaneous::ascii_folding_filter_factory::ASCIIFoldingFilterFactory;
 use crate::analysis::miscellaneous::capitalization_filter_factory::CapitalizationFilterFactory;
 use crate::analysis::miscellaneous::codepoint_count_filter_factory::CodepointCountFilterFactory;
@@ -90,6 +100,12 @@ use crate::analysis::miscellaneous::truncate_token_filter_factory::TruncateToken
 use crate::analysis::miscellaneous::type_as_synonym_filter_factory::TypeAsSynonymFilterFactory;
 use crate::analysis::miscellaneous::word_delimiter_filter_factory::WordDelimiterFilterFactory;
 use crate::analysis::miscellaneous::word_delimiter_graph_filter_factory::WordDelimiterGraphFilterFactory;
+use crate::analysis::synonym::solr_synonym_parser::SolrSynonymParser;
+use crate::analysis::synonym::synonym_filter_factory::SynonymFilterFactory;
+use crate::analysis::synonym::synonym_graph_filter_factory::SynonymGraphFilterFactory;
+use crate::analysis::synonym::synonym_map::Parser;
+use crate::analysis::synonym::word2vec::word2vec_synonym_filter_factory::Word2VecSynonymFilterFactory;
+use crate::analysis::synonym::wordnet_synonym_parser::WordnetSynonymParser;
 use crate::analysis::util::elision_filter_factory::ElisionFilterFactory;
 
 /// The binary name of the char filter factory service, the name of its file.
@@ -131,6 +147,10 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(StopFilterFactory::class()),
         token_filter(TypeTokenFilterFactory::class()),
         token_filter(UpperCaseFilterFactory::class()),
+        token_filter(EnglishMinimalStemFilterFactory::class()),
+        token_filter(EnglishPossessiveFilterFactory::class()),
+        token_filter(KStemFilterFactory::class()),
+        token_filter(PorterStemFilterFactory::class()),
         token_filter(ASCIIFoldingFilterFactory::class()),
         token_filter(CapitalizationFilterFactory::class()),
         token_filter(CodepointCountFilterFactory::class()),
@@ -158,6 +178,9 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(WordDelimiterGraphFilterFactory::class()),
         token_filter(ScandinavianFoldingFilterFactory::class()),
         token_filter(ScandinavianNormalizationFilterFactory::class()),
+        token_filter(SynonymFilterFactory::class()),
+        token_filter(SynonymGraphFilterFactory::class()),
+        token_filter(Word2VecSynonymFilterFactory::class()),
         token_filter(FlattenGraphFilterFactory::class()),
         token_filter(ElisionFilterFactory::class()),
         // META-INF/services/org.apache.lucene.analysis.TokenizerFactory
@@ -204,19 +227,138 @@ pub(crate) fn check_unknown_parameters(args: &HashMap<String, String>) -> Result
     )))
 }
 
-/// The `toString()` of the factory's argument map, `{key=value, ...}`, in
-/// the order [`check_unknown_parameters`] declares.
-pub(crate) fn java_map_to_string(args: &HashMap<String, String>) -> String {
+/// The factory's argument map as a `java.util.HashMap` holding it alone,
+/// filled in key order: the order [`check_unknown_parameters`] declares.
+fn java_hash_map(args: &HashMap<String, String>) -> JavaHashMap<String> {
     let mut leftovers: Vec<(&String, &String)> = args.iter().collect();
     leftovers.sort();
     let mut map = JavaHashMap::new();
     for (key, value) in leftovers {
         map.insert(key.clone(), value.clone());
     }
-    let rendered = map
+    map
+}
+
+/// The `toString()` of the factory's argument map, `{key=value, ...}`, in
+/// the order [`check_unknown_parameters`] declares.
+pub(crate) fn java_map_to_string(args: &HashMap<String, String>) -> String {
+    let rendered = java_hash_map(args)
         .iter()
         .map(|(key, value)| format!("{key}={value}"))
         .collect::<Vec<_>>()
         .join(", ");
     format!("{{{rendered}}}")
+}
+
+/// The keys of the factory's argument map in the iteration order of
+/// `args.keySet()`, as [`check_unknown_parameters`] declares it.
+pub(crate) fn java_map_keys(args: &HashMap<String, String>) -> Vec<String> {
+    java_hash_map(args)
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
+/// The constructor `(boolean dedup, boolean expand, Analyzer analyzer)` a
+/// `SynonymMap.Parser` class offers to the synonym factories
+/// (`SynonymFilterFactory.loadSynonyms`).
+pub type SynonymParserConstructor = fn(bool, bool, Arc<dyn Analyzer>) -> Box<dyn Parser>;
+
+/// The `SynonymMap.Parser` classes the synonym factories' `format` names:
+/// what `ResourceLoader.findClass(cname, SynonymMap.Parser.class)` finds.
+///
+/// **Divergence from Lucene 10.5.0.** Java loads any class of the class
+/// path by name; Rust has no runtime class loading, so the classes are the
+/// entries of this table (the `rucene` stand-in for `findClass`, see
+/// `rucene::util::resource_loader`): this module's
+/// `org.apache.lucene.analysis.synonym.SolrSynonymParser` and
+/// `org.apache.lucene.analysis.synonym.WordnetSynonymParser`, and what an
+/// application registers. A name the table lacks fails as
+/// [`ClassRegistry::find_class`] does.
+pub fn synonym_parser_classes() -> &'static RwLock<ClassRegistry<SynonymParserConstructor>> {
+    static CLASSES: LazyLock<RwLock<ClassRegistry<SynonymParserConstructor>>> =
+        LazyLock::new(|| {
+            let mut classes =
+                ClassRegistry::new("org.apache.lucene.analysis.synonym.SynonymMap$Parser");
+            classes.register(
+                "org.apache.lucene.analysis.synonym.SolrSynonymParser",
+                Arc::new(|| -> SynonymParserConstructor {
+                    |dedup, expand, analyzer| {
+                        Box::new(SolrSynonymParser::new(dedup, expand, analyzer))
+                    }
+                }),
+            );
+            classes.register(
+                "org.apache.lucene.analysis.synonym.WordnetSynonymParser",
+                Arc::new(|| -> SynonymParserConstructor {
+                    |dedup, expand, analyzer| {
+                        Box::new(WordnetSynonymParser::new(dedup, expand, analyzer))
+                    }
+                }),
+            );
+            RwLock::new(classes)
+        });
+    &CLASSES
+}
+
+/// The `Analyzer` classes the synonym factories' `analyzer` names, each
+/// instantiated through its public no-argument constructor: what
+/// `ResourceLoader.findClass(cname, Analyzer.class)` and
+/// `getConstructor().newInstance()` find.
+///
+/// **Divergence from Lucene 10.5.0.** As for [`synonym_parser_classes`]:
+/// the table holds the analyzers with a public no-argument constructor of
+/// `lucene-core` (`StandardAnalyzer`) and of this module ported so far
+/// (`KeywordAnalyzer`, `SimpleAnalyzer`, `UnicodeWhitespaceAnalyzer`,
+/// `WhitespaceAnalyzer`, `EnglishAnalyzer`), and what an application
+/// registers; the module's later analyzers are added as they are ported.
+pub fn analyzer_classes() -> &'static RwLock<ClassRegistry<Arc<dyn Analyzer>>> {
+    static CLASSES: LazyLock<RwLock<ClassRegistry<Arc<dyn Analyzer>>>> = LazyLock::new(|| {
+        let mut classes = ClassRegistry::new("org.apache.lucene.analysis.Analyzer");
+        classes.register(
+            "org.apache.lucene.analysis.standard.StandardAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(StandardAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.core.KeywordAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(KeywordAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.core.SimpleAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(SimpleAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.core.UnicodeWhitespaceAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(UnicodeWhitespaceAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.core.WhitespaceAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(WhitespaceAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.en.EnglishAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(EnglishAnalyzer::new()) }),
+        );
+        RwLock::new(classes)
+    });
+    &CLASSES
+}
+
+/// The `TokenizerFactory` classes the synonym factories'
+/// `tokenizerFactory` names: what `ResourceLoader.findClass(cname,
+/// TokenizerFactory.class)` finds.
+///
+/// **Divergence from Lucene 10.5.0.** As for [`synonym_parser_classes`]:
+/// the classes are those the module's class loader ([`class_loader`]) lists
+/// in its `org.apache.lucene.analysis.TokenizerFactory` service files, its
+/// parents' included, keyed by binary name.
+pub fn tokenizer_factory_classes(
+) -> ClassRegistry<&'static AnalysisFactoryClass<dyn TokenizerFactory>> {
+    let mut classes = ClassRegistry::new("org.apache.lucene.analysis.TokenizerFactory");
+    for provider in class_loader().get_resources(TOKENIZER_FACTORY) {
+        if let Some(class) = provider.class::<AnalysisFactoryClass<dyn TokenizerFactory>>() {
+            classes.register(provider.class_name(), Arc::new(move || class));
+        }
+    }
+    classes
 }
