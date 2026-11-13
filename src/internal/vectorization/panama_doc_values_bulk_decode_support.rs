@@ -18,10 +18,8 @@ use crate::internal::vectorization::{
 /// `count % valuesPerVector` values over as well.
 ///
 /// [`decode_byte_aligned`](Self::decode_byte_aligned) reproduces that guard
-/// exactly. Because stable Rust has no portable SIMD,
-/// [`PanamaVectorConstants::PREFERRED_VECTOR_BYTESIZE`] is zero, the third
-/// condition fails, and the call takes **Lucene's own delegation branch** — no
-/// divergence, just the branch this platform qualifies for.
+/// and the lane loop. `BYTE_SPECIES` is `ByteVector.SPECIES_PREFERRED`, whose
+/// byte size is [`PanamaVectorConstants::preferred_vector_bytesize`].
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PanamaDocValuesBulkDecodeSupport;
 
@@ -44,7 +42,7 @@ impl DocValuesBulkDecodeSupport for PanamaDocValuesBulkDecodeSupport {
     ) -> Result<()> {
         if bits_per_value != 64
             || cfg!(target_endian = "big")
-            || PanamaVectorConstants::PREFERRED_VECTOR_BYTESIZE < 32
+            || PanamaVectorConstants::preferred_vector_bytesize() < 32
         {
             return DefaultDocValuesBulkDecodeSupport::INSTANCE.decode_byte_aligned(
                 bytes,
@@ -55,18 +53,31 @@ impl DocValuesBulkDecodeSupport for PanamaDocValuesBulkDecodeSupport {
                 count,
             );
         }
-        // Unreachable while the preferred vector size is zero; kept so the
-        // structure of Lucene's method survives the port. The lane loop it
-        // guards would decode `PREFERRED_VECTOR_BYTESIZE / 8` values per
-        // iteration and leave the remainder to the scalar decoder, which is
-        // what this call does for all of them.
-        DefaultDocValuesBulkDecodeSupport::INSTANCE.decode_byte_aligned(
-            bytes,
-            bytes_offset,
-            bits_per_value,
-            values,
-            values_offset,
-            count,
-        )
+
+        let values_per_vector = PanamaVectorConstants::preferred_vector_bytesize() as usize / 8;
+        let loop_bound = count - count % values_per_vector;
+        let mut i = 0;
+        while i < loop_bound {
+            // ByteVector.fromArray(...).reinterpretAsLongs().intoArray(values, ...):
+            // little-endian longs, as the guard above requires.
+            for k in 0..values_per_vector {
+                let at = bytes_offset + (i + k) * 8;
+                let mut word = [0u8; 8];
+                word.copy_from_slice(&bytes[at..at + 8]);
+                values[values_offset + i + k] = i64::from_le_bytes(word);
+            }
+            i += values_per_vector;
+        }
+        if i < count {
+            DefaultDocValuesBulkDecodeSupport::INSTANCE.decode_byte_aligned(
+                bytes,
+                bytes_offset + i * 8,
+                bits_per_value,
+                values,
+                values_offset + i,
+                count - i,
+            )?;
+        }
+        Ok(())
     }
 }

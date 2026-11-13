@@ -1,45 +1,45 @@
 //! Vector arithmetic primitives ported from `org.apache.lucene.util.VectorUtil`.
 //!
-//! Every function in this module reproduces, operation by operation, the
-//! **scalar** reference implementation that Lucene 10.5.0 uses when neither the
-//! Panama vector API nor fast scalar FMA are available
-//! (`org.apache.lucene.internal.vectorization.DefaultVectorUtilSupport`).
+//! As in Lucene, every similarity function validates its arguments and then
+//! forwards to `IMPL`, the `VectorUtilSupport` of the vectorization provider
+//! selected for the process
+//! ([`get_instance`](crate::internal::vectorization::get_instance)), keeping
+//! `VectorUtil`'s own `assert Float.isFinite(r)` checks as `debug_assert!`.
 //!
-//! # Which scalar path runs
+//! # Which implementation runs
 //!
 //! Lucene picks one of three implementations at run time:
 //!
-//! * a Panama (`jdk.incubator.vector`) implementation, when the module is
-//!   present and the CPU is supported;
-//! * the scalar implementation using `Math.fma`, when
+//! * the Panama implementation (`PanamaVectorUtilSupport`), when the
+//!   `jdk.incubator.vector` module is present — in this port, when the setting
+//!   [`ADD_VECTOR_MODULE_SYSPROP`](crate::internal::vectorization::ADD_VECTOR_MODULE_SYSPROP)
+//!   is `true` — and the other gates of
+//!   [`lookup`](crate::internal::vectorization::lookup) pass;
+//! * otherwise the scalar `DefaultVectorUtilSupport`, using `Math.fma` when
 //!   `Constants.HAS_FAST_SCALAR_FMA` is true;
-//! * the scalar implementation using `a * b + c`, otherwise.
+//! * and `a * b + c` otherwise.
 //!
 //! Floating-point addition is not associative and `Math.fma` rounds once where
-//! `a * b + c` rounds twice, so the three paths do **not** agree bit for bit.
-//! This port chooses between the two scalar forms exactly as Lucene does, on
+//! `a * b + c` rounds twice, so the paths do **not** agree bit for bit; each
+//! reproduces its Java counterpart. The scalar FMA choice follows
 //! [`Constants::has_fast_scalar_fma`](crate::util::Constants::has_fast_scalar_fma),
 //! read once like Java's `static final` (see [`use_fma`]). The
 //! `lucene.useScalarFMA` system property that decides it in Java is read, as
 //! every system property in this port, from the process environment variable
-//! of the same name (`Constants.getSysProp`); setting
-//! `lucene.useScalarFMA=false` pins the non-fused form, exactly as the
-//! portability fixtures pin the JVM with `-Dlucene.useScalarFMA=false`.
-//! With the default `auto`, the choice rests on the HotSpot options
-//! `Constants` reads (`UseFMA`, `UseXmmI2F`, `MaxVectorSize`), which
+//! of the same name (`Constants.getSysProp`). With the default `auto`, the
+//! choice rests on the HotSpot options `Constants` reads (`UseFMA`,
+//! `UseXmmI2F`, `MaxVectorSize`), which
 //! [`HotspotVMOptions::get`](crate::util::jvm::HotspotVMOptions::get) answers
 //! as HotSpot's ergonomics set them on the running CPU; a `-XX:` flag is the
 //! environment variable `XX:<name>` (for example `XX:UseFMA=false`).
-//!
-//! Consequently the loop shapes below are *not* free to change: the number of
-//! accumulators and the order in which partial sums are added are part of the
-//! observable result.
 
 #![deny(unsafe_code)]
 
 use crate::error::{LuceneError, Result};
-use crate::internal::vectorization::default_vector_util_support::DefaultVectorUtilSupport;
+use std::sync::{Arc, LazyLock};
+
 use crate::internal::vectorization::vector_util_support::VectorUtilSupport;
+use crate::internal::vectorization::{get_instance, VectorizationProvider};
 
 /// Tolerance used by [`l2normalize`] and [`is_unit_vector`].
 ///
@@ -66,19 +66,6 @@ static HAS_FAST_SCALAR_FMA: std::sync::LazyLock<bool> =
 #[inline]
 pub fn use_fma() -> bool {
     *HAS_FAST_SCALAR_FMA
-}
-
-/// `a * b + c`, or `Math.fma(a, b, c)` when [`use_fma`] is true.
-///
-/// Equivalent to `DefaultVectorUtilSupport.fma(float, float, float)`
-/// (`DefaultVectorUtilSupport.java:29-36`).
-#[inline]
-fn fma(a: f32, b: f32, c: f32) -> f32 {
-    if use_fma() {
-        a.mul_add(b, c)
-    } else {
-        a * b + c
-    }
 }
 
 /// `Math.max(float, float)` as specified by the JLS.
@@ -134,40 +121,9 @@ fn check_same_dimensions<T, U>(a: &[T], b: &[U]) -> Result<()> {
 /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn dot_product_f32(a: &[f32], b: &[f32]) -> Result<f32> {
     check_same_dimensions(a, b)?;
-    let r = dot_product_f32_unchecked(a, b);
+    let r = support().dot_product_f32(a, b)?;
     debug_assert!(r.is_finite(), "not finite: {r} from <{a:?},{b:?}>");
     Ok(r)
-}
-
-/// [`dot_product_f32`] without the dimension check.
-///
-/// Equivalent to calling `VectorUtilSupport.dotProduct` directly, which is what
-/// `VectorUtil.l2normalize` and `VectorUtil.isUnitVector` do.
-fn dot_product_f32_unchecked(a: &[f32], b: &[f32]) -> f32 {
-    let mut res = 0.0f32;
-    let mut i = 0usize;
-
-    if a.len() > 32 {
-        let mut acc1 = 0.0f32;
-        let mut acc2 = 0.0f32;
-        let mut acc3 = 0.0f32;
-        let mut acc4 = 0.0f32;
-        let upper_bound = a.len() & !3;
-        while i < upper_bound {
-            acc1 = fma(a[i], b[i], acc1);
-            acc2 = fma(a[i + 1], b[i + 1], acc2);
-            acc3 = fma(a[i + 2], b[i + 2], acc3);
-            acc4 = fma(a[i + 3], b[i + 3], acc4);
-            i += 4;
-        }
-        res += acc1 + acc2 + acc3 + acc4;
-    }
-
-    while i < a.len() {
-        res = fma(a[i], b[i], res);
-        i += 1;
-    }
-    res
 }
 
 /// Returns the cosine similarity of two float vectors.
@@ -184,44 +140,7 @@ fn dot_product_f32_unchecked(a: &[f32], b: &[f32]) -> f32 {
 /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn cosine_f32(a: &[f32], b: &[f32]) -> Result<f32> {
     check_same_dimensions(a, b)?;
-
-    let mut sum = 0.0f32;
-    let mut norm1 = 0.0f32;
-    let mut norm2 = 0.0f32;
-    let mut i = 0usize;
-
-    if a.len() > 32 {
-        let mut sum1 = 0.0f32;
-        let mut sum2 = 0.0f32;
-        let mut norm1_1 = 0.0f32;
-        let mut norm1_2 = 0.0f32;
-        let mut norm2_1 = 0.0f32;
-        let mut norm2_2 = 0.0f32;
-
-        let upper_bound = a.len() & !1;
-        while i < upper_bound {
-            sum1 = fma(a[i], b[i], sum1);
-            norm1_1 = fma(a[i], a[i], norm1_1);
-            norm2_1 = fma(b[i], b[i], norm2_1);
-
-            sum2 = fma(a[i + 1], b[i + 1], sum2);
-            norm1_2 = fma(a[i + 1], a[i + 1], norm1_2);
-            norm2_2 = fma(b[i + 1], b[i + 1], norm2_2);
-            i += 2;
-        }
-        sum += sum1 + sum2;
-        norm1 += norm1_1 + norm1_2;
-        norm2 += norm2_1 + norm2_2;
-    }
-
-    while i < a.len() {
-        sum = fma(a[i], b[i], sum);
-        norm1 = fma(a[i], a[i], norm1);
-        norm2 = fma(b[i], b[i], norm2);
-        i += 1;
-    }
-
-    let r = (f64::from(sum) / (f64::from(norm1) * f64::from(norm2)).sqrt()) as f32;
+    let r = support().cosine_f32(a, b)?;
     debug_assert!(r.is_finite());
     Ok(r)
 }
@@ -237,55 +156,14 @@ pub fn cosine_f32(a: &[f32], b: &[f32]) -> Result<f32> {
 /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn square_distance_f32(a: &[f32], b: &[f32]) -> Result<f32> {
     check_same_dimensions(a, b)?;
-
-    let mut res = 0.0f32;
-    let mut i = 0usize;
-
-    if a.len() > 32 {
-        let mut acc1 = 0.0f32;
-        let mut acc2 = 0.0f32;
-        let mut acc3 = 0.0f32;
-        let mut acc4 = 0.0f32;
-
-        let upper_bound = a.len() & !3;
-        while i < upper_bound {
-            let diff1 = a[i] - b[i];
-            acc1 = fma(diff1, diff1, acc1);
-
-            let diff2 = a[i + 1] - b[i + 1];
-            acc2 = fma(diff2, diff2, acc2);
-
-            let diff3 = a[i + 2] - b[i + 2];
-            acc3 = fma(diff3, diff3, acc3);
-
-            let diff4 = a[i + 3] - b[i + 3];
-            acc4 = fma(diff4, diff4, acc4);
-            i += 4;
-        }
-        res += acc1 + acc2 + acc3 + acc4;
-    }
-
-    while i < a.len() {
-        let diff = a[i] - b[i];
-        res = fma(diff, diff, res);
-        i += 1;
-    }
-    debug_assert!(res.is_finite());
-    Ok(res)
+    let r = support().square_distance_f32(a, b)?;
+    debug_assert!(r.is_finite());
+    Ok(r)
 }
 
 // -----------------------------------------------------------------------------
 // Byte primitives
 // -----------------------------------------------------------------------------
-
-/// Reinterprets one stored byte as the signed Java `byte` it represents.
-///
-/// Lucene byte vectors hold values in `[-128, 127]`; Rucene stores them in a
-/// `u8` slice, so every arithmetic use must go through this reinterpretation.
-#[inline]
-fn signed(value: u8) -> i32 {
-    value as i8 as i32
-}
 
 /// Returns the dot product of two signed-byte vectors.
 ///
@@ -301,11 +179,7 @@ fn signed(value: u8) -> i32 {
 /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn dot_product_bytes(a: &[u8], b: &[u8]) -> Result<i32> {
     check_same_dimensions(a, b)?;
-    let mut total: i32 = 0;
-    for i in 0..a.len() {
-        total = total.wrapping_add(signed(a[i]).wrapping_mul(signed(b[i])));
-    }
-    Ok(total)
+    support().dot_product_bytes(a, b)
 }
 
 /// Returns the sum of squared differences of two signed-byte vectors.
@@ -319,12 +193,7 @@ pub fn dot_product_bytes(a: &[u8], b: &[u8]) -> Result<i32> {
 /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn square_distance_bytes(a: &[u8], b: &[u8]) -> Result<i32> {
     check_same_dimensions(a, b)?;
-    let mut square_sum: i32 = 0;
-    for i in 0..a.len() {
-        let diff = signed(a[i]).wrapping_sub(signed(b[i]));
-        square_sum = square_sum.wrapping_add(diff.wrapping_mul(diff));
-    }
-    Ok(square_sum)
+    support().square_distance_bytes(a, b)
 }
 
 /// Returns the cosine similarity of two signed-byte vectors.
@@ -341,17 +210,7 @@ pub fn square_distance_bytes(a: &[u8], b: &[u8]) -> Result<i32> {
 /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn cosine_bytes(a: &[u8], b: &[u8]) -> Result<f32> {
     check_same_dimensions(a, b)?;
-    let mut sum: i32 = 0;
-    let mut norm1: i32 = 0;
-    let mut norm2: i32 = 0;
-    for i in 0..a.len() {
-        let elem1 = signed(a[i]);
-        let elem2 = signed(b[i]);
-        sum = sum.wrapping_add(elem1.wrapping_mul(elem2));
-        norm1 = norm1.wrapping_add(elem1.wrapping_mul(elem1));
-        norm2 = norm2.wrapping_add(elem2.wrapping_mul(elem2));
-    }
-    Ok((f64::from(sum) / (f64::from(norm1) * f64::from(norm2)).sqrt()) as f32)
+    support().cosine_bytes(a, b)
 }
 
 // -----------------------------------------------------------------------------
@@ -421,7 +280,8 @@ pub fn normalize_distance_to_unit_interval(squared_distance: f32) -> f32 {
 /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `v` is all zeros and
 /// `throw_on_zero` is `true`.
 pub fn l2normalize(v: &mut [f32], throw_on_zero: bool) -> Result<()> {
-    let l1norm = f64::from(dot_product_f32_unchecked(v, v));
+    // Java calls `IMPL.dotProduct(v, v)` directly, without the finite assert.
+    let l1norm = f64::from(support().dot_product_f32(v, v)?);
     if l1norm == 0.0 {
         if throw_on_zero {
             return Err(LuceneError::illegal_argument(
@@ -445,7 +305,11 @@ pub fn l2normalize(v: &mut [f32], throw_on_zero: bool) -> Result<()> {
 ///
 /// Equivalent to `VectorUtil.isUnitVector(float[])`.
 pub fn is_unit_vector(v: &[f32]) -> bool {
-    let l1norm = f64::from(dot_product_f32_unchecked(v, v));
+    let l1norm = f64::from(
+        support()
+            .dot_product_f32(v, v)
+            .expect("a vector has the dimension of itself"),
+    );
     (l1norm - 1.0).abs() <= f64::from(EPSILON)
 }
 
@@ -526,17 +390,16 @@ pub fn add(u: &mut [f32], v: &[f32]) -> Result<()> {
 // uint4, uint8 and binary vectors
 // ---------------------------------------------------------------------------
 
-/// Returns the scalar reference implementation every wrapper below delegates
-/// to.
-///
-/// Lucene's `VectorUtil` validates its arguments and then forwards to the
-/// `VectorUtilSupport` the runtime selected (`IMPL`). This module forwards to
-/// the scalar implementation, the one Lucene selects without
-/// `jdk.incubator.vector`; its fused or non-fused form follows [`use_fma`] —
-/// see the module documentation.
-fn support() -> &'static DefaultVectorUtilSupport {
-    static SUPPORT: DefaultVectorUtilSupport = DefaultVectorUtilSupport::new();
-    &SUPPORT
+/// `VectorUtil.IMPL`: the selected provider, looked up once, as Java's
+/// `static final` field is initialised once (`VectorUtil.java:53-54`).
+static IMPL: LazyLock<Arc<dyn VectorizationProvider>> = LazyLock::new(|| get_instance());
+
+/// `IMPL`, the `VectorUtilSupport` of the selected provider
+/// (`VectorizationProvider.getInstance().getVectorUtilSupport()`), which every
+/// wrapper of this module forwards to after validating its arguments, as
+/// `VectorUtil` does.
+fn support() -> &'static dyn VectorUtilSupport {
+    IMPL.get_vector_util_support()
 }
 
 /// Dot product over uint4 vectors, whose values lie in `[0, 15]`.
@@ -910,6 +773,15 @@ pub fn filter_by_score(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The scalar `fma` of the selected (default) provider.
+    fn fma(a: f32, b: f32, c: f32) -> f32 {
+        if use_fma() {
+            a.mul_add(b, c)
+        } else {
+            a * b + c
+        }
+    }
 
     /// Deterministic pseudo-random float generator, so that tests can build
     /// large vectors without a dependency and still be reproducible.

@@ -3,166 +3,129 @@
 #![deny(unsafe_code)]
 
 use crate::error::Result;
-use crate::internal::vectorization::PostingDecodingUtil;
+use crate::internal::vectorization::{PanamaVectorConstants, PostingDecodingUtil};
 use crate::store::{IndexInput, MemorySegment};
 use crate::util::BitUtil;
 
-/// A [`PostingDecodingUtil`] that decodes straight out of a memory-mapped
-/// segment.
+/// The Panama subclass of [`PostingDecodingUtil`], which decodes straight out
+/// of a memory-mapped segment.
 ///
 /// Equivalent to
 /// `org.apache.lucene.internal.vectorization.MemorySegmentPostingDecodingUtil`.
+/// Rust has no subclassing, so the subclass is a form of the one
+/// [`PostingDecodingUtil`] type (declared there): [`new`](Self::new) is the
+/// subclass constructor, and [`PostingDecodingUtil::split_ints`] runs this
+/// class's override when the decoder carries a segment.
 ///
-/// Where the base decoder pulls `count` ints through
-/// [`IndexInput::read_ints`](crate::store::DataInput::read_ints) into the
-/// caller's buffer and then post-processes them, this one reads each value from
-/// the mapped bytes at the input's current file pointer and advances the input
-/// to the end of the block in a single seek. That is a real structural
-/// difference — no copy through an intermediate buffer — and it is the reason
-/// the class exists over and above its use of SIMD.
-///
-/// # Divergences from Lucene 10.5.0
-///
-/// * **Composition, not inheritance.** Java extends `PostingDecodingUtil` and
-///   overrides `splitInts`. Rust has no implementation inheritance, so this
-///   type *contains* the base decoder and shadows the method. The same shape is
-///   used elsewhere in this crate, for example
-///   [`LockValidatingDirectoryWrapper`](crate::store::LockValidatingDirectoryWrapper)
-///   over `FilterDirectory`.
-/// * **Scalar element loop.** Java loads `INT_SPECIES.length()` ints per
-///   iteration from the segment, shifts and masks them lane-wise, and reads a
-///   final vector right-aligned with `count` to cover the tail; when `count` is
-///   smaller than one vector it calls `super.splitInts` instead. Stable Rust
-///   has no portable SIMD (see [the module docs](super)), so the port reads one
-///   int at a time. The values written to `b` and `c` are integers and are
-///   therefore identical on both paths — only the instruction count differs.
-pub struct MemorySegmentPostingDecodingUtil {
-    base: PostingDecodingUtil,
-    memory_segment: MemorySegment,
-}
-
-impl std::fmt::Debug for MemorySegmentPostingDecodingUtil {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MemorySegmentPostingDecodingUtil")
-            .field("in", &self.base)
-            .field("memorySegment", &self.memory_segment)
-            .finish()
-    }
-}
+/// The override reads `INT_SPECIES` (the preferred `int` species,
+/// [`PanamaVectorConstants::int_lanes`]) lanes of little-endian ints at a time
+/// from the segment at the input's file pointer, shifts and masks every lane,
+/// handles the tail with one vector aligned on the right end of the block,
+/// and advances the input to the end of the block with a single seek.
+#[derive(Debug, Clone, Copy)]
+pub struct MemorySegmentPostingDecodingUtil;
 
 impl MemorySegmentPostingDecodingUtil {
-    /// Sole constructor.
+    /// Creates the memory-segment form of [`PostingDecodingUtil`] over `input`,
+    /// whose bytes `memory_segment` maps from offset 0.
     ///
     /// Equivalent to the package-private
-    /// `MemorySegmentPostingDecodingUtil(IndexInput, MemorySegment)`. The
-    /// segment must cover the whole input, as Lucene obtains it with
-    /// `segmentSliceOrNull(0, input.length())`.
-    pub fn new(input: Box<dyn IndexInput>, memory_segment: MemorySegment) -> Self {
-        Self {
-            base: PostingDecodingUtil::new(input),
-            memory_segment,
+    /// `MemorySegmentPostingDecodingUtil(IndexInput, MemorySegment)`.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(input: Box<dyn IndexInput>, memory_segment: MemorySegment) -> PostingDecodingUtil {
+        let mut util = PostingDecodingUtil::new(input);
+        util.memory_segment = Some(memory_segment);
+        util
+    }
+}
+
+/// `MemorySegmentPostingDecodingUtil.shift(IntVector, int, int, int, int,
+/// int[], int, int)`: lane `k` of `vector` lands at `b[count * j + i + k]`.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn shift(
+    vector: &[i32],
+    b_shift: i32,
+    dec: i32,
+    max_iter: i32,
+    b_mask: i32,
+    b: &mut [i32],
+    count: usize,
+    i: usize,
+) {
+    for j in 0..=max_iter {
+        // `lanewise(LSHR, bShift - j * dec)`: an unsigned shift whose
+        // distance is reduced modulo the lane width.
+        let distance = (b_shift - j * dec) as u32;
+        let base = count * (j as usize) + i;
+        for (k, &lane) in vector.iter().enumerate() {
+            b[base + k] = ((lane as u32).wrapping_shr(distance) as i32) & b_mask;
         }
     }
+}
 
-    /// Returns the wrapped input.
-    ///
-    /// Equivalent to reading the inherited `public final IndexInput in` field.
-    pub fn input(&self) -> &dyn IndexInput {
-        self.base.input()
+/// `IntVector.fromMemorySegment(INT_SPECIES, memorySegment, offset,
+/// LITTLE_ENDIAN)` into `lanes`.
+#[inline]
+fn load(segment: &[u8], offset: usize, lanes: &mut [i32]) {
+    for (k, lane) in lanes.iter_mut().enumerate() {
+        *lane = BitUtil::read_le_int(segment, offset + 4 * k);
     }
+}
 
-    /// Returns the wrapped input for reading.
-    ///
-    /// Equivalent to reading the inherited `public final IndexInput in` field.
-    pub fn input_mut(&mut self) -> &mut dyn IndexInput {
-        self.base.input_mut()
+/// `MemorySegmentPostingDecodingUtil.splitInts(int, int[], int, int, int,
+/// int[], int, int)` (`MemorySegmentPostingDecodingUtil.java:46-81`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn split_ints(
+    input: &mut dyn IndexInput,
+    memory_segment: &MemorySegment,
+    count: i32,
+    b: &mut [i32],
+    b_shift: i32,
+    dec: i32,
+    b_mask: i32,
+    c: &mut [i32],
+    c_index: i32,
+    c_mask: i32,
+) -> Result<()> {
+    let lanes = PanamaVectorConstants::int_lanes();
+    if count < lanes as i32 {
+        // Not enough data to vectorize without going out-of-bounds.
+        return PostingDecodingUtil::split_ints_base(
+            input, count, b, b_shift, dec, b_mask, c, c_index, c_mask,
+        );
     }
+    let count = count as usize;
+    let c_index = c_index as usize;
+    let data = memory_segment.bytes();
+    let mut vector = [0i32; 64];
+    let vector = &mut vector[..lanes];
 
-    /// Returns the segment this decoder reads from.
-    ///
-    /// Equivalent to reading the private `memorySegment` field, which Java
-    /// keeps to itself; it is exposed here because Rust has no package
-    /// visibility.
-    pub fn memory_segment(&self) -> &MemorySegment {
-        &self.memory_segment
-    }
-
-    /// Gives the base decoder back to the caller, consuming this one.
-    ///
-    /// Rust needs an explicit way to recover the wrapped decoder; Java relies
-    /// on the object simply being a `PostingDecodingUtil`.
-    pub fn into_base(self) -> PostingDecodingUtil {
-        self.base
-    }
-
-    /// Applies every shift level of one decoded value to `b`.
-    ///
-    /// Equivalent to the private static
-    /// `MemorySegmentPostingDecodingUtil.shift(IntVector, int, int, int, int, int[], int, int)`,
-    /// with a single element in place of a vector.
-    #[allow(clippy::too_many_arguments)]
-    fn shift(
-        value: i32,
-        b_shift: i32,
-        dec: i32,
-        max_iter: i32,
-        b_mask: i32,
-        b: &mut [i32],
-        count: usize,
-        i: usize,
-    ) {
-        let mut j = 0i32;
-        while j <= max_iter {
-            let shift = b_shift - j * dec;
-            b[count * (j as usize) + i] =
-                ((value as u32).wrapping_shr(shift as u32) as i32) & b_mask;
-            j += 1;
+    let max_iter = (b_shift - 1) / dec;
+    let mut offset = input.file_pointer()?;
+    let end_offset = offset + (count as i64) * 4;
+    // INT_SPECIES.loopBound(count - 1)
+    let loop_bound = (count - 1) - (count - 1) % lanes;
+    let mut i = 0;
+    while i < loop_bound {
+        load(data, offset as usize, vector);
+        shift(vector, b_shift, dec, max_iter, b_mask, b, count, i);
+        for (k, &lane) in vector.iter().enumerate() {
+            c[c_index + i + k] = lane & c_mask;
         }
+        i += lanes;
+        offset += (lanes * 4) as i64;
     }
 
-    /// Core method for decoding blocks of docs / freqs / positions / offsets.
-    ///
-    /// Equivalent to `MemorySegmentPostingDecodingUtil.splitInts(...)`, which
-    /// overrides [`PostingDecodingUtil::split_ints`]. It reads the same
-    /// `count` little-endian ints the base decoder would read, but takes them
-    /// from the mapped segment at the input's current file pointer and then
-    /// seeks the input past them.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error raised while seeking the input to the end of the
-    /// block.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the block runs past the end of the segment, or when `b` or
-    /// `c` are too short, standing in for Java's index-out-of-bounds
-    /// exceptions, and when `dec` is zero, standing in for Java's
-    /// `ArithmeticException`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn split_ints(
-        &mut self,
-        count: usize,
-        b: &mut [i32],
-        b_shift: i32,
-        dec: i32,
-        b_mask: i32,
-        c: &mut [i32],
-        c_index: usize,
-        c_mask: i32,
-    ) -> Result<()> {
-        let max_iter = (b_shift - 1) / dec;
-        let offset = self.base.input().file_pointer()?;
-        let end_offset = offset + (count as i64) * (std::mem::size_of::<i32>() as i64);
-
-        let data = self.memory_segment.bytes();
-        for i in 0..count {
-            let at = (offset as usize) + i * std::mem::size_of::<i32>();
-            let value = BitUtil::read_le_int(data, at);
-            Self::shift(value, b_shift, dec, max_iter, b_mask, b, count, i);
-            c[c_index + i] = value & c_mask;
-        }
-
-        self.base.input_mut().seek(end_offset)
+    // Handle the tail by reading a vector that is aligned with `count` on the
+    // right side.
+    let i = count - lanes;
+    let offset = end_offset - (lanes * 4) as i64;
+    load(data, offset as usize, vector);
+    shift(vector, b_shift, dec, max_iter, b_mask, b, count, i);
+    for (k, &lane) in vector.iter().enumerate() {
+        c[c_index + i + k] = lane & c_mask;
     }
+
+    input.seek(end_offset)
 }

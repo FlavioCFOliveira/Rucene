@@ -2,8 +2,11 @@
 
 #![deny(unsafe_code)]
 
+use crate::internal::vectorization::panama_vector_util_support::{
+    fma, fma_vec, loop_bound, with_float_lanes, FloatVector,
+};
+use crate::internal::vectorization::PanamaVectorConstants;
 use crate::store::MemorySegment;
-use crate::util::vector_util;
 
 /// Implementations of bulk vector comparison operations. Currently only
 /// supports float32.
@@ -14,24 +17,17 @@ use crate::util::vector_util;
 /// single pass over the mapped bytes, which is what lets the HNSW search score
 /// a whole neighbour block without copying any vector to the heap.
 ///
-/// # Divergence from Lucene 10.5.0: the lane loop is absent
-///
-/// Every method in the Java class is a `FloatVector` loop over
-/// `FLOAT_SPECIES.loopBound(elementCount)` elements followed by a scalar loop
-/// that finishes the remainder. Stable Rust has no portable SIMD (`std::simd`
-/// is nightly-only; this crate targets stable Rust), so
-/// [`PanamaVectorConstants::PREFERRED_VECTOR_BITSIZE`](super::PanamaVectorConstants::PREFERRED_VECTOR_BITSIZE)
-/// is zero, the loop bound is zero, and **Lucene's own scalar remainder
-/// computes the whole result**. Each method below is that remainder,
-/// transcribed operation for operation — including which accumulator each
-/// product is added to and the `f64` square root at the end of the cosine —
-/// because floating-point addition is not associative and the accumulation
-/// order is observable in the result.
-///
-/// A JVM that does have the Vector API reduces its lanes in a different order
-/// and can therefore return a slightly different low bit; that is the same
-/// split Lucene already has between its vectorized and scalar paths, and this
-/// port matches the scalar one, as [`crate::util::vector_util`] does.
+/// Every method is Java's: a `FloatVector` loop over
+/// `FLOAT_SPECIES.loopBound(elementCount)` elements — `FLOAT_SPECIES` being
+/// the float species of
+/// [`PanamaVectorConstants::preferred_vector_bitsize`] — accumulating with the
+/// vector `fma` gated on `Constants.HAS_FAST_VECTOR_FMA`, reduced in the order
+/// HotSpot's C2 uses, followed by a scalar loop that finishes the remainder
+/// with the scalar `fma` gated on `Constants.HAS_FAST_SCALAR_FMA` (and, in
+/// `DotProduct.dotProduct`, a plain `+=` of the product, as in Java). The
+/// lanes are fixed-width arrays (see
+/// [`PanamaVectorUtilSupport`](super::PanamaVectorUtilSupport)), so the
+/// results are Java's bit for bit.
 #[derive(Debug, Clone, Copy)]
 pub struct MemorySegmentBulkVectorOps;
 
@@ -52,19 +48,10 @@ impl MemorySegmentBulkVectorOps {
     pub const SQR_INSTANCE: SqrDistance = SqrDistance;
 }
 
-/// `a * b + c`, or `Math.fma(a, b, c)` when [`vector_util::use_fma`]
-/// (`Constants.HAS_FAST_SCALAR_FMA`) is true.
-///
-/// Equivalent to `PanamaVectorUtilSupport.fma(float, float, float)`
-/// (`PanamaVectorUtilSupport.java:100-106`), which Lucene's bulk ops import
-/// statically.
+/// Lane count of `MemorySegmentBulkVectorOps.FLOAT_SPECIES`.
 #[inline]
-fn fma(a: f32, b: f32, c: f32) -> f32 {
-    if vector_util::use_fma() {
-        a.mul_add(b, c)
-    } else {
-        a * b + c
-    }
+fn float_lanes() -> usize {
+    PanamaVectorConstants::int_lanes()
 }
 
 /// Reads the little-endian `f32` stored at byte offset `offset`.
@@ -89,6 +76,225 @@ fn read_f32(data: &[u8], offset: usize) -> f32 {
 #[inline]
 fn elem(base: i64, i: usize) -> usize {
     (base as usize) + i * std::mem::size_of::<f32>()
+}
+
+/// The query of a bulk operation: Java's `qArray`, or, when Java passes
+/// `qOffset != -1`, a vector in the segment.
+#[derive(Clone, Copy)]
+enum Query<'a> {
+    Array(&'a [f32]),
+    Segment(i64),
+}
+
+impl Query<'_> {
+    #[inline]
+    fn vector<const N: usize>(self, data: &[u8], i: usize) -> FloatVector<N> {
+        match self {
+            Query::Array(q) => FloatVector::from_array(q, i),
+            Query::Segment(q) => FloatVector::from_le_bytes(data, elem(q, i)),
+        }
+    }
+
+    #[inline]
+    fn value(self, data: &[u8], i: usize) -> f32 {
+        match self {
+            Query::Array(q) => q[i],
+            Query::Segment(q) => read_f32(data, elem(q, i)),
+        }
+    }
+
+    /// Java fails with an index-out-of-bounds exception when the heap query
+    /// is shorter than the vectors it is scored against.
+    #[inline]
+    fn check(self, element_count: usize) {
+        if let Query::Array(q) = self {
+            let _ = &q[..element_count];
+        }
+    }
+}
+
+/// `DotProduct.dotProductBulkImpl`.
+fn dot_product_bulk_impl<const N: usize>(
+    data: &[u8],
+    q: Query<'_>,
+    d: [i64; 4],
+    element_count: usize,
+) -> [f32; 4] {
+    q.check(element_count);
+    let mut sv = [FloatVector::<N>::zero(); 4];
+    let limit = loop_bound(element_count, N);
+    let mut i = 0;
+    while i < limit {
+        let qv = q.vector::<N>(data, i);
+        for k in 0..4 {
+            let dv = FloatVector::<N>::from_le_bytes(data, elem(d[k], i));
+            sv[k] = fma_vec(qv, dv, sv[k]);
+        }
+        i += N;
+    }
+    let mut sums = sv.map(FloatVector::reduce_add);
+    while i < element_count {
+        let q_value = q.value(data, i);
+        for k in 0..4 {
+            sums[k] = fma(q_value, read_f32(data, elem(d[k], i)), sums[k]);
+        }
+        i += 1;
+    }
+    sums
+}
+
+/// `DotProduct.dotProduct(MemorySegment, long, long, int)`.
+fn dot_product_impl<const N: usize>(data: &[u8], q: i64, d: i64, element_count: usize) -> f32 {
+    let mut i = 0;
+    let mut sv = FloatVector::<N>::zero();
+    let limit = loop_bound(element_count, N);
+    while i < limit {
+        let qv = FloatVector::<N>::from_le_bytes(data, elem(q, i));
+        let dv = FloatVector::<N>::from_le_bytes(data, elem(d, i));
+        sv = fma_vec(qv, dv, sv);
+        i += N;
+    }
+    let mut score = sv.reduce_add();
+    while i < element_count {
+        score += read_f32(data, elem(q, i)) * read_f32(data, elem(d, i));
+        i += 1;
+    }
+    score
+}
+
+/// `(float) (sum / Math.sqrt((double) qNorm * (double) dNorm))`.
+#[inline]
+fn normalize(sum: f32, q_norm: f32, d_norm: f32) -> f32 {
+    (f64::from(sum) / (f64::from(q_norm) * f64::from(d_norm)).sqrt()) as f32
+}
+
+/// `Cosine.cosineBulkImpl`.
+fn cosine_bulk_impl<const N: usize>(
+    data: &[u8],
+    q: Query<'_>,
+    d: [i64; 4],
+    element_count: usize,
+) -> [f32; 4] {
+    q.check(element_count);
+    let mut sv = [FloatVector::<N>::zero(); 4];
+    let mut qv_norm = FloatVector::<N>::zero();
+    let mut dv_norm = [FloatVector::<N>::zero(); 4];
+    let limit = loop_bound(element_count, N);
+    let mut i = 0;
+    while i < limit {
+        let dv = d.map(|base| FloatVector::<N>::from_le_bytes(data, elem(base, i)));
+        let qv = q.vector::<N>(data, i);
+        qv_norm = fma_vec(qv, qv, qv_norm);
+        for k in 0..4 {
+            dv_norm[k] = fma_vec(dv[k], dv[k], dv_norm[k]);
+            sv[k] = fma_vec(qv, dv[k], sv[k]);
+        }
+        i += N;
+    }
+    let mut sums = sv.map(FloatVector::reduce_add);
+    let mut q_norm = qv_norm.reduce_add();
+    let mut d_norms = dv_norm.map(FloatVector::reduce_add);
+    while i < element_count {
+        let q_value = q.value(data, i);
+        let d_values = d.map(|base| read_f32(data, elem(base, i)));
+        for k in 0..4 {
+            sums[k] = fma(q_value, d_values[k], sums[k]);
+        }
+        q_norm = fma(q_value, q_value, q_norm);
+        for k in 0..4 {
+            d_norms[k] = fma(d_values[k], d_values[k], d_norms[k]);
+        }
+        i += 1;
+    }
+    [0, 1, 2, 3].map(|k| normalize(sums[k], q_norm, d_norms[k]))
+}
+
+/// `Cosine.cosine(MemorySegment, long, long, int)`.
+fn cosine_impl<const N: usize>(data: &[u8], q: i64, d: i64, element_count: usize) -> f32 {
+    let mut i = 0;
+    let mut sv = FloatVector::<N>::zero();
+    let mut qv_norm = FloatVector::<N>::zero();
+    let mut dv_norm = FloatVector::<N>::zero();
+    let limit = loop_bound(element_count, N);
+    while i < limit {
+        let qv = FloatVector::<N>::from_le_bytes(data, elem(q, i));
+        let dv = FloatVector::<N>::from_le_bytes(data, elem(d, i));
+        sv = fma_vec(qv, dv, sv);
+        qv_norm = fma_vec(qv, qv, qv_norm);
+        dv_norm = fma_vec(dv, dv, dv_norm);
+        i += N;
+    }
+    let mut sum = sv.reduce_add();
+    let mut q_norm = qv_norm.reduce_add();
+    let mut d_norm = dv_norm.reduce_add();
+    while i < element_count {
+        let q_value = read_f32(data, elem(q, i));
+        let d_value = read_f32(data, elem(d, i));
+        sum = fma(q_value, d_value, sum);
+        q_norm = fma(q_value, q_value, q_norm);
+        d_norm = fma(d_value, d_value, d_norm);
+        i += 1;
+    }
+    normalize(sum, q_norm, d_norm)
+}
+
+/// `SqrDistance.sqrDistanceBulkImpl`.
+fn sqr_distance_bulk_impl<const N: usize>(
+    data: &[u8],
+    q: Query<'_>,
+    d: [i64; 4],
+    element_count: usize,
+) -> [f32; 4] {
+    q.check(element_count);
+    let mut sv = [FloatVector::<N>::zero(); 4];
+    let limit = loop_bound(element_count, N);
+    let mut i = 0;
+    while i < limit {
+        let dv = d.map(|base| FloatVector::<N>::from_le_bytes(data, elem(base, i)));
+        let qv = q.vector::<N>(data, i);
+        let diff = dv.map(|dk| qv.sub(dk));
+        for k in 0..4 {
+            sv[k] = fma_vec(diff[k], diff[k], sv[k]);
+        }
+        i += N;
+    }
+    let mut sums = sv.map(FloatVector::reduce_add);
+    while i < element_count {
+        let q_value = q.value(data, i);
+        let diff = d.map(|base| q_value - read_f32(data, elem(base, i)));
+        for k in 0..4 {
+            sums[k] = fma(diff[k], diff[k], sums[k]);
+        }
+        i += 1;
+    }
+    sums
+}
+
+/// `SqrDistance.sqrDistance(MemorySegment, long, long, int)`.
+fn sqr_distance_impl<const N: usize>(data: &[u8], q: i64, d: i64, element_count: usize) -> f32 {
+    let mut i = 0;
+    let mut sv = FloatVector::<N>::zero();
+    let limit = loop_bound(element_count, N);
+    while i < limit {
+        let qv = FloatVector::<N>::from_le_bytes(data, elem(q, i));
+        let dv = FloatVector::<N>::from_le_bytes(data, elem(d, i));
+        let diff = qv.sub(dv);
+        sv = fma_vec(diff, diff, sv);
+        i += N;
+    }
+    let mut score = sv.reduce_add();
+    while i < element_count {
+        let diff = read_f32(data, elem(q, i)) - read_f32(data, elem(d, i));
+        score = fma(diff, diff, score);
+        i += 1;
+    }
+    score
+}
+
+/// Writes the four bulk results to `scores[0..4]`, as Java does.
+#[inline]
+fn store(scores: &mut [f32], values: [f32; 4]) {
+    scores[..4].copy_from_slice(&values);
 }
 
 /// Dot-product bulk operations.
@@ -121,20 +327,16 @@ impl DotProduct {
         d4: i64,
         element_count: usize,
     ) {
-        let data = data_seg.bytes();
-        let (mut sum1, mut sum2, mut sum3, mut sum4) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-        // Slicing to `element_count` first keeps Lucene's behaviour of failing
-        // when the query is shorter than the vectors it is scored against.
-        for (i, &q_value) in q[..element_count].iter().enumerate() {
-            sum1 = fma(q_value, read_f32(data, elem(d1, i)), sum1);
-            sum2 = fma(q_value, read_f32(data, elem(d2, i)), sum2);
-            sum3 = fma(q_value, read_f32(data, elem(d3, i)), sum3);
-            sum4 = fma(q_value, read_f32(data, elem(d4, i)), sum4);
-        }
-        scores[0] = sum1;
-        scores[1] = sum2;
-        scores[2] = sum3;
-        scores[3] = sum4;
+        let values = with_float_lanes!(
+            float_lanes(),
+            dot_product_bulk_impl(
+                data_seg.bytes(),
+                Query::Array(q),
+                [d1, d2, d3, d4],
+                element_count
+            )
+        );
+        store(scores, values);
     }
 
     /// Scores a query that also lives in the segment against four document
@@ -159,19 +361,16 @@ impl DotProduct {
         d4: i64,
         element_count: usize,
     ) {
-        let data = seg.bytes();
-        let (mut sum1, mut sum2, mut sum3, mut sum4) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-        for i in 0..element_count {
-            let q_value = read_f32(data, elem(q, i));
-            sum1 = fma(q_value, read_f32(data, elem(d1, i)), sum1);
-            sum2 = fma(q_value, read_f32(data, elem(d2, i)), sum2);
-            sum3 = fma(q_value, read_f32(data, elem(d3, i)), sum3);
-            sum4 = fma(q_value, read_f32(data, elem(d4, i)), sum4);
-        }
-        scores[0] = sum1;
-        scores[1] = sum2;
-        scores[2] = sum3;
-        scores[3] = sum4;
+        let values = with_float_lanes!(
+            float_lanes(),
+            dot_product_bulk_impl(
+                seg.bytes(),
+                Query::Segment(q),
+                [d1, d2, d3, d4],
+                element_count
+            )
+        );
+        store(scores, values);
     }
 
     /// Returns the dot product of two vectors that both live in the segment.
@@ -182,12 +381,10 @@ impl DotProduct {
     ///
     /// Panics when either vector runs past the end of the segment.
     pub fn dot_product(&self, seg: &MemorySegment, q: i64, d: i64, element_count: usize) -> f32 {
-        let data = seg.bytes();
-        let mut score = 0.0f32;
-        for i in 0..element_count {
-            score += read_f32(data, elem(q, i)) * read_f32(data, elem(d, i));
-        }
-        score
+        with_float_lanes!(
+            float_lanes(),
+            dot_product_impl(seg.bytes(), q, d, element_count)
+        )
     }
 }
 
@@ -202,6 +399,7 @@ impl Cosine {
     ///
     /// Equivalent to
     /// `Cosine.cosineBulk(MemorySegment, float[], float[], long, long, long, long, int)`.
+    /// The four cosine similarities are written to `scores[0..4]`.
     ///
     /// # Panics
     ///
@@ -219,31 +417,16 @@ impl Cosine {
         d4: i64,
         element_count: usize,
     ) {
-        let data = data_seg.bytes();
-        let (mut sum1, mut sum2, mut sum3, mut sum4) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-        let mut q_norm = 0.0f32;
-        let (mut d1_norm, mut d2_norm, mut d3_norm, mut d4_norm) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-        // Slicing to `element_count` first keeps Lucene's behaviour of failing
-        // when the query is shorter than the vectors it is scored against.
-        for (i, &q_value) in q[..element_count].iter().enumerate() {
-            let d1_value = read_f32(data, elem(d1, i));
-            let d2_value = read_f32(data, elem(d2, i));
-            let d3_value = read_f32(data, elem(d3, i));
-            let d4_value = read_f32(data, elem(d4, i));
-            sum1 = fma(q_value, d1_value, sum1);
-            sum2 = fma(q_value, d2_value, sum2);
-            sum3 = fma(q_value, d3_value, sum3);
-            sum4 = fma(q_value, d4_value, sum4);
-            q_norm = fma(q_value, q_value, q_norm);
-            d1_norm = fma(d1_value, d1_value, d1_norm);
-            d2_norm = fma(d2_value, d2_value, d2_norm);
-            d3_norm = fma(d3_value, d3_value, d3_norm);
-            d4_norm = fma(d4_value, d4_value, d4_norm);
-        }
-        scores[0] = normalize(sum1, q_norm, d1_norm);
-        scores[1] = normalize(sum2, q_norm, d2_norm);
-        scores[2] = normalize(sum3, q_norm, d3_norm);
-        scores[3] = normalize(sum4, q_norm, d4_norm);
+        let values = with_float_lanes!(
+            float_lanes(),
+            cosine_bulk_impl(
+                data_seg.bytes(),
+                Query::Array(q),
+                [d1, d2, d3, d4],
+                element_count
+            )
+        );
+        store(scores, values);
     }
 
     /// Scores a query that also lives in the segment against four document
@@ -267,30 +450,16 @@ impl Cosine {
         d4: i64,
         element_count: usize,
     ) {
-        let data = seg.bytes();
-        let (mut sum1, mut sum2, mut sum3, mut sum4) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-        let mut q_norm = 0.0f32;
-        let (mut d1_norm, mut d2_norm, mut d3_norm, mut d4_norm) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-        for i in 0..element_count {
-            let q_value = read_f32(data, elem(q, i));
-            let d1_value = read_f32(data, elem(d1, i));
-            let d2_value = read_f32(data, elem(d2, i));
-            let d3_value = read_f32(data, elem(d3, i));
-            let d4_value = read_f32(data, elem(d4, i));
-            sum1 = fma(q_value, d1_value, sum1);
-            sum2 = fma(q_value, d2_value, sum2);
-            sum3 = fma(q_value, d3_value, sum3);
-            sum4 = fma(q_value, d4_value, sum4);
-            q_norm = fma(q_value, q_value, q_norm);
-            d1_norm = fma(d1_value, d1_value, d1_norm);
-            d2_norm = fma(d2_value, d2_value, d2_norm);
-            d3_norm = fma(d3_value, d3_value, d3_norm);
-            d4_norm = fma(d4_value, d4_value, d4_norm);
-        }
-        scores[0] = normalize(sum1, q_norm, d1_norm);
-        scores[1] = normalize(sum2, q_norm, d2_norm);
-        scores[2] = normalize(sum3, q_norm, d3_norm);
-        scores[3] = normalize(sum4, q_norm, d4_norm);
+        let values = with_float_lanes!(
+            float_lanes(),
+            cosine_bulk_impl(
+                seg.bytes(),
+                Query::Segment(q),
+                [d1, d2, d3, d4],
+                element_count
+            )
+        );
+        store(scores, values);
     }
 
     /// Returns the cosine similarity of two vectors that both live in the
@@ -302,28 +471,8 @@ impl Cosine {
     ///
     /// Panics when either vector runs past the end of the segment.
     pub fn cosine(&self, seg: &MemorySegment, q: i64, d: i64, element_count: usize) -> f32 {
-        let data = seg.bytes();
-        let mut sum = 0.0f32;
-        let mut q_norm = 0.0f32;
-        let mut d_norm = 0.0f32;
-        for i in 0..element_count {
-            let q_value = read_f32(data, elem(q, i));
-            let d_value = read_f32(data, elem(d, i));
-            sum = fma(q_value, d_value, sum);
-            q_norm = fma(q_value, q_value, q_norm);
-            d_norm = fma(d_value, d_value, d_norm);
-        }
-        normalize(sum, q_norm, d_norm)
+        with_float_lanes!(float_lanes(), cosine_impl(seg.bytes(), q, d, element_count))
     }
-}
-
-/// `(float) (sum / Math.sqrt((double) qNorm * (double) dNorm))`.
-///
-/// The division and square root are performed in `f64` with a single rounding
-/// back to `f32`, exactly as Lucene does; a zero norm therefore yields `NaN`.
-#[inline]
-fn normalize(sum: f32, q_norm: f32, d_norm: f32) -> f32 {
-    (f64::from(sum) / (f64::from(q_norm) * f64::from(d_norm)).sqrt()) as f32
 }
 
 /// Square-distance bulk operations.
@@ -337,6 +486,7 @@ impl SqrDistance {
     ///
     /// Equivalent to
     /// `SqrDistance.sqrDistanceBulk(MemorySegment, float[], float[], long, long, long, long, int)`.
+    /// The four squared distances are written to `scores[0..4]`.
     ///
     /// # Panics
     ///
@@ -354,24 +504,16 @@ impl SqrDistance {
         d4: i64,
         element_count: usize,
     ) {
-        let data = data_seg.bytes();
-        let (mut sum1, mut sum2, mut sum3, mut sum4) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-        // Slicing to `element_count` first keeps Lucene's behaviour of failing
-        // when the query is shorter than the vectors it is scored against.
-        for (i, &q_value) in q[..element_count].iter().enumerate() {
-            let diff1 = q_value - read_f32(data, elem(d1, i));
-            let diff2 = q_value - read_f32(data, elem(d2, i));
-            let diff3 = q_value - read_f32(data, elem(d3, i));
-            let diff4 = q_value - read_f32(data, elem(d4, i));
-            sum1 = fma(diff1, diff1, sum1);
-            sum2 = fma(diff2, diff2, sum2);
-            sum3 = fma(diff3, diff3, sum3);
-            sum4 = fma(diff4, diff4, sum4);
-        }
-        scores[0] = sum1;
-        scores[1] = sum2;
-        scores[2] = sum3;
-        scores[3] = sum4;
+        let values = with_float_lanes!(
+            float_lanes(),
+            sqr_distance_bulk_impl(
+                data_seg.bytes(),
+                Query::Array(q),
+                [d1, d2, d3, d4],
+                element_count
+            )
+        );
+        store(scores, values);
     }
 
     /// Scores a query that also lives in the segment against four document
@@ -395,26 +537,19 @@ impl SqrDistance {
         d4: i64,
         element_count: usize,
     ) {
-        let data = seg.bytes();
-        let (mut sum1, mut sum2, mut sum3, mut sum4) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-        for i in 0..element_count {
-            let q_value = read_f32(data, elem(q, i));
-            let diff1 = q_value - read_f32(data, elem(d1, i));
-            let diff2 = q_value - read_f32(data, elem(d2, i));
-            let diff3 = q_value - read_f32(data, elem(d3, i));
-            let diff4 = q_value - read_f32(data, elem(d4, i));
-            sum1 = fma(diff1, diff1, sum1);
-            sum2 = fma(diff2, diff2, sum2);
-            sum3 = fma(diff3, diff3, sum3);
-            sum4 = fma(diff4, diff4, sum4);
-        }
-        scores[0] = sum1;
-        scores[1] = sum2;
-        scores[2] = sum3;
-        scores[3] = sum4;
+        let values = with_float_lanes!(
+            float_lanes(),
+            sqr_distance_bulk_impl(
+                seg.bytes(),
+                Query::Segment(q),
+                [d1, d2, d3, d4],
+                element_count
+            )
+        );
+        store(scores, values);
     }
 
-    /// Returns the sum of squared differences of two vectors that both live in
+    /// Returns the squared Euclidean distance of two vectors that both live in
     /// the segment.
     ///
     /// Equivalent to `SqrDistance.sqrDistance(MemorySegment, long, long, int)`.
@@ -423,12 +558,9 @@ impl SqrDistance {
     ///
     /// Panics when either vector runs past the end of the segment.
     pub fn sqr_distance(&self, seg: &MemorySegment, q: i64, d: i64, element_count: usize) -> f32 {
-        let data = seg.bytes();
-        let mut score = 0.0f32;
-        for i in 0..element_count {
-            let diff = read_f32(data, elem(q, i)) - read_f32(data, elem(d, i));
-            score = fma(diff, diff, score);
-        }
-        score
+        with_float_lanes!(
+            float_lanes(),
+            sqr_distance_impl(seg.bytes(), q, d, element_count)
+        )
     }
 }

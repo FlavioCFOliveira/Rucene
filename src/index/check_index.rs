@@ -6655,6 +6655,77 @@ mod segment_check_pool_tests {
         }
     }
 
+    /// #223 measurement: `CheckIndex` reads a segment's sort as
+    /// `info.info.getIndexSort()` and prints `    sort=` and runs `testSort`
+    /// only when it is non-null and the level is at least
+    /// `MIN_LEVEL_FOR_INTEGRITY_CHECKS` (`CheckIndex.java:974-977, 1060,
+    /// 1089-1092`). An
+    /// unsorted segment's sort is `None` in this port, so neither happens; a
+    /// segment flushed under an index sort prints it and is tested.
+    #[test]
+    fn index_sort_line_and_test_follow_the_segment_sort() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        for sorted in [false, true] {
+            let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::new());
+            let config = IndexWriterConfig::new();
+            if sorted {
+                config
+                    .set_index_sort(
+                        crate::search::Sort::new_fields(vec![crate::search::SortField::new(
+                            Some("n".to_string()),
+                            crate::search::SortFieldType::Long,
+                        )
+                        .unwrap()])
+                        .unwrap(),
+                    )
+                    .unwrap();
+            }
+            let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+            for value in [2i64, 1] {
+                let mut doc = Document::new();
+                doc.add(Box::new(crate::document::NumericDocValuesField::new(
+                    "n", value,
+                )));
+                writer.add_document(&doc).unwrap();
+            }
+            writer.commit().unwrap();
+            writer.close().unwrap();
+
+            let stream = Arc::new(InterruptingLines {
+                lines: Mutex::new(Vec::new()),
+                pending: Mutex::new(String::new()),
+                interrupt_on: None,
+            });
+            let mut checker = CheckIndex::new(dir).unwrap();
+            checker.set_info_stream(Arc::clone(&stream) as Arc<dyn PrintStream>);
+            // `testSort` runs at the integrity level and above
+            // (`CheckIndex.java:1060`); the default level is 0, as in Java.
+            checker
+                .set_level(Level::MIN_LEVEL_FOR_INTEGRITY_CHECKS)
+                .unwrap();
+            let status = checker.check_index().unwrap();
+            checker.close().unwrap();
+            assert!(status.clean);
+            let lines = stream
+                .lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            let sort_lines: Vec<&String> = lines
+                .iter()
+                .filter(|line| line.starts_with("    sort="))
+                .collect();
+            let segment = &status.segment_infos[0];
+            if sorted {
+                assert_eq!(sort_lines, vec!["    sort=<long: \"n\">"], "{lines:#?}");
+                assert!(segment.index_sort_status.is_some());
+            } else {
+                assert!(sort_lines.is_empty(), "{lines:#?}");
+                assert!(segment.index_sort_status.is_none());
+            }
+        }
+    }
+
     /// Runs `check_index()` with two threads over three one-document
     /// segments on a thread of its own, interrupted on entry when
     /// `interrupt_first`; returns the outcome — the status's `clean`, or the

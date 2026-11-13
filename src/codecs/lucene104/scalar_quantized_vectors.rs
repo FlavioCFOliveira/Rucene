@@ -2670,12 +2670,11 @@ impl std::fmt::Display for Lucene104ScalarQuantizedVectorsFormat {
     /// enum is the constant name — `UNSIGNED_BYTE`, not the Rust variant
     /// spelling.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let scorer = Lucene104ScalarQuantizedVectorScorer::new(std::sync::Arc::new(
-            crate::codecs::hnsw::flat_vectors::DefaultFlatVectorScorer::INSTANCE,
-        ));
-        let raw = crate::codecs::lucene99::flat_vectors_format::Lucene99FlatVectorsFormat::new(
-            crate::codecs::hnsw::flat_vectors::DefaultFlatVectorScorer::INSTANCE,
-        );
+        // Java renders its static `flatVectorScorer` and `rawVectorFormat`,
+        // both built from `FlatVectorScorerUtil.getLucene99FlatVectorsScorer()`
+        // (`Lucene104ScalarQuantizedVectorsFormat.java:107-111`).
+        let scorer = Lucene104ScalarQuantizedVectorScorer::new(crate::codecs::hnsw::flat_vectors::FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer());
+        let raw = raw_vector_format();
         write!(
             f,
             "Lucene104ScalarQuantizedVectorsFormat(name={NAME}, encoding={}, flatVectorScorer={scorer}, rawVectorFormat={raw})",
@@ -2731,9 +2730,7 @@ impl FlatVectorsFormat for Lucene104ScalarQuantizedVectorsFormat {
         Ok(Box::new(Lucene104ScalarQuantizedVectorsReader::new(
             state,
             raw,
-            Arc::new(Lucene104ScalarQuantizedVectorScorer::new(Arc::new(
-                crate::codecs::hnsw::flat_vectors::FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer(),
-            ))),
+            Arc::new(Lucene104ScalarQuantizedVectorScorer::new(crate::codecs::hnsw::flat_vectors::FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer())),
         )?))
     }
 }
@@ -2744,7 +2741,7 @@ impl FlatVectorsFormat for Lucene104ScalarQuantizedVectorsFormat {
 /// rawVectorFormat = new Lucene99FlatVectorsFormat(
 /// FlatVectorScorerUtil.getLucene99FlatVectorsScorer())`.
 fn raw_vector_format() -> crate::codecs::lucene99::flat_vectors_format::Lucene99FlatVectorsFormat {
-    crate::codecs::lucene99::flat_vectors_format::Lucene99FlatVectorsFormat::new(
+    crate::codecs::lucene99::flat_vectors_format::Lucene99FlatVectorsFormat::with_shared_scorer(
         crate::codecs::hnsw::flat_vectors::FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer(),
     )
 }
@@ -4280,9 +4277,7 @@ impl FloatVectorValues for NormalizedFloatVectorValues {
 /// builds its readers with.
 static QUANTIZED_WRITER_SCORER: std::sync::LazyLock<Lucene104ScalarQuantizedVectorScorer> =
     std::sync::LazyLock::new(|| {
-        Lucene104ScalarQuantizedVectorScorer::new(Arc::new(
-            crate::codecs::hnsw::flat_vectors::FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer(),
-        ))
+        Lucene104ScalarQuantizedVectorScorer::new(crate::codecs::hnsw::flat_vectors::FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer())
     });
 
 /// Normalises every vector in place, dividing by the magnitude recorded when it
@@ -4447,9 +4442,7 @@ mod tests {
         let reader = Lucene104ScalarQuantizedVectorsReader::new(
             &read_state,
             raw,
-            Arc::new(Lucene104ScalarQuantizedVectorScorer::new(Arc::new(
-                crate::codecs::hnsw::flat_vectors::FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer(),
-            ))),
+            Arc::new(Lucene104ScalarQuantizedVectorScorer::new(crate::codecs::hnsw::flat_vectors::FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer())),
         )
         .unwrap();
         let entry = reader.fields.get("v").unwrap();
@@ -4524,9 +4517,7 @@ mod tests {
         let reader = Lucene104ScalarQuantizedVectorsReader::new(
             &read_state,
             raw,
-            Arc::new(Lucene104ScalarQuantizedVectorScorer::new(Arc::new(
-                crate::codecs::hnsw::flat_vectors::FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer(),
-            ))),
+            Arc::new(Lucene104ScalarQuantizedVectorScorer::new(crate::codecs::hnsw::flat_vectors::FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer())),
         )
         .unwrap();
         reader
@@ -4906,9 +4897,7 @@ mod tests {
         Lucene104ScalarQuantizedVectorsReader::new(
             &read_state,
             raw,
-            Arc::new(Lucene104ScalarQuantizedVectorScorer::new(Arc::new(
-                crate::codecs::hnsw::flat_vectors::FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer(),
-            ))),
+            Arc::new(Lucene104ScalarQuantizedVectorScorer::new(crate::codecs::hnsw::flat_vectors::FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer())),
         )
         .unwrap()
     }

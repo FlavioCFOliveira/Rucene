@@ -986,7 +986,10 @@ impl Decompressor for DeflateDecompressor {
         bytes.offset = 0;
         bytes.length = 0;
         if bytes.bytes.len() < original_length {
-            bytes.bytes = crate::util::ArrayUtil::grow_no_copy(&bytes.bytes, original_length);
+            bytes.bytes = crate::util::ArrayUtil::grow_no_copy(
+                std::mem::take(&mut bytes.bytes),
+                original_length,
+            );
         }
         bytes.length = java_inflate(
             &mut self.decompressor,
@@ -1154,7 +1157,8 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
         // dictionary first, then every block that intersects the interval,
         // each inflated after the bytes already in `bytes`.
         if bytes.bytes.len() < dict_length {
-            bytes.bytes = crate::util::ArrayUtil::grow_no_copy(&bytes.bytes, dict_length);
+            bytes.bytes =
+                crate::util::ArrayUtil::grow_no_copy(std::mem::take(&mut bytes.bytes), dict_length);
         }
         bytes.offset = 0;
         bytes.length = 0;

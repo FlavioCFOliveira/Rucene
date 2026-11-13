@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
-use rucene::document::geo_fields::InetAddressPoint;
+use rucene::document::InetAddressPoint;
 use rucene::document::{
     Document, Field, FieldType, IntField, LongField, SortedNumericDocValuesField, Store,
 };
@@ -408,8 +408,8 @@ fn test_get_stats_returns_null_for_wide_point_values() -> Result<()> {
         // `InetAddress.getByName("192.168.0.1")`
         w.add_document(&doc_with(InetAddressPoint::new(
             "field",
-            &[192, 168, 0, 1],
-        )?))?;
+            std::net::IpAddr::from([192, 168, 0, 1]),
+        )))?;
         w.commit()?;
         with_reader(w, |reader| {
             assert_null(&get_stats(reader, "field")?);

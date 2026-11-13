@@ -11,13 +11,10 @@ use crate::util::BitUtil;
 ///
 /// Equivalent to `org.apache.lucene.internal.vectorization.DefaultVectorUtilSupport`.
 ///
-/// The float and byte similarity kernels are not re-derived here: they already
-/// exist in [`crate::util::vector_util`], which reproduces this very class
-/// operation by operation (the accumulator count and the summation order are
-/// observable in the result), so this type delegates to them. The other
-/// kernels — the int4/uint8 variants, the bit dot products, the scalar
-/// quantizer and the buffer filters — are implemented below, and
-/// [`crate::util::vector_util`] delegates to them.
+/// Every kernel is implemented here, operation by operation (the accumulator
+/// count and the summation order are observable in the float results);
+/// [`crate::util::vector_util`] reaches them, as Java's `VectorUtil` does,
+/// through the `VectorUtilSupport` of the selected provider.
 ///
 /// # Divergence from Lucene 10.5.0
 ///
@@ -39,25 +36,12 @@ impl DefaultVectorUtilSupport {
     /// Returns `a * b + c`, fusing the multiply and the add when the platform
     /// offers a fast scalar FMA.
     ///
-    /// Lucene picks the fused form on `Constants.HAS_FAST_SCALAR_FMA`
-    /// (`DefaultVectorUtilSupport.java:29-36`). This port reads it through
-    /// [`vector_util::use_fma`], the very gate the float kernels of
-    /// [`crate::util::vector_util`] — the kernels this type delegates to —
-    /// read, so the two copies of this helper can never disagree about the
-    /// low-order bits of a score.
-    ///
-    /// # Divergence from Lucene 10.5.0
-    ///
-    /// Lucene declares the helper `private static` and calls it from the float
-    /// kernels declared in the same class. Those kernels live in
-    /// [`crate::util::vector_util`] in this port, which carries its own copy of
-    /// the helper, so this one has no caller inside the type and is `pub`
-    /// rather than private.
-    ///
-    /// Equivalent to
-    /// `org.apache.lucene.internal.vectorization.DefaultVectorUtilSupport#fma`.
+    /// Equivalent to the private static `DefaultVectorUtilSupport.fma(float,
+    /// float, float)` (`DefaultVectorUtilSupport.java:29-36`), which picks the
+    /// fused form on `Constants.HAS_FAST_SCALAR_FMA`, read here through
+    /// [`vector_util::use_fma`] (evaluated once, as Java's `static final`).
     #[inline]
-    pub fn fma(a: f32, b: f32, c: f32) -> f32 {
+    fn fma(a: f32, b: f32, c: f32) -> f32 {
         if vector_util::use_fma() {
             a.mul_add(b, c)
         } else {
@@ -163,7 +147,7 @@ fn unsigned(value: u8) -> i32 {
 /// The message is verbatim from `VectorUtil`, which throws
 /// `IllegalArgumentException("vector dimensions differ: " + a.length + "!=" + b.length)`.
 #[inline]
-fn check_same_dimensions(a: &[u8], b: &[u8]) -> Result<()> {
+pub(crate) fn check_same_dimensions<T, U>(a: &[T], b: &[U]) -> Result<()> {
     if a.len() != b.len() {
         return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
@@ -177,7 +161,7 @@ fn check_same_dimensions(a: &[u8], b: &[u8]) -> Result<()> {
 /// Returns an error when `unpacked` cannot hold the two half-byte planes that
 /// `packed` addresses.
 #[inline]
-fn check_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<()> {
+pub(crate) fn check_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<()> {
     if unpacked.len() < packed.len() * 2 {
         return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
@@ -193,7 +177,7 @@ fn check_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<()> {
 /// `f32::min` in Rust returns the non-NaN operand when exactly one operand is
 /// NaN, whereas Java propagates NaN, and Java also prefers `-0.0` over `0.0`.
 #[inline]
-fn java_math_min(a: f32, b: f32) -> f32 {
+pub(crate) fn java_math_min(a: f32, b: f32) -> f32 {
     if a.is_nan() {
         return a;
     }
@@ -211,7 +195,7 @@ fn java_math_min(a: f32, b: f32) -> f32 {
 ///
 /// See [`java_math_min`] for why `f32::max` cannot be used.
 #[inline]
-fn java_math_max(a: f32, b: f32) -> f32 {
+pub(crate) fn java_math_max(a: f32, b: f32) -> f32 {
     if a.is_nan() {
         return a;
     }
@@ -269,7 +253,7 @@ fn java_math_round(a: f32) -> i32 {
 /// Equivalent to the package-private nested class
 /// `DefaultVectorUtilSupport.ScalarQuantizer`.
 #[derive(Debug, Clone, Copy)]
-struct ScalarQuantizer {
+pub(crate) struct ScalarQuantizer {
     alpha: f32,
     scale: f32,
     min_quantile: f32,
@@ -277,7 +261,7 @@ struct ScalarQuantizer {
 }
 
 impl ScalarQuantizer {
-    fn new(alpha: f32, scale: f32, min_quantile: f32, max_quantile: f32) -> Self {
+    pub(crate) fn new(alpha: f32, scale: f32, min_quantile: f32, max_quantile: f32) -> Self {
         Self {
             alpha,
             scale,
@@ -287,7 +271,7 @@ impl ScalarQuantizer {
     }
 
     /// Equivalent to `ScalarQuantizer.quantize(float[], byte[], int)`.
-    fn quantize(&self, vector: &[f32], dest: &mut [u8], start: usize) -> f32 {
+    pub(crate) fn quantize(&self, vector: &[f32], dest: &mut [u8], start: usize) -> f32 {
         debug_assert_eq!(vector.len(), dest.len());
         let mut correction = 0.0f32;
         for (v, d) in vector[start..].iter().zip(dest[start..].iter_mut()) {
@@ -297,7 +281,7 @@ impl ScalarQuantizer {
     }
 
     /// Equivalent to `ScalarQuantizer.recalculateOffset(byte[], int, float, float)`.
-    fn recalculate_offset(
+    pub(crate) fn recalculate_offset(
         &self,
         vector: &[u8],
         start: usize,
@@ -342,21 +326,143 @@ impl ScalarQuantizer {
     }
 }
 
+/// `a * b + c`, or `Math.fma(a, b, c)` when `Constants.HAS_FAST_SCALAR_FMA`.
+#[inline]
+fn fma(a: f32, b: f32, c: f32) -> f32 {
+    DefaultVectorUtilSupport::fma(a, b, c)
+}
+
+/// The body of `DefaultVectorUtilSupport.dotProduct(float[], float[])`: four
+/// accumulators beyond 32 elements, then a scalar tail; the summation order is
+/// observable in the result.
+fn dot_product_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
+    let mut res = 0.0f32;
+    let mut i = 0usize;
+
+    if a.len() > 32 {
+        let mut acc1 = 0.0f32;
+        let mut acc2 = 0.0f32;
+        let mut acc3 = 0.0f32;
+        let mut acc4 = 0.0f32;
+        let upper_bound = a.len() & !3;
+        while i < upper_bound {
+            acc1 = fma(a[i], b[i], acc1);
+            acc2 = fma(a[i + 1], b[i + 1], acc2);
+            acc3 = fma(a[i + 2], b[i + 2], acc3);
+            acc4 = fma(a[i + 3], b[i + 3], acc4);
+            i += 4;
+        }
+        res += acc1 + acc2 + acc3 + acc4;
+    }
+
+    while i < a.len() {
+        res = fma(a[i], b[i], res);
+        i += 1;
+    }
+    res
+}
+
+/// The body of `DefaultVectorUtilSupport.cosine(float[], float[])`.
+fn cosine_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
+    let mut sum = 0.0f32;
+    let mut norm1 = 0.0f32;
+    let mut norm2 = 0.0f32;
+    let mut i = 0usize;
+
+    if a.len() > 32 {
+        let mut sum1 = 0.0f32;
+        let mut sum2 = 0.0f32;
+        let mut norm1_1 = 0.0f32;
+        let mut norm1_2 = 0.0f32;
+        let mut norm2_1 = 0.0f32;
+        let mut norm2_2 = 0.0f32;
+
+        let upper_bound = a.len() & !1;
+        while i < upper_bound {
+            sum1 = fma(a[i], b[i], sum1);
+            norm1_1 = fma(a[i], a[i], norm1_1);
+            norm2_1 = fma(b[i], b[i], norm2_1);
+
+            sum2 = fma(a[i + 1], b[i + 1], sum2);
+            norm1_2 = fma(a[i + 1], a[i + 1], norm1_2);
+            norm2_2 = fma(b[i + 1], b[i + 1], norm2_2);
+            i += 2;
+        }
+        sum += sum1 + sum2;
+        norm1 += norm1_1 + norm1_2;
+        norm2 += norm2_1 + norm2_2;
+    }
+
+    while i < a.len() {
+        sum = fma(a[i], b[i], sum);
+        norm1 = fma(a[i], a[i], norm1);
+        norm2 = fma(b[i], b[i], norm2);
+        i += 1;
+    }
+
+    (f64::from(sum) / (f64::from(norm1) * f64::from(norm2)).sqrt()) as f32
+}
+
+/// The body of `DefaultVectorUtilSupport.squareDistance(float[], float[])`.
+fn square_distance_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
+    let mut res = 0.0f32;
+    let mut i = 0usize;
+
+    if a.len() > 32 {
+        let mut acc1 = 0.0f32;
+        let mut acc2 = 0.0f32;
+        let mut acc3 = 0.0f32;
+        let mut acc4 = 0.0f32;
+
+        let upper_bound = a.len() & !3;
+        while i < upper_bound {
+            let diff1 = a[i] - b[i];
+            acc1 = fma(diff1, diff1, acc1);
+
+            let diff2 = a[i + 1] - b[i + 1];
+            acc2 = fma(diff2, diff2, acc2);
+
+            let diff3 = a[i + 2] - b[i + 2];
+            acc3 = fma(diff3, diff3, acc3);
+
+            let diff4 = a[i + 3] - b[i + 3];
+            acc4 = fma(diff4, diff4, acc4);
+            i += 4;
+        }
+        res += acc1 + acc2 + acc3 + acc4;
+    }
+
+    while i < a.len() {
+        let diff = a[i] - b[i];
+        res = fma(diff, diff, res);
+        i += 1;
+    }
+    res
+}
+
 impl VectorUtilSupport for DefaultVectorUtilSupport {
     fn dot_product_f32(&self, a: &[f32], b: &[f32]) -> Result<f32> {
-        vector_util::dot_product_f32(a, b)
+        check_same_dimensions(a, b)?;
+        Ok(dot_product_f32_kernel(a, b))
     }
 
     fn cosine_f32(&self, a: &[f32], b: &[f32]) -> Result<f32> {
-        vector_util::cosine_f32(a, b)
+        check_same_dimensions(a, b)?;
+        Ok(cosine_f32_kernel(a, b))
     }
 
     fn square_distance_f32(&self, a: &[f32], b: &[f32]) -> Result<f32> {
-        vector_util::square_distance_f32(a, b)
+        check_same_dimensions(a, b)?;
+        Ok(square_distance_f32_kernel(a, b))
     }
 
     fn dot_product_bytes(&self, a: &[u8], b: &[u8]) -> Result<i32> {
-        vector_util::dot_product_bytes(a, b)
+        check_same_dimensions(a, b)?;
+        let mut total: i32 = 0;
+        for i in 0..a.len() {
+            total = total.wrapping_add(signed(a[i]).wrapping_mul(signed(b[i])));
+        }
+        Ok(total)
     }
 
     fn uint8_dot_product(&self, a: &[u8], b: &[u8]) -> Result<i32> {
@@ -399,11 +505,28 @@ impl VectorUtilSupport for DefaultVectorUtilSupport {
     }
 
     fn cosine_bytes(&self, a: &[u8], b: &[u8]) -> Result<f32> {
-        vector_util::cosine_bytes(a, b)
+        check_same_dimensions(a, b)?;
+        let mut sum: i32 = 0;
+        let mut norm1: i32 = 0;
+        let mut norm2: i32 = 0;
+        for i in 0..a.len() {
+            let elem1 = signed(a[i]);
+            let elem2 = signed(b[i]);
+            sum = sum.wrapping_add(elem1.wrapping_mul(elem2));
+            norm1 = norm1.wrapping_add(elem1.wrapping_mul(elem1));
+            norm2 = norm2.wrapping_add(elem2.wrapping_mul(elem2));
+        }
+        Ok((f64::from(sum) / (f64::from(norm1) * f64::from(norm2)).sqrt()) as f32)
     }
 
     fn square_distance_bytes(&self, a: &[u8], b: &[u8]) -> Result<i32> {
-        vector_util::square_distance_bytes(a, b)
+        check_same_dimensions(a, b)?;
+        let mut square_sum: i32 = 0;
+        for i in 0..a.len() {
+            let diff = signed(a[i]).wrapping_sub(signed(b[i]));
+            square_sum = square_sum.wrapping_add(diff.wrapping_mul(diff));
+        }
+        Ok(square_sum)
     }
 
     fn int4_square_distance(&self, a: &[u8], b: &[u8]) -> Result<i32> {

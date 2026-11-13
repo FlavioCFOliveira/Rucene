@@ -50,39 +50,26 @@
 //! | [`Lucene99MemorySegmentFloatVectorScorerSupplier`] | `Lucene99MemorySegmentFloatVectorScorerSupplier` |
 //! | [`Lucene99MemorySegmentScalarQuantizedVectorScorer`] | `Lucene99MemorySegmentScalarQuantizedVectorScorer` |
 //!
-//! # Divergence from Lucene 10.5.0: the SIMD kernels are scalar
+//! # The Panama kernels run on lane arrays
 //!
 //! The Panama half of the package rests on two Java 21 features. One of them,
-//! `java.lang.foreign.MemorySegment`, is already ported — the crate maps it onto
-//! `memmap2` in [`crate::store::memory_segment`] — so the memory-segment
-//! scorers here really do read vectors in place from the mapped file instead of
-//! copying them to the heap. That is the structural reason those classes exist,
-//! and it survives the port intact.
+//! `java.lang.foreign.MemorySegment`, is ported onto `memmap2` in
+//! [`crate::store::memory_segment`], so the memory-segment scorers here read
+//! vectors in place from the mapped file.
 //!
-//! The other, the `jdk.incubator.vector` Vector API, does not: Rust's portable
-//! SIMD (`std::simd`) is nightly-only and this crate targets stable Rust.
-//! Every Panama kernel in Lucene is written twice — a lane
-//! path, and a scalar loop that finishes the elements the lanes do not cover —
-//! and each lane path is guarded on a minimum vector width. This port sets
-//! [`PanamaVectorConstants::PREFERRED_VECTOR_BITSIZE`] to zero, which makes
-//! every one of those guards fail, so **the computation is Lucene's own scalar
-//! remainder**, taken for every element rather than only for the tail. Each
-//! affected item states this at its point of divergence.
-//!
-//! Two consequences follow:
-//!
-//! * **Float results can differ in their low bits** from a JVM running with
-//!   `--add-modules jdk.incubator.vector`, because a SIMD reduction adds the
-//!   partial sums in a different order and floating-point addition is not
-//!   associative. That split exists inside Lucene too, which is why the crate
-//!   pins its reference float results to the scalar path; see
-//!   [`crate::util::vector_util`]. Integer results — byte dot products, square
-//!   distances, `int4BitDotProduct`, `findNextGEQ` — are exact and identical on
-//!   every path.
-//! * **Lucene's SIMD-only tuning knobs are not ported**: the `tests.vectorsize`
-//!   and `tests.forceintegervectors` system properties, the
-//!   `org.apache.lucene.vectorization.upperJavaFeatureVersion` property and the
-//!   `VectorSpecies` fields select between lane widths that do not exist here.
+//! The other, the `jdk.incubator.vector` Vector API, is reproduced with
+//! fixed-width lane arrays in safe, stable Rust: a species is its lane count,
+//! taken from [`PanamaVectorConstants::preferred_vector_bitsize`] (the
+//! `VectorShape.preferredShape()` HotSpot would pick on this CPU), and each
+//! lane computes what the Java lane computes. The kernels keep Java's gates
+//! (`Constants.HAS_FAST_VECTOR_FMA`, `HAS_FAST_SCALAR_FMA`,
+//! `HAS_FAST_COMPRESS_MASK_CAST`, `PanamaVectorConstants.HAS_FAST_INTEGER_VECTORS`
+//! and the vector-size branches), loop bounds, unrolling and tails, and the
+//! float reductions use the order HotSpot's C2 compiler uses (see
+//! [`PanamaVectorUtilSupport`]), so their results are Java's bit for bit
+//! under the same gate values. The `tests.vectorsize` and
+//! `tests.forceintegervectors` test properties are not read (declared on
+//! [`PanamaVectorConstants`]).
 //!
 //! # Divergence from Lucene 10.5.0: the run-time narrowing is explicit
 //!
@@ -96,15 +83,25 @@
 //! inherent method taking the already-narrowed type, which reaches the
 //! memory-segment implementation. The individual items name which is which.
 //!
+//! The exception is `PanamaVectorizationProvider.newPostingDecodingUtil`, whose
+//! `input instanceof MemorySegmentAccessInput` test is asked of the input
+//! itself through
+//! [`IndexInput::as_memory_segment_access_input`](crate::store::IndexInput::as_memory_segment_access_input),
+//! so it takes Lucene's branch as Lucene does.
+//!
 //! # Which provider [`lookup`] returns
 //!
-//! [`lookup`] is a faithful port and returns [`DefaultVectorizationProvider`],
-//! because Lucene's first gate is `Constants.IS_HOTSPOT_VM` and
-//! [`crate::util::jvm::HotspotVMOptions::is_hotspot_vm`] reports `false` in a
-//! Rust binary, as Lucene's non-HotSpot fallback does. The Panama provider
-//! is thus unreachable through `lookup` by Lucene's own logic rather than by a
-//! Rucene-specific rule; it is a complete implementation and can be constructed
-//! directly, and it becomes reachable the day that gate changes.
+//! [`lookup`] runs Lucene's gates in Lucene's order. A Rust binary is not a
+//! HotSpot VM and has no module layer, so the two gates that stand for a JVM
+//! launched with `--add-modules jdk.incubator.vector` pass only when the
+//! setting [`ADD_VECTOR_MODULE_SYSPROP`] (`rucene.vectorization.addVectorModule`)
+//! is `true` — a declared divergence, see there. Without it `lookup` returns
+//! [`DefaultVectorizationProvider`], as Lucene does on a JVM launched without
+//! the module; with it, the remaining gates decide, as in Lucene. The selected
+//! provider is the process singleton [`get_instance`] returns, and every
+//! consumer Lucene routes through `VectorizationProvider.getInstance()`
+//! (`VectorUtil`, `FlatVectorScorerUtil`, `Lucene90DocValuesProducer`) reads
+//! it.
 
 #![deny(unsafe_code)]
 
@@ -172,6 +169,7 @@ pub use posting_decoding_util::PostingDecodingUtil;
 pub use vector_util_support::VectorUtilSupport;
 pub use vectorization_provider::{
     ensure_caller, get_instance, get_upper_java_feature_version, lookup, lookup_vector_module,
-    VectorizationProvider, DEFAULT_UPPER_JAVA_FEATURE_VERSION, UPPER_JAVA_FEATURE_VERSION_SYSPROP,
-    VALID_CALLERS, VALID_CALLER_FILES,
+    vector_module_added, VectorizationProvider, ADD_VECTOR_MODULE_SYSPROP,
+    DEFAULT_UPPER_JAVA_FEATURE_VERSION, UPPER_JAVA_FEATURE_VERSION_SYSPROP, VALID_CALLERS,
+    VALID_CALLER_FILES,
 };

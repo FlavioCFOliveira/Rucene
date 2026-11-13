@@ -28,12 +28,11 @@ use std::sync::Arc;
 use rucene::codecs::{register_codec, Lucene104Codec};
 use rucene::document::feature_field::FeatureField;
 use rucene::document::geo_fields::{
-    InetAddressPoint, InetAddressRange, LatLonDocValuesField, LatLonPoint, XYDocValuesField,
-    XYPointField,
+    InetAddressRange, LatLonDocValuesField, LatLonPoint, XYDocValuesField, XYPointField,
 };
 use rucene::document::{
-    BinaryDocValuesField, Document, DoublePoint, Field, FieldType, FloatPoint, IntPoint,
-    LatLonShape, LongPoint, NumericDocValuesField, SortedDocValuesField,
+    BinaryDocValuesField, Document, DoublePoint, Field, FieldType, FloatPoint, InetAddressPoint,
+    IntPoint, LatLonShape, LongPoint, NumericDocValuesField, SortedDocValuesField,
     SortedNumericDocValuesField, SortedSetDocValuesField, Store, StoredField, StringField,
     TextField, XYShape,
 };
@@ -560,13 +559,19 @@ fn shared_type_cases(out: &mut String) {
             (
                 "inetpoint, ndv",
                 vec![
-                    boxed(InetAddressPoint::new("a", &address(1)).unwrap()),
+                    boxed(InetAddressPoint::new(
+                        "a",
+                        InetAddressPoint::decode(&address(1)).unwrap(),
+                    )),
                     ndv("a", 1),
                 ],
             ),
             (
                 "inetpoint",
-                vec![boxed(InetAddressPoint::new("a", &address(2)).unwrap())],
+                vec![boxed(InetAddressPoint::new(
+                    "a",
+                    InetAddressPoint::decode(&address(2)).unwrap(),
+                ))],
             ),
         ],
     );

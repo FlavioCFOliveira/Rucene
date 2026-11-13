@@ -40,11 +40,10 @@ use std::sync::Arc;
 
 use rucene::codecs::{register_codec, Lucene104Codec};
 use rucene::document::feature_field::FeatureField;
-use rucene::document::geo_fields::InetAddressPoint;
 use rucene::document::range_fields::{DoubleRange, FloatRange, IntRange, LongRange};
 use rucene::document::{
-    Document, Field, FieldType, IntPoint, KnnFloatVectorField, LongField, LongPoint,
-    NumericDocValuesField, SortedNumericDocValuesField, SortedSetDocValuesField, Store,
+    Document, Field, FieldType, InetAddressPoint, IntPoint, KnnFloatVectorField, LongField,
+    LongPoint, NumericDocValuesField, SortedNumericDocValuesField, SortedSetDocValuesField, Store,
     StringField,
 };
 use rucene::index::directory_reader;
@@ -118,6 +117,11 @@ fn ipv6(i: i32) -> Vec<u8> {
     b[14] = (i / 256) as u8;
     b[15] = (i % 256) as u8;
     b
+}
+
+/// `DvRangeFeatureFixture.inet(byte[])`: `InetAddress.getByAddress`.
+fn inet(b: &[u8]) -> std::net::IpAddr {
+    InetAddressPoint::decode(b).unwrap()
 }
 
 fn sndv(field: &str, value: i64) -> Box<SortedNumericDocValuesField> {
@@ -206,9 +210,9 @@ fn doc(i: i32, perturbed: bool) -> Document {
         )
         .unwrap(),
     ));
-    d.add(Box::new(InetAddressPoint::new("inet", &ipv4(i)).unwrap()));
+    d.add(Box::new(InetAddressPoint::new("inet", inet(&ipv4(i)))));
     if i % 10 == 0 {
-        d.add(Box::new(InetAddressPoint::new("inet", &ipv6(i)).unwrap()));
+        d.add(Box::new(InetAddressPoint::new("inet", inet(&ipv6(i)))));
     }
     if i % 8 != 7 {
         d.add(Box::new(
@@ -493,20 +497,24 @@ fn queries() -> Vec<(String, Arc<dyn Query>)> {
         ),
         (
             "inet exact 10.0.0.7".to_string(),
-            InetAddressPoint::new_exact_query("inet", &[10, 0, 0, 7]).unwrap(),
+            InetAddressPoint::new_exact_query("inet", inet(&[10, 0, 0, 7])).unwrap(),
         ),
         (
             "inet prefix 10.0.1.0/24".to_string(),
-            InetAddressPoint::new_prefix_query("inet", &[10, 0, 1, 0], 24).unwrap(),
+            InetAddressPoint::new_prefix_query("inet", inet(&[10, 0, 1, 0]), 24).unwrap(),
         ),
         (
             "inet range [10.0.0.0,10.0.0.127]".to_string(),
-            InetAddressPoint::new_range_query("inet", &[10, 0, 0, 0], &[10, 0, 0, 127]).unwrap(),
+            InetAddressPoint::new_range_query("inet", inet(&[10, 0, 0, 0]), inet(&[10, 0, 0, 127]))
+                .unwrap(),
         ),
         (
             "inet set {10.0.0.14,10.0.2.0,2001:db8::a}".to_string(),
-            InetAddressPoint::new_set_query("inet", &[&[10, 0, 0, 14], &[10, 0, 2, 0], &ipv6(10)])
-                .unwrap(),
+            InetAddressPoint::new_set_query(
+                "inet",
+                &[inet(&[10, 0, 0, 14]), inet(&[10, 0, 2, 0]), inet(&ipv6(10))],
+            )
+            .unwrap(),
         ),
         (
             "feature saturation pagerank w=1 pivot=10".to_string(),

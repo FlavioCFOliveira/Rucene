@@ -6,11 +6,7 @@
 //!
 //! Lucene Core equivalent: `org.apache.lucene.codecs.lucene104.Lucene104PostingsReader`.
 
-// The postings enum holds references to its own IndexInput fields while also
-// mutating its other fields. To avoid fighting the borrow checker we use raw
-// pointers to the boxed inputs and convert them back to references in a small,
-// documented unsafe helper. The boxes are never moved while the enum is alive.
-#![allow(unsafe_code)]
+#![deny(unsafe_code)]
 
 use crate::codecs::codec_util::{
     check_footer, check_footer_with_prior, check_index_header, checksum_entire_file,
@@ -19,7 +15,6 @@ use crate::codecs::codec_util::{
 use crate::codecs::lucene104::{
     for_util::{ForUtil, BLOCK_SIZE as FOR_BLOCK_SIZE},
     p_for_util::PForUtil,
-    posting_decoding_util::PostingDecodingUtil,
     postings_format::{
         DOC_CODEC, LEVEL1_NUM_DOCS, META_CODEC, PAY_CODEC, POS_CODEC, TERMS_CODEC, VERSION_CURRENT,
         VERSION_START,
@@ -32,6 +27,7 @@ use crate::codecs::term_state::BlockTermState;
 use crate::error::{LuceneError, Result};
 use crate::index::{FieldInfo, IndexOptions};
 use crate::index::{FreqAndNormBuffer, Impacts, ImpactsSource};
+use crate::internal::vectorization::PostingDecodingUtil;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{close_after, DataInput, IndexInput, SharedIndexInput};
 use crate::util::{BitUtil, FixedBitSet, IOUtils};
@@ -48,6 +44,13 @@ const BS_I32: i32 = BS as i32;
 /// Source of the number each [`Lucene104PostingsReader`] takes to stand for
 /// the identity of its `docIn`; see [`Lucene104PostingsReader::doc_in_identity`].
 static NEXT_DOC_IN_IDENTITY: AtomicU64 = AtomicU64::new(0);
+
+/// `Lucene104PostingsReader.VECTORIZATION_PROVIDER`
+/// (`Lucene104PostingsReader.java:66`): the provider every enum asks for its
+/// `PostingDecodingUtil`s.
+static VECTORIZATION_PROVIDER: std::sync::LazyLock<
+    std::sync::Arc<dyn crate::internal::vectorization::VectorizationProvider>,
+> = std::sync::LazyLock::new(|| crate::internal::vectorization::get_instance());
 
 // ---------------------------------------------------------------------------
 // VInt15 / VLong15 helpers (mirrors Lucene104PostingsReader.readVInt15 /
@@ -208,6 +211,15 @@ impl std::fmt::Debug for Lucene104PostingsReader {
 }
 
 impl Lucene104PostingsReader {
+    /// `Lucene104PostingsReader.VECTORIZATION_PROVIDER`, the package-private
+    /// static field (`Lucene104PostingsReader.java:66`) through which Lucene's
+    /// own tests (`TestForUtil`, `TestPForUtil`) build their decoders. Rust
+    /// has no package visibility, so it is a public accessor.
+    pub fn vectorization_provider(
+    ) -> &'static std::sync::Arc<dyn crate::internal::vectorization::VectorizationProvider> {
+        &VECTORIZATION_PROVIDER
+    }
+
     /// Creates a postings reader for the given segment read state.
     pub fn new(state: &SegmentReadState<'_>) -> Result<Self> {
         let segment_info = state.segment_info;
@@ -359,14 +371,12 @@ impl Lucene104PostingsReader {
         flags: i32,
         needs_impacts: bool,
     ) -> Result<BlockPostingsEnum> {
-        let doc_in = self.doc_in.as_ref().map(SharedIndexInput::read);
         let pos_in = self.pos_in.as_ref().map(SharedIndexInput::read);
         let pay_in = self.pay_in.as_ref().map(SharedIndexInput::read);
         BlockPostingsEnum::new(
             field_info,
             flags,
             needs_impacts,
-            doc_in.as_deref().map(|i| &**i),
             self.doc_in_identity,
             pos_in.as_deref().map(|i| &**i),
             pay_in.as_deref().map(|i| &**i),
@@ -485,7 +495,7 @@ impl PostingsReaderBase for Lucene104PostingsReader {
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<BlockPostingsEnum>())
             .expect("INVARIANT: the enum was just checked or built as a BlockPostingsEnum")
-            .reset(state)?;
+            .reset(state, self.doc_in.as_ref())?;
         Ok(postings)
     }
 
@@ -496,7 +506,7 @@ impl PostingsReaderBase for Lucene104PostingsReader {
         flags: i32,
     ) -> Result<Box<dyn ImpactsEnum>> {
         let mut enum_ = self.new_block_postings_enum(field_info, flags, true)?;
-        enum_.reset(state)?;
+        enum_.reset(state, self.doc_in.as_ref())?;
         Ok(Box::new(enum_))
     }
 
@@ -567,7 +577,14 @@ pub struct BlockPostingsEnum {
     doc_buffer_size: i32,
     doc_buffer_upto: i32,
 
-    doc_in: Option<Box<dyn IndexInput>>,
+    /// `docIn` and `docInUtil` (`Lucene104PostingsReader.java:334-335`): the
+    /// decoder the provider built over this enum's clone of the reader's
+    /// `docIn`, which it owns; `docIn` is `docInUtil.in`. Both are `null`
+    /// until the first term with more than one document
+    /// ([`reset`](Self::reset)). The cell lets [`freq`](PostingsEnum::freq),
+    /// which takes `&self`, decode through it as Java's `freq()` does; every
+    /// other access goes through `get_mut`.
+    doc_in_util: RefCell<Option<PostingDecodingUtil>>,
 
     /// The frequencies of the current block. A full block's are decoded on
     /// the first [`freq`](PostingsEnum::freq), which takes `&self`, hence the
@@ -597,8 +614,14 @@ pub struct BlockPostingsEnum {
 
     pos_buffer_upto: i32,
 
-    pos_in: Option<Box<dyn IndexInput>>,
-    pay_in: Option<Box<dyn IndexInput>>,
+    /// `posIn` and `posInUtil` (`Lucene104PostingsReader.java:354-355`): the
+    /// decoder, owning `posIn`, built in the constructor when positions are
+    /// needed.
+    pos_in_util: Option<PostingDecodingUtil>,
+    /// `payIn` and `payInUtil` (`Lucene104PostingsReader.java:356-357`): the
+    /// decoder, owning `payIn`, built in the constructor when offsets or
+    /// payloads are needed.
+    pay_in_util: Option<PostingDecodingUtil>,
 
     index_has_freq: bool,
     index_has_pos: bool,
@@ -630,9 +653,6 @@ pub struct BlockPostingsEnum {
     /// Where the current full block's frequencies start, or `-1` once they
     /// are decoded. Equivalent to `BlockPostingsEnum.freqFP`.
     freq_fp: Cell<i64>,
-    /// The input the frequencies are decoded from on the first `freq()`; see
-    /// [`freq`](PostingsEnum::freq).
-    freq_in: RefCell<Option<Box<dyn IndexInput>>>,
     position: i32,
     pos_doc_buffer_upto: i32,
     pos_pending_count: i32,
@@ -661,6 +681,23 @@ pub struct BlockPostingsEnum {
     needs_refilling: bool,
 }
 
+/// `docIn`, `posIn` or `payIn` of a [`BlockPostingsEnum`]: the input its
+/// decoder owns (`xxxInUtil.in`). A `null` input dereferenced is the JVM's
+/// `NullPointerException`.
+#[inline]
+fn input_of(util: &mut Option<PostingDecodingUtil>) -> Result<&mut (dyn IndexInput + 'static)> {
+    util.as_mut()
+        .map(|util| util.r#in.as_mut())
+        .ok_or_else(LuceneError::null_pointer)
+}
+
+/// `docInUtil`, `posInUtil` or `payInUtil` of a [`BlockPostingsEnum`]. A
+/// `null` decoder dereferenced is the JVM's `NullPointerException`.
+#[inline]
+fn util_of(util: &mut Option<PostingDecodingUtil>) -> Result<&mut PostingDecodingUtil> {
+    util.as_mut().ok_or_else(LuceneError::null_pointer)
+}
+
 impl std::fmt::Debug for BlockPostingsEnum {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BlockPostingsEnum")
@@ -676,7 +713,6 @@ impl BlockPostingsEnum {
         field_info: &FieldInfo,
         flags: i32,
         needs_impacts: bool,
-        parent_doc_in: Option<&dyn IndexInput>,
         parent_doc_in_identity: u64,
         parent_pos_in: Option<&dyn IndexInput>,
         parent_pay_in: Option<&dyn IndexInput>,
@@ -741,14 +777,20 @@ impl BlockPostingsEnum {
             Vec::new()
         };
 
-        let doc_in = parent_doc_in.map(|input| input.clone_input()).transpose()?;
-        let pos_in = if needs_pos {
-            parent_pos_in.map(|input| input.clone_input()).transpose()?
+        // `this.posIn = Lucene104PostingsReader.this.posIn.clone(); posInUtil =
+        // VECTORIZATION_PROVIDER.newPostingDecodingUtil(posIn)`, and the same
+        // for `payIn` (`Lucene104PostingsReader.java:454-470`).
+        let pos_in_util = if needs_pos {
+            parent_pos_in
+                .map(|input| VECTORIZATION_PROVIDER.new_posting_decoding_util(input.clone_input()?))
+                .transpose()?
         } else {
             None
         };
-        let pay_in = if needs_offsets_or_payloads {
-            parent_pay_in.map(|input| input.clone_input()).transpose()?
+        let pay_in_util = if needs_offsets_or_payloads {
+            parent_pay_in
+                .map(|input| VECTORIZATION_PROVIDER.new_posting_decoding_util(input.clone_input()?))
+                .transpose()?
         } else {
             None
         };
@@ -784,7 +826,7 @@ impl BlockPostingsEnum {
             prev_doc_id: -1,
             doc_buffer_size: BS_I32,
             doc_buffer_upto: BS_I32,
-            doc_in,
+            doc_in_util: RefCell::new(None),
             freq_buffer: RefCell::new(freq_buffer),
             pos_delta_buffer,
             payload_length_buffer,
@@ -802,8 +844,8 @@ impl BlockPostingsEnum {
             start_offset: if needs_offsets { 0 } else { -1 },
             end_offset: if needs_offsets { 0 } else { -1 },
             pos_buffer_upto: BS_I32,
-            pos_in,
-            pay_in,
+            pos_in_util,
+            pay_in_util,
             index_has_freq,
             index_has_pos,
             index_has_offsets,
@@ -820,7 +862,6 @@ impl BlockPostingsEnum {
             needs_impacts,
             needs_docs_and_freqs_only: !needs_pos && !needs_impacts,
             freq_fp: Cell::new(-1),
-            freq_in: RefCell::new(None),
             position: 0,
             pos_doc_buffer_upto: BS_I32,
             pos_pending_count: 0,
@@ -869,7 +910,16 @@ impl BlockPostingsEnum {
     /// `level0DocEndFP`, the serialized impacts — as the previous term left
     /// it: a reused enum answers `startOffset()` before `nextDoc()` with the
     /// previous term's offset (observed with the 10.5.0 oracle).
-    fn reset(&mut self, term_state: &BlockTermState) -> Result<()> {
+    ///
+    /// `parent_doc_in` is the reader's `docIn`, which Java reaches as
+    /// `Lucene104PostingsReader.this.docIn` through the inner class's
+    /// enclosing instance; the reader passes it, as it passes its identity to
+    /// [`can_reuse`](Self::can_reuse).
+    fn reset(
+        &mut self,
+        term_state: &BlockTermState,
+        parent_doc_in: Option<&SharedIndexInput>,
+    ) -> Result<()> {
         self.doc_freq = term_state.doc_freq;
         self.singleton_doc_id = term_state.singleton_doc_id;
 
@@ -880,25 +930,29 @@ impl BlockPostingsEnum {
         };
 
         if self.doc_freq > 1 {
-            if self.doc_in.is_none() {
-                // doc_in is lazily initialized by the parent reader in
-                // postings(); a `null` `docIn` dereferenced is the JVM's
+            let doc_in_util = self.doc_in_util.get_mut();
+            if doc_in_util.is_none() {
+                // lazy init (`Lucene104PostingsReader.java:506-510`): `docIn =
+                // Lucene104PostingsReader.this.docIn.clone(); docInUtil =
+                // VECTORIZATION_PROVIDER.newPostingDecodingUtil(docIn)`. A
+                // `null` reader `docIn` dereferenced is the JVM's
                 // `NullPointerException`.
-                return Err(LuceneError::null_pointer());
+                let parent = parent_doc_in.ok_or_else(LuceneError::null_pointer)?;
+                let doc_in = parent.read().clone_input()?;
+                *doc_in_util = Some(VECTORIZATION_PROVIDER.new_posting_decoding_util(doc_in)?);
             }
-            let doc_in = self
-                .doc_in
+            let doc_in_util = doc_in_util
                 .as_ref()
-                .expect("INVARIANT: doc_in was just checked to be Some");
-            Self::prefetch_postings(doc_in.as_ref(), term_state)?;
+                .expect("INVARIANT: doc_in_util was just set");
+            Self::prefetch_postings(doc_in_util.r#in.as_ref(), term_state)?;
         }
 
         let pos_term_start_fp = term_state.pos_start_fp;
         let pay_term_start_fp = term_state.pay_start_fp;
-        if let Some(ref mut pos_in) = self.pos_in {
-            pos_in.seek(pos_term_start_fp)?;
-            if let Some(ref mut pay_in) = self.pay_in {
-                pay_in.seek(pay_term_start_fp)?;
+        if let Some(pos_in_util) = self.pos_in_util.as_mut() {
+            pos_in_util.r#in.seek(pos_term_start_fp)?;
+            if let Some(pay_in_util) = self.pay_in_util.as_mut() {
+                pay_in_util.r#in.seek(pay_term_start_fp)?;
             }
         }
         self.level1_pos_end_fp = pos_term_start_fp;
@@ -931,8 +985,8 @@ impl BlockPostingsEnum {
         if self.doc_freq < LEVEL1_NUM_DOCS {
             self.level1_last_doc_id = NO_MORE_DOCS;
             if self.doc_freq > 1 {
-                if let Some(ref mut doc_in) = self.doc_in {
-                    doc_in.seek(term_state.doc_start_fp)?;
+                if let Some(doc_in) = self.doc_in_util.get_mut() {
+                    doc_in.r#in.seek(term_state.doc_start_fp)?;
                 }
             }
         } else {
@@ -968,51 +1022,14 @@ impl BlockPostingsEnum {
         Ok(())
     }
 
-    /// Returns a raw pointer to the doc input stream. This is used to work around
-    /// Rust's borrow checker when the enum needs to hold references to its own
-    /// inputs while also mutating its other fields. The pointer is valid for as
-    /// long as the enum exists because the boxed input is never moved.
-    fn doc_in_ptr(&mut self) -> Result<*mut dyn IndexInput> {
-        self.doc_in
-            .as_mut()
-            .map(|b| b.as_mut() as *mut dyn IndexInput)
-            // A `null` `docIn` dereferenced: the JVM\'s `NullPointerException`.
-            .ok_or_else(LuceneError::null_pointer)
-    }
-
-    fn pos_in_ptr(&mut self) -> Result<*mut dyn IndexInput> {
-        self.pos_in
-            .as_mut()
-            .map(|b| b.as_mut() as *mut dyn IndexInput)
-            // A `null` `posIn` dereferenced: the JVM\'s `NullPointerException`.
-            .ok_or_else(LuceneError::null_pointer)
-    }
-
-    fn pay_in_ptr(&mut self) -> Result<*mut dyn IndexInput> {
-        self.pay_in
-            .as_mut()
-            .map(|b| b.as_mut() as *mut dyn IndexInput)
-            // A `null` `payIn` dereferenced: the JVM\'s `NullPointerException`.
-            .ok_or_else(LuceneError::null_pointer)
-    }
-
-    /// # Safety
-    /// The pointer must have been obtained from one of this enum's input fields
-    /// and the enum must not have been dropped or had its input replaced while
-    /// the returned reference is in use.
-    unsafe fn input_ref<'a>(ptr: *mut dyn IndexInput) -> &'a mut dyn IndexInput {
-        &mut *ptr
-    }
-
     fn refill_full_block(&mut self) -> Result<()> {
-        let doc_in = unsafe { Self::input_ref(self.doc_in_ptr()?) };
+        let doc_in_util = util_of(self.doc_in_util.get_mut())?;
         // Java's `readByte()` is signed (`Lucene104PostingsReader.java:594`): a
         // negative value is the number of longs of a bit-set block.
-        let bits_per_value = i32::from(doc_in.read_byte()? as i8);
+        let bits_per_value = i32::from(doc_in_util.r#in.read_byte()? as i8);
         if bits_per_value > 0 {
-            let mut pdu = PostingDecodingUtil::new(doc_in);
             self.for_util
-                .decode(bits_per_value, &mut pdu, &mut self.doc_buffer)?;
+                .decode(bits_per_value, doc_in_util, &mut self.doc_buffer)?;
             prefix_sum(&mut self.doc_buffer, BS, self.prev_doc_id);
             self.encoding = DeltaEncoding::Packed;
         } else {
@@ -1037,7 +1054,9 @@ impl BlockPostingsEnum {
             } else {
                 let num_longs = (-bits_per_value) as usize;
                 let mut longs = vec![0i64; num_longs];
-                doc_in.read_longs(Some(&mut longs), 0, num_longs)?;
+                doc_in_util
+                    .r#in
+                    .read_longs(Some(&mut longs), 0, num_longs)?;
                 for (i, &l) in longs.iter().enumerate() {
                     let word = l as u64;
                     for b in 0..64 {
@@ -1067,9 +1086,9 @@ impl BlockPostingsEnum {
             if self.needs_freq {
                 // Decoded lazily, on the first `freq()` of the block
                 // (`Lucene104PostingsReader.java:628-633`).
-                self.freq_fp.set(doc_in.file_pointer()?);
+                self.freq_fp.set(doc_in_util.r#in.file_pointer()?);
             }
-            PForUtil::skip(doc_in)?;
+            PForUtil::skip(doc_in_util.r#in.as_mut())?;
         }
 
         self.doc_count_left -= BS_I32;
@@ -1089,7 +1108,7 @@ impl BlockPostingsEnum {
             self.doc_buffer_size = 1;
             debug_assert_eq!(self.freq_fp.get(), -1);
         } else {
-            let doc_in = unsafe { Self::input_ref(self.doc_in_ptr()?) };
+            let doc_in = input_of(self.doc_in_util.get_mut())?;
             let count = self.doc_count_left as usize;
             read_v_int_block(
                 doc_in,
@@ -1126,8 +1145,8 @@ impl BlockPostingsEnum {
         loop {
             self.prev_doc_id = self.level1_last_doc_id;
             self.level0_last_doc_id = self.level1_last_doc_id;
-            if let Some(ref mut doc_in) = self.doc_in {
-                doc_in.seek(self.level1_doc_end_fp)?;
+            if let Some(doc_in) = self.doc_in_util.get_mut() {
+                doc_in.r#in.seek(self.level1_doc_end_fp)?;
             }
             self.level0_pos_end_fp = self.level1_pos_end_fp;
             self.level0_block_pos_upto = self.level1_block_pos_upto;
@@ -1141,7 +1160,7 @@ impl BlockPostingsEnum {
                 break;
             }
 
-            let doc_in = unsafe { Self::input_ref(self.doc_in_ptr()?) };
+            let doc_in = input_of(self.doc_in_util.get_mut())?;
             self.level1_last_doc_id += doc_in.read_v_int()?;
             let delta = doc_in.read_v_long()?;
             self.level1_doc_end_fp = delta + doc_in.file_pointer()?;
@@ -1179,18 +1198,16 @@ impl BlockPostingsEnum {
 
     fn do_move_to_next_level0_block(&mut self) -> Result<()> {
         debug_assert_eq!(self.doc, self.level0_last_doc_id);
-        if self.pos_in.is_some() {
-            if self.level0_pos_end_fp
-                >= unsafe { Self::input_ref(self.pos_in_ptr()?) }.file_pointer()?
-            {
-                unsafe { Self::input_ref(self.pos_in_ptr()?) }.seek(self.level0_pos_end_fp)?;
+        if self.pos_in_util.is_some() {
+            if self.level0_pos_end_fp >= input_of(&mut self.pos_in_util)?.file_pointer()? {
+                input_of(&mut self.pos_in_util)?.seek(self.level0_pos_end_fp)?;
                 self.pos_pending_count = self.level0_block_pos_upto;
-                if self.pay_in.is_some() {
+                if self.pay_in_util.is_some() {
                     debug_assert!(
                         self.level0_pay_end_fp
-                            >= unsafe { Self::input_ref(self.pay_in_ptr()?) }.file_pointer()?
+                            >= input_of(&mut self.pay_in_util)?.file_pointer()?
                     );
-                    unsafe { Self::input_ref(self.pay_in_ptr()?) }.seek(self.level0_pay_end_fp)?;
+                    input_of(&mut self.pay_in_util)?.seek(self.level0_pay_end_fp)?;
                     self.payload_byte_upto = self.level0_block_pay_upto;
                 }
                 self.pos_buffer_upto = BS_I32;
@@ -1205,7 +1222,7 @@ impl BlockPostingsEnum {
         }
 
         if self.doc_count_left >= BS_I32 {
-            let doc_in = unsafe { Self::input_ref(self.doc_in_ptr()?) };
+            let doc_in = input_of(self.doc_in_util.get_mut())?;
             doc_in.read_v_long()?; // level0NumBytes
             let doc_delta = read_v_int15(doc_in)?;
             self.level0_last_doc_id += doc_delta;
@@ -1252,14 +1269,10 @@ impl BlockPostingsEnum {
             // (`Lucene104PostingsReader.java:780-786`): skip the rest of the
             // level-0 skip data in one seek.
             let doc_delta = {
-                let doc_in = self
-                    .doc_in
-                    .as_mut()
-                    // A `null` `docIn` dereferenced: the JVM\'s `NullPointerException`.
-                    .ok_or_else(LuceneError::null_pointer)?;
+                let doc_in = input_of(self.doc_in_util.get_mut())?;
                 let level0_num_bytes = doc_in.read_v_long()?;
                 let level0_end = doc_in.file_pointer()? + level0_num_bytes;
-                let doc_delta = read_v_int15(doc_in.as_mut())?;
+                let doc_delta = read_v_int15(&mut *doc_in)?;
                 doc_in.seek(level0_end)?;
                 doc_delta
             };
@@ -1278,11 +1291,7 @@ impl BlockPostingsEnum {
     /// seeked to afterwards, by [`seek_pos_data`](Self::seek_pos_data).
     fn read_level0_pos_data(&mut self) -> Result<()> {
         let index_has_offsets_or_payloads = self.index_has_offsets_or_payloads;
-        let doc_in = self
-            .doc_in
-            .as_mut()
-            // A `null` `docIn` dereferenced: the JVM\'s `NullPointerException`.
-            .ok_or_else(LuceneError::null_pointer)?;
+        let doc_in = input_of(self.doc_in_util.get_mut())?;
         let pos_delta = doc_in.read_v_long()?;
         let block_pos_upto = i32::from(doc_in.read_byte()?);
         let pay = if index_has_offsets_or_payloads {
@@ -1306,16 +1315,15 @@ impl BlockPostingsEnum {
         pay_fp: i64,
         pay_upto: i32,
     ) -> Result<()> {
-        if pos_fp >= unsafe { Self::input_ref(self.pos_in_ptr()?) }.file_pointer()? {
-            unsafe { Self::input_ref(self.pos_in_ptr()?) }.seek(pos_fp)?;
+        if pos_fp >= input_of(&mut self.pos_in_util)?.file_pointer()? {
+            input_of(&mut self.pos_in_util)?.seek(pos_fp)?;
             self.pos_pending_count = pos_upto;
-            if self.pay_in.is_some() {
+            if self.pay_in_util.is_some() {
                 // needs payloads or offsets
                 debug_assert!(
-                    self.level0_pay_end_fp
-                        >= unsafe { Self::input_ref(self.pay_in_ptr()?) }.file_pointer()?
+                    self.level0_pay_end_fp >= input_of(&mut self.pay_in_util)?.file_pointer()?
                 );
-                unsafe { Self::input_ref(self.pay_in_ptr()?) }.seek(pay_fp)?;
+                input_of(&mut self.pay_in_util)?.seek(pay_fp)?;
                 self.payload_byte_upto = pay_upto;
             }
             self.pos_buffer_upto = BS_I32;
@@ -1343,7 +1351,7 @@ impl BlockPostingsEnum {
             pay_upto = self.level0_block_pay_upto;
 
             if self.doc_count_left >= BS_I32 {
-                let doc_in = unsafe { Self::input_ref(self.doc_in_ptr()?) };
+                let doc_in = input_of(self.doc_in_util.get_mut())?;
                 let num_skip_bytes = doc_in.read_v_long()?;
                 let skip0_end = doc_in.file_pointer()? + num_skip_bytes;
                 let doc_delta = read_v_int15(doc_in)?;
@@ -1380,7 +1388,7 @@ impl BlockPostingsEnum {
                     break;
                 }
 
-                doc_in.seek(self.level0_doc_end_fp)?;
+                input_of(self.doc_in_util.get_mut())?.seek(self.level0_doc_end_fp)?;
                 self.doc_count_left -= BS_I32;
             } else {
                 self.level0_last_doc_id = NO_MORE_DOCS;
@@ -1388,7 +1396,7 @@ impl BlockPostingsEnum {
             }
         }
 
-        if self.pos_in.is_some() {
+        if self.pos_in_util.is_some() {
             self.seek_pos_data(pos_fp, pos_upto, pay_fp, pay_upto)?;
         }
         Ok(())
@@ -1398,8 +1406,8 @@ impl BlockPostingsEnum {
         if target > self.level1_last_doc_id {
             self.skip_level1_to(target)?;
         } else if self.needs_refilling {
-            if let Some(ref mut doc_in) = self.doc_in {
-                doc_in.seek(self.level0_doc_end_fp)?;
+            if let Some(doc_in) = self.doc_in_util.get_mut() {
+                doc_in.r#in.seek(self.level0_doc_end_fp)?;
             }
             self.doc_count_left -= BS_I32;
         }
@@ -1421,12 +1429,12 @@ impl BlockPostingsEnum {
             self.pos_buffer_upto = end as i32;
         } else {
             to_skip -= left_in_block;
-            let pos_in = unsafe { Self::input_ref(self.pos_in_ptr()?) };
+            let pos_in = input_of(&mut self.pos_in_util)?;
             // `if (payIn != null)` (`Lucene104PostingsReader.java:1153`): the
             // payloads file is only open when offsets or payloads are
             // requested, which a field that indexes them need not be.
-            let mut pay_in = if self.pay_in.is_some() {
-                Some(unsafe { Self::input_ref(self.pay_in_ptr()?) })
+            let mut pay_in = if self.pay_in_util.is_some() {
+                Some(input_of(&mut self.pay_in_util)?)
             } else {
                 None
             };
@@ -1434,7 +1442,8 @@ impl BlockPostingsEnum {
                 debug_assert_ne!(pos_in.file_pointer()?, self.last_pos_block_fp);
                 PForUtil::skip(pos_in)?;
 
-                if let Some(pay_in) = pay_in.as_deref_mut() {
+                if let Some(pay_in) = pay_in.as_mut() {
+                    let pay_in: &mut dyn IndexInput = &mut **pay_in;
                     if self.index_has_payloads {
                         PForUtil::skip(pay_in)?;
                         let num_bytes = pay_in.read_v_int()?;
@@ -1465,7 +1474,7 @@ impl BlockPostingsEnum {
         let mut payload_length = 0i32;
         let mut offset_length = 0i32;
         self.payload_byte_upto = 0;
-        let pos_in = unsafe { Self::input_ref(self.pos_in_ptr()?) };
+        let pos_in = input_of(&mut self.pos_in_util)?;
         for i in 0..count {
             let code = pos_in.read_v_int()?;
             if self.index_has_payloads {
@@ -1516,24 +1525,20 @@ impl BlockPostingsEnum {
     fn refill_offsets_or_payloads(&mut self) -> Result<()> {
         if self.index_has_payloads {
             if self.needs_payloads {
-                {
-                    let pay_in = unsafe { Self::input_ref(self.pay_in_ptr()?) };
-                    let mut pdu = PostingDecodingUtil::new(pay_in);
-                    self.pfor_util
-                        .as_mut()
-                        .unwrap()
-                        .decode(&mut pdu, self.payload_length_buffer.as_mut().unwrap())?;
-                }
-                let pay_in = unsafe { Self::input_ref(self.pay_in_ptr()?) };
+                self.pfor_util.as_mut().unwrap().decode(
+                    util_of(&mut self.pay_in_util)?,
+                    self.payload_length_buffer.as_mut().unwrap(),
+                )?;
+                let pay_in = input_of(&mut self.pay_in_util)?;
                 let num_bytes = pay_in.read_v_int()? as usize;
                 if num_bytes > self.payload_bytes.len() {
                     self.payload_bytes.resize(num_bytes, 0);
                 }
                 pay_in.read_bytes(Some(&mut self.payload_bytes), 0, num_bytes)?;
-            } else if self.pay_in.is_some() {
+            } else if self.pay_in_util.is_some() {
                 // Needs offsets: skip the payload lengths and bytes
                 // (`Lucene104PostingsReader.java:1230-1235`).
-                let pay_in = unsafe { Self::input_ref(self.pay_in_ptr()?) };
+                let pay_in = input_of(&mut self.pay_in_util)?;
                 PForUtil::skip(pay_in)?;
                 let num_bytes = pay_in.read_v_int()?;
                 pay_in.seek(pay_in.file_pointer()? + num_bytes as i64)?;
@@ -1543,20 +1548,17 @@ impl BlockPostingsEnum {
 
         if self.index_has_offsets {
             if self.needs_offsets {
-                let pay_in = unsafe { Self::input_ref(self.pay_in_ptr()?) };
-                let mut pdu = PostingDecodingUtil::new(pay_in);
-                self.pfor_util
-                    .as_mut()
-                    .unwrap()
-                    .decode(&mut pdu, self.offset_start_delta_buffer.as_mut().unwrap())?;
-                self.pfor_util
-                    .as_mut()
-                    .unwrap()
-                    .decode(&mut pdu, self.offset_length_buffer.as_mut().unwrap())?;
-            } else if self.pay_in.is_some() {
+                let pay_in_util = util_of(&mut self.pay_in_util)?;
+                let pfor_util = self.pfor_util.as_mut().unwrap();
+                pfor_util.decode(
+                    pay_in_util,
+                    self.offset_start_delta_buffer.as_mut().unwrap(),
+                )?;
+                pfor_util.decode(pay_in_util, self.offset_length_buffer.as_mut().unwrap())?;
+            } else if self.pay_in_util.is_some() {
                 // Needs payloads: skip the offset starts and lengths
                 // (`Lucene104PostingsReader.java:1244-1248`).
-                let pay_in = unsafe { Self::input_ref(self.pay_in_ptr()?) };
+                let pay_in = input_of(&mut self.pay_in_util)?;
                 PForUtil::skip(pay_in)?;
                 PForUtil::skip(pay_in)?;
             }
@@ -1565,16 +1567,14 @@ impl BlockPostingsEnum {
     }
 
     fn refill_positions(&mut self) -> Result<()> {
-        let fp = unsafe { Self::input_ref(self.pos_in_ptr()?) }.file_pointer()?;
+        let fp = input_of(&mut self.pos_in_util)?.file_pointer()?;
         if fp == self.last_pos_block_fp {
             self.refill_last_position_block()
         } else {
-            let pos_in = unsafe { Self::input_ref(self.pos_in_ptr()?) };
-            let mut pdu = PostingDecodingUtil::new(pos_in);
-            self.pfor_util
-                .as_mut()
-                .unwrap()
-                .decode(&mut pdu, self.pos_delta_buffer.as_mut().unwrap())?;
+            self.pfor_util.as_mut().unwrap().decode(
+                util_of(&mut self.pos_in_util)?,
+                self.pos_delta_buffer.as_mut().unwrap(),
+            )?;
 
             if self.index_has_offsets_or_payloads {
                 self.refill_offsets_or_payloads()?;
@@ -1874,30 +1874,22 @@ impl PostingsEnum for BlockPostingsEnum {
     /// a full block's frequencies are decoded on the first call, from where
     /// `refill_full_block` recorded them.
     ///
-    /// Java seeks `docIn` there and decodes, which leaves `docIn` where the
-    /// block's skip had already left it, at the end of the frequencies. This
-    /// method takes `&self`, so it reads through its own clone of `docIn`
-    /// instead; `docIn` keeps the position Java's ends at, and the decoded
-    /// values are the same.
+    /// Java seeks `docIn` there and decodes through `docInUtil`, which leaves
+    /// `docIn` where the block's skip had already left it, at the end of the
+    /// frequencies; this does the same through the cell that holds
+    /// `docInUtil`, since the method takes `&self`.
     ///
     /// A document position that a corrupt bit-set block put outside the block
     /// raises the `ArrayIndexOutOfBoundsException` Java throws.
     fn freq(&self) -> Result<i32> {
         let freq_fp = self.freq_fp.get();
         if freq_fp != -1 {
-            let mut freq_in = self.freq_in.borrow_mut();
-            if freq_in.is_none() {
-                // `docIn.clone()` on a `null` input: the JVM's
-                // `NullPointerException`.
-                let doc_in = self.doc_in.as_ref().ok_or_else(LuceneError::null_pointer)?;
-                *freq_in = Some(doc_in.clone_input()?);
-            }
-            let input = freq_in
-                .as_mut()
-                .expect("INVARIANT: the input was set one statement above");
-            input.seek(freq_fp)?;
-            let mut pdu = PostingDecodingUtil::new(input.as_mut());
-            PForUtil::new().decode(&mut pdu, &mut self.freq_buffer.borrow_mut())?;
+            // `docIn.seek(freqFP); pforUtil.decode(docInUtil, freqBuffer)`
+            // (`Lucene104PostingsReader.java:585-587`).
+            let mut doc_in_util = self.doc_in_util.borrow_mut();
+            let doc_in_util = doc_in_util.as_mut().ok_or_else(LuceneError::null_pointer)?;
+            doc_in_util.r#in.seek(freq_fp)?;
+            PForUtil::new().decode(doc_in_util, &mut self.freq_buffer.borrow_mut())?;
             self.freq_fp.set(-1);
         }
         let upto = self.doc_buffer_upto;
@@ -2495,6 +2487,61 @@ mod tests {
             }
             other => panic!("expected Java's index-out-of-bounds failure, got {other:?}"),
         }
+        reader.close().expect("close succeeds");
+    }
+
+    /// Java builds one `PostingDecodingUtil` per input, through the provider,
+    /// and reuses it across refills (`Lucene104PostingsReader.java:66, 454-470,
+    /// 506-510`): `docInUtil` on the first term with more than one document,
+    /// `posInUtil` and `payInUtil` in the constructor. A term of 1000
+    /// documents with three positions each, payloads and offsets, decoded in
+    /// full — four doc blocks, eleven position blocks — and then the same enum
+    /// reused for the term again, asks the provider exactly three times.
+    #[test]
+    fn decoders_come_from_the_provider_once_per_input() {
+        use crate::internal::vectorization::vectorization_provider::NEW_POSTING_DECODING_UTIL_CALLS;
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let field_infos = field_infos_with_positions();
+        let field_info = field_infos.field_info("body").unwrap();
+        let docs: Vec<i32> = (0..1000).map(|d| d * 2).collect();
+        let positions: TestPositions = (0..1000)
+            .map(|d| {
+                (0..3)
+                    .map(|p| (p * 2 + d % 3, Some(b"pl".as_slice()), p * 4, p * 4 + 2))
+                    .collect()
+            })
+            .collect();
+        let postings = TestPostingsEnum::new(docs.clone(), vec![3; 1000], positions);
+        let (reader, state) = write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
+            .expect("reader builds");
+
+        NEW_POSTING_DECODING_UTIL_CALLS.with(|calls| calls.set(0));
+        let mut it = reader
+            .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_ALL)
+            .expect("postings exist");
+        for round in 0..2 {
+            for (d, &doc) in docs.iter().enumerate() {
+                assert_eq!(it.next_doc().unwrap(), doc);
+                assert_eq!(it.freq().unwrap(), 3);
+                for p in 0..3 {
+                    assert_eq!(it.next_position().unwrap(), p * 2 + d as i32 % 3);
+                    assert_eq!(it.start_offset(), p * 4);
+                    assert_eq!(it.get_payload().unwrap(), Some(b"pl".as_slice()));
+                }
+            }
+            assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
+            if round == 0 {
+                it = reader
+                    .postings(
+                        field_info,
+                        &state,
+                        Some(it),
+                        crate::index::POSTINGS_ENUM_ALL,
+                    )
+                    .expect("postings exist");
+            }
+        }
+        assert_eq!(NEW_POSTING_DECODING_UTIL_CALLS.with(|calls| calls.get()), 3);
         reader.close().expect("close succeeds");
     }
 

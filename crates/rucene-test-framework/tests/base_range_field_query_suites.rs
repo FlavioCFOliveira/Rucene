@@ -20,8 +20,9 @@ use std::sync::{Arc, Mutex};
 
 use randomizedtesting::jdk::reflect::{modifier, Class, Constructor, Method};
 use randomizedtesting::junit::{AfterClass, BeforeClass};
-use rucene::document::geo_fields::{InetAddressPoint, InetAddressRange};
+use rucene::document::geo_fields::InetAddressRange;
 use rucene::document::range_fields::{DoubleRange, FloatRange, IntRange, LongRange};
+use rucene::document::InetAddressPoint;
 use rucene::error::Result;
 use rucene::index::IndexableField;
 use rucene::search::query::Query;
@@ -590,10 +591,13 @@ fn host_address(a: &[u8]) -> String {
     }
 }
 
-/// `InetAddressPoint.encode(address)`.
+/// `InetAddressPoint.encode(address)`, of the `InetAddress` whose
+/// `getAddress()` bytes are `address`.
 fn encode(address: &[u8]) -> Vec<u8> {
-    InetAddressPoint::encode(address)
-        .unwrap_or_else(|e| rucene_test_framework::util::java_exceptions::rethrow_java(e))
+    InetAddressPoint::encode(
+        InetAddressPoint::decode(address)
+            .unwrap_or_else(|e| rucene_test_framework::util::java_exceptions::rethrow_java(e)),
+    )
 }
 
 /// `IpRange` (`private class`): encapsulated IpRange for test validation.

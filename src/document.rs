@@ -12,6 +12,7 @@ pub mod distance_sort;
 pub mod doc_values_queries;
 pub mod feature_field;
 pub mod geo_fields;
+pub mod inet_address_point;
 pub mod nearest_neighbor;
 pub mod point_queries;
 pub mod range_bulk_scorer;
@@ -65,6 +66,7 @@ pub use distance_sort::{
     LatLonPointDistanceComparator, LatLonPointSortField, XYPointDistanceComparator,
     XYPointSortField,
 };
+pub use inet_address_point::InetAddressPoint;
 pub use nearest_neighbor::{nearest, NearestHit, NearestNeighbor};
 pub use point_queries::{
     LatLonDocValuesBoxQuery, LatLonDocValuesQuery, LatLonPointDistanceQuery, LatLonPointQuery,

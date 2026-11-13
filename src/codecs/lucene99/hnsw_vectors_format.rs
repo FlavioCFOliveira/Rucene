@@ -18,7 +18,7 @@ use crate::codecs::codec_util::{
     write_index_header,
 };
 use crate::codecs::hnsw::flat_vectors::{
-    DefaultFlatVectorScorer, DocsWithFieldSet, FlatFieldVectorWriter, FlatFieldVectorsWriter,
+    DocsWithFieldSet, FlatFieldVectorWriter, FlatFieldVectorsWriter, FlatVectorScorerUtil,
     FlatVectorsFormat, FlatVectorsReader, FlatVectorsWriter, SharedFlatFieldVectorsWriter,
 };
 use crate::codecs::hnsw::graph_provider::HnswGraphProvider;
@@ -283,8 +283,12 @@ impl Lucene99HnswVectorsFormat {
         }
     }
 
+    /// `Lucene99HnswVectorsFormat.flatVectorsFormat`
+    /// (`Lucene99HnswVectorsFormat.java:152-153`).
     fn flat_format(&self) -> Lucene99FlatVectorsFormat {
-        Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE)
+        Lucene99FlatVectorsFormat::with_shared_scorer(
+            FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer(),
+        )
     }
 }
 
@@ -797,7 +801,9 @@ impl Lucene99HnswVectorsWriter {
         tiny_segments_threshold: i32,
         version: i32,
     ) -> Result<Self> {
-        let flat_vectors_format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
+        let flat_vectors_format = Lucene99FlatVectorsFormat::with_shared_scorer(
+            FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer(),
+        );
         let flat_vector_writer = flat_vectors_format.fields_writer_flat(state)?;
         Self::with_flat_format(
             state,

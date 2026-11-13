@@ -4044,6 +4044,40 @@ mod tests {
     /// `SegmentInfoFormat` deliberately attaches an empty placeholder directory
     /// when it parses a `.si`, precisely because the real files are reached
     /// through the directory passed to the format.
+    /// `Mode.valueOf(value)` (`Lucene90StoredFieldsFormat.java:135`) is
+    /// case-sensitive and throws `Enum.valueOf`'s `IllegalArgumentException`.
+    /// Measured against `lucene-core-10.5.0.jar` (a `fieldsReader` over a
+    /// segment whose mode attribute is `best_speed`):
+    /// `java.lang.IllegalArgumentException: No enum constant
+    /// org.apache.lucene.codecs.lucene90.Lucene90StoredFieldsFormat.Mode.best_speed`.
+    #[test]
+    fn an_unknown_mode_is_refused_with_enum_value_of_message() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let segment_info = make_segment_info(Arc::clone(&dir), "_0", 1);
+        segment_info.put_attribute(
+            Lucene90StoredFieldsFormat::MODE_KEY.to_string(),
+            "best_speed".to_string(),
+        );
+        let error = match Lucene90StoredFieldsFormat::new().fields_reader(
+            dir.as_ref(),
+            &segment_info,
+            &make_field_infos(),
+            &*DEFAULT_IO_CONTEXT,
+        ) {
+            Ok(_) => panic!("an unknown mode must be refused"),
+            Err(error) => error,
+        };
+        assert_eq!(error.java_simple_name(), "IllegalArgumentException");
+        assert_eq!(
+            error.to_string(),
+            LuceneError::illegal_argument(
+                "No enum constant \
+                 org.apache.lucene.codecs.lucene90.Lucene90StoredFieldsFormat.Mode.best_speed"
+            )
+            .to_string()
+        );
+    }
+
     #[test]
     fn the_reader_uses_the_directory_it_is_given_not_the_one_on_the_segment_info() {
         let data_dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());

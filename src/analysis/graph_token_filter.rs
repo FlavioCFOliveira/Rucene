@@ -339,8 +339,12 @@ impl GraphTokenFilter {
                         None => break,
                     }
                 }
+                // `if (stackSize++ > MAX_GRAPH_STACK_SIZE)`
+                // (`GraphTokenFilter.java:130-132`): the count before the
+                // increment is compared, so path 1002 is the first refused.
+                let previous_stack_size = self.stack_size;
                 self.stack_size += 1;
-                if self.stack_size > MAX_GRAPH_STACK_SIZE {
+                if previous_stack_size > MAX_GRAPH_STACK_SIZE {
                     return Err(LuceneError::illegal_state(format!(
                         "Too many graph paths (> {MAX_GRAPH_STACK_SIZE})"
                     )));
@@ -651,6 +655,46 @@ mod tests {
         step(&mut graph, "graph", None);
         step(&mut graph, "base", None);
         assert_eq!(graph.cached_token_count(), 8);
+    }
+
+    /// `incrementGraph` compares the path count before incrementing it
+    /// (`stackSize++ > MAX_GRAPH_STACK_SIZE`, `GraphTokenFilter.java:130-132`),
+    /// so with the count starting at 0 for a base token, calls 1 to 1001
+    /// succeed and call 1002 throws `IllegalStateException("Too many graph
+    /// paths (> 1000)")`. A graph of two positions with 32 alternatives each
+    /// holds 1024 paths, more than enough to reach the limit.
+    #[test]
+    fn graph_path_limit_is_reached_on_the_call_after_1001_paths() {
+        let alternatives = |prefix: &str| {
+            (0..32)
+                .map(|i| format!("{prefix}{i}"))
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let text = format!("a {} {}", alternatives("b"), alternatives("c"));
+        let mut graph = GraphTokenFilter::new(Box::new(GraphTokenizer::new(&text))).unwrap();
+        graph.reset().unwrap();
+        assert!(graph.increment_base_token().unwrap());
+        while graph.increment_graph_token().unwrap() {}
+        let mut successes = 0;
+        let error = loop {
+            match graph.increment_graph() {
+                Ok(true) => {
+                    successes += 1;
+                    while graph.increment_graph_token().unwrap() {}
+                }
+                Ok(false) => panic!("the graph ran out of paths after {successes}"),
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(successes, MAX_GRAPH_STACK_SIZE + 1);
+        match error {
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { message, .. },
+                ..
+            } => assert_eq!(message, "Too many graph paths (> 1000)"),
+            other => panic!("expected IllegalStateException, got {other:?}"),
+        }
     }
 
     /// The count is capped at `MAX_TOKEN_CACHE_SIZE`, and `reset()` clears

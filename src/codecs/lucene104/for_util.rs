@@ -7,7 +7,7 @@
 use crate::error::{LuceneError, Result};
 use crate::store::DataOutput;
 
-use super::posting_decoding_util::PostingDecodingUtil;
+use crate::internal::vectorization::PostingDecodingUtil;
 
 /// Number of integers in a single FOR block.
 pub const BLOCK_SIZE: usize = 256;
@@ -528,7 +528,7 @@ fn decode7(
 }
 
 fn decode8(pdu: &mut PostingDecodingUtil, ints: &mut [i32; BLOCK_SIZE]) -> Result<()> {
-    pdu.read_ints(ints, 0, 64)
+    pdu.r#in.read_ints(Some(ints), 0, 64)
 }
 
 fn decode9(
@@ -741,14 +741,14 @@ fn decode15(
 }
 
 fn decode16(pdu: &mut PostingDecodingUtil, ints: &mut [i32; BLOCK_SIZE]) -> Result<()> {
-    pdu.read_ints(ints, 0, 128)
+    pdu.r#in.read_ints(Some(ints), 0, 128)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::LuceneErrorKind;
-    use crate::store::{IndexInput, MockIndexInput, VecDataOutput};
+    use crate::store::{MockIndexInput, VecDataOutput};
 
     fn round_trip_bits(bits_per_value: i32) {
         let mut for_util = ForUtil::new();
@@ -775,8 +775,8 @@ mod tests {
         let data = out.into_inner();
         assert_eq!(data.len(), num_bytes(bits_per_value));
 
-        let mut input = MockIndexInput::new(data, "for-util-roundtrip");
-        let mut pdu = PostingDecodingUtil::new(&mut input);
+        let input = MockIndexInput::new(data, "for-util-roundtrip");
+        let mut pdu = PostingDecodingUtil::new(Box::new(input));
         let mut decoded = [0i32; BLOCK_SIZE];
         for_util
             .decode(bits_per_value, &mut pdu, &mut decoded)
@@ -803,9 +803,9 @@ mod tests {
     #[test]
     fn a_width_outside_the_mask_table_is_an_error_not_a_panic() {
         for bits in [32, 33, 40, 127] {
-            let mut input = MockIndexInput::new(vec![0u8; 4096], "for-util-corrupt");
+            let input = MockIndexInput::new(vec![0u8; 4096], "for-util-corrupt");
+            let mut pdu = PostingDecodingUtil::new(Box::new(input));
             let error = {
-                let mut pdu = PostingDecodingUtil::new(&mut input);
                 let mut decoded = [0i32; BLOCK_SIZE];
                 ForUtil::new()
                     .decode(bits, &mut pdu, &mut decoded)
@@ -826,7 +826,7 @@ mod tests {
                 other => panic!("unexpected error for {bits} bits: {other:?}"),
             }
             assert_eq!(
-                input.file_pointer().unwrap(),
+                pdu.r#in.file_pointer().unwrap(),
                 0,
                 "nothing is read before the check"
             );

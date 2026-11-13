@@ -169,30 +169,30 @@ fn posting_decoding_util_test_duel_split_ints() -> Result<()> {
             let mut optimized_util = vectorization_provider
                 .new_posting_decoding_util(r#in.slice("test", 0, slice_len)?)?;
 
-            default_util.input_mut().seek(start_fp)?;
+            default_util.r#in.seek(start_fp)?;
             default_util.split_ints(
-                count as usize,
+                count,
                 &mut expected_b,
                 b_shift,
                 dec,
                 b_mask,
                 &mut expected_c,
-                c_index as usize,
+                c_index,
                 c_mask,
             )?;
-            let expected_end_fp = default_util.input().file_pointer()?;
-            optimized_util.input_mut().seek(start_fp)?;
+            let expected_end_fp = default_util.r#in.file_pointer()?;
+            optimized_util.r#in.seek(start_fp)?;
             optimized_util.split_ints(
-                count as usize,
+                count,
                 &mut actual_b,
                 b_shift,
                 dec,
                 b_mask,
                 &mut actual_c,
-                c_index as usize,
+                c_index,
                 c_mask,
             )?;
-            Assert::assert_equals(expected_end_fp, optimized_util.input().file_pointer()?);
+            Assert::assert_equals(expected_end_fp, optimized_util.r#in.file_pointer()?);
             assert_array_equals(&expected_b, &actual_b);
             assert_array_equals(&expected_c, &actual_c);
         }
