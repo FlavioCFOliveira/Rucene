@@ -1,0 +1,16 @@
+[package]
+name = "rucene-analysis-common"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/analysis/common (analyzers, tokenizers, token filters and char filters)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_analysis_common"
+
+[dependencies]
+rucene = { path = "../.." }
