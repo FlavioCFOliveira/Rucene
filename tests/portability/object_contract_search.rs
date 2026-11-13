@@ -24,13 +24,12 @@ use std::hash::{Hash, Hasher};
 
 use rucene::document::doc_values_queries::DocValuesLongHashSet;
 use rucene::document::geo_fields::{
-    InetAddressPoint, InetAddressRange, LatLonDocValuesField, LatLonPoint, XYDocValuesField,
-    XYPointField,
+    InetAddressRange, LatLonDocValuesField, LatLonPoint, XYDocValuesField, XYPointField,
 };
 use rucene::document::range_fields::{DoubleRange, FloatRange, IntRange, LongRange};
 use rucene::document::{
-    DoubleField, DoublePoint, Field, FieldType, FloatField, FloatPoint, IntField, IntPoint,
-    LongField, LongPoint, NumericValue, Store,
+    DoubleField, DoublePoint, Field, FieldType, FloatField, FloatPoint, InetAddressPoint, IntField,
+    IntPoint, LongField, LongPoint, NumericValue, Store,
 };
 use rucene::geo::geometry::{
     Circle, Line, Point, Polygon, Rectangle, XYCircle, XYLine, XYPoint, XYPolygon, XYRectangle,
@@ -302,24 +301,20 @@ fn inet_address_point_to_string_matches_java() {
     // An IPv4 address is printed bare; an IPv6 address is bracketed so that it
     // cannot be read as `field:value`, and is printed uncompressed.
     assert_eq!(
-        InetAddressPoint::new("ip", &[1, 2, 3, 4])
-            .unwrap()
-            .to_string(),
+        InetAddressPoint::new("ip", std::net::IpAddr::from([1, 2, 3, 4])).to_string(),
         "InetAddressPoint <ip:1.2.3.4>"
     );
     let mut loopback = [0u8; 16];
     loopback[15] = 1;
     assert_eq!(
-        InetAddressPoint::new("ip", &loopback).unwrap().to_string(),
+        InetAddressPoint::new("ip", std::net::IpAddr::from(loopback)).to_string(),
         "InetAddressPoint <ip:[0:0:0:0:0:0:0:1]>"
     );
     let link_local = [
         0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x12, 0x34, 0x56, 0x78,
     ];
     assert_eq!(
-        InetAddressPoint::new("ip", &link_local)
-            .unwrap()
-            .to_string(),
+        InetAddressPoint::new("ip", std::net::IpAddr::from(link_local)).to_string(),
         "InetAddressPoint <ip:[fe80:0:0:0:0:0:1234:5678]>"
     );
 }

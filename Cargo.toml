@@ -308,6 +308,10 @@ name = "portability_dv_range_feature_queries"
 path = "tests/portability/dv_range_feature_queries.rs"
 
 [[test]]
+name = "portability_inet_address_point"
+path = "tests/portability/inet_address_point.rs"
+
+[[test]]
 name = "portability_terms_dictionary"
 path = "tests/portability/terms_dictionary.rs"
 
