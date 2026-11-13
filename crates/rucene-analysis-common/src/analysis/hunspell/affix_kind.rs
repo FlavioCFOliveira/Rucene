@@ -15,15 +15,26 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `AffixKind.java`, of the Java
-//! package `org.apache.lucene.analysis.hunspell`.
+//! The kind of an affix, ported from
+//! `org.apache.lucene.analysis.hunspell.AffixKind`.
 
-/// Java: `enum` (package-private).
+/// Whether an affix is a prefix or a suffix.
 ///
-/// Skeleton of `org.apache.lucene.analysis.hunspell.AffixKind`; ported by rmp task #462.
+/// Equivalent to `org.apache.lucene.analysis.hunspell.AffixKind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum AffixKind {
     /// Java constant `PREFIX`.
     Prefix,
     /// Java constant `SUFFIX`.
     Suffix,
+}
+
+impl AffixKind {
+    /// Equivalent to `name()`, which `toString()` returns.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Prefix => "PREFIX",
+            Self::Suffix => "SUFFIX",
+        }
+    }
 }

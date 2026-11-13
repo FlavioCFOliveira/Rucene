@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.hunspell`.
+//! The Java package `org.apache.lucene.analysis.hunspell`: a Hunspell
+//! dictionary model, stemmer, spell checker and suggester.
 
 pub mod affix_condition;
 pub mod affix_kind;

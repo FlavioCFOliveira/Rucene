@@ -58,8 +58,31 @@ public class JdkCharacterTypeData {
     out.append("/// The code points below U+0100 `Character.isUpperCase(int)` accepts.\n");
     out.append("pub(super) const LATIN1_UPPER_CASE: &[u8] = &[");
     appendLatin1(out, false);
+    out.append("];\n\n");
+    out.append("/// The code points `Character.isUpperCase(int)` accepts, as inclusive\n");
+    out.append("/// runs `(first, last)`, in order.\n");
+    out.append("pub(super) const UPPER_CASE: &[(u32, u32)] = &[\n");
+    appendRuns(out, false);
+    out.append("];\n\n");
+    out.append("/// The code points `Character.isLowerCase(int)` accepts, as inclusive\n");
+    out.append("/// runs `(first, last)`, in order.\n");
+    out.append("pub(super) const LOWER_CASE: &[(u32, u32)] = &[\n");
+    appendRuns(out, true);
     out.append("];\n");
     System.out.print(out);
+  }
+
+  private static void appendRuns(StringBuilder out, boolean lower) {
+    int start = -1;
+    for (int c = 0; c <= 0x110000; c++) {
+      boolean in = c < 0x110000 && (lower ? Character.isLowerCase(c) : Character.isUpperCase(c));
+      if (in && start < 0) {
+        start = c;
+      } else if (!in && start >= 0) {
+        out.append(String.format("    (0x%04X, 0x%04X),%n", start, c - 1));
+        start = -1;
+      }
+    }
   }
 
   private static void appendLatin1(StringBuilder out, boolean lower) {

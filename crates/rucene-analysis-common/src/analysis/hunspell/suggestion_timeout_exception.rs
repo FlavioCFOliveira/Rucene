@@ -15,10 +15,78 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SuggestionTimeoutException.java`, of the Java
-//! package `org.apache.lucene.analysis.hunspell`.
+//! The timeout of a suggestion, ported from
+//! `org.apache.lucene.analysis.hunspell.SuggestionTimeoutException`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::{JavaThrowable, LuceneError, LuceneErrorKind};
+
+/// An exception thrown when
+/// [`Hunspell::suggest`](super::hunspell::Hunspell::suggest) call takes too
+/// long, if [`TimeoutPolicy::ThrowException`](super::timeout_policy::TimeoutPolicy::ThrowException)
+/// is used.
 ///
-/// Skeleton of `org.apache.lucene.analysis.hunspell.SuggestionTimeoutException`; ported by rmp task #463.
-pub struct SuggestionTimeoutException;
+/// Equivalent to `org.apache.lucene.analysis.hunspell.SuggestionTimeoutException`,
+/// a `RuntimeException`, carried as [`LuceneErrorKind::Throwable`]; build one
+/// with [`error`](Self::error) and read it back with [`of`](Self::of).
+#[derive(Debug, Clone)]
+pub struct SuggestionTimeoutException {
+    message: Option<String>,
+    partial_result: Option<Vec<String>>,
+}
+
+impl SuggestionTimeoutException {
+    /// Equivalent to `SuggestionTimeoutException(String, List<String>)`.
+    pub fn new(message: Option<String>, partial_result: Option<Vec<String>>) -> Self {
+        Self {
+            message,
+            partial_result,
+        }
+    }
+
+    /// `throw new SuggestionTimeoutException(message, partialResult)`, as a
+    /// [`LuceneError`].
+    pub fn error(message: Option<String>, partial_result: Option<Vec<String>>) -> LuceneError {
+        LuceneError::from(LuceneErrorKind::Throwable(Arc::new(Self::new(
+            message,
+            partial_result,
+        ))))
+    }
+
+    /// The `SuggestionTimeoutException` `error` stands for, if it is one.
+    pub fn of(error: &LuceneError) -> Option<&SuggestionTimeoutException> {
+        match error.kind() {
+            LuceneErrorKind::Throwable(throwable) => throwable.as_any().downcast_ref(),
+            _ => None,
+        }
+    }
+
+    /// Partial result calculated by
+    /// [`Hunspell::suggest`](super::hunspell::Hunspell::suggest) before the
+    /// time limit was exceeded, or `None` if there's none available.
+    ///
+    /// Equivalent to `getPartialResult()`.
+    pub fn get_partial_result(&self) -> Option<&[String]> {
+        self.partial_result.as_deref()
+    }
+
+    /// Equivalent to `getMessage()`.
+    pub fn get_message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+}
+
+impl JavaThrowable for SuggestionTimeoutException {
+    fn java_class(&self) -> &'static str {
+        "org.apache.lucene.analysis.hunspell.SuggestionTimeoutException"
+    }
+
+    fn get_message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

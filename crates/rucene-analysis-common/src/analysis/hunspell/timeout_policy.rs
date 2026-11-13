@@ -15,17 +15,24 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `TimeoutPolicy.java`, of the Java
-//! package `org.apache.lucene.analysis.hunspell`.
+//! What to do when a call takes too long, ported from
+//! `org.apache.lucene.analysis.hunspell.TimeoutPolicy`.
 
-/// Java: `public enum`.
+/// A strategy determining what to do when Hunspell API calls take too much
+/// time.
 ///
-/// Skeleton of `org.apache.lucene.analysis.hunspell.TimeoutPolicy`; ported by rmp task #463.
+/// Equivalent to `org.apache.lucene.analysis.hunspell.TimeoutPolicy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TimeoutPolicy {
-    /// Java constant `NO_TIMEOUT`.
+    /// Java constant `NO_TIMEOUT`: let the computation complete even if it
+    /// takes ages.
     NoTimeout,
-    /// Java constant `RETURN_PARTIAL_RESULT`.
+    /// Java constant `RETURN_PARTIAL_RESULT`: just stop the calculation and
+    /// return whatever has been computed so far.
     ReturnPartialResult,
-    /// Java constant `THROW_EXCEPTION`.
+    /// Java constant `THROW_EXCEPTION`: throw an exception (e.g.
+    /// [`SuggestionTimeoutException`](super::suggestion_timeout_exception::SuggestionTimeoutException))
+    /// to make it more clear to the caller that the timeout happened and the
+    /// returned results might not be reliable or reproducible.
     ThrowException,
 }

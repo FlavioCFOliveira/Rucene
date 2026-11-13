@@ -1511,6 +1511,75 @@ fn java_message(error: &LuceneError) -> String {
 /// `Version.parseLeniently` throw.
 pub const PARSE_EXCEPTION: &str = "java.text.ParseException";
 
+/// A `java.text.ParseException` with its `errorOffset`.
+///
+/// Equivalent to `new ParseException(message, errorOffset)`, carried as
+/// [`LuceneErrorKind::Throwable`](crate::error::LuceneErrorKind::Throwable);
+/// build one with [`ParseException::error`] and read it back with
+/// [`ParseException::of`]. The parse exceptions this crate raised before it
+/// existed are [`LuceneErrorKind::Unchecked`] values of class
+/// [`PARSE_EXCEPTION`], whose `errorOffset` is 0.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseException {
+    message: String,
+    error_offset: i32,
+}
+
+impl ParseException {
+    /// `new ParseException(message, errorOffset)` as a [`LuceneError`].
+    pub fn error(message: impl Into<String>, error_offset: i32) -> LuceneError {
+        LuceneError::from(LuceneErrorKind::Throwable(std::sync::Arc::new(Self {
+            message: message.into(),
+            error_offset,
+        })))
+    }
+
+    /// The `ParseException` `error` stands for, when it is one built by
+    /// [`ParseException::error`].
+    pub fn of(error: &LuceneError) -> Option<&ParseException> {
+        match error.kind() {
+            LuceneErrorKind::Throwable(throwable) => throwable.as_any().downcast_ref(),
+            _ => None,
+        }
+    }
+
+    /// Equivalent to `getErrorOffset()`.
+    pub fn get_error_offset(&self) -> i32 {
+        self.error_offset
+    }
+
+    /// Equivalent to `getMessage()`.
+    pub fn get_message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl crate::error::JavaThrowable for ParseException {
+    fn java_class(&self) -> &'static str {
+        PARSE_EXCEPTION
+    }
+
+    fn get_message(&self) -> Option<&str> {
+        Some(&self.message)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Whether `error` is a `java.text.ParseException`: one built by
+/// [`ParseException::error`], or an
+/// [`LuceneErrorKind::Unchecked`](crate::error::LuceneErrorKind::Unchecked)
+/// value of class [`PARSE_EXCEPTION`].
+pub fn is_parse_exception(error: &LuceneError) -> bool {
+    match error.kind() {
+        LuceneErrorKind::Unchecked { class, .. } => *class == PARSE_EXCEPTION,
+        LuceneErrorKind::Throwable(throwable) => throwable.java_class() == PARSE_EXCEPTION,
+        _ => false,
+    }
+}
+
 /// The binary name of `java.lang.NumberFormatException`, which
 /// `Integer.parseInt` throws.
 const NUMBER_FORMAT_EXCEPTION: &str = "java.lang.NumberFormatException";

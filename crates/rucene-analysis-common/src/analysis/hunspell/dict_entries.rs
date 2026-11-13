@@ -15,10 +15,45 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `DictEntries.java`, of the Java
-//! package `org.apache.lucene.analysis.hunspell`.
+//! Homonym dictionary entries, ported from
+//! `org.apache.lucene.analysis.hunspell.DictEntries`.
 
-/// Java: `public interface`.
+use super::dict_entry::DictEntry;
+
+/// An object representing homonym dictionary entries. Note that the order of
+/// entries here may differ from the order in the *.dic file!
 ///
-/// Skeleton of `org.apache.lucene.analysis.hunspell.DictEntries`; ported by rmp task #462.
-pub trait DictEntries {}
+/// Equivalent to `org.apache.lucene.analysis.hunspell.DictEntries`, a
+/// `List<DictEntry>`: [`size`](Self::size) and [`get`](Self::get) are the
+/// list methods the interface declares.
+pub trait DictEntries {
+    /// A positive number of dictionary entries with the same word. Most
+    /// often it's 1 (unless there are homonyms). Entries are indexed from 0
+    /// to `size() - 1` and these indices can be passed into other methods of
+    /// this class.
+    ///
+    /// Equivalent to `size()`.
+    fn size(&self) -> usize;
+
+    /// Equivalent to `get(int)`.
+    fn get(&self, entry_index: usize) -> DictEntry;
+
+    /// Same as `get(entryIndex).getMorphologicalData()`.
+    ///
+    /// Equivalent to `getMorphologicalData(int)`.
+    fn get_morphological_data(&self, entry_index: usize) -> String {
+        self.get(entry_index).get_morphological_data()
+    }
+
+    /// Same as `get(entryIndex).getMorphologicalValues(key)`.
+    ///
+    /// Equivalent to `getMorphologicalValues(int, String)`.
+    fn get_morphological_values(&self, entry_index: usize, key: &str) -> Vec<String> {
+        self.get(entry_index).get_morphological_values(key)
+    }
+
+    /// The entries in order, as iterating the list does.
+    fn to_vec(&self) -> Vec<DictEntry> {
+        (0..self.size()).map(|i| self.get(i)).collect()
+    }
+}

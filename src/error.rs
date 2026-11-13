@@ -355,6 +355,47 @@ pub enum LuceneErrorKind {
         #[source]
         cause: Option<Arc<LuceneError>>,
     },
+
+    /// A Java exception whose class carries fields beyond a message and a
+    /// cause, held as a typed value its defining module downcasts with
+    /// [`JavaThrowable::as_any`].
+    ///
+    /// Equivalent to throwing an instance of such a class, for example
+    /// `java.text.ParseException` with its `errorOffset`
+    /// ([`ParseException`](crate::util::extra::ParseException)) or
+    /// `org.apache.lucene.analysis.hunspell.SuggestionTimeoutException` with
+    /// its partial result. It displays as Java's `Throwable.toString()`, the
+    /// class then `": " + getMessage()`.
+    #[error("{}", unchecked_to_string(.0.java_class(), &.0.get_message().map(str::to_string)))]
+    Throwable(Arc<dyn JavaThrowable>),
+}
+
+/// A Java exception class with its own fields, as
+/// [`LuceneErrorKind::Throwable`] carries it.
+pub trait JavaThrowable: std::fmt::Debug + Send + Sync + 'static {
+    /// The Java binary class name, `getClass().getName()`.
+    fn java_class(&self) -> &'static str;
+
+    /// `getMessage()`, `None` for `null`.
+    fn get_message(&self) -> Option<&str>;
+
+    /// `getCause()`.
+    fn get_cause(&self) -> Option<&Arc<LuceneError>> {
+        None
+    }
+
+    /// Whether the class extends `java.io.IOException`.
+    fn is_io_exception(&self) -> bool {
+        false
+    }
+
+    /// Whether the class extends `java.lang.IllegalArgumentException`.
+    fn is_illegal_argument_exception(&self) -> bool {
+        false
+    }
+
+    /// The value itself, for the defining module to downcast to its class.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// The binary name of `java.lang.NumberFormatException`, a subclass of
@@ -716,6 +757,10 @@ impl LuceneErrorKind {
             Self::Cancelled => "Cancelled",
             Self::Other(_) => "Other",
             Self::Unchecked { class, .. } => class.rsplit('.').next().unwrap_or(class),
+            Self::Throwable(throwable) => {
+                let class = throwable.java_class();
+                class.rsplit('.').next().unwrap_or(class)
+            }
         }
     }
 
@@ -741,7 +786,7 @@ impl LuceneErrorKind {
                 | Self::LockObtainFailed { .. }
                 | Self::LockReleaseFailed { .. }
                 | Self::MergeAborted(_)
-        )
+        ) || matches!(self, Self::Throwable(throwable) if throwable.is_io_exception())
     }
 
     /// Whether the Java class this error stands for is a
@@ -759,6 +804,7 @@ impl LuceneErrorKind {
         match self {
             Self::IllegalArgument { .. } => true,
             Self::Unchecked { class, .. } => ILLEGAL_ARGUMENT_SUBCLASSES.contains(class),
+            Self::Throwable(throwable) => throwable.is_illegal_argument_exception(),
             _ => false,
         }
     }
@@ -868,6 +914,7 @@ impl LuceneErrorKind {
                 message: message.clone(),
                 cause: cause.clone(),
             },
+            Self::Throwable(throwable) => Self::Throwable(Arc::clone(throwable)),
         }
     }
 

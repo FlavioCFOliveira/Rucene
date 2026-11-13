@@ -23,7 +23,9 @@
 //! as Java's `int` code point is.
 
 use super::character_data::{DIGIT, LETTER, NUMERIC_VALUE, WHITESPACE};
-use super::character_type_data::{LATIN1_LOWER_CASE, LATIN1_UPPER_CASE, TYPES};
+use super::character_type_data::{
+    LATIN1_LOWER_CASE, LATIN1_UPPER_CASE, LOWER_CASE, TYPES, UPPER_CASE,
+};
 
 /// `Character.MIN_SUPPLEMENTARY_CODE_POINT`.
 pub const MIN_SUPPLEMENTARY_CODE_POINT: i32 = 0x10000;
@@ -97,6 +99,40 @@ pub fn get_numeric_value(code_point: i32) -> i32 {
         }
         Err(_) => -1,
     }
+}
+
+/// `Character.isUpperCase(int)`: general category `Lu` or the
+/// `Other_Uppercase` property, as JDK 25 answers.
+pub fn is_upper_case(code_point: i32) -> bool {
+    in_ranges(UPPER_CASE, code_point)
+}
+
+/// `Character.isLowerCase(int)`: general category `Ll` or the
+/// `Other_Lowercase` property, as JDK 25 answers.
+pub fn is_lower_case(code_point: i32) -> bool {
+    in_ranges(LOWER_CASE, code_point)
+}
+
+/// `String.toUpperCase(Locale.ROOT)` of the UTF-16 units `units`: the full,
+/// locale-independent Unicode uppercase mapping (`ß` becomes `SS`).
+///
+/// Each character maps with [`char::to_uppercase`], the Unicode 16.0
+/// `UnicodeData` and unconditional `SpecialCasing` mappings JDK 25 applies
+/// for the root locale; a lone surrogate, which Java keeps, is kept.
+pub fn to_upper_case_root(units: &[u16]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(units.len());
+    let mut buf = [0u16; 2];
+    for decoded in char::decode_utf16(units.iter().copied()) {
+        match decoded {
+            Ok(c) => {
+                for upper in c.to_uppercase() {
+                    out.extend_from_slice(upper.encode_utf16(&mut buf));
+                }
+            }
+            Err(e) => out.push(e.unpaired_surrogate()),
+        }
+    }
+    out
 }
 
 /// `Character.isHighSurrogate(char)`.

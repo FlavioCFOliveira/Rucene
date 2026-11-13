@@ -33,8 +33,13 @@ the committed file, and rerunning it must leave that file unchanged.
   [/tmp/lucene1050]` (`--check` compares instead of writing, `--only <JavaClass>` limits the
   run to one scanner, `--hashes` prints the pins).
 * `JdkCharacterTypeData.java` — writes `crates/rucene-analysis-common/src/jdk/character_type_data.rs`
-  (`Character.getType(int)` runs and the Latin-1 `isLowerCase`/`isUpperCase` sets) from the
-  running JDK. Rerun with JDK 25: `java tools/translate/JdkCharacterTypeData.java > crates/rucene-analysis-common/src/jdk/character_type_data.rs`.
+  (`Character.getType(int)` runs, the Latin-1 `isLowerCase`/`isUpperCase` sets, and the
+  `isUpperCase`/`isLowerCase` runs of every code point) from the running JDK. Rerun with JDK 25: `java tools/translate/JdkCharacterTypeData.java > crates/rucene-analysis-common/src/jdk/character_type_data.rs`.
+* `JdkCharsetData.java` — writes `crates/rucene-analysis-common/src/jdk/charset_data.rs` (the
+  canonical name and aliases of every charset of `Charset.availableCharsets()`, and the
+  byte-to-unit decoding table of every single-byte charset, each byte's unmappable or malformed
+  input marked) from the running JDK; it fails on any inconsistency it checks. Rerun with JDK 25:
+  `java tools/translate/JdkCharsetData.java > crates/rucene-analysis-common/src/jdk/charset_data.rs`.
 * `JdkDateParseData.java` — writes `crates/rucene-analysis-common/src/jdk/date_parse_data.bin`
   (zlib), the JDK locale data `SimpleDateFormat` parsing reads: the CLDR resolution metadata
   (language tags, aliases, parent locales, likely scripts), the display names, `DEFAULT` date

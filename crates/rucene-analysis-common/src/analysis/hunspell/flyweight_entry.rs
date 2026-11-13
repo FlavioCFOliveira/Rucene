@@ -15,10 +15,91 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FlyweightEntry.java`, of the Java
-//! package `org.apache.lucene.analysis.hunspell`.
+//! The mutable entry the dictionary is enumerated with, ported from
+//! `org.apache.lucene.analysis.hunspell.FlyweightEntry`.
 
-/// Java: `abstract class` (package-private).
+use super::dictionary::Dictionary;
+
+/// Java's `CharSequence`, as the package reads one: a length and the unit at
+/// an index.
+pub(crate) trait CharSequence {
+    /// Equivalent to `length()`.
+    fn length(&self) -> usize;
+
+    /// Equivalent to `charAt(int)`.
+    fn char_at(&self, index: usize) -> u16;
+}
+
+impl CharSequence for [u16] {
+    fn length(&self) -> usize {
+        self.len()
+    }
+
+    fn char_at(&self, index: usize) -> u16 {
+        self[index]
+    }
+}
+
+impl CharSequence for Vec<u16> {
+    fn length(&self) -> usize {
+        self.len()
+    }
+
+    fn char_at(&self, index: usize) -> u16 {
+        self[index]
+    }
+}
+
+/// What [`FlyweightEntry::lower_case_root`] returns: the root's units, or a
+/// view folding each unit of the root with `Dictionary.caseFold` as it is
+/// read (the anonymous `CharSequence` of `WordStorage.MyFlyweightEntry`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum LowerCaseRoot<'a> {
+    /// A root already lower-cased.
+    Plain(&'a [u16]),
+    /// A root folded unit by unit, with the dictionary's alternate casing
+    /// flag.
+    Folded {
+        /// The root.
+        chars: &'a [u16],
+        /// `Dictionary.alternateCasing`.
+        alternate_casing: bool,
+    },
+}
+
+impl CharSequence for LowerCaseRoot<'_> {
+    fn length(&self) -> usize {
+        match self {
+            Self::Plain(chars) | Self::Folded { chars, .. } => chars.len(),
+        }
+    }
+
+    fn char_at(&self, index: usize) -> u16 {
+        match self {
+            Self::Plain(chars) => chars[index],
+            Self::Folded {
+                chars,
+                alternate_casing,
+            } => Dictionary::case_fold_with(*alternate_casing, chars[index]),
+        }
+    }
+}
+
+/// A mutable entry object used when enumerating the dictionary internally.
 ///
-/// Skeleton of `org.apache.lucene.analysis.hunspell.FlyweightEntry`; ported by rmp task #462.
-pub(crate) struct FlyweightEntry;
+/// Equivalent to `org.apache.lucene.analysis.hunspell.FlyweightEntry`. The
+/// root and the forms are returned as the active parts of Java's `CharsRef`
+/// and `IntsRef`, which the enumeration reuses.
+pub(crate) trait FlyweightEntry {
+    /// Equivalent to `hasTitleCase()`.
+    fn has_title_case(&self) -> bool;
+
+    /// Equivalent to `root()`.
+    fn root(&self) -> &[u16];
+
+    /// Equivalent to `lowerCaseRoot()`.
+    fn lower_case_root(&self) -> LowerCaseRoot<'_>;
+
+    /// Equivalent to `forms()`.
+    fn forms(&mut self) -> &[i32];
+}

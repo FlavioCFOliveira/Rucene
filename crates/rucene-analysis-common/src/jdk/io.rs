@@ -16,9 +16,9 @@
  */
 
 //! The `java.io` readers the module reads text with, as JDK 25 implements
-//! them: `InputStreamReader` over UTF-8 (`sun.nio.cs.StreamDecoder` and the
-//! `sun.nio.cs.UTF_8` decoder), `BufferedReader.readLine()` and
-//! `LineNumberReader`.
+//! them: `InputStreamReader` (`sun.nio.cs.StreamDecoder` over a
+//! [`CharsetDecoder`], the `sun.nio.cs.UTF_8` decoder for UTF-8),
+//! `BufferedReader.readLine()`, `mark` and `reset`, and `LineNumberReader`.
 //!
 //! These are emulations of the JDK, written from its specification and
 //! checked against its behaviour (see the [`jdk`](crate::jdk) module
@@ -31,6 +31,8 @@ use std::sync::Mutex;
 use rucene::analysis::CharReader;
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::store::java_nio_file::JavaIoException;
+
+use super::charset::{Charset, CharsetDecoder, CoderResult};
 
 /// `new IOException(message)` of class `class`, as a [`LuceneError`].
 pub(crate) fn io_exception(class: &'static str, message: Option<String>) -> LuceneError {
@@ -45,8 +47,8 @@ const DEFAULT_BYTE_BUFFER_SIZE: usize = 8192;
 /// `java.io.BufferedReader.DEFAULT_CHAR_BUFFER_SIZE`.
 const DEFAULT_CHAR_BUFFER_SIZE: usize = 8192;
 
-/// `java.nio.charset.CodingErrorAction`, for the malformed input of the
-/// UTF-8 decoder (UTF-8 has no unmappable character).
+/// `java.nio.charset.CodingErrorAction`, for malformed input and unmappable
+/// characters (`IGNORE` is not used by the module).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodingErrorAction {
     /// `CodingErrorAction.REPORT`: the decoder throws
@@ -54,14 +56,6 @@ pub enum CodingErrorAction {
     Report,
     /// `CodingErrorAction.REPLACE`: the decoder writes U+FFFD and goes on.
     Replace,
-}
-
-/// `java.nio.charset.CoderResult`, as the UTF-8 decoder returns it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CoderResult {
-    Underflow,
-    Overflow,
-    Malformed(usize),
 }
 
 /// `isNotContinuation(int)` of the JDK's UTF-8 decoder.
@@ -125,7 +119,12 @@ fn xflow(remaining: usize, nb: usize) -> CoderResult {
 /// The decoding loop of JDK 25's UTF-8 decoder (`UTF_8.Decoder`): decodes
 /// `src[*sp..]` into `dst[*dp..]` until the input is used up, the output is
 /// full, or a malformed sequence starts at `*sp`.
-fn decode_loop(src: &[u8], sp: &mut usize, dst: &mut [u16], dp: &mut usize) -> CoderResult {
+pub(crate) fn utf8_decode_loop(
+    src: &[u8],
+    sp: &mut usize,
+    dst: &mut [u16],
+    dp: &mut usize,
+) -> CoderResult {
     let sl = src.len();
     let dl = dst.len();
     while *sp < sl {
@@ -207,13 +206,13 @@ fn decode_loop(src: &[u8], sp: &mut usize, dst: &mut [u16], dp: &mut usize) -> C
     xflow(0, 0)
 }
 
-/// A UTF-8 `java.io.InputStreamReader`: the `sun.nio.cs.StreamDecoder` of
-/// JDK 25 over `input`, with an 8192-byte buffer.
+/// A `java.io.InputStreamReader`: the `sun.nio.cs.StreamDecoder` of JDK 25
+/// over `input`, with an 8192-byte buffer and a [`CharsetDecoder`].
 ///
 /// `InputStreamReader(InputStream, Charset)` decodes with
-/// [`CodingErrorAction::Replace`]; `InputStreamReader(InputStream,
-/// CharsetDecoder)` with the decoder's action, which Lucene sets to
-/// [`CodingErrorAction::Report`].
+/// [`CodingErrorAction::Replace`] for malformed input and unmappable
+/// characters; `InputStreamReader(InputStream, CharsetDecoder)` with the
+/// decoder's actions.
 ///
 /// **Divergence from JDK 25.** `StreamDecoder` stops filling the caller's
 /// buffer early when the stream's `available()` answers 0 ("block at most
@@ -224,7 +223,7 @@ fn decode_loop(src: &[u8], sp: &mut usize, dst: &mut [u16], dp: &mut usize) -> C
 /// ends, as it does on the JDK for those streams.
 pub struct InputStreamReader<R: Read> {
     input: Option<R>,
-    action: CodingErrorAction,
+    decoder: CharsetDecoder,
     /// `bb`: `bytes[position..limit]` hold the bytes not yet decoded.
     bytes: Vec<u8>,
     position: usize,
@@ -236,7 +235,7 @@ pub struct InputStreamReader<R: Read> {
 impl<R: Read> Debug for InputStreamReader<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InputStreamReader")
-            .field("action", &self.action)
+            .field("decoder", &self.decoder)
             .field("pending_bytes", &(self.limit - self.position))
             .field("closed", &self.input.is_none())
             .finish()
@@ -247,15 +246,40 @@ impl<R: Read> InputStreamReader<R> {
     /// Equivalent to `new InputStreamReader(input, StandardCharsets.UTF_8)`,
     /// which replaces malformed input with U+FFFD.
     pub fn new_utf8(input: R) -> Self {
-        Self::with_action(input, CodingErrorAction::Replace)
+        Self::with_charset(input, Charset::utf_8())
     }
 
     /// Equivalent to `new InputStreamReader(input, decoder)` for a UTF-8
     /// `CharsetDecoder` whose malformed-input action is `action`.
     pub fn with_action(input: R, action: CodingErrorAction) -> Self {
+        let decoder = Charset::utf_8()
+            .new_decoder()
+            .expect("INVARIANT: UTF-8 is emulated")
+            .on_malformed_input(action);
+        Self::with_decoder(input, decoder)
+    }
+
+    /// Equivalent to `new InputStreamReader(input, charset)`: a decoder of
+    /// `charset` that replaces malformed input and unmappable characters.
+    ///
+    /// # Panics
+    ///
+    /// For a charset whose decoder is not emulated (see
+    /// [`Charset::new_decoder`]); `UTF-8` and the single-byte charsets are.
+    pub fn with_charset(input: R, charset: Charset) -> Self {
+        let decoder = charset
+            .new_decoder()
+            .expect("INVARIANT: the caller passes an emulated charset")
+            .on_malformed_input(CodingErrorAction::Replace)
+            .on_unmappable_character(CodingErrorAction::Replace);
+        Self::with_decoder(input, decoder)
+    }
+
+    /// Equivalent to `new InputStreamReader(input, decoder)`.
+    pub fn with_decoder(input: R, decoder: CharsetDecoder) -> Self {
         Self {
             input: Some(input),
-            action,
+            decoder,
             bytes: vec![0; DEFAULT_BYTE_BUFFER_SIZE],
             position: 0,
             limit: 0,
@@ -279,7 +303,9 @@ impl<R: Read> InputStreamReader<R> {
     fn decode(&mut self, cbuf: &mut [u16], cp: &mut usize, end_of_input: bool) -> CoderResult {
         loop {
             let mut sp = self.position;
-            let mut cr = decode_loop(&self.bytes[..self.limit], &mut sp, cbuf, cp);
+            let mut cr = self
+                .decoder
+                .decode_loop(&self.bytes[..self.limit], &mut sp, cbuf, cp);
             self.position = sp;
             if cr == CoderResult::Underflow {
                 if end_of_input && self.position < self.limit {
@@ -288,20 +314,24 @@ impl<R: Read> InputStreamReader<R> {
                     return cr;
                 }
             }
-            match cr {
+            let (action, length) = match cr {
                 CoderResult::Overflow => return cr,
-                CoderResult::Malformed(length) => match self.action {
-                    CodingErrorAction::Report => return cr,
-                    CodingErrorAction::Replace => {
-                        if *cp >= cbuf.len() {
-                            return CoderResult::Overflow;
-                        }
-                        cbuf[*cp] = 0xfffd;
-                        *cp += 1;
-                        self.position += length;
-                    }
-                },
+                CoderResult::Malformed(length) => (self.decoder.malformed_input_action(), length),
+                CoderResult::Unmappable(length) => {
+                    (self.decoder.unmappable_character_action(), length)
+                }
                 CoderResult::Underflow => unreachable!("handled above"),
+            };
+            match action {
+                CodingErrorAction::Report => return cr,
+                CodingErrorAction::Replace => {
+                    if *cp >= cbuf.len() {
+                        return CoderResult::Overflow;
+                    }
+                    cbuf[*cp] = 0xfffd;
+                    *cp += 1;
+                    self.position += length;
+                }
             }
         }
     }
@@ -347,6 +377,13 @@ impl<R: Read> InputStreamReader<R> {
                     // `cr.throwException()`
                     return Err(io_exception(
                         "java.nio.charset.MalformedInputException",
+                        Some(format!("Input length = {length}")),
+                    ));
+                }
+                CoderResult::Unmappable(length) => {
+                    // `cr.throwException()`
+                    return Err(io_exception(
+                        "java.nio.charset.UnmappableCharacterException",
                         Some(format!("Input length = {length}")),
                     ));
                 }
@@ -527,7 +564,20 @@ pub struct BufferedReader<S: ReadChars> {
     next_char: usize,
     /// If the next character is a line feed, skip it.
     skip_lf: bool,
+    /// `markedChar`: the marked position, or [`UNMARKED`] or
+    /// [`INVALIDATED`].
+    marked_char: i64,
+    /// `readAheadLimit`, valid only when marked.
+    read_ahead_limit: usize,
+    /// `markedSkipLF`: `skip_lf` at the mark.
+    marked_skip_lf: bool,
 }
+
+/// `BufferedReader.INVALIDATED`.
+const INVALIDATED: i64 = -2;
+
+/// `BufferedReader.UNMARKED`.
+const UNMARKED: i64 = -1;
 
 impl<S: ReadChars> Debug for BufferedReader<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -548,6 +598,9 @@ impl<S: ReadChars> BufferedReader<S> {
             n_chars: 0,
             next_char: 0,
             skip_lf: false,
+            marked_char: UNMARKED,
+            read_ahead_limit: 0,
+            marked_skip_lf: false,
         }
     }
 
@@ -562,14 +615,89 @@ impl<S: ReadChars> BufferedReader<S> {
         Ok(())
     }
 
-    /// `fill()` without a mark: reads into the whole buffer.
+    /// `fill()`: reads into the buffer, keeping the marked characters
+    /// within the read-ahead limit.
     fn fill(&mut self) -> Result<()> {
-        let input = self.input.as_mut().expect("INVARIANT: ensure_open checked");
-        let n = input.read_chars(&mut self.cb)?;
-        if n > 0 {
-            self.n_chars = n;
-            self.next_char = 0;
+        let dst;
+        if self.marked_char <= UNMARKED {
+            // No mark
+            dst = 0;
+        } else {
+            // Marked
+            let marked = self.marked_char as usize;
+            let delta = self.next_char - marked;
+            if delta >= self.read_ahead_limit {
+                // Gone past read-ahead limit: Invalidate mark
+                self.marked_char = INVALIDATED;
+                self.read_ahead_limit = 0;
+                dst = 0;
+            } else {
+                if self.read_ahead_limit <= self.cb.len() {
+                    // Shuffle in the current buffer
+                    self.cb.copy_within(marked..marked + delta, 0);
+                } else {
+                    // Reallocate buffer to accommodate read-ahead limit
+                    let mut ncb = vec![0u16; self.read_ahead_limit];
+                    ncb[..delta].copy_from_slice(&self.cb[marked..marked + delta]);
+                    self.cb = ncb;
+                }
+                self.marked_char = 0;
+                dst = delta;
+                self.next_char = delta;
+                self.n_chars = delta;
+            }
         }
+        let input = self.input.as_mut().expect("INVARIANT: ensure_open checked");
+        let n = input.read_chars(&mut self.cb[dst..])?;
+        if n > 0 {
+            self.n_chars = dst + n;
+            self.next_char = dst;
+        }
+        Ok(())
+    }
+
+    /// Marks the present position: [`reset`](Self::reset) returns to it
+    /// while at most `read_ahead_limit` characters were read since.
+    ///
+    /// Equivalent to `BufferedReader.mark(int)`.
+    ///
+    /// # Errors
+    ///
+    /// `IOException("Stream closed")` after [`close`](Self::close).
+    pub fn mark(&mut self, read_ahead_limit: usize) -> Result<()> {
+        self.ensure_open()?;
+        self.read_ahead_limit = read_ahead_limit;
+        self.marked_char = self.next_char as i64;
+        self.marked_skip_lf = self.skip_lf;
+        Ok(())
+    }
+
+    /// Returns to the most recent mark.
+    ///
+    /// Equivalent to `BufferedReader.reset()`.
+    ///
+    /// # Errors
+    ///
+    /// `IOException("Stream closed")` after [`close`](Self::close), and
+    /// `IOException("Mark invalid")` or `IOException("Stream not marked")`
+    /// when there is no valid mark.
+    pub fn reset(&mut self) -> Result<()> {
+        self.ensure_open()?;
+        if self.marked_char < 0 {
+            return Err(io_exception(
+                "java.io.IOException",
+                Some(
+                    if self.marked_char == INVALIDATED {
+                        "Mark invalid"
+                    } else {
+                        "Stream not marked"
+                    }
+                    .to_string(),
+                ),
+            ));
+        }
+        self.next_char = self.marked_char as usize;
+        self.skip_lf = self.marked_skip_lf;
         Ok(())
     }
 
@@ -695,6 +823,10 @@ pub struct LineNumberReader<S: ReadChars> {
     prev_char: PrevChar,
     line_number: i32,
     skip_lf: bool,
+    /// `markedLineNumber`.
+    marked_line_number: i32,
+    /// `markedSkipLF`.
+    marked_skip_lf: bool,
 }
 
 impl<S: ReadChars> Debug for LineNumberReader<S> {
@@ -714,6 +846,8 @@ impl<S: ReadChars> LineNumberReader<S> {
             prev_char: PrevChar::None,
             line_number: 0,
             skip_lf: false,
+            marked_line_number: 0,
+            marked_skip_lf: false,
         }
     }
 
@@ -748,6 +882,42 @@ impl<S: ReadChars> LineNumberReader<S> {
             self.prev_char = PrevChar::Eof;
         }
         Ok(l)
+    }
+
+    /// Marks the present position and line number.
+    ///
+    /// Equivalent to `LineNumberReader.mark(int)`: the limit grows by one
+    /// when the last character read was a carriage return.
+    ///
+    /// # Errors
+    ///
+    /// As [`BufferedReader::mark`].
+    pub fn mark(&mut self, read_ahead_limit: usize) -> Result<()> {
+        let mut read_ahead_limit = read_ahead_limit;
+        // If the most recently read character is '\r', then increment the
+        // read ahead limit as in this case if the next character is '\n',
+        // two characters would actually be read by the next read().
+        if self.skip_lf {
+            read_ahead_limit += 1;
+        }
+        self.inner.mark(read_ahead_limit)?;
+        self.marked_line_number = self.line_number;
+        self.marked_skip_lf = self.skip_lf;
+        Ok(())
+    }
+
+    /// Returns to the most recent mark and its line number.
+    ///
+    /// Equivalent to `LineNumberReader.reset()`.
+    ///
+    /// # Errors
+    ///
+    /// As [`BufferedReader::reset`].
+    pub fn reset(&mut self) -> Result<()> {
+        self.inner.reset()?;
+        self.line_number = self.marked_line_number;
+        self.skip_lf = self.marked_skip_lf;
+        Ok(())
     }
 
     /// Equivalent to `LineNumberReader.close()`, the inherited

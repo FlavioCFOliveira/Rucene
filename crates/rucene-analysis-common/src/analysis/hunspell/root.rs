@@ -15,10 +15,40 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Root.java`, of the Java
-//! package `org.apache.lucene.analysis.hunspell`.
+//! A dictionary root with its entry id, ported from
+//! `org.apache.lucene.analysis.hunspell.Root`.
 
-/// Java: `record` (package-private).
+use std::cmp::Ordering;
+
+/// A root word and the id of its dictionary entry.
 ///
-/// Skeleton of `org.apache.lucene.analysis.hunspell.Root`; ported by rmp task #462.
-pub(crate) struct Root;
+/// Equivalent to `org.apache.lucene.analysis.hunspell.Root<T extends
+/// CharSequence>`, a record: `T` is held as its UTF-16 units. Equality
+/// compares both components, as the record's `equals`; the order compares
+/// the words only (`CharSequence.compare`), as `compareTo`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Root {
+    /// The record component `word`.
+    pub(crate) word: Vec<u16>,
+    /// The record component `entryId`.
+    pub(crate) entry_id: i32,
+}
+
+impl Root {
+    /// Equivalent to the canonical constructor `Root(T, int)`.
+    pub(crate) fn new(word: Vec<u16>, entry_id: i32) -> Self {
+        Self { word, entry_id }
+    }
+
+    /// Equivalent to `compareTo(Root)`: `CharSequence.compare(word, o.word)`.
+    pub(crate) fn compare_to(&self, o: &Root) -> Ordering {
+        self.word.cmp(&o.word)
+    }
+}
+
+impl std::fmt::Display for Root {
+    /// Equivalent to `toString()`, the word.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&String::from_utf16_lossy(&self.word))
+    }
+}

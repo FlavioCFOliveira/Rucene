@@ -211,6 +211,7 @@ pub fn java_class_name(e: &LuceneError) -> String {
         LuceneErrorKind::Arithmetic(_) => "java.lang.ArithmeticException".into(),
         LuceneErrorKind::AssertionError(_) => "java.lang.AssertionError".into(),
         LuceneErrorKind::Unchecked { class, .. } => class.to_string(),
+        LuceneErrorKind::Throwable(throwable) => throwable.java_class().to_string(),
         LuceneErrorKind::TooManyClauses(_) => {
             "org.apache.lucene.search.IndexSearcher$TooManyClauses".into()
         }

@@ -83,6 +83,7 @@ use crate::analysis::en::english_minimal_stem_filter_factory::EnglishMinimalStem
 use crate::analysis::en::english_possessive_filter_factory::EnglishPossessiveFilterFactory;
 use crate::analysis::en::kstem_filter_factory::KStemFilterFactory;
 use crate::analysis::en::porter_stem_filter_factory::PorterStemFilterFactory;
+use crate::analysis::hunspell::hunspell_stem_filter_factory::HunspellStemFilterFactory;
 use crate::analysis::minhash::min_hash_filter_factory::MinHashFilterFactory;
 use crate::analysis::miscellaneous::ascii_folding_filter_factory::ASCIIFoldingFilterFactory;
 use crate::analysis::miscellaneous::capitalization_filter_factory::CapitalizationFilterFactory;
@@ -227,6 +228,7 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(EnglishPossessiveFilterFactory::class()),
         token_filter(KStemFilterFactory::class()),
         token_filter(PorterStemFilterFactory::class()),
+        token_filter(HunspellStemFilterFactory::class()),
         token_filter(MinHashFilterFactory::class()),
         token_filter(ASCIIFoldingFilterFactory::class()),
         token_filter(CapitalizationFilterFactory::class()),
