@@ -1,0 +1,18 @@
+[package]
+name = "rucene-queryparser"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/queryparser (classic, flexible, simple, surround, complex-phrase, extendable and XML query parsers)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_queryparser"
+
+[dependencies]
+rucene = { path = "../.." }
+rucene-queries = { path = "../rucene-queries" }
+rucene-sandbox = { path = "../rucene-sandbox" }

@@ -1,0 +1,19 @@
+[package]
+name = "rucene-sandbox"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/sandbox, limited to FuzzyLikeThisQuery."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_sandbox"
+
+# Lucene's `lucene/sandbox` module also requires `lucene/queries` and
+# `lucene/facet`; the one file in scope, `FuzzyLikeThisQuery.java`, imports
+# `lucene/core` only.
+[dependencies]
+rucene = { path = "../.." }
