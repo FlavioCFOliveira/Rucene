@@ -155,7 +155,12 @@ fn ct_test_read_supplementary_chars() -> Result<()> {
     let mut tokenizer = new_letter_tokenizer_with_factory(B::new_attribute_factory())?;
     tokenizer.set_reader(Box::new(StringCharReader::new(text.clone())))?;
     let lower = lower_root(&text);
-    let expected: Vec<&str> = lower.split(' ').collect();
+    // `String.split(" ")` drops trailing empty strings (the text ends with a
+    // space when `num - 1` is a multiple of 10).
+    let mut expected: Vec<&str> = lower.split(' ').collect();
+    while expected.last() == Some(&"") {
+        expected.pop();
+    }
     let mut stream = LowerCaseFilter::new(boxed(tokenizer))?;
     B::assert_token_stream_contents(&mut stream, &expected)
 }

@@ -74,6 +74,14 @@ the committed file, and rerunning it must leave that file unchanged.
     crates/rucene-analysis-common/src/jdk/charset_data.rs \
     crates/rucene-analysis-common/src/jdk/charset_multibyte.bin
   ```
+* `JdkSimpleCaseData.java` — rewrites, in place, the simple case-mapping tables `SIMPLE_UPPERCASE`
+  and `SIMPLE_LOWERCASE` of `src/util/automaton/case_folding.rs`: every code point whose
+  `Character.toUpperCase(int)` / `toLowerCase(int)` differs from it, on JDK 25 (Unicode 16.0; it
+  refuses another JDK). Deterministic; a rerun on its output changes nothing. Rerun with JDK 25:
+
+  ```sh
+  java tools/translate/JdkSimpleCaseData.java src/util/automaton/case_folding.rs
+  ```
 * `JdkDateParseData.java` — writes `crates/rucene-analysis-common/src/jdk/date_parse_data.bin`
   (zlib), the JDK locale data `SimpleDateFormat` parsing reads: the CLDR resolution metadata
   (language tags, aliases, parent locales, likely scripts), the display names, `DEFAULT` date
