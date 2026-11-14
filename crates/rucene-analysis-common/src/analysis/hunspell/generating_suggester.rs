@@ -639,7 +639,12 @@ pub(crate) fn common_prefix(s1: &[u16], s2: &[u16]) -> usize {
 /// Generate an n-gram score comparing `s1` and `s2`.
 ///
 /// Equivalent to `ngramScore(int, String, String, boolean)`.
-pub(crate) fn ngram_score(n: i32, s1: &[u16], s2: &[u16], weighted: bool) -> i32 {
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub fn ngram_score(n: i32, s1: &[u16], s2: &[u16], weighted: bool) -> i32 {
     let l1 = s1.len() as i32;
     let mut score = 0;
     let mut last_starts = vec![0i32; s1.len()];

@@ -34,8 +34,13 @@ const N: usize = 3;
 /// `GeneratingSuggester.ngramScore`, but faster (in `O(s2.length)` time).
 ///
 /// Equivalent to `org.apache.lucene.analysis.hunspell.TrigramAutomaton`.
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug)]
-pub(crate) struct TrigramAutomaton {
+pub struct TrigramAutomaton {
     automaton: CharacterRunAutomaton,
     state2_score: Vec<i32>,
     counted_substrings: FixedBitSet,
@@ -50,7 +55,12 @@ impl TrigramAutomaton {
     ///
     /// Java's `NoSuchElementException("No value present")` for an empty
     /// `s1`, and what determinizing the automaton raises.
-    pub(crate) fn new(s1: &[u16]) -> Result<Self> {
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn new(s1: &[u16]) -> Result<Self> {
         let mut substring_counts: HashMap<Vec<u16>, i32> = HashMap::new();
 
         let mut builder = AutomatonBuilder::with_capacity(s1.len() * N, s1.len() * N);
@@ -94,7 +104,12 @@ impl TrigramAutomaton {
     }
 
     /// Equivalent to `ngramScore(CharSequence)`.
-    pub(crate) fn ngram_score<S: CharSequence + ?Sized>(&mut self, s2: &S) -> i32 {
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn ngram_score<S: CharSequence + ?Sized>(&mut self, s2: &S) -> i32 {
         self.counted_substrings.clear_all();
 
         let mut score = 0;

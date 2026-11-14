@@ -26,8 +26,13 @@ use crate::jdk::string::{concat, ends_with_str, index_of, replace_unit, starts_w
 /// the start (`^`) or the end (`$`) of the word, and its replacement.
 ///
 /// Equivalent to `org.apache.lucene.analysis.hunspell.RepEntry`.
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug, Clone)]
-pub(crate) struct RepEntry {
+pub struct RepEntry {
     pattern: Vec<u16>,
     replacement: Vec<u16>,
     must_start: bool,

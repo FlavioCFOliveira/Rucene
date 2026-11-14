@@ -35,8 +35,13 @@ const TITLE_CASE: i16 = WordCase::Title.ordinal();
 /// stored in plain contiguous arrays with no compression.
 ///
 /// Equivalent to `org.apache.lucene.analysis.hunspell.SuggestibleEntryCache`.
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug)]
-pub(crate) struct SuggestibleEntryCache {
+pub struct SuggestibleEntryCache {
     sections: Vec<Option<Section>>,
 }
 
@@ -62,7 +67,12 @@ impl SuggestibleEntryCache {
     /// # Errors
     ///
     /// `UnsupportedOperationException` for an entry longer than 32767 units.
-    pub(crate) fn build_cache(storage: &WordStorage) -> Result<Self> {
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn build_cache(storage: &WordStorage) -> Result<Self> {
         let mut builders: HashMap<usize, SectionBuilder> = HashMap::new();
         let mut max_length = 0;
         storage.process_suggestible_words(1, i32::MAX, &mut |entry: &mut dyn FlyweightEntry| {
@@ -85,7 +95,12 @@ impl SuggestibleEntryCache {
     /// # Errors
     ///
     /// What the processor raises, which stops the enumeration.
-    pub(crate) fn process_suggestible_words(
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn process_suggestible_words(
         &self,
         min_length: i32,
         max_length: i32,

@@ -67,13 +67,23 @@ use crate::jdk::string::{
 /// `TestAllDictionaries.testMaxPrologueNeeded`.
 ///
 /// Equivalent to `Dictionary.MAX_PROLOGUE_SCAN_WINDOW`.
-pub(crate) const MAX_PROLOGUE_SCAN_WINDOW: usize = 30 * 1024;
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub const MAX_PROLOGUE_SCAN_WINDOW: usize = 30 * 1024;
 
 /// Equivalent to `Dictionary.NOFLAGS`.
 pub(crate) const NOFLAGS: [u16; 0] = [];
 
 /// Equivalent to `Dictionary.FLAG_UNSET`.
-pub(crate) const FLAG_UNSET: u16 = 0;
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub const FLAG_UNSET: u16 = 0;
 
 /// Equivalent to `Dictionary.DEFAULT_FLAGS`.
 const DEFAULT_FLAGS: u16 = 65510;
@@ -170,7 +180,11 @@ impl DictionarySubclass for NoSubclass {}
 ///
 /// Equivalent to `org.apache.lucene.analysis.hunspell.Dictionary`.
 pub struct Dictionary {
-    pub(crate) decoder: CharsetDecoder,
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub decoder: CharsetDecoder,
 
     pub(crate) prefixes: Option<FST<IntSequenceOutputs>>,
     pub(crate) suffixes: Option<FST<IntSequenceOutputs>>,
@@ -182,18 +196,32 @@ pub struct Dictionary {
     pub(crate) patterns: Vec<Option<Arc<dyn AffixCondition>>>,
 
     /// The entries in the .dic file, mapping to their set of flags.
-    pub(crate) words: WordStorage,
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub words: WordStorage,
 
     /// The list of unique flagsets (wordforms). theoretically huge, but
     /// practically small (for Polish this is 756), otherwise humans wouldn't
     /// be able to deal with it either.
-    pub(crate) flag_lookup: Lookup,
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub flag_lookup: Lookup,
 
     // the list of unique strip affixes.
     pub(crate) strip_data: Vec<u16>,
     pub(crate) strip_offsets: Vec<i32>,
 
-    pub(crate) word_chars: Vec<u16>,
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub word_chars: Vec<u16>,
 
     // 4 chars per affix, each char representing an unsigned 2-byte integer
     pub(crate) affix_data: Vec<u16>,
@@ -227,15 +255,27 @@ pub struct Dictionary {
     second_stage_suffix_flags: Vec<u16>,
 
     pub(crate) circumfix: u16,
-    pub(crate) keepcase: u16,
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub keepcase: u16,
     pub(crate) force_u_case: u16,
     pub(crate) needaffix: u16,
     pub(crate) forbiddenword: u16,
     pub(crate) onlyincompound: u16,
-    pub(crate) compound_begin: u16,
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub compound_begin: u16,
     pub(crate) compound_middle: u16,
     pub(crate) compound_end: u16,
-    pub(crate) compound_flag: u16,
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub compound_flag: u16,
     pub(crate) compound_permit: u16,
     pub(crate) compound_forbid: u16,
     pub(crate) check_compound_case: bool,
@@ -244,9 +284,18 @@ pub struct Dictionary {
     pub(crate) check_compound_triple: bool,
     pub(crate) simplified_triple: bool,
     pub(crate) compound_min: i32,
-    pub(crate) compound_max: i32,
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub compound_max: i32,
     /// Nullable.
-    pub(crate) compound_rules: Option<Vec<CompoundRule>>,
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub compound_rules: Option<Vec<CompoundRule>>,
     pub(crate) check_compound_patterns: Vec<CheckCompoundPattern>,
 
     // ignored characters (dictionary, affix, inputs)
@@ -255,7 +304,11 @@ pub struct Dictionary {
     pub(crate) try_chars: Vec<u16>,
     pub(crate) neighbor_key_groups: Vec<Vec<u16>>,
     pub(crate) enable_split_suggestions: bool,
-    pub(crate) rep_table: Vec<RepEntry>,
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub rep_table: Vec<RepEntry>,
     pub(crate) map_table: Vec<Vec<Vec<u16>>>,
     pub(crate) max_diff: i32,
     pub(crate) max_n_gram_suggestions: i32,
@@ -517,12 +570,12 @@ impl Dictionary {
     /// Looks up Hunspell word forms from the dictionary.
     ///
     /// Equivalent to `lookupWord(char[], int, int)`.
-    pub(crate) fn lookup_word(
-        &self,
-        word: &[u16],
-        offset: usize,
-        length: usize,
-    ) -> Option<IntsRef> {
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn lookup_word(&self, word: &[u16], offset: usize, length: usize) -> Option<IntsRef> {
         self.words.lookup_word(word, offset, length)
     }
 
@@ -534,8 +587,12 @@ impl Dictionary {
     ///
     /// Java's `NullPointerException` when the dictionary has no prefix, and
     /// what reading the FST raises.
-    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
-    pub(crate) fn lookup_prefix(&self, word: &[u16]) -> Result<Option<IntsRef>> {
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn lookup_prefix(&self, word: &[u16]) -> Result<Option<IntsRef>> {
         Self::lookup(self.prefixes.as_ref(), word)
     }
 
@@ -546,8 +603,12 @@ impl Dictionary {
     /// # Errors
     ///
     /// As [`lookup_prefix`](Self::lookup_prefix).
-    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
-    pub(crate) fn lookup_suffix(&self, word: &[u16]) -> Result<Option<IntsRef>> {
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn lookup_suffix(&self, word: &[u16]) -> Result<Option<IntsRef>> {
         Self::lookup(self.suffixes.as_ref(), word)
     }
 
@@ -1623,7 +1684,12 @@ impl Dictionary {
     }
 
     /// Equivalent to `mayNeedInputCleaning()`.
-    pub(crate) fn may_need_input_cleaning(&self) -> bool {
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn may_need_input_cleaning(&self) -> bool {
         self.ignore_case || self.ignore.is_some() || self.iconv.is_some()
     }
 
@@ -1879,7 +1945,12 @@ fn parse_map_entry<S: ReadChars>(
 }
 
 /// Equivalent to `extractLanguageCode(String)`.
-pub(crate) fn extract_language_code(iso_code: &[u16]) -> &[u16] {
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub fn extract_language_code(iso_code: &[u16]) -> &[u16] {
     match index_of_unit(iso_code, u16::from(b'_'), 0) {
         None => iso_code,
         Some(underscore) => &iso_code[..underscore],
@@ -2068,7 +2139,12 @@ fn replacing_decoder(charset: Charset) -> Result<CharsetDecoder> {
 ///
 /// `IllegalArgumentException("Illegal FLAG specification: ...")` or
 /// `IllegalArgumentException("Unknown flag type: ...")`.
-pub(crate) fn get_flag_parsing_strategy(
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub fn get_flag_parsing_strategy(
     flag_line: &[u16],
     charset: Charset,
 ) -> Result<Arc<dyn FlagParsingStrategy>> {
@@ -2151,7 +2227,12 @@ pub(crate) fn to_sorted_char_array(set: &HashSet<u16>) -> Vec<u16> {
 /// an abstract class: [`parse_flags`](Self::parse_flags) and
 /// [`print_flag`](Self::print_flag) are its abstract methods, the others its
 /// concrete ones.
-pub(crate) trait FlagParsingStrategy: Debug + Send + Sync {
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub trait FlagParsingStrategy: Debug + Send + Sync {
     /// Java's `getClass()`, compared by `readAffixFile`.
     fn class_name(&self) -> &'static str;
 

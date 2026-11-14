@@ -44,8 +44,13 @@ enum Stripped {
 /// hunspell algorithm, including recursive suffix stripping.
 ///
 /// Equivalent to `org.apache.lucene.analysis.hunspell.Stemmer`.
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug, Clone)]
-pub(crate) struct Stemmer {
+pub struct Stemmer {
     dictionary: Arc<Dictionary>,
     // it's '1' if we have no stem exceptions, otherwise every other form
     // is really an ID pointing to the exception table
@@ -251,7 +256,12 @@ impl Stemmer {
     /// create its stems.
     ///
     /// Equivalent to `Stemmer(Dictionary)`.
-    pub(crate) fn new(dictionary: Arc<Dictionary>) -> Self {
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn new(dictionary: Arc<Dictionary>) -> Self {
         let form_step = dictionary.form_step();
         Self {
             dictionary,
@@ -272,7 +282,12 @@ impl Stemmer {
     /// # Errors
     ///
     /// What reading the affix FSTs raises.
-    pub(crate) fn stem(&self, word: &[u16], length: usize) -> Result<Vec<CharsRef>> {
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn stem(&self, word: &[u16], length: usize) -> Result<Vec<CharsRef>> {
         let mut collector = StemCollector {
             stemmer: self,
             list: Vec::new(),

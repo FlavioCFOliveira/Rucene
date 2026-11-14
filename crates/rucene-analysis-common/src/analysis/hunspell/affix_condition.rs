@@ -41,7 +41,12 @@ use crate::jdk::string::{
 /// Equivalent to `org.apache.lucene.analysis.hunspell.AffixCondition`. Its
 /// constants are [`ALWAYS_TRUE_KEY`], [`always_true`] and [`always_false`];
 /// its static methods [`unique_key`] and [`compile`].
-pub(crate) trait AffixCondition: Debug + Send + Sync {
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub trait AffixCondition: Debug + Send + Sync {
     /// Equivalent to the default `acceptsStem(String)`.
     fn accepts_stem_string(&self, stem: &[u16]) -> bool {
         self.accepts_stem(stem, 0, stem.len())
@@ -55,7 +60,12 @@ pub(crate) trait AffixCondition: Debug + Send + Sync {
 }
 
 /// Equivalent to `AffixCondition.ALWAYS_TRUE_KEY`.
-pub(crate) const ALWAYS_TRUE_KEY: &str = ".*";
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub const ALWAYS_TRUE_KEY: &str = ".*";
 
 /// The condition every stem meets.
 #[derive(Debug)]
@@ -92,7 +102,12 @@ pub(crate) fn always_true() -> Arc<dyn AffixCondition> {
 }
 
 /// Equivalent to `AffixCondition.ALWAYS_FALSE`.
-pub(crate) fn always_false() -> Arc<dyn AffixCondition> {
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub fn always_false() -> Arc<dyn AffixCondition> {
     static ALWAYS_FALSE: LazyLock<Arc<dyn AffixCondition>> =
         LazyLock::new(|| Arc::new(AlwaysFalse));
     Arc::clone(&ALWAYS_FALSE)
@@ -102,7 +117,12 @@ pub(crate) fn always_false() -> Arc<dyn AffixCondition> {
 /// conditions that need no check, [`ALWAYS_TRUE_KEY`] is returned.
 ///
 /// Equivalent to `AffixCondition.uniqueKey(AffixKind, String, String)`.
-pub(crate) fn unique_key(kind: AffixKind, strip: &[u16], condition: &[u16]) -> Vec<u16> {
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub fn unique_key(kind: AffixKind, strip: &[u16], condition: &[u16]) -> Vec<u16> {
     if condition == units(".").as_slice()
         || kind == AffixKind::Prefix && strip.starts_with(condition)
         || kind == AffixKind::Suffix && strip.ends_with(condition) && !is_regexp(condition)
@@ -144,7 +164,12 @@ impl From<LuceneError> for CompileFailure {
 /// `IllegalArgumentException("On line: " + line)` with the cause, for any
 /// failure but a `PatternSyntaxException` (which makes the condition
 /// [`always_false`]).
-pub(crate) fn compile(
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub fn compile(
     kind: AffixKind,
     strip: &[u16],
     condition: &[u16],

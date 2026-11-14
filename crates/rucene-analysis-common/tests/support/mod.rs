@@ -139,6 +139,18 @@ impl RunListener for Listener {
 /// suite of the binary at a time, and panics with every failure. Prints
 /// `<class> seed=<s>: run=<r> fail=<f> ignore=<i> assume=<a>` per seed.
 pub fn run(class: fn() -> Arc<Class>) {
+    run_checked(&class, None);
+}
+
+/// As [`run`], for a suite Lucene runs with `ignored` `@Ignore`d methods
+/// and, when `may_assume` holds, assumptions that may skip it (a system
+/// property the suite needs is unset): the suite must fail nothing, and
+/// ignore at most `ignored` methods.
+pub fn run_allowing(class: fn() -> Arc<Class>, ignored: usize, may_assume: bool) {
+    run_checked(&class, Some((ignored, may_assume)));
+}
+
+fn run_checked(class: &dyn Fn() -> Arc<Class>, allowed: Option<(usize, bool)>) {
     let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
     rucene_test_framework::util::lucene_test_case::enable_error_backtraces();
     ensure_spi();
@@ -177,15 +189,29 @@ pub fn run(class: fn() -> Arc<Class>) {
             println!("  FAIL {f}");
             all_failures.push(format!("seed={}: {f}", seed.unwrap_or("-")));
         }
-        assert!(
-            r.run_count() > 0 && !events.started.is_empty(),
-            "the suite ran no test"
-        );
-        assert_eq!(
-            r.ignore_count() + r.assumption_failure_count(),
-            0,
-            "a test was ignored or assumed away"
-        );
+        match allowed {
+            None => {
+                assert!(
+                    r.run_count() > 0 && !events.started.is_empty(),
+                    "the suite ran no test"
+                );
+                assert_eq!(
+                    r.ignore_count() + r.assumption_failure_count(),
+                    0,
+                    "a test was ignored or assumed away"
+                );
+            }
+            Some((ignored, may_assume)) => {
+                assert!(
+                    r.ignore_count() <= ignored,
+                    "more tests were ignored than Lucene ignores"
+                );
+                assert!(
+                    may_assume || r.assumption_failure_count() == 0,
+                    "a test was assumed away"
+                );
+            }
+        }
     }
     assert!(
         all_failures.is_empty(),
@@ -262,6 +288,12 @@ pub static TEST_RESOURCES: &[(&str, &[u8])] = &[
     test_resource!("org/apache/lucene/analysis/commongrams/common-1.txt"),
     test_resource!("org/apache/lucene/analysis/commongrams/common-2.txt"),
     test_resource!("org/apache/lucene/analysis/commongrams/common-snowball.txt"),
+    test_resource!("org/apache/lucene/analysis/hunspell/simple.aff"),
+    test_resource!("org/apache/lucene/analysis/hunspell/simple.dic"),
+    test_resource!("org/apache/lucene/analysis/compound/compoundDictionary.txt"),
+    test_resource!("org/apache/lucene/analysis/compound/compoundDictionary_lucene8183.txt"),
+    test_resource!("org/apache/lucene/analysis/compound/da_UTF8.xml"),
+    test_resource!("org/apache/lucene/analysis/compound/da_compoundDictionary.txt"),
 ];
 
 /// The resources the test class loader sees: the module's and the tests'.

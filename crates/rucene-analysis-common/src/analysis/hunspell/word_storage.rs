@@ -76,8 +76,13 @@ fn read_vint(input: &mut ByteArrayDataInput<'_>) -> i32 {
 /// `caseFold(char)` as `Dictionary.caseFold`; this port keeps the flag that
 /// method reads, `Dictionary.alternateCasing`, which is final once the words
 /// are stored.
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug)]
-pub(crate) struct WordStorage {
+pub struct WordStorage {
     max_entry_length: usize,
     has_custom_morph_data: bool,
     /// A map from word's hash (modulo array's length) into an int
@@ -193,7 +198,12 @@ impl WordStorage {
     /// # Errors
     ///
     /// What the processor raises, which stops the enumeration.
-    pub(crate) fn process_suggestible_words(
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn process_suggestible_words(
         &self,
         min_length: i32,
         max_length: i32,

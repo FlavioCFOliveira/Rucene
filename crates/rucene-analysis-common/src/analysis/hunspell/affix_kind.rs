@@ -21,8 +21,13 @@
 /// Whether an affix is a prefix or a suffix.
 ///
 /// Equivalent to `org.apache.lucene.analysis.hunspell.AffixKind`.
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum AffixKind {
+pub enum AffixKind {
     /// Java constant `PREFIX`.
     Prefix,
     /// Java constant `SUFFIX`.

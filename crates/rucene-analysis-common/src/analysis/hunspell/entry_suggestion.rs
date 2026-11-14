@@ -75,7 +75,12 @@ impl EntrySuggestion {
     }
 
     /// Equivalent to `internalsToString()`.
-    pub(crate) fn internals_to_string(&self) -> String {
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn internals_to_string(&self) -> String {
         let list = |items: Vec<String>| format!("[{}]", items.join(", "));
         format!(
             "toEdit={}, toAdd={}, extra={}",

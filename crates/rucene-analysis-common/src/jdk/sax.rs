@@ -59,9 +59,14 @@
 //!   `PatternParser` ignores text outside its elements, so its consumer calls
 //!   do not change.
 //! * **Entities.** Internal general entities (`<!ENTITY name "value">`) are
-//!   expanded; a reference to an external general entity, and replacement
-//!   text holding markup, are fatal errors here (the JDK resolves and parses
-//!   them). Parameter entities are not expanded.
+//!   expanded. A reference to an external general entity in content calls
+//!   `resolveEntity` with the expanded system id, as the JDK does (what it
+//!   throws ends the parse); when it returns, the reference is a fatal error
+//!   here (the JDK reads and parses the entity). Replacement text holding
+//!   markup is a fatal error here too. Parameter entities are not expanded.
+//!   As the JDK does, a reference to an undeclared entity is skipped (no
+//!   text) when the `DOCTYPE` names an external subset and the document is
+//!   not `standalone="yes"`, and is a fatal error otherwise.
 //! * **Errors.** A fatal error is a [`SaxException`] of class
 //!   `org.xml.sax.SAXParseException` with the JDK's message for the errors
 //!   listed in [`XmlReader::parse`]; any other well-formedness error carries
@@ -89,19 +94,23 @@ use quick_xml::name::{QName, ResolveResult};
 use quick_xml::reader::NsReader;
 use rucene::error::{JavaThrowable, LuceneError, LuceneErrorKind, Result};
 
+use rucene::analysis::CharReader;
+
 use super::charset::Charset;
 use super::io::io_exception;
 
 /// A single input source for an XML entity.
 ///
-/// Equivalent to `org.xml.sax.InputSource`: a public id, a system id, a byte
-/// stream and an encoding (the character-stream form is not used by the
-/// module). The reader reads the byte stream when there is one, otherwise it
-/// opens the system id.
+/// Equivalent to `org.xml.sax.InputSource`: a public id, a system id, a
+/// character stream, a byte stream and an encoding. As the JDK parser does,
+/// the reader reads the character stream when there is one (the encoding of
+/// the XML declaration is then not applied), otherwise the byte stream when
+/// there is one, otherwise it opens the system id.
 #[derive(Default)]
 pub struct InputSource {
     public_id: Option<String>,
     system_id: Option<String>,
+    character_stream: Option<Box<dyn CharReader>>,
     byte_stream: Option<Box<dyn Read + Send>>,
     encoding: Option<String>,
 }
@@ -111,6 +120,10 @@ impl fmt::Debug for InputSource {
         f.debug_struct("InputSource")
             .field("public_id", &self.public_id)
             .field("system_id", &self.system_id)
+            .field(
+                "character_stream",
+                &self.character_stream.as_ref().map(|_| "Reader"),
+            )
             .field(
                 "byte_stream",
                 &self.byte_stream.as_ref().map(|_| "InputStream"),
@@ -146,6 +159,21 @@ impl InputSource {
             byte_stream: Some(byte_stream),
             ..Self::default()
         }
+    }
+
+    /// Create a new input source with a character stream.
+    ///
+    /// Equivalent to `InputSource(Reader characterStream)`.
+    pub fn from_character_stream(character_stream: Box<dyn CharReader>) -> Self {
+        Self {
+            character_stream: Some(character_stream),
+            ..Self::default()
+        }
+    }
+
+    /// Equivalent to `InputSource.setCharacterStream(Reader)`.
+    pub fn set_character_stream(&mut self, character_stream: Option<Box<dyn CharReader>>) {
+        self.character_stream = character_stream;
     }
 
     /// Equivalent to `InputSource.setPublicId(String)`.
@@ -414,12 +442,16 @@ fn predefined_entity(name: &str) -> Option<char> {
     }
 }
 
-/// An internal general entity: its replacement text with character
-/// references expanded and entity references kept.
+/// A general entity of the internal subset: an internal one's replacement
+/// text with character references expanded and entity references kept, or
+/// an external one's public and system ids.
 #[derive(Debug, Clone)]
 enum EntityDecl {
     Internal(String),
-    External,
+    External {
+        public_id: Option<String>,
+        system_id: String,
+    },
 }
 
 /// The state of one parse.
@@ -429,6 +461,10 @@ struct Parse<'h> {
     system_id: Option<String>,
     public_id: Option<String>,
     entities: HashMap<String, EntityDecl>,
+    /// The `DOCTYPE` names an external subset.
+    external_subset: bool,
+    /// The XML declaration says `standalone="yes"`.
+    standalone: bool,
 }
 
 impl XmlReader {
@@ -463,6 +499,27 @@ impl XmlReader {
             .system_id
             .as_deref()
             .map(|id| expand_system_id(id, None));
+        if let Some(mut stream) = source.character_stream.take() {
+            let mut units = Vec::new();
+            let mut buf = [0u16; 8192];
+            loop {
+                let n = stream.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                units.extend_from_slice(&buf[..n]);
+            }
+            let mut parse = Parse {
+                handler,
+                text: String::from_utf16_lossy(&units),
+                system_id,
+                public_id: source.public_id.clone(),
+                entities: HashMap::new(),
+                external_subset: false,
+                standalone: false,
+            };
+            return parse.run();
+        }
         let bytes = match source.byte_stream.take() {
             Some(mut stream) => {
                 let mut bytes = Vec::new();
@@ -485,6 +542,8 @@ impl XmlReader {
             system_id,
             public_id: source.public_id.clone(),
             entities: HashMap::new(),
+            external_subset: false,
+            standalone: false,
         };
         parse.text = parse.decode(&bytes, source.encoding.as_deref())?;
         parse.run()
@@ -637,7 +696,12 @@ impl Parse<'_> {
                 Err(e) => return Err(self.xml_error(&e, reader.error_position() as usize, &open)),
             };
             match event {
-                Event::Decl(_) | Event::Comment(_) | Event::PI(_) => {}
+                Event::Decl(decl) => {
+                    if let Some(Ok(standalone)) = decl.standalone() {
+                        self.standalone = &*standalone == "yes";
+                    }
+                }
+                Event::Comment(_) | Event::PI(_) => {}
                 Event::DocType(doctype) => {
                     if seen_root {
                         return Err(self.fatal(
@@ -744,6 +808,17 @@ impl Parse<'_> {
                         return Err(self.fatal(pos, message));
                     }
                     let name: &str = &r;
+                    if let Some(EntityDecl::External {
+                        public_id,
+                        system_id,
+                    }) = self.entities.get(name).cloned()
+                    {
+                        // The JDK asks the resolver for the entity at its
+                        // reference; what the resolver throws ends the parse.
+                        let expanded = expand_system_id(&system_id, self.system_id.as_deref());
+                        self.handler
+                            .resolve_entity(public_id.as_deref(), Some(&expanded))?;
+                    }
                     let expanded = self.expand_reference(name, pos, false, 0)?;
                     self.characters(&expanded)?;
                 }
@@ -830,6 +905,7 @@ impl Parse<'_> {
             self.internal_subset(&subset[..end], pos)?;
         }
         if let Some(system_id) = system_id {
+            self.external_subset = true;
             let expanded = expand_system_id(&system_id, self.system_id.as_deref());
             match self
                 .handler
@@ -869,8 +945,28 @@ impl Parse<'_> {
             let name_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
             let name = rest[..name_end].to_string();
             rest = rest[name_end..].trim_start();
-            let decl = if rest.starts_with("SYSTEM") || rest.starts_with("PUBLIC") {
-                EntityDecl::External
+            let decl = if let Some(after) = rest.strip_prefix("SYSTEM") {
+                let (literal, _) = quoted(after.trim_start()).ok_or_else(|| {
+                    self.fatal(pos, "The system identifier must begin with either a single or double quote character.")
+                })?;
+                EntityDecl::External {
+                    public_id: None,
+                    system_id: literal.to_string(),
+                }
+            } else if let Some(after) = rest.strip_prefix("PUBLIC") {
+                let (public, after) = quoted(after.trim_start()).ok_or_else(|| {
+                    self.fatal(pos, "The public identifier must begin with either a single or double quote character.")
+                })?;
+                let (literal, _) = quoted(after.trim_start()).ok_or_else(|| {
+                    self.fatal(
+                        pos,
+                        "White spaces are required between publicId and systemId.",
+                    )
+                })?;
+                EntityDecl::External {
+                    public_id: Some(public.to_string()),
+                    system_id: literal.to_string(),
+                }
             } else {
                 let (literal, _) = quoted(rest).ok_or_else(|| {
                     self.fatal(
@@ -945,11 +1041,15 @@ impl Parse<'_> {
             ));
         }
         match self.entities.get(name) {
+            // With an external subset the declaration may be there (a
+            // validity constraint, not a well-formedness one): the JDK skips
+            // the reference (`skippedEntity`) without an error.
+            None if self.external_subset && !self.standalone => Ok(String::new()),
             None => Err(self.fatal(
                 pos,
                 format!("The entity \"{name}\" was referenced, but not declared."),
             )),
-            Some(EntityDecl::External) => Err(self.fatal(
+            Some(EntityDecl::External { .. }) => Err(self.fatal(
                 pos,
                 format!("The external entity \"{name}\" is not supported by this reader."),
             )),

@@ -22,7 +22,12 @@ use super::dictionary::Dictionary;
 
 /// Java's `CharSequence`, as the package reads one: a length and the unit at
 /// an index.
-pub(crate) trait CharSequence {
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub trait CharSequence {
     /// Equivalent to `length()`.
     fn length(&self) -> usize;
 
@@ -53,8 +58,13 @@ impl CharSequence for Vec<u16> {
 /// What [`FlyweightEntry::lower_case_root`] returns: the root's units, or a
 /// view folding each unit of the root with `Dictionary.caseFold` as it is
 /// read (the anonymous `CharSequence` of `WordStorage.MyFlyweightEntry`).
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum LowerCaseRoot<'a> {
+pub enum LowerCaseRoot<'a> {
     /// A root already lower-cased.
     Plain(&'a [u16]),
     /// A root folded unit by unit, with the dictionary's alternate casing
@@ -90,7 +100,12 @@ impl CharSequence for LowerCaseRoot<'_> {
 /// Equivalent to `org.apache.lucene.analysis.hunspell.FlyweightEntry`. The
 /// root and the forms are returned as the active parts of Java's `CharsRef`
 /// and `IntsRef`, which the enumeration reuses.
-pub(crate) trait FlyweightEntry {
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub trait FlyweightEntry {
     /// Equivalent to `hasTitleCase()`.
     fn has_title_case(&self) -> bool;
 

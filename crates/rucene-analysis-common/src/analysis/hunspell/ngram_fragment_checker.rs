@@ -119,8 +119,12 @@ impl NGramFragmentChecker {
     }
 
     /// Equivalent to `hashCount()`.
-    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
-    pub(crate) fn hash_count(&self) -> i32 {
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn hash_count(&self) -> i32 {
         self.hashes.cardinality()
     }
 

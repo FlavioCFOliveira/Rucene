@@ -482,6 +482,9 @@ public final class AnalysisOracle {
    *       LowerCaseFilter};
    *   <li>{@code custom:when-term}, {@code custom:when-protected}, {@code custom:classes}: {@link
    *       CustomAnalyzer} builder paths the {@code custom} spec does not take.
+   *   <li>{@code collation:<tag>:<strength>:<decomposition>}: a {@code CollationKeyAnalyzer} over
+   *       {@code Collator.getInstance} of the locale of language tag {@code <tag>}, with that
+   *       strength and decomposition.
    * </ul>
    */
   static Analyzer scenario(String name, List<String> corpus) throws Exception {
@@ -571,6 +574,14 @@ public final class AnalysisOracle {
                 .build();
           default:
             throw new IllegalArgumentException("unknown custom scenario " + p[1]);
+        }
+      case "collation":
+        {
+          java.text.Collator collator =
+              java.text.Collator.getInstance(new java.util.Locale.Builder().setLanguageTag(p[1]).build());
+          collator.setStrength(Integer.parseInt(p[2]));
+          collator.setDecomposition(Integer.parseInt(p[3]));
+          return new org.apache.lucene.collation.CollationKeyAnalyzer(collator);
         }
       default:
         throw new IllegalArgumentException("unknown scenario " + name);

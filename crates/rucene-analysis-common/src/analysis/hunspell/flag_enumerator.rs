@@ -110,8 +110,13 @@ impl FlagEnumerator {
 /// The flag sets of a [`FlagEnumerator`], by id.
 ///
 /// Equivalent to `org.apache.lucene.analysis.hunspell.FlagEnumerator$Lookup`.
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug, Clone)]
-pub(crate) struct Lookup {
+pub struct Lookup {
     data: Vec<u16>,
 }
 
@@ -169,7 +174,12 @@ impl Lookup {
     }
 
     /// Equivalent to `getFlags(int)`.
-    pub(crate) fn get_flags(&self, entry_id: i32) -> Vec<u16> {
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn get_flags(&self, entry_id: i32) -> Vec<u16> {
         let entry_id = entry_id as usize;
         self.data[entry_id + 1..entry_id + 1 + usize::from(self.data[entry_id])].to_vec()
     }

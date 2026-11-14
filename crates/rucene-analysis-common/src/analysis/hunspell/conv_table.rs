@@ -29,8 +29,13 @@ use rucene::util::{CharsRef, FixedBitSet, IntsRef};
 /// ICONV or OCONV replacement table.
 ///
 /// Equivalent to `org.apache.lucene.analysis.hunspell.ConvTable`.
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug)]
-pub(crate) struct ConvTable {
+pub struct ConvTable {
     fst: Option<FST<CharSequenceOutputs>>,
     first_char_hashes: FixedBitSet,
     modulo: usize,
@@ -45,7 +50,12 @@ impl ConvTable {
     /// # Errors
     ///
     /// What compiling the FST raises (Java wraps it in a `RuntimeException`).
-    pub(crate) fn new(mappings: &BTreeMap<Vec<u16>, Vec<u16>>) -> Result<Self> {
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn new(mappings: &BTreeMap<Vec<u16>, Vec<u16>>) -> Result<Self> {
         let modulo = 256usize.max(java_highest_one_bit(mappings.len()) << 1);
         let mut first_char_hashes = FixedBitSet::new(modulo);
         let outputs = CharSequenceOutputs::get_singleton();
@@ -73,7 +83,12 @@ impl ConvTable {
     /// # Errors
     ///
     /// What reading the FST raises (Java wraps it in a `RuntimeException`).
-    pub(crate) fn apply_mappings(&self, sb: &mut Vec<u16>) -> Result<()> {
+    ///
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn apply_mappings(&self, sb: &mut Vec<u16>) -> Result<()> {
         let Some(fst) = &self.fst else {
             // an FST that accepts nothing: `mightReplaceChar` admits no
             // character, since no mapping set a hash

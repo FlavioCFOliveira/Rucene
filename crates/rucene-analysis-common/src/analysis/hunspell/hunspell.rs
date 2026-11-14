@@ -76,7 +76,11 @@ pub(crate) struct SuggestionSpeller {
 /// subclass in Lucene, the anonymous one of `Suggester.suggest`, is this type
 /// with the suggestion speller overrides.
 pub struct Hunspell {
-    pub(crate) dictionary: Arc<Dictionary>,
+    /// Java's member is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port makes it public
+    /// (hidden from the documentation).
+    #[doc(hidden)]
+    pub dictionary: Arc<Dictionary>,
     pub(crate) stemmer: Stemmer,
     policy: TimeoutPolicy,
     pub(crate) check_canceled: CheckCanceled,
@@ -93,7 +97,12 @@ impl std::fmt::Debug for Hunspell {
 }
 
 /// `Hunspell.SUGGEST_TIME_LIMIT`, in milliseconds.
-pub(crate) const SUGGEST_TIME_LIMIT: i64 = 250;
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub const SUGGEST_TIME_LIMIT: i64 = 250;
 
 /// The root processor of `findStem`.
 struct FindStemProcessor<'a> {

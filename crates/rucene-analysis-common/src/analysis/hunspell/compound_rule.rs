@@ -34,8 +34,13 @@ use crate::jdk::string::{index_of_unit, to_rust_string};
 /// **Divergence.** Java keeps the `Dictionary` the rule belongs to and asks
 /// it for flags; a Rust value cannot point back at the dictionary that owns
 /// it, so the matching methods take the dictionary.
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug, Clone)]
-pub(crate) struct CompoundRule {
+pub struct CompoundRule {
     data: Vec<u16>,
 }
 
