@@ -31,15 +31,14 @@
 //! out-of-range ones (`IllegalArgumentException` on both sides). Every
 //! result is compared.
 //!
-//! The Thai word iterator's dictionary is the ICU 79.1 word list in the
-//! port, the JDK's own `thai_dict` in the JDK (the divergence approved on
-//! #447). To tell the algorithm from the data, the Thai cases also run the
-//! port on the JDK's word list, read from the local JDK at test time
-//! (`BreakIteratorOracle dict`, never stored in the repository) and loaded
-//! with `get_thai_word_instance_with_words`: that run must equal the JDK on
-//! every text. The ICU-list iterator must equal the JDK on texts without
+//! The Thai word iterator reads the installed JDK's own `thai_dict` at run
+//! time (`jdk::break_dictionary`), so with a JDK on the machine it must equal
+//! the JDK on every text, Thai included ([`thai_dictionary_source_is_the_jdk`]
+//! asserts the source). The fallback iterator, on the embedded ICU 79.1 word
+//! list (`get_icu_thai_word_instance`), must equal the JDK on texts without
 //! Thai characters; on Thai text its differences are measured
-//! ([`thai_dictionary_measurement`]) and reported, not asserted.
+//! ([`thai_dictionary_measurement`]) and reported, and must not be zero (the
+//! positive control that the comparison sees a dictionary change).
 //!
 //! Positive controls: [`negative_control_detects_a_changed_result`] shows
 //! that one wrong result fails the comparison.
@@ -50,13 +49,13 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
 
 use randomizedtesting::jdk::random::{JdkRandom, Random};
 use rucene::error::LuceneError;
 use rucene_analysis_common::analysis::util::char_array_iterator::CharArrayIterator;
+use rucene_analysis_common::jdk::break_dictionary::{thai_dictionary_source, ThaiDictionarySource};
 use rucene_analysis_common::jdk::break_iterator::{
-    get_sentence_instance, get_thai_word_instance_with_words, get_word_instance, BreakIterator,
+    get_icu_thai_word_instance, get_sentence_instance, get_word_instance, BreakIterator,
 };
 use rucene_analysis_common::jdk::locale::Locale;
 
@@ -88,8 +87,6 @@ fn run_java(args: &[&str]) -> String {
     ])
     .expect("a class path");
     let output = Command::new("java")
-        .arg("--add-opens")
-        .arg("java.base/sun.text=ALL-UNNAMED")
         .arg("-cp")
         .arg(class_path)
         .arg(oracle_source())
@@ -116,30 +113,6 @@ fn hex(units: &[u16]) -> String {
     s
 }
 
-fn unhex(s: &str) -> Vec<u16> {
-    (0..s.len())
-        .step_by(4)
-        .map(|i| u16::from_str_radix(&s[i..i + 4], 16).unwrap())
-        .collect()
-}
-
-/// The JDK's Thai dictionary words (UTF-16), read once from the local JDK.
-fn jdk_thai_words() -> &'static Vec<String> {
-    static WORDS: OnceLock<Vec<String>> = OnceLock::new();
-    WORDS.get_or_init(|| {
-        let words: Vec<String> = run_java(&["dict"])
-            .lines()
-            .map(|l| String::from_utf16(&unhex(l)).expect("a word"))
-            .collect();
-        assert!(
-            words.len() > 10_000,
-            "JDK thai_dict holds {} words",
-            words.len()
-        );
-        words
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Cases
 // ---------------------------------------------------------------------------
@@ -151,10 +124,12 @@ enum Kind {
     Word,
     /// `getSentenceInstance(Locale.ROOT)`.
     Sentence,
-    /// `getWordInstance(th)`, the port on the ICU list.
+    /// `getWordInstance(th)`: the port on the process's Thai dictionary, the
+    /// installed JDK's `thai_dict` on a machine with a JDK.
     Thai,
-    /// `getWordInstance(th)`, the port on the JDK's word list.
-    ThaiJdkWords,
+    /// The port's fallback Thai iterator, on the embedded ICU 79.1 list
+    /// (`get_icu_thai_word_instance`).
+    ThaiIcu,
 }
 
 impl Kind {
@@ -163,7 +138,7 @@ impl Kind {
         match self {
             Kind::Word => "w",
             Kind::Sentence => "s",
-            Kind::Thai | Kind::ThaiJdkWords => "t",
+            Kind::ThaiIcu | Kind::Thai => "t",
         }
     }
 
@@ -172,9 +147,7 @@ impl Kind {
             Kind::Word => get_word_instance(&Locale::of_parts("", "", "", "")),
             Kind::Sentence => get_sentence_instance(&Locale::of_parts("", "", "", "")),
             Kind::Thai => get_word_instance(&Locale::builder_from_language_tag("th").expect("th")),
-            Kind::ThaiJdkWords => {
-                get_thai_word_instance_with_words(jdk_thai_words().iter().map(String::as_str))
-            }
+            Kind::ThaiIcu => get_icu_thai_word_instance(),
         }
     }
 }
@@ -569,10 +542,11 @@ fn word_and_sentence_instances_equal_jdk() {
     assert_no_diffs("word+sentence (root)", cases.len(), &diffs);
 }
 
-/// The Thai word instance's algorithm, on the JDK's own word list: equal to
-/// the JDK on Lucene's Thai test texts, a seeded Thai corpus, seeded strings
-/// over the Thai and rule classes, and the standard corpus; and the
-/// ICU-list instance equal to the JDK on every text without Thai characters.
+/// The Thai word instance (the installed JDK's `thai_dict`): equal to the
+/// JDK on Lucene's Thai test texts, a seeded Thai corpus, seeded strings over
+/// the Thai and rule classes, and the standard corpus; and the fallback
+/// (ICU-list) instance equal to the JDK on every text without Thai
+/// characters.
 #[test]
 fn thai_word_instance_equals_jdk() {
     let r = JdkRandom::new(0x0447_7411);
@@ -591,32 +565,51 @@ fn thai_word_instance_equals_jdk() {
     let non_thai = random_strings(&r, &alpha, 5_000, 20);
     let mut cases = Vec::new();
     for text in &texts {
-        cases.push(make_case(&r, Kind::ThaiJdkWords, text.clone()));
+        cases.push(make_case(&r, Kind::Thai, text.clone()));
     }
     for text in texts.iter().chain(&non_thai).filter(|t| !has_thai(t)) {
-        cases.push(make_case(&r, Kind::Thai, text.clone()));
+        cases.push(make_case(&r, Kind::ThaiIcu, text.clone()));
     }
     let java = java_results(&cases, "th");
     let diffs = compare(&cases, &java);
     let algorithm: Vec<_> = diffs
         .iter()
-        .filter(|(c, _, _)| c.kind == Kind::ThaiJdkWords)
+        .filter(|(c, _, _)| c.kind == Kind::Thai)
         .cloned()
         .collect();
     let non_thai_diffs: Vec<_> = diffs
         .iter()
-        .filter(|(c, _, _)| c.kind == Kind::Thai)
+        .filter(|(c, _, _)| c.kind == Kind::ThaiIcu)
         .cloned()
         .collect();
-    let n_jdk = cases
-        .iter()
-        .filter(|c| c.kind == Kind::ThaiJdkWords)
-        .count();
-    assert_no_diffs("thai (JDK word list)", n_jdk, &algorithm);
+    let n_jdk = cases.iter().filter(|c| c.kind == Kind::Thai).count();
+    assert_no_diffs("thai (JDK thai_dict read at run time)", n_jdk, &algorithm);
     assert_no_diffs(
-        "thai (ICU list, no Thai text)",
+        "thai fallback (ICU list, no Thai text)",
         cases.len() - n_jdk,
         &non_thai_diffs,
+    );
+}
+
+/// The Thai dictionary source is the JDK's `thai_dict`, read from the image
+/// of the JDK the lookup order finds first (`JAVA_HOME`, then `java` on
+/// `PATH`): on this machine, the JDK whose `java` the oracle runs.
+#[test]
+fn thai_dictionary_source_is_the_jdk() {
+    let expected = match std::env::var_os("JAVA_HOME").filter(|h| !h.is_empty()) {
+        Some(home) => PathBuf::from(home).join("lib/modules"),
+        None => {
+            let java = std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
+                .map(|d| d.join("java"))
+                .find(|j| j.is_file())
+                .expect("java on PATH");
+            let java = std::fs::canonicalize(java).expect("canonical java");
+            java.parent().unwrap().parent().unwrap().join("lib/modules")
+        }
+    };
+    assert_eq!(
+        ThaiDictionarySource::Jdk { image: expected },
+        thai_dictionary_source()
     );
 }
 
@@ -656,7 +649,7 @@ fn supplementary_category_quirks_equal_jdk() {
         let x = char::from_u32(p).unwrap().to_string();
         for c in contexts {
             let text: Vec<u16> = c.replace("{}", &x).encode_utf16().collect();
-            for kind in [Kind::Word, Kind::Sentence, Kind::ThaiJdkWords] {
+            for kind in [Kind::Word, Kind::Sentence, Kind::Thai] {
                 cases.push(make_case(&r, kind, text.clone()));
             }
         }
@@ -711,13 +704,13 @@ fn segmented(text: &[u16], b: &[i32]) -> String {
     out
 }
 
-/// The measurement the user asked for on #447: word breaks of the port
-/// (ICU 79.1 word list) against JDK 25 (its own dictionary) on Lucene's Thai
-/// test texts and a seeded Thai corpus of 10,000 sentences
-/// ([`thai_corpus`]). Prints the share of texts with identical breaks, the
-/// share of break positions that differ, and the first 10 differing texts;
-/// the port on the JDK's word list must equal the JDK on every text (so
-/// every difference comes from the word list). Written to
+/// The Thai word breaks of the port against JDK 25 on Lucene's Thai test
+/// texts and a seeded Thai corpus of 10,000 sentences ([`thai_corpus`]): the
+/// port's Thai iterator (the installed JDK's `thai_dict`) must equal the JDK
+/// on every text. The fallback (ICU 79.1 list) is measured on the same texts
+/// (the share of texts with identical breaks, the share of break positions
+/// that differ, the first 10 differing texts), and must differ somewhere:
+/// the positive control that the comparison sees the dictionary. Written to
 /// `$TMPDIR/rucene-thai-measurement.txt` as well.
 #[test]
 fn thai_dictionary_measurement() {
@@ -730,15 +723,19 @@ fn thai_dictionary_measurement() {
     let cases: Vec<Case> = texts
         .iter()
         .map(|t| Case {
-            kind: Kind::Thai,
+            kind: Kind::ThaiIcu,
             text: t.clone(),
             range: None,
             ops: vec!["A".into()],
         })
         .collect();
     let java = java_results(&cases, "measure");
-    let mut icu = Kind::Thai.instance();
-    let mut jdk_words = Kind::ThaiJdkWords.instance();
+    let mut icu = Kind::ThaiIcu.instance();
+    let mut jdk_words = Kind::Thai.instance();
+    assert!(matches!(
+        thai_dictionary_source(),
+        ThaiDictionarySource::Jdk { .. }
+    ));
     let mut report = String::new();
     let mut summary = |name: &str, range: std::ops::Range<usize>, report: &mut String| {
         let (mut same, mut diff_pos, mut union_pos, mut jdk_pos, mut algorithm) = (0, 0, 0, 0, 0);
@@ -772,7 +769,7 @@ fn thai_dictionary_measurement() {
             report,
             "{name}: texts={n} identical={same} ({:.2}%); break positions: JDK={jdk_pos} \
              union={union_pos} differing={diff_pos} ({:.2}% of the union, {:.2}% of JDK's); \
-             port on the JDK word list differs on {algorithm} texts",
+             port (JDK thai_dict) differs on {algorithm} texts",
             100.0 * same as f64 / n as f64,
             100.0 * diff_pos as f64 / union_pos as f64,
             100.0 * diff_pos as f64 / jdk_pos as f64,
@@ -781,14 +778,18 @@ fn thai_dictionary_measurement() {
         for e in examples {
             writeln!(report, "{e}").unwrap();
         }
-        algorithm
+        (algorithm, diff_pos)
     };
-    let a1 = summary("Lucene Thai test texts", 0..lucene_count, &mut report);
-    let a2 = summary("seeded Thai corpus", lucene_count..texts.len(), &mut report);
+    let (a1, _) = summary("Lucene Thai test texts", 0..lucene_count, &mut report);
+    let (a2, icu_diffs) = summary("seeded Thai corpus", lucene_count..texts.len(), &mut report);
     println!("{report}");
     let _ = std::fs::write(
         std::env::temp_dir().join("rucene-thai-measurement.txt"),
         &report,
     );
-    assert_eq!(0, a1 + a2, "the port on the JDK word list equals the JDK");
+    assert_eq!(0, a1 + a2, "the port (JDK thai_dict) equals the JDK");
+    assert!(
+        icu_diffs > 0,
+        "positive control: the ICU fallback differs from the JDK on the corpus"
+    );
 }

@@ -28,11 +28,12 @@
 //! is the harness's standard one (fixed edge cases and seeded random
 //! inputs) plus inputs that reach each task's filters.
 //!
-//! **Thai.** `ThaiTokenizer` splits Thai runs with a dictionary; the port
-//! uses the ICU 79.1 word list where the JDK uses its own (the divergence
-//! approved on rmp #447). The Thai specs are therefore asserted equal on the
-//! inputs that hold no Thai character, and measured (not asserted) on the
-//! inputs that do: [`oracle_467_thai_measurement`] prints how many differ.
+//! **Thai.** `ThaiTokenizer` splits Thai runs with a dictionary, which the
+//! port reads at run time from the installed JDK (`jdk::break_dictionary`);
+//! with a JDK on the machine the Thai specs are asserted equal on every
+//! input ([`oracle_467_thai_inputs`], which first asserts that source).
+//! Without one the port falls back to the ICU 79.1 word list, whose
+//! differences on Thai text #447 measures.
 
 mod analysis_oracle;
 mod support;
@@ -44,6 +45,7 @@ use rucene::analysis::{Analyzer, CharArraySet};
 use rucene_analysis_common::analysis::cjk::cjk_analyzer::CJKAnalyzer;
 use rucene_analysis_common::analysis::en::english_analyzer::EnglishAnalyzer;
 use rucene_analysis_common::analysis::th::thai_analyzer::ThaiAnalyzer;
+use rucene_analysis_common::jdk::break_dictionary::{thai_dictionary_source, ThaiDictionarySource};
 
 /// The seed of the random half of the corpus.
 const SEED: i64 = 0x0452_0467;
@@ -318,61 +320,20 @@ fn oracle_467_thai_non_thai_inputs() {
     assert_oracle(&o);
 }
 
-/// The `input` sections of `dump`, per spec: `(spec, input, lines)`.
-fn input_sections(dump: &str) -> Vec<(String, String, String)> {
-    let mut out = Vec::new();
-    let mut spec = String::new();
-    let mut input: Option<(String, String)> = None;
-    for line in dump.lines() {
-        if let Some(id) = line.strip_prefix("spec ") {
-            if let Some((i, l)) = input.take() {
-                out.push((spec.clone(), i, l));
-            }
-            spec = id.to_string();
-        } else if let Some(i) = line.strip_prefix("input ") {
-            if let Some((i, l)) = input.take() {
-                out.push((spec.clone(), i, l));
-            }
-            input = Some((i.to_string(), String::new()));
-        } else if let Some((_, l)) = input.as_mut() {
-            l.push_str(line);
-            l.push('\n');
-        }
-    }
-    if let Some((i, l)) = input.take() {
-        out.push((spec, i, l));
-    }
-    out
-}
-
-/// Measures (does not assert) the Thai specs on the inputs that hold Thai
-/// text: the dictionary data differs by the approved divergence of #447.
-/// Prints, per spec, the inputs whose token dumps differ.
+/// The Thai specs on the inputs that hold Thai text, asserted equal: the
+/// port's Thai dictionary is the installed JDK's `thai_dict`.
 #[test]
-fn oracle_467_thai_measurement() {
-    let dir = config_dir("th-measure");
+fn oracle_467_thai_inputs() {
+    assert!(matches!(
+        thai_dictionary_source(),
+        ThaiDictionarySource::Jdk { .. }
+    ));
+    let dir = config_dir("th-thai");
     let corpus: Vec<Vec<u16>> = task_corpus().into_iter().filter(|i| has_thai(i)).collect();
-    let mut o = Oracle::new(corpus.clone());
+    assert!(!corpus.is_empty());
+    let mut o = Oracle::new(corpus);
     thai_specs(&mut o, &dir);
-    let java = o.java_dump();
-    o.assert_covers(&java);
-    let rust = o.rust_dump();
-    let j = input_sections(&java);
-    let r = input_sections(&rust);
-    assert_eq!(j.len(), r.len(), "the dumps hold the same sections");
-    let mut differing = 0;
-    for ((spec, input, jl), (_, _, rl)) in j.iter().zip(&r) {
-        if jl != rl {
-            differing += 1;
-            println!("THAI-DIFF spec={spec} input={input}");
-        }
-    }
-    println!(
-        "THAI-MEASURE inputs={} sections={} differing={}",
-        corpus.len(),
-        j.len(),
-        differing
-    );
+    assert_oracle(&o);
 }
 
 // ---------------------------------------------------------------------------

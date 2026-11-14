@@ -50,6 +50,7 @@ pub mod character_iterator;
 #[rustfmt::skip]
 mod unicode_block_data;
 pub mod io;
+mod jimage;
 pub mod locale;
 pub mod locale_data;
 pub mod sax;

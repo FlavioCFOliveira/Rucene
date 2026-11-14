@@ -33,8 +33,9 @@
 //! `DictionaryBasedBreakIterator.divideUpDictionaryRange` over
 //! `BreakDictionary`.
 //!
-//! **Divergence.** The Thai dictionary is ICU's word list, not the JDK's
-//! `thai_dict` (see `break_dictionary`; approved on rmp task #447).
+//! The Thai dictionary is the JDK's own `thai_dict`, read at run time from a
+//! JDK installed on the machine; without one, ICU's word list (the
+//! divergence declared in `break_dictionary`; decided on rmp task #447).
 
 use std::cell::RefCell;
 use std::fmt::{self, Debug};
@@ -154,24 +155,18 @@ pub fn get_word_instance(locale: &Locale) -> Box<dyn BreakIterator> {
 }
 
 /// Returns a new Thai word iterator, as [`get_word_instance`] returns for
-/// `th`, whose dictionary holds `words` instead of the embedded ICU 79.1
-/// word list.
+/// `th`, over the embedded ICU 79.1 word list whatever
+/// [`thai_dictionary_source`](super::break_dictionary::thai_dictionary_source)
+/// answers.
 ///
-/// Not a JDK API: the oracle tests use it to run this emulation of
-/// `DictionaryBasedBreakIterator` on the JDK's own Thai word list (read
-/// from the local JDK at test time), which separates differences of the
-/// algorithm from those of the word list (the data-source divergence
-/// declared in [`break_dictionary`](super::break_dictionary)). The
-/// dictionary is leaked: each call allocates one for the process's life.
+/// Not a JDK API: the fallback of the dictionary lookup (see
+/// [`break_dictionary`](super::break_dictionary)) is what this returns, so a
+/// test on a machine with a JDK can exercise it.
 #[doc(hidden)]
-pub fn get_thai_word_instance_with_words<'a>(
-    words: impl Iterator<Item = &'a str>,
-) -> Box<dyn BreakIterator> {
-    let dictionary: &'static BreakDictionary =
-        Box::leak(Box::new(BreakDictionary::from_words(words)));
+pub fn get_icu_thai_word_instance() -> Box<dyn BreakIterator> {
     Box::new(RuleBasedBreakIterator::with_dictionary(
         thai_word_rules(),
-        dictionary,
+        BreakDictionary::icu_thai(),
     ))
 }
 

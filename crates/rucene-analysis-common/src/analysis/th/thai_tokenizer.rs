@@ -157,8 +157,9 @@ impl SegmentingTokenizerBaseLogic for ThaiTokenizerLogic {
 /// Equivalent to `org.apache.lucene.analysis.th.ThaiTokenizer`, which
 /// extends `SegmentingTokenizerBase`: a [`SegmentingTokenizerBase`] over
 /// [`ThaiTokenizerLogic`]. Its word breaks come from the Thai word instance
-/// of the `BreakIterator` emulation, whose dictionary is ICU's word list
-/// (see [`crate::jdk::break_dictionary`]).
+/// of the `BreakIterator` emulation, whose dictionary is the installed JDK's
+/// `thai_dict`, or ICU's word list without one (see
+/// [`crate::jdk::break_dictionary`]).
 pub type ThaiTokenizer = SegmentingTokenizerBase<ThaiTokenizerLogic>;
 
 /// The source and body of a `ThaiTokenizer` over `factory`: the

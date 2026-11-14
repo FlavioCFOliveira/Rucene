@@ -19,8 +19,6 @@ package org.apache.lucene.rucene.codec;
 import java.io.BufferedWriter;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -42,9 +40,6 @@ import org.apache.lucene.analysis.util.CharArrayIterator;
  *       W&lt;k&gt; following(k), V&lt;k&gt; preceding(k), B&lt;k&gt; isBoundary(k) (1/0), A every
  *       boundary from first() on (joined by ':'). Prints one line of comma-separated results per
  *       case; a call that throws prints {@code E<SimpleName>}.
- *   <li>{@code dict}: prints every word of the JDK's Thai dictionary, one per line, as 4-digit hex
- *       units (needs {@code --add-opens java.base/sun.text=ALL-UNNAMED}). The words stay in the
- *       caller's temporary files; they are JDK data and are never committed.
  * </ul>
  */
 public class BreakIteratorOracle {
@@ -116,9 +111,7 @@ public class BreakIteratorOracle {
     PrintWriter out =
         new PrintWriter(
             new BufferedWriter(new OutputStreamWriter(System.out, StandardCharsets.UTF_8), 1 << 16));
-    if (args[0].equals("dict")) {
-      dict(out);
-    } else {
+    {
       List<String> lines = Files.readAllLines(Paths.get(args[1]), StandardCharsets.UTF_8);
       BreakIterator w = instance("w"), s = instance("s"), t = instance("t");
       for (String line : lines) {
@@ -143,47 +136,5 @@ public class BreakIteratorOracle {
       }
     }
     out.flush();
-  }
-
-  /** Enumerates the words of the JDK's Thai dictionary by a depth-first walk of its machine. */
-  static void dict(PrintWriter out) throws Exception {
-    BreakIterator jt = instance("t");
-    Field fd = jt.getClass().getDeclaredField("dictionary");
-    fd.setAccessible(true);
-    Object bd = fd.get(jt);
-    Method next = bd.getClass().getMethod("getNextStateFromCharacter", int.class, int.class);
-    Method state = bd.getClass().getMethod("getNextState", int.class, int.class);
-    next.setAccessible(true);
-    state.setAccessible(true);
-    Field cm = bd.getClass().getDeclaredField("columnMap");
-    cm.setAccessible(true);
-    Object columnMap = cm.get(bd);
-    Method elementAt = columnMap.getClass().getMethod("elementAt", char.class);
-    elementAt.setAccessible(true);
-    StringBuilder alphabet = new StringBuilder();
-    for (int c = 0; c <= 0xFFFF; c++) {
-      if (((Byte) elementAt.invoke(columnMap, (char) c)) != 0) alphabet.append((char) c);
-    }
-    walk(out, next, state, bd, alphabet.toString(), 0, new StringBuilder());
-  }
-
-  static void walk(
-      PrintWriter out,
-      Method next,
-      Method state,
-      Object bd,
-      String alphabet,
-      int s,
-      StringBuilder prefix)
-      throws Exception {
-    for (int i = 0; i < alphabet.length(); i++) {
-      char c = alphabet.charAt(i);
-      int n = (Short) next.invoke(bd, s, (int) c);
-      if (n <= 0) continue;
-      prefix.append(c);
-      if ((Short) state.invoke(bd, n, 0) == -1) out.println(hex(prefix.toString()));
-      walk(out, next, state, bd, alphabet, n, prefix);
-      prefix.setLength(prefix.length() - 1);
-    }
   }
 }
