@@ -37,6 +37,7 @@
 
 use std::any::Any;
 use std::fmt;
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 use super::exception::{self, Throwable};
@@ -128,17 +129,30 @@ impl JavaAnnotation for Marker {
     }
 }
 
-/// Quotes a string member as JDK 25's `Annotation.toString()` does.
+/// Quotes a string member as JDK 25's `Annotation.toString()` does
+/// (`AnnotationInvocationHandler.toSourceString(String)`): per UTF-16 code
+/// unit, `"` and `\` escaped with a backslash, `\b`, `\f`, `\n`, `\r` and
+/// `\t` as such, printable ASCII (`' '..='~'`, the apostrophe included) as
+/// is, and every other unit as `\u` and four lower-case hexadecimal digits
+/// (a supplementary character as its two surrogates).
+///
+/// Observed on JDK 25.0.5 (`@A("q'\b\f\r\u0001\u001f ~\u007f\u00e9\ud83d\ude00")`
+/// prints every escape back as written, the apostrophe bare).
 pub fn quote_member(s: &str) -> String {
     let mut b = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => b.push_str("\\\""),
-            '\\' => b.push_str("\\\\"),
-            '\n' => b.push_str("\\n"),
-            '\t' => b.push_str("\\t"),
-            '\r' => b.push_str("\\r"),
-            c => b.push(c),
+    for unit in s.encode_utf16() {
+        match unit {
+            0x22 => b.push_str("\\\""),
+            0x5c => b.push_str("\\\\"),
+            0x08 => b.push_str("\\b"),
+            0x0c => b.push_str("\\f"),
+            0x0a => b.push_str("\\n"),
+            0x0d => b.push_str("\\r"),
+            0x09 => b.push_str("\\t"),
+            0x20..=0x7e => b.push(char::from(unit as u8)),
+            unit => {
+                let _ = write!(b, "\\u{unit:04x}");
+            }
         }
     }
     b.push('"');
@@ -1164,5 +1178,23 @@ impl ClassBuilder {
             }
             class
         })
+    }
+}
+
+#[cfg(test)]
+mod quote_member_tests {
+    use super::quote_member;
+
+    /// JDK 25.0.5 prints `@A("q'\b\f\r\u0001\u001f ~\u007fé😀x")`
+    /// for that member value (observed with a single-file probe): the
+    /// escapes per UTF-16 unit, the apostrophe bare.
+    #[test]
+    fn quotes_as_jdk_25() {
+        assert_eq!(
+            quote_member("q'\u{8}\u{c}\r\u{1}\u{1f} ~\u{7f}\u{e9}\u{1f600}x"),
+            r#""q'\b\f\r\u0001\u001f ~\u007f\u00e9\ud83d\ude00x""#
+        );
+        assert_eq!(quote_member("a\"b\\c\n\t"), r#""a\"b\\c\n\t""#);
+        assert_eq!(quote_member(""), r#""""#);
     }
 }

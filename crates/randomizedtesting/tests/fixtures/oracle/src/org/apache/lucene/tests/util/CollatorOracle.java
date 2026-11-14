@@ -16,7 +16,7 @@ import java.util.Random;
 import org.junit.internal.AssumptionViolatedException;
 
 /**
- * java.text.RuleBasedCollator on JDK 25, for crates/rucene-test-framework/src/jdk/collator.rs and
+ * java.text.RuleBasedCollator on JDK 25, for crates/rucene-analysis-common/src/jdk/collator.rs and
  * LuceneTestCase.collate (rmp #349). Writes rucene-test-framework/collator.tsv:
  *
  * <ul>

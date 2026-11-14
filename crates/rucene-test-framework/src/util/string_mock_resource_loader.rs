@@ -25,10 +25,14 @@ use rucene::util::resource_loader::ResourceLoader;
 /// Fake resource loader for tests: works if you want to fake reading a single
 /// file.
 ///
-/// Port of `StringMockResourceLoader`: every resource opens as the UTF-8
-/// bytes of `text`. Java's `findClass(String, Class)` (`Class.forName`) has
-/// no counterpart: the port's `ResourceLoader` declares only
-/// `openResource`.
+/// Equivalent to `org.apache.lucene.tests.util.StringMockResourceLoader`:
+/// every resource opens as the UTF-8 bytes of `text`.
+///
+/// Java's `findClass(String, Class)` (`Class.forName(cname).asSubclass(..)`)
+/// has no counterpart here: the port's `ResourceLoader` declares only
+/// `openResource`, and the class half of Lucene's `ResourceLoader` is
+/// `rucene::util::resource_loader::ClassRegistry` (the divergence declared in
+/// `rucene::util::resource_loader`).
 #[derive(Debug, Clone)]
 pub struct StringMockResourceLoader {
     pub(crate) text: String,

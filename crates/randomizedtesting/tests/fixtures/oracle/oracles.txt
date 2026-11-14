@@ -16,6 +16,8 @@ org.apache.lucene.codecs.simpletext.SimpleTextOracle
 org.apache.lucene.tests.codecs.TestCodecsOracle
 # The helpers of org.apache.lucene.tests.util (rmp #342)
 org.apache.lucene.tests.util.TestUtilOracle
+# LuceneTestCase.Nightly, SuppressSysoutChecks and StringMockResourceLoader (rmp #445)
+org.apache.lucene.tests.util.TestFrameworkTypesOracle
 org.apache.lucene.tests.util.TimeZoneOracle
 # java.text.RuleBasedCollator and LuceneTestCase.collate (rmp #349)
 org.apache.lucene.tests.util.CollatorOracle

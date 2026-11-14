@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 
 use crate::analysis::{
-    default_token_attribute_factory, CharFilter, TokenFilterLogic, Tokenizer, TokenizerLogic,
+    default_token_attribute_factory, CharReader, TokenStream, Tokenizer, TokenizerLogic,
 };
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::util::attribute::AttributeFactory;
@@ -519,6 +519,37 @@ impl AbstractAnalysisFactory {
         }
     }
 
+    /// [`get_pattern`](Self::get_pattern) for a caller that runs the pattern
+    /// with a `java.util.regex.Matcher`: the same `getPattern(Map, String)`,
+    /// returning the compiled pattern as a
+    /// [`JavaPattern`](crate::analysis::java_regex::JavaPattern), whose
+    /// [`matcher`](crate::analysis::java_regex::JavaPattern::matcher) reports
+    /// groups in UTF-16 indices and expands replacements as Java's does
+    /// (`PatternTokenizerFactory`, `PatternReplaceFilterFactory` and the other
+    /// pattern factories of `lucene/analysis/common`).
+    ///
+    /// Equivalent to `AbstractAnalysisFactory.getPattern(Map, String)`; what
+    /// [`get_pattern`](Self::get_pattern) declares holds here too.
+    ///
+    /// # Errors
+    ///
+    /// As [`get_pattern`](Self::get_pattern): the `IllegalArgumentException`
+    /// `Configuration Error: '<name>' can not be parsed in <factory>`, its
+    /// cause the port's diagnostic.
+    pub fn get_java_pattern(
+        args: &mut HashMap<String, String>,
+        name: &str,
+        factory_simple_name: &str,
+    ) -> Result<crate::analysis::java_regex::JavaPattern> {
+        let value = Self::require(args, name)?;
+        crate::analysis::java_regex::JavaPattern::compile(&value, 0).map_err(|syntax| {
+            LuceneError::illegal_argument_with_cause(
+                format!("Configuration Error: '{name}' can not be parsed in {factory_simple_name}"),
+                std::sync::Arc::new(LuceneError::illegal_argument(syntax.to_string())),
+            )
+        })
+    }
+
     /// Consumes and returns a required argument, checking it against a list.
     ///
     /// Equivalent to `AbstractAnalysisFactory.require(Map, String, Collection, boolean)`
@@ -567,6 +598,48 @@ impl AbstractAnalysisFactory {
     /// Equivalent to the overload `AbstractAnalysisFactory.get(Map, String, String)`.
     pub fn get_or(args: &mut HashMap<String, String>, name: &str, default_val: &str) -> String {
         args.remove(name).unwrap_or_else(|| default_val.to_string())
+    }
+
+    /// Consumes an optional argument, checking it against a list.
+    ///
+    /// Equivalent to the overloads `AbstractAnalysisFactory.get(Map, String,
+    /// Collection)`, `get(Map, String, Collection, String)` and `get(Map,
+    /// String, Collection, String, boolean)` (`AbstractAnalysisFactory.java:165-198`),
+    /// which the first two call with `defaultVal = null` and
+    /// `caseSensitive = true` respectively: an absent argument yields
+    /// `default_val` (Java's `null` is `None`); a present one is returned when
+    /// it equals one of `allowed_values` — with `String.equals`, or
+    /// `String.equalsIgnoreCase` when not `case_sensitive` — and refused
+    /// otherwise, the list rendered as `Collection.toString()` does, `[a, b]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] with Java's message,
+    /// `Configuration Error: '<name>' value must be one of [a, b]`, when the
+    /// argument matches none of `allowed_values`.
+    pub fn get_one_of(
+        args: &mut HashMap<String, String>,
+        name: &str,
+        allowed_values: &[&str],
+        default_val: Option<&str>,
+        case_sensitive: bool,
+    ) -> Result<Option<String>> {
+        let Some(s) = args.remove(name) else {
+            return Ok(default_val.map(str::to_string));
+        };
+        for allowed_value in allowed_values {
+            if case_sensitive {
+                if s == *allowed_value {
+                    return Ok(Some(s));
+                }
+            } else if java_equals_ignore_case(&s, allowed_value) {
+                return Ok(Some(s));
+            }
+        }
+        Err(LuceneError::illegal_argument(format!(
+            "Configuration Error: '{name}' value must be one of [{}]",
+            allowed_values.join(", ")
+        )))
     }
 
     /// Consumes a required integer argument.
@@ -710,7 +783,11 @@ fn parse_boolean(s: &str) -> bool {
 /// `Character.toLowerCase(Character.toUpperCase(..))` (the JDK's
 /// `StringUTF16.regionMatchesCI`, which compares supplementary characters by
 /// code point).
-fn java_equals_ignore_case(a: &str, b: &str) -> bool {
+///
+/// Public so that the analysis modules, whose factories compare their
+/// arguments with `String.equalsIgnoreCase` too (`AbstractWordsFileFilterFactory`
+/// of `lucene/analysis/common`), apply the same JDK rule.
+pub fn java_equals_ignore_case(a: &str, b: &str) -> bool {
     if a.encode_utf16().count() != b.encode_utf16().count() {
         return false;
     }
@@ -957,8 +1034,15 @@ pub trait TokenFilterFactory: Send + Sync + std::fmt::Debug {
 
     /// Wraps `input` in the filter.
     ///
-    /// Equivalent to `TokenFilterFactory.create(TokenStream)`.
-    fn create(&self, input: Box<dyn TokenFilterLogic>) -> Result<Box<dyn TokenFilterLogic>>;
+    /// Equivalent to `TokenFilterFactory.create(TokenStream)`: the stream
+    /// the factory builds over `input`, returned through its `TokenStream`
+    /// supertype.
+    ///
+    /// # Errors
+    ///
+    /// Returns what the filter's construction returns (Java's `addAttribute`
+    /// failures).
+    fn create(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>>;
 
     /// Normalizes `input`.
     ///
@@ -973,7 +1057,7 @@ pub trait TokenFilterFactory: Send + Sync + std::fmt::Debug {
     /// [`create`](Self::create) returns.
     ///
     /// Equivalent to `org.apache.lucene.analysis.TokenFilterFactory#normalize`.
-    fn normalize(&self, input: Box<dyn TokenFilterLogic>) -> Result<Box<dyn TokenFilterLogic>> {
+    fn normalize(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>> {
         Ok(input)
     }
     /// Returns this factory as a [`ResourceLoaderAware`], or `None` when it is
@@ -1004,8 +1088,15 @@ pub trait CharFilterFactory: Send + Sync + std::fmt::Debug {
 
     /// Wraps `input` in the filter.
     ///
-    /// Equivalent to `CharFilterFactory.create(Reader)`.
-    fn create(&self, input: Box<dyn CharFilter>) -> Result<Box<dyn CharFilter>>;
+    /// Equivalent to `CharFilterFactory.create(Reader)`: the reader the
+    /// factory builds over `input`, returned through its `Reader` supertype
+    /// (a factory with nothing to apply may return `input` itself, as
+    /// `MappingCharFilterFactory` does for an empty mapping).
+    ///
+    /// # Errors
+    ///
+    /// Returns what the filter's construction returns.
+    fn create(&self, input: Box<dyn CharReader>) -> Result<Box<dyn CharReader>>;
 
     /// Normalizes `input`.
     ///
@@ -1019,7 +1110,7 @@ pub trait CharFilterFactory: Send + Sync + std::fmt::Debug {
     /// [`create`](Self::create) returns.
     ///
     /// Equivalent to `org.apache.lucene.analysis.CharFilterFactory#normalize`.
-    fn normalize(&self, input: Box<dyn CharFilter>) -> Result<Box<dyn CharFilter>> {
+    fn normalize(&self, input: Box<dyn CharReader>) -> Result<Box<dyn CharReader>> {
         Ok(input)
     }
     /// Returns this factory as a [`ResourceLoaderAware`], or `None` when it is

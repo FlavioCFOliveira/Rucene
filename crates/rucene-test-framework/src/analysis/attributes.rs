@@ -66,7 +66,7 @@ impl std::fmt::Debug for Att {
 }
 
 macro_rules! accessors {
-    ($(($get:ident, $get_mut:ident, $iface:ident, [$($imp:ty),+])),+ $(,)?) => {
+    ($(($get:ident, $get_mut:ident, $iface:ident, [$($imp:ty),+] $(, $cast:ident, $cast_mut:ident)?)),+ $(,)?) => {
         impl Att {
             $(
                 #[doc = concat!("Borrows the implementation as `", stringify!($iface), "`.")]
@@ -83,6 +83,13 @@ macro_rules! accessors {
                                 return x as &dyn $iface;
                             }
                         )+
+                        // any other implementation of the interface (Java's
+                        // `getAttribute(X.class)` returns it whatever its class)
+                        $(
+                            if let Some(x) = att.$cast() {
+                                return x;
+                            }
+                        )?
                         panic!(
                             "{:?} does not implement {}",
                             att,
@@ -100,13 +107,31 @@ macro_rules! accessors {
                 pub fn $get_mut(&self) -> AtomicRefMut<'_, dyn $iface> {
                     AtomicRefMut::map(self.0.borrow_mut(), |att| {
                         let name = format!("{:?}", att);
+                        let known = {
+                            let any = att.as_any();
+                            false $(|| any.is::<$imp>())+
+                        };
+                        if !known {
+                            // any other implementation of the interface
+                            // (Java's `getAttribute(X.class)` returns it
+                            // whatever its class)
+                            $(
+                                return att
+                                    .$cast_mut()
+                                    .unwrap_or_else(|| panic!("{} does not implement {}", name, stringify!($iface)));
+                            )?
+                            #[allow(unreachable_code)]
+                            {
+                                panic!("{} does not implement {}", name, stringify!($iface))
+                            }
+                        }
                         let any = att.as_any_mut();
                         $(
                             if any.is::<$imp>() {
                                 return any.downcast_mut::<$imp>().unwrap() as &mut dyn $iface;
                             }
                         )+
-                        panic!("{} does not implement {}", name, stringify!($iface))
+                        unreachable!("INVARIANT: `known` holds")
                     })
                 }
             )+
@@ -124,7 +149,9 @@ accessors!(
             Token,
             CharTermAttributeImpl,
             MockUTF16TermAttributeImpl
-        ]
+        ],
+        as_char_term_attribute,
+        as_char_term_attribute_mut
     ),
     (
         term_to_bytes_ref,
@@ -136,19 +163,25 @@ accessors!(
             CharTermAttributeImpl,
             MockUTF16TermAttributeImpl,
             BytesTermAttributeImpl
-        ]
+        ],
+        as_term_to_bytes_ref_attribute,
+        as_term_to_bytes_ref_attribute_mut
     ),
     (
         bytes_term,
         bytes_term_mut,
         BytesTermAttribute,
-        [BytesTermAttributeImpl]
+        [BytesTermAttributeImpl],
+        as_bytes_term_attribute,
+        as_bytes_term_attribute_mut
     ),
     (
         offset,
         offset_mut,
         OffsetAttribute,
-        [PackedTokenAttributeImpl, Token, OffsetAttributeImpl]
+        [PackedTokenAttributeImpl, Token, OffsetAttributeImpl],
+        as_offset_attribute,
+        as_offset_attribute_mut
     ),
     (
         pos_inc,
@@ -158,43 +191,57 @@ accessors!(
             PackedTokenAttributeImpl,
             Token,
             PositionIncrementAttributeImpl
-        ]
+        ],
+        as_position_increment_attribute,
+        as_position_increment_attribute_mut
     ),
     (
         pos_len,
         pos_len_mut,
         PositionLengthAttribute,
-        [PackedTokenAttributeImpl, Token, PositionLengthAttributeImpl]
+        [PackedTokenAttributeImpl, Token, PositionLengthAttributeImpl],
+        as_position_length_attribute,
+        as_position_length_attribute_mut
     ),
     (
         type_att,
         type_att_mut,
         TypeAttribute,
-        [PackedTokenAttributeImpl, Token, TypeAttributeImpl]
+        [PackedTokenAttributeImpl, Token, TypeAttributeImpl],
+        as_type_attribute,
+        as_type_attribute_mut
     ),
     (
         term_freq,
         term_freq_mut,
         TermFrequencyAttribute,
-        [PackedTokenAttributeImpl, Token, TermFrequencyAttributeImpl]
+        [PackedTokenAttributeImpl, Token, TermFrequencyAttributeImpl],
+        as_term_frequency_attribute,
+        as_term_frequency_attribute_mut
     ),
     (
         flags,
         flags_mut,
         FlagsAttribute,
-        [Token, FlagsAttributeImpl]
+        [Token, FlagsAttributeImpl],
+        as_flags_attribute,
+        as_flags_attribute_mut
     ),
     (
         payload,
         payload_mut,
         PayloadAttribute,
-        [Token, PayloadAttributeImpl]
+        [Token, PayloadAttributeImpl],
+        as_payload_attribute,
+        as_payload_attribute_mut
     ),
     (
         keyword,
         keyword_mut,
         KeywordAttribute,
-        [KeywordAttributeImpl]
+        [KeywordAttributeImpl],
+        as_keyword_attribute,
+        as_keyword_attribute_mut
     ),
     (boost, boost_mut, BoostAttribute, [BoostAttributeImpl]),
     (

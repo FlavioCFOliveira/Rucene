@@ -155,6 +155,9 @@ pub fn java_message(e: &LuceneError) -> Option<String> {
     Some(match e.kind() {
         LuceneErrorKind::Io(io) => return rucene::store::java_nio_file::java_message_of(io),
         LuceneErrorKind::Unchecked { message, .. } => return message.clone(),
+        LuceneErrorKind::Throwable(throwable) => {
+            return throwable.get_message().map(str::to_string)
+        }
         // `CorruptIndexException(message, resourceDescription)` has the
         // message `message + " (resource=" + resourceDescription + ")"`,
         // which the payload already holds (`LuceneError::corrupt_index`).

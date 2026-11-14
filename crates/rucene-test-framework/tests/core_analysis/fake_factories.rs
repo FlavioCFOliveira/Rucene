@@ -9,7 +9,7 @@ use rucene::analysis::factories::{
     reload_char_filters, reload_token_filters, AbstractAnalysisFactory, AnalysisFactoryClass,
     CharFilterFactory, SPINameField, TokenFilterFactory,
 };
-use rucene::analysis::{CharFilter, TokenFilterLogic};
+use rucene::analysis::{CharReader, TokenStream};
 use rucene::error::Result;
 use rucene::util::resource_loader::{ClassLoader, ServiceProvider};
 
@@ -62,7 +62,7 @@ impl CharFilterFactory for FakeCharFilterFactory {
     }
 
     /// `create(Reader input)`: `input`.
-    fn create(&self, input: Box<dyn CharFilter>) -> Result<Box<dyn CharFilter>> {
+    fn create(&self, input: Box<dyn CharReader>) -> Result<Box<dyn CharReader>> {
         Ok(input)
     }
 }
@@ -116,7 +116,7 @@ impl TokenFilterFactory for FakeTokenFilterFactory {
     }
 
     /// `create(TokenStream input)`: `input`.
-    fn create(&self, input: Box<dyn TokenFilterLogic>) -> Result<Box<dyn TokenFilterLogic>> {
+    fn create(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>> {
         Ok(input)
     }
 }

@@ -1,6 +1,7 @@
-"""Task #323: the sprint-9 port modules in the KG -- lucene/test-framework,
-lucene/codecs and randomizedtesting 2.8.1 -- and the workspace crates that port
-them. Off the store: every graph call is replaced by a recorder."""
+"""Task #323: the port modules beyond lucene/core in the KG -- sprint 9's
+lucene/test-framework, lucene/codecs and randomizedtesting 2.8.1, and sprint 12's
+lucene/analysis/common (`test_skeletons.py`) -- and the workspace crates that
+port them. Off the store: every graph call is replaced by a recorder."""
 import json
 import sys
 from pathlib import Path
@@ -26,14 +27,15 @@ def write(root: Path, rel: str, text: str):
 
 # --- the module registry ----------------------------------------------------
 
-def test_the_registry_names_the_four_modules_and_their_crates():
+def test_the_registry_names_the_five_modules_and_their_crates():
     assert [m["name"] for m in pm.PORT_MODULES] == [
         "lucene/core", "lucene/codecs", "lucene/test-framework",
-        "randomizedtesting/randomized-runner"]
-    assert pm.SPRINT9 == ("lucene/codecs", "lucene/test-framework",
-                          "randomizedtesting/randomized-runner")
+        "randomizedtesting/randomized-runner", "lucene/analysis/common"]
+    assert pm.ADDED_MODULES == ("lucene/codecs", "lucene/test-framework",
+                                "randomizedtesting/randomized-runner", "lucene/analysis/common")
     assert {m["cratePath"] for m in pm.PORT_MODULES} == {
-        ".", "crates/rucene-codecs", "crates/rucene-test-framework", "crates/randomizedtesting"}
+        ".", "crates/rucene-codecs", "crates/rucene-test-framework", "crates/randomizedtesting",
+        "crates/rucene-analysis-common"}
 
 
 def test_module_of_file_keys_on_the_declaring_tree():
@@ -88,12 +90,16 @@ def test_module_dependencies_map_jpms_names_to_port_modules(tmp_path):
           "module org.apache.lucene.test_framework {\n requires org.apache.lucene.core;\n"
           " requires org.apache.lucene.codecs;\n requires transitive junit;\n"
           " requires transitive randomizedtesting.runner;\n}")
+    write(lucene, "lucene/analysis/common/src/java/module-info.java",
+          "module org.apache.lucene.analysis.common {\n requires java.xml;\n"
+          " requires org.apache.lucene.core;\n}")
     deps = pm.module_dependencies(pm.repo_roots(lucene, rt))
     assert [(a, b) for a, b, _ in deps] == [
         ("lucene/codecs", "lucene/core"),
         ("lucene/test-framework", "lucene/core"),
         ("lucene/test-framework", "lucene/codecs"),
-        ("lucene/test-framework", "randomizedtesting/randomized-runner")]
+        ("lucene/test-framework", "randomizedtesting/randomized-runner"),
+        ("lucene/analysis/common", "lucene/core")]
 
 
 def test_queries_narrow_to_one_module_and_the_model_holds_them_verbatim():
@@ -234,7 +240,7 @@ def test_a_member_only_claim_leaves_a_sprint9_type_missing_but_not_a_core_one(mo
     assert {r["qn"] for r in g.rows("portState = ported")} == {core, tf_full}
     assert {r["qn"] for r in g.rows("portState = unported")} == {tf}
     assert g.rows("portScope = nested") == [{"qn": nested, "module": "lucene/test-framework"}]
-    (n,) = g.rows("sprint-9 nested portState")
+    (n,) = g.rows("added-module nested portState")
     assert (n["qn"], n["state"], n["evidence"], n["dest"]) == (
         nested, "unported", "no-port-claim", "crates/rucene-test-framework/src/util/")
 
@@ -247,7 +253,7 @@ def test_candidates_are_looked_for_only_in_the_crate_of_the_module(monkeypatch, 
          "file": "crates/rucene-codecs/src/bloom/fuzzy.rs"},
         {"name": "Bits", "kind": "trait", "scope": "crate",
          "file": "crates/rucene-codecs/src/bits.rs"}]}))
-    g = Graph([("c.portState <> 'ported'", [
+    g = Graph([("NOT c.portState IN ['ported', 'skeleton']", [
         {"qn": "org.apache.lucene.tests.util.TestUtil", "name": "TestUtil",
          "module": "lucene/test-framework"},
         {"qn": "org.apache.lucene.codecs.bloom.Fuzzy", "name": "Fuzzy",
@@ -345,7 +351,7 @@ def test_divergences_are_scanned_in_the_member_crates(tmp_path):
 
 def test_ask_lists_one_module_with_its_status():
     q = ask.q_coverage_list("lucene/codecs")
-    assert "c.module = 'lucene/codecs'" in q and "ELSE 'missing'" in q
+    assert "c.module = 'lucene/codecs'" in q and "ELSE 'unported'" in q
 
 
 def test_test_support_modules_are_named_by_location(monkeypatch):

@@ -89,6 +89,94 @@ def nested_ported_without_ports(q, ported_ids):
         "RETURN id(c), c.qualifiedName") if cid not in ported_ids)
 
 
+def skeleton_audit(q, check, source_root: Path):
+    """The skeleton relation, both ways: the crate's declarations against the
+    graph's `SKELETON_OF` / `PLANS_PORT`, and each skeleton-tracked module's
+    classes against their skeletons.
+
+    The declarations are re-read from the surveyed tree with the parser the
+    loader uses (`port_evidence_kg.scan_skeletons`): what is audited here is
+    the load and the relation's integrity, not the parser, which the unit
+    tests pin down.
+    """
+    import port_evidence_kg as pe
+    import extract_rucene_kg as exr
+    decl = []
+    for base in ("src", *[f"{d}/src" for d in exr.load_workspace(source_root)]):
+        for dp, _d, names in os.walk(source_root / base):
+            for fn in sorted(names):
+                if fn.endswith(".rs"):
+                    rel = str(Path(dp, fn).relative_to(source_root)).replace(os.sep, "/")
+                    decl.extend(pe.scan_skeletons(source_root, rel))
+    print(f"   skeleton declarations in the crate: {len(decl)}")
+    check("skeleton declarations in a module doc", sum(1 for d in decl
+                                                       if d["scope"] != "skeleton"), 0)
+    classes = {r[0]: r[1] for r in q("MATCH (c:Class) RETURN c.qualifiedName, c.portScope")}
+    exact, _short = pe.build_class_index(list(classes))
+    tasks = {r[0] for r in q("MATCH (t:Task) RETURN t.id")}
+    items = [d for d in decl if d["scope"] == "skeleton"]
+    bad_class = [d for d in items if classes.get(exact.get(d["lucene"])) not in ("in", "nested")]
+    check("skeletons naming no in-scope Class", len(bad_class), 0,
+          f"{[(d['file'], d['lucene']) for d in bad_class[:3]]}" if bad_class else "")
+    bad_task = [d for d in items if d["task"] not in tasks]
+    check("skeletons naming no Task", len(bad_task), 0,
+          f"{[(d['file'], d['task']) for d in bad_task[:3]]}" if bad_task else "")
+    want = {(d["target"], d["file"], exact[d["lucene"]]) for d in items
+            if exact.get(d["lucene"]) in classes}
+    have = {(n, f, c) for n, f, c in q(
+        "MATCH (t)-[:SKELETON_OF]->(c:Class) RETURN t.name, t.file, c.qualifiedName")}
+    check("skeleton declarations without a SKELETON_OF", len(want - have), 0,
+          f"{sorted(want - have)[:3]}" if want - have else "")
+    check("SKELETON_OF edges the crate does not declare", len(have - want), 0,
+          f"{sorted(have - want)[:3]}" if have - want else "")
+    want_p = {(d["task"], exact[d["lucene"]]) for d in items
+              if exact.get(d["lucene"]) in classes and d["task"] in tasks}
+    have_p = {(t, c) for t, c in q(
+        "MATCH (t:Task)-[:PLANS_PORT]->(c:Class) RETURN t.id, c.qualifiedName")}
+    check("skeleton tasks without a PLANS_PORT", len(want_p - have_p), 0,
+          f"{sorted(want_p - have_p)[:3]}" if want_p - have_p else "")
+    check("PLANS_PORT edges the crate does not declare", len(have_p - want_p), 0,
+          f"{sorted(have_p - want_p)[:3]}" if have_p - want_p else "")
+    unevid = q("MATCH ()-[e:SKELETON_OF]->(:Class) WHERE e.evidence IS NULL "
+               "OR e.task IS NULL RETURN count(e)")[0][0]
+    check("SKELETON_OF edges without evidence or task", unevid, 0)
+    # `skeleton` asserts a skeleton exists and no port does.
+    # Two anchored reads and a set difference: an `OPTIONAL MATCH` from each
+    # `skeleton` class to its source (any label) exceeds the server's 5 s
+    # budget at 614 skeletons (rmp 1.21.0, measured 2026-11-13), while each
+    # read below takes ~0.02 s.
+    skel_cls = {r[0] for r in q(
+        "MATCH (c:Class) WHERE c.portState = 'skeleton' RETURN c.qualifiedName")}
+    with_src = {c for _n, _f, c in have}
+    stale = len(skel_cls - with_src)
+    check("'skeleton' classes without a SKELETON_OF", stale, 0,
+          f"{sorted(skel_cls - with_src)[:3]}" if stale else "")
+    # Per skeleton-tracked module: exactly one skeleton per class, and the gap.
+    per_class = {}
+    for c, n in q("MATCH (t)-[:SKELETON_OF]->(c:Class) RETURN c.qualifiedName, count(t)"):
+        per_class[c] = n
+    for module in pm.SKELETON_MODULES:
+        mode = pm.BY_NAME[module]["skeletons"]
+        mod = {r[0]: (r[1], r[2]) for r in q(
+            "MATCH (c:Class) WHERE c.module = '" + module + "' AND c.portScope IN "
+            "['in', 'nested'] RETURN c.qualifiedName, c.portScope, c.portState")}
+        multi = sorted(c for c in mod if per_class.get(c, 0) > 1)
+        check(f"{module} classes with more than one skeleton", len(multi), 0,
+              f"{multi[:3]}" if multi else "")
+        gap = sorted(c for c, (_sc, st) in mod.items()
+                     if per_class.get(c, 0) == 0 and st != "ported")
+        gap_in = sum(1 for c in gap if mod[c][0] == "in")
+        line = (f"   {module}: classes {len(mod)} (top-level "
+                f"{sum(1 for v in mod.values() if v[0] == 'in')}, nested "
+                f"{sum(1 for v in mod.values() if v[0] == 'nested')}); without a "
+                f"skeleton or a port: {len(gap)} (top-level {gap_in}, nested "
+                f"{len(gap) - gap_in}) [skeletons: {mode}]")
+        if mode == "enforce":
+            check(f"{module} classes without a skeleton", len(gap), 0, line.strip())
+        else:
+            print(line)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("roadmap")
@@ -254,13 +342,16 @@ def main():
     stale_ported = nested_ported_without_ports(q, ported)
     check("nested types 'ported' without a PORTS edge", len(stale_ported), 0,
           f"{stale_ported[:3]}" if stale_ported else "")
-    # The cycle rule's record: a member ported early belongs to a sprint-9 type.
+    # The cycle rule's record: a member ported early belongs to a type of a
+    # module beyond lucene/core.
     early_bad = q("MATCH (:Task)-[:PORTS_EARLY]->(m:Method) "
                   "OPTIONAL MATCH (c:Class)-[:DECLARES]->(m) "
                   "WITH m, collect(c.module) AS mods "
-                  f"WHERE NONE(x IN mods WHERE x IN {list(pm.SPRINT9)}) "
+                  f"WHERE NONE(x IN mods WHERE x IN {list(pm.ADDED_MODULES)}) "
                   "RETURN count(m)")[0][0]
-    check("PORTS_EARLY members outside a sprint-9 type", early_bad, 0)
+    check("PORTS_EARLY members outside an added module", early_bad, 0)
+
+    skeleton_audit(q, check, Path(args.source_root))
 
     # Every PORTS edge must start at a node the survey confirms -- as a type or
     # as a function, since a free function can be the port of a Lucene class.

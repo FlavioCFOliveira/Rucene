@@ -28,16 +28,23 @@ de indice com o Apache Lucene Core 10.5.0. Os tipos aninhados ficam marcados
 `nested`: sao portados com o tipo que os envolve, nao de forma independente, e
 por isso nao entram no denominador.
 
-Desde a decisao do utilizador de 2026-11-03 (sprint 9), a mesma regra cobre os
-modulos que `port_modules_kg.PORT_MODULES` nomeia -- `lucene/codecs`,
-`lucene/test-framework` e randomizedtesting 2.8.1 (`randomized-runner`) -- com
-`portScopeRule = 'sprint-9-module-top-level'`, e cada `Class` leva o seu
-`module`. Para esses modulos, uma reivindicacao so de membro
-(`claimLevel = 'member'`) nao torna o tipo `ported`: e a regra de ciclo do
-sprint, que porta um membro antes do tipo que o contem; os seus aninhados
-recebem um `portState` mecanico (`ported` com `PORTS`, senao `unported` com o
-destino no crate do modulo), porque `nested_port_kg.py` mede apenas os de
-`lucene/core`.
+Desde as decisoes do utilizador de 2026-11-03 (sprint 9) e de 2026-11-13
+(sprint 12), a mesma regra cobre todos os modulos que
+`port_modules_kg.PORT_MODULES` nomeia para la de `lucene/core`
+(`port_modules_kg.ADDED_MODULES`: `lucene/codecs`, `lucene/test-framework`,
+randomizedtesting 2.8.1 `randomized-runner` e `lucene/analysis/common`), com o
+`classRule` de cada um (`sprint-9-module-top-level`,
+`sprint-12-module-top-level`), e cada `Class` leva o seu `module`. Para esses
+modulos, uma reivindicacao so de membro (`claimLevel = 'member'`) nao torna o
+tipo `ported`: e a regra de ciclo do sprint, que porta um membro antes do tipo
+que o contem; os seus aninhados recebem um `portState` mecanico (`ported` com
+`PORTS`, `skeleton` com `SKELETON_OF`, senao `unported` com o destino no crate
+do modulo), porque `nested_port_kg.py` mede apenas os de `lucene/core`.
+
+`portState = 'skeleton'` (qualquer modulo): o tipo nao tem `PORTS` ao nivel do
+tipo, mas um item Rust declara-se o seu esqueleto (`SKELETON_OF`, escrito por
+`port_evidence_kg.py`). A passagem `skeleton -> ported` so acontece com um
+`PORTS`.
 
 Uso:
     python3 tools/kg/port_coverage_kg.py rucene \\
@@ -247,8 +254,9 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
     overridden = overridden_set(roadmap)
 
     # The sprint's cycle rule ports a member before the type that holds it, so
-    # in a sprint-9 module a claim naming only a member is not a port of the
-    # type: the member is recorded (`PORTS_EARLY`) and the type stays missing.
+    # in a module beyond lucene/core a claim naming only a member is not a port
+    # of the type: the member is recorded (`PORTS_EARLY`) and the type stays
+    # missing.
     ported = read(
         roadmap,
         "MATCH (x)-[e:PORTS]->(c:Class) WHERE c.portScope = 'in' "
@@ -265,6 +273,8 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
         batch_size,
         "portState = ported",
     )
+    # A Rust skeleton without a port: the item exists, the port is not done.
+    skeletons = skeleton_targets(roadmap)
     run_unwind(
         "update",
         roadmap,
@@ -272,6 +282,21 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
             {"qn": r["qn"]}
             for r in rows_in
             if r["qn"] not in ported_set and r["qn"] not in overridden
+            and r["qn"] in skeletons
+        ],
+        f"MATCH (c:Class {{qualifiedName:row.qn}}) SET c.portState = 'skeleton', "
+        f"{stamp}",
+        batch_size,
+        "portState = skeleton",
+    )
+    run_unwind(
+        "update",
+        roadmap,
+        [
+            {"qn": r["qn"]}
+            for r in rows_in
+            if r["qn"] not in ported_set and r["qn"] not in overridden
+            and r["qn"] not in skeletons
         ],
         f"MATCH (c:Class {{qualifiedName:row.qn}}) SET c.portState = 'unported', "
         f"{stamp}",
@@ -283,30 +308,49 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
             f"  portState preservado por verificacao manual: {len(overridden)}",
             file=sys.stderr,
         )
-    phase_sprint9_nested(roadmap, rows_nested, commit, date, batch_size)
+    phase_added_nested(roadmap, rows_nested, commit, date, batch_size)
 
 
-def phase_sprint9_nested(roadmap, rows_nested, commit, date, batch_size):
-    """`portState` of the nested types of the sprint-9 modules.
+def skeleton_targets(roadmap):
+    """The `Class` nodes a Rust skeleton declares itself the skeleton of."""
+    return {r["qn"] for r in read(
+        roadmap,
+        "MATCH ()-[:SKELETON_OF]->(c:Class) RETURN DISTINCT c.qualifiedName AS qn")}
+
+
+def nested_state(qn, claimed, skeletons):
+    """`(portState, portStateEvidence)` of a nested type of an added module."""
+    if qn in claimed:
+        return "ported", "doc-comment"
+    if qn in skeletons:
+        return "skeleton", "skeleton-doc-comment"
+    return "unported", "no-port-claim"
+
+
+def phase_added_nested(roadmap, rows_nested, commit, date, batch_size):
+    """`portState` of the nested types of the modules beyond lucene/core.
 
     `nested_port_kg.py` measures `lucene/core`'s nested types only: its
     `absorbed` grounds rest on a port of the enclosing type, and none of these
     modules has one yet. Until it is extended, these carry the mechanical
-    state: `ported` when a type-level `PORTS` reaches them, else `unported`
-    with the crate directory their port belongs in (`portDestination`), on the
-    evidence `doc-comment` or `no-port-claim`.
+    state: `ported` when a type-level `PORTS` reaches them, `skeleton` when a
+    Rust skeleton declares itself theirs (`SKELETON_OF`), else `unported` with
+    the crate directory their port belongs in (`portDestination`), on the
+    evidence `doc-comment`, `skeleton-doc-comment` or `no-port-claim`.
     """
-    rows = [r for r in rows_nested if r["qn"] and r["module"] in pm.SPRINT9]
+    rows = [r for r in rows_nested if r["qn"] and r["module"] in pm.ADDED_MODULES]
     claimed = {r["qn"] for r in read(
         roadmap,
         "MATCH ()-[e:PORTS]->(c:Class) WHERE c.portScope = 'nested' "
         "AND coalesce(e.claimLevel, 'type') = 'type' RETURN DISTINCT c.qualifiedName AS qn")}
-    out = [{"qn": r["qn"],
-            "state": "ported" if r["qn"] in claimed else "unported",
-            "evidence": "doc-comment" if r["qn"] in claimed else "no-port-claim",
-            "dest": None if r["qn"] in claimed
-            else pm.crate_destination(r["module"], r["pkg"]),
-            "commit": commit, "date": date} for r in rows]
+    skeletons = skeleton_targets(roadmap)
+    out = []
+    for r in rows:
+        state, evidence = nested_state(r["qn"], claimed, skeletons)
+        out.append({"qn": r["qn"], "state": state, "evidence": evidence,
+                    "dest": pm.crate_destination(r["module"], r["pkg"])
+                    if state == "unported" else None,
+                    "commit": commit, "date": date})
     run_unwind(
         "update",
         roadmap,
@@ -315,7 +359,7 @@ def phase_sprint9_nested(roadmap, rows_nested, commit, date, batch_size):
         "c.portStateEvidence = row.evidence, c.portDestination = row.dest, "
         "c.gitCommit = row.commit, c.gitDate = row.date",
         batch_size,
-        "sprint-9 nested portState",
+        "added-module nested portState",
     )
 
 
@@ -354,7 +398,7 @@ def phase_candidates(roadmap, survey_path, commit, date, batch_size):
         sys.exit(2)
     survey = json.load(open(survey_path, encoding="utf-8"))
     # A candidate is looked for only in the crate that ports the type's module:
-    # a `lucene/core` type in `src/`, a sprint-9 type in its own workspace crate.
+    # a `lucene/core` type in `src/`, any other in its own workspace crate.
     def crate_of(file):
         for m in pm.PORT_MODULES:
             if m["cratePath"] != "." and file.startswith(m["cratePath"] + "/src/"):
@@ -376,9 +420,12 @@ def phase_candidates(roadmap, survey_path, commit, date, batch_size):
         "MATCH ()-[r:PORTS_CANDIDATE]->() DELETE r",
         "reset candidates",
     )
+    # A type with a skeleton is not a candidate: its Rust item is declared, and
+    # the name match would only restate that the skeleton exists.
     unported = read(
         roadmap,
-        "MATCH (c:Class) WHERE c.portScope = 'in' AND c.portState <> 'ported' "
+        "MATCH (c:Class) WHERE c.portScope = 'in' "
+        "AND NOT c.portState IN ['ported', 'skeleton'] "
         "AND c.portStateNote IS NULL "
         "RETURN c.qualifiedName AS qn, c.name AS name, c.module AS module",
     )
@@ -663,22 +710,28 @@ def phase_decision(roadmap, top_level, commit, date):
     name = "Port scope is every top-level type of lucene/core 10.5.0"
     rmp("create", roadmap, f"MERGE (d:Decision {{name:{esc(name)}}})", "decision")
     core = sum(1 for f in top_level.values() if pm.module_of_file(f) == "lucene/core")
+    added = "; ".join(
+        f"'{d['name']}' ("
+        + ", ".join(f"{m} {sum(1 for f in top_level.values() if pm.module_of_file(f) == m)}"
+                    for m in d["modules"]) + " types)"
+        for d in pm.DECISIONS)
     summary = (
         "Every top-level type declared by a file of the Apache Lucene Core 10.5.0 "
         f"module lucene/core ({core} types, src/java and src/java21) is "
         "marked portScope='in' and forms the denominator of port coverage, with "
-        "the modules sprint 9 adds -- see the decision 'Sprint 9 ports "
-        "lucene/test-framework, lucene/codecs and randomizedtesting 2.8.1' "
-        f"({len(top_level) - core} more types); Class.module tells them apart. Nested "
+        "the modules each later scope decision adds -- see the decisions "
+        f"{added}; Class.module tells them apart. Nested "
         "types are marked portScope='nested' and are excluded, because a nested "
         "type is not an independent port unit. That exclusion is measured, not "
         "assumed: tools/kg/nested_port_kg.py gives every one of the 908 a "
         "portState of its own -- see the decision 'Nested types are excluded "
         "from the denominator by measurement, not by assumption'. Anything "
         "else carrying a Java label is portScope='out'. portState splits the "
-        "in-scope set three ways: 'ported' (a curated PORTS edge), 'candidate' "
+        "in-scope set four ways: 'ported' (a curated PORTS edge), 'candidate' "
         "(no PORTS edge, but exactly one Rucene type carries the same simple "
-        "name, recorded as PORTS_CANDIDATE) and 'unported'."
+        "name, recorded as PORTS_CANDIDATE), 'skeleton' (no PORTS edge, but a "
+        "Rust skeleton declares itself the type's, recorded as SKELETON_OF) and "
+        "'unported'."
     )
     rationale = (
         "CLAUDE.md 1 states the reference source is Apache Lucene Core 10.5.0 and "

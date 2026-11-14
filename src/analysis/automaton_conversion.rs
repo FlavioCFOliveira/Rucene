@@ -129,12 +129,12 @@ impl TokenStreamToAutomaton {
     /// rewrite a token — escaping bytes that would otherwise collide with
     /// [`POS_SEP`] or [`HOLE`], for instance — before it becomes arcs.
     ///
-    /// Divergence: Rust has no implementation inheritance, so nothing can
-    /// replace this behaviour the way a Java subclass overrides
-    /// `changeToken` (`TokenStreamToAutomaton.java` lines 93-95). The default
-    /// body is ported exactly, and it is applied at the same point of
-    /// [`to_automaton`](Self::to_automaton) that Java applies it
-    /// (`TokenStreamToAutomaton.java` line 176).
+    /// Rust has no implementation inheritance: a Java subclass that overrides
+    /// `changeToken` (`TokenStreamToAutomaton.java` lines 93-95) passes its
+    /// override to [`to_automaton_changing_tokens`](Self::to_automaton_changing_tokens),
+    /// which applies it at the point Java applies `changeToken`
+    /// (`TokenStreamToAutomaton.java` line 176); [`to_automaton`](Self::to_automaton)
+    /// applies this default body there.
     ///
     /// Equivalent to `org.apache.lucene.analysis.TokenStreamToAutomaton#changeToken`.
     pub fn change_token(&self, input: BytesRef) -> BytesRef {
@@ -189,6 +189,25 @@ impl TokenStreamToAutomaton {
     /// `debug_assert!`) fails first, and without assertions its
     /// `posData.leaving` then dereferences `null`.
     pub fn to_automaton(&self, input: &mut dyn TokenStream) -> Result<Automaton> {
+        self.to_automaton_changing_tokens(input, &mut |token| self.change_token(token))
+    }
+
+    /// [`to_automaton`](Self::to_automaton) of a subclass that overrides
+    /// `changeToken`: `change_token` is the override, applied to each token's
+    /// bytes before they become arcs.
+    ///
+    /// Equivalent to `TokenStreamToAutomaton.toAutomaton(TokenStream)` on a
+    /// subclass instance, such as `ConcatenateGraphFilter`'s private
+    /// `EscapingTokenStreamToAutomaton`.
+    ///
+    /// # Errors
+    ///
+    /// As [`to_automaton`](Self::to_automaton).
+    pub fn to_automaton_changing_tokens(
+        &self,
+        input: &mut dyn TokenStream,
+        change_token: &mut dyn FnMut(BytesRef) -> BytesRef,
+    ) -> Result<Automaton> {
         let mut builder = AutomatonBuilder::new();
         builder.create_state();
 
@@ -272,7 +291,7 @@ impl TokenStreamToAutomaton {
 
             let end_pos = pos + pos_len;
 
-            let term_bytes = self.change_token(term_bytes);
+            let term_bytes = change_token(term_bytes);
             if positions.get(end_pos).arriving == -1 {
                 let arriving = builder.create_state();
                 positions.get(end_pos).arriving = arriving;

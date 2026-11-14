@@ -19,7 +19,9 @@
 
 /// Converts numbers to English strings for testing.
 ///
-/// Port of `English` (`final`, no instances), `@lucene.internal`.
+/// Equivalent to the final class `org.apache.lucene.tests.util.English`
+/// (`@lucene.internal`): no instances (its private constructor is the
+/// private unit field).
 pub struct English(());
 
 impl English {

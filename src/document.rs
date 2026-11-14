@@ -5083,6 +5083,16 @@ impl SortedDocValuesField {
         sorted_doc_values_field_type()
     }
 
+    /// Returns `SortedDocValuesField.TYPE` as the one shared object every
+    /// instance references, for a [`Field`] built over it, as
+    /// `new Field(name, SortedDocValuesField.TYPE)` shares it
+    /// (`CollationDocValuesField`).
+    ///
+    /// Equivalent to the static field `SortedDocValuesField.TYPE`.
+    pub fn type_shared() -> Arc<FieldType> {
+        Arc::clone(sorted_doc_values_field_type_shared())
+    }
+
     /// Creates a new SortedDocValuesField.
     pub fn new(name: &str, value: BytesRef) -> Self {
         Self {

@@ -53,6 +53,28 @@ impl CharacterRunAutomaton {
         self.inner.is_accept(p)
     }
 
+    /// Returns true if the UTF-16 units `s[offset..offset + length]` are
+    /// accepted by this automaton.
+    ///
+    /// Equivalent to `CharacterRunAutomaton.run(char[], int, int)` over
+    /// Java's `char`s: each step reads `Character.codePointAt(s, i, offset +
+    /// length)`, so a surrogate pair is one code point and a lone surrogate
+    /// stands for itself.
+    pub fn run_units(&self, s: &[u16], offset: usize, length: usize) -> bool {
+        let mut p = 0i32;
+        let l = offset + length;
+        let mut i = offset;
+        while i < l {
+            let cp = crate::analysis::character_utils::code_point_at(s, i, l);
+            p = self.inner.step(p, cp);
+            if p == -1 {
+                return false;
+            }
+            i += crate::analysis::character_utils::char_count(cp);
+        }
+        self.inner.is_accept(p)
+    }
+
     /// Returns a reference to the underlying run table.
     pub fn run_automaton(&self) -> &RunAutomaton {
         &self.inner

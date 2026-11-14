@@ -1,0 +1,84 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+//! `TokenFilter` that normalizes cedilla forms to comma forms, ported from
+//! `org.apache.lucene.analysis.ro.RomanianNormalizationFilter`.
+
+use rucene::analysis::{CharTermAttribute, TokenFilter, TokenFilterLogic, TokenStream};
+use rucene::error::Result;
+use rucene::util::attribute::AttributeSource;
+
+use super::romanian_normalizer::RomanianNormalizer;
+use crate::jdk::character::{chars_to_utf16, utf16_to_term_chars};
+
+/// The body of [`RomanianNormalizationFilter`]: what Lucene's
+/// `RomanianNormalizationFilter` adds to `TokenFilter`.
+#[derive(Debug)]
+pub struct RomanianNormalizationFilterLogic {
+    normalizer: RomanianNormalizer,
+}
+
+impl TokenFilterLogic for RomanianNormalizationFilterLogic {
+    /// Equivalent to `RomanianNormalizationFilter.incrementToken()`. The
+    /// normalizer reads the term's UTF-16 units, Java's `termAtt.buffer()`,
+    /// and changes them in place; the first `newlen` units become the term.
+    fn increment_token(
+        &mut self,
+        source: &mut AttributeSource,
+        input: &mut dyn TokenStream,
+    ) -> Result<bool> {
+        if input.increment_token()? {
+            let mut term_att = source
+                .get_attribute_interface_mut::<dyn CharTermAttribute>()
+                .expect("INVARIANT: the constructor added the CharTermAttribute");
+            let mut buffer = chars_to_utf16(&term_att.buffer()[..term_att.length()]);
+            let length = buffer.len();
+            let newlen = self.normalizer.normalize(&mut buffer, length);
+            let chars = utf16_to_term_chars(&buffer[..newlen]);
+            term_att.copy_buffer(&chars, 0, chars.len());
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+/// TokenFilter that normalizes cedilla forms to comma forms.
+///
+/// Equivalent to `org.apache.lucene.analysis.ro.RomanianNormalizationFilter`.
+pub type RomanianNormalizationFilter = TokenFilter<RomanianNormalizationFilterLogic>;
+
+/// Equivalent to `RomanianNormalizationFilter(TokenStream)`, whose field
+/// adds the `CharTermAttribute`.
+///
+/// # Errors
+///
+/// What the stream's attribute factory raises for an interface it cannot
+/// implement, as Java's `addAttribute` throws.
+pub fn new_romanian_normalization_filter(
+    input: Box<dyn TokenStream>,
+) -> Result<RomanianNormalizationFilter> {
+    let mut filter = TokenFilter::new(
+        input,
+        RomanianNormalizationFilterLogic {
+            normalizer: RomanianNormalizer::new(),
+        },
+    );
+    filter
+        .attribute_source_mut()
+        .add_attribute_interface::<dyn CharTermAttribute>()?;
+    Ok(filter)
+}

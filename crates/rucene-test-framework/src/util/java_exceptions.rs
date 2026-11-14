@@ -80,6 +80,12 @@ const HIERARCHY: &[(&str, &str)] = &[
         "java.lang.NullPointerException",
         "java.lang.RuntimeException",
     ),
+    // `java.util.IllformedLocaleException extends RuntimeException`: what
+    // `Locale.Builder` throws for an ill-formed tag (`DateRecognizerFilterFactory`).
+    (
+        "java.util.IllformedLocaleException",
+        "java.lang.RuntimeException",
+    ),
     ("java.lang.Error", "java.lang.Throwable"),
     ("java.lang.AssertionError", "java.lang.Error"),
     (
@@ -211,6 +217,7 @@ pub fn java_class_name(e: &LuceneError) -> String {
         LuceneErrorKind::Arithmetic(_) => "java.lang.ArithmeticException".into(),
         LuceneErrorKind::AssertionError(_) => "java.lang.AssertionError".into(),
         LuceneErrorKind::Unchecked { class, .. } => class.to_string(),
+        LuceneErrorKind::Throwable(throwable) => throwable.java_class().to_string(),
         LuceneErrorKind::TooManyClauses(_) => {
             "org.apache.lucene.search.IndexSearcher$TooManyClauses".into()
         }

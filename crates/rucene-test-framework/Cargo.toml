@@ -12,4 +12,8 @@ publish = false
 [dependencies]
 rucene = { path = "../.." }
 rucene-codecs = { path = "../rucene-codecs" }
+# Holds the `java.text.Collator` emulation (`jdk::collator`) that
+# `LuceneTestCase.collate` and the collation tests use; the runtime classes of
+# `org.apache.lucene.collation` need it, so it lives there, once.
+rucene-analysis-common = { path = "../rucene-analysis-common" }
 randomizedtesting = { path = "../randomizedtesting" }

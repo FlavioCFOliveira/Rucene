@@ -747,6 +747,21 @@ impl BytesRefBuilder {
         self.inner.length = length;
     }
 
+    /// Copies the UTF-8 encoding of the UTF-16 units
+    /// `text[offset..offset + length]` into the buffer.
+    ///
+    /// Equivalent to `BytesRefBuilder.copyChars(char[], int, int)`
+    /// (`BytesRefBuilder.java:146-149`) over Java's `char`s:
+    /// `growNoCopy(UnicodeUtil.maxUTF8Length(len))`, then
+    /// `UnicodeUtil.UTF16toUTF8`, which writes U+FFFD for a lone surrogate.
+    pub fn copy_chars_utf16(&mut self, text: &[u16], offset: usize, length: usize) {
+        self.grow_no_copy(UnicodeUtil::max_utf8_length(length));
+        debug_assert!(self.inner.offset == 0);
+        let written = UnicodeUtil::utf16_to_utf8(text, offset, length, &mut self.inner.bytes);
+        self.inner.offset = 0;
+        self.inner.length = written;
+    }
+
     /// Returns a `BytesRef` pointing to the builder's internal content.
     ///
     /// The returned value remains valid only until the builder is modified.

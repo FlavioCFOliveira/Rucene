@@ -48,7 +48,12 @@ pub const HANGUL: usize = 6;
 pub const EMOJI: usize = 7;
 
 /// String token types that correspond to the integer constants above.
-pub const TOKEN_TYPES: [&str; 8] = [
+///
+/// A `static`, not a `const`: Java's `StandardTokenizer.TOKEN_TYPES` is one
+/// array whose strings consumers compare by reference (`CJKBigramFilter`'s
+/// `type == doHan`), so every reader must see the same string objects; a
+/// `const` is copied into each crate that uses it, and its literals with it.
+pub static TOKEN_TYPES: [&str; 8] = [
     "<ALPHANUM>",
     "<NUM>",
     "<SOUTHEAST_ASIAN>",

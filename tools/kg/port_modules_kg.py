@@ -2,13 +2,19 @@
 """The modules the port covers, surveyed and tracked as `lucene/core` is.
 
 `CLAUDE.md` 6.1 requires the graph to say, at any moment, what of the port's
-scope is ported and what is missing. On 2026-11-03 the user widened that scope:
-sprint 9 ("Port Tests Framework") ports Lucene 10.5.0's `lucene/test-framework`
-and `lucene/codecs` and the runner they are built on, randomizedtesting 2.8.1
-(`randomized-runner`), as a Cargo workspace with one crate per module. Before
-this tool the graph held the opposite decision ("Rucene does not port
-org.apache.lucene.tests"), `inScope: false` on both Lucene modules, the
-framework only as `TestClass` nodes, and nothing of randomizedtesting.
+scope is ported and what is missing. The user has widened that scope twice:
+
+* 2026-11-03, sprint 9 ("Port Tests Framework"): Lucene 10.5.0's
+  `lucene/test-framework` and `lucene/codecs` and the runner they are built on,
+  randomizedtesting 2.8.1 (`randomized-runner`), as a Cargo workspace with one
+  crate per module. Before this tool the graph held the opposite decision
+  ("Rucene does not port org.apache.lucene.tests"), `inScope: false` on both
+  Lucene modules, the framework only as `TestClass` nodes, and nothing of
+  randomizedtesting.
+* 2026-11-13, sprint 12 ("Port Analysis Common Module"): Lucene 10.5.0's
+  `lucene/analysis/common`, as the workspace crate `rucene-analysis-common`,
+  ported 100% faithfully. Its types are tracked through a Rust skeleton
+  (`SKELETON_OF`, `portState = 'skeleton'`) before each is ported.
 
 `PORT_MODULES` is the single statement of that scope. Every other KG tool that
 needs to know which module a Java file belongs to, which crate ports it, or
@@ -21,12 +27,14 @@ which source trees to census imports it from here:
 
 Phases (`--phase`, default `all`):
 
-  modules    the four `Module` nodes' scope properties, the randomizedtesting
+  modules    the port `Module` nodes' scope properties, the randomizedtesting
              `Project`, `Module` -> `Module` `DEPENDS_ON` from each module's
-             JPMS descriptor, and the scope `Decision` with its `SUPERSEDES`.
+             JPMS descriptor, and one scope `Decision` per widening
+             (`DECISIONS`), with its `SUPERSEDES`.
   structure  packages, files, top-level and nested types, members, `EXTENDS` /
-             `IMPLEMENTS`, and `TestClass` -[:PORT_UNIT]-> `Class`, for the three
-             sprint-9 modules, reusing `extract_lucene_kg.discover` and
+             `IMPLEMENTS`, and `TestClass` -[:PORT_UNIT]-> `Class`, for every
+             module beyond `lucene/core` (`ADDED_MODULES`), reusing
+             `extract_lucene_kg.discover` and
              `lucene_structure_kg`'s loaders over each module's source tree;
              nodes the trees no longer declare are pruned.
   coverage   prints the per-module coverage (`COVERAGE_QUERY`).
@@ -65,9 +73,20 @@ DEFAULT_RT_ROOT = "/tmp/randomizedtesting281"
 
 # One entry per module the port covers. `repo` names the clone a module's
 # `sources` are relative to, and every `File.path` of the module is relative to
-# that clone's root. `packageRoot` is the Java package the crate's `src/`
-# mirrors (`org.apache.lucene.codecs.simpletext.X` ->
-# `crates/rucene-codecs/src/simpletext/`). `jpms` is the module's JPMS name:
+# that clone's root. `prefix` is the Java name prefix (or prefixes) of the
+# module's types, and `packageRoot` the Java package (or packages) the crate's
+# `src/` mirrors (`org.apache.lucene.codecs.simpletext.X` ->
+# `crates/rucene-codecs/src/simpletext/`); either is a string or a tuple.
+# `lucene/analysis/common` declares packages under two roots,
+# `org.apache.lucene` (`analysis.*`, `collation.*`) and `org.tartarus.snowball`
+# (the Snowball runtime and its generated stemmers), so both are tuples there:
+# `org.apache.lucene.analysis.ar` -> `src/analysis/ar/`, and `org` as the
+# second root keeps the vendor in the path (`org.tartarus.snowball` ->
+# `src/tartarus/snowball/`), clear of `analysis.snowball`.
+# `skeletons` is set on a module whose types are tracked through a Rust
+# skeleton before they are ported (`SKELETON_OF`): `"report"` makes the audit
+# report the classes still lacking one, `"enforce"` fails it on any.
+# `jpms` is the module's JPMS name:
 # randomizedtesting 2.8.1 ships no descriptor, so its name is the automatic one
 # the JDK derives from `randomizedtesting-runner-2.8.1.jar` (version dropped,
 # `-` -> `.`), the name `lucene/test-framework`'s descriptor requires.
@@ -105,22 +124,60 @@ PORT_MODULES = (
      "scopeRule": "sprint-9-ports-the-module", "classRule": "sprint-9-module-top-level",
      "role": "the randomized test runner lucene/test-framework is built on; "
              "ported by sprint 9"},
+    {"name": "lucene/analysis/common", "project": LUCENE, "repo": "lucene",
+     "sources": ("lucene/analysis/common/src/java",),
+     "prefix": ("org.apache.lucene", "org.tartarus.snowball"),
+     "packageRoot": ("org.apache.lucene", "org"),
+     "crate": "rucene-analysis-common", "cratePath": "crates/rucene-analysis-common",
+     "jpms": "org.apache.lucene.analysis.common",
+     "descriptor": "lucene/analysis/common/src/java/module-info.java",
+     "scopeRule": "sprint-12-ports-the-module", "classRule": "sprint-12-module-top-level",
+     "skeletons": "enforce",
+     "role": "analyzers, tokenizers, token filters and char filters for many "
+             "languages, with their SPI factories (the Snowball stemmers included); "
+             "ported by sprint 12"},
 )
 BY_NAME = {m["name"]: m for m in PORT_MODULES}
-SPRINT9 = tuple(m["name"] for m in PORT_MODULES if m["name"] != "lucene/core")
-JAVA_PREFIXES = tuple(sorted({m["prefix"] for m in PORT_MODULES}))
+# The modules beyond `lucene/core`: surveyed by `--phase structure`, given the
+# mechanical nested `portState`, and the only ones a cycle-rule early port
+# (`PORTS_EARLY`) may belong to.
+ADDED_MODULES = tuple(m["name"] for m in PORT_MODULES if m["name"] != "lucene/core")
 
-DECISION = ("Sprint 9 ports lucene/test-framework, lucene/codecs and "
-            "randomizedtesting 2.8.1")
-SUPERSEDED = ("Rucene tests Lucene differentially instead of porting "
-              "lucene/test-framework")
+
+def as_tuple(v):
+    """A `prefix` / `packageRoot` value as a tuple of strings."""
+    return (v,) if isinstance(v, str) else tuple(v)
+
+
+JAVA_PREFIXES = tuple(sorted({p for m in PORT_MODULES for p in as_tuple(m["prefix"])}))
+SKELETON_MODULES = tuple(m["name"] for m in PORT_MODULES if m.get("skeletons"))
+
+# The scope decisions, one per widening of the port, each with the modules it
+# brought in. `supersedes` names an earlier `Decision` it replaces, if any.
+DECISIONS = (
+    {"name": "Sprint 9 ports lucene/test-framework, lucene/codecs and "
+             "randomizedtesting 2.8.1",
+     "on": "2026-11-03",
+     "modules": ("lucene/codecs", "lucene/test-framework",
+                 "randomizedtesting/randomized-runner"),
+     "supersedes": "Rucene tests Lucene differentially instead of porting "
+                   "lucene/test-framework"},
+    {"name": "Sprint 12 ports lucene/analysis/common",
+     "on": "2026-11-13",
+     "modules": ("lucene/analysis/common",),
+     "supersedes": None},
+)
+DECISION = DECISIONS[0]["name"]
+SUPERSEDED = DECISIONS[0]["supersedes"]
 
 # The per-module coverage: every in-scope top-level type, by module and status.
-# `missing` is every `portState` other than `ported` (`unported`, `candidate`).
+# `skeleton` is a Rust skeleton with no port yet; `unported` is every other
+# `portState` but `ported` (`unported`, `candidate`).
 COVERAGE_QUERY = (
     "MATCH (c:Class) WHERE c.portScope = 'in' "
     "RETURN c.module AS module, "
-    "CASE WHEN c.portState = 'ported' THEN 'ported' ELSE 'missing' END AS status, "
+    "CASE WHEN c.portState = 'ported' THEN 'ported' "
+    "WHEN c.portState = 'skeleton' THEN 'skeleton' ELSE 'unported' END AS status, "
     "count(c) AS classes ORDER BY module, status"
 )
 # The members ported early under the cycle rule, by module.
@@ -173,12 +230,19 @@ def module_of_file(path):
     return None
 
 
+def package_root(module, package):
+    """The longest `packageRoot` of `module` that `package` lies under, or `None`."""
+    hits = [r for r in as_tuple(BY_NAME[module]["packageRoot"])
+            if package == r or package.startswith(r + ".")]
+    return max(hits, key=len) if hits else None
+
+
 def crate_destination(module, package):
     """The crate directory a type of `package` is ported into (`src/` mirrors
     the package below the module's `packageRoot`)."""
     m = BY_NAME[module]
-    rel = package[len(m["packageRoot"]):].lstrip(".") if package.startswith(
-        m["packageRoot"]) else package
+    root = package_root(module, package)
+    rel = package[len(root):].lstrip(".") if root else package
     base = "src" if m["cratePath"] == "." else f"{m['cratePath']}/src"
     return "/".join([base] + ([rel.replace(".", "/")] if rel else [])) + "/"
 
@@ -244,9 +308,9 @@ def survey_module(module, roots):
         if not (base / source).is_dir():
             raise SystemExit(f"no sources for {module} under {base / source}")
         with lucene_roots(base, source) as (el, en):
-            el.CORE_PREFIX = m["prefix"]
+            el.CORE_PREFIX = as_tuple(m["prefix"])
             d = el.discover()
-            data["packages"].update(p for p in d["packages"] if p.startswith(m["packageRoot"]))
+            data["packages"].update(p for p in d["packages"] if package_root(module, p))
             data["files"].extend(d["files"])
             data["types"].extend(d["types"])
             data["nested"].extend(en.extract_inner_classes())
@@ -317,12 +381,41 @@ def phase_modules(roadmap, roots, commit, date):
            "e.gitCommit = row.commit, e.gitDate = row.date", "Module DEPENDS_ON evidence")
     for a, b, _via in module_dependencies(roots):
         print(f"  {a} requires {b}", file=sys.stderr)
-    write_decision(roadmap, rows, deps, commit, date)
+    for d in DECISIONS:
+        write_decision(roadmap, d, rows, deps, commit, date)
 
 
-def write_decision(roadmap, rows, deps, commit, date):
-    files = {r["name"]: r["javaFiles"] for r in rows}
-    summary = (
+def decision_text(decision):
+    """`(summary, rationale, alternatives)` of one scope `Decision`."""
+    if decision["name"] == DECISIONS[1]["name"]:
+        return (
+            "On 2026-11-13 the user decided that sprint 12 ('Port Analysis Common "
+            "Module') ports Lucene 10.5.0's lucene/analysis/common completely and "
+            "100% faithfully, as the Cargo workspace crate rucene-analysis-common at "
+            "crates/rucene-analysis-common; Rust module paths mirror the Java "
+            "packages (org.apache.lucene.analysis.*, org.apache.lucene.collation.*, "
+            "org.tartarus.snowball.*). The module is inScope=true; its top-level "
+            "types are portScope='in' (portScopeRule 'sprint-12-module-top-level'), "
+            "every Class carries its module, and portState is derived from the same "
+            "declared PORTS evidence as every other module's, read from the module's "
+            "crate. Before a type is ported it is tracked through its Rust skeleton: "
+            "an item documented 'Skeleton of `<Java type>`; ported by rmp task #N.' "
+            "is recorded as SKELETON_OF the Class, the task as Task-[:PLANS_PORT]->"
+            "Class, and the Class is portState='skeleton' until a PORTS claim makes "
+            "it 'ported'.",
+            "The user's decision for sprint 12 (2026-11-13). CLAUDE.md 6.1 requires "
+            "the graph to answer what of the port's scope is ported and what is "
+            "missing, so the module the work now covers has to be in the graph's "
+            "scope; the skeleton relation makes the state of each type exact "
+            "between its skeleton and its port, as the user asked.",
+            "Keeping the module outside the port modules (rejected: the sprint ports "
+            "it, and coverage would have no denominator for it). Counting a skeleton "
+            "as a port (rejected: a skeleton carries no behaviour; only a PORTS "
+            "claim makes a type ported). A separate portScope value for the module "
+            "(rejected: its types are port targets exactly as lucene/core's are; "
+            "Class.module tells the modules apart).",
+        )
+    return (
         "On 2026-11-03 the user decided that sprint 9 ('Port Tests Framework') ports "
         "Lucene 10.5.0's lucene/test-framework and lucene/codecs and the runner they "
         "are built on, randomizedtesting 2.8.1 (randomized-runner), completely, as a "
@@ -333,54 +426,60 @@ def write_decision(roadmap, rows, deps, commit, date):
         "carries its module, and portState is derived from the same declared PORTS "
         "evidence as lucene/core's, read from each module's crate. A member a task "
         "ports early under the sprint's cycle rule is recorded as Task-[:PORTS_EARLY]->"
-        "Method, and a member-level claim alone does not make a sprint-9 type ported."
-    )
-    rationale = (
+        "Method, and a member-level claim alone does not make a sprint-9 type ported.",
         "The user's decision for sprint 9 (rmp sprint 9, tasks #323-#360). CLAUDE.md "
         "6.1 requires the graph to answer what of the port's scope is ported and what "
         "is missing, so the scope the work now covers has to be the graph's scope. It "
         "supersedes the earlier observation that Rucene tests Lucene differentially "
         "instead of porting lucene/test-framework, which recorded the code as it stood "
-        "and left porting the framework as an open question for the maintainer."
-    )
-    alternatives = (
+        "and left porting the framework as an open question for the maintainer.",
         "Keeping the framework as TestClass nodes only (rejected: TestClass carries no "
         "port state, so 'what of the framework is ported' had no answer). A separate "
         "portScope value for the sprint-9 modules (rejected: they are port targets "
         "exactly as lucene/core is; Class.module already tells the modules apart). "
         "Deleting the superseded decision (rejected: it is history; it is kept, marked "
-        "status='superseded', and linked by SUPERSEDES)."
+        "status='superseded', and linked by SUPERSEDES).",
     )
+
+
+def write_decision(roadmap, decision, rows, deps, commit, date):
+    name = decision["name"]
+    files = {r["name"]: r["javaFiles"] for r in rows if r["name"] in decision["modules"]}
+    summary, rationale, alternatives = decision_text(decision)
     evidence = (
         "Java files at the surveyed tags: " +
         ", ".join(f"{k} {v}" for k, v in files.items()) +
-        ". JPMS requirements between port modules: " +
-        ", ".join(f"{d['a']} -> {d['b']}" for d in deps) + "."
+        ". JPMS requirements of these modules on port modules: " +
+        ", ".join(f"{d['a']} -> {d['b']}" for d in deps if d["a"] in decision["modules"]) +
+        "."
     )
-    rmp("create", roadmap, f"MERGE (d:Decision {{name: {esc(DECISION)}}})")
+    rmp("create", roadmap, f"MERGE (d:Decision {{name: {esc(name)}}})")
     rmp("update", roadmap,
-        f"MATCH (d:Decision {{name: {esc(DECISION)}}}) SET d.kind = 'principle', "
+        f"MATCH (d:Decision {{name: {esc(name)}}}) SET d.kind = 'principle', "
         f"d.summary = {esc(summary)}, d.rationale = {esc(rationale)}, "
         f"d.alternatives = {esc(alternatives)}, d.evidence = {esc(evidence)}, "
         f"d.status = 'current', d.gitCommit = {esc(commit)}, d.gitDate = {esc(date)}")
-    old = read(roadmap, f"MATCH (d:Decision {{name: {esc(SUPERSEDED)}}}) RETURN count(d)")
+    old_name = decision["supersedes"]
+    if not old_name:
+        return
+    old = read(roadmap, f"MATCH (d:Decision {{name: {esc(old_name)}}}) RETURN count(d)")
     if old and old[0][0]:
         rmp("create", roadmap,
-            f"MATCH (n:Decision {{name: {esc(DECISION)}}}) "
-            f"MATCH (o:Decision {{name: {esc(SUPERSEDED)}}}) MERGE (n)-[:SUPERSEDES]->(o)")
+            f"MATCH (n:Decision {{name: {esc(name)}}}) "
+            f"MATCH (o:Decision {{name: {esc(old_name)}}}) MERGE (n)-[:SUPERSEDES]->(o)")
         rmp("update", roadmap,
-            f"MATCH (n:Decision {{name: {esc(DECISION)}}})-[e:SUPERSEDES]->"
-            f"(o:Decision {{name: {esc(SUPERSEDED)}}}) "
-            f"SET e.on = '2026-11-03', e.gitCommit = {esc(commit)}, e.gitDate = {esc(date)}, "
-            "o.status = 'superseded'")
-        print(f"  '{SUPERSEDED}' marked superseded", file=sys.stderr)
+            f"MATCH (n:Decision {{name: {esc(name)}}})-[e:SUPERSEDES]->"
+            f"(o:Decision {{name: {esc(old_name)}}}) "
+            f"SET e.on = {esc(decision['on'])}, e.gitCommit = {esc(commit)}, "
+            f"e.gitDate = {esc(date)}, o.status = 'superseded'")
+        print(f"  '{old_name}' marked superseded", file=sys.stderr)
 
 
 def phase_structure(roadmap, roots, commit, date):
     print("phase: structure", file=sys.stderr)
     import lucene_structure_kg as ls
     graph_classes = {r[0] for r in read(roadmap, "MATCH (c:Class) RETURN c.qualifiedName")}
-    for module in SPRINT9:
+    for module in ADDED_MODULES:
         m = BY_NAME[module]
         data = survey_module(module, roots)
         print(f"  {module}: packages={len(data['packages'])} files={len(data['files'])} "
@@ -543,8 +642,9 @@ def phase_early(roadmap, a):
                "RETURN c.module")
     if not hit:
         raise SystemExit(f"no Method {a.member!r} in the graph")
-    if hit[0][0] not in SPRINT9:
-        raise SystemExit(f"{a.member!r} belongs to {hit[0][0]}, not to a sprint-9 module")
+    if hit[0][0] not in ADDED_MODULES:
+        raise SystemExit(f"{a.member!r} belongs to {hit[0][0]}, not to a module beyond "
+                         "lucene/core")
     for tid in (a.task, a.owner_task):
         if not read(roadmap, f"MATCH (t:Task {{id: {int(tid)}}}) RETURN t.id"):
             raise SystemExit(f"no Task #{tid} in the graph")
