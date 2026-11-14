@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.morph`.
+//! The Java package `org.apache.lucene.analysis.morph`: common classes for the morphological
+//! analyzers (the Viterbi lattice, binary dictionaries and their writers).
 
 pub mod binary_dictionary;
 pub mod binary_dictionary_writer;

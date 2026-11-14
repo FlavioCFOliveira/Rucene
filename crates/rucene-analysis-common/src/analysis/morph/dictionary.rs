@@ -15,10 +15,40 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Dictionary.java`, of the Java
-//! package `org.apache.lucene.analysis.morph`.
+//! The type declared in `Dictionary.java`, of the Java package
+//! `org.apache.lucene.analysis.morph`.
 
-/// Java: `public interface`.
+use super::morph_data::MorphData;
+
+/// High-level dictionary interface for morphological analyzers.
 ///
-/// Skeleton of `org.apache.lucene.analysis.morph.Dictionary`; ported by rmp task #466.
-pub trait Dictionary {}
+/// Equivalent to `org.apache.lucene.analysis.morph.Dictionary<T extends MorphData>`.
+/// Java's wildcard `Dictionary<? extends MorphData>` is
+/// `dyn Dictionary<dyn MorphData>`: a dictionary whose morphological data is
+/// a subtype of `MorphData` implements this trait for `dyn MorphData` too,
+/// answering its data upcast.
+pub trait Dictionary<T: ?Sized + MorphData>: Send + Sync {
+    /// Get left id of specified word
+    ///
+    /// Equivalent to the default `Dictionary.getLeftId(int)`.
+    fn get_left_id(&self, morph_id: i32) -> i32 {
+        self.get_morph_attributes().get_left_id(morph_id)
+    }
+
+    /// Get right id of specified word
+    ///
+    /// Equivalent to the default `Dictionary.getRightId(int)`.
+    fn get_right_id(&self, morph_id: i32) -> i32 {
+        self.get_morph_attributes().get_right_id(morph_id)
+    }
+
+    /// Get word cost of specified word
+    ///
+    /// Equivalent to the default `Dictionary.getWordCost(int)`.
+    fn get_word_cost(&self, morph_id: i32) -> i32 {
+        self.get_morph_attributes().get_word_cost(morph_id)
+    }
+
+    /// Equivalent to `Dictionary.getMorphAttributes()`.
+    fn get_morph_attributes(&self) -> &T;
+}

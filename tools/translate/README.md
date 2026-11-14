@@ -22,8 +22,9 @@ the committed file, and rerunning it must leave that file unchanged.
   count of each construct translated).
 * `jflex_java_to_rust.py` — translates the four JFlex 1.8.2 scanners of Lucene
   (`ClassicTokenizerImpl`, `WikipediaTokenizerImpl`, `UAX29URLEmailTokenizerImpl`,
-  `HTMLStripCharFilter`): their DFA tables, unpacked as the Java `zzUnpack*` routines do, into
-  the wholly generated `crates/rucene-analysis-common/src/analysis/<pkg>/<scanner>_tables.rs`,
+  `HTMLStripCharFilter`): their DFA tables, in Java's packed form (the packed `String`
+  constants and the ported `zzUnpack*` routines, run at first use), into the wholly generated
+  `crates/rucene-analysis-common/src/analysis/<pkg>/<scanner>_tables.rs`,
   and the JFlex skeleton with its simple actions into the `// @generated begin/end` regions
   (`constants`, `fields`, `init`, `skeleton`) of the hand-written `<scanner>.rs`, which it
   then formats with `rustfmt`. It checks every skeleton member token for token against the

@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.compound.hyphenation`.
+//! The Java package `org.apache.lucene.analysis.compound.hyphenation`: the hyphenation code of
+//! the Apache FOP project, used by `HyphenationCompoundWordTokenFilter`.
 
 pub mod byte_vector;
 pub mod char_vector;

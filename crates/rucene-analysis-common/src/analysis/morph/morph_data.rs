@@ -15,10 +15,26 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `MorphData.java`, of the Java
-//! package `org.apache.lucene.analysis.morph`.
+//! The type declared in `MorphData.java`, of the Java package
+//! `org.apache.lucene.analysis.morph`.
 
-/// Java: `public interface`.
+/// High-level interface that represents morphological information in a
+/// dictionary
 ///
-/// Skeleton of `org.apache.lucene.analysis.morph.MorphData`; ported by rmp task #466.
-pub trait MorphData {}
+/// Equivalent to `org.apache.lucene.analysis.morph.MorphData`.
+pub trait MorphData: Send + Sync {
+    /// Get left id of specified word
+    ///
+    /// Equivalent to `MorphData.getLeftId(int)`.
+    fn get_left_id(&self, morph_id: i32) -> i32;
+
+    /// Get right id of specified word
+    ///
+    /// Equivalent to `MorphData.getRightId(int)`.
+    fn get_right_id(&self, morph_id: i32) -> i32;
+
+    /// Get word cost of specified word
+    ///
+    /// Equivalent to `MorphData.getWordCost(int)`.
+    fn get_word_cost(&self, morph_id: i32) -> i32;
+}

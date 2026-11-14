@@ -529,6 +529,9 @@ impl ClassicTokenizerImpl {
         let mut zz_current_pos_l: usize;
         let mut zz_marked_pos_l: usize;
         let mut zz_end_read_l = self.zz_end_read;
+        let zz_trans_l: &[i32] = &super::classic_tokenizer_impl_tables::ZZ_TRANS;
+        let zz_row_map_l: &[i32] = &super::classic_tokenizer_impl_tables::ZZ_ROWMAP;
+        let zz_attr_l: &[i32] = &super::classic_tokenizer_impl_tables::ZZ_ATTRIBUTE;
 
         loop {
             zz_marked_pos_l = self.zz_marked_pos;
@@ -544,8 +547,7 @@ impl ClassicTokenizerImpl {
             self.zz_state = ZZ_LEXSTATE[self.zz_lexical_state as usize];
 
             // set up zzAction for empty match case:
-            let mut zz_attributes =
-                super::classic_tokenizer_impl_tables::ZZ_ATTRIBUTE[self.zz_state as usize];
+            let mut zz_attributes = zz_attr_l[self.zz_state as usize];
             if (zz_attributes & 1) == 1 {
                 zz_action = self.zz_state;
             }
@@ -583,16 +585,14 @@ impl ClassicTokenizerImpl {
                         zz_current_pos_l += crate::jdk::character::char_count(zz_input);
                     }
                 }
-                let zz_next = super::classic_tokenizer_impl_tables::ZZ_TRANS
-                    [(super::classic_tokenizer_impl_tables::ZZ_ROWMAP[self.zz_state as usize]
-                        + Self::zz_cmap(zz_input)) as usize];
+                let zz_next = zz_trans_l
+                    [(zz_row_map_l[self.zz_state as usize] + Self::zz_cmap(zz_input)) as usize];
                 if zz_next == -1 {
                     break;
                 }
                 self.zz_state = zz_next;
 
-                zz_attributes =
-                    super::classic_tokenizer_impl_tables::ZZ_ATTRIBUTE[self.zz_state as usize];
+                zz_attributes = zz_attr_l[self.zz_state as usize];
                 if (zz_attributes & 1) == 1 {
                     zz_action = self.zz_state;
                     zz_marked_pos_l = zz_current_pos_l;

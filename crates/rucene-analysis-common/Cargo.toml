@@ -17,3 +17,8 @@ rucene = { path = "../.." }
 # Inflates the JDK 25 locale data `SimpleDateFormat` parsing reads
 # (`src/jdk/date_parse_data.bin`, zlib), the same backend as the core crate.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+# The XML pull parser under the SAX-shaped reader `jdk::sax`, which
+# `PatternParser` (analysis.compound.hyphenation) reads hyphenation pattern
+# files with in place of the JDK's SAX parser (MIT; user decision on rmp task
+# #461, 2026-11-13). No features: the reader decodes the bytes itself.
+quick-xml = "0.42.0"

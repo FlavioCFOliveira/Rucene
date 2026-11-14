@@ -15,10 +15,41 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Hyphenation.java`, of the Java
-//! package `org.apache.lucene.analysis.compound.hyphenation`.
+//! The type declared in `Hyphenation.java`, of the Java package
+//! `org.apache.lucene.analysis.compound.hyphenation`.
 
-/// Java: `public class`.
+/// This class represents a hyphenated word.
 ///
-/// Skeleton of `org.apache.lucene.analysis.compound.hyphenation.Hyphenation`; ported by rmp task #461.
-pub struct Hyphenation;
+/// This class has been taken from the Apache FOP project
+/// (<http://xmlgraphics.apache.org/fop/>). They have been slightly modified.
+///
+/// Equivalent to `org.apache.lucene.analysis.compound.hyphenation.Hyphenation`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hyphenation {
+    hyphen_points: Vec<i32>,
+}
+
+impl Hyphenation {
+    /// rawWord as made of alternating strings and [`Hyphen`](super::hyphen::Hyphen) instances
+    ///
+    /// Equivalent to the package-private `Hyphenation(int[] points)`.
+    pub(crate) fn new(points: Vec<i32>) -> Self {
+        Self {
+            hyphen_points: points,
+        }
+    }
+
+    /// Returns the number of hyphenation points in the word.
+    ///
+    /// Equivalent to `Hyphenation.length()`.
+    pub fn length(&self) -> usize {
+        self.hyphen_points.len()
+    }
+
+    /// Returns the hyphenation points.
+    ///
+    /// Equivalent to `Hyphenation.getHyphenationPoints()`.
+    pub fn get_hyphenation_points(&self) -> &[i32] {
+        &self.hyphen_points
+    }
+}

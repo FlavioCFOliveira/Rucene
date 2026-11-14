@@ -8,12 +8,18 @@ Input: the four JFlex-generated Java scanners of `lucene/analysis/common`
 Output, per scanner:
 
 * `<scanner>_tables.rs`, wholly generated: the DFA tables (`ZZ_CMAP_TOP`,
-  `ZZ_CMAP_BLOCKS`, `ZZ_ACTION`, `ZZ_ROWMAP`, `ZZ_TRANS`, `ZZ_ATTRIBUTE`) as
-  `static` arrays, unpacked from the packed `String` constants exactly as the
-  Java `zzUnpack*` routines unpack them (the string literals are decoded as
-  `javac` decodes them), each checked against the `new int[N]` its routine
-  allocates. This is the representation of the core's
-  `src/analysis/standard/standard_tokenizer_impl_tables.rs`.
+  `ZZ_CMAP_BLOCKS`, `ZZ_ACTION`, `ZZ_ROWMAP`, `ZZ_TRANS`, `ZZ_ATTRIBUTE`) in
+  Java's own form: the packed `String` constants (`ZZ_TRANS_PACKED_0`, ...),
+  one Rust line per Java literal, as Rust string literals whose chars are the
+  UTF-16 units `javac` decodes from the Java literals (a constant holding a
+  surrogate unit, which a Rust string cannot hold, as a `&[u16]` of the same
+  units), and the ported `zzUnpack*` routines, run once at first use through a
+  `LazyLock` (Java runs them in the class initializer). The script also
+  unpacks every table itself and checks it against the `new int[N]` its
+  routine allocates. Unlike the core's
+  `src/analysis/standard/standard_tokenizer_impl_tables.rs`, the tables are
+  not unpacked `static` arrays: a 1,095,920-entry array literal (the e-mail
+  scanner's `ZZ_TRANS`) stops `rust-analyzer scip` from finishing.
 * the regions between `// @generated begin <region>` and
   `// @generated end <region>` of the hand-written `<scanner>.rs`: `constants`
   (`YYEOF`, the lexical states, `ZZ_LEXSTATE`, the error messages, a constant
@@ -510,6 +516,17 @@ ERROR_MESSAGES = [
 
 
 @dataclass
+class Table:
+    name: str  # ZZ_TRANS
+    routine: str  # zzUnpackTrans
+    kind: str  # "rle", "rowmap" or "trans"
+    doc: str
+    size: int  # the `new int[size]` of the unpacking driver
+    packed: list  # (constant name, [UTF-16 units of each Java literal])
+    values: list  # the unpacked values, as the Java routines produce them
+
+
+@dataclass
 class Parsed:
     sha256: str
     lexical_states: list  # (name, value, public)
@@ -518,7 +535,7 @@ class Parsed:
     buffer_size_is_field: bool
     refill: str  # "grow" or "fixed"
     public_api: bool
-    tables: list  # (name, values, doc, routine)
+    tables: list  # Table
     eof: list  # tokens after `zzAtEOF = true;` up to the closing brace
     actions: list  # (number, lookahead tokens, body tokens)
     break_labels: list
@@ -565,23 +582,28 @@ def to_i32(v: int) -> int:
     return v - (1 << 32) if v & 0x80000000 else v
 
 
-def string_constant(scanner: str, toks: list, name: str) -> list:
-    """The UTF-16 units of `private static final String <name> = "..." + "...";`."""
+def string_pieces(scanner: str, toks: list, name: str) -> list:
+    """The UTF-16 units of each literal of `private static final String <name> = "..." + "...";`."""
     for i, t in enumerate(toks):
         if t.text == name and i + 1 < len(toks) and toks[i + 1].text == "=" and toks[i - 1].text == "String":
-            units = []
+            pieces = []
             j = i + 2
             while True:
                 if toks[j].kind != "str":
                     fail(scanner, f"{name}: expected a string literal, found {toks[j].text!r}")
-                units.extend(string_literal_body(toks[j].text[1:-1]))
+                pieces.append(string_literal_body(toks[j].text[1:-1]))
                 j += 1
                 if toks[j].text == ";":
-                    return units
+                    return pieces
                 if toks[j].text != "+":
                     fail(scanner, f"{name}: unexpected {toks[j].text!r}")
                 j += 1
     fail(scanner, f"string constant {name} not found")
+
+
+def string_constant(scanner: str, toks: list, name: str) -> list:
+    """The UTF-16 units of `private static final String <name> = "..." + "...";`."""
+    return [u for piece in string_pieces(scanner, toks, name) for u in piece]
 
 
 def read_tables(scanner: str, toks: list) -> list:
@@ -618,11 +640,14 @@ def read_tables(scanner: str, toks: list) -> list:
         check_same(scanner, f"{routine}(String, int, int[])", overload, UNPACK_BODY[kind])
         result = [None] * size
         offset = 0
+        packed = []
         for const in consts:
-            offset = unpack(kind, string_constant(scanner, toks, const), result, offset)
+            pieces = string_pieces(scanner, toks, const)
+            packed.append((const, pieces))
+            offset = unpack(kind, [u for piece in pieces for u in piece], result, offset)
         if offset != size or any(v is None for v in result):
             fail(scanner, f"{name}: unpacked {offset} values into int[{size}]")
-        tables.append((name, [to_i32(v) for v in result], doc, routine))
+        tables.append(Table(name, routine, kind, doc, size, packed, [to_i32(v) for v in result]))
     return tables
 
 
@@ -1093,26 +1118,160 @@ def snake_vis(public: bool) -> str:
     return "pub " if public else ""
 
 
+def snake(name: str) -> str:
+    """`zzUnpackRowMap` -> `zz_unpack_row_map`, `zzUnpackcmap_top` -> `zz_unpackcmap_top`."""
+    return re.sub(r"(?<=[a-z0-9])([A-Z])", r"_\1", name).lower()
+
+
+def rust_str_piece(units: list) -> str:
+    """The body of a Rust string literal whose chars are the UTF-16 units `units`
+    (none a surrogate): printable ASCII but the space as is, `\\0` for NUL (`\\u{0}`
+    before a digit, which `\\0` would seem to start an octal escape with), the rest
+    `\\u{..}` escapes. Spaces are escaped so that a `\\` line continuation cannot eat
+    one at the start of a line."""
+    out = []
+    for k, u in enumerate(units):
+        if u == 0:
+            nxt = units[k + 1] if k + 1 < len(units) else None
+            out.append("\\u{0}" if nxt is not None and 0x30 <= nxt <= 0x39 else "\\0")
+        elif u == 0x22:
+            out.append('\\"')
+        elif u == 0x5C:
+            out.append("\\\\")
+        elif 0x21 <= u < 0x7F:
+            out.append(chr(u))
+        else:
+            out.append("\\u{%x}" % u)
+    return "".join(out)
+
+
+UNPACK_RUST = {
+    "rle": [
+        "    while i < l {",
+        "        let mut count = i32::from(packed[i]);",
+        "        i += 1;",
+        "        let value = i32::from(packed[i]);",
+        "        i += 1;",
+        "        loop {",
+        "            result[j] = value;",
+        "            j += 1;",
+        "            count -= 1;",
+        "            if count <= 0 {",
+        "                break;",
+        "            }",
+        "        }",
+        "    }",
+    ],
+    "trans": [
+        "    while i < l {",
+        "        let mut count = i32::from(packed[i]);",
+        "        i += 1;",
+        "        let mut value = i32::from(packed[i]);",
+        "        i += 1;",
+        "        value -= 1;",
+        "        loop {",
+        "            result[j] = value;",
+        "            j += 1;",
+        "            count -= 1;",
+        "            if count <= 0 {",
+        "                break;",
+        "            }",
+        "        }",
+        "    }",
+    ],
+    "rowmap": [
+        "    while i < l {",
+        "        let high = i32::from(packed[i]) << 16;",
+        "        i += 1;",
+        "        result[j] = high | i32::from(packed[i]);",
+        "        i += 1;",
+        "        j += 1;",
+        "    }",
+    ],
+}
+
+
 def emit_tables(sc: Scanner, parsed: Parsed, lucene_java: str) -> str:
     lines = [
         f"// @generated by {SCRIPT} from Lucene 10.5.0's",
         f"// {lucene_java}",
         f"// (sha256 {parsed.sha256}). DO NOT EDIT: rerun the script.",
         "",
-        f"//! The DFA tables of `{sc.java_class}`, unpacked exactly as the static",
-        "//! initializers of the JFlex-generated Java class unpack them.",
+        f"//! The DFA tables of `{sc.java_class}`, in the form the JFlex-generated Java",
+        "//! class holds them: packed `String` constants, unpacked into `int[]` tables",
+        "//! by the `zzUnpack*` routines when the tables are first used (Java unpacks",
+        "//! them in the class initializer).",
+        "//!",
+        "//! A Java `String` is a sequence of UTF-16 code units; each packed constant is",
+        "//! a Rust string literal whose chars are those units, read back with",
+        "//! [`str::encode_utf16`]. A constant holding a surrogate unit, which a Rust",
+        "//! string cannot hold, is an array of the same units instead.",
+        "",
+        "use std::sync::LazyLock;",
+        "",
+        "/// The UTF-16 code units of a packed constant, the `char`s `String.charAt` reads.",
+        "fn utf16(packed: &str) -> Vec<u16> {",
+        "    packed.encode_utf16().collect()",
+        "}",
         "",
     ]
-    for name, values, doc, routine in parsed.tables:
-        lines.append(f"/// {doc}")
-        lines.append("///")
-        lines.append(f"/// Equivalent to `{sc.java_class}.{name}` (`{routine}()`).")
-        lines.append("#[rustfmt::skip]")
-        lines.append(f"pub(super) static {name}: [i32; {len(values)}] = [")
-        for k in range(0, len(values), 16):
-            lines.append("    " + ", ".join(str(v) for v in values[k:k + 16]) + ",")
-        lines.append("];")
-        lines.append("")
+    for tb in parsed.tables:
+        driver = snake(tb.routine)
+        routine = driver + "_packed"
+        lines += [
+            f"/// {tb.doc}",
+            "///",
+            f"/// Equivalent to `{sc.java_class}.{tb.name}`, unpacked by `{tb.routine}()` at first use.",
+            f"pub(super) static {tb.name}: LazyLock<Box<[i32]>> = LazyLock::new({driver});",
+            "",
+        ]
+        for const, pieces in tb.packed:
+            units = [u for piece in pieces for u in piece]
+            if any(0xD800 <= u <= 0xDFFF for u in units):
+                lines += [
+                    f"/// Equivalent to `{sc.java_class}.{const}`, as its UTF-16 code units: the",
+                    "/// string holds surrogate units, which a Rust string cannot hold.",
+                    "#[rustfmt::skip]",
+                    f"const {const}: &[u16] = &[",
+                ]
+                for piece in pieces:
+                    lines.append("    " + ", ".join(str(u) for u in piece) + ",")
+                lines.append("];")
+            else:
+                lines += [
+                    f"/// Equivalent to `{sc.java_class}.{const}`.",
+                    "#[rustfmt::skip]",
+                    f'const {const}: &str = "\\',
+                ]
+                for k, piece in enumerate(pieces):
+                    tail = '";' if k == len(pieces) - 1 else "\\"
+                    lines.append("    " + rust_str_piece(piece) + tail)
+            lines.append("")
+        lines += [
+            f"/// Equivalent to `{sc.java_class}.{tb.routine}()`.",
+            f"fn {driver}() -> Box<[i32]> {{",
+            f"    let mut result = vec![0; {tb.size}];",
+            "    let mut offset = 0;" if len(tb.packed) > 1 else "    let offset = 0;",
+        ]
+        for k, (const, pieces) in enumerate(tb.packed):
+            units = [u for piece in pieces for u in piece]
+            arg = const if any(0xD800 <= u <= 0xDFFF for u in units) else f"&utf16({const})"
+            call = f"{routine}({arg}, offset, &mut result);"
+            lines.append(("    offset = " if k < len(tb.packed) - 1 else "    ") + call)
+        lines += [
+            "    result.into_boxed_slice()",
+            "}",
+            "",
+            f"/// Equivalent to `{sc.java_class}.{tb.routine}(String, int, int[])`.",
+            f"fn {routine}(packed: &[u16], offset: usize, result: &mut [i32]) -> usize {{",
+            "    let mut i = 0; /* index in packed string  */",
+            "    let mut j = offset; /* index in unpacked array */",
+            "    let l = packed.len();",
+        ] + UNPACK_RUST[tb.kind] + [
+            "    j",
+            "}",
+            "",
+        ]
     return "\n".join(lines)
 
 
@@ -1609,6 +1768,9 @@ def emit_skeleton(sc: Scanner, parsed: Parsed) -> list:
         "    let mut zz_current_pos_l: usize;",
         "    let mut zz_marked_pos_l: usize;",
         "    let mut zz_end_read_l = self.zz_end_read;",
+        f"    let zz_trans_l: &[i32] = &{t}::ZZ_TRANS;",
+        f"    let zz_row_map_l: &[i32] = &{t}::ZZ_ROWMAP;",
+        f"    let zz_attr_l: &[i32] = &{t}::ZZ_ATTRIBUTE;",
         "",
         "    loop {",
         "        zz_marked_pos_l = self.zz_marked_pos;",
@@ -1624,7 +1786,7 @@ def emit_skeleton(sc: Scanner, parsed: Parsed) -> list:
         "        self.zz_state = ZZ_LEXSTATE[self.zz_lexical_state as usize];",
         "",
         "        // set up zzAction for empty match case:",
-        f"        let mut zz_attributes = {t}::ZZ_ATTRIBUTE[self.zz_state as usize];",
+        "        let mut zz_attributes = zz_attr_l[self.zz_state as usize];",
         "        if (zz_attributes & 1) == 1 {",
         "            zz_action = self.zz_state;",
         "        }",
@@ -1663,14 +1825,14 @@ def emit_skeleton(sc: Scanner, parsed: Parsed) -> list:
         "                    zz_current_pos_l += crate::jdk::character::char_count(zz_input);",
         "                }",
         "            }",
-        f"            let zz_next = {t}::ZZ_TRANS",
-        f"                [({t}::ZZ_ROWMAP[self.zz_state as usize] + Self::zz_cmap(zz_input)) as usize];",
+        "            let zz_next =",
+        "                zz_trans_l[(zz_row_map_l[self.zz_state as usize] + Self::zz_cmap(zz_input)) as usize];",
         "            if zz_next == -1 {",
         "                break;",
         "            }",
         "            self.zz_state = zz_next;",
         "",
-        f"            zz_attributes = {t}::ZZ_ATTRIBUTE[self.zz_state as usize];",
+        "            zz_attributes = zz_attr_l[self.zz_state as usize];",
         "            if (zz_attributes & 1) == 1 {",
         "                zz_action = self.zz_state;",
         "                zz_marked_pos_l = zz_current_pos_l;",
@@ -1793,7 +1955,7 @@ def main(argv: list) -> int:
             if PRINT_HASHES:
                 emit_skeleton(sc, parsed)
                 continue
-            tables = emit_tables(sc, parsed, sc.java)
+            tables = rustfmt(emit_tables(sc, parsed, sc.java))
             rust_path = REPO / sc.rust
             scanner_text = rustfmt(fill_regions(sc, rust_path.read_text(encoding="utf-8"), parsed, sc.java))
             for path, text in ((REPO / sc.tables, tables), (rust_path, scanner_text)):

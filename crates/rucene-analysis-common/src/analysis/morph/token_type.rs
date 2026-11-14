@@ -15,17 +15,50 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `TokenType.java`, of the Java
-//! package `org.apache.lucene.analysis.morph`.
+//! The type declared in `TokenType.java`, of the Java package
+//! `org.apache.lucene.analysis.morph`.
 
-/// Java: `public enum`.
+use std::fmt;
+
+/// Token type reflecting the original source of this token
 ///
-/// Skeleton of `org.apache.lucene.analysis.morph.TokenType`; ported by rmp task #466.
+/// Equivalent to `org.apache.lucene.analysis.morph.TokenType`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TokenType {
-    /// Java constant `KNOWN`.
+    /// Known words from the system dictionary.
     Known,
-    /// Java constant `UNKNOWN`.
+    /// Unknown words (heuristically segmented).
     Unknown,
-    /// Java constant `USER`.
+    /// Known words from the user dictionary.
     User,
+}
+
+impl TokenType {
+    /// Equivalent to `TokenType.values()`.
+    pub const VALUES: [TokenType; 3] = [TokenType::Known, TokenType::Unknown, TokenType::User];
+
+    /// Equivalent to `Enum.ordinal()`.
+    pub fn ordinal(self) -> i32 {
+        match self {
+            TokenType::Known => 0,
+            TokenType::Unknown => 1,
+            TokenType::User => 2,
+        }
+    }
+
+    /// Equivalent to `Enum.name()`.
+    pub fn name(self) -> &'static str {
+        match self {
+            TokenType::Known => "KNOWN",
+            TokenType::Unknown => "UNKNOWN",
+            TokenType::User => "USER",
+        }
+    }
+}
+
+impl fmt::Display for TokenType {
+    /// Equivalent to `Enum.toString()`, the constant's name.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
 }

@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.compound`.
+//! The Java package `org.apache.lucene.analysis.compound`: a filter that decomposes compound
+//! words you find in many Germanic languages into the word parts.
 
 pub mod compound_word_token_filter_base;
 pub mod dictionary_compound_word_token_filter;

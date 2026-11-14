@@ -67,6 +67,8 @@ use crate::analysis::classic::classic_filter_factory::ClassicFilterFactory;
 use crate::analysis::classic::classic_tokenizer_factory::ClassicTokenizerFactory;
 use crate::analysis::commongrams::common_grams_filter_factory::CommonGramsFilterFactory;
 use crate::analysis::commongrams::common_grams_query_filter_factory::CommonGramsQueryFilterFactory;
+use crate::analysis::compound::dictionary_compound_word_token_filter_factory::DictionaryCompoundWordTokenFilterFactory;
+use crate::analysis::compound::hyphenation_compound_word_token_filter_factory::HyphenationCompoundWordTokenFilterFactory;
 use crate::analysis::core::decimal_digit_filter_factory::DecimalDigitFilterFactory;
 use crate::analysis::core::flatten_graph_filter_factory::FlattenGraphFilterFactory;
 use crate::analysis::core::keyword_analyzer::KeywordAnalyzer;
@@ -228,6 +230,8 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(ClassicFilterFactory::class()),
         token_filter(CommonGramsFilterFactory::class()),
         token_filter(CommonGramsQueryFilterFactory::class()),
+        token_filter(DictionaryCompoundWordTokenFilterFactory::class()),
+        token_filter(HyphenationCompoundWordTokenFilterFactory::class()),
         token_filter(DecimalDigitFilterFactory::class()),
         token_filter(LowerCaseFilterFactory::class()),
         token_filter(StopFilterFactory::class()),
