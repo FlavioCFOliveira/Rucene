@@ -246,6 +246,22 @@ pub static TEST_RESOURCES: &[(&str, &[u8])] = &[
         "org/apache/lucene/analysis/synonym/word2vec/word2vec-corrupted-vector-dimension-model.zip"
     ),
     test_resource!("org/apache/lucene/analysis/util/frenchArticles.txt"),
+    test_resource!("org/apache/lucene/analysis/snowball/languages.txt"),
+    test_resource!("org/apache/lucene/analysis/charfilter/htmlStripReaderTest.html"),
+    test_resource!("org/apache/lucene/analysis/charfilter/MS-Word 14 generated.htm"),
+    test_resource!("org/apache/lucene/analysis/email/LuceneResourcesWikiPage.html"),
+    test_resource!("org/apache/lucene/analysis/email/LuceneResourcesWikiPageURLs.txt"),
+    test_resource!("org/apache/lucene/analysis/email/TLDs.txt"),
+    test_resource!("org/apache/lucene/analysis/email/email.addresses.from.random.text.with.email.addresses.txt"),
+    test_resource!("org/apache/lucene/analysis/email/random.text.with.email.addresses.txt"),
+    test_resource!("org/apache/lucene/analysis/email/random.text.with.urls.txt"),
+    test_resource!("org/apache/lucene/analysis/email/urls.from.random.text.with.urls.txt"),
+    test_resource!("org/apache/lucene/analysis/custom/mapping1.txt"),
+    test_resource!("org/apache/lucene/analysis/custom/mapping2.txt"),
+    test_resource!("org/apache/lucene/analysis/custom/teststop.txt"),
+    test_resource!("org/apache/lucene/analysis/commongrams/common-1.txt"),
+    test_resource!("org/apache/lucene/analysis/commongrams/common-2.txt"),
+    test_resource!("org/apache/lucene/analysis/commongrams/common-snowball.txt"),
 ];
 
 /// The resources the test class loader sees: the module's and the tests'.
@@ -503,6 +519,45 @@ pub fn mock_tokenizer_analyzer(
     .arc()
 }
 
+/// `new Analyzer() { createComponents: tokenizer = new MockTokenizer(runAutomaton,
+/// lowerCase, maxTokenLength); ... }`.
+pub fn mock_tokenizer_analyzer_max(
+    name: &'static str,
+    run_automaton: Arc<rucene::util::automaton::CharacterRunAutomaton>,
+    lower_case: bool,
+    max_token_length: i32,
+    chain: impl Fn(Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>> + Send + Sync + 'static,
+) -> Arc<dyn Analyzer> {
+    use rucene_test_framework::analysis::mock_analyzer::BoxedStream;
+    use rucene_test_framework::analysis::{components, shared, sink, MockTokenizer};
+    FnAnalyzer::new(name, move |_| {
+        let tokenizer = Arc::new(rucene::util::atomic_ref_cell::AtomicRefCell::new(
+            MockTokenizer::with_max_token_length(
+                Arc::clone(&run_automaton),
+                lower_case,
+                max_token_length,
+            )?,
+        ));
+        let stream = chain(shared(&tokenizer))?;
+        Ok(components(tokenizer, sink(BoxedStream(stream))))
+    })
+    .arc()
+}
+
+/// `new Analyzer() { createComponents: tokenizer = new MockTokenizer(); ... }`
+/// (whitespace, lower-casing).
+pub fn mock_default_analyzer(
+    name: &'static str,
+    chain: impl Fn(Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>> + Send + Sync + 'static,
+) -> Arc<dyn Analyzer> {
+    mock_tokenizer_analyzer(
+        name,
+        Arc::clone(&rucene_test_framework::analysis::mock_tokenizer::WHITESPACE),
+        true,
+        chain,
+    )
+}
+
 /// [`mock_tokenizer_analyzer`] over `new MockTokenizer(MockTokenizer.WHITESPACE, false)`.
 pub fn whitespace_analyzer(
     name: &'static str,
@@ -550,6 +605,11 @@ pub fn tokenizer_analyzer<T: rucene_test_framework::analysis::ReaderTokenizer + 
         Ok(components(tokenizer, sink(BoxedStream(stream))))
     })
     .arc()
+}
+
+/// A tokenizer as the shared cell `TokenStreamComponents` keep.
+pub fn own<T>(t: T) -> Arc<rucene::util::atomic_ref_cell::AtomicRefCell<T>> {
+    Arc::new(rucene::util::atomic_ref_cell::AtomicRefCell::new(t))
 }
 
 /// The term of `ts`'s `CharTermAttribute` (`termAtt.toString()`).

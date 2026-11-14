@@ -63,6 +63,27 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.ClasspathResourceLoader;
 import org.apache.lucene.util.ResourceLoader;
 import org.apache.lucene.util.ResourceLoaderAware;
+import org.apache.lucene.analysis.LowerCaseFilter;
+import org.apache.lucene.analysis.charfilter.HTMLStripCharFilterFactory;
+import org.apache.lucene.analysis.core.LowerCaseFilterFactory;
+import org.apache.lucene.analysis.core.WhitespaceAnalyzer;
+import org.apache.lucene.analysis.core.WhitespaceTokenizer;
+import org.apache.lucene.analysis.miscellaneous.ASCIIFoldingFilterFactory;
+import org.apache.lucene.analysis.query.QueryAutoStopWordAnalyzer;
+import org.apache.lucene.analysis.reverse.ReverseStringFilterFactory;
+import org.apache.lucene.analysis.sinks.TeeSinkTokenFilter;
+import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.apache.lucene.analysis.standard.StandardTokenizer;
+import org.apache.lucene.analysis.standard.StandardTokenizerFactory;
+import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
+import org.apache.lucene.document.TextField;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.store.ByteBuffersDirectory;
+import org.apache.lucene.util.Version;
 
 /**
  * The Java side of the analysis oracle harness of {@code lucene-analysis-common} (rmp #446). Its
@@ -82,6 +103,9 @@ import org.apache.lucene.util.ResourceLoaderAware;
  * configdir <path>}, {@code charfilter <name> <key=value>...}, {@code tokenizer <name>
  * <key=value>...} and {@code filter <name> <key=value>...} lines that follow, the factories looked
  * up by SPI name.
+ *
+ * <p>A {@code spec <id> scenario <name>} record builds the analyzer of a fixed scenario ({@link
+ * #scenario}): analyzers that need an index built from the corpus or a hand-made chain.
  *
  * <p>With the single argument {@code --spi} it prints the factory registry instead ({@link
  * #spi}).
@@ -381,6 +405,178 @@ public final class AnalysisOracle {
     return analyzer;
   }
 
+  /**
+   * A stream over a {@link TeeSinkTokenFilter}'s sink that consumes the tee first: {@code reset}
+   * resets the tee, consumes all its tokens and resets the sink; the attributes are the sink's.
+   */
+  static final class SinkAfterTee extends TokenStream {
+    private final TeeSinkTokenFilter tee;
+    private final TokenStream sink;
+
+    SinkAfterTee(TeeSinkTokenFilter tee, TokenStream sink) {
+      super(sink);
+      this.tee = tee;
+      this.sink = sink;
+    }
+
+    @Override
+    public boolean incrementToken() throws IOException {
+      return sink.incrementToken();
+    }
+
+    @Override
+    public void reset() throws IOException {
+      tee.reset();
+      tee.consumeAllTokens();
+      sink.reset();
+    }
+
+    @Override
+    public void end() throws IOException {
+      sink.end();
+    }
+
+    @Override
+    public void close() throws IOException {
+      tee.close();
+      sink.close();
+    }
+  }
+
+  /** A new instance of the delegate analyzer {@code name}: {@code whitespace} or {@code standard}. */
+  static Analyzer delegate(String name) {
+    switch (name) {
+      case "whitespace":
+        return new WhitespaceAnalyzer();
+      case "standard":
+        return new StandardAnalyzer();
+      default:
+        throw new IllegalArgumentException("unknown delegate " + name);
+    }
+  }
+
+  /** A new tokenizer {@code name}: {@code whitespace} or {@code standard}. */
+  static Tokenizer tokenizer(String name) {
+    switch (name) {
+      case "whitespace":
+        return new WhitespaceTokenizer();
+      case "standard":
+        return new StandardTokenizer();
+      default:
+        throw new IllegalArgumentException("unknown tokenizer " + name);
+    }
+  }
+
+  /**
+   * The analyzer of scenario {@code name}:
+   *
+   * <ul>
+   *   <li>{@code qasw:<delegate>:<mode>:<value>[:<fields>]}: a {@link QueryAutoStopWordAnalyzer}
+   *       over a new {@code <delegate>} analyzer and a reader of an index holding one document per
+   *       corpus input, its text in the fields {@code field} and {@code body} (indexed with another
+   *       {@code <delegate>}); {@code <mode>} {@code default} (no value), {@code percent} or {@code
+   *       docfreq} selects the constructor, {@code <fields>} (comma-separated) the field list;
+   *   <li>{@code tee:<tokenizer>:<stream>}: a {@code <tokenizer>} under a {@link
+   *       TeeSinkTokenFilter}; {@code <stream>} {@code source} hands out the tee, {@code sink} its
+   *       sink after the tee is consumed, {@code sink-lowercase} that sink under a {@link
+   *       LowerCaseFilter};
+   *   <li>{@code custom:when-term}, {@code custom:when-protected}, {@code custom:classes}: {@link
+   *       CustomAnalyzer} builder paths the {@code custom} spec does not take.
+   * </ul>
+   */
+  static Analyzer scenario(String name, List<String> corpus) throws Exception {
+    String[] p = name.split(":", -1);
+    switch (p[0]) {
+      case "qasw":
+        {
+          ByteBuffersDirectory dir = new ByteBuffersDirectory();
+          try (IndexWriter w = new IndexWriter(dir, new IndexWriterConfig(delegate(p[1])))) {
+            for (String text : corpus) {
+              Document doc = new Document();
+              doc.add(new TextField("field", text, Field.Store.NO));
+              doc.add(new TextField("body", text, Field.Store.NO));
+              w.addDocument(doc);
+            }
+          }
+          IndexReader reader = DirectoryReader.open(dir);
+          Analyzer d = delegate(p[1]);
+          List<String> fields = p.length > 4 ? Arrays.asList(p[4].split(",")) : null;
+          switch (p[2]) {
+            case "default":
+              return new QueryAutoStopWordAnalyzer(d, reader);
+            case "percent":
+              return fields == null
+                  ? new QueryAutoStopWordAnalyzer(d, reader, Float.parseFloat(p[3]))
+                  : new QueryAutoStopWordAnalyzer(d, reader, fields, Float.parseFloat(p[3]));
+            case "docfreq":
+              return fields == null
+                  ? new QueryAutoStopWordAnalyzer(d, reader, Integer.parseInt(p[3]))
+                  : new QueryAutoStopWordAnalyzer(d, reader, fields, Integer.parseInt(p[3]));
+            default:
+              throw new IllegalArgumentException("unknown qasw mode " + p[2]);
+          }
+        }
+      case "tee":
+        return new Analyzer() {
+          @Override
+          protected TokenStreamComponents createComponents(String fieldName) {
+            Tokenizer source = tokenizer(p[1]);
+            TeeSinkTokenFilter tee = new TeeSinkTokenFilter(source);
+            switch (p[2]) {
+              case "source":
+                return new TokenStreamComponents(source, tee);
+              case "sink":
+                return new TokenStreamComponents(
+                    source, new SinkAfterTee(tee, tee.newSinkTokenStream()));
+              case "sink-lowercase":
+                return new TokenStreamComponents(
+                    source, new LowerCaseFilter(new SinkAfterTee(tee, tee.newSinkTokenStream())));
+              default:
+                throw new IllegalArgumentException("unknown tee stream " + p[2]);
+            }
+          }
+        };
+      case "custom":
+        switch (p[1]) {
+          case "when-term":
+            return CustomAnalyzer.builder()
+                .withTokenizer("whitespace")
+                .addTokenFilter("lowercase")
+                .whenTerm(t -> t.toString().contains("o"))
+                .addTokenFilter("uppercase")
+                .addTokenFilter(ReverseStringFilterFactory.class)
+                .endwhen()
+                .addTokenFilter("asciifolding")
+                .build();
+          case "when-protected":
+            return CustomAnalyzer.builder()
+                .withTokenizer("standard")
+                .addTokenFilter("lowercase")
+                .when(
+                    "protectedterm",
+                    "protected",
+                    "org/apache/lucene/analysis/snowball/english_stop.txt")
+                .addTokenFilter("reversestring")
+                .endwhen()
+                .build();
+          case "classes":
+            return CustomAnalyzer.builder()
+                .withDefaultMatchVersion(Version.LUCENE_9_0_0)
+                .addCharFilter(HTMLStripCharFilterFactory.class)
+                .withTokenizer(StandardTokenizerFactory.class)
+                .addTokenFilter(ASCIIFoldingFilterFactory.class, "preserveOriginal", "true")
+                .addTokenFilter(LowerCaseFilterFactory.class)
+                .withPositionIncrementGap(100)
+                .withOffsetGap(1000)
+                .build();
+          default:
+            throw new IllegalArgumentException("unknown custom scenario " + p[1]);
+        }
+      default:
+        throw new IllegalArgumentException("unknown scenario " + name);
+    }
+  }
+
   static ResourceLoader loader(Spec spec) {
     ClassLoader classLoader = CustomAnalyzer.class.getClassLoader();
     return spec.configDir == null
@@ -540,6 +736,9 @@ public final class AnalysisOracle {
             break;
           case "factories":
             factories = factories(spec);
+            break;
+          case "scenario":
+            analyzer = scenario(unescape(spec.target), corpus);
             break;
           default:
             throw new IllegalArgumentException("unknown spec kind " + spec.kind);

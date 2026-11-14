@@ -27,6 +27,11 @@
 //!   build the same analyzer);
 //! * [`Spec::custom`]: a `CustomAnalyzer` built from a [`Chain`] of SPI names
 //!   and parameters, on both sides by the same builder calls;
+//! * [`Spec::scenario`]: an analyzer the Java side builds by a fixed
+//!   scenario name (`AnalysisOracle.scenario`: analyzers that need an
+//!   index or a hand-made chain, such as `QueryAutoStopWordAnalyzer` or a
+//!   `TeeSinkTokenFilter` and its sink), and the Rust side by the closure
+//!   the test gives (which must build the same analyzer);
 //! * [`Spec::factories`]: the factories of a [`Chain`], looked up by SPI name
 //!   (`forName`), informed with the resource loader when they are
 //!   `ResourceLoaderAware`, and chained by hand: a new chain per input
@@ -341,6 +346,10 @@ enum SpecKind {
         calls: Vec<(String, Arg)>,
         build: AnalyzerBuilder,
     },
+    Scenario {
+        name: String,
+        build: AnalyzerBuilder,
+    },
     Custom(Chain),
     Factories(Chain),
 }
@@ -390,6 +399,22 @@ impl Spec {
         self
     }
 
+    /// The analyzer of the Java scenario `name` (`AnalysisOracle.scenario`),
+    /// built in Rust by `build`, which must build the same analyzer.
+    pub fn scenario(
+        id: &str,
+        name: &str,
+        build: impl Fn() -> Result<Box<dyn Analyzer>> + 'static,
+    ) -> Spec {
+        Spec {
+            id: id.to_string(),
+            kind: SpecKind::Scenario {
+                name: name.to_string(),
+                build: Box::new(build),
+            },
+        }
+    }
+
     /// A `CustomAnalyzer` built from `chain`.
     pub fn custom(id: &str, chain: Chain) -> Spec {
         Spec {
@@ -422,6 +447,7 @@ impl Spec {
                     calls.iter().map(|(m, a)| format!(".{m}({a:?})")).collect();
                 format!("new {class}({}){}", args.join(", "), calls.join(""))
             }
+            SpecKind::Scenario { name, .. } => format!("scenario {name}"),
             SpecKind::Custom(chain) => format!("CustomAnalyzer {}", chain.describe()),
             SpecKind::Factories(chain) => format!("factories {}", chain.describe()),
         }
@@ -458,6 +484,15 @@ impl Spec {
                             .collect(),
                     );
                 }
+                return;
+            }
+            SpecKind::Scenario { name, .. } => {
+                line(vec![
+                    "spec".into(),
+                    self.id.clone(),
+                    "scenario".into(),
+                    escape_str(name),
+                ]);
                 return;
             }
             SpecKind::Custom(chain) => {
@@ -599,7 +634,7 @@ impl Oracle {
         for spec in &self.specs {
             writeln!(out, "spec {}", spec.id).unwrap();
             match &spec.kind {
-                SpecKind::Analyzer { build, .. } => {
+                SpecKind::Analyzer { build, .. } | SpecKind::Scenario { build, .. } => {
                     match guarded(build) {
                         Ok(analyzer) => self.dump_analyzer(&*analyzer, &mut out),
                         Err(class) => writeln!(out, "spec-error {class}").unwrap(),

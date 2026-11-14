@@ -44,7 +44,12 @@ pub const DEFAULT_HASH_SET_SIZE: i32 = 1;
 pub const DEFAULT_BUCKET_COUNT: i32 = 512;
 
 /// Equivalent to the package-private `MinHashFilter.MIN_HASH_TYPE`.
-pub(crate) const MIN_HASH_TYPE: &str = "MIN_HASH";
+///
+/// Java's member is package-private, reached by the same package's
+/// `TestMinHashFilter`; Rust's integration tests are another crate, so the
+/// port makes it public (hidden from the documentation).
+#[doc(hidden)]
+pub const MIN_HASH_TYPE: &str = "MIN_HASH";
 
 /// Equivalent to the private static `cachedIntHashes`, filled by the
 /// class's static initializer.
@@ -56,7 +61,12 @@ static CACHED_INT_HASHES: LazyLock<Vec<LongPair>> = LazyLock::new(|| {
 
 /// Equivalent to the package-private static `getBytes(int)`: `i` in
 /// big-endian order (`BitUtil.VH_BE_INT`).
-pub(crate) fn get_bytes(i: i32) -> [u8; 4] {
+///
+/// Java's member is package-private, reached by the same package's
+/// `TestMinHashFilter`; Rust's integration tests are another crate, so the
+/// port makes it public (hidden from the documentation).
+#[doc(hidden)]
+pub fn get_bytes(i: i32) -> [u8; 4] {
     i.to_be_bytes()
 }
 
@@ -401,7 +411,12 @@ fn int1(x: i32) -> u16 {
 
 /// Equivalent to the package-private static `isLessThanUnsigned(long,
 /// long)`.
-pub(crate) fn is_less_than_unsigned(n1: i64, n2: i64) -> bool {
+///
+/// Java's member is package-private, reached by the same package's
+/// `TestMinHashFilter`; Rust's integration tests are another crate, so the
+/// port makes it public (hidden from the documentation).
+#[doc(hidden)]
+pub fn is_less_than_unsigned(n1: i64, n2: i64) -> bool {
     (n1 < n2) ^ ((n1 < 0) != (n2 < 0))
 }
 
@@ -410,21 +425,33 @@ pub(crate) fn is_less_than_unsigned(n1: i64, n2: i64) -> bool {
 /// Equivalent to `org.apache.lucene.analysis.minhash.MinHashFilter$FixedSizeTreeSet`,
 /// a `TreeSet`: the set is a [`BTreeSet`], ordered as the elements'
 /// `compareTo` orders them.
+///
+/// Java's member is package-private, reached by the same package's
+/// `TestMinHashFilter`; Rust's integration tests are another crate, so the
+/// port makes it public (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug, Clone)]
-pub(crate) struct FixedSizeTreeSet<E: Ord> {
+pub struct FixedSizeTreeSet<E: Ord> {
     set: BTreeSet<E>,
     capacity: i32,
+}
+
+impl<E: Ord + Clone> Default for FixedSizeTreeSet<E> {
+    /// `FixedSizeTreeSet()`: see [`new`](Self::new).
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<E: Ord + Clone> FixedSizeTreeSet<E> {
     /// Equivalent to `FixedSizeTreeSet()`, `this(20)`.
     #[allow(dead_code)]
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::with_capacity(20)
     }
 
     /// Equivalent to `FixedSizeTreeSet(int)`.
-    pub(crate) fn with_capacity(capacity: i32) -> Self {
+    pub fn with_capacity(capacity: i32) -> Self {
         Self {
             set: BTreeSet::new(),
             capacity,
@@ -433,7 +460,7 @@ impl<E: Ord + Clone> FixedSizeTreeSet<E> {
 
     /// Equivalent to `FixedSizeTreeSet.add(E)`: past the capacity, an
     /// element is added only if it is below the greatest, which it evicts.
-    pub(crate) fn add(&mut self, to_add: E) -> bool {
+    pub fn add(&mut self, to_add: E) -> bool {
         if self.capacity as usize <= self.set.len() {
             let last_elm = self.set.last().expect("INVARIANT: the set is full");
             if to_add.cmp(last_elm) != Ordering::Less {
@@ -446,23 +473,35 @@ impl<E: Ord + Clone> FixedSizeTreeSet<E> {
     }
 
     /// `TreeSet.size()`.
-    pub(crate) fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.set.len()
     }
 
     /// `TreeSet.first()`, `None` where Java throws `NoSuchElementException`.
-    pub(crate) fn first(&self) -> Option<E> {
+    pub fn first(&self) -> Option<E> {
         self.set.first().cloned()
     }
 
     /// `TreeSet.pollFirst()`.
-    pub(crate) fn poll_first(&mut self) -> Option<E> {
+    pub fn poll_first(&mut self) -> Option<E> {
         self.set.pop_first()
     }
 
     /// `TreeSet.clear()`.
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.set.clear();
+    }
+
+    /// `TreeSet.last()`, `None` where Java throws `NoSuchElementException`
+    /// (inherited from `TreeSet`; Lucene's tests call it).
+    pub fn last(&self) -> Option<E> {
+        self.set.last().cloned()
+    }
+
+    /// `TreeSet.pollLast()` (inherited from `TreeSet`; Lucene's tests call
+    /// it).
+    pub fn poll_last(&mut self) -> Option<E> {
+        self.set.pop_last()
     }
 }
 
@@ -481,16 +520,23 @@ fn combine_ordered(hash_codes: &[LongPair]) -> LongPair {
 /// Equivalent to `org.apache.lucene.analysis.minhash.MinHashFilter$LongPair`:
 /// its `compareTo` is [`Ord`] (unsigned, `val2` first), its `equals`
 /// [`PartialEq`], and its `hashCode` [`hash_code`](Self::hash_code).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct LongPair {
-    pub(crate) val1: i64,
-    pub(crate) val2: i64,
+///
+/// Java's member is package-private, reached by the same package's
+/// `TestMinHashFilter`; Rust's integration tests are another crate, so the
+/// port makes it public (hidden from the documentation).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct LongPair {
+    /// `val1`.
+    pub val1: i64,
+    /// `val2`.
+    pub val2: i64,
 }
 
 impl LongPair {
     /// Equivalent to `LongPair.hashCode()`.
     #[allow(dead_code)]
-    pub(crate) fn hash_code(&self) -> i32 {
+    pub fn hash_code(&self) -> i32 {
         let mut result = (self.val1 ^ ((self.val1 as u64) >> 32) as i64) as i32;
         result = result
             .wrapping_mul(31)
@@ -539,7 +585,12 @@ fn get_long_little_endian(buf: &[u8], offset: usize) -> i64 {
 ///
 /// Equivalent to the package-private static `murmurhash3_x64_128(byte[],
 /// int, int, int, LongPair)`, returning `out`.
-pub(crate) fn murmurhash3_x64_128(key: &[u8], offset: i32, len: i32, seed: i32) -> LongPair {
+///
+/// Java's member is package-private, reached by the same package's
+/// `TestMinHashFilter`; Rust's integration tests are another crate, so the
+/// port makes it public (hidden from the documentation).
+#[doc(hidden)]
+pub fn murmurhash3_x64_128(key: &[u8], offset: i32, len: i32, seed: i32) -> LongPair {
     // The original algorithm does have a 32 bit unsigned seed.
     // We have to mask to match the behavior of the unsigned types and prevent sign extension.
     let mut h1: i64 = i64::from(seed) & 0x0000_0000_FFFF_FFFF;

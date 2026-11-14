@@ -222,6 +222,12 @@ impl TypeAttribute for Token {
     fn set_type(&mut self, type_value: String) {
         self.packed.set_type(type_value)
     }
+    /// Java's `Token` inherits `PackedTokenAttributeImpl.setType`, which
+    /// keeps the reference it is given: a tokenizer's constant type stays
+    /// that object, as `ClassicFilter`'s identity test (`==`) needs.
+    fn set_type_static(&mut self, type_value: &'static str) {
+        self.packed.set_type_static(type_value)
+    }
 }
 
 impl TermFrequencyAttribute for Token {
