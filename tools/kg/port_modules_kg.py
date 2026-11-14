@@ -132,7 +132,7 @@ PORT_MODULES = (
      "jpms": "org.apache.lucene.analysis.common",
      "descriptor": "lucene/analysis/common/src/java/module-info.java",
      "scopeRule": "sprint-12-ports-the-module", "classRule": "sprint-12-module-top-level",
-     "skeletons": "report",
+     "skeletons": "enforce",
      "role": "analyzers, tokenizers, token filters and char filters for many "
              "languages, with their SPI factories (the Snowball stemmers included); "
              "ported by sprint 12"},

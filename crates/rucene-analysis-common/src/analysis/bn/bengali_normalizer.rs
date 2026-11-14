@@ -29,12 +29,17 @@ use crate::analysis::util::stemmer_util::StemmerUtil;
 ///
 /// Equivalent to `org.apache.lucene.analysis.bn.BengaliNormalizer`. The term
 /// it normalizes is the `char[]` of Java, UTF-16 units.
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct BengaliNormalizer;
+pub struct BengaliNormalizer;
 
 impl BengaliNormalizer {
     /// Equivalent to the implicit `BengaliNormalizer()`.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self
     }
 
@@ -48,7 +53,7 @@ impl BengaliNormalizer {
     /// `-1` before the loop's `i++` in the phala cases (`i -= 2` at index 1),
     /// so the index here is signed as Java's; it is non-negative wherever it
     /// indexes `s`.
-    pub(crate) fn normalize(&self, s: &mut [u16], len: usize) -> usize {
+    pub fn normalize(&self, s: &mut [u16], len: usize) -> usize {
         let mut len = len;
         let mut i: isize = 0;
         while i < len as isize {

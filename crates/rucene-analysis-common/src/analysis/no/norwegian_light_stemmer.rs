@@ -66,12 +66,22 @@ fn ends_with(s: &[u16], len: usize, suffix: &str) -> bool {
 /// Constant to remove Bokmål-specific endings
 ///
 /// Equivalent to `NorwegianLightStemmer.BOKMAAL`.
-pub(crate) const BOKMAAL: i32 = 1;
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub const BOKMAAL: i32 = 1;
 
 /// Constant to remove Nynorsk-specific endings
 ///
 /// Equivalent to `NorwegianLightStemmer.NYNORSK`.
-pub(crate) const NYNORSK: i32 = 2;
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub const NYNORSK: i32 = 2;
 
 /// Light Stemmer for Norwegian.
 ///
