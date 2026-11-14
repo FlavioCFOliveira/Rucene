@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.sandbox.queries`.
+//! Port of the Java package `org.apache.lucene.sandbox.queries`, limited to
+//! `FuzzyLikeThisQuery`.
 
 pub mod fuzzy_like_this_query;

@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queries.payloads`.
+//! Port of the Java package `org.apache.lucene.queries.payloads`: span queries
+//! that score or filter matches by their payloads.
 
 pub mod average_payload_function;
 pub mod max_payload_function;

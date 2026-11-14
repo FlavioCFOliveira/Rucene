@@ -15,10 +15,23 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `PayloadMatcher.java`, of the Java
-//! package `org.apache.lucene.queries.payloads`.
+//! Port of `PayloadMatcher.java`, of the Java package
+//! `org.apache.lucene.queries.payloads`.
 
-/// Java: `public interface`.
+use std::fmt::Debug;
+
+use rucene::util::BytesRef;
+
+/// Defines an interface for testing if two payloads should be considered to
+/// match.
 ///
-/// Skeleton of `org.apache.lucene.queries.payloads.PayloadMatcher`; ported by rmp task #481.
-pub trait PayloadMatcher {}
+/// Equivalent to the interface `org.apache.lucene.queries.payloads.PayloadMatcher`.
+pub trait PayloadMatcher: Debug + Send + Sync {
+    /// Tests if two [`BytesRef`]s match.
+    ///
+    /// Equivalent to `PayloadMatcher.comparePayload(BytesRef, BytesRef)`.
+    ///
+    /// * `source` — left side of the compare;
+    /// * `payload` — right side of the compare.
+    fn compare_payload(&self, source: &BytesRef, payload: &BytesRef) -> bool;
+}

@@ -15,10 +15,37 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SpanCollector.java`, of the Java
-//! package `org.apache.lucene.queries.spans`.
+//! Port of `SpanCollector.java`, of the Java package
+//! `org.apache.lucene.queries.spans`.
 
-/// Java: `public interface`.
+use rucene::error::Result;
+use rucene::index::{PostingsEnum, Term};
+
+/// The collection of postings information from the leaves of a
+/// [`Spans`](crate::spans::spans::Spans).
 ///
-/// Skeleton of `org.apache.lucene.queries.spans.SpanCollector`; ported by rmp task #480.
-pub trait SpanCollector {}
+/// Equivalent to `org.apache.lucene.queries.spans.SpanCollector`.
+pub trait SpanCollector {
+    /// Collects information from postings.
+    ///
+    /// Equivalent to `SpanCollector.collectLeaf(PostingsEnum, int, Term)`.
+    ///
+    /// * `postings` — a [`PostingsEnum`];
+    /// * `position` — the position of the postings enum;
+    /// * `term` — the [`Term`] for this postings list.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while reading the postings.
+    fn collect_leaf(
+        &mut self,
+        postings: &dyn PostingsEnum,
+        position: i32,
+        term: &Term,
+    ) -> Result<()>;
+
+    /// Called to indicate that the driving spans has moved to a new position.
+    ///
+    /// Equivalent to `SpanCollector.reset()`.
+    fn reset(&mut self);
+}

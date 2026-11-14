@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queries.spans`.
+//! Port of the Java package `org.apache.lucene.queries.spans`: span queries,
+//! their weights and the spans they iterate.
 
 pub mod conjunction_spans;
 pub mod contain_spans;

@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queries.mlt`.
+//! Port of the Java package `org.apache.lucene.queries.mlt`: "more like this"
+//! query generation.
 
 pub mod more_like_this;
 pub mod more_like_this_query;

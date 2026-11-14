@@ -15,10 +15,73 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `AveragePayloadFunction.java`, of the Java
-//! package `org.apache.lucene.queries.payloads`.
+//! Port of `AveragePayloadFunction.java`, of the Java package
+//! `org.apache.lucene.queries.payloads`.
 
-/// Java: `public class`.
+use std::any::Any;
+
+use crate::payloads::payload_function::{class_based_hash, PayloadFunction};
+
+/// Calculates the final score as the average score of all payloads seen.
 ///
-/// Skeleton of `org.apache.lucene.queries.payloads.AveragePayloadFunction`; ported by rmp task #481.
+/// Equivalent to `org.apache.lucene.queries.payloads.AveragePayloadFunction`.
+#[derive(Debug, Default, Clone, Copy)]
 pub struct AveragePayloadFunction;
+
+impl AveragePayloadFunction {
+    /// Creates the function.
+    ///
+    /// Equivalent to the implicit `AveragePayloadFunction()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl PayloadFunction for AveragePayloadFunction {
+    fn current_score(
+        &self,
+        _doc_id: i32,
+        _field: &str,
+        _start: i32,
+        _end: i32,
+        num_payloads_seen: i32,
+        current_score: f32,
+        current_payload_score: f32,
+    ) -> f32 {
+        let _ = num_payloads_seen;
+        current_payload_score + current_score
+    }
+
+    fn doc_score(
+        &self,
+        _doc_id: i32,
+        _field: &str,
+        num_payloads_seen: i32,
+        payload_score: f32,
+    ) -> f32 {
+        if num_payloads_seen > 0 {
+            payload_score / num_payloads_seen as f32
+        } else {
+            1.0
+        }
+    }
+
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.queries.payloads.AveragePayloadFunction"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    /// Equivalent to `AveragePayloadFunction.equals(Object)`: equal to any instance of the
+    /// same class.
+    fn function_eq(&self, other: &dyn PayloadFunction) -> bool {
+        other.as_any().is::<AveragePayloadFunction>()
+    }
+
+    /// Equivalent to `AveragePayloadFunction.hashCode()`, `31 * 1 + getClass().hashCode()`.
+    fn function_hash(&self) -> i32 {
+        class_based_hash("org.apache.lucene.queries.payloads.AveragePayloadFunction")
+    }
+}
