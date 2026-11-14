@@ -28,13 +28,17 @@ de indice com o Apache Lucene Core 10.5.0. Os tipos aninhados ficam marcados
 `nested`: sao portados com o tipo que os envolve, nao de forma independente, e
 por isso nao entram no denominador.
 
-Desde as decisoes do utilizador de 2026-11-03 (sprint 9) e de 2026-11-13
-(sprint 12), a mesma regra cobre todos os modulos que
+Desde as decisoes do utilizador de 2026-11-03 (sprint 9), de 2026-11-13
+(sprint 12) e de 2026-11-14 (sprint 13), a mesma regra cobre todos os modulos que
 `port_modules_kg.PORT_MODULES` nomeia para la de `lucene/core`
 (`port_modules_kg.ADDED_MODULES`: `lucene/codecs`, `lucene/test-framework`,
-randomizedtesting 2.8.1 `randomized-runner` e `lucene/analysis/common`), com o
-`classRule` de cada um (`sprint-9-module-top-level`,
-`sprint-12-module-top-level`), e cada `Class` leva o seu `module`. Para esses
+randomizedtesting 2.8.1 `randomized-runner`, `lucene/analysis/common`,
+`lucene/queries`, `lucene/queryparser` e `lucene/sandbox`), com o `classRule` de
+cada um (`sprint-9-module-top-level`, `sprint-12-module-top-level`,
+`sprint-13-module-top-level`, `sprint-13-listed-file-top-level`), e cada `Class`
+leva o seu `module`. Um modulo com `files` (`lucene/sandbox`: so
+`FuzzyLikeThisQuery.java`) so contribui os ficheiros listados
+(`port_modules_kg.file_in_scope`). Para esses
 modulos, uma reivindicacao so de membro (`claimLevel = 'member'`) nao torna o
 tipo `ported`: e a regra de ciclo do sprint, que porta um membro antes do tipo
 que o contem; os seus aninhados recebem um `portState` mecanico (`ported` com
@@ -61,7 +65,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from extract_lucene_kg import clean_for_brace_count  # noqa: E402
+from extract_lucene_kg import DECL_HEAD, clean_for_brace_count  # noqa: E402
 from load_rucene_kg import esc, read, rmp, run_unwind  # noqa: E402
 import port_modules_kg as pm  # noqa: E402
 
@@ -71,9 +75,10 @@ SCOPE_RULE_IN = "lucene-core-top-level"
 SCOPE_RULE_NESTED = "nested-in-enclosing-type"
 SCOPE_RULE_OUT = "not-a-lucene-core-type"
 
+# `DECL_HEAD` admits annotations among the modifiers (JavaCC's generated parsers
+# put `@SuppressWarnings(...)` on the same line as the declaration).
 DECL_RE = re.compile(
-    r"^\s*(?:public\s+|protected\s+|private\s+|abstract\s+|final\s+|static\s+"
-    r"|strictfp\s+|sealed\s+|non-sealed\s+)*"
+    r"^\s*" + DECL_HEAD +
     r"(class|interface|enum|record|@interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)",
     re.M,
 )
@@ -96,11 +101,14 @@ def scan_lucene(lucene_root: str, rt_root=None):
     """
     roots = pm.repo_roots(lucene_root, rt_root)
     files = []
-    for _m, base, r in pm.source_dirs(roots):
+    for m, base, r in pm.source_dirs(roots):
         for dp, _dirs, fns in os.walk(r):
             for fn in fns:
                 if fn.endswith(".java") and fn != "module-info.java":
-                    files.append((str(base), os.path.join(dp, fn)))
+                    path = os.path.join(dp, fn)
+                    # A module scoped to listed files contributes those alone.
+                    if pm.file_in_scope(m["name"], os.path.relpath(path, base)):
+                        files.append((str(base), path))
     files.sort()
 
     info = {}

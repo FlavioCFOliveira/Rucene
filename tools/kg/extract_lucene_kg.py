@@ -29,6 +29,17 @@ ROOT = Path('/tmp/lucene1050/lucene/core/src/java/org/apache/lucene')
 LUCENE_ROOT = Path('/tmp/lucene1050')
 CORE_PREFIX = 'org.apache.lucene'
 
+# The head of a type declaration: annotations and modifiers in any order
+# (JLS 8.1.1, 8.1.1.1). JavaCC writes `@SuppressWarnings({"unused","null"})
+# public class QueryParser` on one line (lucene/queryparser's three generated
+# parsers), and a modifiers-only head missed those types and, with no enclosing
+# type on the stack, their nested types and members. An annotation is spelled as
+# `enrich_lucene_kg.ANNOTATION`. Shared by `discover`, the nested-type and member
+# extractors of `enrich_lucene_kg.py` and `port_coverage_kg.scan_lucene`.
+ANNOTATION = r'@[A-Za-z_$][A-Za-z0-9_$.]*(?:\s*\([^()]*\))?'
+DECL_HEAD = (r'(?:' + ANNOTATION + r'\s*'
+             r'|(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*')
+
 args = None
 
 def clean_for_brace_count(text):
@@ -179,7 +190,7 @@ def discover():
             # regex: optional modifiers, then (class|interface|enum|record|@interface), name,
             # optional generics, extends, implements, permits
             decl_re = re.compile(
-                r'^\s*(?P<mods>(?:public\s+|protected\s+|private\s+|abstract\s+|final\s+|static\s+|strictfp\s+|sealed\s+|non-sealed\s+)*)'
+                r'^\s*(?P<mods>' + DECL_HEAD + r')'
                 r'(?P<kind>class|interface|enum|record|@interface)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)'
                 r'(?P<params>\([^)]*\))?\s*'
                 r'(?P<generics>[<][^;{}]*[>])?\s*'

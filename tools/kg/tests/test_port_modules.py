@@ -1,12 +1,16 @@
 """Task #323: the port modules beyond lucene/core in the KG -- sprint 9's
-lucene/test-framework, lucene/codecs and randomizedtesting 2.8.1, and sprint 12's
-lucene/analysis/common (`test_skeletons.py`) -- and the workspace crates that
-port them. Off the store: every graph call is replaced by a recorder."""
+lucene/test-framework, lucene/codecs and randomizedtesting 2.8.1, sprint 12's
+lucene/analysis/common (`test_skeletons.py`), and sprint 13's lucene/queries,
+lucene/queryparser and lucene/sandbox scoped to FuzzyLikeThisQuery.java -- and the
+workspace crates that port them. Off the store: every graph call is replaced by a
+recorder."""
 import json
 import sys
 from pathlib import Path
 
 import ask
+import audit_kg as audit
+import lucene_structure_kg as ls
 import divergences_kg as dv
 import extract_lucene_kg as el
 import enrich_lucene_kg as en
@@ -25,17 +29,35 @@ def write(root: Path, rel: str, text: str):
     return p
 
 
+def write_query_descriptors(lucene: Path):
+    """The three sprint-13 descriptors, as Lucene 10.5.0 declares their `requires`."""
+    write(lucene, "lucene/queries/src/java/module-info.java",
+          "module org.apache.lucene.queries {\n requires org.apache.lucene.core;\n}")
+    write(lucene, "lucene/queryparser/src/java/module-info.java",
+          "module org.apache.lucene.queryparser {\n requires java.xml;\n"
+          " requires org.apache.lucene.core;\n requires org.apache.lucene.queries;\n"
+          " requires org.apache.lucene.sandbox;\n}")
+    write(lucene, "lucene/sandbox/src/java/module-info.java",
+          "module org.apache.lucene.sandbox {\n requires org.apache.lucene.core;\n"
+          " requires org.apache.lucene.queries;\n requires org.apache.lucene.facet;\n}")
+
+
 # --- the module registry ----------------------------------------------------
 
-def test_the_registry_names_the_five_modules_and_their_crates():
+def test_the_registry_names_the_eight_modules_and_their_crates():
     assert [m["name"] for m in pm.PORT_MODULES] == [
         "lucene/core", "lucene/codecs", "lucene/test-framework",
-        "randomizedtesting/randomized-runner", "lucene/analysis/common"]
+        "randomizedtesting/randomized-runner", "lucene/analysis/common",
+        "lucene/queries", "lucene/queryparser", "lucene/sandbox"]
     assert pm.ADDED_MODULES == ("lucene/codecs", "lucene/test-framework",
-                                "randomizedtesting/randomized-runner", "lucene/analysis/common")
+                                "randomizedtesting/randomized-runner", "lucene/analysis/common",
+                                "lucene/queries", "lucene/queryparser", "lucene/sandbox")
     assert {m["cratePath"] for m in pm.PORT_MODULES} == {
         ".", "crates/rucene-codecs", "crates/rucene-test-framework", "crates/randomizedtesting",
-        "crates/rucene-analysis-common"}
+        "crates/rucene-analysis-common", "crates/rucene-queries", "crates/rucene-queryparser",
+        "crates/rucene-sandbox"}
+    # only lucene/sandbox is narrowed to listed files
+    assert [m["name"] for m in pm.PORT_MODULES if m.get("files")] == ["lucene/sandbox"]
 
 
 def test_module_of_file_keys_on_the_declaring_tree():
@@ -93,13 +115,20 @@ def test_module_dependencies_map_jpms_names_to_port_modules(tmp_path):
     write(lucene, "lucene/analysis/common/src/java/module-info.java",
           "module org.apache.lucene.analysis.common {\n requires java.xml;\n"
           " requires org.apache.lucene.core;\n}")
+    write_query_descriptors(lucene)
     deps = pm.module_dependencies(pm.repo_roots(lucene, rt))
     assert [(a, b) for a, b, _ in deps] == [
         ("lucene/codecs", "lucene/core"),
         ("lucene/test-framework", "lucene/core"),
         ("lucene/test-framework", "lucene/codecs"),
         ("lucene/test-framework", "randomizedtesting/randomized-runner"),
-        ("lucene/analysis/common", "lucene/core")]
+        ("lucene/analysis/common", "lucene/core"),
+        ("lucene/queries", "lucene/core"),
+        ("lucene/queryparser", "lucene/core"),
+        ("lucene/queryparser", "lucene/queries"),
+        ("lucene/queryparser", "lucene/sandbox"),
+        ("lucene/sandbox", "lucene/core"),
+        ("lucene/sandbox", "lucene/queries")]
 
 
 def test_queries_narrow_to_one_module_and_the_model_holds_them_verbatim():
@@ -378,3 +407,286 @@ def test_test_support_modules_are_named_by_location(monkeypatch):
     assert ex.test_file_path("tests/portability/codecs.rs", None,
                              {"tests/portability/codecs.rs": "portability_codecs"}) == "portability_codecs"
     assert ex.test_file_path("tests/common/util.rs", None, {}) == f"{ex.CRATE}::tests::common::util"
+
+
+# --- sprint 13: lucene/queries, lucene/queryparser, sandbox FuzzyLikeThisQuery --
+
+SB = "lucene/sandbox"
+SB_SRC = "lucene/sandbox/src/java/org/apache/lucene/sandbox"
+FLT_FILE = f"{SB_SRC}/queries/FuzzyLikeThisQuery.java"
+FLT = "org.apache.lucene.sandbox.queries.FuzzyLikeThisQuery"
+FLT_JAVA = """/* licence */
+package org.apache.lucene.sandbox.queries;
+
+import org.apache.lucene.search.Query;
+
+public class FuzzyLikeThisQuery extends Query {
+  public void addTerms(String queryString, String fieldName) {}
+  static class FieldVals { String fieldName; }
+  private static class ScoreTerm { float score; }
+}
+"""
+# Another sandbox type, outside the user's scope: it must never enter the graph.
+OTHER_FILE = f"{SB_SRC}/search/CombinedFieldQuery.java"
+OTHER = "org.apache.lucene.sandbox.search.CombinedFieldQuery"
+OTHER_JAVA = """/* licence */
+package org.apache.lucene.sandbox.search;
+
+public final class CombinedFieldQuery {
+  public int fieldCount() { return 0; }
+  public static class Builder { }
+}
+"""
+
+
+def write_sandbox(lucene: Path):
+    write(lucene, FLT_FILE, FLT_JAVA)
+    write(lucene, OTHER_FILE, OTHER_JAVA)
+    write(lucene, f"{SB_SRC}/queries/package-info.java",
+          "/* licence */\n/** Queries. */\npackage org.apache.lucene.sandbox.queries;\n")
+
+
+def test_sprint13_modules_are_port_modules_with_their_crates_and_rules():
+    for name, crate, jpms in (("lucene/queries", "rucene-queries", "org.apache.lucene.queries"),
+                              ("lucene/queryparser", "rucene-queryparser",
+                               "org.apache.lucene.queryparser"),
+                              (SB, "rucene-sandbox", "org.apache.lucene.sandbox")):
+        m = pm.BY_NAME[name]
+        assert (m["crate"], m["cratePath"], m["jpms"]) == (crate, f"crates/{crate}", jpms)
+        assert m["descriptor"] == f"{name}/src/java/module-info.java"
+        assert m["sources"] == (f"{name}/src/java",)
+        assert m["skeletons"] == "report"
+        assert name in pm.ADDED_MODULES and name in pm.SKELETON_MODULES
+    for name in ("lucene/queries", "lucene/queryparser"):
+        assert (pm.BY_NAME[name]["scopeRule"], pm.BY_NAME[name]["classRule"]) == (
+            "sprint-13-ports-the-module", "sprint-13-module-top-level")
+        assert "files" not in pm.BY_NAME[name]
+    assert (pm.BY_NAME[SB]["scopeRule"], pm.BY_NAME[SB]["classRule"]) == (
+        "sprint-13-ports-listed-files", "sprint-13-listed-file-top-level")
+    assert pm.BY_NAME[SB]["files"] == (FLT_FILE,)
+    d = pm.DECISIONS[-1]
+    assert (d["name"], d["on"], d["modules"], d["supersedes"]) == (
+        "Sprint 13 ports lucene/queries and lucene/queryparser, with sandbox "
+        "FuzzyLikeThisQuery", "2026-11-14",
+        ("lucene/queries", "lucene/queryparser", SB), None)
+    summary, rationale, alternatives = pm.decision_text(d)
+    assert "FuzzyLikeThisQuery" in summary and "sprint-13-listed-file-top-level" in summary
+    assert "FuzzyLikeThisQueryBuilder" in rationale and "rejected" in alternatives
+
+
+def test_sprint13_crate_destinations_mirror_the_package_below_the_module_root():
+    assert pm.crate_destination("lucene/queries",
+                                "org.apache.lucene.queries.function.valuesource") \
+        == "crates/rucene-queries/src/function/valuesource/"
+    assert pm.crate_destination("lucene/queries", "org.apache.lucene.queries") \
+        == "crates/rucene-queries/src/"
+    assert pm.crate_destination("lucene/queryparser",
+                                "org.apache.lucene.queryparser.flexible.core.nodes") \
+        == "crates/rucene-queryparser/src/flexible/core/nodes/"
+    assert pm.crate_destination(SB, "org.apache.lucene.sandbox.queries") \
+        == "crates/rucene-sandbox/src/queries/"
+
+
+def test_the_sandbox_scope_is_the_listed_file_and_the_descriptor():
+    assert pm.file_in_scope(SB, FLT_FILE)
+    assert pm.file_in_scope(SB, "lucene/sandbox/src/java/module-info.java")
+    assert not pm.file_in_scope(SB, OTHER_FILE)
+    assert not pm.file_in_scope(SB, f"{SB_SRC}/queries/package-info.java")
+    assert not pm.file_in_scope(SB, "lucene/sandbox/src/test/org/apache/lucene/sandbox/"
+                                    "queries/TestFuzzyLikeThisQuery.java")
+    assert not pm.file_in_scope(SB, None)
+    assert pm.module_of_file(FLT_FILE) == SB
+    assert pm.module_of_file(OTHER_FILE) is None
+    # the modules ported whole keep every file of their trees
+    assert pm.module_of_file("lucene/queries/src/java/org/apache/lucene/queries/function/"
+                             "valuesource/ConstValueSource.java") == "lucene/queries"
+    assert pm.module_of_file("lucene/queryparser/src/java/org/apache/lucene/queryparser/"
+                             "classic/QueryParser.java") == "lucene/queryparser"
+
+
+def test_the_survey_of_the_sandbox_keeps_only_the_listed_file(tmp_path):
+    lucene = tmp_path / "lucene"
+    write_sandbox(lucene)
+    data = pm.survey_module(SB, pm.repo_roots(lucene, tmp_path / "rt"))
+    assert [f["path"] for f in data["files"]] == [FLT_FILE]
+    assert [t["qualified"] for t in data["types"]] == [FLT]
+    assert sorted(n["qualifiedName"] for n in data["nested"]) == [
+        f"{FLT}$FieldVals", f"{FLT}$ScoreTerm"]
+    assert data["packages"] == ["org.apache.lucene.sandbox.queries"]
+    owners = {x["parentQualifiedName"] for v in data["members"].values() for x in v}
+    assert owners and owners <= {FLT, f"{FLT}$FieldVals", f"{FLT}$ScoreTerm"}
+    names = {x["name"] for v in data["members"].values() for x in v}
+    assert "addTerms" in names and "fieldCount" not in names
+
+
+def test_the_structure_loaders_take_the_survey_instead_of_re_extracting(monkeypatch):
+    sent = []
+    monkeypatch.setattr(ls, "unwind", lambda _r, _m, rows, body, label, batch=None:
+                        sent.append((label, rows)))
+    monkeypatch.setattr(ls.en, "extract_inner_classes", lambda: 1 / 0)
+    monkeypatch.setattr(ls.en, "extract_members", lambda: 1 / 0)
+    inner = {"qualifiedName": f"{FLT}$ScoreTerm", "name": "ScoreTerm", "kind": "class",
+             "file": FLT_FILE, "package": "org.apache.lucene.sandbox.queries",
+             "parentQualifiedName": FLT}
+    ls.load_nested("r", "c" * 40, "2026-11-14", prune=False, inners=[inner])
+    method = {"qualifiedName": f"{FLT}#addTerms(String,String)", "name": "addTerms",
+              "parentQualifiedName": FLT}
+    ls.load_members("r", "c" * 40, "2026-11-14", members={
+        "methods": [method], "constructors": [], "fields": [], "enumConstants": []})
+    nested_rows = next(r for lab, r in sent if lab == "nested Class nodes")
+    assert [r["qn"] for r in nested_rows] == [f"{FLT}$ScoreTerm"]
+    method_rows = next(r for lab, r in sent if lab == "Method nodes")
+    assert [(r["qn"], r["kind"], r["parent"]) for r in method_rows] == [
+        (f"{FLT}#addTerms(String,String)", "method", FLT)]
+
+
+def test_scan_lucene_reads_the_listed_sandbox_file_only(tmp_path):
+    lucene = tmp_path / "lucene"
+    write_sandbox(lucene)
+    write(lucene, "lucene/queryparser/src/java/org/apache/lucene/queryparser/xml/builders/"
+                  "FuzzyLikeThisQueryBuilder.java",
+          "/* licence */\npackage org.apache.lucene.queryparser.xml.builders;\n"
+          "import org.apache.lucene.sandbox.queries.FuzzyLikeThisQuery;\n"
+          "import org.apache.lucene.sandbox.search.CombinedFieldQuery;\n"
+          "public class FuzzyLikeThisQueryBuilder { FuzzyLikeThisQuery q; }\n")
+    top, deps = pc.scan_lucene(str(lucene), str(tmp_path / "rt"))
+    builder = "org.apache.lucene.queryparser.xml.builders.FuzzyLikeThisQueryBuilder"
+    assert top == {FLT: FLT_FILE, builder: "lucene/queryparser/src/java/org/apache/lucene/"
+                   "queryparser/xml/builders/FuzzyLikeThisQueryBuilder.java"}
+    assert deps == [(builder, FLT)]
+
+
+def test_the_audit_census_honours_the_allow_list(tmp_path):
+    lucene = tmp_path / "lucene"
+    write_sandbox(lucene)
+    write(lucene, "lucene/sandbox/src/java/module-info.java",
+          "module org.apache.lucene.sandbox { requires org.apache.lucene.core; }")
+    files, top, nested = audit.java_census(lucene, ("lucene/sandbox/src/java",),
+                                           lambda rel: pm.file_in_scope(SB, rel))
+    assert sorted(files) == sorted([FLT_FILE, "lucene/sandbox/src/java/module-info.java"])
+    assert top == [(FLT, FLT_FILE)]
+    assert sorted(nested) == [("FieldVals", FLT_FILE), ("ScoreTerm", FLT_FILE)]
+    # without the predicate the census reads the whole tree
+    all_files, all_top, _ = audit.java_census(lucene, ("lucene/sandbox/src/java",))
+    assert OTHER_FILE in all_files and (OTHER, OTHER_FILE) in all_top
+
+
+def test_an_unlisted_sandbox_type_never_enters_the_scope(monkeypatch):
+    """Even a stray sandbox `Class` node is scoped `out`, never `in` or `nested`."""
+    g = Graph([
+        ("RETURN c.qualifiedName AS qn, c.file AS file", [
+            {"qn": FLT, "file": FLT_FILE, "pkg": "org.apache.lucene.sandbox.queries"},
+            {"qn": f"{FLT}$ScoreTerm", "file": FLT_FILE,
+             "pkg": "org.apache.lucene.sandbox.queries"},
+            {"qn": OTHER, "file": OTHER_FILE, "pkg": "org.apache.lucene.sandbox.search"},
+            {"qn": f"{OTHER}$Builder", "file": OTHER_FILE,
+             "pkg": "org.apache.lucene.sandbox.search"}]),
+        ("portStateNote IS NOT NULL", []),
+    ])
+    monkeypatch.setattr(pc, "read", g.read)
+    monkeypatch.setattr(pc, "run_unwind", g.run_unwind)
+    pc.phase_scope("r", {FLT: FLT_FILE}, "c" * 40, "2026-11-14", 200)
+    assert g.rows("portScope = in") == [{"qn": FLT, "file": FLT_FILE, "module": SB,
+                                          "rule": "sprint-13-listed-file-top-level"}]
+    assert g.rows("portScope = nested") == [{"qn": f"{FLT}$ScoreTerm", "module": SB}]
+    assert sorted(r["qn"] for r in g.rows("portScope = out")) == [OTHER, f"{OTHER}$Builder"]
+    assert [r["qn"] for r in g.rows("portState = unported")] == [FLT]
+    (n,) = g.rows("added-module nested portState")
+    assert (n["qn"], n["state"], n["dest"]) == (
+        f"{FLT}$ScoreTerm", "unported", "crates/rucene-sandbox/src/queries/")
+
+
+def test_phase_modules_records_the_sandbox_scope_files_and_the_decision(monkeypatch, tmp_path):
+    lucene, rt = tmp_path / "lucene", tmp_path / "rt"
+    for m in pm.PORT_MODULES:
+        base = lucene if m["repo"] == "lucene" else rt
+        write(base, f"{m['sources'][0]}/X.java", "package x;\nclass X {}\n")
+        if m["descriptor"]:
+            write(base, m["descriptor"], f"module {m['jpms']} {{ requires org.apache.lucene.core; }}")
+    write_query_descriptors(lucene)
+    writes, statements = [], []
+    monkeypatch.setattr(pm, "unwind", lambda _r, _m, rows, body, label, *a, **k:
+                        writes.append((label, rows, body)))
+    monkeypatch.setattr(pm, "rmp", lambda _m, _r, q, *a, **k: statements.append(q) or "{}")
+    monkeypatch.setattr(pm, "read", lambda _r, _q: [[0]])
+    pm.phase_modules("r", pm.repo_roots(lucene, rt), "c" * 40, "2026-11-14")
+    label, rows, body = next(w for w in writes if w[0] == "port Module properties")
+    assert "m.scopeFiles = row.scopeFiles" in body
+    scope = {r["name"]: r["scopeFiles"] for r in rows}
+    assert scope.pop(SB) == FLT_FILE
+    assert set(scope.values()) == {None}
+    assert {r["name"]: r["scopeRule"] for r in rows}["lucene/queryparser"] == \
+        "sprint-13-ports-the-module"
+    decision = next(q for q in statements if "Sprint 13 ports" in q and "d.evidence" in q)
+    # `javaFiles` stays the whole module's count; the evidence names the scope
+    sandbox_files = {r["name"]: r["javaFiles"] for r in rows}[SB]
+    assert sandbox_files == 2  # X.java and the descriptor
+    assert f"lucene/sandbox {sandbox_files} (in scope: FuzzyLikeThisQuery.java)" in decision
+    assert "lucene/queryparser -> lucene/sandbox" in decision
+
+
+def test_the_model_documents_the_sprint13_scope():
+    model = MODEL.read_text(encoding="utf-8")
+    for term in ("sprint-13-ports-the-module", "sprint-13-ports-listed-files",
+                 "sprint-13-module-top-level", "sprint-13-listed-file-top-level",
+                 "`scopeFiles`", "lucene/queries", "lucene/queryparser", "lucene/sandbox"):
+        assert term in model, term
+
+
+QP_SRC = "lucene/queryparser/src/java/org/apache/lucene/queryparser/classic"
+QP = "org.apache.lucene.queryparser.classic"
+# The shape JavaCC writes (`classic/QueryParser.java:82`): the annotation on the
+# same line as the declaration, nested types declared `static private final`.
+QP_JAVA = """/* QueryParser.java */
+/* Generated By:JavaCC: Do not edit this line. QueryParser.java */
+package org.apache.lucene.queryparser.classic;
+
+import java.util.Locale;
+
+@SuppressWarnings({"unused","null"}) public class QueryParser extends QueryParserBase implements QueryParserConstants {
+  final public int Conjunction() throws ParseException { return 0; }
+  static private final class LookaheadSuccess extends java.lang.Error {
+    @Override
+    public Throwable fillInStackTrace() { return this; }
+  }
+  static final class JJCalls {
+    int gen;
+  }
+}
+"""
+
+
+def test_an_annotation_on_the_declaration_line_is_seen_by_every_extractor(tmp_path):
+    """Regression: the three JavaCC parsers of lucene/queryparser were missing.
+
+    Every extractor anchored a declaration at `^\\s*` plus modifiers only, so
+    `@SuppressWarnings({"unused","null"}) public class QueryParser` matched none,
+    and with no top-level type on the stack its nested types and members were
+    dropped too; the audit's census saw them (graph 218, real 221 top-level).
+    """
+    lucene = tmp_path / "lucene"
+    write(lucene, f"{QP_SRC}/QueryParser.java", QP_JAVA)
+    # an annotation on the line before the declaration still yields one type
+    write(lucene, f"{QP_SRC}/QueryParserBase.java",
+          f"/* licence */\npackage {QP};\n\n@Deprecated\npublic abstract class QueryParserBase {{}}\n")
+    write(lucene, f"{QP_SRC}/QueryParserConstants.java",
+          f"/* licence */\npackage {QP};\npublic interface QueryParserConstants {{ int EOF = 0; }}\n")
+    data = pm.survey_module("lucene/queryparser", pm.repo_roots(lucene, tmp_path / "rt"))
+    assert sorted(t["qualified"] for t in data["types"]) == [
+        f"{QP}.QueryParser", f"{QP}.QueryParserBase", f"{QP}.QueryParserConstants"]
+    assert sorted(n["qualifiedName"] for n in data["nested"]) == [
+        f"{QP}.QueryParser$JJCalls", f"{QP}.QueryParser$LookaheadSuccess"]
+    members = {(x["parentQualifiedName"], x["name"])
+               for v in data["members"].values() for x in v}
+    assert {(f"{QP}.QueryParser", "Conjunction"), (f"{QP}.QueryParser$JJCalls", "gen"),
+            (f"{QP}.QueryParser$LookaheadSuccess", "fillInStackTrace")} <= members
+
+    top, deps = pc.scan_lucene(str(lucene), str(tmp_path / "rt"))
+    assert sorted(top) == [f"{QP}.QueryParser", f"{QP}.QueryParserBase",
+                           f"{QP}.QueryParserConstants"]
+    assert (f"{QP}.QueryParser", f"{QP}.QueryParserBase") in deps
+    assert (f"{QP}.QueryParser", f"{QP}.QueryParserConstants") in deps
+
+    _files, ctop, cnested = audit.java_census(lucene, ("lucene/queryparser/src/java",))
+    assert sorted(q for q, _ in ctop) == sorted(top)
+    assert sorted(n for n, _ in cnested) == ["JJCalls", "LookaheadSuccess"]

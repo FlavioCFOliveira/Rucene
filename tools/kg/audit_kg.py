@@ -42,10 +42,11 @@ JAVA_DECL = re.compile(
 
 
 def java_census(lucene_root: Path, sources=("lucene/core/src/java",
-                                             "lucene/core/src/java21")):
+                                             "lucene/core/src/java21"), keep=None):
     """Files, top-level types and nested types of the source trees `sources`
     (relative to `lucene_root`, the root of the clone that holds them);
-    `lucene/core` by default."""
+    `lucene/core` by default. `keep`, when given, admits a file by its path
+    relative to `lucene_root` (a module scoped to listed files)."""
     files, top, nested = [], [], []
     for base in sources:
         d = lucene_root / base
@@ -57,6 +58,8 @@ def java_census(lucene_root: Path, sources=("lucene/core/src/java",
                     continue
                 path = Path(dirpath, name)
                 rel = str(path.relative_to(lucene_root))
+                if keep is not None and not keep(rel):
+                    continue
                 src = strip_java(path.read_text(encoding="utf-8", errors="replace"))
                 m = re.search(r"^\s*package\s+([\w.]+)\s*;", src, re.M)
                 pkg = m.group(1) if m else None
@@ -215,15 +218,27 @@ def main():
     top, nested = [], []
     for m in pm.PORT_MODULES:
         base = roots[m["repo"]]
-        mfiles, mtop, mnested = java_census(base, m["sources"])
+        name = m["name"]
+        # A module scoped to listed files is censused over those alone, while
+        # the graph side below reads every File under its trees: a file the
+        # loaders let in beyond the list reads as GRAPH-ONLY.
+        keep = (lambda rel, n=name: pm.file_in_scope(n, rel)) if m.get("files") else None
+        mfiles, mtop, mnested = java_census(base, m["sources"], keep)
         top += mtop
         nested += mnested
-        name = m["name"]
         cond = " OR ".join(f"f.path STARTS WITH '{s}/'" for s in m["sources"])
         gf = {r[0] for r in q(f"MATCH (f:File) WHERE {cond} RETURN f.path")}
         check(f"{name} java files", len(gf), len(mfiles))
         for p in sorted(set(mfiles) - gf)[:5]:
             print("   MISSING:", p)
+        for p in sorted(gf - set(mfiles))[:5]:
+            print("   GRAPH-ONLY:", p)
+        if m.get("files"):
+            outside = [r[0] for r in q(
+                f"MATCH (c:Class) WHERE ({cond.replace('f.path', 'c.file')}) "
+                f"AND NOT c.file IN {list(m['files'])} RETURN c.qualifiedName")]
+            check(f"{name} types outside its listed files", len(outside), 0,
+                  f"{outside[:3]}" if outside else "")
         gmt = {r[0] for r in q("MATCH (c:Class) WHERE c.portScope='in' "
                                f"AND c.module = '{name}' RETURN c.qualifiedName")}
         cmt = {q_ for q_, _ in mtop}

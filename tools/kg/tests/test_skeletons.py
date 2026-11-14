@@ -56,9 +56,10 @@ def test_analysis_common_is_a_port_module_with_its_crate_and_rules():
     assert (m["scopeRule"], m["classRule"]) == (
         "sprint-12-ports-the-module", "sprint-12-module-top-level")
     assert AC in pm.ADDED_MODULES and "lucene/core" not in pm.ADDED_MODULES
-    assert pm.SKELETON_MODULES == (AC,)
+    assert pm.SKELETON_MODULES == (AC, "lucene/queries", "lucene/queryparser", "lucene/sandbox")
+    assert m["skeletons"] == "enforce"
     assert "org.tartarus.snowball" in pm.JAVA_PREFIXES
-    assert [d["name"] for d in pm.DECISIONS][-1] == "Sprint 12 ports lucene/analysis/common"
+    assert [d["name"] for d in pm.DECISIONS][1] == "Sprint 12 ports lucene/analysis/common"
     assert pm.module_of_file(
         "lucene/analysis/common/src/java/org/tartarus/snowball/Among.java") == AC
 

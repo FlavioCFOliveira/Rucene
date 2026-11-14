@@ -15,6 +15,13 @@ scope is ported and what is missing. The user has widened that scope twice:
   `lucene/analysis/common`, as the workspace crate `rucene-analysis-common`,
   ported 100% faithfully. Its types are tracked through a Rust skeleton
   (`SKELETON_OF`, `portState = 'skeleton'`) before each is ported.
+* 2026-11-14, sprint 13 ("Port Query Modules"): Lucene 10.5.0's
+  `lucene/queries` and `lucene/queryparser`, whole, as the workspace crates
+  `rucene-queries` and `rucene-queryparser`, and of `lucene/sandbox` only
+  `org.apache.lucene.sandbox.queries.FuzzyLikeThisQuery` (with its nested
+  types), which `queryparser.xml.builders.FuzzyLikeThisQueryBuilder` needs, as
+  the crate `rucene-sandbox`. The sandbox entry carries a source-file
+  allow-list (`files`), so no other sandbox type enters the scope.
 
 `PORT_MODULES` is the single statement of that scope. Every other KG tool that
 needs to know which module a Java file belongs to, which crate ports it, or
@@ -27,7 +34,8 @@ which source trees to census imports it from here:
 
 Phases (`--phase`, default `all`):
 
-  modules    the port `Module` nodes' scope properties, the randomizedtesting
+  modules    the port `Module` nodes' scope properties (`scopeFiles` on a
+             module scoped to listed files), the randomizedtesting
              `Project`, `Module` -> `Module` `DEPENDS_ON` from each module's
              JPMS descriptor, and one scope `Decision` per widening
              (`DECISIONS`), with its `SUPERSEDES`.
@@ -83,6 +91,21 @@ DEFAULT_RT_ROOT = "/tmp/randomizedtesting281"
 # `org.apache.lucene.analysis.ar` -> `src/analysis/ar/`, and `org` as the
 # second root keeps the vendor in the path (`org.tartarus.snowball` ->
 # `src/tartarus/snowball/`), clear of `analysis.snowball`.
+# `files`, when present, narrows a module to the listed source files (paths
+# relative to the clone, as `File.path`): only they, and the module's JPMS
+# descriptor, are surveyed, scoped, censused and given a crate destination;
+# every other file of the module's `sources` is outside the port
+# (`file_in_scope`). Sprint 13 takes from `lucene/sandbox` only
+# `FuzzyLikeThisQuery.java`, whose top-level type and nested types are all
+# declared in that one file, so a file allow-list is exactly the type set the
+# user scoped and needs no type-level rule. Its package root is
+# `org.apache.lucene.sandbox` (`org.apache.lucene.sandbox.queries` ->
+# `crates/rucene-sandbox/src/queries/`), as `lucene/queries` and
+# `lucene/queryparser` mirror the packages below `org.apache.lucene.queries` and
+# `org.apache.lucene.queryparser` (`...queries.function.valuesource` ->
+# `crates/rucene-queries/src/function/valuesource/`,
+# `...queryparser.flexible.core.nodes` ->
+# `crates/rucene-queryparser/src/flexible/core/nodes/`).
 # `skeletons` is set on a module whose types are tracked through a Rust
 # skeleton before they are ported (`SKELETON_OF`): `"report"` makes the audit
 # report the classes still lacking one, `"enforce"` fails it on any.
@@ -136,6 +159,39 @@ PORT_MODULES = (
      "role": "analyzers, tokenizers, token filters and char filters for many "
              "languages, with their SPI factories (the Snowball stemmers included); "
              "ported by sprint 12"},
+    {"name": "lucene/queries", "project": LUCENE, "repo": "lucene",
+     "sources": ("lucene/queries/src/java",),
+     "prefix": "org.apache.lucene", "packageRoot": "org.apache.lucene.queries",
+     "crate": "rucene-queries", "cratePath": "crates/rucene-queries",
+     "jpms": "org.apache.lucene.queries",
+     "descriptor": "lucene/queries/src/java/module-info.java",
+     "scopeRule": "sprint-13-ports-the-module", "classRule": "sprint-13-module-top-level",
+     "skeletons": "report",
+     "role": "query types outside core: function queries and value sources, "
+             "intervals, spans, payload queries, more-like-this; ported by sprint 13"},
+    {"name": "lucene/queryparser", "project": LUCENE, "repo": "lucene",
+     "sources": ("lucene/queryparser/src/java",),
+     "prefix": "org.apache.lucene", "packageRoot": "org.apache.lucene.queryparser",
+     "crate": "rucene-queryparser", "cratePath": "crates/rucene-queryparser",
+     "jpms": "org.apache.lucene.queryparser",
+     "descriptor": "lucene/queryparser/src/java/module-info.java",
+     "scopeRule": "sprint-13-ports-the-module", "classRule": "sprint-13-module-top-level",
+     "skeletons": "report",
+     "role": "query parsers: classic, flexible (standard, precedence), simple, "
+             "surround, complex-phrase, ext and the XML query parser; ported by sprint 13"},
+    {"name": "lucene/sandbox", "project": LUCENE, "repo": "lucene",
+     "sources": ("lucene/sandbox/src/java",),
+     "files": ("lucene/sandbox/src/java/org/apache/lucene/sandbox/queries/"
+               "FuzzyLikeThisQuery.java",),
+     "prefix": "org.apache.lucene", "packageRoot": "org.apache.lucene.sandbox",
+     "crate": "rucene-sandbox", "cratePath": "crates/rucene-sandbox",
+     "jpms": "org.apache.lucene.sandbox",
+     "descriptor": "lucene/sandbox/src/java/module-info.java",
+     "scopeRule": "sprint-13-ports-listed-files",
+     "classRule": "sprint-13-listed-file-top-level",
+     "skeletons": "report",
+     "role": "experimental code; only FuzzyLikeThisQuery is ported (sprint 13), "
+             "for the XML query parser's FuzzyLikeThisQueryBuilder"},
 )
 BY_NAME = {m["name"]: m for m in PORT_MODULES}
 # The modules beyond `lucene/core`: surveyed by `--phase structure`, given the
@@ -165,6 +221,11 @@ DECISIONS = (
     {"name": "Sprint 12 ports lucene/analysis/common",
      "on": "2026-11-13",
      "modules": ("lucene/analysis/common",),
+     "supersedes": None},
+    {"name": "Sprint 13 ports lucene/queries and lucene/queryparser, with sandbox "
+             "FuzzyLikeThisQuery",
+     "on": "2026-11-14",
+     "modules": ("lucene/queries", "lucene/queryparser", "lucene/sandbox"),
      "supersedes": None},
 )
 DECISION = DECISIONS[0]["name"]
@@ -216,16 +277,32 @@ def source_dirs(roots, modules=PORT_MODULES):
             for m in modules for s in m["sources"]]
 
 
+def file_in_scope(module, path):
+    """Whether the Java file `path` (relative to its clone) is in `module`'s scope.
+
+    A file of the module's `sources` is in scope, unless the module lists
+    `files`: then only those and the module's JPMS descriptor are (the
+    descriptor declares no type, so it never enters a type count).
+    """
+    m = BY_NAME[module]
+    if not path or not any(path.startswith(s + "/") for s in m["sources"]):
+        return False
+    files = m.get("files")
+    return files is None or path in files or path == m["descriptor"]
+
+
 def module_of_file(path):
     """The port module a Java `File.path` belongs to, or `None`.
 
     Lucene paths start `lucene/<module>/src/...` and randomizedtesting paths
     `randomized-runner/src/main/java/...`, so the source prefixes never overlap.
+    A file of a module scoped to listed `files` that is not listed belongs to
+    no port module.
     """
     if not path:
         return None
     for m in PORT_MODULES:
-        if any(path.startswith(s + "/") for s in m["sources"]):
+        if file_in_scope(m["name"], path):
             return m["name"]
     return None
 
@@ -298,7 +375,11 @@ def lucene_roots(base, source):
 
 
 def survey_module(module, roots):
-    """Packages, files, types, nested types and members of one module."""
+    """Packages, files, types, nested types and members of one module.
+
+    A module scoped to listed `files` keeps only what those files declare:
+    their packages, top-level and nested types, and the members of those types.
+    """
     m = BY_NAME[module]
     data = {"packages": set(), "files": [], "types": [], "nested": [],
             "members": {"methods": [], "constructors": [], "fields": [],
@@ -316,6 +397,17 @@ def survey_module(module, roots):
             data["nested"].extend(en.extract_inner_classes())
             for k, v in en.extract_members().items():
                 data["members"][k].extend(v)
+    if m.get("files"):
+        keep = lambda path: file_in_scope(module, path)  # noqa: E731
+        data["files"] = [f for f in data["files"] if keep(f["path"])]
+        data["types"] = [t for t in data["types"] if keep(t["file"])]
+        data["nested"] = [n for n in data["nested"] if keep(n["file"])]
+        owners = ({t["qualified"] for t in data["types"]}
+                  | {n["qualifiedName"] for n in data["nested"]})
+        data["members"] = {k: [x for x in v if x["parentQualifiedName"] in owners]
+                           for k, v in data["members"].items()}
+        data["packages"] = {f["package"] for f in data["files"]
+                            if package_root(module, f["package"])}
     data["packages"] = sorted(data["packages"])
     return data
 
@@ -347,7 +439,11 @@ def phase_modules(roadmap, roots, commit, date):
                      "path": m["sources"][0].rsplit("/src/", 1)[0],
                      "javaFiles": java_files, "scopeRule": m["scopeRule"],
                      "role": m["role"], "crate": m["crate"], "cratePath": m["cratePath"],
-                     "jpms": m["jpms"], **stamp})
+                     "jpms": m["jpms"],
+                     # As `Class.nestedHostFiles`: one string, ", "-separated; null
+                     # (no property) on a module ported whole.
+                     "scopeFiles": ", ".join(m["files"]) if m.get("files") else None,
+                     **stamp})
     unwind(roadmap, "create", [{"name": r["name"]} for r in rows],
            "MERGE (m:Module {name: row.name})", "port Module nodes")
     unwind(roadmap, "update", rows,
@@ -355,7 +451,8 @@ def phase_modules(roadmap, roots, commit, date):
            "m.project = row.project, m.shortName = row.shortName, m.path = row.path, "
            "m.javaFiles = row.javaFiles, m.inScope = true, m.scopeRule = row.scopeRule, "
            "m.role = row.role, m.crate = row.crate, m.cratePath = row.cratePath, "
-           "m.jpmsName = row.jpms, m.gitCommit = row.commit, m.gitDate = row.date",
+           "m.jpmsName = row.jpms, m.scopeFiles = row.scopeFiles, "
+           "m.gitCommit = row.commit, m.gitDate = row.date",
            "port Module properties")
     unwind(roadmap, "create", [{"name": r["name"], "project": r["project"]} for r in rows],
            "MATCH (p:Project {name: row.project}) WITH p, row "
@@ -387,6 +484,42 @@ def phase_modules(roadmap, roots, commit, date):
 
 def decision_text(decision):
     """`(summary, rationale, alternatives)` of one scope `Decision`."""
+    if decision["name"] == DECISIONS[2]["name"]:
+        return (
+            "On 2026-11-14 the user decided that sprint 13 ('Port Query Modules') ports "
+            "Lucene 10.5.0's lucene/queries and lucene/queryparser completely and "
+            "faithfully, as the Cargo workspace crates rucene-queries "
+            "(crates/rucene-queries) and rucene-queryparser (crates/rucene-queryparser), "
+            "and of lucene/sandbox only org.apache.lucene.sandbox.queries."
+            "FuzzyLikeThisQuery and its nested types, as the crate rucene-sandbox "
+            "(crates/rucene-sandbox). Rust module paths mirror the Java packages below "
+            "org.apache.lucene.queries, org.apache.lucene.queryparser and "
+            "org.apache.lucene.sandbox. The three modules are inScope=true; the top-level "
+            "types of lucene/queries and lucene/queryparser are portScope='in' "
+            "(portScopeRule 'sprint-13-module-top-level'). lucene/sandbox is scoped to "
+            "the source files its Module.scopeFiles lists, FuzzyLikeThisQuery.java alone: "
+            "its top-level type is portScope='in' (portScopeRule "
+            "'sprint-13-listed-file-top-level'), its nested types are portScope='nested', "
+            "and no other sandbox type is surveyed, scoped or counted. The three modules "
+            "are tracked through Rust skeletons (skeletons: 'report' until the skeletons "
+            "land).",
+            "The user's decisions for sprint 13 (rmp sprint 13 comments, 2026-11-14): "
+            "both query modules, whole; from lucene/sandbox only FuzzyLikeThisQuery, "
+            "because lucene/queryparser's xml.builders.FuzzyLikeThisQueryBuilder needs it "
+            "and it depends only on lucene/core. CLAUDE.md 6.1 requires the graph to "
+            "answer what of the port's scope is ported and what is missing, against an "
+            "explicit denominator, so the modules the work now covers enter the graph's "
+            "scope, and the sandbox narrowing is stated in the graph rather than implied.",
+            "Bringing lucene/sandbox in whole (rejected: the user scoped it to one type; "
+            "every other sandbox type would inflate the denominator with work nobody "
+            "asked for). Leaving FuzzyLikeThisQuery outside the port modules (rejected: "
+            "the queryparser port needs it, and its coverage would have no denominator). "
+            "A type-level allow-list (rejected: FuzzyLikeThisQuery and its nested types "
+            "are exactly what FuzzyLikeThisQuery.java declares, so the file is the "
+            "narrowest unit that every survey, scope and census tool already keys on). "
+            "Folding FuzzyLikeThisQuery into the queryparser crate (rejected: the crate "
+            "layout mirrors Lucene's modules).",
+        )
     if decision["name"] == DECISIONS[1]["name"]:
         return (
             "On 2026-11-13 the user decided that sprint 12 ('Port Analysis Common "
@@ -445,10 +578,13 @@ def decision_text(decision):
 def write_decision(roadmap, decision, rows, deps, commit, date):
     name = decision["name"]
     files = {r["name"]: r["javaFiles"] for r in rows if r["name"] in decision["modules"]}
+    scoped = {k: BY_NAME[k]["files"] for k in files if BY_NAME[k].get("files")}
     summary, rationale, alternatives = decision_text(decision)
     evidence = (
         "Java files at the surveyed tags: " +
-        ", ".join(f"{k} {v}" for k, v in files.items()) +
+        ", ".join(f"{k} {v}" + (f" (in scope: {', '.join(p.rsplit('/', 1)[1] for p in scoped[k])})"
+                                if k in scoped else "")
+                  for k, v in files.items()) +
         ". JPMS requirements of these modules on port modules: " +
         ", ".join(f"{d['a']} -> {d['b']}" for d in deps if d["a"] in decision["modules"]) +
         "."
@@ -552,12 +688,13 @@ def phase_structure(roadmap, roots, commit, date):
                "MATCH (:File {path: row.file})-[e:DECLARES]->(c:Class {qualifiedName: row.qn}) "
                "SET e.gitCommit = row.commit, e.gitDate = row.date", "File DECLARES stamped")
 
-        # Nested types and members, by `lucene_structure_kg`'s own loaders over
-        # this module's tree. Its prune is never asked for: it compares against
-        # the whole graph, and would read lucene/core's nested types as stale.
-        with lucene_roots(roots[m["repo"]], m["sources"][0]) as (_el, en):
-            ls.load_nested(roadmap, commit, date, prune=False)
-            ls.load_members(roadmap, commit, date)
+        # Nested types and members, by `lucene_structure_kg`'s own loaders, fed
+        # the survey's extraction of this module's tree (narrowed to a scoped
+        # module's listed files). Its prune is never asked for: it compares
+        # against the whole graph, and would read lucene/core's nested types as
+        # stale.
+        ls.load_nested(roadmap, commit, date, prune=False, inners=data["nested"])
+        ls.load_members(roadmap, commit, date, members=data["members"])
         unwind(roadmap, "update", [{"qn": n["qualifiedName"], "module": module}
                                    for n in data["nested"]],
                "MATCH (c:Class {qualifiedName: row.qn}) SET c.module = row.module",

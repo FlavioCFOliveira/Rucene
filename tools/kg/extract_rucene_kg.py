@@ -14,10 +14,11 @@ Workspace: alem do crate raiz (`src/`, `tests/`), levanta cada crate membro em
 `crates/<dir>/` (`src/`, `tests/`) -- os crates que portam os modulos de
 `port_modules_kg.PORT_MODULES` para la de `lucene/core` (o `cratePath` de cada
 um: `crates/rucene-codecs`, `crates/randomizedtesting`,
-`crates/rucene-test-framework`, `crates/rucene-analysis-common`), mais qualquer
-outro membro com `Cargo.toml` (`crates/rucene-cli-example`). Os membros sao
-lidos de `crates/*/Cargo.toml`, por isso um crate que ainda nao existe (o
-`crates/rucene-analysis-common` antes do sprint 12 o criar) nao contribui
+`crates/rucene-test-framework`, `crates/rucene-analysis-common`,
+`crates/rucene-queries`, `crates/rucene-queryparser`, `crates/rucene-sandbox`),
+mais qualquer outro membro com `Cargo.toml` (`crates/rucene-cli-example`). Os
+membros sao lidos de `crates/*/Cargo.toml`, por isso um crate que ainda nao
+existe (os tres do sprint 13 antes de o sprint os criar) nao contribui
 nada e nao e um erro. O caminho de modulo
 de um ficheiro de um membro comeca pelo identificador do seu pacote Cargo
 (`rucene_codecs::simpletext::...`), lido do seu `Cargo.toml`, e `--expand`

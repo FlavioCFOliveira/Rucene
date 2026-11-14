@@ -8,7 +8,9 @@ The knowledge graph of the **Rucene** project (roadmap `rucene`, reached through
 2. the reference **Apache Lucene Core 10.5.0**: the 35 modules of the distribution,
    and the **port modules** in depth — `lucene/core`, the modules sprint 9 adds,
    `lucene/codecs`, `lucene/test-framework` and **randomizedtesting 2.8.1**
-   (`randomized-runner`), and the module sprint 12 adds, `lucene/analysis/common`:
+   (`randomized-runner`), the module sprint 12 adds, `lucene/analysis/common`, and
+   the modules sprint 13 adds, `lucene/queries`, `lucene/queryparser` and
+   `lucene/sandbox` (only its listed source files, `Module.scopeFiles`):
    packages, files, types, members, dependencies; for `lucene/core` also bytecode
    calls and its test surface;
 3. **the port between them**: which Lucene type each Rust item ports and on what
@@ -84,14 +86,15 @@ member crate the survey no longer has is pruned).
 
 | Property | Purpose |
 |---|---|
-| `name` | `"rucene"`, `"rucene-codecs"`, `"lucene/core"`, `"lucene/analysis/common"`, `"randomizedtesting/randomized-runner"`, … |
+| `name` | `"rucene"`, `"rucene-codecs"`, `"lucene/core"`, `"lucene/analysis/common"`, `"lucene/queryparser"`, `"randomizedtesting/randomized-runner"`, … |
 | `shortName` | The path under `lucene/` (`"core"`), or under the randomizedtesting repository (`"randomized-runner"`). |
 | `kind` | `"crate"`, `"maven-module"`. |
 | `path` | Root path in the source tree. |
 | `project` | The owning `Project.name`. |
-| `javaFiles` | Java source files the module declares at the surveyed tag (its first source tree). |
-| `inScope` | `true` for a module the port covers. |
-| `scopeRule` | The rule that set `inScope`: `"lucene-core-is-the-port-target"`, `"sprint-9-ports-the-module"`, `"sprint-12-ports-the-module"`, `"outside-the-port-modules"`. |
+| `javaFiles` | Java source files the module declares at the surveyed tag (its first source tree), whether or not all are in scope. |
+| `inScope` | `true` for a module the port covers, whole or in part (`scopeFiles`). |
+| `scopeRule` | The rule that set `inScope`: `"lucene-core-is-the-port-target"`, `"sprint-9-ports-the-module"`, `"sprint-12-ports-the-module"`, `"sprint-13-ports-the-module"`, `"sprint-13-ports-listed-files"`, `"outside-the-port-modules"`. |
+| `scopeFiles` | On a port module scoped to listed source files (`scopeRule` `"sprint-13-ports-listed-files"`): those files' paths, relative to the repository root, `", "`-separated. Only they (and the module's JPMS descriptor) are surveyed, scoped and censused; no other type of the module is a `Class`. Absent on a module ported whole. |
 | `role` | What the module is, in one line. |
 | `crate` / `cratePath` | On a port module: the Cargo package that ports it and its directory (`"."` for `rucene`). |
 | `jpmsName` | On a port module: its JPMS module name (randomizedtesting's is the automatic name of its jar, `randomizedtesting.runner`). |
@@ -108,7 +111,8 @@ A Java package. Identity: `name` (string).
 
 ### `Class`
 A Java type of a port module (`lucene/core`, `lucene/codecs`, `lucene/test-framework`,
-`randomizedtesting/randomized-runner`, `lucene/analysis/common`) — class, interface, enum, record, exception or
+`randomizedtesting/randomized-runner`, `lucene/analysis/common`, `lucene/queries`,
+`lucene/queryparser`, and of `lucene/sandbox` the types its `scopeFiles` declare) — class, interface, enum, record, exception or
 annotation; `kind` tells them apart. (`Interface`, `Enum`, `Exception` and `Annotation`
 are reserved labels that no loader writes.) Identity: `qualifiedName` (string); a nested
 type is keyed `pkg.Outer$Inner`. Written by the Lucene survey (`extract_lucene_kg.py`,
@@ -146,6 +150,8 @@ port loaders named below.
 | `in` | `lucene-core-top-level` | A top-level type declared by a file of `lucene/core` (`src/java`, `src/java21`). The port target. |
 | `in` | `sprint-9-module-top-level` | A top-level type declared by a file of `lucene/codecs`, `lucene/test-framework` or randomizedtesting's `randomized-runner` (`src/main/java`). |
 | `in` | `sprint-12-module-top-level` | A top-level type declared by a file of `lucene/analysis/common` (`src/java`). |
+| `in` | `sprint-13-module-top-level` | A top-level type declared by a file of `lucene/queries` or `lucene/queryparser` (`src/java`). |
+| `in` | `sprint-13-listed-file-top-level` | A top-level type declared by a file a port module lists in `scopeFiles` (`lucene/sandbox`). |
 | `nested` | `nested-in-enclosing-type` | An inner type; not an independent port unit. Each carries its own measured `portState`. |
 | `out` | `not-a-lucene-core-type` | Anything else carrying the label, such as Rucene's own Java test fixtures. |
 
@@ -929,8 +935,9 @@ above; `tools/kg/README.md` gives the arguments.
 `tools/kg/audit_kg.py`, after every sync; `problems: 0` is the pass condition. Each
 check compares the graph with a source it re-derives independently:
 
-* **Lucene and randomizedtesting:** per port module, Java files and top-level types;
-  over all of them, top-level and nested types (a brace-depth scanner written
+* **Lucene and randomizedtesting:** per port module, Java files and top-level types
+  (a module scoped to listed files is censused over those alone, and has no `Class`
+  declared by another of its files); over all of them, top-level and nested types (a brace-depth scanner written
   independently of the extractor); registered modules; the in-scope modules equal
   `PORT_MODULES`; every in-scope or nested `Class` has a `module`; every
   `PORTS_EARLY` member belongs to a type of a module beyond `lucene/core`.

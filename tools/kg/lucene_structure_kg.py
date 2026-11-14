@@ -50,8 +50,11 @@ def read(roadmap, query):
     return json.loads(rmp("query", roadmap, query))["rows"]
 
 
-def load_nested(roadmap, commit, date, prune):
-    inners = en.extract_inner_classes()
+def load_nested(roadmap, commit, date, prune, inners=None):
+    """Nested `Class` nodes and `NESTED_IN`; `inners` defaults to the reference
+    tree's extraction (`port_modules_kg.py` passes a module's own survey)."""
+    if inners is None:
+        inners = en.extract_inner_classes()
     print(f"nested types in the reference tree: {len(inners)}", file=sys.stderr)
     rows = [{"qn": i["qualifiedName"], "name": i["name"], "kind": i["kind"],
              "file": i["file"], "pkg": i["package"],
@@ -96,8 +99,11 @@ def load_nested(roadmap, commit, date, prune):
             print("  no stale nested types", file=sys.stderr)
 
 
-def load_members(roadmap, commit, date):
-    members = en.extract_members()
+def load_members(roadmap, commit, date, members=None):
+    """`Method` nodes and `DECLARES`; `members` defaults to the reference tree's
+    extraction (`port_modules_kg.py` passes a module's own survey)."""
+    if members is None:
+        members = en.extract_members()
     all_rows = []
     for kind, items in (("method", members["methods"]),
                         ("constructor", members["constructors"]),

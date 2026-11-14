@@ -427,7 +427,9 @@ def extract_inner_classes():
     parentQualifiedName.
     """
     decl_re = re.compile(
-        r'^\s*(?:(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*'
+        # `e.DECL_HEAD`: annotations as well as modifiers, so a declaration
+        # whose annotation shares its line (JavaCC's parsers) is seen.
+        r'^\s*' + e.DECL_HEAD +
         r'(class|interface|enum|record|@interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
         r'(?:\s*<[^;{}]*>)?'
         # A record carries a component list between its name and its body, and a
@@ -573,7 +575,9 @@ def extract_members():
     `member_extraction_check.py` now fixes each in a test.
     """
     decl_re = re.compile(
-        r'^\s*(?:(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*'
+        # `e.DECL_HEAD`: annotations as well as modifiers, so a declaration
+        # whose annotation shares its line (JavaCC's parsers) is seen.
+        r'^\s*' + e.DECL_HEAD +
         r'(class|interface|enum|record|@interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
         r'(?:\s*<[^;{}]*>)?'
         # A record carries a component list between its name and its body, and a
