@@ -15,10 +15,107 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `NorwegianMinimalStemFilter.java`, of the Java
-//! package `org.apache.lucene.analysis.no`.
+//! A `TokenFilter` that applies `NorwegianMinimalStemmer` to stem Norwegian
+//! words, ported from `org.apache.lucene.analysis.no.NorwegianMinimalStemFilter`.
 
-/// Java: `public final class`.
+use rucene::analysis::{
+    CharTermAttribute, KeywordAttribute, TokenFilter, TokenFilterLogic, TokenStream,
+};
+use rucene::error::Result;
+use rucene::util::attribute::AttributeSource;
+
+use super::norwegian_light_stemmer::BOKMAAL;
+use super::norwegian_minimal_stemmer::NorwegianMinimalStemmer;
+use crate::jdk::character::{chars_to_utf16, utf16_to_term_chars};
+
+/// The body of [`NorwegianMinimalStemFilter`]: what Lucene's
+/// `NorwegianMinimalStemFilter` adds to `TokenFilter`.
+#[derive(Debug)]
+pub struct NorwegianMinimalStemFilterLogic {
+    stemmer: NorwegianMinimalStemmer,
+}
+
+impl TokenFilterLogic for NorwegianMinimalStemFilterLogic {
+    /// Equivalent to `NorwegianMinimalStemFilter.incrementToken()`. The stemmer
+    /// reads the term's UTF-16 units, Java's `termAtt.buffer()`, and may
+    /// change them in place; the first `newlen` units become the term, as
+    /// Java's `termAtt.setLength(newlen)` keeps them.
+    fn increment_token(
+        &mut self,
+        source: &mut AttributeSource,
+        input: &mut dyn TokenStream,
+    ) -> Result<bool> {
+        if input.increment_token()? {
+            let is_keyword = source
+                .get_attribute_interface::<dyn KeywordAttribute>()
+                .expect("INVARIANT: the constructor added the KeywordAttribute")
+                .is_keyword();
+            if !is_keyword {
+                let mut term_att = source
+                    .get_attribute_interface_mut::<dyn CharTermAttribute>()
+                    .expect("INVARIANT: the constructor added the CharTermAttribute");
+                let mut buffer = chars_to_utf16(&term_att.buffer()[..term_att.length()]);
+                let length = buffer.len();
+                let newlen = self.stemmer.stem(&mut buffer, length);
+                let chars = utf16_to_term_chars(&buffer[..newlen]);
+                term_att.copy_buffer(&chars, 0, chars.len());
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+/// A `TokenFilter` that applies `NorwegianMinimalStemmer` to stem Norwegian
+/// words.
 ///
-/// Skeleton of `org.apache.lucene.analysis.no.NorwegianMinimalStemFilter`; ported by rmp task #468.
-pub struct NorwegianMinimalStemFilter;
+/// To prevent terms from being stemmed use an instance of
+/// `SetKeywordMarkerFilter` or a custom `TokenFilter` that sets the
+/// `KeywordAttribute` before this `TokenStream`.
+///
+/// Equivalent to `org.apache.lucene.analysis.no.NorwegianMinimalStemFilter`.
+pub type NorwegianMinimalStemFilter = TokenFilter<NorwegianMinimalStemFilterLogic>;
+
+/// Calls [`NorwegianMinimalStemFilter(input, BOKMAAL)`](new_norwegian_minimal_stem_filter_with_flags).
+///
+/// Equivalent to `NorwegianMinimalStemFilter(TokenStream)`.
+///
+/// # Errors
+///
+/// What [`new_norwegian_minimal_stem_filter_with_flags`] returns.
+pub fn new_norwegian_minimal_stem_filter(
+    input: Box<dyn TokenStream>,
+) -> Result<NorwegianMinimalStemFilter> {
+    new_norwegian_minimal_stem_filter_with_flags(input, BOKMAAL)
+}
+
+/// Creates a new NorwegianMinimalStemFilter
+///
+/// * `flags`: set to `NorwegianLightStemmer.BOKMAAL`,
+///   `NorwegianLightStemmer.NYNORSK`, or both.
+///
+/// Equivalent to `NorwegianMinimalStemFilter(TokenStream, int)`: the field
+/// initializers add the `CharTermAttribute` and the `KeywordAttribute`, in
+/// that order, before the constructor body builds the stemmer. The filter's
+/// source shares the input's attributes, so they are added to the input's
+/// source here, before the stemmer is built.
+///
+/// # Errors
+///
+/// What the stream's attribute factory raises for an interface it cannot
+/// implement, as Java's `addAttribute` throws, and
+/// `IllegalArgumentException` "invalid flags" from the stemmer.
+pub fn new_norwegian_minimal_stem_filter_with_flags(
+    mut input: Box<dyn TokenStream>,
+    flags: i32,
+) -> Result<NorwegianMinimalStemFilter> {
+    let source = input.attribute_source_mut();
+    source.add_attribute_interface::<dyn CharTermAttribute>()?;
+    source.add_attribute_interface::<dyn KeywordAttribute>()?;
+    let stemmer = NorwegianMinimalStemmer::new(flags)?;
+    Ok(TokenFilter::new(
+        input,
+        NorwegianMinimalStemFilterLogic { stemmer },
+    ))
+}

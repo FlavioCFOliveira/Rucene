@@ -56,6 +56,9 @@ use rucene::util::resource_loader::{ClassLoader, ClassRegistry, ServiceProvider}
 use rucene::util::spi::lucene_core_class_loader;
 
 use crate::analysis::boost::delimited_boost_token_filter_factory::DelimitedBoostTokenFilterFactory;
+use crate::analysis::br::brazilian_analyzer::BrazilianAnalyzer;
+use crate::analysis::br::brazilian_stem_filter_factory::BrazilianStemFilterFactory;
+use crate::analysis::ca::catalan_analyzer::CatalanAnalyzer;
 use crate::analysis::charfilter::html_strip_char_filter_factory::HTMLStripCharFilterFactory;
 use crate::analysis::charfilter::mapping_char_filter_factory::MappingCharFilterFactory;
 use crate::analysis::cjk::cjk_analyzer::CJKAnalyzer;
@@ -82,6 +85,15 @@ use crate::analysis::core::unicode_whitespace_analyzer::UnicodeWhitespaceAnalyze
 use crate::analysis::core::upper_case_filter_factory::UpperCaseFilterFactory;
 use crate::analysis::core::whitespace_analyzer::WhitespaceAnalyzer;
 use crate::analysis::core::whitespace_tokenizer_factory::WhitespaceTokenizerFactory;
+use crate::analysis::da::danish_analyzer::DanishAnalyzer;
+use crate::analysis::de::german_analyzer::GermanAnalyzer;
+use crate::analysis::de::german_light_stem_filter_factory::GermanLightStemFilterFactory;
+use crate::analysis::de::german_minimal_stem_filter_factory::GermanMinimalStemFilterFactory;
+use crate::analysis::de::german_normalization_filter_factory::GermanNormalizationFilterFactory;
+use crate::analysis::de::german_stem_filter_factory::GermanStemFilterFactory;
+use crate::analysis::el::greek_analyzer::GreekAnalyzer;
+use crate::analysis::el::greek_lower_case_filter_factory::GreekLowerCaseFilterFactory;
+use crate::analysis::el::greek_stem_filter_factory::GreekStemFilterFactory;
 use crate::analysis::email::uax29_url_email_analyzer::UAX29URLEmailAnalyzer;
 use crate::analysis::email::uax29_url_email_tokenizer_factory::UAX29URLEmailTokenizerFactory;
 use crate::analysis::en::english_analyzer::EnglishAnalyzer;
@@ -89,7 +101,24 @@ use crate::analysis::en::english_minimal_stem_filter_factory::EnglishMinimalStem
 use crate::analysis::en::english_possessive_filter_factory::EnglishPossessiveFilterFactory;
 use crate::analysis::en::kstem_filter_factory::KStemFilterFactory;
 use crate::analysis::en::porter_stem_filter_factory::PorterStemFilterFactory;
+use crate::analysis::es::spanish_analyzer::SpanishAnalyzer;
+use crate::analysis::es::spanish_light_stem_filter_factory::SpanishLightStemFilterFactory;
+#[allow(deprecated)]
+use crate::analysis::es::spanish_minimal_stem_filter_factory::SpanishMinimalStemFilterFactory;
+use crate::analysis::es::spanish_plural_stem_filter_factory::SpanishPluralStemFilterFactory;
+use crate::analysis::fr::french_analyzer::FrenchAnalyzer;
+use crate::analysis::fr::french_light_stem_filter_factory::FrenchLightStemFilterFactory;
+use crate::analysis::fr::french_minimal_stem_filter_factory::FrenchMinimalStemFilterFactory;
+use crate::analysis::ga::irish_analyzer::IrishAnalyzer;
+use crate::analysis::ga::irish_lower_case_filter_factory::IrishLowerCaseFilterFactory;
+use crate::analysis::gl::galician_analyzer::GalicianAnalyzer;
+use crate::analysis::gl::galician_minimal_stem_filter_factory::GalicianMinimalStemFilterFactory;
+use crate::analysis::gl::galician_stem_filter_factory::GalicianStemFilterFactory;
 use crate::analysis::hunspell::hunspell_stem_filter_factory::HunspellStemFilterFactory;
+use crate::analysis::id::indonesian_analyzer::IndonesianAnalyzer;
+use crate::analysis::id::indonesian_stem_filter_factory::IndonesianStemFilterFactory;
+use crate::analysis::it::italian_analyzer::ItalianAnalyzer;
+use crate::analysis::it::italian_light_stem_filter_factory::ItalianLightStemFilterFactory;
 use crate::analysis::minhash::min_hash_filter_factory::MinHashFilterFactory;
 use crate::analysis::miscellaneous::ascii_folding_filter_factory::ASCIIFoldingFilterFactory;
 use crate::analysis::miscellaneous::capitalization_filter_factory::CapitalizationFilterFactory;
@@ -123,6 +152,11 @@ use crate::analysis::ngram::edge_ngram_filter_factory::EdgeNGramFilterFactory;
 use crate::analysis::ngram::edge_ngram_tokenizer_factory::EdgeNGramTokenizerFactory;
 use crate::analysis::ngram::ngram_filter_factory::NGramFilterFactory;
 use crate::analysis::ngram::ngram_tokenizer_factory::NGramTokenizerFactory;
+use crate::analysis::nl::dutch_analyzer::DutchAnalyzer;
+use crate::analysis::no::norwegian_analyzer::NorwegianAnalyzer;
+use crate::analysis::no::norwegian_light_stem_filter_factory::NorwegianLightStemFilterFactory;
+use crate::analysis::no::norwegian_minimal_stem_filter_factory::NorwegianMinimalStemFilterFactory;
+use crate::analysis::no::norwegian_normalization_filter_factory::NorwegianNormalizationFilterFactory;
 use crate::analysis::path::path_hierarchy_tokenizer_factory::PathHierarchyTokenizerFactory;
 use crate::analysis::pattern::pattern_capture_group_filter_factory::PatternCaptureGroupFilterFactory;
 use crate::analysis::pattern::pattern_replace_char_filter_factory::PatternReplaceCharFilterFactory;
@@ -139,11 +173,20 @@ use crate::analysis::payloads::numeric_payload_token_filter_factory::NumericPayl
 use crate::analysis::payloads::payload_encoder::PayloadEncoder;
 use crate::analysis::payloads::token_offset_payload_token_filter_factory::TokenOffsetPayloadTokenFilterFactory;
 use crate::analysis::payloads::type_as_payload_token_filter_factory::TypeAsPayloadTokenFilterFactory;
+use crate::analysis::pt::portuguese_analyzer::PortugueseAnalyzer;
+use crate::analysis::pt::portuguese_light_stem_filter_factory::PortugueseLightStemFilterFactory;
+use crate::analysis::pt::portuguese_minimal_stem_filter_factory::PortugueseMinimalStemFilterFactory;
+use crate::analysis::pt::portuguese_stem_filter_factory::PortugueseStemFilterFactory;
 use crate::analysis::reverse::reverse_string_filter_factory::ReverseStringFilterFactory;
+use crate::analysis::ro::romanian_analyzer::RomanianAnalyzer;
+use crate::analysis::ro::romanian_normalization_filter_factory::RomanianNormalizationFilterFactory;
 use crate::analysis::shingle::fixed_shingle_filter_factory::FixedShingleFilterFactory;
 use crate::analysis::shingle::shingle_analyzer_wrapper::ShingleAnalyzerWrapper;
 use crate::analysis::shingle::shingle_filter_factory::ShingleFilterFactory;
 use crate::analysis::snowball::snowball_porter_filter_factory::SnowballPorterFilterFactory;
+use crate::analysis::sv::swedish_analyzer::SwedishAnalyzer;
+use crate::analysis::sv::swedish_light_stem_filter_factory::SwedishLightStemFilterFactory;
+use crate::analysis::sv::swedish_minimal_stem_filter_factory::SwedishMinimalStemFilterFactory;
 use crate::analysis::synonym::solr_synonym_parser::SolrSynonymParser;
 use crate::analysis::synonym::synonym_filter_factory::SynonymFilterFactory;
 use crate::analysis::synonym::synonym_graph_filter_factory::SynonymGraphFilterFactory;
@@ -152,6 +195,9 @@ use crate::analysis::synonym::word2vec::word2vec_synonym_filter_factory::Word2Ve
 use crate::analysis::synonym::wordnet_synonym_parser::WordnetSynonymParser;
 use crate::analysis::th::thai_analyzer::ThaiAnalyzer;
 use crate::analysis::th::thai_tokenizer_factory::ThaiTokenizerFactory;
+use crate::analysis::tr::apostrophe_filter_factory::ApostropheFilterFactory;
+use crate::analysis::tr::turkish_analyzer::TurkishAnalyzer;
+use crate::analysis::tr::turkish_lower_case_filter_factory::TurkishLowerCaseFilterFactory;
 use crate::analysis::util::elision_filter_factory::ElisionFilterFactory;
 use crate::analysis::wikipedia::wikipedia_tokenizer_factory::WikipediaTokenizerFactory;
 use crate::tartarus::snowball::ext::arabic_stemmer::ArabicStemmer;
@@ -216,6 +262,8 @@ fn tokenizer(class: AnalysisFactoryClass<dyn TokenizerFactory>) -> ServiceProvid
 /// The lines of the module's three service files, each file's lines in its
 /// order (`lucene/analysis/common/src/resources/META-INF/services/`), for the
 /// factories ported so far.
+// `SpanishMinimalStemFilterFactory` is deprecated in Lucene 10.5.0, and still listed.
+#[allow(deprecated)]
 fn services() -> Vec<ServiceProvider> {
     vec![
         // META-INF/services/org.apache.lucene.analysis.CharFilterFactory
@@ -224,7 +272,9 @@ fn services() -> Vec<ServiceProvider> {
         char_filter(CJKWidthCharFilterFactory::class()),
         char_filter(PatternReplaceCharFilterFactory::class()),
         // META-INF/services/org.apache.lucene.analysis.TokenFilterFactory
+        token_filter(ApostropheFilterFactory::class()),
         token_filter(DelimitedBoostTokenFilterFactory::class()),
+        token_filter(BrazilianStemFilterFactory::class()),
         token_filter(CJKBigramFilterFactory::class()),
         token_filter(CJKWidthFilterFactory::class()),
         token_filter(ClassicFilterFactory::class()),
@@ -237,11 +287,27 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(StopFilterFactory::class()),
         token_filter(TypeTokenFilterFactory::class()),
         token_filter(UpperCaseFilterFactory::class()),
+        token_filter(GermanLightStemFilterFactory::class()),
+        token_filter(GermanMinimalStemFilterFactory::class()),
+        token_filter(GermanNormalizationFilterFactory::class()),
+        token_filter(GermanStemFilterFactory::class()),
+        token_filter(GreekLowerCaseFilterFactory::class()),
+        token_filter(GreekStemFilterFactory::class()),
         token_filter(EnglishMinimalStemFilterFactory::class()),
         token_filter(EnglishPossessiveFilterFactory::class()),
         token_filter(KStemFilterFactory::class()),
         token_filter(PorterStemFilterFactory::class()),
+        token_filter(SpanishLightStemFilterFactory::class()),
+        token_filter(SpanishMinimalStemFilterFactory::class()),
+        token_filter(SpanishPluralStemFilterFactory::class()),
+        token_filter(FrenchLightStemFilterFactory::class()),
+        token_filter(FrenchMinimalStemFilterFactory::class()),
+        token_filter(IrishLowerCaseFilterFactory::class()),
+        token_filter(GalicianMinimalStemFilterFactory::class()),
+        token_filter(GalicianStemFilterFactory::class()),
         token_filter(HunspellStemFilterFactory::class()),
+        token_filter(IndonesianStemFilterFactory::class()),
+        token_filter(ItalianLightStemFilterFactory::class()),
         token_filter(MinHashFilterFactory::class()),
         token_filter(ASCIIFoldingFilterFactory::class()),
         token_filter(CapitalizationFilterFactory::class()),
@@ -272,6 +338,9 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(ScandinavianNormalizationFilterFactory::class()),
         token_filter(EdgeNGramFilterFactory::class()),
         token_filter(NGramFilterFactory::class()),
+        token_filter(NorwegianLightStemFilterFactory::class()),
+        token_filter(NorwegianMinimalStemFilterFactory::class()),
+        token_filter(NorwegianNormalizationFilterFactory::class()),
         token_filter(PatternReplaceFilterFactory::class()),
         token_filter(PatternCaptureGroupFilterFactory::class()),
         token_filter(PatternTypingFilterFactory::class()),
@@ -279,14 +348,21 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(NumericPayloadTokenFilterFactory::class()),
         token_filter(TokenOffsetPayloadTokenFilterFactory::class()),
         token_filter(TypeAsPayloadTokenFilterFactory::class()),
+        token_filter(PortugueseLightStemFilterFactory::class()),
+        token_filter(PortugueseMinimalStemFilterFactory::class()),
+        token_filter(PortugueseStemFilterFactory::class()),
         token_filter(ReverseStringFilterFactory::class()),
+        token_filter(RomanianNormalizationFilterFactory::class()),
         token_filter(ShingleFilterFactory::class()),
         token_filter(FixedShingleFilterFactory::class()),
         token_filter(SnowballPorterFilterFactory::class()),
+        token_filter(SwedishLightStemFilterFactory::class()),
+        token_filter(SwedishMinimalStemFilterFactory::class()),
         token_filter(SynonymFilterFactory::class()),
         token_filter(SynonymGraphFilterFactory::class()),
         token_filter(Word2VecSynonymFilterFactory::class()),
         token_filter(FlattenGraphFilterFactory::class()),
+        token_filter(TurkishLowerCaseFilterFactory::class()),
         token_filter(ElisionFilterFactory::class()),
         // META-INF/services/org.apache.lucene.analysis.TokenizerFactory
         tokenizer(ClassicTokenizerFactory::class()),
@@ -425,9 +501,11 @@ pub fn synonym_parser_classes() -> &'static RwLock<ClassRegistry<SynonymParserCo
 /// the table holds the analyzers with a public no-argument constructor of
 /// `lucene-core` (`StandardAnalyzer`) and of this module ported so far
 /// (`KeywordAnalyzer`, `SimpleAnalyzer`, `UnicodeWhitespaceAnalyzer`,
-/// `WhitespaceAnalyzer`, `EnglishAnalyzer`, `ClassicAnalyzer`,
-/// `UAX29URLEmailAnalyzer`, `ShingleAnalyzerWrapper`), and what an
-/// application registers; the module's later analyzers are added as they
+/// `WhitespaceAnalyzer`, `EnglishAnalyzer`, `CJKAnalyzer`, `ClassicAnalyzer`,
+/// `ThaiAnalyzer`, `UAX29URLEmailAnalyzer`, `ShingleAnalyzerWrapper`, and
+/// the per-language analyzers of `ca`, `da`, `de`, `es`, `fr`, `gl`, `it`,
+/// `nl`, `no`, `pt`, `sv`, `el`, `br`, `tr`, `ro`, `id` and `ga`), and what
+/// an application registers; the module's later analyzers are added as they
 /// are ported.
 pub fn analyzer_classes() -> &'static RwLock<ClassRegistry<Arc<dyn Analyzer>>> {
     static CLASSES: LazyLock<RwLock<ClassRegistry<Arc<dyn Analyzer>>>> = LazyLock::new(|| {
@@ -475,6 +553,74 @@ pub fn analyzer_classes() -> &'static RwLock<ClassRegistry<Arc<dyn Analyzer>>> {
         classes.register(
             "org.apache.lucene.analysis.shingle.ShingleAnalyzerWrapper",
             Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(ShingleAnalyzerWrapper::new_standard()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.ca.CatalanAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(CatalanAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.da.DanishAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(DanishAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.de.GermanAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(GermanAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.es.SpanishAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(SpanishAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.fr.FrenchAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(FrenchAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.gl.GalicianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(GalicianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.it.ItalianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(ItalianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.nl.DutchAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(DutchAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.no.NorwegianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(NorwegianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.pt.PortugueseAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(PortugueseAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.sv.SwedishAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(SwedishAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.el.GreekAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(GreekAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.br.BrazilianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(BrazilianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.tr.TurkishAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(TurkishAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.ro.RomanianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(RomanianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.id.IndonesianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(IndonesianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.ga.IrishAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(IrishAnalyzer::new()) }),
         );
         RwLock::new(classes)
     });

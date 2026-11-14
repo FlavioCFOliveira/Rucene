@@ -20,6 +20,14 @@
 //! lengths count units, and a comparison compares units.
 
 use rucene::error::{LuceneError, Result};
+use rucene::util::automaton::case_folding;
+
+use super::break_iterator;
+use super::character::{
+    char_count, code_point_at, get_type, is_high_surrogate, is_low_surrogate, LOWERCASE_LETTER,
+    TITLECASE_LETTER, UPPERCASE_LETTER,
+};
+use super::locale::Locale;
 
 /// The UTF-16 units of `s`: Java's `String` literal `s`.
 pub fn units(s: &str) -> Vec<u16> {
@@ -232,4 +240,244 @@ pub fn parse_int(s: &[u16]) -> Result<i32> {
     let text = to_rust_string(s);
     rucene::util::extra::java_parse_int(&text)
         .ok_or_else(|| LuceneError::number_format_for_input_string(&text, 10))
+}
+
+/// `String.toLowerCase(Locale)` on JDK 25: `s` lowercased with the rules of
+/// `locale`, for a locale whose language is none of `tr`, `az` and `lt`.
+///
+/// Written from `java.lang.StringUTF16.toLowerCase(String, byte[], Locale)`
+/// and `toLowerCaseEx`, and from the language-independent entries of
+/// `java.lang.ConditionalSpecialCasing`, read as specification: every code
+/// point maps through `Character.toLowerCase(int)`, except
+///
+/// * U+03A3 GREEK CAPITAL LETTER SIGMA, which becomes U+03C2 (final sigma)
+///   when it ends a word that a cased letter precedes, the word boundaries
+///   being those of `BreakIterator.getWordInstance(locale)` over `s`, and
+///   U+03C3 otherwise;
+/// * U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE, which becomes the two
+///   units U+0069 U+0307.
+///
+/// A string of Latin-1 characters only takes `StringLatin1.toLowerCase`,
+/// which maps each through `CharacterDataLatin1.toLowerCase`: the same
+/// result, so one path serves both.
+///
+/// # Panics
+///
+/// When the language of `locale` is `tr`, `az` or `lt`, whose
+/// locale-dependent mappings (`ConditionalSpecialCasing`'s `AFTER_I`,
+/// `NOT_BEFORE_DOT`, `MORE_ABOVE`, `AFTER_SOFT_DOTTED`) are not emulated;
+/// no caller passes one.
+pub fn to_lower_case(s: &[u16], locale: &Locale) -> Vec<u16> {
+    let lang = locale.get_language();
+    assert!(
+        lang != "tr" && lang != "az" && lang != "lt",
+        "String.toLowerCase is not emulated for the language {lang}"
+    );
+    let len = s.len();
+    let mut first = 0;
+    let mut has_surr = false;
+    // Now check if there are any characters that need to be changed, or are surrogate
+    while first < len {
+        let cp = i32::from(s[first]);
+        if is_surrogate(s[first]) {
+            has_surr = true;
+            break;
+        }
+        if cp != case_folding::to_lower_case(cp) {
+            break;
+        }
+        first += 1;
+    }
+    if first == len {
+        return s.to_vec();
+    }
+    // Just copy the first few lowerCase characters.
+    let mut result = s[..first].to_vec();
+    if has_surr {
+        return to_lower_case_ex(s, result, first, locale, false);
+    }
+    for i in first..len {
+        let cp = i32::from(s[i]);
+        if cp == 0x03A3 || is_surrogate(s[i]) {
+            // GREEK CAPITAL LETTER SIGMA
+            return to_lower_case_ex(s, result, i, locale, false);
+        }
+        if cp == 0x0130 {
+            // LATIN CAPITAL LETTER I WITH DOT ABOVE
+            return to_lower_case_ex(s, result, i, locale, true);
+        }
+        let cp = case_folding::to_lower_case(cp);
+        if !(0..=0xFFFF).contains(&cp) {
+            return to_lower_case_ex(s, result, i, locale, false);
+        }
+        result.push(cp as u16);
+    }
+    result
+}
+
+/// `Character.ERROR`, `0xFFFFFFFF`.
+const CHARACTER_ERROR: i32 = -1;
+
+/// `StringUTF16.toLowerCaseEx(String, byte[], byte[], int, Locale,
+/// boolean)`: `result` holds the lowercased units before `first`.
+fn to_lower_case_ex(
+    s: &[u16],
+    mut result: Vec<u16>,
+    first: usize,
+    locale: &Locale,
+    locale_dependent: bool,
+) -> Vec<u16> {
+    let length = s.len();
+    let mut i = first;
+    while i < length {
+        let mut src_char = i32::from(s[i]);
+        let mut src_count = 1;
+        if is_surrogate(s[i]) {
+            src_char = code_point_at(s, i, length);
+            src_count = char_count(src_char);
+        }
+        let lower_char = if locale_dependent
+            || src_char == 0x03A3 // GREEK CAPITAL LETTER SIGMA
+            || src_char == 0x0130
+        {
+            // LATIN CAPITAL LETTER I WITH DOT ABOVE
+            conditional_to_lower_case_ex(s, i, locale)
+        } else {
+            case_folding::to_lower_case(src_char)
+        };
+        if (0..=0xFFFF).contains(&lower_char) {
+            // Character.ERROR is not a bmp
+            result.push(lower_char as u16);
+        } else {
+            let lower_char_array = if lower_char == CHARACTER_ERROR {
+                conditional_look_up_lower_case(s, i, locale)
+                    .expect("INVARIANT: Character.ERROR comes from a table entry")
+            } else {
+                to_chars(lower_char)
+            };
+            result.extend_from_slice(&lower_char_array);
+        }
+        i += src_count;
+    }
+    result
+}
+
+/// `Character.toChars(int)` of a supplementary code point.
+fn to_chars(code_point: i32) -> Vec<u16> {
+    let c = u32::try_from(code_point)
+        .ok()
+        .and_then(char::from_u32)
+        .expect("INVARIANT: Character.toLowerCase answers a valid code point");
+    let mut buf = [0u16; 2];
+    c.encode_utf16(&mut buf).to_vec()
+}
+
+/// `ConditionalSpecialCasing.toLowerCaseEx(String, int, Locale)`.
+fn conditional_to_lower_case_ex(s: &[u16], index: usize, locale: &Locale) -> i32 {
+    match conditional_look_up_lower_case(s, index, locale) {
+        Some(result) => {
+            if result.len() == 1 {
+                i32::from(result[0])
+            } else {
+                CHARACTER_ERROR
+            }
+        }
+        // default to Character class' one
+        None => case_folding::to_lower_case(code_point_at(s, index, s.len())),
+    }
+}
+
+/// `ConditionalSpecialCasing.lookUpTable(src, index, locale, true)` for a
+/// language other than `tr`, `az` and `lt`: only the two entries without a
+/// language apply, U+03A3 under the `FINAL_CASED` condition and U+0130
+/// unconditionally.
+fn conditional_look_up_lower_case(s: &[u16], index: usize, locale: &Locale) -> Option<Vec<u16>> {
+    match code_point_at(s, index, s.len()) {
+        // # GREEK CAPITAL LETTER SIGMA
+        0x03A3 if is_final_cased(s, index, locale) => Some(vec![0x03C2]),
+        // # LATIN CAPITAL LETTER I WITH DOT ABOVE
+        0x0130 => Some(vec![0x0069, 0x0307]),
+        _ => None,
+    }
+}
+
+/// `ConditionalSpecialCasing.isFinalCased(String, int, Locale)`: a cased
+/// letter precedes `index` in its word, and none follows it.
+fn is_final_cased(src: &[u16], index: usize, locale: &Locale) -> bool {
+    let mut word_boundary = break_iterator::get_word_instance(locale);
+    word_boundary.set_text_units(src);
+    let mut is_boundary = |offset: usize| {
+        word_boundary
+            .is_boundary(offset as i32)
+            .expect("INVARIANT: the offset lies within the text")
+    };
+
+    // Look for a preceding 'cased' letter
+    let mut i = index;
+    while !is_boundary(i) {
+        let ch = code_point_before(src, i);
+        if is_cased(ch) {
+            let len = src.len();
+            // Check that there is no 'cased' letter after the index
+            let mut i = index + char_count(code_point_at(src, index, len));
+            while i < len && !is_boundary(i) {
+                let ch = code_point_at(src, i, len);
+                if is_cased(ch) {
+                    return false;
+                }
+                i += char_count(ch);
+            }
+
+            return true;
+        }
+        i -= char_count(ch);
+    }
+
+    false
+}
+
+/// `String.codePointBefore(int)`.
+fn code_point_before(s: &[u16], index: usize) -> i32 {
+    let c2 = s[index - 1];
+    if is_low_surrogate(c2) && index >= 2 {
+        let c1 = s[index - 2];
+        if is_high_surrogate(c1) {
+            return ((i32::from(c1) - 0xD800) << 10) + (i32::from(c2) - 0xDC00) + 0x10000;
+        }
+    }
+    i32::from(c2)
+}
+
+/// `ConditionalSpecialCasing.isCased(int)`.
+fn is_cased(ch: i32) -> bool {
+    let r#type = get_type(ch);
+    if r#type == LOWERCASE_LETTER || r#type == UPPERCASE_LETTER || r#type == TITLECASE_LETTER {
+        true
+    } else {
+        // Check for Other_Lowercase and Other_Uppercase
+        //
+        // MODIFIER LETTER SMALL H..MODIFIER LETTER SMALL Y
+        (0x02B0..=0x02B8).contains(&ch)
+            // MODIFIER LETTER GLOTTAL STOP..MODIFIER LETTER REVERSED GLOTTAL STOP
+            || (0x02C0..=0x02C1).contains(&ch)
+            // MODIFIER LETTER SMALL GAMMA..MODIFIER LETTER SMALL REVERSED GLOTTAL STOP
+            || (0x02E0..=0x02E4).contains(&ch)
+            // COMBINING GREEK YPOGEGRAMMENI
+            || ch == 0x0345
+            // GREEK YPOGEGRAMMENI
+            || ch == 0x037A
+            // MODIFIER LETTER CAPITAL A..MODIFIER LETTER SMALL CHI
+            || (0x1D2C..=0x1D61).contains(&ch)
+            // ROMAN NUMERAL ONE..ROMAN NUMERAL ONE THOUSAND
+            // SMALL ROMAN NUMERAL ONE..SMALL ROMAN NUMERAL ONE THOUSAND
+            || (0x2160..=0x217F).contains(&ch)
+            // CIRCLED LATIN CAPITAL LETTER A..CIRCLED LATIN CAPITAL LETTER Z
+            // CIRCLED LATIN SMALL LETTER A..CIRCLED LATIN SMALL LETTER Z
+            || (0x24B6..=0x24E9).contains(&ch)
+    }
+}
+
+/// `Character.isSurrogate(char)`.
+fn is_surrogate(unit: u16) -> bool {
+    (0xD800..=0xDFFF).contains(&unit)
 }

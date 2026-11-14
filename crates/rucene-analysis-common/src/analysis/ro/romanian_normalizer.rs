@@ -15,10 +15,53 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `RomanianNormalizer.java`, of the Java
-//! package `org.apache.lucene.analysis.ro`.
+//! Normalizer for Romanian, ported from
+//! `org.apache.lucene.analysis.ro.RomanianNormalizer`.
 
-/// Java: `class` (package-private).
+pub(crate) const CAPITAL_S_WITH_COMMA_BELOW: u16 = 0x0218;
+pub(crate) const SMALL_S_WITH_COMMA_BELOW: u16 = 0x0219;
+pub(crate) const CAPITAL_T_WITH_COMMA_BELOW: u16 = 0x021A;
+pub(crate) const SMALL_T_WITH_COMMA_BELOW: u16 = 0x021B;
+
+pub(crate) const CAPITAL_S_WITH_CEDILLA: u16 = 0x015E;
+pub(crate) const SMALL_S_WITH_CEDILLA: u16 = 0x015F;
+pub(crate) const CAPITAL_T_WITH_CEDILLA: u16 = 0x0162;
+pub(crate) const SMALL_T_WITH_CEDILLA: u16 = 0x0163;
+
+/// Normalizer for Romanian.
 ///
-/// Skeleton of `org.apache.lucene.analysis.ro.RomanianNormalizer`; ported by rmp task #469.
+/// Cedilla forms are normalized to forms with comma.
+///
+/// Equivalent to `org.apache.lucene.analysis.ro.RomanianNormalizer`; its
+/// `static final char` constants are this module's constants. The buffer it
+/// normalizes is the `char[]` of Java, UTF-16 units.
+#[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct RomanianNormalizer;
+
+impl RomanianNormalizer {
+    /// Equivalent to the implicit `RomanianNormalizer()`.
+    pub(crate) fn new() -> Self {
+        Self
+    }
+
+    /// Normalize an input buffer of Romanian text
+    ///
+    /// * `s`: input buffer
+    /// * `len`: length of input buffer
+    /// * returns: length of input buffer after normalization
+    ///
+    /// Equivalent to `normalize(char[], int)`.
+    pub(crate) fn normalize(&self, s: &mut [u16], len: usize) -> usize {
+        for c in s.iter_mut().take(len) {
+            match *c {
+                CAPITAL_S_WITH_CEDILLA => *c = CAPITAL_S_WITH_COMMA_BELOW,
+                SMALL_S_WITH_CEDILLA => *c = SMALL_S_WITH_COMMA_BELOW,
+                CAPITAL_T_WITH_CEDILLA => *c = CAPITAL_T_WITH_COMMA_BELOW,
+                SMALL_T_WITH_CEDILLA => *c = SMALL_T_WITH_COMMA_BELOW,
+                _ => {}
+            }
+        }
+
+        len
+    }
+}

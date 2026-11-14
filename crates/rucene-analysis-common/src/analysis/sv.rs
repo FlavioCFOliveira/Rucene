@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.sv`.
+//! The Java package `org.apache.lucene.analysis.sv`: analyzer for Swedish.
 
 pub mod swedish_analyzer;
 pub mod swedish_light_stem_filter;

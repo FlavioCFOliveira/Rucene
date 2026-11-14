@@ -15,6 +15,6 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.ca`.
+//! The Java package `org.apache.lucene.analysis.ca`: analyzer for Catalan.
 
 pub mod catalan_analyzer;

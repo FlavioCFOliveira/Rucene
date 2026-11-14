@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.el`.
+//! The Java package `org.apache.lucene.analysis.el`: analyzer for Greek.
 
 pub mod greek_analyzer;
 pub mod greek_lower_case_filter;

@@ -33,6 +33,18 @@ the committed file, and rerunning it must leave that file unchanged.
   SHA-256 of their Java tokens. Rerun: `python3 tools/translate/jflex_java_to_rust.py
   [/tmp/lucene1050]` (`--check` compares instead of writing, `--only <JavaClass>` limits the
   run to one scanner, `--hashes` prints the pins).
+* `lang_families.py` — translates the per-language class families of `lucene/analysis/common`
+  (packages `ca`, `da`, `de`, `es`, `fr`, `gl`, `it`, `nl`, `no`, `pt`, `sv`, `el`, `br`, `tr`,
+  `ro`, `id`, `ga`) into `crates/rucene-analysis-common/src/analysis/<pkg>/<class>.rs`: the
+  keyword-aware stem filters (`stemmer.stem(termAtt.buffer(), termAtt.length())`, and the
+  `resizeBuffer(len + 1)` variant), the token filter factories without arguments, and the
+  `StopwordAnalyzerBase` analyzers with a default stop set and a chain of known filters. It
+  matches each Java class token for token against its family's template, captures only the
+  varying parts (names, `NAME`, resources, constant sets, the filter chain, messages, javadoc),
+  and reports every class that deviates, with the reason, without generating it; those are
+  translated by hand. The output is formatted by `rustfmt`. Rerun:
+  `python3 tools/translate/lang_families.py [/tmp/lucene1050]` (`--check` compares instead of
+  writing, `--list` prints each class as generated or deviating).
 * `JdkCharacterTypeData.java` — writes `crates/rucene-analysis-common/src/jdk/character_type_data.rs`
   (`Character.getType(int)` runs, the Latin-1 `isLowerCase`/`isUpperCase` sets, and the
   `isUpperCase`/`isLowerCase` runs of every code point) from the running JDK. Rerun with JDK 25: `java tools/translate/JdkCharacterTypeData.java > crates/rucene-analysis-common/src/jdk/character_type_data.rs`.

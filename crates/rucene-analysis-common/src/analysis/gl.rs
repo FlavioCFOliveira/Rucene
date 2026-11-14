@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.gl`.
+//! The Java package `org.apache.lucene.analysis.gl`: analyzer for Galician.
 
 pub mod galician_analyzer;
 pub mod galician_minimal_stem_filter;

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.es`.
+//! The Java package `org.apache.lucene.analysis.es`: analyzer for Spanish.
 
 pub mod spanish_analyzer;
 pub mod spanish_light_stem_filter;

@@ -15,10 +15,70 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `RomanianNormalizationFilter.java`, of the Java
-//! package `org.apache.lucene.analysis.ro`.
+//! `TokenFilter` that normalizes cedilla forms to comma forms, ported from
+//! `org.apache.lucene.analysis.ro.RomanianNormalizationFilter`.
 
-/// Java: `public final class`.
+use rucene::analysis::{CharTermAttribute, TokenFilter, TokenFilterLogic, TokenStream};
+use rucene::error::Result;
+use rucene::util::attribute::AttributeSource;
+
+use super::romanian_normalizer::RomanianNormalizer;
+use crate::jdk::character::{chars_to_utf16, utf16_to_term_chars};
+
+/// The body of [`RomanianNormalizationFilter`]: what Lucene's
+/// `RomanianNormalizationFilter` adds to `TokenFilter`.
+#[derive(Debug)]
+pub struct RomanianNormalizationFilterLogic {
+    normalizer: RomanianNormalizer,
+}
+
+impl TokenFilterLogic for RomanianNormalizationFilterLogic {
+    /// Equivalent to `RomanianNormalizationFilter.incrementToken()`. The
+    /// normalizer reads the term's UTF-16 units, Java's `termAtt.buffer()`,
+    /// and changes them in place; the first `newlen` units become the term.
+    fn increment_token(
+        &mut self,
+        source: &mut AttributeSource,
+        input: &mut dyn TokenStream,
+    ) -> Result<bool> {
+        if input.increment_token()? {
+            let mut term_att = source
+                .get_attribute_interface_mut::<dyn CharTermAttribute>()
+                .expect("INVARIANT: the constructor added the CharTermAttribute");
+            let mut buffer = chars_to_utf16(&term_att.buffer()[..term_att.length()]);
+            let length = buffer.len();
+            let newlen = self.normalizer.normalize(&mut buffer, length);
+            let chars = utf16_to_term_chars(&buffer[..newlen]);
+            term_att.copy_buffer(&chars, 0, chars.len());
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+/// TokenFilter that normalizes cedilla forms to comma forms.
 ///
-/// Skeleton of `org.apache.lucene.analysis.ro.RomanianNormalizationFilter`; ported by rmp task #469.
-pub struct RomanianNormalizationFilter;
+/// Equivalent to `org.apache.lucene.analysis.ro.RomanianNormalizationFilter`.
+pub type RomanianNormalizationFilter = TokenFilter<RomanianNormalizationFilterLogic>;
+
+/// Equivalent to `RomanianNormalizationFilter(TokenStream)`, whose field
+/// adds the `CharTermAttribute`.
+///
+/// # Errors
+///
+/// What the stream's attribute factory raises for an interface it cannot
+/// implement, as Java's `addAttribute` throws.
+pub fn new_romanian_normalization_filter(
+    input: Box<dyn TokenStream>,
+) -> Result<RomanianNormalizationFilter> {
+    let mut filter = TokenFilter::new(
+        input,
+        RomanianNormalizationFilterLogic {
+            normalizer: RomanianNormalizer::new(),
+        },
+    );
+    filter
+        .attribute_source_mut()
+        .add_attribute_interface::<dyn CharTermAttribute>()?;
+    Ok(filter)
+}

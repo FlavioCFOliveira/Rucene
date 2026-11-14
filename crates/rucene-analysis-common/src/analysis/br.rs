@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.br`.
+//! The Java package `org.apache.lucene.analysis.br`: analyzer for Brazilian Portuguese.
 
 pub mod brazilian_analyzer;
 pub mod brazilian_stem_filter;

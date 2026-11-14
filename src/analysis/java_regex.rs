@@ -200,6 +200,11 @@ impl JavaPattern {
         &self.find
     }
 
+    /// The compiled pattern a [`JavaMatcher`] matches the whole input with.
+    pub(crate) fn whole_regex(&self) -> &fancy_regex::Regex {
+        &self.whole
+    }
+
     /// Creates a matcher that will match `input` against this pattern.
     ///
     /// Equivalent to `Pattern.matcher(CharSequence)`: `input` is the

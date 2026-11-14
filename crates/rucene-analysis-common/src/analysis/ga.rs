@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.ga`.
+//! The Java package `org.apache.lucene.analysis.ga`: analyzer for Irish.
 
 pub mod irish_analyzer;
 pub mod irish_lower_case_filter;

@@ -194,6 +194,40 @@ impl JavaMatcher {
         self.search(next_search_index)
     }
 
+    /// Attempts to match the entire input against the pattern; on success
+    /// the groups hold the match.
+    ///
+    /// Equivalent to `Matcher.matches()`, the package-private
+    /// `match(from, ENDANCHOR)` from the start of the input (the region is
+    /// always the whole input): the groups are cleared, a failed match
+    /// leaves no match, a successful one sets `first`, `last` and the
+    /// groups.
+    pub fn matches(&mut self) -> bool {
+        self.first = 0;
+        self.groups.fill(-1);
+        let captures = self
+            .pattern
+            .whole_regex()
+            .captures(self.haystack.as_str())
+            .expect("INVARIANT: the engine has no backtracking limit");
+        let Some(captures) = captures else {
+            self.first = -1;
+            return false;
+        };
+        let bounds: Vec<Option<(usize, usize)>> = (0..=self.group_count())
+            .map(|group| captures.get(group).map(|m| (m.start(), m.end())))
+            .collect();
+        for (group, bound) in bounds.into_iter().enumerate() {
+            if let Some((start, end)) = bound {
+                self.groups[group * 2] = self.unit_of_byte(start);
+                self.groups[group * 2 + 1] = self.unit_of_byte(end);
+            }
+        }
+        self.first = self.groups[0];
+        self.last = self.groups[1];
+        true
+    }
+
     /// Equivalent to the package-private `Matcher.search(int)`: an unanchored
     /// search from `from`.
     fn search(&mut self, from: i32) -> bool {

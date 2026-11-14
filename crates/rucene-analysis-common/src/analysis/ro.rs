@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.ro`.
+//! The Java package `org.apache.lucene.analysis.ro`: analyzer for Romanian.
 
 pub mod romanian_analyzer;
 pub mod romanian_normalization_filter;

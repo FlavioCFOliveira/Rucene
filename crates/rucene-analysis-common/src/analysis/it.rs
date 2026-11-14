@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.it`.
+//! The Java package `org.apache.lucene.analysis.it`: analyzer for Italian.
 
 pub mod italian_analyzer;
 pub mod italian_light_stem_filter;

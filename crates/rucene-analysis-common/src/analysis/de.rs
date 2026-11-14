@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.de`.
+//! The Java package `org.apache.lucene.analysis.de`: analyzer for German.
 
 pub mod german_analyzer;
 pub mod german_light_stem_filter;

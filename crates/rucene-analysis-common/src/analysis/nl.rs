@@ -15,6 +15,6 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.nl`.
+//! The Java package `org.apache.lucene.analysis.nl`: analyzer for Dutch.
 
 pub mod dutch_analyzer;

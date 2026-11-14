@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.id`.
+//! The Java package `org.apache.lucene.analysis.id`: analyzer for Indonesian.
 
 pub mod indonesian_analyzer;
 pub mod indonesian_stem_filter;

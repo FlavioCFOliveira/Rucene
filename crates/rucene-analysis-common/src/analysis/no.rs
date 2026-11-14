@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.no`.
+//! The Java package `org.apache.lucene.analysis.no`: analyzer for Norwegian.
 
 pub mod norwegian_analyzer;
 pub mod norwegian_light_stem_filter;

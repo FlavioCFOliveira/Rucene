@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.tr`.
+//! The Java package `org.apache.lucene.analysis.tr`: analyzer for Turkish.
 
 pub mod apostrophe_filter;
 pub mod apostrophe_filter_factory;

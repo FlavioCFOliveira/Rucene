@@ -15,10 +15,54 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GalicianMinimalStemmer.java`, of the Java
-//! package `org.apache.lucene.analysis.gl`.
+//! Minimal stemmer for Galician, ported from
+//! `org.apache.lucene.analysis.gl.GalicianMinimalStemmer`.
 
-/// Java: `class` (package-private).
+use std::sync::LazyLock;
+
+use crate::analysis::pt::rslp_stemmer_base::{RSLPStemmerBase, Step};
+
+/// `GalicianMinimalStemmer.pluralStep`, `parse(GalicianMinimalStemmer.class, "galician.rslp").get("Plural")`.
 ///
-/// Skeleton of `org.apache.lucene.analysis.gl.GalicianMinimalStemmer`; ported by rmp task #468.
+/// # Panics
+///
+/// As Java's static initializer throws, when the resource cannot be parsed;
+/// it is part of the crate, as it is of Java's JAR, and declares the step.
+static PLURAL_STEP: LazyLock<Step> = LazyLock::new(|| {
+    RSLPStemmerBase::parse(
+        "org.apache.lucene.analysis.gl.GalicianMinimalStemmer",
+        "galician.rslp",
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+    .remove("Plural")
+    .expect("INVARIANT: galician.rslp declares the step Plural")
+});
+
+/// Minimal Stemmer for Galician
+///
+/// This follows the "RSLP-S" algorithm, but modified for Galician. Hence
+/// this stemmer only applies the plural reduction step of: "Regras do
+/// lematizador para o galego"
+///
+/// * see: `RSLPStemmerBase`
+///
+/// Equivalent to `org.apache.lucene.analysis.gl.GalicianMinimalStemmer`,
+/// which extends `RSLPStemmerBase`. The term it stems is the `char[]` of
+/// Java, UTF-16 units.
+#[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct GalicianMinimalStemmer;
+
+impl GalicianMinimalStemmer {
+    /// Equivalent to the implicit `GalicianMinimalStemmer()`.
+    pub(crate) fn new() -> Self {
+        Self
+    }
+
+    /// Stems the first `len` units of `s` in place and returns the new
+    /// length.
+    ///
+    /// Equivalent to `stem(char[], int)`.
+    pub(crate) fn stem(&self, s: &mut [u16], len: usize) -> usize {
+        PLURAL_STEP.apply(s, len)
+    }
+}

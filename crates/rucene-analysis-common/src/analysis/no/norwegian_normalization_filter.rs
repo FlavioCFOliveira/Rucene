@@ -15,10 +15,82 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `NorwegianNormalizationFilter.java`, of the Java
-//! package `org.apache.lucene.analysis.no`.
+//! Normalizes the interchangeable Scandinavian characters with the
+//! Norwegian folding rules, ported from
+//! `org.apache.lucene.analysis.no.NorwegianNormalizationFilter`.
 
-/// Java: `public final class`.
+use std::collections::BTreeSet;
+
+use rucene::analysis::{CharTermAttribute, TokenFilter, TokenFilterLogic, TokenStream};
+use rucene::error::Result;
+use rucene::util::attribute::AttributeSource;
+
+use crate::analysis::miscellaneous::scandinavian_normalizer::{Foldings, ScandinavianNormalizer};
+
+/// The body of [`NorwegianNormalizationFilter`]: what Lucene's
+/// `NorwegianNormalizationFilter` adds to `TokenFilter`.
+#[derive(Debug)]
+pub struct NorwegianNormalizationFilterLogic {
+    normalizer: ScandinavianNormalizer,
+}
+
+impl TokenFilterLogic for NorwegianNormalizationFilterLogic {
+    /// Equivalent to `NorwegianNormalizationFilter.incrementToken()`.
+    fn increment_token(
+        &mut self,
+        source: &mut AttributeSource,
+        input: &mut dyn TokenStream,
+    ) -> Result<bool> {
+        if !input.increment_token()? {
+            return Ok(false);
+        }
+        let mut char_term_attribute = source
+            .get_attribute_interface_mut::<dyn CharTermAttribute>()
+            .expect("INVARIANT: the constructor added the CharTermAttribute");
+        let length = char_term_attribute.length();
+        let new_length = self
+            .normalizer
+            .process_token(char_term_attribute.buffer_mut(), length);
+        char_term_attribute.set_length(new_length);
+        Ok(true)
+    }
+}
+
+/// This filter normalize use of the interchangeable Scandinavian characters
+/// æÆäÄöÖøØ and folded variants (ae, oe, aa) by transforming them to
+/// åÅæÆøØ. This is similar to ScandinavianNormalizationFilter, except for
+/// the folding rules customized for Norwegian.
 ///
-/// Skeleton of `org.apache.lucene.analysis.no.NorwegianNormalizationFilter`; ported by rmp task #468.
-pub struct NorwegianNormalizationFilter;
+/// blåbærsyltetøj == blåbärsyltetöj == blaabaersyltetoej
+///
+/// * see: `ScandinavianNormalizationFilter`
+///
+/// Equivalent to `org.apache.lucene.analysis.no.NorwegianNormalizationFilter`.
+pub type NorwegianNormalizationFilter = TokenFilter<NorwegianNormalizationFilterLogic>;
+
+/// Equivalent to `NorwegianNormalizationFilter(TokenStream)`: the
+/// constructor builds `new ScandinavianNormalizer(EnumSet.of(Foldings.AE,
+/// Foldings.OE, Foldings.AA))`, the field adds the `CharTermAttribute`.
+///
+/// # Errors
+///
+/// What the stream's attribute factory raises for an interface it cannot
+/// implement, as Java's `addAttribute` throws.
+pub fn new_norwegian_normalization_filter(
+    input: Box<dyn TokenStream>,
+) -> Result<NorwegianNormalizationFilter> {
+    let mut filter = TokenFilter::new(
+        input,
+        NorwegianNormalizationFilterLogic {
+            normalizer: ScandinavianNormalizer::new(BTreeSet::from([
+                Foldings::AE,
+                Foldings::OE,
+                Foldings::AA,
+            ])),
+        },
+    );
+    filter
+        .attribute_source_mut()
+        .add_attribute_interface::<dyn CharTermAttribute>()?;
+    Ok(filter)
+}

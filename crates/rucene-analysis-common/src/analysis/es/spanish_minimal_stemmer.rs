@@ -15,10 +15,65 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SpanishMinimalStemmer.java`, of the Java
-//! package `org.apache.lucene.analysis.es`.
+//! Minimal plural stemmer for Spanish, ported from
+//! `org.apache.lucene.analysis.es.SpanishMinimalStemmer`.
 
-/// Java: `class` (package-private).
+/// Minimal plural stemmer for Spanish.
 ///
-/// Skeleton of `org.apache.lucene.analysis.es.SpanishMinimalStemmer`; ported by rmp task #468.
+/// This stemmer implements the "plurals" stemmer for spanish lanugage.
+///
+/// Equivalent to `org.apache.lucene.analysis.es.SpanishMinimalStemmer`. The
+/// term it stems is the `char[]` of Java, UTF-16 units.
+#[deprecated(note = "Use `SpanishPluralStemmer` instead.")]
+#[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct SpanishMinimalStemmer;
+
+#[allow(deprecated)]
+impl SpanishMinimalStemmer {
+    /// Equivalent to the implicit `SpanishMinimalStemmer()`.
+    pub(crate) fn new() -> Self {
+        Self
+    }
+
+    /// Stems the first `len` units of `s` in place and returns the new
+    /// length.
+    ///
+    /// Equivalent to `stem(char[], int)`.
+    pub(crate) fn stem(&self, s: &mut [u16], len: usize) -> usize {
+        if len < 4 || s[len - 1] != 's' as u16 {
+            return len;
+        }
+
+        for c in s.iter_mut().take(len) {
+            match char::from_u32(u32::from(*c)) {
+                Some('à' | 'á' | 'â' | 'ä') => *c = 'a' as u16,
+                Some('ò' | 'ó' | 'ô' | 'ö') => *c = 'o' as u16,
+                Some('è' | 'é' | 'ê' | 'ë') => *c = 'e' as u16,
+                Some('ù' | 'ú' | 'û' | 'ü') => *c = 'u' as u16,
+                Some('ì' | 'í' | 'î' | 'ï') => *c = 'i' as u16,
+                Some('ñ') => *c = 'n' as u16,
+                _ => {}
+            }
+        }
+
+        if s[len - 1] == 's' as u16 {
+            if s[len - 2] == 'a' as u16 || s[len - 2] == 'o' as u16 {
+                return len - 1;
+            }
+            if s[len - 2] == 'e' as u16 {
+                if s[len - 3] == 's' as u16 && s[len - 4] == 'e' as u16 {
+                    return len - 2;
+                }
+                if s[len - 3] == 'c' as u16 {
+                    s[len - 3] = 'z' as u16;
+                    return len - 2;
+                } else {
+                    return len - 2;
+                }
+            } else {
+                return len - 1;
+            }
+        }
+        len
+    }
+}

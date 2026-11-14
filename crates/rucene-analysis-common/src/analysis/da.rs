@@ -15,6 +15,6 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.da`.
+//! The Java package `org.apache.lucene.analysis.da`: analyzer for Danish.
 
 pub mod danish_analyzer;

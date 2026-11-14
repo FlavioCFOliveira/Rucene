@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.fr`.
+//! The Java package `org.apache.lucene.analysis.fr`: analyzer for French.
 
 pub mod french_analyzer;
 pub mod french_light_stem_filter;
