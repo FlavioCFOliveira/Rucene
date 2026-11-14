@@ -64,6 +64,7 @@ impl<T, C: Fn(&T, &T) -> Ordering> JavaPriorityQueue<T, C> {
     }
 
     /// Equivalent to `isEmpty()`.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }

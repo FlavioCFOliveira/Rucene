@@ -1913,6 +1913,7 @@ impl KStemmer {
     ///
     /// Equivalent to `stem(String)`; `term` holds the UTF-16 units of Java's
     /// string.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn stem_string(&mut self, term: &[u16]) -> Vec<u16> {
         let changed = self.stem(term, term.len());
         if !changed {
@@ -1925,6 +1926,7 @@ impl KStemmer {
     /// String.
     ///
     /// Equivalent to `asString()`, as UTF-16 units.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn as_string(&self) -> Vec<u16> {
         match self.get_string() {
             Some(s) => units(s),
@@ -1941,16 +1943,19 @@ impl KStemmer {
     }
 
     /// Equivalent to `getString()`: `result`, `None` for Java's `null`.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn get_string(&self) -> Option<&'static str> {
         self.result
     }
 
     /// Equivalent to `getChars()`.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn get_chars(&self) -> &[u16] {
         self.word.get_array()
     }
 
     /// Equivalent to `getLength()`.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn get_length(&self) -> usize {
         self.word.length()
     }

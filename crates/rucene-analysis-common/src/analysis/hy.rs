@@ -15,6 +15,6 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.hy`.
+//! The Java package `org.apache.lucene.analysis.hy`: analyzer for Armenian.
 
 pub mod armenian_analyzer;

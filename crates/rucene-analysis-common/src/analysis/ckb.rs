@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.ckb`.
+//! The Java package `org.apache.lucene.analysis.ckb`: analyzer for Sorani Kurdish.
 
 pub mod sorani_analyzer;
 pub mod sorani_normalization_filter;

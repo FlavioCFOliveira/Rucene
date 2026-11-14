@@ -32,6 +32,7 @@ use super::html_strip_char_filter::HTMLStripCharFilter;
 use crate::spi::check_unknown_parameters;
 
 /// Equivalent to the package-private `HTMLStripCharFilterFactory.TAG_NAME_PATTERN`.
+#[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
 pub(crate) static TAG_NAME_PATTERN: LazyLock<JavaPattern> =
     LazyLock::new(|| JavaPattern::compile("[^\\s,]+", 0).expect("INVARIANT: the pattern is valid"));
 

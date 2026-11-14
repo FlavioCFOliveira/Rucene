@@ -260,6 +260,7 @@ impl Stemmer {
     }
 
     /// The dictionary.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn dictionary(&self) -> &Arc<Dictionary> {
         &self.dictionary
     }

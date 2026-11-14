@@ -35,9 +35,13 @@ the committed file, and rerunning it must leave that file unchanged.
   run to one scanner, `--hashes` prints the pins).
 * `lang_families.py` — translates the per-language class families of `lucene/analysis/common`
   (packages `ca`, `da`, `de`, `es`, `fr`, `gl`, `it`, `nl`, `no`, `pt`, `sv`, `el`, `br`, `tr`,
-  `ro`, `id`, `ga`) into `crates/rucene-analysis-common/src/analysis/<pkg>/<class>.rs`: the
+  `ro`, `id`, `ga`, `ru`, `cz`, `bg`, `sr`, `lv`, `lt`, `fi`, `hu`, `et`, `eu`, `hy`, `ar`, `fa`,
+  `ckb`, `in`, `hi`, `bn`, `te`, `ta`, `ne`) into
+  `crates/rucene-analysis-common/src/analysis/<pkg>/<class>.rs`: the
   keyword-aware stem filters (`stemmer.stem(termAtt.buffer(), termAtt.length())`, and the
-  `resizeBuffer(len + 1)` variant), the token filter factories without arguments, and the
+  `resizeBuffer(len + 1)` variant), the stem and normalization filters of the general template
+  (a stemmer's `stem` or a normalizer's `normalize` on every term or every non-keyword term),
+  the token filter factories without arguments, and the
   `StopwordAnalyzerBase` analyzers with a default stop set and a chain of known filters. It
   matches each Java class token for token against its family's template, captures only the
   varying parts (names, `NAME`, resources, constant sets, the filter chain, messages, javadoc),
@@ -45,6 +49,9 @@ the committed file, and rerunning it must leave that file unchanged.
   translated by hand. The output is formatted by `rustfmt`. Rerun:
   `python3 tools/translate/lang_families.py [/tmp/lucene1050]` (`--check` compares instead of
   writing, `--list` prints each class as generated or deviating).
+* `JdkUnicodeBlockData.java` — writes `crates/rucene-analysis-common/src/jdk/unicode_block_data.rs`
+  (`Character.UnicodeBlock.of(int)` for every code point, as runs over the blocks' canonical
+  names) from the running JDK. Rerun with JDK 25: `java tools/translate/JdkUnicodeBlockData.java > crates/rucene-analysis-common/src/jdk/unicode_block_data.rs`.
 * `JdkCharacterTypeData.java` — writes `crates/rucene-analysis-common/src/jdk/character_type_data.rs`
   (`Character.getType(int)` runs, the Latin-1 `isLowerCase`/`isUpperCase` sets, and the
   `isUpperCase`/`isLowerCase` runs of every code point) from the running JDK. Rerun with JDK 25: `java tools/translate/JdkCharacterTypeData.java > crates/rucene-analysis-common/src/jdk/character_type_data.rs`.
@@ -108,3 +115,8 @@ the committed file, and rerunning it must leave that file unchanged.
   java --add-opens java.base/sun.text=ALL-UNNAMED tools/translate/DbbiCheck.java [seed]
   java --add-opens java.base/sun.text=ALL-UNNAMED tools/translate/BrkBackCheck.java [seed] [count]
   ```
+* `../gen/CollatorData.java` (in `tools/gen`, where the test framework's JDK generators live) —
+  writes `crates/rucene-analysis-common/src/jdk/collator_data.rs`, the data of the
+  `java.text.Collator` emulation: the root rules, the decompositions and combining classes, and
+  the locale tailorings of `Collator.getInstance(Locale)`, with a check of the locale resolution
+  on every available locale; see its header for the command.

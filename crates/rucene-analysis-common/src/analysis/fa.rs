@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.fa`.
+//! The Java package `org.apache.lucene.analysis.fa`: analyzer for Persian.
 
 pub mod persian_analyzer;
 pub mod persian_char_filter;

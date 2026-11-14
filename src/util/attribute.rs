@@ -526,6 +526,31 @@ pub struct StaticImplementationAttributeFactory {
 }
 
 impl StaticImplementationAttributeFactory {
+    /// Creates a factory fixed to the implementation `A`, as a subclass of
+    /// Lucene's does: `create_instance` is the subclass's `createInstance()`,
+    /// and `interfaces` the attribute interfaces `A` implements (what
+    /// `attClass.isAssignableFrom(clazz)` accepts besides `A` itself).
+    ///
+    /// Equivalent to the protected constructor
+    /// `AttributeFactory.StaticImplementationAttributeFactory(AttributeFactory
+    /// delegate, Class<A> clazz)` with the subclass's `createInstance()`
+    /// (`AttributeFactory.java:108-111`), for an implementation whose instances
+    /// need state the subclass holds (`CollationAttributeFactory`'s
+    /// collator), which [`get_static_implementation`]'s no-argument
+    /// constructor cannot give.
+    pub fn new<A: AttributeImpl + 'static>(
+        delegate: Arc<dyn AttributeFactory>,
+        interfaces: &'static [TypeId],
+        create_instance: impl Fn() -> A + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            delegate,
+            clazz: TypeId::of::<A>(),
+            interfaces,
+            ctor: Box::new(move || Box::new(create_instance())),
+        }
+    }
+
     /// Creates an instance of the implementation this factory is fixed to.
     ///
     /// Equivalent to

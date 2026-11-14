@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.in`.
+//! The Java package `org.apache.lucene.analysis.in`: analyzer for Indian languages.
 
 pub mod indic_normalization_filter;
 pub mod indic_normalization_filter_factory;

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.ar`.
+//! The Java package `org.apache.lucene.analysis.ar`: analyzer for Arabic.
 
 pub mod arabic_analyzer;
 pub mod arabic_normalization_filter;

@@ -41,6 +41,7 @@ fn substring(s: &[u16], begin: usize, end: usize) -> Result<&[u16]> {
     Ok(&s[begin..end])
 }
 
+// TODO: allow you to specify syntactic categories (e.g. just nouns, etc)
 /// Parser for wordnet prolog format
 ///
 /// See <https://wordnet.princeton.edu/documentation/prologdb5wn> for a
@@ -49,7 +50,6 @@ fn substring(s: &[u16], begin: usize, end: usize) -> Result<&[u16]> {
 /// Equivalent to `org.apache.lucene.analysis.synonym.WordnetSynonymParser`
 /// (`@lucene.experimental`), which extends `SynonymMap.Parser`. Lines are
 /// read as UTF-16 units, Java's strings.
-// TODO: allow you to specify syntactic categories (e.g. just nouns, etc)
 #[derive(Debug)]
 pub struct WordnetSynonymParser {
     builder: Builder,

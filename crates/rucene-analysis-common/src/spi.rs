@@ -39,8 +39,8 @@
 //! `lucene-core`'s, so its scan lists `lucene-core`'s factories first, as a
 //! class path holding both jars in that order does.
 //!
-//! The registry holds the factories ported so far: a factory is registered by
-//! adding its line to the private `services` list, at the position its class has in its
+//! The registry holds every factory of the module: each is registered by its
+//! line in the private `services` list, at the position its class has in its
 //! Java service file.
 
 use std::collections::HashMap;
@@ -55,6 +55,14 @@ use rucene::util::java_collections::JavaHashMap;
 use rucene::util::resource_loader::{ClassLoader, ClassRegistry, ServiceProvider};
 use rucene::util::spi::lucene_core_class_loader;
 
+use crate::analysis::ar::arabic_analyzer::ArabicAnalyzer;
+use crate::analysis::ar::arabic_normalization_filter_factory::ArabicNormalizationFilterFactory;
+use crate::analysis::ar::arabic_stem_filter_factory::ArabicStemFilterFactory;
+use crate::analysis::bg::bulgarian_analyzer::BulgarianAnalyzer;
+use crate::analysis::bg::bulgarian_stem_filter_factory::BulgarianStemFilterFactory;
+use crate::analysis::bn::bengali_analyzer::BengaliAnalyzer;
+use crate::analysis::bn::bengali_normalization_filter_factory::BengaliNormalizationFilterFactory;
+use crate::analysis::bn::bengali_stem_filter_factory::BengaliStemFilterFactory;
 use crate::analysis::boost::delimited_boost_token_filter_factory::DelimitedBoostTokenFilterFactory;
 use crate::analysis::br::brazilian_analyzer::BrazilianAnalyzer;
 use crate::analysis::br::brazilian_stem_filter_factory::BrazilianStemFilterFactory;
@@ -65,6 +73,9 @@ use crate::analysis::cjk::cjk_analyzer::CJKAnalyzer;
 use crate::analysis::cjk::cjk_bigram_filter_factory::CJKBigramFilterFactory;
 use crate::analysis::cjk::cjk_width_char_filter_factory::CJKWidthCharFilterFactory;
 use crate::analysis::cjk::cjk_width_filter_factory::CJKWidthFilterFactory;
+use crate::analysis::ckb::sorani_analyzer::SoraniAnalyzer;
+use crate::analysis::ckb::sorani_normalization_filter_factory::SoraniNormalizationFilterFactory;
+use crate::analysis::ckb::sorani_stem_filter_factory::SoraniStemFilterFactory;
 use crate::analysis::classic::classic_analyzer::ClassicAnalyzer;
 use crate::analysis::classic::classic_filter_factory::ClassicFilterFactory;
 use crate::analysis::classic::classic_tokenizer_factory::ClassicTokenizerFactory;
@@ -85,6 +96,8 @@ use crate::analysis::core::unicode_whitespace_analyzer::UnicodeWhitespaceAnalyze
 use crate::analysis::core::upper_case_filter_factory::UpperCaseFilterFactory;
 use crate::analysis::core::whitespace_analyzer::WhitespaceAnalyzer;
 use crate::analysis::core::whitespace_tokenizer_factory::WhitespaceTokenizerFactory;
+use crate::analysis::cz::czech_analyzer::CzechAnalyzer;
+use crate::analysis::cz::czech_stem_filter_factory::CzechStemFilterFactory;
 use crate::analysis::da::danish_analyzer::DanishAnalyzer;
 use crate::analysis::de::german_analyzer::GermanAnalyzer;
 use crate::analysis::de::german_light_stem_filter_factory::GermanLightStemFilterFactory;
@@ -106,6 +119,14 @@ use crate::analysis::es::spanish_light_stem_filter_factory::SpanishLightStemFilt
 #[allow(deprecated)]
 use crate::analysis::es::spanish_minimal_stem_filter_factory::SpanishMinimalStemFilterFactory;
 use crate::analysis::es::spanish_plural_stem_filter_factory::SpanishPluralStemFilterFactory;
+use crate::analysis::et::estonian_analyzer::EstonianAnalyzer;
+use crate::analysis::eu::basque_analyzer::BasqueAnalyzer;
+use crate::analysis::fa::persian_analyzer::PersianAnalyzer;
+use crate::analysis::fa::persian_char_filter_factory::PersianCharFilterFactory;
+use crate::analysis::fa::persian_normalization_filter_factory::PersianNormalizationFilterFactory;
+use crate::analysis::fa::persian_stem_filter_factory::PersianStemFilterFactory;
+use crate::analysis::fi::finnish_analyzer::FinnishAnalyzer;
+use crate::analysis::fi::finnish_light_stem_filter_factory::FinnishLightStemFilterFactory;
 use crate::analysis::fr::french_analyzer::FrenchAnalyzer;
 use crate::analysis::fr::french_light_stem_filter_factory::FrenchLightStemFilterFactory;
 use crate::analysis::fr::french_minimal_stem_filter_factory::FrenchMinimalStemFilterFactory;
@@ -114,11 +135,20 @@ use crate::analysis::ga::irish_lower_case_filter_factory::IrishLowerCaseFilterFa
 use crate::analysis::gl::galician_analyzer::GalicianAnalyzer;
 use crate::analysis::gl::galician_minimal_stem_filter_factory::GalicianMinimalStemFilterFactory;
 use crate::analysis::gl::galician_stem_filter_factory::GalicianStemFilterFactory;
+use crate::analysis::hi::hindi_analyzer::HindiAnalyzer;
+use crate::analysis::hi::hindi_normalization_filter_factory::HindiNormalizationFilterFactory;
+use crate::analysis::hi::hindi_stem_filter_factory::HindiStemFilterFactory;
+use crate::analysis::hu::hungarian_analyzer::HungarianAnalyzer;
+use crate::analysis::hu::hungarian_light_stem_filter_factory::HungarianLightStemFilterFactory;
 use crate::analysis::hunspell::hunspell_stem_filter_factory::HunspellStemFilterFactory;
+use crate::analysis::hy::armenian_analyzer::ArmenianAnalyzer;
 use crate::analysis::id::indonesian_analyzer::IndonesianAnalyzer;
 use crate::analysis::id::indonesian_stem_filter_factory::IndonesianStemFilterFactory;
 use crate::analysis::it::italian_analyzer::ItalianAnalyzer;
 use crate::analysis::it::italian_light_stem_filter_factory::ItalianLightStemFilterFactory;
+use crate::analysis::lt::lithuanian_analyzer::LithuanianAnalyzer;
+use crate::analysis::lv::latvian_analyzer::LatvianAnalyzer;
+use crate::analysis::lv::latvian_stem_filter_factory::LatvianStemFilterFactory;
 use crate::analysis::minhash::min_hash_filter_factory::MinHashFilterFactory;
 use crate::analysis::miscellaneous::ascii_folding_filter_factory::ASCIIFoldingFilterFactory;
 use crate::analysis::miscellaneous::capitalization_filter_factory::CapitalizationFilterFactory;
@@ -148,6 +178,7 @@ use crate::analysis::miscellaneous::truncate_token_filter_factory::TruncateToken
 use crate::analysis::miscellaneous::type_as_synonym_filter_factory::TypeAsSynonymFilterFactory;
 use crate::analysis::miscellaneous::word_delimiter_filter_factory::WordDelimiterFilterFactory;
 use crate::analysis::miscellaneous::word_delimiter_graph_filter_factory::WordDelimiterGraphFilterFactory;
+use crate::analysis::ne::nepali_analyzer::NepaliAnalyzer;
 use crate::analysis::ngram::edge_ngram_filter_factory::EdgeNGramFilterFactory;
 use crate::analysis::ngram::edge_ngram_tokenizer_factory::EdgeNGramTokenizerFactory;
 use crate::analysis::ngram::ngram_filter_factory::NGramFilterFactory;
@@ -177,13 +208,18 @@ use crate::analysis::pt::portuguese_analyzer::PortugueseAnalyzer;
 use crate::analysis::pt::portuguese_light_stem_filter_factory::PortugueseLightStemFilterFactory;
 use crate::analysis::pt::portuguese_minimal_stem_filter_factory::PortugueseMinimalStemFilterFactory;
 use crate::analysis::pt::portuguese_stem_filter_factory::PortugueseStemFilterFactory;
+use crate::analysis::r#in::indic_normalization_filter_factory::IndicNormalizationFilterFactory;
 use crate::analysis::reverse::reverse_string_filter_factory::ReverseStringFilterFactory;
 use crate::analysis::ro::romanian_analyzer::RomanianAnalyzer;
 use crate::analysis::ro::romanian_normalization_filter_factory::RomanianNormalizationFilterFactory;
+use crate::analysis::ru::russian_analyzer::RussianAnalyzer;
+use crate::analysis::ru::russian_light_stem_filter_factory::RussianLightStemFilterFactory;
 use crate::analysis::shingle::fixed_shingle_filter_factory::FixedShingleFilterFactory;
 use crate::analysis::shingle::shingle_analyzer_wrapper::ShingleAnalyzerWrapper;
 use crate::analysis::shingle::shingle_filter_factory::ShingleFilterFactory;
 use crate::analysis::snowball::snowball_porter_filter_factory::SnowballPorterFilterFactory;
+use crate::analysis::sr::serbian_analyzer::SerbianAnalyzer;
+use crate::analysis::sr::serbian_normalization_filter_factory::SerbianNormalizationFilterFactory;
 use crate::analysis::sv::swedish_analyzer::SwedishAnalyzer;
 use crate::analysis::sv::swedish_light_stem_filter_factory::SwedishLightStemFilterFactory;
 use crate::analysis::sv::swedish_minimal_stem_filter_factory::SwedishMinimalStemFilterFactory;
@@ -193,6 +229,10 @@ use crate::analysis::synonym::synonym_graph_filter_factory::SynonymGraphFilterFa
 use crate::analysis::synonym::synonym_map::Parser;
 use crate::analysis::synonym::word2vec::word2vec_synonym_filter_factory::Word2VecSynonymFilterFactory;
 use crate::analysis::synonym::wordnet_synonym_parser::WordnetSynonymParser;
+use crate::analysis::ta::tamil_analyzer::TamilAnalyzer;
+use crate::analysis::te::telugu_analyzer::TeluguAnalyzer;
+use crate::analysis::te::telugu_normalization_filter_factory::TeluguNormalizationFilterFactory;
+use crate::analysis::te::telugu_stem_filter_factory::TeluguStemFilterFactory;
 use crate::analysis::th::thai_analyzer::ThaiAnalyzer;
 use crate::analysis::th::thai_tokenizer_factory::ThaiTokenizerFactory;
 use crate::analysis::tr::apostrophe_filter_factory::ApostropheFilterFactory;
@@ -260,8 +300,8 @@ fn tokenizer(class: AnalysisFactoryClass<dyn TokenizerFactory>) -> ServiceProvid
 }
 
 /// The lines of the module's three service files, each file's lines in its
-/// order (`lucene/analysis/common/src/resources/META-INF/services/`), for the
-/// factories ported so far.
+/// order (`lucene/analysis/common/src/resources/META-INF/services/`): every
+/// factory of the module.
 // `SpanishMinimalStemFilterFactory` is deprecated in Lucene 10.5.0, and still listed.
 #[allow(deprecated)]
 fn services() -> Vec<ServiceProvider> {
@@ -270,13 +310,21 @@ fn services() -> Vec<ServiceProvider> {
         char_filter(HTMLStripCharFilterFactory::class()),
         char_filter(MappingCharFilterFactory::class()),
         char_filter(CJKWidthCharFilterFactory::class()),
+        char_filter(PersianCharFilterFactory::class()),
         char_filter(PatternReplaceCharFilterFactory::class()),
         // META-INF/services/org.apache.lucene.analysis.TokenFilterFactory
         token_filter(ApostropheFilterFactory::class()),
+        token_filter(ArabicNormalizationFilterFactory::class()),
+        token_filter(ArabicStemFilterFactory::class()),
+        token_filter(BulgarianStemFilterFactory::class()),
         token_filter(DelimitedBoostTokenFilterFactory::class()),
+        token_filter(BengaliNormalizationFilterFactory::class()),
+        token_filter(BengaliStemFilterFactory::class()),
         token_filter(BrazilianStemFilterFactory::class()),
         token_filter(CJKBigramFilterFactory::class()),
         token_filter(CJKWidthFilterFactory::class()),
+        token_filter(SoraniNormalizationFilterFactory::class()),
+        token_filter(SoraniStemFilterFactory::class()),
         token_filter(ClassicFilterFactory::class()),
         token_filter(CommonGramsFilterFactory::class()),
         token_filter(CommonGramsQueryFilterFactory::class()),
@@ -287,6 +335,7 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(StopFilterFactory::class()),
         token_filter(TypeTokenFilterFactory::class()),
         token_filter(UpperCaseFilterFactory::class()),
+        token_filter(CzechStemFilterFactory::class()),
         token_filter(GermanLightStemFilterFactory::class()),
         token_filter(GermanMinimalStemFilterFactory::class()),
         token_filter(GermanNormalizationFilterFactory::class()),
@@ -300,14 +349,22 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(SpanishLightStemFilterFactory::class()),
         token_filter(SpanishMinimalStemFilterFactory::class()),
         token_filter(SpanishPluralStemFilterFactory::class()),
+        token_filter(PersianNormalizationFilterFactory::class()),
+        token_filter(PersianStemFilterFactory::class()),
+        token_filter(FinnishLightStemFilterFactory::class()),
         token_filter(FrenchLightStemFilterFactory::class()),
         token_filter(FrenchMinimalStemFilterFactory::class()),
         token_filter(IrishLowerCaseFilterFactory::class()),
         token_filter(GalicianMinimalStemFilterFactory::class()),
         token_filter(GalicianStemFilterFactory::class()),
+        token_filter(HindiNormalizationFilterFactory::class()),
+        token_filter(HindiStemFilterFactory::class()),
+        token_filter(HungarianLightStemFilterFactory::class()),
         token_filter(HunspellStemFilterFactory::class()),
         token_filter(IndonesianStemFilterFactory::class()),
+        token_filter(IndicNormalizationFilterFactory::class()),
         token_filter(ItalianLightStemFilterFactory::class()),
+        token_filter(LatvianStemFilterFactory::class()),
         token_filter(MinHashFilterFactory::class()),
         token_filter(ASCIIFoldingFilterFactory::class()),
         token_filter(CapitalizationFilterFactory::class()),
@@ -353,15 +410,19 @@ fn services() -> Vec<ServiceProvider> {
         token_filter(PortugueseStemFilterFactory::class()),
         token_filter(ReverseStringFilterFactory::class()),
         token_filter(RomanianNormalizationFilterFactory::class()),
+        token_filter(RussianLightStemFilterFactory::class()),
         token_filter(ShingleFilterFactory::class()),
         token_filter(FixedShingleFilterFactory::class()),
         token_filter(SnowballPorterFilterFactory::class()),
+        token_filter(SerbianNormalizationFilterFactory::class()),
         token_filter(SwedishLightStemFilterFactory::class()),
         token_filter(SwedishMinimalStemFilterFactory::class()),
         token_filter(SynonymFilterFactory::class()),
         token_filter(SynonymGraphFilterFactory::class()),
         token_filter(Word2VecSynonymFilterFactory::class()),
         token_filter(FlattenGraphFilterFactory::class()),
+        token_filter(TeluguNormalizationFilterFactory::class()),
+        token_filter(TeluguStemFilterFactory::class()),
         token_filter(TurkishLowerCaseFilterFactory::class()),
         token_filter(ElisionFilterFactory::class()),
         // META-INF/services/org.apache.lucene.analysis.TokenizerFactory
@@ -499,14 +560,14 @@ pub fn synonym_parser_classes() -> &'static RwLock<ClassRegistry<SynonymParserCo
 ///
 /// **Divergence from Lucene 10.5.0.** As for [`synonym_parser_classes`]:
 /// the table holds the analyzers with a public no-argument constructor of
-/// `lucene-core` (`StandardAnalyzer`) and of this module ported so far
-/// (`KeywordAnalyzer`, `SimpleAnalyzer`, `UnicodeWhitespaceAnalyzer`,
-/// `WhitespaceAnalyzer`, `EnglishAnalyzer`, `CJKAnalyzer`, `ClassicAnalyzer`,
-/// `ThaiAnalyzer`, `UAX29URLEmailAnalyzer`, `ShingleAnalyzerWrapper`, and
-/// the per-language analyzers of `ca`, `da`, `de`, `es`, `fr`, `gl`, `it`,
-/// `nl`, `no`, `pt`, `sv`, `el`, `br`, `tr`, `ro`, `id` and `ga`), and what
-/// an application registers; the module's later analyzers are added as they
-/// are ported.
+/// `lucene-core` (`StandardAnalyzer`) and of this module (`KeywordAnalyzer`,
+/// `SimpleAnalyzer`, `UnicodeWhitespaceAnalyzer`, `WhitespaceAnalyzer`,
+/// `EnglishAnalyzer`, `CJKAnalyzer`, `ClassicAnalyzer`, `ThaiAnalyzer`,
+/// `UAX29URLEmailAnalyzer`, `ShingleAnalyzerWrapper`, and the per-language
+/// analyzers of `ca`, `da`, `de`, `es`, `fr`, `gl`, `it`, `nl`, `no`, `pt`,
+/// `sv`, `el`, `br`, `tr`, `ro`, `id`, `ga`, `ru`, `cz`, `bg`, `sr`, `lv`,
+/// `lt`, `fi`, `hu`, `et`, `eu`, `hy`, `ar`, `fa`, `ckb`, `hi`, `bn`, `te`,
+/// `ta` and `ne`), and what an application registers.
 pub fn analyzer_classes() -> &'static RwLock<ClassRegistry<Arc<dyn Analyzer>>> {
     static CLASSES: LazyLock<RwLock<ClassRegistry<Arc<dyn Analyzer>>>> = LazyLock::new(|| {
         let mut classes = ClassRegistry::new("org.apache.lucene.analysis.Analyzer");
@@ -621,6 +682,82 @@ pub fn analyzer_classes() -> &'static RwLock<ClassRegistry<Arc<dyn Analyzer>>> {
         classes.register(
             "org.apache.lucene.analysis.ga.IrishAnalyzer",
             Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(IrishAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.ru.RussianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(RussianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.cz.CzechAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(CzechAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.bg.BulgarianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(BulgarianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.sr.SerbianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(SerbianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.lv.LatvianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(LatvianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.lt.LithuanianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(LithuanianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.fi.FinnishAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(FinnishAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.hu.HungarianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(HungarianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.et.EstonianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(EstonianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.eu.BasqueAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(BasqueAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.hy.ArmenianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(ArmenianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.ar.ArabicAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(ArabicAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.fa.PersianAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(PersianAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.ckb.SoraniAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(SoraniAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.hi.HindiAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(HindiAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.bn.BengaliAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(BengaliAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.te.TeluguAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(TeluguAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.ta.TamilAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(TamilAnalyzer::new()) }),
+        );
+        classes.register(
+            "org.apache.lucene.analysis.ne.NepaliAnalyzer",
+            Arc::new(|| -> Arc<dyn Analyzer> { Arc::new(NepaliAnalyzer::new()) }),
         );
         RwLock::new(classes)
     });

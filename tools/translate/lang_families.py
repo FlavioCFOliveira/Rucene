@@ -8,7 +8,10 @@ Three families of near-identical Java classes are generated into
   keyword-aware `TokenFilter` holding a stemmer and calling
   `stemmer.stem(termAtt.buffer(), termAtt.length())` (or, in the variant,
   `stemmer.stem(termAtt.resizeBuffer(len + 1), len)`) on every non-keyword
-  term;
+  term; and, by a general template, the stem and normalization filters
+  (`XNormalizationFilter`) that call a stemmer's `stem` or a normalizer's
+  `normalize` the same way on every term or every non-keyword term, with the
+  fields in any order and the call in either of its Java spellings;
 * token filter factories (`XStemFilterFactory`, `XNormalizationFilterFactory`,
   ...): `NAME`, the `Map` constructor rejecting leftover arguments, the SPI
   default constructor, `create` building the filter from the input alone and,
@@ -17,7 +20,10 @@ Three families of near-identical Java classes are generated into
   optional constant `CharArraySet`s, a `DefaultSetHolder` loading the default
   stop set from a resource, the constructors `()`, `(stopwords)` and
   `(stopwords, stemExclusionSet)`, and a `createComponents` / `normalize` built
-  from a `StandardTokenizer` and a chain of known filters.
+  from a `StandardTokenizer` and a chain of known filters (those of the
+  package, the module's filters a package imports, `LowerCaseFilter`,
+  `StopFilter`, `SetKeywordMarkerFilter`, `ElisionFilter` and `SnowballFilter`),
+  the line comments of the chain carried over.
 
 Every Java class is matched token for token (comments aside) against its
 family's template, with only the varying parts captured: class, stemmer and
@@ -48,7 +54,9 @@ REPO = Path(__file__).resolve().parents[2]
 CRATE_SRC = REPO / "crates" / "rucene-analysis-common" / "src"
 JAVA_REL = "lucene/analysis/common/src/java/org/apache/lucene/analysis"
 PACKAGES = ["ca", "da", "de", "es", "fr", "gl", "it", "nl", "no", "pt", "sv",
-            "el", "br", "tr", "ro", "id", "ga"]
+            "el", "br", "tr", "ro", "id", "ga",
+            "ru", "cz", "bg", "sr", "lv", "lt", "fi", "hu", "et", "eu", "hy",
+            "ar", "fa", "ckb", "in", "hi", "bn", "te", "ta", "ne"]
 ASF_HEADER = """/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements.  See the NOTICE file distributed with
@@ -332,7 +340,11 @@ def inline(text: str) -> str:
     text = re.sub(r"<br\s*/?>", " ", text)
     if re.search(r"<[A-Za-z/]", text):
         raise Deviation(f"unhandled HTML in javadoc: {text!r}")
-    return html.unescape(text)
+    text = html.unescape(text)
+    # A bare URL becomes a rustdoc autolink (`<url>`); one inside a Markdown
+    # link or code span is left alone.
+    return re.sub(r"(?<![(<`\[])\b(https?://[^\s<>()\[\]`]*[^\s<>()\[\]`.,;:])",
+                  r"<\1>", text)
 
 
 def javadoc_parts(jd: str | None):
@@ -513,62 +525,81 @@ def stem_filter(jc: JavaClass, pkg: str) -> str:
     if (len(comments) != (1 if resize else 0)) or any(not c.startswith("//") for c in comments):
         raise Deviation(f"comments in the class body: {comments}")
 
+    return emit_term_filter(jc, pkg, stemmer, "stemmer", "stem", True, ("term", "keyword"),
+                            resize, comments)
+
+
+def emit_term_filter(jc, pkg, worker, field, method, keyword, attr_order, resize, comments):
+    """Emits a filter that rewrites every term (every non-keyword term when
+    `keyword`) with `worker.method(buffer, length)`: the stem filters and the
+    normalization filters. `field` is the Java field holding the worker,
+    `attr_order` the order of the attribute fields."""
+    noun = "stemmer" if worker.endswith("Stemmer") else "normalizer"
+    wf = snake(field)
     fqn = f"org.apache.lucene.analysis.{pkg}.{jc.name}"
     blocks, tags = doc_blocks(jc.class_javadoc)
     dep = deprecated_attr(tags, jc.annotations)
-    stem_mod = snake(stemmer)
     logic = f"{jc.name}Logic"
     ctor = f"new_{snake(jc.name)}"
     first_sentence = blocks[0][1] if blocks and blocks[0][0] == "p" else jc.name
     module_doc = first_sentence.split(". ")[0].rstrip(".")
+    attr_type = {"term": "CharTermAttribute", "keyword": "KeywordAttribute"}
     out = [ASF_HEADER, "", GENERATED_NOTE.format(java=f"{jc.name}.java"), ""]
     out += wrap(f"{module_doc}, ported from `{fqn}`.", 76, "//! ", "//! ")
     out += pre_comments(jc)
     if dep:
         out += ["", "// Lucene deprecates this class; its uses of the deprecated types are the", "// Java class's own.", "#![allow(deprecated)]"]
-    out += ["", "use rucene::analysis::{",
-            "    CharTermAttribute, KeywordAttribute, TokenFilter, TokenFilterLogic, TokenStream,",
-            "};", "use rucene::error::Result;", "use rucene::util::attribute::AttributeSource;", ""]
-    stemmer_use = f"use super::{stem_mod}::{stemmer};"
-    out += [stemmer_use, "use crate::jdk::character::{chars_to_utf16, utf16_to_term_chars};", ""]
+    if keyword:
+        out += ["", "use rucene::analysis::{",
+                "    CharTermAttribute, KeywordAttribute, TokenFilter, TokenFilterLogic, TokenStream,",
+                "};"]
+    else:
+        out += ["", "use rucene::analysis::{CharTermAttribute, TokenFilter, TokenFilterLogic, TokenStream};"]
+    out += ["use rucene::error::Result;", "use rucene::util::attribute::AttributeSource;", ""]
+    out += [f"use super::{snake(worker)}::{worker};",
+            "use crate::jdk::character::{chars_to_utf16, utf16_to_term_chars};", ""]
     out += [f"/// The body of [`{jc.name}`]: what Lucene's", f"/// `{jc.name}` adds to `TokenFilter`."]
-    out += dep + ["#[derive(Debug)]", f"pub struct {logic} {{", f"    stemmer: {stemmer},", "}", ""]
+    out += dep + ["#[derive(Debug)]", f"pub struct {logic} {{", f"    {wf}: {worker},", "}", ""]
     out += [f"impl TokenFilterLogic for {logic} {{"]
-    out += [f"    /// Equivalent to `{jc.name}.incrementToken()`. The stemmer",
+    out += [f"    /// Equivalent to `{jc.name}.incrementToken()`. The {noun}",
             "    /// reads the term's UTF-16 units, Java's `termAtt.buffer()`, and may",
             "    /// change them in place; the first `newlen` units become the term, as",
             "    /// Java's `termAtt.setLength(newlen)` keeps them."]
     if resize:
         out += ["    ///",
-                "    /// Java's `termAtt.resizeBuffer(len + 1)` gives the stemmer one unit",
+                f"    /// Java's `termAtt.resizeBuffer(len + 1)` gives the {noun} one unit",
                 "    /// beyond the term to write into; the units grow by one here."]
     out += ["    fn increment_token(",
             "        &mut self,",
             "        source: &mut AttributeSource,",
             "        input: &mut dyn TokenStream,",
             "    ) -> Result<bool> {",
-            "        if input.increment_token()? {",
-            "            let is_keyword = source",
-            "                .get_attribute_interface::<dyn KeywordAttribute>()",
-            "                .expect(\"INVARIANT: the constructor added the KeywordAttribute\")",
-            "                .is_keyword();",
-            "            if !is_keyword {",
-            "                let mut term_att = source",
-            "                    .get_attribute_interface_mut::<dyn CharTermAttribute>()",
-            "                    .expect(\"INVARIANT: the constructor added the CharTermAttribute\");",
-            "                let mut buffer = chars_to_utf16(&term_att.buffer()[..term_att.length()]);"]
+            "        if input.increment_token()? {"]
+    rewrite = ["let mut term_att = source",
+               "    .get_attribute_interface_mut::<dyn CharTermAttribute>()",
+               "    .expect(\"INVARIANT: the constructor added the CharTermAttribute\");",
+               "let mut buffer = chars_to_utf16(&term_att.buffer()[..term_att.length()]);"]
     if resize:
-        out += [f"                {comments[0]}",
-                "                let len = buffer.len();",
-                "                buffer.resize(len + 1, 0);",
-                "                let newlen = self.stemmer.stem(&mut buffer, len);"]
+        rewrite += [f"{comments[0]}",
+                    "let len = buffer.len();",
+                    "buffer.resize(len + 1, 0);",
+                    f"let newlen = self.{wf}.{method}(&mut buffer, len);"]
     else:
-        out += ["                let length = buffer.len();",
-                "                let newlen = self.stemmer.stem(&mut buffer, length);"]
-    out += ["                let chars = utf16_to_term_chars(&buffer[..newlen]);",
-            "                term_att.copy_buffer(&chars, 0, chars.len());",
-            "            }",
-            "            Ok(true)",
+        rewrite += ["let length = buffer.len();",
+                    f"let newlen = self.{wf}.{method}(&mut buffer, length);"]
+    rewrite += ["let chars = utf16_to_term_chars(&buffer[..newlen]);",
+                "term_att.copy_buffer(&chars, 0, chars.len());"]
+    if keyword:
+        out += ["            let is_keyword = source",
+                "                .get_attribute_interface::<dyn KeywordAttribute>()",
+                "                .expect(\"INVARIANT: the constructor added the KeywordAttribute\")",
+                "                .is_keyword();",
+                "            if !is_keyword {"]
+        out += ["                " + line for line in rewrite]
+        out += ["            }"]
+    else:
+        out += ["            " + line for line in rewrite]
+    out += ["            Ok(true)",
             "        } else {",
             "            Ok(false)",
             "        }",
@@ -577,9 +608,14 @@ def stem_filter(jc: JavaClass, pkg: str) -> str:
     out += render_doc(blocks, 0)
     out += ["///", "/// " + claim(fqn, tags)]
     out += dep + [f"pub type {jc.name} = TokenFilter<{logic}>;", ""]
-    out += [f"/// Equivalent to `{jc.name}(TokenStream)`, whose fields add the",
-            "/// `CharTermAttribute` and the `KeywordAttribute`, in that order.",
-            "///", "/// # Errors", "///",
+    if keyword:
+        a0, a1 = (attr_type[k] for k in attr_order)
+        out += [f"/// Equivalent to `{jc.name}(TokenStream)`, whose fields add the",
+                f"/// `{a0}` and the `{a1}`, in that order."]
+    else:
+        out += [f"/// Equivalent to `{jc.name}(TokenStream)`, whose attribute field adds",
+                "/// the `CharTermAttribute`."]
+    out += ["///", "/// # Errors", "///",
             "/// What the stream's attribute factory raises for an interface it cannot",
             "/// implement, as Java's `addAttribute` throws."]
     out += dep
@@ -587,15 +623,84 @@ def stem_filter(jc: JavaClass, pkg: str) -> str:
             "    let mut filter = TokenFilter::new(",
             "        input,",
             f"        {logic} {{",
-            f"            stemmer: {stemmer}::new(),",
+            f"            {wf}: {worker}::new(),",
             "        },",
             "    );",
-            "    let source = filter.attribute_source_mut();",
-            "    source.add_attribute_interface::<dyn CharTermAttribute>()?;",
-            "    source.add_attribute_interface::<dyn KeywordAttribute>()?;",
-            "    Ok(filter)",
+            "    let source = filter.attribute_source_mut();"]
+    for k in attr_order:
+        out.append(f"    source.add_attribute_interface::<dyn {attr_type[k]}>()?;")
+    out += ["    Ok(filter)",
             "}"]
     return "\n".join(out) + "\n"
+
+
+TERM_FILTER_WORKER = "private final @worker @field = new @worker2 ( ) ;"
+TERM_FILTER_ATTR = "private final @type @name = addAttribute ( @type2 . class ) ;"
+TERM_FILTER_CTOR = "public @cls ( @...param ) { super ( input ) ; }"
+TERM_FILTER_INCREMENT = """@ Override public boolean incrementToken ( ) throws IOException {
+  if ( input . incrementToken ( ) ) { @...body return true ; } @...tail
+}"""
+
+
+def term_filter(jc: JavaClass, pkg: str) -> str:
+    """The general stem and normalization filter: the worker and attribute
+    fields in any order, `final` or not on the constructor parameter, and the
+    rewrite statement in either of its two Java spellings, with or without
+    braces, inside a keyword test or not."""
+    if jc.header != ["public", "final", "class", jc.name, "extends", "TokenFilter"]:
+        raise Deviation(f"class header {' '.join(jc.header)}")
+    if len(jc.members) not in (4, 5):
+        raise Deviation(f"{len(jc.members)} members, the general template has 4 or 5")
+    for m in jc.members:
+        if m.javadoc is not None or m.comments():
+            raise Deviation("a member carries javadoc or comments")
+    *fields, m_ctor, m_inc = jc.members
+    worker = field = None
+    attrs = {}
+    order = []
+    for m in fields:
+        w = match(TERM_FILTER_WORKER, m.toks)
+        a = match(TERM_FILTER_ATTR, m.toks)
+        if w and w["worker"] == w["worker2"] and re.fullmatch(r"[A-Z]\w*(Stemmer|Normalizer)", w["worker"]) \
+                and worker is None:
+            worker, field = w["worker"], w["field"]
+        elif a and a["type"] == a["type2"] and a["type"] in ("CharTermAttribute", "KeywordAttribute") \
+                and a["type"] not in attrs:
+            kind = "term" if a["type"] == "CharTermAttribute" else "keyword"
+            attrs[kind] = a["name"]
+            order.append(kind)
+        else:
+            raise Deviation("field " + " ".join(t.text for t in m.code))
+    if worker is None or "term" not in attrs:
+        raise Deviation("no worker or no CharTermAttribute field")
+    method = "stem" if worker.endswith("Stemmer") else "normalize"
+    expected = "StemFilter" if method == "stem" else "NormalizationFilter"
+    if not jc.name.endswith(expected):
+        raise Deviation(f"{jc.name} holds a {worker}")
+    c = require(TERM_FILTER_CTOR, m_ctor, "the constructor")
+    if c["cls"] != jc.name or [t.text for t in c["param"]] not in (
+            ["TokenStream", "input"], ["final", "TokenStream", "input"]):
+        raise Deviation("constructor signature")
+    inc = require(TERM_FILTER_INCREMENT, m_inc, "incrementToken")
+    tail = " ".join(t.text for t in inc["tail"])
+    if tail not in ("else { return false ; }", "return false ;"):
+        raise Deviation(f"incrementToken tail {tail}")
+    t, w = attrs["term"], field
+    call = f"{w} . {method} ( {t} . buffer ( ) , {t} . length ( ) )"
+    stmts = [f"final int newlen = {call} ; {t} . setLength ( newlen ) ;",
+             f"int newlen = {call} ; {t} . setLength ( newlen ) ;",
+             f"{t} . setLength ( {call} ) ;"]
+    body = " ".join(x.text for x in inc["body"])
+    keyword = "keyword" in attrs
+    if keyword:
+        k = attrs["keyword"]
+        bodies = [f"if ( ! {k} . isKeyword ( ) ) {s}" for s in stmts] + \
+                 [f"if ( ! {k} . isKeyword ( ) ) {{ {s} }}" for s in stmts]
+    else:
+        bodies = stmts
+    if body not in bodies:
+        raise Deviation(f"incrementToken body {body}")
+    return emit_term_filter(jc, pkg, worker, field, method, keyword, order, False, [])
 
 
 # --------------------------------------------------------------------------
@@ -788,10 +893,11 @@ def parse_filter(expr_toks, var, ctx):
         return (f"new_set_keyword_marker_filter({{x}}, self.{snake(extra[1])}.clone())",
                 ("crate", "crate::analysis::miscellaneous::set_keyword_marker_filter::new_set_keyword_marker_filter"))
     if filt == "SnowballFilter":
-        mm = re.fullmatch(r", new ([A-Z][A-Za-z]*Stemmer) \( \)", " ".join(extra))
+        mm = re.fullmatch(r", new ((?:org \. tartarus \. snowball \. ext \. )?)([A-Z][A-Za-z]*Stemmer) \( \)",
+                          " ".join(extra))
         if mm:
-            st = mm.group(1)
-            if f"org.tartarus.snowball.ext.{st}" not in ctx["imports"]:
+            st = mm.group(2)
+            if not mm.group(1) and f"org.tartarus.snowball.ext.{st}" not in ctx["imports"]:
                 raise Deviation(f"{st} not imported from org.tartarus.snowball.ext")
             ctx["uses"].add(("crate", f"crate::tartarus::snowball::ext::{snake(st)}::{st}"))
             return (f"new_snowball_filter({{x}}, Box::new({st}::new()))",
@@ -799,11 +905,19 @@ def parse_filter(expr_toks, var, ctx):
     if not extra and (CRATE_SRC / "analysis" / ctx["pkg"] / f"{snake(filt)}.rs").exists() \
             and not any(i.endswith("." + filt) for i in ctx["imports"]):
         return f"new_{snake(filt)}({{x}})", ("super", f"super::{snake(filt)}::new_{snake(filt)}")
+    imported = [i for i in ctx["imports"] if i.endswith("." + filt)]
+    mm = re.fullmatch(r"org\.apache\.lucene\.analysis\.([a-z]+)\." + filt, imported[0]) \
+        if len(imported) == 1 else None
+    if not extra and mm and (CRATE_SRC / "analysis" / mm.group(1) / f"{snake(filt)}.rs").exists():
+        module = "r#in" if mm.group(1) == "in" else mm.group(1)
+        return (f"new_{snake(filt)}({{x}})",
+                ("crate", f"crate::analysis::{module}::{snake(filt)}::new_{snake(filt)}"))
     raise Deviation(f"unknown filter construction {filt}({' '.join(texts)})")
 
 
 def analyzer(jc: JavaClass, pkg: str) -> str:
-    if jc.header != ["public", "final", "class", jc.name, "extends", "StopwordAnalyzerBase"]:
+    if jc.header not in (["public", "final", "class", jc.name, "extends", "StopwordAnalyzerBase"],
+                         ["public", "class", jc.name, "extends", "StopwordAnalyzerBase"]):
         raise Deviation(f"class header {' '.join(jc.header)}")
     ctx = {"pkg": pkg, "sets": {}, "imports": set(jc.imports), "uses": set(), "excl": None}
     consts = []  # (name, rust lines)
@@ -818,7 +932,8 @@ def analyzer(jc: JavaClass, pkg: str) -> str:
     for m in jc.members:
         toks = m.code
         texts = [t.text for t in toks]
-        if m.comments() and [c for c in m.comments() if c != m.javadoc and c not in HOLDER_COMMENT]:
+        if m.comments() and [c for c in m.comments() if c != m.javadoc and c not in HOLDER_COMMENT] \
+                and "createComponents" not in texts and "normalize" not in texts:
             raise Deviation(f"comment in member {' '.join(texts[:6])}")
         if texts[:2] == ["private", "final"] and texts[2:3] == ["CharArraySet"] and len(texts) == 5:
             ctx["excl"] = texts[3]
@@ -831,8 +946,9 @@ def analyzer(jc: JavaClass, pkg: str) -> str:
                                      "STOPWORDS_COMMENT")["v"], m.javadoc)
         elif "getDefaultStopSet" in texts:
             caps = match("public static @...mods CharArraySet getDefaultStopSet ( ) { "
-                         "return DefaultSetHolder . @set ; }", m.toks)
-            if caps is None or [t.text for t in caps["mods"]] not in ([], ["final"]):
+                         "return @...qual DefaultSetHolder . @set ; }", m.toks)
+            if caps is None or [t.text for t in caps["mods"]] not in ([], ["final"]) \
+                    or [t.text for t in caps["qual"]] not in ([], [jc.name, "."]):
                 raise Deviation("getDefaultStopSet")
             getter = (caps["set"], m.javadoc)
         elif texts[2:4] == ["final", "CharArraySet"] and texts[1] == "static":
@@ -865,9 +981,10 @@ def analyzer(jc: JavaClass, pkg: str) -> str:
                     raise Deviation(f"getWordSet comment {cm}")
             else:
                 raise Deviation("DefaultSetHolder loader")
-            if [c for c in m.comments() if c != m.javadoc] != HOLDER_COMMENT:
+            holder_comments = [c for c in m.comments() if c != m.javadoc]
+            if holder_comments != HOLDER_COMMENT[:len(holder_comments)]:
                 raise Deviation("DefaultSetHolder comments")
-            holder = (set_name, kind, caps["exc"], m.javadoc)
+            holder = (set_name, kind, caps["exc"], m.javadoc, holder_comments)
         elif texts[:3] == ["public", jc.name, "("]:
             n = texts[:texts.index(")")].count("CharArraySet")
             ctors[n] = m
@@ -880,7 +997,7 @@ def analyzer(jc: JavaClass, pkg: str) -> str:
     if None in (stopword_file, getter, holder, create, normalize) or ctx["excl"] is None \
             or set(ctors) != {0, 1, 2}:
         raise Deviation("missing or extra members")
-    set_name, load_kind, exc, holder_doc = holder
+    set_name, load_kind, exc, holder_doc, _ = holder
     if getter[0] != set_name:
         raise Deviation("getDefaultStopSet returns another set")
     if exc not in ("UncheckedIOException", "RuntimeException"):
@@ -888,7 +1005,9 @@ def analyzer(jc: JavaClass, pkg: str) -> str:
     if load_kind[1] == "STOPWORDS_COMMENT" and comment_const is None:
         raise Deviation("STOPWORDS_COMMENT used, not declared")
     excl = ctx["excl"]
-    require(f"public {jc.name} ( ) {{ this ( DefaultSetHolder . {set_name} ) ; }}", ctors[0], "ctor ()")
+    if match(f"public {jc.name} ( ) {{ this ( DefaultSetHolder . {set_name} ) ; }}", ctors[0].toks) is None:
+        require(f"public {jc.name} ( ) {{ this ( {jc.name} . DefaultSetHolder . {set_name} ) ; }}",
+                ctors[0], "ctor ()")
     require(f"public {jc.name} ( CharArraySet stopwords ) {{ this ( stopwords , CharArraySet . EMPTY_SET ) ; }}",
             ctors[1], "ctor (stopwords)")
     c2 = require(f"public {jc.name} ( CharArraySet stopwords , CharArraySet @p ) {{ super ( stopwords ) ; "
@@ -898,12 +1017,13 @@ def analyzer(jc: JavaClass, pkg: str) -> str:
         raise Deviation("ctor (stopwords, stemExclusionSet) body")
 
     # createComponents
-    cc = match("@ Override protected TokenStreamComponents createComponents ( String fieldName ) { "
+    cc = match("@ Override @vis TokenStreamComponents createComponents ( String fieldName ) { "
                "final Tokenizer source = new StandardTokenizer ( ) ; TokenStream result = @...first ; "
                "@...rest return new TokenStreamComponents ( source , @...last ) ; }", create.toks)
-    if cc is None:
+    if cc is None or cc["vis"] not in ("protected", "public"):
         raise Deviation("createComponents shape")
-    steps = [(None, parse_filter(cc["first"], "source", ctx))]
+    cc_comments = comments_before(create)
+    steps = [(None, parse_filter(cc["first"], "source", ctx), [])]
     rest = code(cc["rest"])
     i = 0
     while i < len(rest):
@@ -912,22 +1032,24 @@ def analyzer(jc: JavaClass, pkg: str) -> str:
             m = match("result = @...e ;", rest[i:j + 1])
             if m is None:
                 raise Deviation("chain statement")
-            steps.append((None, parse_filter(m["e"], "result", ctx)))
+            steps.append((None, parse_filter(m["e"], "result", ctx), cc_comments.pop(id(rest[i]), [])))
             i = j + 1
         elif rest[i].text == "if":
             j = next(k for k in range(i, len(rest)) if rest[k].text == ";")
             braces = j + 1 < len(rest) and rest[j + 1].text == "}"
-            m = match(f"if ( ! {excl} . isEmpty ( ) ) " + ("{ " if braces else "") + "result = @...e ;"
-                      + (" }" if braces else ""), rest[i:j + 2 if braces else j + 1])
-            if m is None:
+            m = match(f"if ( ! @...this {excl} . isEmpty ( ) ) " + ("{ " if braces else "")
+                      + "result = @...e ;" + (" }" if braces else ""), rest[i:j + 2 if braces else j + 1])
+            if m is None or [t.text for t in m["this"]] not in ([], ["this", "."]):
                 raise Deviation("conditional chain statement")
-            steps.append((excl, parse_filter(m["e"], "result", ctx)))
+            steps.append((excl, parse_filter(m["e"], "result", ctx), cc_comments.pop(id(rest[i]), [])))
             i = j + (2 if braces else 1)
         else:
             raise Deviation("chain statement " + rest[i].text)
     last = [t.text for t in code(cc["last"])]
     if last != ["result"]:
-        steps.append((None, parse_filter(cc["last"], "result", ctx)))
+        steps.append((None, parse_filter(cc["last"], "result", ctx), []))
+    if cc_comments:
+        raise Deviation("a comment in createComponents not before a chain statement")
     if steps[-1][0] is not None:
         raise Deviation("the chain ends in a conditional filter")
     # normalize
@@ -936,6 +1058,8 @@ def analyzer(jc: JavaClass, pkg: str) -> str:
     if nm is None:
         raise Deviation("normalize shape")
     body = code(nm["body"])
+    if comments_before(normalize):
+        raise Deviation("a comment in normalize")
     nsteps = []
     single = match("return @...e ;", body)
     if single is not None:
@@ -961,6 +1085,29 @@ def analyzer(jc: JavaClass, pkg: str) -> str:
                          excl_doc, create, steps, nsteps)
 
 
+def comments_before(member):
+    """The comments inside a member's body (its javadoc and the comments
+    before its body aside), keyed by the `id` of the code token each
+    precedes; a block comment, or a comment after the last code token,
+    fails."""
+    out, pending, started = {}, [], False
+    for t in member.toks:
+        if t.kind in ("line", "block", "javadoc"):
+            if started:
+                if not t.text.startswith("//"):
+                    raise Deviation(f"block comment in a method body: {t.text[:40]!r}")
+                pending.append(t.text)
+        else:
+            if t.text == "{":
+                started = True
+            if pending:
+                out[id(t)] = pending
+                pending = []
+    if pending:
+        raise Deviation("comment after the last statement")
+    return out
+
+
 def rust_word_list(words):
     return ", ".join(words)
 
@@ -968,11 +1115,11 @@ def rust_word_list(words):
 def emit_analyzer(jc, pkg, ctx, stopword_file, comment_const, getter, holder, ctors, c2, excl_doc,
                   create, steps, nsteps):
     fqn = f"org.apache.lucene.analysis.{pkg}.{jc.name}"
-    set_name, load_kind, exc, holder_doc = holder
+    set_name, load_kind, exc, holder_doc, holder_comments = holder
     excl = ctx["excl"]
     excl_rs = snake(excl)
     uses = set(ctx["uses"])
-    for _, (_, use) in steps:
+    for _, (_, use), _ in steps:
         uses.add(use)
     for _, use in nsteps:
         uses.add(use)
@@ -1054,9 +1201,9 @@ def emit_analyzer(jc, pkg, ctx, stopword_file, comment_const, getter, holder, ct
             "    fn load() -> CharArraySet {", "        let load = || -> Result<CharArraySet> {",
             "            let mut stream = IOUtils::require_resource_non_null(",
             f"                get_resource_as_stream(\"{res_class}\", DEFAULT_STOPWORD_FILE),",
-            "                DEFAULT_STOPWORD_FILE,", "            )?;", f"            {call}", "        };",
-            "        " + HOLDER_COMMENT[0], "        " + HOLDER_COMMENT[1],
-            "        load().unwrap_or_else(|ex| panic!(\"Unable to load default stopword set: {ex}\"))",
+            "                DEFAULT_STOPWORD_FILE,", "            )?;", f"            {call}", "        };"]
+    out += ["        " + c for c in holder_comments]
+    out += ["        load().unwrap_or_else(|ex| panic!(\"Unable to load default stopword set: {ex}\"))",
             "    }", "}", ""]
     # the analyzer
     out += render_doc(blocks, 0)
@@ -1112,7 +1259,8 @@ def emit_analyzer(jc, pkg, ctx, stopword_file, comment_const, getter, holder, ct
     mut = "mut " if middle else ""
     first_ctor = steps[0][1][0].replace("{x}", "Box::new(SharedTokenStream::new(source))")
     out.append(f"        let {mut}result: Box<dyn TokenStream> = Box::new({first_ctor}?);")
-    for cond, (ctor, _) in middle:
+    for cond, (ctor, _), comments in middle:
+        out += ["        " + c for c in comments]
         stmt = f"result = Box::new({ctor.replace('{x}', 'result')}?);"
         if cond:
             out += [f"        if !self.{snake(cond)}.is_empty() {{", f"            {stmt}", "        }"]
@@ -1159,8 +1307,21 @@ def family_of(name: str):
     if name.endswith("Analyzer"):
         return "analyzer", analyzer
     if name.endswith("StemFilter"):
-        return "stem filter", stem_filter
+        return "stem filter", stem_or_term_filter
+    if name.endswith("NormalizationFilter"):
+        return "norm filter", term_filter
     return None, None
+
+
+def stem_or_term_filter(jc: JavaClass, pkg: str) -> str:
+    """A stem filter: the strict template first, then the general one."""
+    try:
+        return stem_filter(jc, pkg)
+    except Deviation as strict:
+        try:
+            return term_filter(jc, pkg)
+        except Deviation as general:
+            raise Deviation(f"{strict}; general template: {general}") from None
 
 
 def rustfmt(text: str) -> str:

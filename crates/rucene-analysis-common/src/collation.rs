@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.collation`.
+//! The Java package `org.apache.lucene.collation`: Unicode collation support.
 
 pub mod collation_attribute_factory;
 pub mod collation_doc_values_field;

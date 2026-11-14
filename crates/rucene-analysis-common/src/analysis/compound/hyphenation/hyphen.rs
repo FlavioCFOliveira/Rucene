@@ -55,6 +55,7 @@ impl Hyphen {
     }
 
     /// Equivalent to the package-private `Hyphen(String pre)`.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn with_pre_break(pre: Option<String>) -> Self {
         Self {
             pre_break: pre,

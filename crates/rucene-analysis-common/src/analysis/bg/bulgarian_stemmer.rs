@@ -15,10 +15,151 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `BulgarianStemmer.java`, of the Java
-//! package `org.apache.lucene.analysis.bg`.
+//! Light stemmer for Bulgarian, ported from
+//! `org.apache.lucene.analysis.bg.BulgarianStemmer`.
 
-/// Java: `class` (package-private).
+use crate::analysis::util::stemmer_util::StemmerUtil;
+
+/// Light Stemmer for Bulgarian.
 ///
-/// Skeleton of `org.apache.lucene.analysis.bg.BulgarianStemmer`; ported by rmp task #470.
+/// Implements the algorithm described in: * Searching Strategies for the
+/// Bulgarian Language * http://members.unine.ch/jacques.savoy/Papers/BUIR.pdf
+///
+/// Equivalent to `org.apache.lucene.analysis.bg.BulgarianStemmer`. The term
+/// it stems is the `char[]` of Java, UTF-16 units.
+#[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct BulgarianStemmer;
+
+impl BulgarianStemmer {
+    /// Equivalent to the implicit `BulgarianStemmer()`.
+    pub(crate) fn new() -> Self {
+        Self
+    }
+
+    /// Stem an input buffer of Bulgarian text.
+    ///
+    /// * `s`: input buffer
+    /// * `len`: length of input buffer
+    /// * returns: length of input buffer after normalization
+    ///
+    /// Equivalent to `stem(char[], int)`.
+    pub(crate) fn stem(&self, s: &mut [u16], len: usize) -> usize {
+        if len < 4 {
+            // do not stem
+            return len;
+        }
+
+        if len > 5 && StemmerUtil::ends_with(s, len, "ища") {
+            return len - 3;
+        }
+
+        let mut len = self.remove_article(s, len);
+        len = self.remove_plural(s, len);
+
+        if len > 3 {
+            if StemmerUtil::ends_with(s, len, "я") {
+                len -= 1;
+            }
+            if StemmerUtil::ends_with(s, len, "а")
+                || StemmerUtil::ends_with(s, len, "о")
+                || StemmerUtil::ends_with(s, len, "е")
+            {
+                len -= 1;
+            }
+        }
+
+        // the rule to rewrite ен -> н is duplicated in the paper.
+        // in the perl implementation referenced by the paper, this is fixed.
+        // (it is fixed here as well)
+        if len > 4 && StemmerUtil::ends_with(s, len, "ен") {
+            s[len - 2] = 'н' as u16; // replace with н
+            len -= 1;
+        }
+
+        if len > 5 && s[len - 2] == 'ъ' as u16 {
+            s[len - 2] = s[len - 1]; // replace ъN with N
+            len -= 1;
+        }
+
+        len
+    }
+
+    /// Mainly remove the definite article
+    ///
+    /// * `s`: input buffer
+    /// * `len`: length of input buffer
+    /// * returns: new stemmed length
+    ///
+    /// Equivalent to `removeArticle(char[], int)`.
+    fn remove_article(&self, s: &[u16], len: usize) -> usize {
+        if len > 6 && StemmerUtil::ends_with(s, len, "ият") {
+            return len - 3;
+        }
+
+        if len > 5
+            && (StemmerUtil::ends_with(s, len, "ът")
+                || StemmerUtil::ends_with(s, len, "то")
+                || StemmerUtil::ends_with(s, len, "те")
+                || StemmerUtil::ends_with(s, len, "та")
+                || StemmerUtil::ends_with(s, len, "ия"))
+        {
+            return len - 2;
+        }
+
+        if len > 4 && StemmerUtil::ends_with(s, len, "ят") {
+            return len - 2;
+        }
+
+        len
+    }
+
+    /// Equivalent to `removePlural(char[], int)`.
+    fn remove_plural(&self, s: &mut [u16], len: usize) -> usize {
+        if len > 6 {
+            if StemmerUtil::ends_with(s, len, "овци") {
+                return len - 3; // replace with о
+            }
+            if StemmerUtil::ends_with(s, len, "ове") {
+                return len - 3;
+            }
+            if StemmerUtil::ends_with(s, len, "еве") {
+                s[len - 3] = 'й' as u16; // replace with й
+                return len - 2;
+            }
+        }
+
+        if len > 5 {
+            if StemmerUtil::ends_with(s, len, "ища") {
+                return len - 3;
+            }
+            if StemmerUtil::ends_with(s, len, "та") {
+                return len - 2;
+            }
+            if StemmerUtil::ends_with(s, len, "ци") {
+                s[len - 2] = 'к' as u16; // replace with к
+                return len - 1;
+            }
+            if StemmerUtil::ends_with(s, len, "зи") {
+                s[len - 2] = 'г' as u16; // replace with г
+                return len - 1;
+            }
+
+            if s[len - 3] == 'е' as u16 && s[len - 1] == 'и' as u16 {
+                s[len - 3] = 'я' as u16; // replace е with я, remove и
+                return len - 1;
+            }
+        }
+
+        if len > 4 {
+            if StemmerUtil::ends_with(s, len, "си") {
+                s[len - 2] = 'х' as u16; // replace with х
+                return len - 1;
+            }
+            if StemmerUtil::ends_with(s, len, "и") {
+                return len - 1;
+            }
+        }
+
+        len
+    }
+}

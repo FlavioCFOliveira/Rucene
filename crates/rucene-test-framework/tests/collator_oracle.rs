@@ -16,6 +16,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use oracle_support::rows;
 use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::random::JdkRandom;
+use rucene::error::LuceneErrorKind;
+use rucene::util::extra::ParseException;
 use rucene_test_framework::jdk::collator::{CollationKey, RuleBasedCollator};
 use rucene_test_framework::util::lucene_test_case::LuceneTestCase;
 use rucene_test_framework::util::TestUtil;
@@ -88,8 +90,8 @@ fn signs(base: &RuleBasedCollator, a: &str, b: &str) -> String {
     for d in 0..=2 {
         for st in 0..=3 {
             let mut c = base.clone();
-            c.set_decomposition(d);
-            c.set_strength(st);
+            c.set_decomposition(d).unwrap();
+            c.set_strength(st).unwrap();
             s.push(sign(c.compare(a, b)));
         }
     }
@@ -141,11 +143,17 @@ fn collator_matches_jdk25() {
                 let rules = string(&row[2]);
                 let got = match catch_unwind(AssertUnwindSafe(|| RuleBasedCollator::new(&rules))) {
                     Ok(Ok(_)) => "ok\t-\t-".to_string(),
-                    Ok(Err(e)) => format!(
-                        "java.text.ParseException\t{}\t{}",
-                        e.get_message(),
-                        e.get_error_offset()
-                    ),
+                    Ok(Err(e)) => match (ParseException::of(&e), e.kind()) {
+                        (Some(p), _) => format!(
+                            "java.text.ParseException\t{}\t{}",
+                            p.get_message(),
+                            p.get_error_offset()
+                        ),
+                        (None, LuceneErrorKind::Unchecked { class, message, .. }) => {
+                            format!("{class}\t{}\t-", message.as_deref().unwrap_or("<null>"))
+                        }
+                        (None, _) => format!("{e}\t-\t-"),
+                    },
                     Err(p) => {
                         let t = throwable(p);
                         format!("{}\t{}\t-", t.class_name(), t.message().unwrap_or("<null>"))
@@ -161,8 +169,8 @@ fn collator_matches_jdk25() {
             }
             "cmp" => {
                 let mut c = collators[&row[1]].clone();
-                c.set_strength(row[2].parse().unwrap());
-                c.set_decomposition(row[3].parse().unwrap());
+                c.set_strength(row[2].parse().unwrap()).unwrap();
+                c.set_decomposition(row[3].parse().unwrap()).unwrap();
                 let i: usize = row[4].parse().unwrap();
                 let got: String = grid.iter().map(|g| sign(c.compare(&grid[i], g))).collect();
                 if got != row[5] {
@@ -185,8 +193,8 @@ fn collator_matches_jdk25() {
             }
             "keys" => {
                 let mut c = collators[&row[1]].clone();
-                c.set_strength(row[2].parse().unwrap());
-                c.set_decomposition(row[3].parse().unwrap());
+                c.set_strength(row[2].parse().unwrap()).unwrap();
+                c.set_decomposition(row[3].parse().unwrap()).unwrap();
                 let h = grid.iter().fold(FNV_OFFSET, |h, g| {
                     fnv(h, &key_units(&c.get_collation_key(g)))
                 });

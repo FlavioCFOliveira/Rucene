@@ -678,6 +678,7 @@ impl HTMLStripCharFilter {
 
     /// Equivalent to the package-private `HTMLStripCharFilter.getInitialBufferSize()`,
     /// for testing purposes.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn get_initial_buffer_size() -> usize {
         ZZ_BUFFERSIZE
     }

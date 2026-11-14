@@ -81,6 +81,7 @@ const ZIP64_MAGICVAL: i64 = 0xFFFF_FFFF;
 /// `ZipConstants64.EXTID_ZIP64`.
 const EXTID_ZIP64: usize = 0x0001;
 /// `ZipConstants64.USE_UTF8`.
+#[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
 const USE_UTF8: usize = 0x800;
 /// `ZipEntry.MAX_COMBINED_CEN_HEADER_SIZE`.
 const MAX_COMBINED_CEN_HEADER_SIZE: usize = 0xFFFF;

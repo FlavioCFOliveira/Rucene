@@ -41,6 +41,7 @@ impl GermanStemFilterLogic {
     /// Equivalent to `GermanStemFilter.setStemmer(GermanStemmer)`: `None`,
     /// Java's `null`, keeps the current stemmer. Java's method is public but
     /// names a package-private type, so only its package can call it.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn set_stemmer(&mut self, stemmer: Option<GermanStemmer>) {
         if let Some(stemmer) = stemmer {
             self.stemmer = stemmer;

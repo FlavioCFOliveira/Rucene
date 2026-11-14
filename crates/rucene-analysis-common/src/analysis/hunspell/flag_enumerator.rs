@@ -135,6 +135,7 @@ impl Lookup {
     }
 
     /// Equivalent to `hasAnyFlag(int, char[])`.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn has_any_flag(&self, entry_id: i32, sorted_flags: &[u16]) -> bool {
         let entry_id = entry_id as usize;
         let length = usize::from(self.data[entry_id]);

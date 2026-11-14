@@ -15,6 +15,6 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.lt`.
+//! The Java package `org.apache.lucene.analysis.lt`: analyzer for Lithuanian.
 
 pub mod lithuanian_analyzer;

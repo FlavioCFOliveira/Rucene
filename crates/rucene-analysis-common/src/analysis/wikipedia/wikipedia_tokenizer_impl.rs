@@ -309,6 +309,7 @@ impl WikipediaTokenizerImpl {
 }
 
 // @generated begin skeleton by tools/translate/jflex_java_to_rust.py; DO NOT EDIT
+#[allow(dead_code)] // the public JFlex API of a package-private class, used in part
 impl WikipediaTokenizerImpl {
     /// Translates raw input code points to DFA table row.
     ///

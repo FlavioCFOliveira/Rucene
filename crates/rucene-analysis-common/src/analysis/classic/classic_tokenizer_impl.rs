@@ -213,6 +213,7 @@ impl ClassicTokenizerImpl {
     /// # Errors
     ///
     /// Always, Java's `java.lang.UnsupportedOperationException`.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub fn set_buffer_size(&mut self, _num_chars: i32) -> Result<()> {
         Err(LuceneError::from(
             rucene::error::LuceneErrorKind::Unchecked {
@@ -225,6 +226,7 @@ impl ClassicTokenizerImpl {
 }
 
 // @generated begin skeleton by tools/translate/jflex_java_to_rust.py; DO NOT EDIT
+#[allow(dead_code)] // the public JFlex API of a package-private class, used in part
 impl ClassicTokenizerImpl {
     /// Translates raw input code points to DFA table row.
     ///

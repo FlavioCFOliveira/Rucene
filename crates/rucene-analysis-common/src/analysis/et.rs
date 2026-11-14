@@ -15,6 +15,6 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.et`.
+//! The Java package `org.apache.lucene.analysis.et`: analyzer for Estonian.
 
 pub mod estonian_analyzer;

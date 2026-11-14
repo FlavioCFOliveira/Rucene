@@ -92,6 +92,7 @@ impl std::fmt::Debug for WordFormGenerator {
 #[derive(Debug, Clone)]
 pub(crate) struct AffixEntry {
     id: i32,
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     flag: u16,
     kind: AffixKind,
     affix: Vec<u16>,
@@ -691,6 +692,7 @@ impl FlagSet {
     }
 
     /// Equivalent to `toString()`.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn to_java_string(&self, dictionary: &Dictionary) -> String {
         to_rust_string(&dictionary.flag_parsing_strategy.print_flags(&self.flags))
     }

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.bg`.
+//! The Java package `org.apache.lucene.analysis.bg`: analyzer for Bulgarian.
 
 pub mod bulgarian_analyzer;
 pub mod bulgarian_stem_filter;

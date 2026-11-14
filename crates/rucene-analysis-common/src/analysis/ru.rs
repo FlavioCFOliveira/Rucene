@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.ru`.
+//! The Java package `org.apache.lucene.analysis.ru`: analyzer for Russian.
 
 pub mod russian_analyzer;
 pub mod russian_light_stem_filter;

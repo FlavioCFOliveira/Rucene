@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.fi`.
+//! The Java package `org.apache.lucene.analysis.fi`: analyzer for Finnish.
 
 pub mod finnish_analyzer;
 pub mod finnish_light_stem_filter;

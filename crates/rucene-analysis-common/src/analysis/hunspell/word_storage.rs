@@ -268,6 +268,7 @@ impl WordStorage {
     ///
     /// Equivalent to `caseFold(char)`, which the subclass in `Dictionary`
     /// implements as `Dictionary.caseFold`.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn case_fold(&self, c: u16) -> u16 {
         Dictionary::case_fold_with(self.alternate_casing, c)
     }

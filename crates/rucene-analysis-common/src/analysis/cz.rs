@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.cz`.
+//! The Java package `org.apache.lucene.analysis.cz`: analyzer for Czech.
 
 pub mod czech_analyzer;
 pub mod czech_stem_filter;

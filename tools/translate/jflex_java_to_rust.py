@@ -535,6 +535,7 @@ class Parsed:
     buffer_size_is_field: bool
     refill: str  # "grow" or "fixed"
     public_api: bool
+    public_class: bool  # the scanner class is `public` (else package-private)
     tables: list  # Table
     eof: list  # tokens after `zzAtEOF = true;` up to the closing brace
     actions: list  # (number, lookahead tokens, body tokens)
@@ -688,6 +689,10 @@ def parse(sc: Scanner, lucene: Path) -> Parsed:
     if not m:
         fail(sc.java_class, "YYEOF not found")
     public_api = m.group(1) == "public"
+    m = re.search(r"(?:^| )(public )?(?:final )?class " + re.escape(sc.java_class) + " ", text)
+    if not m:
+        fail(sc.java_class, "class declaration not found")
+    public_class = m.group(1) is not None
     m = re.search(r"private static final int ZZ_LEXSTATE \[ \] = \{ ([\d ,]+) \} ;", text)
     if not m:
         fail(sc.java_class, "ZZ_LEXSTATE not found")
@@ -807,6 +812,7 @@ def parse(sc: Scanner, lucene: Path) -> Parsed:
         buffer_size_is_field=buffer_size_is_field,
         refill=refill_kind,
         public_api=public_api,
+        public_class=public_class,
         tables=tables,
         eof=eof,
         actions=actions,
@@ -1413,7 +1419,12 @@ def emit_skeleton(sc: Scanner, parsed: Parsed) -> list:
     bufsize = "self.zz_buffer_size" if parsed.buffer_size_is_field else "ZZ_BUFFERSIZE"
     next_rust = "get_next_token" if sc.next_method == "getNextToken" else "next_char"
 
-    out = [f"impl {sc.struct} {{"]
+    out = []
+    if parsed.public_api and not parsed.public_class:
+        # `public` members of a package-private class: Lucene's code calls
+        # only part of them, which Java does not report.
+        out.append("#[allow(dead_code)] // the public JFlex API of a package-private class, used in part")
+    out.append(f"impl {sc.struct} {{")
 
     def method(lines):
         out.extend(lines)

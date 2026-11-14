@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.collation.tokenattributes`.
+//! The Java package `org.apache.lucene.collation.tokenattributes`: custom
+//! `AttributeImpl` for indexing collation keys as index terms.
 
 pub mod collated_term_attribute_impl;

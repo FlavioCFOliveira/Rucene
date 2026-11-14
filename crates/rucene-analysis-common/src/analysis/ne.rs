@@ -15,6 +15,6 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.ne`.
+//! The Java package `org.apache.lucene.analysis.ne`: analyzer for Nepali.
 
 pub mod nepali_analyzer;

@@ -1,18 +1,39 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 //! `java.text.Collator`, `RuleBasedCollator`, `CollationKey` and the
 //! classes behind them (`RBCollationTables`, `RBTableBuilder`,
 //! `MergeCollation`, `PatternEntry`, `EntryPair`,
 //! `CollationElementIterator`), with the parts of
 //! `jdk.internal.icu.impl.NormalizerImpl` (`canonicalDecomposeWithSingleQuotation`,
 //! `getDecompose`), `sun.text.ComposedCharIter` and the NFD/NFKD
-//! normalization they read: `LuceneTestCase.collate`'s collator, as
-//! `Collator.getInstance(Locale.ROOT)` builds it on JDK 25.
+//! normalization they read, as `Collator.getInstance(Locale)` builds them on
+//! JDK 25: the collator of `org.apache.lucene.collation` (whose keys
+//! `CollationDocValuesField` writes to the index) and of the test
+//! framework's `LuceneTestCase.collate`, which uses this module.
 //!
 //! Written from the JDK 25 sources read as specification (see
 //! [`crate::jdk`]); the data (the root rules, the canonical and
-//! compatibility decompositions, the canonical combining classes) is
-//! generated from the JDK by `tools/gen/CollatorData.java` into
-//! `collator_data.rs`. `tests/collator_oracle.rs` compares every result with
-//! the JDK on the grid of `CollatorOracle`.
+//! compatibility decompositions, the canonical combining classes, the locale
+//! tailorings) is generated from the JDK by `tools/gen/CollatorData.java`
+//! into `collator_data.rs`, which also checks, on every available locale,
+//! the locale resolution [`RuleBasedCollator::get_instance`] implements.
+//! `crates/rucene-test-framework/tests/collator_oracle.rs` compares results
+//! with the JDK on the grid of `CollatorOracle`.
 //!
 //! **Divergences.**
 //! * Strings are Rust `&str`, so a Java string holding an unpaired
@@ -22,9 +43,18 @@
 //!   implementation; this port has the one type [`RuleBasedCollator`]
 //!   (`Collator`'s members included), and [`CollationKey`] is
 //!   `RuleBasedCollationKey`.
-//! * Of `Collator.getInstance`, only the root locale ([`RuleBasedCollator::root`]):
-//!   the other locales' tailorings are JDK locale data this port does not
-//!   carry.
+//! * `Collator.getInstance(Locale)` reads the JDK's locale providers; here
+//!   [`RuleBasedCollator::get_instance`] reads the tailorings those
+//!   providers return (generated data) and resolves the locale as they do,
+//!   a resolution the generator verifies against the JDK. Java caches one
+//!   collator per locale (soft references) and returns clones; here the
+//!   built tables are cached per tailoring and shared, which changes no
+//!   result.
+//! * Java's unchecked exceptions (an `ArrayIndexOutOfBoundsException` or
+//!   `StringIndexOutOfBoundsException` some malformed rules raise, the
+//!   `IllegalArgumentException` of `setStrength` and `setDecomposition`) are
+//!   [`LuceneError`]s of the same class and message, and
+//!   `java.text.ParseException` is `rucene`'s [`ParseException`].
 //! * `compare` and `getCollationKey` are `synchronized` in Java to share
 //!   cached iterators and buffers; here each call builds its own, which
 //!   changes no result.
@@ -32,7 +62,7 @@
 //!   default value and a set: the same lookups, without the JDK's
 //!   compaction. `UCompactIntArray` keeps four planes (`PLANEMASK`
 //!   `0x30000`), so code points `0x40000` apart share an order; the map
-//!   reproduces it ([`compact_index`]).
+//!   reproduces it (`compact_index`).
 //! * The NFD and NFKD texts the collation element iterator reads are
 //!   normalized whole instead of segment by segment
 //!   (`NormalizerBase.nextNormalize`); normalization is defined on the whole
@@ -40,12 +70,16 @@
 //!   points the iterator reads are the same.
 
 use std::collections::{HashMap, HashSet};
-use std::fmt;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
-use randomizedtesting::jdk::exception;
+use rucene::error::{LuceneError, Result};
+use rucene::util::extra::{is_parse_exception, ParseException};
 
-use super::collator_data::{COMBINING_CLASSES, COMPAT_DECOMPOSITIONS, DECOMPOSITIONS, ROOT_RULES};
+use super::collator_data::{
+    COMBINING_CLASSES, COMPAT_DECOMPOSITIONS, DECOMPOSITIONS, ROOT_RULES, TAILORINGS,
+    TAILORING_RULES,
+};
+use super::locale::Locale;
 
 /// `Collator.PRIMARY`.
 pub const PRIMARY: i32 = 0;
@@ -95,40 +129,6 @@ const RESET: i32 = -2;
 const UNSET: i32 = -1;
 /// `NormalizerBase.DONE`.
 const DONE: i32 = -1;
-
-/// `java.text.ParseException`: a message and the error offset.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseException {
-    message: String,
-    error_offset: i32,
-}
-
-impl ParseException {
-    fn new(message: impl Into<String>, error_offset: i32) -> ParseException {
-        ParseException {
-            message: message.into(),
-            error_offset,
-        }
-    }
-
-    /// `getMessage()`.
-    pub fn get_message(&self) -> &str {
-        &self.message
-    }
-
-    /// `getErrorOffset()`.
-    pub fn get_error_offset(&self) -> i32 {
-        self.error_offset
-    }
-}
-
-impl fmt::Display for ParseException {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "java.text.ParseException: {}", self.message)
-    }
-}
-
-impl std::error::Error for ParseException {}
 
 // -----------------------------------------------------------------------------
 // java.lang.Character / String helpers over UTF-16 code units.
@@ -233,24 +233,29 @@ fn is_space_char(c: u16) -> bool {
 }
 
 /// `a[i]` with Java's bounds check: `ArrayIndexOutOfBoundsException`.
-fn array_get(a: &[u16], i: usize) -> u16 {
+fn array_get(a: &[u16], i: usize) -> Result<u16> {
     match a.get(i) {
-        Some(&c) => c,
-        None => array_index_out_of_bounds(i, a.len()),
+        Some(&c) => Ok(c),
+        None => Err(array_index_out_of_bounds(i, a.len())),
     }
 }
 
 /// `a[i] = v` with Java's bounds check.
-fn array_set(a: &mut [u16], i: usize, v: u16) {
+fn array_set(a: &mut [u16], i: usize, v: u16) -> Result<()> {
     let len = a.len();
     match a.get_mut(i) {
-        Some(c) => *c = v,
-        None => array_index_out_of_bounds(i, len),
+        Some(c) => {
+            *c = v;
+            Ok(())
+        }
+        None => Err(array_index_out_of_bounds(i, len)),
     }
 }
 
-fn array_index_out_of_bounds(i: usize, len: usize) -> ! {
-    exception::throw(
+/// The JVM's `ArrayIndexOutOfBoundsException` for index `i` of an array of
+/// `len` elements.
+fn array_index_out_of_bounds(i: usize, len: usize) -> LuceneError {
+    LuceneError::unchecked(
         "java.lang.ArrayIndexOutOfBoundsException",
         format!("Index {i} out of bounds for length {len}"),
     )
@@ -503,7 +508,7 @@ fn merge_ordered(
     data: &mut [u16],
     next: usize,
     limit: usize,
-) -> i32 {
+) -> Result<i32> {
     let mut trail_cc = 0;
     let adjacent = current == next;
     let mut nc = NextCcArgs {
@@ -520,10 +525,10 @@ fn merge_ordered(
                 if adjacent {
                     current = nc.next;
                 } else {
-                    array_set(data, current, nc.c1);
+                    array_set(data, current, nc.c1)?;
                     current += 1;
                     if nc.c2 != 0 {
-                        array_set(data, current, nc.c2);
+                        array_set(data, current, nc.c2)?;
                         current += 1;
                     }
                 }
@@ -536,7 +541,7 @@ fn merge_ordered(
         }
     }
     if nc.next == nc.limit {
-        trail_cc
+        Ok(trail_cc)
     } else {
         if !adjacent {
             loop {
@@ -555,14 +560,14 @@ fn merge_ordered(
             c1: 0,
             c2: 0,
         };
-        get_prev_cc(data, &mut args)
+        Ok(get_prev_cc(data, &mut args))
     }
 }
 
 /// `NormalizerImpl.canonicalDecomposeWithSingleQuotation(string)`: the
 /// canonical decomposition of the rules, each decomposition whose first
 /// code unit is a syntax character quoted.
-fn canonical_decompose_with_single_quotation(string: &[u16]) -> Vec<u16> {
+fn canonical_decompose_with_single_quotation(string: &[u16]) -> Result<Vec<u16>> {
     let src = string;
     let mut src_index = 0usize;
     let src_limit = src.len();
@@ -581,7 +586,7 @@ fn canonical_decompose_with_single_quotation(string: &[u16]) -> Vec<u16> {
         // the last code point read, so a decomposed supplementary character
         // makes the walk skip a unit and, at the end, read past the array.
         while src_index != src_limit && {
-            c1 = array_get(src, src_index);
+            c1 = array_get(src, src_index)?;
             c1 < min_no_maybe
                 || {
                     cp = code_point_at(string, src_index);
@@ -703,7 +708,7 @@ fn canonical_decompose_with_single_quotation(string: &[u16]) -> Vec<u16> {
                         pv,
                         p_start,
                         p_start + length,
-                    );
+                    )?;
                 } else {
                     loop {
                         dest[dest_index] = pv[p_start];
@@ -723,7 +728,7 @@ fn canonical_decompose_with_single_quotation(string: &[u16]) -> Vec<u16> {
         }
     }
     dest.truncate(dest_index);
-    dest
+    Ok(dest)
 }
 
 // -----------------------------------------------------------------------------
@@ -808,10 +813,9 @@ impl PatternEntry {
             PRIMARY => b'<',
             RESET => b'&',
             UNSET => b'?',
-            s => exception::throw(
-                "java.lang.IllegalStateException",
-                format!("Unexpected value: {s}"),
-            ),
+            // Java's `default -> throw new IllegalStateException("Unexpected
+            // value: " + strength)`: the parser gives an entry no other strength.
+            s => unreachable!("INVARIANT: an entry has one of the six strengths, not {s}"),
         };
         to.push(u16::from(c));
         if show_white_space {
@@ -845,18 +849,18 @@ impl Parser<'_> {
     }
 
     /// `pattern.charAt(i)`.
-    fn char_at(&self, i: usize) -> u16 {
+    fn char_at(&self, i: usize) -> Result<u16> {
         match self.pattern.get(i) {
-            Some(&c) => c,
-            None => exception::throw(
+            Some(&c) => Ok(c),
+            None => Err(LuceneError::unchecked(
                 "java.lang.StringIndexOutOfBoundsException",
                 format!("Index {i} out of bounds for length {}", self.pattern.len()),
-            ),
+            )),
         }
     }
 
     /// `next()`.
-    fn next(&mut self) -> Result<Option<PatternEntry>, ParseException> {
+    fn next(&mut self) -> Result<Option<PatternEntry>> {
         let mut new_strength = UNSET;
         let mut new_chars: Vec<u16> = Vec::new();
         let mut new_extension: Vec<u16> = Vec::new();
@@ -894,7 +898,7 @@ impl Parser<'_> {
                             // '\''
                             in_quote = true;
                             self.i += 1;
-                            ch = self.char_at(self.i);
+                            ch = self.char_at(self.i)?;
                             if new_chars.is_empty() || in_chars {
                                 new_chars.push(ch);
                             } else {
@@ -903,7 +907,7 @@ impl Parser<'_> {
                         }
                         _ => {
                             if new_strength == UNSET {
-                                return Err(ParseException::new(
+                                return Err(ParseException::error(
                                     format!(
                                         "missing char (=,;<&) : {}",
                                         self.substring_from(self.i)
@@ -912,7 +916,7 @@ impl Parser<'_> {
                                 ));
                             }
                             if is_special_char(ch) && !in_quote {
-                                return Err(ParseException::new(
+                                return Err(ParseException::error(
                                     format!(
                                         "Unquoted punctuation character : {}",
                                         format_radix_16(i32::from(ch))
@@ -935,7 +939,7 @@ impl Parser<'_> {
             return Ok(None);
         }
         if new_chars.is_empty() {
-            return Err(ParseException::new(
+            return Err(ParseException::error(
                 format!("missing chars (=,;<&): {}", self.substring_from(self.i)),
                 self.i as i32,
             ));
@@ -966,7 +970,7 @@ struct MergeCollation {
 
 impl MergeCollation {
     /// `new MergeCollation(pattern)`.
-    fn new(pattern: &[u16]) -> Result<MergeCollation, ParseException> {
+    fn new(pattern: &[u16]) -> Result<MergeCollation> {
         let mut m = MergeCollation {
             patterns: Vec::new(),
             save_entry: None,
@@ -985,11 +989,11 @@ impl MergeCollation {
     }
 
     /// `fixEntry(newEntry)`.
-    fn fix_entry(&mut self, mut new_entry: PatternEntry) -> Result<(), ParseException> {
+    fn fix_entry(&mut self, mut new_entry: PatternEntry) -> Result<()> {
         if let Some(last) = &self.last_entry {
             if new_entry.chars == last.chars && new_entry.extension == last.extension {
                 if new_entry.strength != IDENTICAL && new_entry.strength != RESET {
-                    return Err(ParseException::new(
+                    return Err(ParseException::error(
                         format!(
                             "The entries {} and {} are adjacent in the rules, but have \
                              conflicting strengths: A character can't be unequal to itself.",
@@ -1051,7 +1055,7 @@ impl MergeCollation {
         &self,
         entry: Option<&PatternEntry>,
         excess_chars: &mut Vec<u16>,
-    ) -> Result<usize, ParseException> {
+    ) -> Result<usize> {
         let Some(entry) = entry else {
             return Ok(0);
         };
@@ -1067,7 +1071,7 @@ impl MergeCollation {
             }
             match old_index {
                 Some(i) => Ok(i + 1),
-                None => Err(ParseException::new(
+                None => Err(ParseException::error(
                     format!("couldn't find last entry: {}", entry.to_java_string()),
                     -1,
                 )),
@@ -1080,7 +1084,7 @@ impl MergeCollation {
                     return Ok(i + 1);
                 }
             }
-            Err(ParseException::new(
+            Err(ParseException::error(
                 format!("couldn't find: {}", entry.to_java_string()),
                 -1,
             ))
@@ -1119,7 +1123,7 @@ struct RbCollationTables {
 
 impl RbCollationTables {
     /// `new RBCollationTables(rules, decmp)`: `RBTableBuilder.build`.
-    fn new(rules: &str) -> Result<RbCollationTables, ParseException> {
+    fn new(rules: &str) -> Result<RbCollationTables> {
         let mut b = RbTableBuilder {
             tables: RbCollationTables {
                 rules: rules.to_string(),
@@ -1194,12 +1198,12 @@ struct RbTableBuilder {
 
 impl RbTableBuilder {
     /// `build(pattern, decmp)`.
-    fn build(&mut self, pattern: &str) -> Result<(), ParseException> {
+    fn build(&mut self, pattern: &str) -> Result<()> {
         if pattern.is_empty() {
-            return Err(ParseException::new("Build rules empty.", 0));
+            return Err(ParseException::error("Build rules empty.", 0));
         }
         let units: Vec<u16> = pattern.encode_utf16().collect();
-        let units = canonical_decompose_with_single_quotation(&units);
+        let units = canonical_decompose_with_single_quotation(&units)?;
         let m_pattern = MergeCollation::new(&units)?;
         let mut order = 0i32;
         for entry in &m_pattern.patterns {
@@ -1769,6 +1773,208 @@ static ROOT_TABLES: LazyLock<Arc<RbCollationTables>> = LazyLock::new(|| {
     )
 });
 
+/// The tables `Collator.getInstance` built for each tailoring of
+/// [`TAILORING_RULES`], by its index (Java caches the collator of each
+/// locale; equal tailorings build equal tables).
+static TAILORED_TABLES: LazyLock<Mutex<HashMap<usize, Arc<RbCollationTables>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// One candidate locale of `ResourceBundle.Control.getCandidateLocales`:
+/// language, script, region and variant.
+type Candidate = (String, String, String, String);
+
+/// `ResourceBundle.Control.getCandidateLocales(baseName, locale)` (its
+/// private `createCandidateList`): the candidate locales of the base locale
+/// `language`, `script`, `region`, `variant`, most specific first, the root
+/// locale last; with the special lists of Norwegian (`nb`/`no` and
+/// `nn`/`no_NO_NY`) and the script Chinese regions imply.
+fn candidate_locales(language: &str, script: &str, region: &str, variant: &str) -> Vec<Candidate> {
+    let mut variant = variant.to_string();
+    let mut script = script.to_string();
+    // Special handling for Norwegian
+    let mut is_norwegian_bokmal = false;
+    let mut is_norwegian_nynorsk = false;
+    if language == "no" {
+        if region == "NO" && variant == "NY" {
+            variant = String::new();
+            is_norwegian_nynorsk = true;
+        } else {
+            is_norwegian_bokmal = true;
+        }
+    }
+    if language == "nb" || is_norwegian_bokmal {
+        let tmp_list = default_candidate_list("nb", &script, region, &variant);
+        // Insert a locale replacing "nb" with "no" for every list entry with precedence
+        let mut bokmal_list = Vec::new();
+        for l_nb in tmp_list {
+            let is_root = l_nb.0.is_empty();
+            let l_no = (
+                if is_root {
+                    String::new()
+                } else {
+                    "no".to_string()
+                },
+                l_nb.1.clone(),
+                l_nb.2.clone(),
+                l_nb.3.clone(),
+            );
+            if is_norwegian_bokmal {
+                bokmal_list.push(l_no.clone());
+            } else {
+                bokmal_list.push(l_nb.clone());
+            }
+            if is_root {
+                break;
+            }
+            bokmal_list.push(if is_norwegian_bokmal { l_nb } else { l_no });
+        }
+        return bokmal_list;
+    } else if language == "nn" || is_norwegian_nynorsk {
+        // Insert no_NO_NY, no_NO, no after nn
+        let mut nynorsk_list = default_candidate_list("nn", &script, region, &variant);
+        let idx = nynorsk_list.len() - 1;
+        for (offset, (l, r, v)) in [("no", "NO", "NY"), ("no", "NO", ""), ("no", "", "")]
+            .into_iter()
+            .enumerate()
+        {
+            nynorsk_list.insert(
+                idx + offset,
+                (l.to_string(), String::new(), r.to_string(), v.to_string()),
+            );
+        }
+        return nynorsk_list;
+    }
+    // Special handling for Chinese
+    else if language == "zh" && script.is_empty() && !region.is_empty() {
+        // Supply script for users who want to use zh_Hans/zh_Hant
+        // as bundle names (recommended for Java7+)
+        match region {
+            "TW" | "HK" | "MO" => script = "Hant".to_string(),
+            "CN" | "SG" => script = "Hans".to_string(),
+            _ => {}
+        }
+    }
+
+    default_candidate_list(language, &script, region, &variant)
+}
+
+/// The private `ResourceBundle.Control.getDefaultList(language, script,
+/// region, variant)`.
+fn default_candidate_list(
+    language: &str,
+    script: &str,
+    region: &str,
+    variant: &str,
+) -> Vec<Candidate> {
+    let candidate = |l: &str, s: &str, r: &str, v: &str| {
+        (l.to_string(), s.to_string(), r.to_string(), v.to_string())
+    };
+    let mut variants: Option<Vec<String>> = None;
+
+    if !variant.is_empty() {
+        // `variant.substring(0, idx)`, then the prefix before each '_' from
+        // the right.
+        let mut list = vec![variant.to_string()];
+        let mut end = variant.len();
+        while let Some(idx) = variant[..end].rfind('_') {
+            list.push(variant[..idx].to_string());
+            end = idx;
+        }
+        variants = Some(list);
+    }
+
+    let mut list = Vec::new();
+
+    if let Some(variants) = &variants {
+        for v in variants {
+            list.push(candidate(language, script, region, v));
+        }
+    }
+    if !region.is_empty() {
+        list.push(candidate(language, script, region, ""));
+    }
+    let mut region = region.to_string();
+    if !script.is_empty() {
+        list.push(candidate(language, script, "", ""));
+        // Special handling for Chinese
+        if language == "zh" && region.is_empty() {
+            // Supply region(country) for users who still package Chinese
+            // bundles using old convention.
+            match script {
+                "Hans" => region = "CN".to_string(),
+                "Hant" => region = "TW".to_string(),
+                _ => {}
+            }
+        }
+
+        // With script, after truncating variant, region and script,
+        // start over without script.
+        if let Some(variants) = &variants {
+            for v in variants {
+                list.push(candidate(language, "", &region, v));
+            }
+        }
+        if !region.is_empty() {
+            list.push(candidate(language, "", &region, ""));
+        }
+    }
+    if !language.is_empty() {
+        list.push(candidate(language, "", "", ""));
+    }
+    // Add root locale at the end
+    list.push(candidate("", "", "", ""));
+
+    list
+}
+
+/// `LocaleResources.getCollationData()` of the JRE locale provider for
+/// `locale`: the tailoring `CollatorProviderImpl` appends to the default
+/// rules, as the `CollationData` resource bundles resolve it.
+///
+/// The key is `Rule`, or `Rule.<type>` for a `co` Unicode extension type
+/// other than empty and `standard` (ignoring case). The bundle is that of the
+/// first candidate locale (`ResourceBundle.Control.getCandidateLocales`)
+/// whose language tag has `CollationData` (the set `LocaleData` weeds the
+/// candidates with), and the string is its value for the key, through its
+/// parent chain, or `""` when it has none. Returns the index of the string in
+/// [`TAILORING_RULES`], `None` for `""` read from no table entry.
+fn collation_data(locale: &Locale) -> Option<usize> {
+    let mut key = String::from("Rule");
+    if let Some(type_) = locale.get_unicode_locale_type("co") {
+        if !type_.is_empty() && !type_.eq_ignore_ascii_case("standard") {
+            key.push('.');
+            key.push_str(&type_);
+        }
+    }
+    let candidates = candidate_locales(
+        locale.get_language(),
+        locale.get_script(),
+        locale.get_country(),
+        locale.get_variant(),
+    );
+    for (language, script, region, variant) in candidates {
+        // The tags with `CollationData` have no variant; a candidate with one
+        // matches none of them.
+        if !variant.is_empty() {
+            continue;
+        }
+        let mut tag = language;
+        for subtag in [script, region] {
+            if !subtag.is_empty() {
+                tag.push('-');
+                tag.push_str(&subtag);
+            }
+        }
+        if TAILORINGS.iter().any(|&(t, _, _)| t == tag) {
+            return TAILORINGS
+                .iter()
+                .find(|&&(t, k, _)| t == tag && k == key)
+                .map(|&(_, _, index)| usize::from(index));
+        }
+    }
+    unreachable!("INVARIANT: the root locale, the last candidate, has CollationData")
+}
+
 /// `java.text.RuleBasedCollator` (with `java.text.Collator`'s members).
 #[derive(Debug, Clone)]
 pub struct RuleBasedCollator {
@@ -1793,7 +1999,7 @@ impl RuleBasedCollator {
     ///
     /// The `ParseException` the rules raise (`RBTableBuilder.build`,
     /// `MergeCollation`, `PatternEntry.Parser`).
-    pub fn new(rules: &str) -> Result<RuleBasedCollator, ParseException> {
+    pub fn new(rules: &str) -> Result<RuleBasedCollator> {
         Ok(RuleBasedCollator {
             tables: Arc::new(RbCollationTables::new(rules)?),
             strength: TERTIARY,
@@ -1811,6 +2017,67 @@ impl RuleBasedCollator {
         }
     }
 
+    /// `Collator.getInstance(desiredLocale)`: the collator of the locale, as
+    /// JDK 25's locale providers build it (`CollatorProviderImpl`): a
+    /// `RuleBasedCollator` of `CollationRules.DEFAULTRULES` and the locale's
+    /// tailoring (the default rules alone when they do not parse), at
+    /// `TERTIARY` strength and `NO_DECOMPOSITION`; then the `ks` Unicode
+    /// extension (`level1`, `level2`, `level3`, `identic`, ignoring case)
+    /// overrides the strength, and `kk` (`true`, `false`) the decomposition.
+    /// Java returns a clone of a cached collator; this is a new collator
+    /// sharing cached tables.
+    pub fn get_instance(desired_locale: &Locale) -> RuleBasedCollator {
+        let tables = match collation_data(desired_locale) {
+            Some(index) if !TAILORING_RULES[index].is_empty() => {
+                let mut cache = TAILORED_TABLES
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                Arc::clone(cache.entry(index).or_insert_with(|| {
+                    let rules = format!("{ROOT_RULES}{}", TAILORING_RULES[index]);
+                    match RbCollationTables::new(&rules) {
+                        Ok(tables) => Arc::new(tables),
+                        // predefined tables should contain correct grammar
+                        // (Java catches the `ParseException` only)
+                        Err(e) if is_parse_exception(&e) => Arc::clone(&ROOT_TABLES),
+                        Err(e) => panic!(
+                            "INVARIANT: the JDK's tailorings build (tools/gen/CollatorData.java \
+                             checks every one): {e}"
+                        ),
+                    }
+                }))
+            }
+            // `DEFAULTRULES + ""`: the root tables.
+            _ => Arc::clone(&ROOT_TABLES),
+        };
+        let mut result = RuleBasedCollator {
+            tables,
+            strength: TERTIARY,
+            // Now that RuleBasedCollator adds expansions for pre-composed characters
+            // into their decomposed equivalents, the default collators don't need
+            // to have decomposition turned on.  Laura, 5/5/98, bug 4114077
+            decomposition: NO_DECOMPOSITION,
+        };
+
+        // Override strength and decomposition with `desiredLocale`, if any
+        if let Some(strength) = desired_locale.get_unicode_locale_type("ks") {
+            match strength.to_ascii_lowercase().as_str() {
+                "level1" => result.strength = PRIMARY,
+                "level2" => result.strength = SECONDARY,
+                "level3" => result.strength = TERTIARY,
+                "identic" => result.strength = IDENTICAL,
+                _ => {}
+            }
+        }
+        if let Some(norm) = desired_locale.get_unicode_locale_type("kk") {
+            match norm.to_ascii_lowercase().as_str() {
+                "true" => result.decomposition = CANONICAL_DECOMPOSITION,
+                "false" => result.decomposition = NO_DECOMPOSITION,
+                _ => {}
+            }
+        }
+        result
+    }
+
     /// `getRules()`.
     pub fn get_rules(&self) -> &str {
         &self.tables.rules
@@ -1823,15 +2090,16 @@ impl RuleBasedCollator {
 
     /// `setStrength(newStrength)`.
     ///
-    /// # Panics
+    /// # Errors
     ///
     /// `IllegalArgumentException` (`Incorrect comparison level.`) for a
     /// value other than the four strengths.
-    pub fn set_strength(&mut self, new_strength: i32) {
+    pub fn set_strength(&mut self, new_strength: i32) -> Result<()> {
         if !(PRIMARY..=IDENTICAL).contains(&new_strength) {
-            exception::illegal_argument("Incorrect comparison level.");
+            return Err(LuceneError::illegal_argument("Incorrect comparison level."));
         }
         self.strength = new_strength;
+        Ok(())
     }
 
     /// `getDecomposition()`.
@@ -1841,15 +2109,16 @@ impl RuleBasedCollator {
 
     /// `setDecomposition(decompositionMode)`.
     ///
-    /// # Panics
+    /// # Errors
     ///
     /// `IllegalArgumentException` (`Wrong decomposition mode.`) for a value
     /// other than the three modes.
-    pub fn set_decomposition(&mut self, decomposition_mode: i32) {
+    pub fn set_decomposition(&mut self, decomposition_mode: i32) -> Result<()> {
         if !(NO_DECOMPOSITION..=FULL_DECOMPOSITION).contains(&decomposition_mode) {
-            exception::illegal_argument("Wrong decomposition mode.");
+            return Err(LuceneError::illegal_argument("Wrong decomposition mode."));
         }
         self.decomposition = decomposition_mode;
+        Ok(())
     }
 
     /// `equals(source, target)`: `compare(source, target) == EQUAL`.

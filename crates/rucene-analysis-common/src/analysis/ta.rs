@@ -15,6 +15,6 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.ta`.
+//! The Java package `org.apache.lucene.analysis.ta`: analyzer for Tamil.
 
 pub mod tamil_analyzer;

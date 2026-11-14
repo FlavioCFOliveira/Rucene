@@ -15,6 +15,6 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.eu`.
+//! The Java package `org.apache.lucene.analysis.eu`: analyzer for Basque.
 
 pub mod basque_analyzer;

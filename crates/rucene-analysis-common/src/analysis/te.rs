@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.te`.
+//! The Java package `org.apache.lucene.analysis.te`: analyzer for Telugu Language.
 
 pub mod telugu_analyzer;
 pub mod telugu_normalization_filter;

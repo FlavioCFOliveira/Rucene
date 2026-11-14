@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.lv`.
+//! The Java package `org.apache.lucene.analysis.lv`: analyzer for Latvian.
 
 pub mod latvian_analyzer;
 pub mod latvian_stem_filter;

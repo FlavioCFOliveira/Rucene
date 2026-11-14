@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.hi`.
+//! The Java package `org.apache.lucene.analysis.hi`: analyzer for Hindi.
 
 pub mod hindi_analyzer;
 pub mod hindi_normalization_filter;

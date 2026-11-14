@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.sr`.
+//! The Java package `org.apache.lucene.analysis.sr`: analyzer for Serbian.
 
 pub mod serbian_analyzer;
 pub mod serbian_normalization_filter;

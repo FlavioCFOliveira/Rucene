@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.hu`.
+//! The Java package `org.apache.lucene.analysis.hu`: analyzer for Hungarian.
 
 pub mod hungarian_analyzer;
 pub mod hungarian_light_stem_filter;

@@ -102,6 +102,7 @@ impl PorterStemmer {
     /// adding characters, you can call stem(void) to process the word.
     ///
     /// Equivalent to `add(char)`.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn add(&mut self, ch: u16) {
         if self.b.len() <= self.i as usize {
             self.b = ArrayUtil::grow_generic(&self.b, self.i as usize + 1);
@@ -115,6 +116,7 @@ impl PorterStemmer {
     /// and getResultLength (which is generally more efficient.)
     ///
     /// Equivalent to `toString()`, as UTF-16 units.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn to_units(&self) -> Vec<u16> {
         self.b[..self.i as usize].to_vec()
     }
@@ -487,6 +489,7 @@ impl PorterStemmer {
     /// Stem a word provided as a String. Returns the result as a String.
     ///
     /// Equivalent to `stem(String)`, over the UTF-16 units of the string.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn stem_string(&mut self, s: &[u16]) -> Vec<u16> {
         if self.stem_word(s, s.len()) {
             self.to_units()
@@ -500,6 +503,7 @@ impl PorterStemmer {
     /// the result with getResultLength()/getResultBuffer() or toString().
     ///
     /// Equivalent to `stem(char[])`.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn stem_array(&mut self, word: &[u16]) -> bool {
         self.stem_word(word, word.len())
     }
@@ -531,6 +535,7 @@ impl PorterStemmer {
     /// getResultLength()/getResultBuffer() or toString().
     ///
     /// Equivalent to `stem(char[], int)`.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn stem_word(&mut self, word: &[u16], word_len: usize) -> bool {
         self.stem_range(word, 0, word_len)
     }
@@ -541,6 +546,7 @@ impl PorterStemmer {
     /// getResultLength()/getResultBuffer() or toString().
     ///
     /// Equivalent to `stem()`.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn stem(&mut self) -> bool {
         self.stem_from(0)
     }

@@ -1222,6 +1222,7 @@ impl BrazilianStemmer {
     ///
     /// Equivalent to `log()`; a null field prints `null`, as Java's string
     /// concatenation does.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn log(&self) -> String {
         let text = |value: &Option<Vec<u16>>| match value {
             Some(value) => to_rust_string(value),

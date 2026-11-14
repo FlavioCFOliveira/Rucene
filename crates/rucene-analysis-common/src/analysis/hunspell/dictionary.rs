@@ -534,6 +534,7 @@ impl Dictionary {
     ///
     /// Java's `NullPointerException` when the dictionary has no prefix, and
     /// what reading the FST raises.
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn lookup_prefix(&self, word: &[u16]) -> Result<Option<IntsRef>> {
         Self::lookup(self.prefixes.as_ref(), word)
     }
@@ -545,6 +546,7 @@ impl Dictionary {
     /// # Errors
     ///
     /// As [`lookup_prefix`](Self::lookup_prefix).
+    #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn lookup_suffix(&self, word: &[u16]) -> Result<Option<IntsRef>> {
         Self::lookup(self.suffixes.as_ref(), word)
     }

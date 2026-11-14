@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.analysis.bn`.
+//! The Java package `org.apache.lucene.analysis.bn`: analyzer for Bengali Language.
 
 pub mod bengali_analyzer;
 pub mod bengali_normalization_filter;
