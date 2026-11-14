@@ -368,6 +368,48 @@ pub enum SortFieldKind {
         /// `Float.floatToIntBits(y)`.
         y_bits: u32,
     },
+    /// A `SortField` subclass of another module that declares
+    /// [`SortFieldType::Rewriteable`] and overrides only
+    /// `rewrite(IndexSearcher)`: `ValueSource.ValueSourceSortField` of
+    /// `lucene/queries` (`ValueSource.java:349-362`). Such a subclass keeps
+    /// `SortField`'s `equals`, `hashCode`, `toString` and comparator, so the
+    /// variant behaves as [`SortFieldKind::Plain`] everywhere except in
+    /// [`SortField::rewrite`], which calls the rewriter.
+    Rewriteable {
+        /// The subclass's `rewrite(IndexSearcher)`.
+        rewriter: SortFieldRewriter,
+    },
+}
+
+/// The `rewrite(IndexSearcher)` override a [`SortFieldKind::Rewriteable`] sort
+/// field carries: it receives the sort field (Java's `this`) and the searcher,
+/// and returns the rewritten sort field.
+pub type SortFieldRewriteFn = dyn Fn(&SortField, &IndexSearcher) -> Result<SortField> + Send + Sync;
+
+/// The override held by [`SortFieldKind::Rewriteable`].
+///
+/// It takes no part in equality or hashing — every rewriter compares equal
+/// and hashes to nothing — because the Java subclass it stands for does not
+/// override `SortField.equals` or `SortField.hashCode`.
+#[derive(Clone)]
+pub struct SortFieldRewriter(pub Arc<SortFieldRewriteFn>);
+
+impl PartialEq for SortFieldRewriter {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for SortFieldRewriter {}
+
+impl Hash for SortFieldRewriter {
+    fn hash<H: Hasher>(&self, _state: &mut H) {}
+}
+
+impl fmt::Debug for SortFieldRewriter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SortFieldRewriter")
+    }
 }
 
 /// Describes how to sort documents by terms in an individual field.
@@ -727,7 +769,9 @@ impl SortField {
                 self.missing_value = missing_value;
                 return Ok(());
             }
-            SortFieldKind::Binary { .. } | SortFieldKind::Plain => {}
+            SortFieldKind::Binary { .. }
+            | SortFieldKind::Plain
+            | SortFieldKind::Rewriteable { .. } => {}
         }
         // `DoubleValuesSortField.setMissingValue(Object)` and
         // `LongValuesSortField.setMissingValue(Object)`: a `Number` is kept and
@@ -1054,7 +1098,7 @@ impl SortField {
                 ));
                 Box::new(SharedFieldComparator::new(comparator))
             }
-            SortFieldKind::Plain => match self.field_type {
+            SortFieldKind::Plain | SortFieldKind::Rewriteable { .. } => match self.field_type {
                 SortFieldType::Score => Box::new(SharedFieldComparator::new(RelevanceComparator::new(num_hits))),
                 SortFieldType::Doc => {
                     Box::new(SharedFieldComparator::new(DocComparator::new(num_hits, self.reverse, pruning)))
@@ -1282,6 +1326,11 @@ impl SortField {
     /// rewrite their producer as those subclasses' overrides do
     /// (`DoubleValuesSource.java:557-566`, `LongValuesSource.java:318-327`).
     pub fn rewrite<'a>(&'a self, searcher: &IndexSearcher) -> Result<Cow<'a, SortField>> {
+        // The override of a `REWRITEABLE` subclass declared in another module
+        // (`ValueSource.ValueSourceSortField.rewrite`).
+        if let SortFieldKind::Rewriteable { rewriter } = &self.kind {
+            return Ok(Cow::Owned((rewriter.0)(self, searcher)?));
+        }
         let source = self.comparator_source.as_deref().and_then(|s| s.as_any());
         if let Some(source) = source.and_then(|s| {
             s.downcast_ref::<crate::search::double_values_source::DoubleValuesComparatorSource>()
@@ -1434,7 +1483,7 @@ impl fmt::Display for SortField {
                 }
                 return Ok(());
             }
-            SortFieldKind::Plain => {}
+            SortFieldKind::Plain | SortFieldKind::Rewriteable { .. } => {}
         }
         match self.field_type {
             SortFieldType::Score => f.write_str("<score>")?,

@@ -15,10 +15,72 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `MaxDocValueSource.java`, of the Java
-//! package `org.apache.lucene.queries.function.valuesource`.
+//! Port of `MaxDocValueSource.java`, of the Java package
+//! `org.apache.lucene.queries.function.valuesource`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::index::LeafReaderContext;
+use rucene::search::index_searcher::IndexSearcher;
+
+use crate::function::function_values::FunctionValues;
+use crate::function::value_source::{class_hash, ValueSource, ValueSourceContext};
+use crate::function::valuesource::doc_freq_value_source::{ConstIntDocValues, DocFreqValueSource};
+
+/// Returns the value of `IndexReader.maxDoc()` for every document. This is
+/// the number of documents including deletions.
 ///
-/// Skeleton of `org.apache.lucene.queries.function.valuesource.MaxDocValueSource`; ported by rmp task #479.
+/// Equivalent to `org.apache.lucene.queries.function.valuesource.MaxDocValueSource`.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct MaxDocValueSource;
+
+impl MaxDocValueSource {
+    /// Equivalent to the implicit `MaxDocValueSource()`.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Equivalent to `MaxDocValueSource.name()`.
+    pub fn name(&self) -> String {
+        "maxdoc".to_string()
+    }
+}
+
+impl ValueSource for MaxDocValueSource {
+    fn description(&self) -> String {
+        format!("{}()", self.name())
+    }
+
+    /// `context.put("searcher", searcher)`.
+    fn create_weight(
+        &self,
+        context: &ValueSourceContext<'_>,
+        searcher: &IndexSearcher,
+    ) -> Result<()> {
+        context.put_searcher(searcher);
+        Ok(())
+    }
+
+    fn get_values<'a>(
+        self: Arc<Self>,
+        context: &ValueSourceContext<'a>,
+        _reader_context: &LeafReaderContext,
+    ) -> Result<Box<dyn FunctionValues + 'a>> {
+        let searcher = DocFreqValueSource::searcher(context)?;
+        Ok(Box::new(ConstIntDocValues::new(
+            searcher.get_index_reader().max_doc(),
+            self,
+        )))
+    }
+
+    /// `this.getClass() == o.getClass()`.
+    fn value_source_eq(&self, other: &dyn ValueSource) -> bool {
+        other.as_any().is::<MaxDocValueSource>()
+    }
+
+    /// `this.getClass().hashCode()`.
+    fn value_source_hash(&self) -> i32 {
+        class_hash("org.apache.lucene.queries.function.valuesource.MaxDocValueSource")
+    }
+}

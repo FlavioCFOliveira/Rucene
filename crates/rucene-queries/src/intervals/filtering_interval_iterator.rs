@@ -15,10 +15,98 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FilteringIntervalIterator.java`, of the Java
-//! package `org.apache.lucene.queries.intervals`.
+//! Port of `FilteringIntervalIterator.java`, of the Java package
+//! `org.apache.lucene.queries.intervals`.
 
-/// Java: `abstract class` (package-private).
+use rucene::error::Result;
+
+use crate::intervals::conjunction_interval_iterator::{
+    conjunction_interval_iterator_disi, ConjunctionIntervalIterator,
+};
+use crate::intervals::interval_iterator::{
+    IntervalIterator, SharedIntervalIterator, NO_MORE_INTERVALS,
+};
+
+/// The `nextInterval()` of a [`FilteringIntervalIterator`] subclass.
+pub(crate) type FilteringNextInterval = fn(&mut FilteringIntervalIterator) -> Result<i32>;
+
+/// A conjunction of two interval iterators whose intervals are those of `a`
+/// that pass a filter against `b`.
 ///
-/// Skeleton of `org.apache.lucene.queries.intervals.FilteringIntervalIterator`; ported by rmp task #482.
-pub(crate) struct FilteringIntervalIterator;
+/// Equivalent to the abstract class
+/// `org.apache.lucene.queries.intervals.FilteringIntervalIterator`, whose
+/// subclasses are anonymous classes of `OverlappingIntervalsSource`,
+/// `ContainingIntervalsSource` and `ContainedByIntervalsSource` that only
+/// implement `nextInterval()`; each is the [`FilteringNextInterval`] the
+/// iterator is built with.
+pub(crate) struct FilteringIntervalIterator {
+    pub(crate) base: ConjunctionIntervalIterator,
+    /// The package-private `a` field.
+    pub(crate) a: SharedIntervalIterator,
+    /// The package-private `b` field.
+    pub(crate) b: SharedIntervalIterator,
+    /// The package-private `bpos` field.
+    pub(crate) bpos: bool,
+    next_interval: FilteringNextInterval,
+}
+
+impl FilteringIntervalIterator {
+    /// Equivalent to the protected
+    /// `FilteringIntervalIterator(IntervalIterator, IntervalIterator)`, with
+    /// the subclass's `nextInterval()`.
+    ///
+    /// # Errors
+    ///
+    /// The error of building the conjunction.
+    pub(crate) fn new(
+        a: Box<dyn IntervalIterator>,
+        b: Box<dyn IntervalIterator>,
+        next_interval: FilteringNextInterval,
+    ) -> Result<Self> {
+        let a = SharedIntervalIterator::new(a);
+        let b = SharedIntervalIterator::new(b);
+        Ok(Self {
+            base: ConjunctionIntervalIterator::new(vec![a.clone(), b.clone()])?,
+            a,
+            b,
+            bpos: false,
+            next_interval,
+        })
+    }
+
+    /// Equivalent to the protected `FilteringIntervalIterator.reset()`.
+    fn reset(&mut self) -> Result<()> {
+        self.bpos = self.b.next_interval()? != NO_MORE_INTERVALS;
+        Ok(())
+    }
+}
+
+conjunction_interval_iterator_disi!(FilteringIntervalIterator);
+
+impl IntervalIterator for FilteringIntervalIterator {
+    fn start(&self) -> i32 {
+        if !self.bpos {
+            return NO_MORE_INTERVALS;
+        }
+        self.a.start()
+    }
+
+    fn end(&self) -> i32 {
+        if !self.bpos {
+            return NO_MORE_INTERVALS;
+        }
+        self.a.end()
+    }
+
+    fn gaps(&self) -> i32 {
+        self.a.gaps()
+    }
+
+    fn next_interval(&mut self) -> Result<i32> {
+        (self.next_interval)(self)
+    }
+
+    fn match_cost(&self) -> f32 {
+        self.base.match_cost()
+    }
+}

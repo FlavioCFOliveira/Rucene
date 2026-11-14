@@ -15,10 +15,78 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `NoMatchIntervalsSource.java`, of the Java
-//! package `org.apache.lucene.queries.intervals`.
+//! Port of `NoMatchIntervalsSource.java`, of the Java package
+//! `org.apache.lucene.queries.intervals`.
 
-/// Java: `class` (package-private).
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::index::LeafReaderContext;
+use rucene::search::query_visitor::QueryVisitor;
+use rucene::util::java_collections::java_string_hash_code;
+
+use crate::intervals::interval_iterator::IntervalIterator;
+use crate::intervals::interval_matches_iterator::IntervalMatchesIterator;
+use crate::intervals::intervals_source::{objects_hash, IntervalsSource};
+
+/// A source returning no matches.
 ///
-/// Skeleton of `org.apache.lucene.queries.intervals.NoMatchIntervalsSource`; ported by rmp task #482.
-pub(crate) struct NoMatchIntervalsSource;
+/// Equivalent to the class
+/// `org.apache.lucene.queries.intervals.NoMatchIntervalsSource`.
+#[derive(Debug, Clone)]
+pub(crate) struct NoMatchIntervalsSource {
+    /// The package-private `reason` field.
+    reason: String,
+}
+
+impl NoMatchIntervalsSource {
+    /// Equivalent to `NoMatchIntervalsSource(String)`.
+    pub(crate) fn new(reason: String) -> Self {
+        Self { reason }
+    }
+}
+
+impl IntervalsSource for NoMatchIntervalsSource {
+    fn intervals(
+        &self,
+        _field: &str,
+        _ctx: &LeafReaderContext,
+    ) -> Result<Option<Box<dyn IntervalIterator>>> {
+        Ok(None)
+    }
+
+    fn matches(
+        &self,
+        _field: &str,
+        _ctx: &LeafReaderContext,
+        _doc: i32,
+    ) -> Result<Option<Box<dyn IntervalMatchesIterator>>> {
+        Ok(None)
+    }
+
+    fn visit(self: Arc<Self>, _field: &str, _visitor: &mut dyn QueryVisitor) {}
+
+    fn min_extent(&self) -> i32 {
+        0
+    }
+
+    fn pull_up_disjunctions(self: Arc<Self>) -> Result<Vec<Arc<dyn IntervalsSource>>> {
+        Ok(vec![self])
+    }
+
+    fn source_eq(&self, other: &dyn IntervalsSource) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<NoMatchIntervalsSource>()
+            .is_some_and(|that| self.reason == that.reason)
+    }
+
+    /// `Objects.hash(reason)`.
+    fn source_hash(&self) -> i32 {
+        objects_hash(&[java_string_hash_code(&self.reason)])
+    }
+
+    fn to_source_string(&self) -> String {
+        format!("NOMATCH({})", self.reason)
+    }
+}

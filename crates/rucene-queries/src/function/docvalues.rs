@@ -15,7 +15,9 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queries.function.docvalues`.
+//! Port of the Java package `org.apache.lucene.queries.function.docvalues`:
+//! the abstract `FunctionValues` classes the value sources build their values
+//! on.
 
 pub mod bool_doc_values;
 pub mod doc_terms_index_doc_values;

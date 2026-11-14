@@ -15,7 +15,9 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queries.function.valuesource`.
+//! Port of the Java package `org.apache.lucene.queries.function.valuesource`:
+//! the value sources — fields, constants, statistics and functions of other
+//! sources.
 
 pub mod bool_function;
 pub mod byte_knn_vector_field_source;

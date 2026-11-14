@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queries.intervals`.
+//! Port of the Java package `org.apache.lucene.queries.intervals`: interval
+//! sources, their iterators and matches, and the query that scores them.
 
 pub mod block_intervals_source;
 pub mod caching_matches_iterator;

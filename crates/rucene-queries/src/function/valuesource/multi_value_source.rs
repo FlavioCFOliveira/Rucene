@@ -15,10 +15,19 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `MultiValueSource.java`, of the Java
-//! package `org.apache.lucene.queries.function.valuesource`.
+//! Port of `MultiValueSource.java`, of the Java package
+//! `org.apache.lucene.queries.function.valuesource`.
 
-/// Java: `public abstract class`.
+use crate::function::value_source::ValueSource;
+
+/// A [`ValueSource`] that abstractly represents value sources which return
+/// multiple values.
 ///
-/// Skeleton of `org.apache.lucene.queries.function.valuesource.MultiValueSource`; ported by rmp task #479.
-pub struct MultiValueSource;
+/// Equivalent to the abstract class
+/// `org.apache.lucene.queries.function.valuesource.MultiValueSource`.
+pub trait MultiValueSource: ValueSource {
+    /// The number of values each document has.
+    ///
+    /// Equivalent to the abstract `MultiValueSource.dimension()`.
+    fn dimension(&self) -> i32;
+}

@@ -162,6 +162,32 @@ pub trait Similarity: Send + Sync + Debug {
         crate::index::index_reader::java_object_to_string(self.java_class_name(), self)
     }
 
+    /// Returns this similarity as a [`TFIDFSimilarity`] when its Java class
+    /// extends `TFIDFSimilarity`, and `None` otherwise.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java tests the class with
+    /// `sim instanceof TFIDFSimilarity` and casts — `IDFValueSource.asTFIDF`
+    /// of `lucene/queries` does (`IDFValueSource.java:71-80`). Rust cannot
+    /// narrow a `dyn Similarity` to another trait, so the test is declared,
+    /// as [`Query::is_multi_term_query`](crate::search::Query::is_multi_term_query)
+    /// is: the default answers `None`, Java's `false` branch, and every
+    /// implementor of [`TFIDFSimilarity`] that Java would see through the
+    /// cast overrides it to return `self`.
+    fn as_tfidf_similarity(&self) -> Option<&dyn TFIDFSimilarity> {
+        None
+    }
+
+    /// Returns this similarity as a [`PerFieldSimilarityWrapper`] when its Java
+    /// class extends `PerFieldSimilarityWrapper`, and `None` otherwise.
+    ///
+    /// **Divergence from Lucene 10.5.0.** As
+    /// [`as_tfidf_similarity`](Self::as_tfidf_similarity), for the
+    /// `sim instanceof PerFieldSimilarityWrapper` test of
+    /// `IDFValueSource.asTFIDF` (`IDFValueSource.java:72-74`).
+    fn as_per_field_similarity_wrapper(&self) -> Option<&dyn PerFieldSimilarityWrapper> {
+        None
+    }
+
     /// Returns `true` when overlap tokens — tokens whose position increment is
     /// zero, such as synonyms — are discounted from the document's length.
     ///

@@ -15,10 +15,37 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ConstNumberSource.java`, of the Java
-//! package `org.apache.lucene.queries.function.valuesource`.
+//! Port of `ConstNumberSource.java`, of the Java package
+//! `org.apache.lucene.queries.function.valuesource`.
 
-/// Java: `public abstract class`.
+use rucene::search::similarities::ExplanationValue;
+
+use crate::function::value_source::ValueSource;
+
+/// A [`ValueSource`] that returns a constant number.
 ///
-/// Skeleton of `org.apache.lucene.queries.function.valuesource.ConstNumberSource`; ported by rmp task #479.
-pub struct ConstNumberSource;
+/// Equivalent to the abstract class
+/// `org.apache.lucene.queries.function.valuesource.ConstNumberSource`.
+///
+/// **Divergence.** `getNumber()` returns a `java.lang.Number`; the port
+/// returns the boxed type as an [`ExplanationValue`], the core's stand-in for
+/// a Java `Number`, whose rendering is the boxed type's `toString()`.
+pub trait ConstNumberSource: ValueSource {
+    /// Equivalent to the abstract `ConstNumberSource.getInt()`.
+    fn get_int(&self) -> i32;
+
+    /// Equivalent to the abstract `ConstNumberSource.getLong()`.
+    fn get_long(&self) -> i64;
+
+    /// Equivalent to the abstract `ConstNumberSource.getFloat()`.
+    fn get_float(&self) -> f32;
+
+    /// Equivalent to the abstract `ConstNumberSource.getDouble()`.
+    fn get_double(&self) -> f64;
+
+    /// Equivalent to the abstract `ConstNumberSource.getNumber()`.
+    fn get_number(&self) -> ExplanationValue;
+
+    /// Equivalent to the abstract `ConstNumberSource.getBool()`.
+    fn get_bool(&self) -> bool;
+}

@@ -15,10 +15,68 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SingleFunction.java`, of the Java
-//! package `org.apache.lucene.queries.function.valuesource`.
+//! Port of `SingleFunction.java`, of the Java package
+//! `org.apache.lucene.queries.function.valuesource`.
+//!
+//! The concrete members of the abstract class are the functions of this
+//! module, applied to `this`.
 
-/// Java: `public abstract class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::index_searcher::IndexSearcher;
+use rucene::util::java_collections::java_string_hash_code;
+
+use crate::function::value_source::{ValueSource, ValueSourceContext};
+
+/// A function with a single (one) argument.
 ///
-/// Skeleton of `org.apache.lucene.queries.function.valuesource.SingleFunction`; ported by rmp task #479.
-pub struct SingleFunction;
+/// Equivalent to the abstract class
+/// `org.apache.lucene.queries.function.valuesource.SingleFunction`. Note:
+/// subclasses must override `description()` if the name is not the default
+/// `name(source)`. Its members are [`description`], [`value_source_hash`],
+/// [`value_source_eq`] and [`create_weight`], which an implementor's
+/// [`ValueSource`] implementation delegates to.
+pub trait SingleFunction: ValueSource {
+    /// The protected `source` field.
+    fn source(&self) -> &Arc<dyn ValueSource>;
+
+    /// Equivalent to the abstract protected `SingleFunction.name()`.
+    fn name(&self) -> String;
+}
+
+/// Equivalent to `SingleFunction.description()`:
+/// `name() + '(' + source.description() + ')'`.
+pub fn description<T: SingleFunction + ?Sized>(this: &T) -> String {
+    format!("{}({})", this.name(), this.source().description())
+}
+
+/// Equivalent to `SingleFunction.hashCode()`:
+/// `source.hashCode() + name().hashCode()`.
+pub fn value_source_hash<T: SingleFunction + ?Sized>(this: &T) -> i32 {
+    this.source()
+        .value_source_hash()
+        .wrapping_add(java_string_hash_code(&this.name()))
+}
+
+/// Equivalent to `SingleFunction.equals(Object)`: the same class, an equal
+/// name and an equal source.
+pub fn value_source_eq<T: SingleFunction>(this: &T, other: &dyn ValueSource) -> bool {
+    other.as_any().downcast_ref::<T>().is_some_and(|other| {
+        this.name() == other.name() && this.source().value_source_eq(&**other.source())
+    })
+}
+
+/// Equivalent to `SingleFunction.createWeight(Map, IndexSearcher)`, which
+/// propagates to the source.
+///
+/// # Errors
+///
+/// Propagates the error of the source's `create_weight`.
+pub fn create_weight<T: SingleFunction + ?Sized>(
+    this: &T,
+    context: &ValueSourceContext<'_>,
+    searcher: &IndexSearcher,
+) -> Result<()> {
+    this.source().create_weight(context, searcher)
+}

@@ -15,10 +15,54 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `DisiWrapper.java`, of the Java
-//! package `org.apache.lucene.queries.intervals`.
+//! Port of `DisiWrapper.java`, of the Java package
+//! `org.apache.lucene.queries.intervals`.
 
-/// Java: `class` (package-private).
+use crate::intervals::interval_iterator::{IntervalIterator, SharedIntervalIterator};
+
+/// Wrapper used in the intervals package's `DisiPriorityQueue`.
 ///
-/// Skeleton of `org.apache.lucene.queries.intervals.DisiWrapper`; ported by rmp task #482.
-pub(crate) struct DisiWrapper;
+/// Equivalent to the package-private class
+/// `org.apache.lucene.queries.intervals.DisiWrapper`, the package's own copy,
+/// distinct from the core's.
+///
+/// **Divergence.** Java's three fields `iterator`, `intervals` and
+/// `approximation` reference the one interval iterator; here they are the one
+/// handle [`intervals`](Self::intervals). The `next` field that
+/// `DisiPriorityQueue.topList()` threads its list through is replaced by the
+/// vector of positions that method returns, in the same order.
+pub(crate) struct DisiWrapper {
+    /// The interval iterator, also Java's `iterator` and `approximation`.
+    pub(crate) intervals: SharedIntervalIterator,
+    /// The `cost` field.
+    pub(crate) cost: i64,
+    /// The match cost for two-phase iterators, `0` otherwise; the `matchCost`
+    /// field.
+    pub(crate) match_cost: f32,
+    /// The current doc, used for comparison; the `doc` field.
+    pub(crate) doc: i32,
+}
+
+impl std::fmt::Debug for DisiWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DisiWrapper")
+            .field("cost", &self.cost)
+            .field("match_cost", &self.match_cost)
+            .field("doc", &self.doc)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DisiWrapper {
+    /// Equivalent to `DisiWrapper(IntervalIterator)`.
+    pub(crate) fn new(iterator: SharedIntervalIterator) -> Self {
+        let cost = rucene::search::doc_id_set_iterator::DocIdSetIterator::cost(&iterator);
+        let match_cost = iterator.match_cost();
+        Self {
+            intervals: iterator,
+            cost,
+            match_cost,
+            doc: -1,
+        }
+    }
+}

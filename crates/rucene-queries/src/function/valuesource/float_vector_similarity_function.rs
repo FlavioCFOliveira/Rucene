@@ -15,10 +15,92 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FloatVectorSimilarityFunction.java`, of the Java
-//! package `org.apache.lucene.queries.function.valuesource`.
+//! Port of `FloatVectorSimilarityFunction.java`, of the Java package
+//! `org.apache.lucene.queries.function.valuesource`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::index::{LeafReaderContext, VectorSimilarityFunction as IndexVectorSimilarityFunction};
+
+use crate::function::function_values::FunctionValues;
+use crate::function::value_source::{ValueSource, ValueSourceContext};
+use crate::function::valuesource::vector_similarity_function::{self, VectorSimilarityFunction};
+
+/// [`VectorSimilarityFunction`] implementation for float vectors.
 ///
-/// Skeleton of `org.apache.lucene.queries.function.valuesource.FloatVectorSimilarityFunction`; ported by rmp task #479.
-pub struct FloatVectorSimilarityFunction;
+/// Equivalent to `org.apache.lucene.queries.function.valuesource.FloatVectorSimilarityFunction`.
+#[derive(Debug, Clone)]
+pub struct FloatVectorSimilarityFunction {
+    similarity_function: IndexVectorSimilarityFunction,
+    vector1: Arc<dyn ValueSource>,
+    vector2: Arc<dyn ValueSource>,
+}
+
+impl FloatVectorSimilarityFunction {
+    /// Equivalent to `FloatVectorSimilarityFunction(VectorSimilarityFunction, ValueSource,
+    /// ValueSource)`.
+    pub fn new(
+        similarity_function: IndexVectorSimilarityFunction,
+        vector1: Arc<dyn ValueSource>,
+        vector2: Arc<dyn ValueSource>,
+    ) -> Self {
+        Self {
+            similarity_function,
+            vector1,
+            vector2,
+        }
+    }
+}
+
+impl VectorSimilarityFunction for FloatVectorSimilarityFunction {
+    fn similarity_function(&self) -> IndexVectorSimilarityFunction {
+        self.similarity_function
+    }
+
+    fn vector1(&self) -> &Arc<dyn ValueSource> {
+        &self.vector1
+    }
+
+    fn vector2(&self) -> &Arc<dyn ValueSource> {
+        &self.vector2
+    }
+
+    /// `0` when either vector is `null`, the similarity otherwise.
+    fn func(
+        &self,
+        doc: i32,
+        f1: &mut dyn FunctionValues,
+        f2: &mut dyn FunctionValues,
+    ) -> Result<f32> {
+        let v1 = f1.float_vector_val(doc)?;
+        let v2 = f2.float_vector_val(doc)?;
+        let (Some(v1), Some(v2)) = (v1, v2) else {
+            return Ok(0.0);
+        };
+        debug_assert!(v1.len() == v2.len(), "Vectors must have the same length");
+        self.similarity_function.compare_f32(&v1, &v2)
+    }
+}
+
+impl ValueSource for FloatVectorSimilarityFunction {
+    fn get_values<'a>(
+        self: Arc<Self>,
+        context: &ValueSourceContext<'a>,
+        reader_context: &LeafReaderContext,
+    ) -> Result<Box<dyn FunctionValues + 'a>> {
+        vector_similarity_function::get_values(self, context, reader_context)
+    }
+
+    fn value_source_eq(&self, other: &dyn ValueSource) -> bool {
+        vector_similarity_function::value_source_eq(self, other)
+    }
+
+    fn value_source_hash(&self) -> i32 {
+        vector_similarity_function::value_source_hash(self)
+    }
+
+    fn description(&self) -> String {
+        vector_similarity_function::description(self)
+    }
+}

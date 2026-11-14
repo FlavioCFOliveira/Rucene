@@ -2,11 +2,9 @@
 //! types outside `lucene/core`, namely function queries and value sources,
 //! intervals, spans, payload queries, more-like-this and `CommonTermsQuery`.
 //!
-//! Every type of the module is declared here as a skeleton: a declaration that
-//! stands for one Java type, without fields, methods or behaviour (an enum
-//! lists its Java constants as variants), whose doc names the sprint-13 rmp task
-//! that will port it. A type stays a skeleton until that task replaces it with
-//! its port.
+//! Every type of the module is ported: each Rust item that stands for a Java
+//! type says so in its documentation (`Equivalent to ...`), and declares at its
+//! point every divergence from the Java source.
 //!
 //! The module tree mirrors the Java packages below the package root
 //! `org.apache.lucene.queries`: the types of that package sit at the crate root
@@ -19,8 +17,9 @@
 //! only when its own name is a name of the Rust prelude or the name of another
 //! item of that module.
 
-// Package-private and private Java types are `pub(crate)` skeletons that nothing
-// uses yet. This allowance goes away when the module is fully ported.
+// Package-private and private Java members are ported whole, including the
+// ones Lucene itself never calls (`DisiPriorityQueue.pop()`, for one), which
+// Rust reports as dead code.
 #![allow(dead_code)]
 
 pub mod common_terms_query;

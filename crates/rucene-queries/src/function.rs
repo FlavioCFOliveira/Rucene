@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queries.function`.
+//! Port of the Java package `org.apache.lucene.queries.function`: value sources,
+//! their per-segment values and the queries that score or filter with them.
 
 pub mod docvalues;
 pub mod function_match_query;

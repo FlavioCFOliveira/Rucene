@@ -15,10 +15,16 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `BoolFunction.java`, of the Java
-//! package `org.apache.lucene.queries.function.valuesource`.
+//! Port of `BoolFunction.java`, of the Java package
+//! `org.apache.lucene.queries.function.valuesource`.
 
-/// Java: `public abstract class`.
+use crate::function::value_source::ValueSource;
+
+/// Abstract parent class for those [`ValueSource`] implementations which apply
+/// boolean logic to their values.
 ///
-/// Skeleton of `org.apache.lucene.queries.function.valuesource.BoolFunction`; ported by rmp task #479.
-pub struct BoolFunction;
+/// Equivalent to the abstract class
+/// `org.apache.lucene.queries.function.valuesource.BoolFunction`, which
+/// declares no member of its own; a Rust value source that extends it
+/// implements this marker trait.
+pub trait BoolFunction: ValueSource {}

@@ -15,10 +15,92 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `MinFloatFunction.java`, of the Java
-//! package `org.apache.lucene.queries.function.valuesource`.
+//! Port of `MinFloatFunction.java`, of the Java package
+//! `org.apache.lucene.queries.function.valuesource`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::index::LeafReaderContext;
+use rucene::search::index_searcher::IndexSearcher;
+
+use crate::function::function_values::{java_min_f32, FunctionValues};
+use crate::function::value_source::{ValueSource, ValueSourceContext};
+use crate::function::valuesource::multi_float_function::{self, MultiFloatFunction};
+use crate::function::valuesource::multi_function;
+
+/// Returns the min of its components.
 ///
-/// Skeleton of `org.apache.lucene.queries.function.valuesource.MinFloatFunction`; ported by rmp task #479.
-pub struct MinFloatFunction;
+/// Equivalent to `org.apache.lucene.queries.function.valuesource.MinFloatFunction`, a
+/// [`MultiFloatFunction`].
+#[derive(Debug, Clone)]
+pub struct MinFloatFunction {
+    sources: Vec<Arc<dyn ValueSource>>,
+}
+
+impl MinFloatFunction {
+    /// Equivalent to `MinFloatFunction(ValueSource[])`.
+    pub fn new(sources: Vec<Arc<dyn ValueSource>>) -> Self {
+        Self { sources }
+    }
+}
+
+impl MultiFloatFunction for MinFloatFunction {
+    fn sources(&self) -> &[Arc<dyn ValueSource>] {
+        &self.sources
+    }
+
+    fn name(&self) -> String {
+        "min".to_string()
+    }
+
+    fn func(&self, doc: i32, vals_arr: &mut [Box<dyn FunctionValues + '_>]) -> Result<f32> {
+        let mut none_found = true;
+        let mut val = f32::INFINITY;
+        for vals in vals_arr.iter_mut() {
+            if vals.exists(doc)? {
+                none_found = false;
+                val = java_min_f32(vals.float_val(doc)?, val);
+            }
+        }
+        if none_found {
+            return Ok(0.0);
+        }
+        Ok(val)
+    }
+
+    /// Values exist when any source has a value: `MultiFunction.anyExists`.
+    fn exists(&self, doc: i32, vals_arr: &mut [Box<dyn FunctionValues + '_>]) -> Result<bool> {
+        multi_function::any_exists(doc, vals_arr)
+    }
+}
+
+impl ValueSource for MinFloatFunction {
+    fn get_values<'a>(
+        self: Arc<Self>,
+        context: &ValueSourceContext<'a>,
+        reader_context: &LeafReaderContext,
+    ) -> Result<Box<dyn FunctionValues + 'a>> {
+        multi_float_function::get_values(self, context, reader_context)
+    }
+
+    fn value_source_eq(&self, other: &dyn ValueSource) -> bool {
+        multi_float_function::value_source_eq(self, other)
+    }
+
+    fn value_source_hash(&self) -> i32 {
+        multi_float_function::value_source_hash(self)
+    }
+
+    fn description(&self) -> String {
+        multi_float_function::description(self)
+    }
+
+    fn create_weight(
+        &self,
+        context: &ValueSourceContext<'_>,
+        searcher: &IndexSearcher,
+    ) -> Result<()> {
+        multi_float_function::create_weight(self, context, searcher)
+    }
+}
