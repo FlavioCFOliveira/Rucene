@@ -645,11 +645,13 @@ impl LocaleData {
         'F'
     }
 
-    /// `CalendarNameProviderImpl.isSupportedLocale(locale)` of an adapter
-    /// whose language tags are `tags`.
-    fn calendar_names_supports(locale: &Locale, tags: &HashSet<String>) -> bool {
+    /// The calendar-type check both calendar-name providers' `isSupportedLocale`
+    /// start with: `None` when the locale is the root (supported) or names an
+    /// unknown `-u-ca-` type (unsupported), else the locale without its
+    /// extensions.
+    fn calendar_names_locale(locale: &Locale) -> Result<Locale, bool> {
         if locale.is_root() {
-            return true;
+            return Err(true);
         }
         let mut locale = locale.clone();
         if locale.has_extensions() {
@@ -658,13 +660,36 @@ impl LocaleData {
                     calendar_type.as_str(),
                     "buddhist" | "japanese" | "gregory" | "islamic" | "roc"
                 ) {
-                    return false;
+                    return Err(false);
                 }
             }
             locale = locale.strip_extensions();
         }
-        tags.contains(&locale.to_language_tag())
-            || tags.contains(&locale.to_string().replace('_', "-"))
+        Ok(locale)
+    }
+
+    /// `CalendarNameProviderImpl.isSupportedLocale(locale)` of the FALLBACK
+    /// adapter, whose language tags are `tags`.
+    fn calendar_names_supports(locale: &Locale, tags: &HashSet<String>) -> bool {
+        match Self::calendar_names_locale(locale) {
+            Err(supported) => supported,
+            Ok(locale) => {
+                tags.contains(&locale.to_language_tag())
+                    || tags.contains(&locale.to_string().replace('_', "-"))
+            }
+        }
+    }
+
+    /// `CLDRCalendarNameProviderImpl.isSupportedLocale(locale)`: the same
+    /// calendar-type check, then the CLDR adapter's
+    /// `isSupportedProviderLocale(locale, langtags)`, which also accepts a
+    /// locale whose equivalent (language alias, `no`/`no_NO` as `nb`) is
+    /// available (`tl` as `fil`).
+    fn cldr_calendar_names_supports(&self, locale: &Locale) -> bool {
+        match Self::calendar_names_locale(locale) {
+            Err(supported) => supported,
+            Ok(locale) => self.cldr_supports(&locale),
+        }
     }
 
     /// The class key of `locale`: what the JDK's resolution depends on (see
@@ -678,7 +703,7 @@ impl LocaleData {
         key.push(';');
         // the calendar-name pool: the providers supporting each lookup locale
         for c in Self::control_candidates(locale) {
-            if Self::calendar_names_supports(&c, &self.langtags) {
+            if self.cldr_calendar_names_supports(&c) {
                 key.push('C');
             }
             if Self::calendar_names_supports(&c, &self.fallback_tags) {

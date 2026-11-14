@@ -302,8 +302,21 @@ public final class AnalysisOracle {
       case "charset":
       case "charset_ic":
         return CharArraySet.class;
+      case "analyzer":
+        return Analyzer.class;
+      case "analyzermap":
+        return Map.class;
       default:
         throw new IllegalArgumentException("unknown argument type " + type);
+    }
+  }
+
+  /** A new instance of the analyzer class {@code name}, through its public no-args constructor. */
+  static Analyzer newAnalyzer(String name) {
+    try {
+      return Class.forName(name).asSubclass(Analyzer.class).getConstructor().newInstance();
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalArgumentException("cannot instantiate analyzer " + name, e);
     }
   }
 
@@ -323,6 +336,16 @@ public final class AnalysisOracle {
           words.add(unescape(fields[i]));
         }
         return new CharArraySet(words, type.equals("charset_ic"));
+      case "analyzer":
+        return newAnalyzer(unescape(fields[from + 1]));
+      case "analyzermap":
+        Map<String, Analyzer> analyzers = new HashMap<>();
+        for (int i = from + 1; i < fields.length; i++) {
+          String entry = unescape(fields[i]);
+          int eq = entry.indexOf('=');
+          analyzers.put(entry.substring(0, eq), newAnalyzer(entry.substring(eq + 1)));
+        }
+        return analyzers;
       default:
         throw new IllegalArgumentException("unknown argument type " + type);
     }

@@ -80,6 +80,12 @@ const HIERARCHY: &[(&str, &str)] = &[
         "java.lang.NullPointerException",
         "java.lang.RuntimeException",
     ),
+    // `java.util.IllformedLocaleException extends RuntimeException`: what
+    // `Locale.Builder` throws for an ill-formed tag (`DateRecognizerFilterFactory`).
+    (
+        "java.util.IllformedLocaleException",
+        "java.lang.RuntimeException",
+    ),
     ("java.lang.Error", "java.lang.Throwable"),
     ("java.lang.AssertionError", "java.lang.Error"),
     (

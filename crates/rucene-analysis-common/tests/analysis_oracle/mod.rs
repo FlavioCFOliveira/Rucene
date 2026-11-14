@@ -111,6 +111,12 @@ pub enum Arg {
     CharSet(Vec<String>),
     /// `new CharArraySet(words, true)`.
     CharSetIgnoreCase(Vec<String>),
+    /// An `Analyzer`: a new instance of the named class, through its public
+    /// no-args constructor.
+    Analyzer(String),
+    /// A `Map<String, Analyzer>` of field names to new instances of the
+    /// named analyzer classes (no-args constructors).
+    AnalyzerMap(Vec<(String, String)>),
 }
 
 impl Arg {
@@ -131,6 +137,14 @@ impl Arg {
                     .chain(words.iter().map(|w| escape_str(w)))
                     .collect()
             }
+            Arg::Analyzer(class) => vec!["analyzer".into(), escape_str(class)],
+            Arg::AnalyzerMap(entries) => std::iter::once("analyzermap".to_string())
+                .chain(
+                    entries
+                        .iter()
+                        .map(|(field, class)| escape_str(&format!("{field}={class}"))),
+                )
+                .collect(),
         }
     }
 }
@@ -916,7 +930,8 @@ pub fn compare(java: &str, rust: &str, oracle: &Oracle) -> std::result::Result<(
 
 /// The attribute interfaces `AnalysisOracle.KNOWN` prints by name, with their
 /// Java simple names.
-fn known_attributes() -> [(TypeId, &'static str); 11] {
+/// The eleven attribute interfaces the dump names: their Java simple names.
+pub fn known_attributes() -> [(TypeId, &'static str); 11] {
     [
         (TypeId::of::<dyn CharTermAttribute>(), "CharTermAttribute"),
         (
@@ -1027,6 +1042,13 @@ pub fn fixture() -> PathBuf {
 /// class path `lucene-core` + `lucene-analysis-common`: `(success, stdout,
 /// stderr)`.
 pub fn run_java(args: &[&str]) -> (bool, String, String) {
+    run_java_file(&fixture(), args)
+}
+
+/// Runs the Java source file `source` with `args` as a single source file
+/// on the class path `lucene-core` + `lucene-analysis-common`: `(success,
+/// stdout, stderr)`.
+pub fn run_java_file(source: &Path, args: &[&str]) -> (bool, String, String) {
     let class_path = std::env::join_paths([
         lucene_jar("lucene-core"),
         lucene_jar("lucene-analysis-common"),
@@ -1035,7 +1057,7 @@ pub fn run_java(args: &[&str]) -> (bool, String, String) {
     let output = Command::new("java")
         .arg("-cp")
         .arg(class_path)
-        .arg(fixture())
+        .arg(source)
         .args(args)
         .output()
         .expect("a JDK is required to run the Lucene oracle");

@@ -1330,12 +1330,28 @@ impl TypeAttribute for PackedTokenAttributeImpl {
     }
 }
 
-impl TermFrequencyAttribute for PackedTokenAttributeImpl {
-    fn set_term_frequency(&mut self, term_frequency: i32) {
-        assert!(
-            term_frequency >= 1,
-            "Term frequency must be 1 or greater; got {term_frequency}"
+/// `if (termFrequency < 1) throw new IllegalArgumentException("Term
+/// frequency must be 1 or greater; got " + termFrequency)`, the check
+/// `PackedTokenAttributeImpl.setTermFrequency` and
+/// `TermFrequencyAttributeImpl.setTermFrequency` make: the setter returns
+/// nothing, so the unchecked exception is thrown as a panic the test
+/// framework and the analysis consumers read back as that class.
+fn check_term_frequency(term_frequency: i32) {
+    if term_frequency < 1 {
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.IllegalArgumentException",
+            Some(&format!(
+                "Term frequency must be 1 or greater; got {term_frequency}"
+            )),
         );
+    }
+}
+
+impl TermFrequencyAttribute for PackedTokenAttributeImpl {
+    /// Throws (panics with) Java's `IllegalArgumentException` for a
+    /// frequency below 1.
+    fn set_term_frequency(&mut self, term_frequency: i32) {
+        check_term_frequency(term_frequency);
         self.term_frequency = term_frequency;
     }
 
@@ -1604,11 +1620,10 @@ impl TermFrequencyAttributeImpl {
 impl Attribute for TermFrequencyAttributeImpl {}
 
 impl TermFrequencyAttribute for TermFrequencyAttributeImpl {
+    /// Throws (panics with) Java's `IllegalArgumentException` for a
+    /// frequency below 1.
     fn set_term_frequency(&mut self, term_frequency: i32) {
-        assert!(
-            term_frequency >= 1,
-            "Term frequency must be 1 or greater; got {term_frequency}"
-        );
+        check_term_frequency(term_frequency);
         self.term_frequency = term_frequency;
     }
 
