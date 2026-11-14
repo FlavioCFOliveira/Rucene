@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.complexPhrase`.
+//! Port of the Java package `org.apache.lucene.queryparser.complexPhrase`: the query parser for phrases holding wildcards, fuzzy terms
+//! and other queries, resolved into span queries.
 
 pub mod complex_phrase_query_parser;

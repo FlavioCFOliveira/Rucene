@@ -358,13 +358,43 @@ pub trait QueryBuilderOps {
         quoted: bool,
         phrase_slop: i32,
     ) -> Result<Option<Arc<dyn Query>>> {
+        let analyzer = self.query_builder().get_analyzer().cloned();
+        self.create_field_query_with_analyzer(
+            analyzer.as_ref(),
+            operator,
+            field,
+            query_text,
+            quoted,
+            phrase_slop,
+        )
+    }
+
+    /// Creates a query from the analysis chain of `analyzer`, which need not
+    /// be this builder's own.
+    ///
+    /// Equivalent to the protected
+    /// `createFieldQuery(Analyzer, Occur, String, String, boolean, int)`,
+    /// which `QueryParserBase.newFieldQuery` calls with the analyzer it is
+    /// given; `None` is Java's `null`, on which `tokenStream` raises
+    /// `NullPointerException`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from the analysis chain.
+    fn create_field_query_with_analyzer(
+        &self,
+        analyzer: Option<&Arc<dyn Analyzer>>,
+        operator: Occur,
+        field: &str,
+        query_text: &str,
+        quoted: bool,
+        phrase_slop: i32,
+    ) -> Result<Option<Arc<dyn Query>>> {
         debug_assert!(operator == Occur::SHOULD || operator == Occur::MUST);
 
         // Use the analyzer to get all the tokens, and then build an appropriate
         // query based on the analysis chain.
-        let source = self
-            .query_builder()
-            .get_analyzer()
+        let source = analyzer
             // `analyzer.tokenStream(field, queryText)` on a `null` analyzer.
             .ok_or_else(crate::error::LuceneError::null_pointer)?
             .token_stream_from_str(field, query_text)

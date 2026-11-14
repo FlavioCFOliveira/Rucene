@@ -15,6 +15,6 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.simple`.
+//! Port of the Java package `org.apache.lucene.queryparser.simple`: the simple query parser for human readable query syntax.
 
 pub mod simple_query_parser;

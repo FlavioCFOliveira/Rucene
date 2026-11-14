@@ -15,10 +15,89 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `NotQuery.java`, of the Java
-//! package `org.apache.lucene.queryparser.surround.query`.
+//! The port of `NotQuery.java`, of the Java package
+//! `org.apache.lucene.queryparser.surround.query`.
 
-/// Java: `public class`.
+use std::any::Any;
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::boolean_query;
+use rucene::search::{Occur, Query};
+
+use super::basic_query_factory::BasicQueryFactory;
+use super::composed_query::{self, ComposedQuery, ComposedQueryState};
+use super::srnd_boolean_query::SrndBooleanQuery;
+use super::srnd_query::{SrndQuery, SrndQueryState};
+
+/// Factory for prohibited clauses.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.surround.query.NotQuery`; ported by rmp task #492.
-pub struct NotQuery;
+/// Equivalent to `org.apache.lucene.queryparser.surround.query.NotQuery`.
+#[derive(Debug, Clone)]
+pub struct NotQuery {
+    composed: ComposedQueryState,
+}
+
+impl NotQuery {
+    /// Equivalent to `new NotQuery(List<SrndQuery>, String)`: an infix
+    /// operator.
+    ///
+    /// # Errors
+    ///
+    /// As [`ComposedQueryState::new`].
+    pub fn new(queries: Vec<Arc<dyn SrndQuery>>, op_name: &str) -> Result<Self> {
+        Ok(Self {
+            composed: ComposedQueryState::new(queries, true /* infix */, op_name)?,
+        })
+    }
+}
+
+impl ComposedQuery for NotQuery {
+    fn composed(&self) -> &ComposedQueryState {
+        &self.composed
+    }
+}
+
+impl SrndQuery for NotQuery {
+    fn srnd_state(&self) -> &SrndQueryState {
+        &self.composed.srnd
+    }
+
+    fn srnd_to_string(&self) -> String {
+        composed_query::to_string(self)
+    }
+
+    fn is_fields_sub_query_acceptable(&self) -> bool {
+        composed_query::is_fields_sub_query_acceptable(self)
+    }
+
+    fn clone_srnd(&self) -> Arc<dyn SrndQuery> {
+        Arc::new(self.clone())
+    }
+
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.queryparser.surround.query.NotQuery"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn make_lucene_query_field_no_boost(
+        self: Arc<Self>,
+        field_name: Option<&str>,
+        qf: &Arc<BasicQueryFactory>,
+    ) -> Result<Arc<dyn Query>> {
+        let lucene_sub_queries = self.make_lucene_sub_queries_field(field_name, qf)?;
+        let mut bq = boolean_query::Builder::new();
+        bq.add(Arc::clone(&lucene_sub_queries[0]), Occur::MUST)?;
+        SrndBooleanQuery::add_queries_to_boolean(
+            &mut bq,
+            // FIXME: do not allow weights on prohibited subqueries.
+            &lucene_sub_queries[1..],
+            // later subqueries: not required, prohibited
+            Occur::MUST_NOT,
+        )?;
+        Ok(Arc::new(bq.build()))
+    }
+}

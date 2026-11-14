@@ -15,10 +15,58 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SrndBooleanQuery.java`, of the Java
-//! package `org.apache.lucene.queryparser.surround.query`.
+//! The port of `SrndBooleanQuery.java`, of the Java package
+//! `org.apache.lucene.queryparser.surround.query`.
 
-/// Java: `class` (package-private).
+use std::sync::Arc;
+
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
+use rucene::search::boolean_query;
+use rucene::search::{Occur, Query};
+
+/// The static helpers that build the boolean queries of the surround
+/// queries.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.surround.query.SrndBooleanQuery`; ported by rmp task #492.
+/// Equivalent to the package-private class
+/// `org.apache.lucene.queryparser.surround.query.SrndBooleanQuery`.
 pub(crate) struct SrndBooleanQuery;
+
+impl SrndBooleanQuery {
+    /// Equivalent to `addQueriesToBoolean(BooleanQuery.Builder, List<Query>,
+    /// BooleanClause.Occur)`.
+    ///
+    /// # Errors
+    ///
+    /// The `TooManyClauses` of the builder.
+    pub(crate) fn add_queries_to_boolean(
+        bq: &mut boolean_query::Builder,
+        queries: &[Arc<dyn Query>],
+        occur: Occur,
+    ) -> Result<()> {
+        for q in queries {
+            bq.add(Arc::clone(q), occur)?;
+        }
+        Ok(())
+    }
+
+    /// Equivalent to `makeBooleanQuery(List<Query>, BooleanClause.Occur)`.
+    ///
+    /// # Errors
+    ///
+    /// `AssertionError("Too few subqueries: " + size)` for fewer than two
+    /// queries, and the `TooManyClauses` of the builder.
+    pub(crate) fn make_boolean_query(
+        queries: &[Arc<dyn Query>],
+        occur: Occur,
+    ) -> Result<Arc<dyn Query>> {
+        if queries.len() <= 1 {
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
+                "Too few subqueries: {}",
+                queries.len()
+            ))));
+        }
+        let mut bq = boolean_query::Builder::new();
+        Self::add_queries_to_boolean(&mut bq, queries, occur)?;
+        Ok(Arc::new(bq.build()))
+    }
+}

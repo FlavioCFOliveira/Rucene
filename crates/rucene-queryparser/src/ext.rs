@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.ext`.
+//! Port of the Java package `org.apache.lucene.queryparser.ext`: the extendable classic query parser and its field-name
+//! encoded extensions.
 
 pub mod extendable_query_parser;
 pub mod extension_query;

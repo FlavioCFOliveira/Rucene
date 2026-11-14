@@ -16,3 +16,7 @@ name = "rucene_queryparser"
 rucene = { path = "../.." }
 rucene-queries = { path = "../rucene-queries" }
 rucene-sandbox = { path = "../rucene-sandbox" }
+# Inflates the JDK 25 locale data of the `jdk` emulations
+# (`src/jdk/format_data.bin`, zlib), the backend and features the core crate
+# and `rucene-analysis-common` already build: no new crate in the graph.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }

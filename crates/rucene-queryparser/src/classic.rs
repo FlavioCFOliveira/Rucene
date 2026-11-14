@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.classic`.
+//! Port of the Java package `org.apache.lucene.queryparser.classic`: the classic query parser JavaCC generates, its base class and
+//! the multi-field parser.
 
 pub mod multi_field_query_parser;
 pub mod parse_exception;

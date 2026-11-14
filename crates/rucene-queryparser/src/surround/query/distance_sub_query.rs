@@ -15,10 +15,30 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `DistanceSubQuery.java`, of the Java
-//! package `org.apache.lucene.queryparser.surround.query`.
+//! The port of `DistanceSubQuery.java`, of the Java package
+//! `org.apache.lucene.queryparser.surround.query`.
 
-/// Java: `public interface`.
+use rucene::error::Result;
+
+use super::span_near_clause_factory::SpanNearClauseFactory;
+
+/// Interface for queries that can be nested as subqueries into a span near.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.surround.query.DistanceSubQuery`; ported by rmp task #492.
-pub trait DistanceSubQuery {}
+/// Equivalent to `org.apache.lucene.queryparser.surround.query.DistanceSubQuery`.
+pub trait DistanceSubQuery {
+    /// When `distance_sub_query_not_allowed()` returns non null, the reason
+    /// why the subquery is not allowed as a distance subquery is returned.
+    /// When `distance_sub_query_not_allowed()` returns `None`,
+    /// `add_span_queries` can be used in the creation of the span near
+    /// clause for the subquery.
+    ///
+    /// Equivalent to `distanceSubQueryNotAllowed()`.
+    fn distance_sub_query_not_allowed(&self) -> Option<String>;
+
+    /// Equivalent to `addSpanQueries(SpanNearClauseFactory)`.
+    ///
+    /// # Errors
+    ///
+    /// The `IOException` of the index access and `TooManyBasicQueries`.
+    fn add_span_queries(&self, sncf: &mut SpanNearClauseFactory) -> Result<()>;
+}

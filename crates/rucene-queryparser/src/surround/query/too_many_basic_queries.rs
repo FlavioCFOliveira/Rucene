@@ -15,10 +15,53 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `TooManyBasicQueries.java`, of the Java
-//! package `org.apache.lucene.queryparser.surround.query`.
+//! The port of `TooManyBasicQueries.java`, of the Java package
+//! `org.apache.lucene.queryparser.surround.query`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::{JavaThrowable, LuceneError, LuceneErrorKind};
+
+/// Exception thrown when `BasicQueryFactory` would exceed the limit of query
+/// clauses.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.surround.query.TooManyBasicQueries`; ported by rmp task #492.
-pub struct TooManyBasicQueries;
+/// Equivalent to `org.apache.lucene.queryparser.surround.query.TooManyBasicQueries`,
+/// a subclass of `java.io.IOException` (so that it is usable from within
+/// `Query.rewrite()`); it is thrown as a [`LuceneError`] of kind
+/// [`LuceneErrorKind::Throwable`].
+#[derive(Debug, Clone)]
+pub struct TooManyBasicQueries {
+    message: String,
+}
+
+impl TooManyBasicQueries {
+    /// Equivalent to `new TooManyBasicQueries(int)`.
+    pub fn new(max_basic_queries: i32) -> Self {
+        Self {
+            message: format!("Exceeded maximum of {max_basic_queries} basic queries."),
+        }
+    }
+
+    /// This exception as the [`LuceneError`] it is thrown as.
+    pub fn error(self) -> LuceneError {
+        LuceneError::from(LuceneErrorKind::Throwable(Arc::new(self)))
+    }
+}
+
+impl JavaThrowable for TooManyBasicQueries {
+    fn java_class(&self) -> &'static str {
+        "org.apache.lucene.queryparser.surround.query.TooManyBasicQueries"
+    }
+
+    fn get_message(&self) -> Option<&str> {
+        Some(&self.message)
+    }
+
+    fn is_io_exception(&self) -> bool {
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

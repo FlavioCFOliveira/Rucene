@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.surround.parser`.
+//! Port of the Java package `org.apache.lucene.queryparser.surround.parser`: the surround query parser JavaCC generates.
 
 pub mod parse_exception;
 pub mod query_parser;

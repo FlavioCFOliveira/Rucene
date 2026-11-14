@@ -30,6 +30,8 @@ pub mod classic;
 pub mod complex_phrase;
 pub mod ext;
 pub mod flexible;
+pub(crate) mod javacc;
+pub mod jdk;
 pub mod simple;
 pub mod surround;
 pub mod xml;

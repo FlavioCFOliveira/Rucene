@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.surround.query`.
+//! Port of the Java package `org.apache.lucene.queryparser.surround.query`: the surround queries and their rewriting into Lucene
+//! queries.
 
 pub mod and_query;
 pub mod basic_query_factory;

@@ -15,10 +15,81 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `AndQuery.java`, of the Java
-//! package `org.apache.lucene.queryparser.surround.query`.
+//! The port of `AndQuery.java`, of the Java package
+//! `org.apache.lucene.queryparser.surround.query`.
 
-/// Java: `public class`.
+use std::any::Any;
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::{Occur, Query};
+
+use super::basic_query_factory::BasicQueryFactory;
+use super::composed_query::{self, ComposedQuery, ComposedQueryState};
+use super::srnd_boolean_query::SrndBooleanQuery;
+use super::srnd_query::{SrndQuery, SrndQueryState};
+
+/// Factory for conjunctions.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.surround.query.AndQuery`; ported by rmp task #492.
-pub struct AndQuery;
+/// Equivalent to `org.apache.lucene.queryparser.surround.query.AndQuery`.
+#[derive(Debug, Clone)]
+pub struct AndQuery {
+    composed: ComposedQueryState,
+}
+
+impl AndQuery {
+    /// Equivalent to `new AndQuery(List<SrndQuery>, boolean, String)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`ComposedQueryState::new`].
+    pub fn new(queries: Vec<Arc<dyn SrndQuery>>, inf: bool, op_name: &str) -> Result<Self> {
+        Ok(Self {
+            composed: ComposedQueryState::new(queries, inf, op_name)?,
+        })
+    }
+}
+
+impl ComposedQuery for AndQuery {
+    fn composed(&self) -> &ComposedQueryState {
+        &self.composed
+    }
+}
+
+impl SrndQuery for AndQuery {
+    fn srnd_state(&self) -> &SrndQueryState {
+        &self.composed.srnd
+    }
+
+    fn srnd_to_string(&self) -> String {
+        composed_query::to_string(self)
+    }
+
+    fn is_fields_sub_query_acceptable(&self) -> bool {
+        composed_query::is_fields_sub_query_acceptable(self)
+    }
+
+    fn clone_srnd(&self) -> Arc<dyn SrndQuery> {
+        Arc::new(self.clone())
+    }
+
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.queryparser.surround.query.AndQuery"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn make_lucene_query_field_no_boost(
+        self: Arc<Self>,
+        field_name: Option<&str>,
+        qf: &Arc<BasicQueryFactory>,
+    ) -> Result<Arc<dyn Query>> {
+        SrndBooleanQuery::make_boolean_query(
+            /* subqueries can be individually boosted */
+            &self.make_lucene_sub_queries_field(field_name, qf)?,
+            Occur::MUST,
+        )
+    }
+}

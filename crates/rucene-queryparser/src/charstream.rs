@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.charstream`.
+//! Port of the Java package `org.apache.lucene.queryparser.charstream`: the character streams the JavaCC token managers read.
 
 pub mod char_stream;
 pub mod fast_char_stream;
