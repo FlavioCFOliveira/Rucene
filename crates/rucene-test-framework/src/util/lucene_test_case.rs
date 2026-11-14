@@ -75,8 +75,9 @@ pub const ASSERTION_FAILED_ERROR: &str = "junit.framework.AssertionFailedError";
 /// `org.junit.internal.AssumptionViolatedException`.
 const ASSUMPTION_VIOLATED_EXCEPTION: &str = "org.junit.internal.AssumptionViolatedException";
 
-/// Port of the annotation `LuceneTestCase.Nightly`: tests that should only be
-/// run during nightly builds (`@TestGroup(enabled = false, sysProperty =
+/// The annotation type of [`Nightly`] (`LuceneTestCase.Nightly.class`): tests
+/// that should only be run during nightly builds (`@Documented @Inherited
+/// @Retention(RUNTIME) @TestGroup(enabled = false, sysProperty =
 /// SYSPROP_NIGHTLY)`). Ported under the cycle rule: `TEST_NIGHTLY` reads its
 /// `TestGroup`.
 pub const NIGHTLY: AnnotationType = AnnotationType {
@@ -92,6 +93,10 @@ pub const NIGHTLY: AnnotationType = AnnotationType {
 
 /// An `@LuceneTestCase.Nightly` annotation value (the annotation has no
 /// members), for the tests and suites Lucene marks with it.
+///
+/// Equivalent to the annotation `LuceneTestCase.Nightly`: "Annotation for
+/// tests that should only be run during nightly builds." Its type, with the
+/// `@TestGroup` and `@Inherited` meta-annotations, is [`NIGHTLY`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Nightly;
 
@@ -351,6 +356,12 @@ pub static SUPPRESS_SYSOUT_CHECKS: AnnotationType =
     AnnotationType::plain(SUPPRESS_SYSOUT_CHECKS_NAME, "SuppressSysoutChecks", true);
 
 /// An `@SuppressSysoutChecks(bugUrl)` annotation value.
+///
+/// Equivalent to the annotation `LuceneTestCase.SuppressSysoutChecks`
+/// (`@Documented @Inherited @Retention(RUNTIME) @Target(TYPE)`). Its type is
+/// [`SUPPRESS_SYSOUT_CHECKS`]; `@Target(TYPE)` has no Rust counterpart, the
+/// one reader (`TestRuleLimitSysouts`) looks it up on the suite class only, as
+/// Java does.
 #[derive(Debug, Clone, Default)]
 pub struct SuppressSysoutChecks {
     /// `bugUrl()`: "point to JIRA entry."

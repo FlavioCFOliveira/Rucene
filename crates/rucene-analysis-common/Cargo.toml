@@ -22,3 +22,11 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 # files with in place of the JDK's SAX parser (MIT; user decision on rmp task
 # #461, 2026-11-13). No features: the reader decodes the bytes itself.
 quick-xml = "0.42.0"
+
+[dev-dependencies]
+# The tests port Lucene's analysis tests onto lucene/test-framework (and its
+# randomized-testing base), and draw the oracle corpus with its generators.
+# The test framework depends on this crate in turn: a dev-dependency cycle, as
+# `rucene-codecs` has.
+rucene-test-framework = { path = "../rucene-test-framework" }
+randomizedtesting = { path = "../randomizedtesting" }
