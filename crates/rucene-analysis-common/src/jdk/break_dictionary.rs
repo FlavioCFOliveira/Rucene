@@ -68,13 +68,18 @@ impl BreakDictionary {
     fn load() -> BreakDictionary {
         let text = std::str::from_utf8(WORD_LIST).expect("INVARIANT: the word list is UTF-8");
         let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
+        BreakDictionary::from_words(
+            text.lines()
+                .map(str::trim)
+                .filter(|word| !word.is_empty() && !word.starts_with('#')),
+        )
+    }
+
+    /// Builds the machine from `words` (each one a word of the dictionary).
+    pub(crate) fn from_words<'a>(words: impl Iterator<Item = &'a str>) -> BreakDictionary {
         let mut nodes = vec![Node::default()];
         let mut alphabet: Vec<u16> = Vec::new();
-        for line in text.lines() {
-            let word = line.trim();
-            if word.is_empty() || word.starts_with('#') {
-                continue;
-            }
+        for word in words {
             let mut node = 0usize;
             for unit in word.encode_utf16() {
                 alphabet.push(unit);

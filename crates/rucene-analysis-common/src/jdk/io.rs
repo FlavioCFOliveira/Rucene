@@ -215,12 +215,17 @@ pub(crate) fn utf8_decode_loop(
 /// decoder's actions.
 ///
 /// **Divergence from JDK 25.** `StreamDecoder` stops filling the caller's
-/// buffer early when the stream's `available()` answers 0 ("block at most
-/// once"); `std::io::Read` has no `available()`, so the stream is taken to
-/// have bytes available until it reports its end, which is what the
-/// `FileInputStream`, `ByteArrayInputStream` and `ZipInputStream` the module
-/// reads answer. A read therefore returns a full buffer unless the stream
-/// ends, as it does on the JDK for those streams.
+/// buffer early when it holds some units and the stream's `available()`
+/// answers 0 ("block at most once", `inReady()`); `std::io::Read` has no
+/// `available()`, so the port answers whether a byte remains by reading one
+/// byte ahead (kept for the next read). That is what `available() > 0`
+/// answers for the streams the module reads with `REPORT`, where the early
+/// stop is observable (a malformed sequence after a complete line is
+/// reported by the read after the one that returns the line): the
+/// `FileInputStream`, `Files.newInputStream` and `ByteArrayInputStream` of
+/// the resource loaders. `ZipInputStream.available()` answers 1 until a read
+/// meets the entry's end, but the module reads it with `REPLACE`, which
+/// decodes the same text however the reads are split.
 pub struct InputStreamReader<R: Read> {
     input: Option<R>,
     decoder: CharsetDecoder,
@@ -230,6 +235,8 @@ pub struct InputStreamReader<R: Read> {
     limit: usize,
     /// `haveLeftoverChar` and `leftoverChar`.
     leftover: Option<u16>,
+    /// The byte `in_ready` read ahead, not yet in `bytes`.
+    peeked: Option<u8>,
 }
 
 impl<R: Read> Debug for InputStreamReader<R> {
@@ -280,6 +287,27 @@ impl<R: Read> InputStreamReader<R> {
             position: 0,
             limit: 0,
             leftover: None,
+            peeked: None,
+        }
+    }
+
+    /// `StreamDecoder.inReady()`, `in.available() > 0`: whether a byte
+    /// remains, read ahead into `peeked` (see the type's documentation); an
+    /// I/O error answers `false`, as Java's `IOException` does.
+    fn in_ready(&mut self) -> bool {
+        if self.peeked.is_some() {
+            return true;
+        }
+        let Some(input) = self.input.as_mut() else {
+            return false;
+        };
+        let mut b = [0u8; 1];
+        match input.read(&mut b) {
+            Ok(1) => {
+                self.peeked = Some(b[0]);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -340,7 +368,13 @@ impl<R: Read> InputStreamReader<R> {
         self.position = 0;
         self.limit = pos;
         let input = self.input.as_mut().expect("INVARIANT: ensure_open checked");
-        let n = input.read(&mut self.bytes[pos..])?;
+        let n = match self.peeked.take() {
+            Some(b) => {
+                self.bytes[pos] = b;
+                1 + input.read(&mut self.bytes[pos + 1..])?
+            }
+            None => input.read(&mut self.bytes[pos..])?,
+        };
         if n == 0 {
             return Ok(None);
         }
@@ -360,6 +394,9 @@ impl<R: Read> InputStreamReader<R> {
                 CoderResult::Underflow => {
                     if eof || cp >= cbuf.len() {
                         break;
+                    }
+                    if cp > 0 && !self.in_ready() {
+                        break; // Block at most once
                     }
                     if self.read_bytes()?.is_none() {
                         eof = true;

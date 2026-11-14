@@ -153,6 +153,28 @@ pub fn get_word_instance(locale: &Locale) -> Box<dyn BreakIterator> {
     }
 }
 
+/// Returns a new Thai word iterator, as [`get_word_instance`] returns for
+/// `th`, whose dictionary holds `words` instead of the embedded ICU 79.1
+/// word list.
+///
+/// Not a JDK API: the oracle tests use it to run this emulation of
+/// `DictionaryBasedBreakIterator` on the JDK's own Thai word list (read
+/// from the local JDK at test time), which separates differences of the
+/// algorithm from those of the word list (the data-source divergence
+/// declared in [`break_dictionary`](super::break_dictionary)). The
+/// dictionary is leaked: each call allocates one for the process's life.
+#[doc(hidden)]
+pub fn get_thai_word_instance_with_words<'a>(
+    words: impl Iterator<Item = &'a str>,
+) -> Box<dyn BreakIterator> {
+    let dictionary: &'static BreakDictionary =
+        Box::leak(Box::new(BreakDictionary::from_words(words)));
+    Box::new(RuleBasedBreakIterator::with_dictionary(
+        thai_word_rules(),
+        dictionary,
+    ))
+}
+
 /// Returns a new break iterator for sentence breaks in `locale`.
 ///
 /// Equivalent to `BreakIterator.getSentenceInstance(Locale)` on JDK 25: a

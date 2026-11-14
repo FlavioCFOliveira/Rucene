@@ -52,7 +52,12 @@
 //!   `sentence_rules`).
 //!
 //! Character classes use JDK 25's general categories (`Character.getType`,
-//! Unicode 16.0, the data the JDK's build reads).
+//! Unicode 16.0, the data the JDK's build reads), as the JDK's builder
+//! reads them (`type_segments`: a gap before a `UnicodeData.txt` `First>`
+//! range of the same category joins the range), and supplementary code
+//! points are looked up in a table built as the JDK builds its
+//! `SupplementaryCharacterData` (`supplementary_table`: an ignore range
+//! loses its last code point, a single-code-point one vanishes).
 //!
 //! **Verification.** Java models of these tables, of `handleNext`,
 //! `handlePrevious` and the movements built on them were checked against
@@ -174,9 +179,30 @@ impl Set {
     }
 }
 
+/// The code points of the `<..., First>` lines of Unicode 16.0's
+/// `UnicodeData.txt`: the starts of the ranges it lists by their first and
+/// last code points (CJK ideographs and extensions, Hangul syllables,
+/// surrogates, Tangut, private use).
+const UNICODE_DATA_RANGE_STARTS: &[u32] = &[
+    0x3400, 0x4E00, 0xAC00, 0xD800, 0xDB80, 0xDC00, 0xE000, 0x17000, 0x18D00, 0x20000, 0x2A700,
+    0x2B740, 0x2B820, 0x2CEB0, 0x2EBF0, 0x30000, 0x31350, 0xF0000, 0x100000,
+];
+
 /// The segments of the code space over which the general category is
-/// constant: `(first code point, category)` in order, unassigned gaps being
-/// category 0, as `Character.getType` answers.
+/// constant, as the JDK's break-iterator builder sees the categories:
+/// `(first code point, category)` in order, unassigned gaps being category
+/// 0 (`Character.getType`), except a gap just before a `<..., First>` range
+/// of `UnicodeData.txt` whose preceding code point has the range's
+/// category: the gap takes that category.
+///
+/// The exception is how `build.tools.generatebreakiteratordata.CharacterCategory`
+/// (`storeNewData`) of JDK 25 reads `UnicodeData.txt`, the data of the
+/// JDK's compiled break-iterator tables: a `First>` line of the same
+/// category as the line before continues the current run without checking
+/// for a gap (only a line that is neither `First>` nor `Last>` is), so the
+/// gap ends up in the run. Observed on JDK 25.0.5: `U+2A6E0..U+2A6FF`, the
+/// gap between CJK Extensions B and C, joins letters in a word like an
+/// ideograph (`tests/break_iterator_jdk_oracle.rs`).
 fn type_segments() -> Vec<(u32, u8)> {
     let mut segments = Vec::with_capacity(TYPES.len() * 2);
     let mut next = 0u32;
@@ -189,6 +215,16 @@ fn type_segments() -> Vec<(u32, u8)> {
     }
     if next <= 0x10FFFF {
         segments.push((next, 0));
+    }
+    for &start in UNICODE_DATA_RANGE_STARTS {
+        let Ok(i) = segments.binary_search_by_key(&start, |&(first, _)| first) else {
+            continue;
+        };
+        // a gap (category 0) right before the range, after a code point of
+        // the range's category
+        if i >= 2 && segments[i - 1].1 == 0 && segments[i - 2].1 == segments[i].1 {
+            segments[i - 1].1 = segments[i].1;
+        }
     }
     segments
 }
@@ -270,12 +306,130 @@ pub(crate) struct RuleTable {
     /// (`DictionaryBasedBreakIterator.categoryFlags`); empty for a table
     /// without a dictionary.
     category_flags: Vec<bool>,
+    /// The categories of the supplementary code points, as the JDK's
+    /// `SupplementaryCharacterData` table (see [`supplementary_table`]).
+    supplementary: Vec<i32>,
+    /// The category of a code point the rules do not mention (the JDK's
+    /// category 0), which the supplementary table's default entries name.
+    default_category: i32,
+}
+
+/// The encoding of a category in [`supplementary_table`]: the JDK's value
+/// byte, `0` for the default category, `-1` (`0xFF`) for [`IGNORE`], and
+/// `1 +` the port's number for the others.
+fn supplementary_byte(category: i32, default_category: i32) -> Option<i64> {
+    if category == IGNORE {
+        Some(-1)
+    } else if category == default_category {
+        None
+    } else {
+        Some(i64::from(category) + 1)
+    }
+}
+
+/// The table `SupplementaryCharacterData.getValue` searches, built from the
+/// category runs `ranges` as the JDK's break-iterator builder builds it
+/// (`build.tools.generatebreakiteratordata.RuleBasedBreakIteratorBuilder`
+/// appending each category's supplementary ranges to its
+/// `SupplementaryCharacterData`, then `generateTable`), derived from the
+/// JDK 25 sources read as a specification.
+///
+/// Two consequences of that construction are the JDK's observable
+/// behaviour and reproduced here (observed on JDK 25.0.5 by
+/// `tests/break_iterator_jdk_oracle.rs`):
+///
+/// * an entry is the long `((start << 24) + end) << 8) + value` with the
+///   ignore value the byte `-1`, so for an ignore range the addition borrows
+///   from `end`: the range loses its last code point (`U+1343F`, the last
+///   of the Egyptian format controls `U+13430..U+1343F`, is not ignored);
+/// * a default entry follows a range only if the range is not a single
+///   code point (`end != start`) and a gap follows it; for an ignore range
+///   whose `end` the borrow moved below `start`, the default entry at
+///   `start` hides the range (`U+11001`, a single nonspacing mark, is not
+///   ignored).
+fn supplementary_table(ranges: &[(u32, i32)], default_category: i32) -> Vec<i32> {
+    const UPPER_LIMIT: i64 = 0x10FFFF + 1;
+    const CODEPOINT_MASK: i64 = 0x1F_FFFF;
+    const MIN_SUPPLEMENTARY_CODE_POINT: i64 = 0x10000;
+    let compose_entry =
+        |code_point: i64, value: i64| -> i32 { ((code_point as i32) << 8) | (value as i32 & 0xFF) };
+    // `appendElement(start, end, value)` for each supplementary range
+    let mut temp: Vec<i64> = Vec::new();
+    for (i, &(first, category)) in ranges.iter().enumerate() {
+        let last = ranges.get(i + 1).map_or(0x10FFFF, |&(next, _)| next - 1);
+        if i64::from(last) < MIN_SUPPLEMENTARY_CODE_POINT {
+            continue;
+        }
+        let Some(value) = supplementary_byte(category, default_category) else {
+            continue;
+        };
+        let start = i64::from(first).max(MIN_SUPPLEMENTARY_CODE_POINT);
+        temp.push((((start << 24) + i64::from(last)) << 8) + value);
+    }
+    // `generateTable()`
+    if temp.is_empty() {
+        return vec![compose_entry(0, 0), compose_entry(UPPER_LIMIT, 0)];
+    }
+    temp.sort_unstable();
+    let mut table: Vec<i32> = Vec::with_capacity(temp.len() * 2 + 3);
+    let mut data = temp[0];
+    let mut start = (data >> 32) & CODEPOINT_MASK;
+    let mut end = (data >> 8) & CODEPOINT_MASK;
+    if start != MIN_SUPPLEMENTARY_CODE_POINT {
+        table.push(compose_entry(MIN_SUPPLEMENTARY_CODE_POINT, 0));
+    }
+    table.push(compose_entry(start, data));
+    for &next in &temp[1..] {
+        data = next;
+        let next_start = (data >> 32) & CODEPOINT_MASK;
+        if end != start && end != next_start - 1 {
+            table.push(compose_entry(end + 1, 0));
+        }
+        table.push(compose_entry(next_start, data));
+        start = next_start;
+        end = (data >> 8) & CODEPOINT_MASK;
+    }
+    end += 1;
+    table.push(compose_entry(end, 0));
+    if end < UPPER_LIMIT {
+        table.push(compose_entry(UPPER_LIMIT, 0));
+    }
+    table
+}
+
+/// `SupplementaryCharacterData.getValue(index)` over `table`, decoded to a
+/// category (see [`supplementary_byte`]).
+fn supplementary_category(table: &[i32], index: i32, default_category: i32) -> i32 {
+    let mut i = 0usize;
+    let mut j = table.len() - 1;
+    loop {
+        let k = (i + j) / 2;
+        let start = table[k] >> 8;
+        let end = table[k + 1] >> 8;
+        if index < start {
+            j = k;
+        } else if index > end - 1 {
+            i = k;
+        } else {
+            return match table[k] & 0xFF {
+                0xFF => IGNORE,
+                0 => default_category,
+                v => v - 1,
+            };
+        }
+    }
 }
 
 impl RuleTable {
     /// `lookupCategory(int)`: the category of code point `c`, or
     /// [`IGNORE`].
+    ///
+    /// A supplementary code point is looked up in the JDK's
+    /// `SupplementaryCharacterData` table ([`supplementary_table`]).
     pub(crate) fn lookup_category(&self, c: i32) -> i32 {
+        if (0x10000..=0x10FFFF).contains(&c) {
+            return supplementary_category(&self.supplementary, c, self.default_category);
+        }
         let c = c.clamp(0, 0x10FFFF) as u32;
         let index = self.ranges.partition_point(|&(first, _)| first <= c) - 1;
         self.ranges[index].1
@@ -453,7 +607,7 @@ fn compile(classes: &[Set], ignore: &Set, dictionary: Option<usize>, rules: &[Re
         class.breakpoints(&mut points);
     }
     ignore.breakpoints(&mut points);
-    let (categories, masks) = categorize(&points, |c, t| {
+    let (mut categories, mut masks) = categorize(&points, |c, t| {
         let mask: u64 = classes
             .iter()
             .enumerate()
@@ -465,6 +619,13 @@ fn compile(classes: &[Set], ignore: &Set, dictionary: Option<usize>, rules: &[Re
             Some(mask)
         }
     });
+    // The JDK's tables always have category 0, the code points in no class;
+    // when every code point is in some class, the supplementary table's
+    // default entries (see `supplementary_table`) still name it.
+    if !masks.contains(&0) {
+        masks.push(0);
+        categories.count += 1;
+    }
 
     // the NFA of every rule from one start position
     let mut nfa = Nfa::default();
@@ -515,7 +676,15 @@ fn compile(classes: &[Set], ignore: &Set, dictionary: Option<usize>, rules: &[Re
         .map(|set| set.iter().fold(0, |f, &x| f | nfa.flags[x]))
         .collect();
     let backwards_state_table = pair_table(&state_table, categories.count, None);
+    // the category of the code points in no class (the JDK's category 0)
+    let default_category = masks
+        .iter()
+        .position(|&m| m == 0)
+        .expect("INVARIANT: category 0 was added above") as i32;
+    let supplementary = supplementary_table(&categories.ranges, default_category);
     RuleTable {
+        supplementary,
+        default_category,
         ranges: categories.ranges,
         num_categories: categories.count,
         state_table,
@@ -1108,7 +1277,16 @@ pub(crate) fn sentence_rules() -> &'static RuleTable {
             }
         }
 
+        // `,` is in no class but `.`, as a code point the rules do not
+        // mention (the JDK's category 0)
+        let default_category = keys
+            .iter()
+            .position(|&k| k == K::Other)
+            .expect("INVARIANT: `,` has a category") as i32;
+        let supplementary = supplementary_table(&categories.ranges, default_category);
         RuleTable {
+            supplementary,
+            default_category,
             ranges: categories.ranges,
             num_categories: categories.count,
             state_table,

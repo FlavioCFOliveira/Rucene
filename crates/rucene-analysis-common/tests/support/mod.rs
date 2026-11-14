@@ -237,6 +237,14 @@ pub static TEST_RESOURCES: &[(&str, &[u8])] = &[
     test_resource!("org/apache/lucene/analysis/miscellaneous/keep-snowball.txt"),
     test_resource!("org/apache/lucene/analysis/miscellaneous/protected-1.txt"),
     test_resource!("org/apache/lucene/analysis/miscellaneous/protected-2.txt"),
+    test_resource!("org/apache/lucene/analysis/synonym/synonyms.txt"),
+    test_resource!("org/apache/lucene/analysis/synonym/synonyms2.txt"),
+    test_resource!("org/apache/lucene/analysis/synonym/synonyms-wordnet.txt"),
+    test_resource!("org/apache/lucene/analysis/synonym/word2vec/word2vec-model.zip"),
+    test_resource!("org/apache/lucene/analysis/synonym/word2vec/word2vec-empty-model.zip"),
+    test_resource!(
+        "org/apache/lucene/analysis/synonym/word2vec/word2vec-corrupted-vector-dimension-model.zip"
+    ),
     test_resource!("org/apache/lucene/analysis/util/frenchArticles.txt"),
 ];
 
@@ -521,6 +529,23 @@ pub fn keyword_tokenizer_analyzer(
         let tokenizer = Arc::new(rucene::util::atomic_ref_cell::AtomicRefCell::new(
             new_keyword_tokenizer(),
         ));
+        let stream = chain(shared(&tokenizer))?;
+        Ok(components(tokenizer, sink(BoxedStream(stream))))
+    })
+    .arc()
+}
+
+/// `new Analyzer() { createComponents: tokenizer = make(); return new
+/// TokenStreamComponents(tokenizer, chain(tokenizer)); }` over any tokenizer.
+pub fn tokenizer_analyzer<T: rucene_test_framework::analysis::ReaderTokenizer + 'static>(
+    name: &'static str,
+    make: impl Fn() -> Result<T> + Send + Sync + 'static,
+    chain: impl Fn(Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>> + Send + Sync + 'static,
+) -> Arc<dyn Analyzer> {
+    use rucene_test_framework::analysis::mock_analyzer::BoxedStream;
+    use rucene_test_framework::analysis::{components, shared, sink};
+    FnAnalyzer::new(name, move |_| {
+        let tokenizer = Arc::new(rucene::util::atomic_ref_cell::AtomicRefCell::new(make()?));
         let stream = chain(shared(&tokenizer))?;
         Ok(components(tokenizer, sink(BoxedStream(stream))))
     })

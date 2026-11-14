@@ -517,7 +517,10 @@ impl<R: Read> ZipInputStream<R> {
         let mut tmpbuf = self.tmpbuf;
         match self.read_fully(&mut tmpbuf[..LOCHDR]) {
             Ok(()) => {}
-            Err(e) if e.java_simple_name() == "EOFException" => return Ok(None),
+            // `catch (EOFException e)`: an `IOException` whose Java class is
+            // `java.io.EOFException` (`java_simple_name` answers
+            // `IOException` for every I/O error, so it cannot tell them apart)
+            Err(e) if is_eof_exception(&e) => return Ok(None),
             Err(e) => return Err(e),
         }
         self.tmpbuf = tmpbuf;
@@ -674,4 +677,12 @@ impl<R: Read> Read for ZipInputStream<R> {
             }),
         }
     }
+}
+
+/// Whether `e` is a `java.io.EOFException`.
+fn is_eof_exception(e: &LuceneError) -> bool {
+    matches!(
+        e.kind(),
+        LuceneErrorKind::Io(io) if rucene::store::java_nio_file::java_class_of(io) == "java.io.EOFException"
+    )
 }

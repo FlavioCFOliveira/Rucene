@@ -223,7 +223,12 @@ impl Dl4jModelReader {
     ///
     /// `StringIndexOutOfBoundsException` for a term shorter than 4 units,
     /// and the `IllegalArgumentException` of `Base64.Decoder.decode`.
-    pub(crate) fn decode_b64_term(term: &[u16]) -> Result<BytesRef> {
+    ///
+    /// Java's method is package-private (`static`), reached by the same
+    /// package's `TestDl4jModelReader`; Rust's integration tests are another
+    /// crate, so the port makes it public (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn decode_b64_term(term: &[u16]) -> Result<BytesRef> {
         let buffer = base64::decode_string(substring(term, 4, term.len())?)?;
         Ok(BytesRef::new(buffer))
     }
