@@ -748,8 +748,8 @@ fn write_with_rucene(
     // Java fixture uses, which inherits the `Analyzer` defaults of 0 and 1.
     let analyzer: Arc<dyn Analyzer> = Arc::new(StandardAnalyzer::new());
     for spec in &specs {
-        assert_eq!(analyzer.get_position_increment_gap(spec.name), 0);
-        assert_eq!(analyzer.get_offset_gap(spec.name), 1);
+        assert_eq!(analyzer.get_position_increment_gap(Some(spec.name)), 0);
+        assert_eq!(analyzer.get_offset_gap(Some(spec.name)), 1);
     }
     let live = Arc::new(LiveIndexWriterConfig::new(Some(Arc::clone(&analyzer))));
 

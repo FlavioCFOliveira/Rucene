@@ -589,12 +589,12 @@ fn write_with_rucene(
     // Java fixture uses, which inherits the `Analyzer` defaults of 0 and 1.
     let analyzer: Arc<dyn Analyzer> = Arc::new(StandardAnalyzer::new());
     assert_eq!(
-        analyzer.get_position_increment_gap(FIELD),
+        analyzer.get_position_increment_gap(Some(FIELD)),
         0,
         "the two analyzers must apply the same position gap"
     );
     assert_eq!(
-        analyzer.get_offset_gap(FIELD),
+        analyzer.get_offset_gap(Some(FIELD)),
         1,
         "the two analyzers must apply the same offset gap"
     );
