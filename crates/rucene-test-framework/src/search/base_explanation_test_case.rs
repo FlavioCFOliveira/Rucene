@@ -26,7 +26,7 @@
 //! The class is declared by [`class()`] (its `@BeforeClass` and
 //! `@AfterClass` hooks); it declares no test. Its static state
 //! (`searcher`, `reader`, `directory`, `analyzer`) is [`STATE`], read
-//! through [`searcher`]; its helpers are the functions of this module.
+//! through [`state`]; its helpers are the functions of this module.
 //!
 //! **Divergence** (`afterClassTestExplanations`): `analyzer.close()` closes
 //! the analyzer through its only handle; the writer and its configuration,
@@ -95,6 +95,10 @@ pub fn state() -> MutexGuard<'static, Option<ExplanationState>> {
 
 /// The declaration of `org.apache.lucene.tests.search.BaseExplanationTestCase`
 /// (`public abstract class BaseExplanationTestCase extends LuceneTestCase`).
+///
+/// Equivalent to `org.apache.lucene.tests.search.BaseExplanationTestCase`:
+/// the class, its `@BeforeClass`/`@AfterClass` hooks and, through this
+/// module, its static state and helpers.
 pub fn class() -> Arc<Class> {
     static CLASS: LazyLock<Arc<Class>> = LazyLock::new(|| {
         Class::builder("org.apache.lucene.tests.search.BaseExplanationTestCase")

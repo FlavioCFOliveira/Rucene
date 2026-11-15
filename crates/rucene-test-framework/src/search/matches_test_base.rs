@@ -28,6 +28,14 @@
 //! **Divergence** (`checkLabelCount`): Java counts the distinct query
 //! objects by identity (`IdentityHashMap`); the port counts the distinct
 //! addresses of the `Arc<dyn Query>` each match reports.
+//!
+//! **Divergence** (`assertNull` of a `Matches` or a `MatchesIterator`): JUnit's
+//! failure message is `expected null, but was:<...>` around
+//! `String.valueOf(actual)`, and none of Lucene's `Matches`/`MatchesIterator`
+//! classes overrides `Object.toString()`, so Java prints
+//! `<class name>@<identity hash>`, which no run reproduces; the port prints
+//! `<Matches>` or `<MatchesIterator>`. The assertion and its `AssertionError`
+//! are Java's.
 
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
@@ -43,6 +51,7 @@ use rucene::search::matches::{Matches, MatchesIterator};
 use rucene::search::named_matches::NamedMatches;
 use rucene::search::query::Query;
 use rucene::search::score_mode::ScoreMode;
+use rucene::util::java_collections::{JavaHashCode, JavaHashSet, JavaObjectHashSet};
 
 use crate::analysis::MockAnalyzer;
 use crate::index::RandomIndexWriter;
@@ -81,6 +90,10 @@ static DOCS_AND_FREQS: LazyLock<FieldType> =
 /// The declaration of `org.apache.lucene.tests.search.MatchesTestBase`
 /// (`public abstract class MatchesTestBase extends LuceneTestCase`), with
 /// its `setUp()` and `tearDown()` overrides.
+///
+/// Equivalent to `org.apache.lucene.tests.search.MatchesTestBase`: the class
+/// and its `setUp()`/`tearDown()` overrides; its abstract member is
+/// [`MatchesTestBase`], its instance fields [`MatchesState`].
 pub fn class() -> Arc<Class> {
     static CLASS: LazyLock<Arc<Class>> = LazyLock::new(|| {
         Class::builder("org.apache.lucene.tests.search.MatchesTestBase")
@@ -236,6 +249,15 @@ impl TermMatch {
     }
 }
 
+impl JavaHashCode for TermMatch {
+    /// `Objects.hash(position, startOffset, endOffset)`.
+    fn java_hash_code(&self) -> i32 {
+        [self.position, self.start_offset, self.end_offset]
+            .iter()
+            .fold(1i32, |h, &v| h.wrapping_mul(31).wrapping_add(v))
+    }
+}
+
 impl std::fmt::Display for TermMatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -251,6 +273,32 @@ fn assert_null_iterator(it: &Option<Box<dyn MatchesIterator>>) {
     if it.is_some() {
         Assert::fail("expected null, but was:<MatchesIterator>");
     }
+}
+
+/// The `NullPointerException` Java throws when a method is called on a
+/// `null` matches iterator (`it.next()` in `checkFieldMatches` and
+/// `checkTerms`).
+fn null_iterator() -> ! {
+    randomizedtesting::jdk::exception::throw_without_message("java.lang.NullPointerException")
+}
+
+/// `AbstractCollection.toString()` of a `HashSet<String>`: `[a, b]`, in the
+/// set's iteration order.
+fn java_set_to_string(set: &JavaHashSet) -> String {
+    let items: Vec<&str> = set.iter().map(String::as_str).collect();
+    format!("[{}]", items.join(", "))
+}
+
+/// `new HashSet<>(Collection)` of JDK 25: `HashMap.newHashMap(Math.max(c.size(),
+/// 12))`, then one `add` per element in the collection's order.
+fn term_match_set(items: &[TermMatch]) -> JavaObjectHashSet<TermMatch> {
+    let requested = (items.len() as i32).max(12);
+    let capacity = (f64::from(requested) / 0.75).ceil() as i32;
+    let mut set = JavaObjectHashSet::with_initial_capacity(capacity);
+    for tm in items {
+        set.insert(*tm);
+    }
+    set
 }
 
 impl MatchesState {
@@ -296,11 +344,11 @@ impl MatchesState {
                 assert_null_iterator(&it);
                 continue;
             }
-            let mut it = it.unwrap_or_else(|| Assert::fail_without_message());
+            let mut it = it.unwrap_or_else(|| null_iterator());
             self.check_field_matches(&mut *it, e)?;
             let mut again = matches
                 .get_matches(field)?
-                .unwrap_or_else(|| Assert::fail_without_message());
+                .unwrap_or_else(|| null_iterator());
             self.check_field_matches(&mut *again, e)?; // test multiple calls
         }
         Ok(())
@@ -422,8 +470,11 @@ impl MatchesState {
                 );
                 continue;
             };
-            let expected_queries: HashSet<String> = names.iter().map(|s| s.to_string()).collect();
-            let actual_queries: HashSet<String> = NamedMatches::find_named_matches(matches)
+            // `new HashSet<>(Arrays.asList(expectedNames[i]))`.
+            let expected_queries =
+                JavaHashSet::from_collection(names.iter().map(|s| s.to_string()));
+            // `Collectors.toSet()`: `HashSet::new`, then `add` per name.
+            let actual_queries: JavaHashSet = NamedMatches::find_named_matches(matches)
                 .iter()
                 .filter_map(|m| {
                     m.as_any()
@@ -431,15 +482,29 @@ impl MatchesState {
                         .map(|n| n.get_name().to_string())
                 })
                 .collect();
-            let unexpected: Vec<&String> = actual_queries.difference(&expected_queries).collect();
+            let mut unexpected =
+                JavaHashSet::from_collection(actual_queries.iter().cloned().collect::<Vec<_>>());
+            for q in expected_queries.iter() {
+                unexpected.remove(q);
+            }
             Assert::assert_equals_msg(
-                Some(&format!("Unexpected matching leaf queries: {unexpected:?}")),
+                Some(&format!(
+                    "Unexpected matching leaf queries: {}",
+                    java_set_to_string(&unexpected)
+                )),
                 0,
                 unexpected.len(),
             );
-            let missing: Vec<&String> = expected_queries.difference(&actual_queries).collect();
+            let mut missing =
+                JavaHashSet::from_collection(expected_queries.iter().cloned().collect::<Vec<_>>());
+            for q in actual_queries.iter() {
+                missing.remove(q);
+            }
             Assert::assert_equals_msg(
-                Some(&format!("Missing matching leaf queries: {missing:?}")),
+                Some(&format!(
+                    "Missing matching leaf queries: {}",
+                    java_set_to_string(&missing)
+                )),
                 0,
                 missing.len(),
             );
@@ -487,7 +552,7 @@ impl MatchesState {
                 assert_null_iterator(&it);
                 continue;
             }
-            let mut it = it.unwrap_or_else(|| Assert::fail_without_message());
+            let mut it = it.unwrap_or_else(|| null_iterator());
             check_terms(e, &mut *it)?;
         }
         Ok(())
@@ -498,7 +563,7 @@ impl MatchesState {
 fn check_terms(expected: &[Vec<TermMatch>], it: &mut dyn MatchesIterator) -> Result<()> {
     let mut up_to = 0;
     while it.next()? {
-        let mut expected_matches: HashSet<TermMatch> = expected[up_to].iter().copied().collect();
+        let mut expected_matches = term_match_set(&expected[up_to]);
         let mut submatches = it.get_sub_matches()?.unwrap_or_else(|| {
             randomizedtesting::jdk::exception::throw_without_message(
                 "java.lang.NullPointerException",

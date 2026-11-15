@@ -24,3 +24,10 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 # at the version `rucene-analysis-common` already builds (approved on rmp
 # task #461; decided for the XML query parser on task #493).
 quick-xml = "0.42.0"
+
+[dev-dependencies]
+# The tests port Lucene's queryparser tests onto lucene/test-framework (and
+# its randomized-testing base); the Java-oracle harness they share with
+# `rucene-queries` (rmp #475) draws on both.
+rucene-test-framework = { path = "../rucene-test-framework" }
+randomizedtesting = { path = "../randomizedtesting" }

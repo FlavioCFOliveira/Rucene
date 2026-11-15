@@ -84,6 +84,10 @@ pub fn state() -> MutexGuard<'static, Option<EquivalenceState>> {
 /// The declaration of `org.apache.lucene.tests.search.SearchEquivalenceTestBase`
 /// (`@SuppressCodecs("SimpleText") public abstract class
 /// SearchEquivalenceTestBase extends LuceneTestCase`).
+///
+/// Equivalent to `org.apache.lucene.tests.search.SearchEquivalenceTestBase`:
+/// the class, its `@BeforeClass`/`@AfterClass` hooks and, through this
+/// module, its static state and helpers.
 pub fn class() -> Arc<Class> {
     static CLASS: LazyLock<Arc<Class>> = LazyLock::new(|| {
         Class::builder("org.apache.lucene.tests.search.SearchEquivalenceTestBase")
@@ -404,9 +408,14 @@ pub fn assert_same_scores_filtered(
     let td1 = state.s1.search(q1, max_doc)?;
     let td2 = state.s2.search(q2, max_doc)?;
     Assert::assert_equals(td1.total_hits.value(), td2.total_hits.value());
-    for (a, b) in td1.score_docs.iter().zip(&td2.score_docs) {
+    // Java walks `td1.scoreDocs` and indexes `td2.scoreDocs[i]` (an
+    // `ArrayIndexOutOfBoundsException` when `td2` is shorter); `10e-5` is a
+    // `double`, so the overload is `assertEquals(double, double, double)`
+    // over the widened scores.
+    for i in 0..td1.score_docs.len() {
+        let (a, b) = (&td1.score_docs[i], &td2.score_docs[i]);
         Assert::assert_equals(a.doc, b.doc);
-        Assert::assert_equals_float_msg(None, a.score, b.score, 10e-5);
+        Assert::assert_equals_double_msg(None, f64::from(a.score), f64::from(b.score), 10e-5);
     }
     Ok(())
 }

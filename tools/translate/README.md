@@ -169,3 +169,11 @@ the committed file, and rerunning it must leave that file unchanged.
   (the canonical combining class runs `String.toLowerCase(Locale)` reads for the Lithuanian
   special casing) from the running JDK. Rerun with JDK 25:
   `java --add-exports java.base/sun.text=ALL-UNNAMED tools/translate/JdkCombiningClassData.java crates/rucene-queryparser/src/jdk/combining_class_data.rs`.
+* `JdkFormatOracle.java` — the JDK 25 oracle of that emulation, run by
+  `crates/rucene-queryparser/tests/jdk_format_oracle.rs` (rmp #476) as a single source file on
+  the public API only: `java JdkFormatOracle.java <seed> <shard> <shards>` prints, for each
+  locale of `Locale.getAvailableLocales()` in the shard, the `DateFormat.getDateInstance(SHORT,
+  l)` pattern, `format` and lenient/strict `parse` results, the `getNumberInstance` /
+  `getIntegerInstance` `format` and `parse` results, and `toLowerCase(l)` of seeded inputs. The
+  queryparser's `src/jdk/time_zone_data.rs` must be regenerated (`tools/gen/TimeZoneRules.java
+  crates/rucene-queryparser/src/jdk/time_zone_data.rs`) whenever the JDK's tzdata changes.

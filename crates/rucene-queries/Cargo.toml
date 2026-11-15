@@ -14,3 +14,10 @@ name = "rucene_queries"
 
 [dependencies]
 rucene = { path = "../.." }
+
+[dev-dependencies]
+# The tests port Lucene's query-module tests onto lucene/test-framework (and
+# its randomized-testing base), and the Java-oracle harness of the query
+# modules (`tests/query_oracle/`, rmp #475) draws on both.
+rucene-test-framework = { path = "../rucene-test-framework" }
+randomizedtesting = { path = "../randomizedtesting" }
