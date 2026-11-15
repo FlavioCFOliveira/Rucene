@@ -37,16 +37,24 @@ import java.util.Map;
 import java.util.function.Supplier;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.PostingsEnum;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.queries.spans.SpanCollector;
+import org.apache.lucene.queries.spans.SpanQuery;
+import org.apache.lucene.queries.spans.SpanWeight;
+import org.apache.lucene.queries.spans.Spans;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.automaton.ByteRunAutomaton;
 
 /**
@@ -70,14 +78,16 @@ import org.apache.lucene.util.automaton.ByteRunAutomaton;
  *   <li>{@code let <name> <expr>}: binds {@code $name};
  *   <li>{@code do <expr>}: evaluates the expression for its effect;
  *   <li>{@code query <id> <expr>}: search parity of the query the expression builds;
+ *   <li>{@code spans <id> <expr> <postings>}: span parity of the span query the expression
+ *       builds, its spans iterated with the {@code SpanWeight.Postings} constant {@code postings};
  *   <li>{@code parse <id> <expr> <input> [<field>]}: parser parity of the expression evaluated
  *       with {@code $input} bound to the (escaped) input.
  * </ul>
  *
  * <p>Expressions are S-expressions: {@code "..."} a {@code String} (escaped as below), {@code
  * null}, {@code i:1} {@code int}, {@code l:1} {@code long}, {@code f:1.5} {@code float}, {@code
- * d:1.5} {@code double}, {@code z:true} {@code boolean}, {@code c:0041} {@code char}, {@code $name}
- * a binding; {@code (new <class> args...)} the public constructor the arguments fit, {@code
+ * d:1.5} {@code double}, {@code z:true} {@code boolean}, {@code c:0041} {@code char}, {@code b:-1}
+ * {@code byte}, {@code $name} a binding; {@code (new <class> args...)} the public constructor the arguments fit, {@code
  * (static <class> <method> args...)}, {@code (call <method> <receiver> args...)}, {@code (field
  * <class> <name>)} a public static field (an enum constant), {@code (array <component class>
  * elems...)}, {@code (list elems...)} an {@code ArrayList}, and {@code (cast <class> expr)}, which
@@ -93,7 +103,12 @@ import org.apache.lucene.util.automaton.ByteRunAutomaton;
  * failure prints {@code error <stage> <class> <message>} and ends the record. Per {@code parse}:
  * {@code parse <id>}, then {@code tostring} (and {@code tostringf} with the field), {@code
  * classtree}, or {@code value <class> <string>} for a result that is no query, or {@code error
- * <class> <message>}. The class tree is the query's class and the calls {@code
+ * <class> <message>}. Per {@code spans}: {@code spans <id>}, {@code tostring}, {@code rewritten},
+ * then per leaf {@code leaf <ord> null} when {@code getSpans} returns {@code null}, else {@code leaf
+ * <ord> <docBase>} followed, for every document the spans iterate, by {@code sdoc <doc>} and, per
+ * span, {@code span <start> <end> <width>} and one {@code coll <term> <position> <payload hex or
+ * null>} per {@code collectLeaf} call its {@code collect} makes; a failure prints {@code error spans
+ * <class> <message>} and ends the record. The class tree is the query's class and the calls {@code
  * Query.visit(QueryVisitor)} makes on a visitor that records every {@code getSubVisitor}, {@code
  * consumeTerms}, {@code consumeTermsMatching} and {@code visitLeaf}, siblings sorted (see {@link
  * Node#render}). Strings are escaped: printable
@@ -248,6 +263,7 @@ public final class QueryOracle {
         case "d:" -> Double.parseDouble(value);
         case "z:" -> Boolean.parseBoolean(value);
         case "c:" -> (char) Integer.parseInt(value, 16);
+        case "b:" -> Byte.parseByte(value);
         default -> throw new IllegalStateException("harness: bad atom " + atom);
       };
     }
@@ -573,7 +589,14 @@ public final class QueryOracle {
       error("build", t);
       return;
     }
-    line("tostring", escape(q.toString()));
+    String text;
+    try {
+      text = q.toString();
+    } catch (Throwable t) {
+      error("tostring", t);
+      return;
+    }
+    line("tostring", escape(text));
     line("classtree", escape(classTree(q)));
     Query rewritten;
     try {
@@ -609,6 +632,86 @@ public final class QueryOracle {
         error("explain", t);
         return;
       }
+    }
+  }
+
+  /** The payload bytes in lower-case hexadecimal, {@code null} for none. */
+  static String hex(BytesRef b) {
+    if (b == null) {
+      return "null";
+    }
+    StringBuilder out = new StringBuilder();
+    for (int i = b.offset; i < b.offset + b.length; i++) {
+      out.append(String.format("%02x", b.bytes[i] & 0xff));
+    }
+    return out.toString();
+  }
+
+  void spans(String id, String expr, String postings) {
+    line("spans", id);
+    Query q;
+    try {
+      q = (Query) eval(parse(expr));
+    } catch (Throwable t) {
+      error("build", t);
+      return;
+    }
+    String text;
+    try {
+      text = q.toString();
+    } catch (Throwable t) {
+      error("tostring", t);
+      return;
+    }
+    line("tostring", escape(text));
+    try {
+      Query rewritten = searcher.rewrite(q);
+      line("rewritten", escape(rewritten.toString()));
+      SpanWeight weight =
+          ((SpanQuery) rewritten).createWeight(searcher, ScoreMode.COMPLETE_NO_SCORES, 1f);
+      SpanWeight.Postings required = SpanWeight.Postings.valueOf(postings);
+      List<String> collected = new ArrayList<>();
+      SpanCollector collector =
+          new SpanCollector() {
+            @Override
+            public void collectLeaf(PostingsEnum p, int position, Term term) throws java.io.IOException {
+              collected.add(
+                  String.join(
+                      "\t",
+                      "coll",
+                      escape(term.toString()),
+                      Integer.toString(position),
+                      hex(p.getPayload())));
+            }
+
+            @Override
+            public void reset() {}
+          };
+      for (LeafReaderContext ctx : reader.leaves()) {
+        Spans s = weight.getSpans(ctx, required);
+        if (s == null) {
+          line("leaf", Integer.toString(ctx.ord), "null");
+          continue;
+        }
+        line("leaf", Integer.toString(ctx.ord), Integer.toString(ctx.docBase));
+        while (s.nextDoc() != Spans.NO_MORE_DOCS) {
+          line("sdoc", Integer.toString(s.docID()));
+          while (s.nextStartPosition() != Spans.NO_MORE_POSITIONS) {
+            line(
+                "span",
+                Integer.toString(s.startPosition()),
+                Integer.toString(s.endPosition()),
+                Integer.toString(s.width()));
+            collected.clear();
+            s.collect(collector);
+            for (String c : collected) {
+              out.append(c).append('\n');
+            }
+          }
+        }
+      }
+    } catch (Throwable t) {
+      error("spans", t);
     }
   }
 
@@ -654,6 +757,7 @@ public final class QueryOracle {
         case "let" -> vars.put(f[1], eval(parse(f[2])));
         case "do" -> eval(parse(f[1]));
         case "query" -> query(f[1], f[2]);
+        case "spans" -> spans(f[1], f[2], f[3]);
         case "parse" -> parseRecord(f[1], f[2], unescape(f[3]), f.length > 4 ? unescape(f[4]) : null);
         default -> throw new IllegalStateException("harness: bad spec line " + l);
       }

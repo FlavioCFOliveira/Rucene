@@ -240,10 +240,11 @@ impl Query for SpanPayloadCheckQuery {
         for bytes in self.payload_to_match.iter() {
             match bytes {
                 Some(bytes) => buffer.push_str(&Term::to_string_bytes_ref(bytes)),
-                // `Term.toString(null)` dereferences its argument.
+                // `Term.toString(null)` dereferences its argument
+                // (`Term.java:116`); the message is JDK 25's helpful one.
                 None => rucene::store::java_nio_file::throw_unchecked(
                     "java.lang.NullPointerException",
-                    None,
+                    Some("Cannot read field \"bytes\" because \"termText\" is null"),
                 ),
             }
             buffer.push(';');

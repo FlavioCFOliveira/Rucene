@@ -22,9 +22,10 @@ use std::cell::RefCell;
 use std::sync::{Arc, Weak};
 
 use rucene::error::{LuceneError, Result};
+use rucene::index::multi_reader::get_top_level_context;
 use rucene::index::{
-    LeafReaderContext, PostingsEnum, Term, POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS,
-    POSTINGS_ENUM_POSITIONS,
+    IndexReaderContext, LeafReaderContext, PostingsEnum, Term, POSTINGS_ENUM_OFFSETS,
+    POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
 };
 use rucene::search::index_searcher::IndexSearcher;
 use rucene::search::matches::{owned_leaf_context, Matches, MatchesIterator, MatchesUtils};
@@ -423,7 +424,7 @@ pub fn span_weight_matches(
     let base = weight.span_weight_base();
     let this = base.this()?;
     let query = base.get_query();
-    let context = owned_leaf_context(context);
+    let context = leaf_context_handle(context)?;
     // A weight with a `null` field opens no spans, so the supplier answers
     // `null` before `MatchesUtils.forField` would keep the field.
     let field = base.field.clone().unwrap_or_default();
@@ -443,6 +444,39 @@ pub fn span_weight_matches(
             }) as Box<dyn MatchesIterator>))
         }),
     )
+}
+
+/// An owning handle on `context` itself, for the `Matches` supplier of
+/// [`span_weight_matches`] to keep.
+///
+/// Java's anonymous supplier captures the `LeafReaderContext` object it is
+/// handed (`SpanWeight.java:210-217`); the spans it opens later run
+/// `SpanTermWeight.getSpans`, whose
+/// `assert termStates.wasBuiltFor(ReaderUtil.getTopLevelContext(context))`
+/// (`SpanTermQuery.java:135`) holds only for a context of the searcher's tree.
+/// A borrow cannot be kept, so the context's own `Arc` is found again: the
+/// leaf of the same ordinal of its top-level context (its parent's, or for a
+/// top-level leaf its reader's cached context), which is `context` itself.
+/// Only a context outside every reader's tree falls back to
+/// [`owned_leaf_context`], a copy with a fresh identity.
+///
+/// # Errors
+///
+/// [`LuceneErrorKind::AlreadyClosed`](rucene::error::LuceneErrorKind::AlreadyClosed)
+/// when the top-level leaf's reader is closed.
+fn leaf_context_handle(context: &LeafReaderContext) -> Result<Arc<LeafReaderContext>> {
+    let top: Arc<dyn IndexReaderContext> = match context.parent().and_then(|p| p.upgrade()) {
+        Some(parent) => get_top_level_context(parent),
+        None => IndexReaderContext::reader(context).get_context()?,
+    };
+    if top.is_top_level() {
+        if let Some(leaf) = top.leaves().get(context.ord() as usize) {
+            if std::ptr::eq(Arc::as_ptr(leaf), context) {
+                return Ok(Arc::clone(leaf));
+            }
+        }
+    }
+    Ok(owned_leaf_context(context))
 }
 
 /// One leaf term collected from the current match.

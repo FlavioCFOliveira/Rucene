@@ -114,17 +114,18 @@ pub fn get_term_states_of(weights: &[Arc<dyn SpanWeight>]) -> TermStatesMap {
 
 /// `visitor.acceptField(field)` for a span query's possibly-`null` field.
 ///
-/// **Divergence from Lucene 10.5.0.** Java passes a `null` field — that of a
+/// Java passes the `null` field of a
 /// [`SpanOrQuery`](crate::spans::span_or_query::SpanOrQuery) or a
 /// [`SpanNearQuery`](crate::spans::span_near_query::SpanNearQuery) without
-/// clauses — to `QueryVisitor.acceptField(String)` (`SpanOrQuery.java:86`,
-/// `SpanNearQuery.java:279`). [`QueryVisitor::accept_field`] takes a `&str`,
-/// so a `None` field is answered `false` without asking the visitor, as the
-/// core's [`PhraseQuery`](rucene::search::PhraseQuery) does for its own `null`
-/// field. Such a query has no clause to visit, so only a visitor's
-/// `getSubVisitor` call is skipped.
+/// clauses to `QueryVisitor.acceptField(String)` (`SpanOrQuery.java:86`,
+/// `SpanNearQuery.java:279`); [`QueryVisitor::accept_field`] takes a `&str`,
+/// so the `null` argument goes to [`QueryVisitor::accept_null_field`], which
+/// answers as Java's `acceptField(null)` does.
 pub(crate) fn accept_field(visitor: &dyn QueryVisitor, field: Option<&str>) -> bool {
-    field.is_some_and(|field| visitor.accept_field(field))
+    match field {
+        Some(field) => visitor.accept_field(field),
+        None => visitor.accept_null_field(),
+    }
 }
 
 /// `List.equals` over two lists of span queries: same length and pairwise

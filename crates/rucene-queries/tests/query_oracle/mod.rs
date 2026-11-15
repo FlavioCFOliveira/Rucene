@@ -37,7 +37,7 @@
 //! **Specs are data both sides build from.** A query, a parser or any
 //! argument is an S-expression ([`parse_expr`]): `"text"`, `null`, `i:1`
 //! (`int`), `l:1` (`long`), `f:1.5` (`float`), `d:1.5` (`double`), `z:true`,
-//! `c:0041` (`char`), `$name`, `(new <class> args…)`, `(static <class>
+//! `c:0041` (`char`), `b:-1` (`byte`), `$name`, `(new <class> args…)`, `(static <class>
 //! <method> args…)`, `(call <method> <receiver> args…)`, `(field <class>
 //! <name>)`, `(array <component class> elems…)`, `(list elems…)` and `(cast
 //! <class> expr)`. Java evaluates it by reflection (the most specific public
@@ -54,6 +54,13 @@
 //! `float` score), and `Explanation` of every document (match flag, value
 //! with its class and bits, description, details); a failure gives the same
 //! stage, exception class and message.
+//!
+//! **Span parity** ([`SearchOracle::spans`]): for a span query, the same
+//! `toString()` and rewritten query, then per leaf the documents
+//! `SpanWeight.getSpans` iterates, each span's start, end and width, and each
+//! `SpanCollector.collectLeaf` call its `collect` makes (term, position,
+//! payload). Rucene's side is the hook [`SearchOracle::spans_dumper`]
+//! installs, so the harness does not depend on `rucene-queries`.
 //!
 //! **Parser parity** ([`ParseOracle`]): each query string, evaluated with
 //! `$input` bound to it, gives the same `toString()` (and `toString(field)`)
@@ -276,6 +283,8 @@ pub enum Value {
     Bool(bool),
     /// A `Character`.
     Char(u16),
+    /// A `Byte`.
+    Byte(i8),
     /// An array: its component class and elements.
     Array(String, Vec<Value>),
     /// An `ArrayList`.
@@ -295,6 +304,7 @@ impl std::fmt::Debug for Value {
             Value::Double(v) => write!(f, "d:{v}"),
             Value::Bool(v) => write!(f, "z:{v}"),
             Value::Char(v) => write!(f, "c:{v:04x}"),
+            Value::Byte(v) => write!(f, "b:{v}"),
             Value::Array(c, v) => write!(f, "{c}[]{v:?}"),
             Value::List(v) => write!(f, "list{v:?}"),
             Value::Object(o) => write!(f, "<{}>", o.class),
@@ -328,6 +338,7 @@ impl Value {
             Value::Double(_) => "java.lang.Double".into(),
             Value::Bool(_) => "java.lang.Boolean".into(),
             Value::Char(_) => "java.lang.Character".into(),
+            Value::Byte(_) => "java.lang.Byte".into(),
             Value::Array(c, _) => format!("[L{c};"),
             Value::List(_) => "java.util.ArrayList".into(),
             Value::Object(o) => o.class.clone(),
@@ -815,6 +826,7 @@ fn eval_atom(atom: &str, vars: &HashMap<String, Value>) -> Value {
         "d:" => Value::Double(value.parse().unwrap_or_else(|_| bad(atom))),
         "z:" => Value::Bool(value.parse().unwrap_or_else(|_| bad(atom))),
         "c:" => Value::Char(u16::from_str_radix(value, 16).unwrap_or_else(|_| bad(atom))),
+        "b:" => Value::Byte(value.parse().unwrap_or_else(|_| bad(atom))),
         _ => bad(atom),
     }
 }
@@ -1031,12 +1043,38 @@ impl OracleIndex {
     ///
     /// When Rucene fails to write the index.
     pub fn write(docs: &[Document], deletes: &[usize]) -> OracleIndex {
+        OracleIndex::write_with_config(docs, deletes, IndexWriterConfig::new())
+    }
+
+    /// As [`write`](OracleIndex::write), the documents analyzed by
+    /// `analyzer` instead of `IndexWriterConfig`'s default `StandardAnalyzer`
+    /// (a field whose tokens carry payloads, for example).
+    ///
+    /// # Panics
+    ///
+    /// When Rucene fails to write the index.
+    pub fn write_with_analyzer(
+        docs: &[Document],
+        deletes: &[usize],
+        analyzer: Arc<dyn rucene::analysis::Analyzer>,
+    ) -> OracleIndex {
+        OracleIndex::write_with_config(
+            docs,
+            deletes,
+            IndexWriterConfig::with_analyzer(Some(analyzer)),
+        )
+    }
+
+    fn write_with_config(
+        docs: &[Document],
+        deletes: &[usize],
+        config: IndexWriterConfig,
+    ) -> OracleIndex {
         pin_hash_seed();
         let _ = register_codec("Lucene104", Lucene104Codec::new());
         let work = WorkDir::new("query-oracle-index");
         let dir: Arc<dyn Directory> =
             Arc::new(FSDirectory::open(work.path()).expect("open the index directory"));
-        let config = IndexWriterConfig::new();
         config
             .set_merge_policy(Some(NoMergePolicy::instance()))
             .expect("set the merge policy");
@@ -1354,6 +1392,7 @@ enum Stmt {
     Let(String, String),
     Do(String),
     Query(String, String),
+    Spans(String, String, String),
     Parse(String, String, Vec<u16>, Option<String>),
 }
 
@@ -1363,6 +1402,7 @@ fn write_stmts(out: &mut String, stmts: &[Stmt]) {
             Stmt::Let(name, e) => line(out, &["let", name, e]),
             Stmt::Do(e) => line(out, &["do", e]),
             Stmt::Query(id, e) => line(out, &["query", id, e]),
+            Stmt::Spans(id, e, postings) => line(out, &["spans", id, e, postings]),
             Stmt::Parse(id, e, input, field) => {
                 let input = escape_units(input);
                 match field {
@@ -1374,11 +1414,15 @@ fn write_stmts(out: &mut String, stmts: &[Stmt]) {
     }
 }
 
-/// The records of a dump: each starts at a `query` or `parse` line.
+/// The records of a dump: each starts at a `query`, `spans` or `parse` line.
 fn records(dump: &str) -> Vec<Vec<&str>> {
     let mut out: Vec<Vec<&str>> = Vec::new();
     for l in dump.lines() {
-        if l.starts_with("query\t") || l.starts_with("parse\t") || out.is_empty() {
+        if l.starts_with("query\t")
+            || l.starts_with("spans\t")
+            || l.starts_with("parse\t")
+            || out.is_empty()
+        {
             out.push(Vec::new());
         }
         out.last_mut().expect("a record").push(l);
@@ -1419,12 +1463,19 @@ pub fn compare(java: &str, rust: &str) -> std::result::Result<(), String> {
 // Search parity
 // ---------------------------------------------------------------------------
 
+/// Rucene's side of a `spans` record: given the query value, the searcher and
+/// the `SpanWeight.Postings` constant name, appends the record's lines after
+/// `tostring` (`rewritten`, then the `leaf`, `sdoc`, `span` and `coll`
+/// lines, each without its newline) as `QueryOracle.spans` prints them.
+pub type SpansFn = Box<dyn Fn(&Value, &IndexSearcher, &str, &mut Vec<String>) -> Result<()>>;
+
 /// Search parity over one [`OracleIndex`]: see the module documentation.
 pub struct SearchOracle {
     index: PathBuf,
     similarity: Option<String>,
     stmts: Vec<Stmt>,
     registry: Registry,
+    spans_fn: Option<SpansFn>,
 }
 
 impl SearchOracle {
@@ -1436,7 +1487,23 @@ impl SearchOracle {
             similarity: None,
             stmts: Vec::new(),
             registry,
+            spans_fn: None,
         }
+    }
+
+    /// Installs Rucene's side of the `spans` records ([`SpansFn`]).
+    pub fn spans_dumper(&mut self, f: SpansFn) -> &mut SearchOracle {
+        self.spans_fn = Some(f);
+        self
+    }
+
+    /// A spans record: `expr` builds a span query whose spans are iterated
+    /// with the `SpanWeight.Postings` constant `postings` (`POSITIONS`,
+    /// `PAYLOADS` or `OFFSETS`).
+    pub fn spans(&mut self, id: &str, expr: &str, postings: &str) -> &mut SearchOracle {
+        self.stmts
+            .push(Stmt::Spans(id.into(), expr.into(), postings.into()));
+        self
     }
 
     /// `searcher.setSimilarity(expr)`.
@@ -1519,6 +1586,9 @@ impl SearchOracle {
                     self.registry.eval_text(e, &vars).expect("a statement");
                 }
                 Stmt::Query(id, e) => self.dump_query(&mut out, &searcher, &*reader, &vars, id, e),
+                Stmt::Spans(id, e, postings) => {
+                    self.dump_spans(&mut out, &searcher, &vars, id, e, postings)
+                }
                 Stmt::Parse(..) => unreachable!("no parse record in a search oracle"),
             }
         }
@@ -1539,7 +1609,11 @@ impl SearchOracle {
             Ok(q) => q,
             Err(t) => return error_line(out, Some("build"), &t),
         };
-        line(out, &["tostring", &escape(&query_to_string(&*q))]);
+        let text = match stage(|| Ok(query_to_string(&*q))) {
+            Ok(text) => text,
+            Err(t) => return error_line(out, Some("tostring"), &t),
+        };
+        line(out, &["tostring", &escape(&text)]);
         line(out, &["classtree", &escape(&class_tree(&*q))]);
         let rewritten = match stage(|| searcher.rewrite(Arc::clone(&q))) {
             Ok(r) => r,
@@ -1580,6 +1654,40 @@ impl SearchOracle {
                 Ok(ex) => explanation(out, &ex, 0),
                 Err(t) => return error_line(out, Some("explain"), &t),
             }
+        }
+    }
+
+    fn dump_spans(
+        &self,
+        out: &mut String,
+        searcher: &IndexSearcher,
+        vars: &HashMap<String, Value>,
+        id: &str,
+        e: &str,
+        postings: &str,
+    ) {
+        line(out, &["spans", id]);
+        let v = match stage(|| self.registry.eval_text(e, vars)) {
+            Ok(v) => v,
+            Err(t) => return error_line(out, Some("build"), &t),
+        };
+        let text = match stage(|| Ok(query_to_string(&*v.as_query()))) {
+            Ok(text) => text,
+            Err(t) => return error_line(out, Some("tostring"), &t),
+        };
+        line(out, &["tostring", &escape(&text)]);
+        let f = self
+            .spans_fn
+            .as_ref()
+            .unwrap_or_else(|| harness_fail("a spans record needs a spans dumper".into()));
+        let mut lines = Vec::new();
+        let result = stage(|| f(&v, searcher, postings, &mut lines));
+        for l in &lines {
+            out.push_str(l);
+            out.push('\n');
+        }
+        if let Err(t) = result {
+            error_line(out, Some("spans"), &t);
         }
     }
 
@@ -1702,7 +1810,9 @@ impl ParseOracle {
                         line(&mut out, &["value", &result.class_name(), &escape(&s)]);
                     }
                 }
-                Stmt::Query(..) => unreachable!("no query record in a parse oracle"),
+                Stmt::Query(..) | Stmt::Spans(..) => {
+                    unreachable!("no query or spans record in a parse oracle")
+                }
             }
         }
         out
