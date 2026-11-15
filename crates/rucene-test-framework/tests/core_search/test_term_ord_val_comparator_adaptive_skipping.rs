@@ -5,6 +5,7 @@
 //! distributions, and that it disables skipping when the skip index is
 //! ineffective.
 
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
@@ -72,21 +73,35 @@ fn br(s: &str) -> BytesRef {
     BytesRef::from_char_sequence(s)
 }
 
-/// `try (Directory dir = newDirectory()) { body }`.
+/// `try (Directory dir = newDirectory()) { body }`: `dir` is closed on every
+/// exit, a throwable (an `assumeTrue` failure included) too.
 fn with_dir(body: impl FnOnce(&TestDirectory) -> Result<()>) -> Result<()> {
     let dir = LuceneTestCase::new_directory();
-    let result = body(&dir);
-    result.and(close_dir(Some(dir)))
+    let result = catch_unwind(AssertUnwindSafe(|| body(&dir)));
+    finish_with(result, close_dir(Some(dir)))
 }
 
-/// `try (IndexReader reader = DirectoryReader.open(dir)) { body }`.
+/// `try (IndexReader reader = DirectoryReader.open(dir)) { body }`: `reader`
+/// is closed on every exit, a throwable (an `assumeTrue` failure included)
+/// too.
 fn with_reader(
     dir: &TestDirectory,
     body: impl FnOnce(&Arc<dyn IndexReader>) -> Result<()>,
 ) -> Result<()> {
     let reader: Arc<dyn IndexReader> = directory_reader::open(dir.as_directory())?;
-    let result = body(&reader);
-    result.and(reader.close())
+    let result = catch_unwind(AssertUnwindSafe(|| body(&reader)));
+    finish_with(result, reader.close())
+}
+
+/// The outcome of a try-with-resources whose body ran under `catch_unwind`
+/// and whose resource was then closed (`closed`): a throwable propagates
+/// after the close, with the close failure suppressed; otherwise the body's
+/// error, or else the close error.
+fn finish_with(result: std::thread::Result<Result<()>>, closed: Result<()>) -> Result<()> {
+    match result {
+        Ok(result) => result.and(closed),
+        Err(payload) => resume_unwind(payload),
+    }
 }
 
 /// For interleaved data (alternating values uncorrelated with doc order),

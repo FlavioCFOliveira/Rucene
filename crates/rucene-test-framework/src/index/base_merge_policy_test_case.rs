@@ -38,6 +38,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -526,7 +527,10 @@ pub trait BaseMergePolicyTestCase: Send + Sync + 'static {
     /// `testForceMergeNotNeeded()`.
     fn test_force_merge_not_needed(&self) -> Result<()> {
         let dir = LuceneTestCase::new_directory();
-        {
+        // `try (Directory dir = newDirectory())`: `dir` is closed on every
+        // exit, the `assumeFalse` unwind included, then the throwable
+        // propagates.
+        let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
             let may_merge = Arc::new(AtomicBool::new(true));
             let merge_scheduler = Arc::new(NotNeededMergeScheduler {
                 may_merge: Arc::clone(&may_merge),
@@ -577,8 +581,13 @@ pub trait BaseMergePolicyTestCase: Send + Sync + 'static {
                 writer.force_merge(max_num_segments)?;
             }
             writer.close()?;
+            Ok(())
+        }));
+        let closed = dir.close();
+        match result {
+            Ok(result) => result.and(closed),
+            Err(payload) => resume_unwind(payload),
         }
-        dir.close()
     }
 
     /// `testFindForcedDeletesMerges()`.

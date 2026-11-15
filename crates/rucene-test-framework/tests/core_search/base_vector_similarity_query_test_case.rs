@@ -7,6 +7,7 @@
 //! class lists in its declaration through [`methods`].
 
 use std::any::Any;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
@@ -539,7 +540,16 @@ fn with_index<C: VectorSimilarityCase, T>(
 ) -> Result<T> {
     let index_store = get_index_store(f, vectors)?;
     let reader = directory_reader::open(index_store.as_directory())?;
-    let result = body(&reader);
+    // try-with-resources closes both resources on a throwable too (an
+    // `assumeTrue` failure included), suppressing close failures.
+    let result = match std::panic::catch_unwind(AssertUnwindSafe(|| body(&reader))) {
+        Ok(result) => result,
+        Err(payload) => {
+            let _ = reader.close();
+            let _ = index_store.close();
+            std::panic::resume_unwind(payload)
+        }
+    };
     reader.close()?;
     index_store.close()?;
     result
@@ -793,7 +803,7 @@ fn test_some_deletes<C: VectorSimilarityCase>(f: &mut VectorSimilarityFixture<C>
     w.commit()?;
 
     let reader = directory_reader::open(index_store.as_directory())?;
-    let result = (|| -> Result<()> {
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         LuceneTestCase::assume_true(
             "graph is disconnected",
             graph_is_rooted(&reader, f.vector_field())?,
@@ -821,7 +831,19 @@ fn test_some_deletes<C: VectorSimilarityCase>(f: &mut VectorSimilarityFixture<C>
             &(score_docs.len() as i32),
         );
         Ok(())
-    })();
+    }));
+    // The nested try-with-resources close reader, w and indexStore on a
+    // throwable too (an `assumeTrue` failure included), suppressing close
+    // failures.
+    let result = match result {
+        Ok(result) => result,
+        Err(payload) => {
+            let _ = reader.close();
+            let _ = w.close();
+            let _ = index_store.close();
+            std::panic::resume_unwind(payload)
+        }
+    };
     reader.close()?;
     w.close()?;
     index_store.close()?;

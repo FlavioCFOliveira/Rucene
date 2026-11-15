@@ -29,7 +29,7 @@ use rucene::store::{
 use rucene_test_framework::mockfile::filter_file_system_provider::{self, install};
 use rucene_test_framework::mockfile::filter_path::FilterPath;
 use rucene_test_framework::mockfile::{FilterFileSystemProvider, FilterState};
-use rucene_test_framework::store::base_directory_test_case::OwnedTestDirectory;
+use rucene_test_framework::store::base_directory_test_case::{with_directory, OwnedTestDirectory};
 use rucene_test_framework::store::base_lock_factory_test_case::{
     self, BaseLockFactoryTestCase, LockFactoryTestInstance,
 };
@@ -154,7 +154,7 @@ fn single_instance_test_default_lock_factory() -> Result<()> {
 /// test `ensureValid` fails.
 fn simple_fs_test_delete_lock_file(case: &dyn BaseLockFactoryTestCase) -> Result<()> {
     let dir = case.get_directory(&LuceneTestCase::create_temp_dir())?;
-    let result = (|| -> Result<()> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
         let lock = dir.obtain_lock("test.lock")?;
         lock.ensure_valid()?;
 
@@ -170,9 +170,18 @@ fn simple_fs_test_delete_lock_file(case: &dyn BaseLockFactoryTestCase) -> Result
         expect_throws("java.io.IOException", || lock.ensure_valid());
         let _ = lock.close();
         Ok(())
-    })();
+    }));
     // Do this in finally clause in case the assumeNoException is false:
-    result.and(dir.close())
+    // `finally { dir.close(); }` runs on the assumption's unwind too, and a
+    // close failure replaces the pending throwable, as in Java.
+    let closed = dir.close();
+    match result {
+        Ok(result) => result.and(closed),
+        Err(payload) => {
+            closed?;
+            std::panic::resume_unwind(payload)
+        }
+    }
 }
 
 /// `TestNativeFSLockFactory.testLockFileExists()`: `NativeFSLockFactory`
@@ -235,23 +244,26 @@ fn native_fs_test_invalidate_channel(case: &dyn BaseLockFactoryTestCase) -> Resu
 /// `TestNativeFSLockFactory.testDeleteLockFile()`: delete the lockfile and
 /// test `ensureValid` fails.
 fn native_fs_test_delete_lock_file(case: &dyn BaseLockFactoryTestCase) -> Result<()> {
-    let dir = case.get_directory(&LuceneTestCase::create_temp_dir())?;
-    let result = (|| -> Result<()> {
-        LuceneTestCase::assume_false(
-            "we must be able to delete an open file",
-            TestUtil::has_windows_fs(&*dir)?,
-        );
+    // `try (Directory dir = ...)`: `with_directory` closes `dir` on every
+    // exit, the `assumeFalse` unwind included, then rethrows.
+    with_directory(
+        case.get_directory(&LuceneTestCase::create_temp_dir())?,
+        |dir| {
+            LuceneTestCase::assume_false(
+                "we must be able to delete an open file",
+                TestUtil::has_windows_fs(dir)?,
+            );
 
-        let lock = dir.obtain_lock("test.lock")?;
-        lock.ensure_valid()?;
+            let lock = dir.obtain_lock("test.lock")?;
+            lock.ensure_valid()?;
 
-        dir.delete_file("test.lock")?;
+            dir.delete_file("test.lock")?;
 
-        expect_throws("java.io.IOException", || lock.ensure_valid());
-        let _ = lock.close();
-        Ok(())
-    })();
-    result.and(dir.close())
+            expect_throws("java.io.IOException", || lock.ensure_valid());
+            let _ = lock.close();
+            Ok(())
+        },
+    )
 }
 
 /// `TestNativeFSLockFactory.MockBadPermissionsFileSystem`: a mock filesystem

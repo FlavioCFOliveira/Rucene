@@ -3,6 +3,7 @@
 //! `SortingCodecReader.wrap(CodecReader, Sort)` is
 //! `SortingCodecReader::wrap_sort` in Rucene (Rust has no overloading).
 
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
 use randomizedtesting::generators::{RandomPicks, RandomStrings};
@@ -223,12 +224,23 @@ fn graph_of(leaf: &Arc<dyn LeafReader>) -> Result<Option<Box<dyn HnswGraph>>> {
     }
 }
 
+/// The outcome of a try-with-resources whose body ran under `catch_unwind`
+/// and whose resource was then closed (`closed`): a throwable (an
+/// `assumeTrue` failure included) propagates after the close, with the close
+/// failure suppressed; otherwise the body's error, or else the close error.
+fn finish_with(result: std::thread::Result<Result<()>>, closed: Result<()>) -> Result<()> {
+    match result {
+        Ok(result) => result.and(closed),
+        Err(payload) => resume_unwind(payload),
+    }
+}
+
 /// Port of `TestSortingCodecReader.testSortOnAddIndicesRandom`.
 fn test_sort_on_add_indices_random() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
-    let result = sort_on_add_indices_random_in(&dir);
+    let result = catch_unwind(AssertUnwindSafe(|| sort_on_add_indices_random_in(&dir)));
     let closed = dir.close();
-    result.and(closed)
+    finish_with(result, closed)
 }
 
 /// The body of `try (Directory dir = newDirectory()) { ... }` in
@@ -367,11 +379,11 @@ fn sort_on_add_indices_random_in(
     ];
     let index_sort = RandomPicks::random_from(&*random(), &sorts).clone();
     let sort_dir = LuceneTestCase::new_directory();
-    let result = (|| -> Result<()> {
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_index_sort(index_sort.clone())?;
         let writer = IndexWriter::new(sort_dir.as_directory(), iwc)?;
-        let result = (|| -> Result<()> {
+        let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
             {
                 let reader = directory_reader::open(dir.as_directory())?;
                 let result = (|| -> Result<()> {
@@ -400,12 +412,12 @@ fn sort_on_add_indices_random_in(
             let result = check_sorted_index(&r, actual_num_docs, dense);
             let closed = r.close();
             result.and(closed)
-        })();
+        }));
         let closed = writer.close();
-        result.and(closed)
-    })();
+        finish_with(result, closed)
+    }));
     let closed = sort_dir.close();
-    result.and(closed)
+    finish_with(result, closed)
 }
 
 /// The checks of `testSortOnAddIndicesRandom` over the sorted index `r`.
