@@ -787,7 +787,7 @@ impl Analyzer for DelimitedTermFrequencyAnalyzer {
         "org.apache.lucene.queries.mlt.TestMoreLikeThis$1"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::with_max_token_length(
             Arc::clone(&WHITESPACE),
             false,

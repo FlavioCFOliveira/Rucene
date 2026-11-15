@@ -49,10 +49,6 @@ use crate::jdk::time_zone::TimeZone;
 /// date value.
 ///
 /// Equivalent to `org.apache.lucene.queryparser.flexible.standard.processors.TermRangeQueryNodeProcessor`.
-///
-/// **Divergence.** As in `FuzzyQueryNodeProcessor`, a bound without a field
-/// throws a `NullPointerException` when the analyzer normalizes a text that
-/// is not a date, where Java's `Analyzer.normalize` accepts a `null` field.
 #[derive(Debug, Default)]
 pub struct TermRangeQueryNodeProcessor {
     base: QueryNodeProcessorImpl,
@@ -160,21 +156,20 @@ impl QueryNodeProcessorImplOps for TermRangeQueryNodeProcessor {
                 if let Some(analyzer) = analyzer {
                     // because we call utf8ToString, this will only work with the default
                     // TermToBytesRefAttribute
-                    let field = lower
-                        .get_field_as_string()
-                        .ok_or_else(LuceneError::null_pointer)?;
+                    // the field may be `null` (an empty `MULTI_FIELDS`)
+                    let field = lower.get_field_as_string();
                     part1 = Some(
                         analyzer
-                            .normalize(
-                                &field,
+                            .normalize_nullable_field(
+                                field.as_deref(),
                                 part1.as_deref().ok_or_else(LuceneError::null_pointer)?,
                             )?
                             .utf8_to_string()?,
                     );
                     part2 = Some(
                         analyzer
-                            .normalize(
-                                &field,
+                            .normalize_nullable_field(
+                                field.as_deref(),
                                 part2.as_deref().ok_or_else(LuceneError::null_pointer)?,
                             )?
                             .utf8_to_string()?,

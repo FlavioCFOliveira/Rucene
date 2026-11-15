@@ -52,7 +52,7 @@ impl Analyzer for KeywordAnalyzer {
     }
 
     /// Equivalent to `KeywordAnalyzer.createComponents(String)`.
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         Ok(TokenStreamComponents::from_tokenizer(Arc::new(
             AtomicRefCell::new(new_keyword_tokenizer()),
         )))

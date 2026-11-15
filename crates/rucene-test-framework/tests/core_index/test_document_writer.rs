@@ -216,13 +216,13 @@ impl Analyzer for GapAnalyzer {
         "org.apache.lucene.index.TestDocumentWriter$1"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
             MockTokenizer::new(Arc::clone(&WHITESPACE), false)?,
         ))))
     }
 
-    fn get_position_increment_gap(&self, _field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, _field_name: Option<&str>) -> i32 {
         500
     }
 }
@@ -352,7 +352,7 @@ impl Analyzer for SynonymAnalyzer {
         "org.apache.lucene.index.TestDocumentWriter$2"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let mut tokenizer = MockTokenizer::new(Arc::clone(&WHITESPACE), false)?;
         // The filter shares its input's attributes: Java's field
         // initializers `addAttribute(...)` on the filter add them there.

@@ -406,7 +406,7 @@ impl Analyzer for MockTokenizerAnalyzer {
         "org.apache.lucene.tests.index.BasePostingsFormatTestCase$2"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = MockTokenizer::whitespace_lower_case()?;
         Ok(tokenizer_components(std::sync::Arc::new(
             rucene::util::atomic_ref_cell::AtomicRefCell::new(tokenizer),

@@ -317,13 +317,15 @@ pub fn test_class_loader(package: &str) -> ClasspathResourceLoader {
 // ---------------------------------------------------------------------------
 
 /// The `createComponents` body of an anonymous analyzer.
-pub type CreateComponents = dyn Fn(&str) -> Result<TokenStreamComponents> + Send + Sync;
+pub type CreateComponents = dyn Fn(Option<&str>) -> Result<TokenStreamComponents> + Send + Sync;
 
 /// The `normalize(String, TokenStream)` body of an anonymous analyzer.
-pub type Normalize = dyn Fn(&str, Box<dyn TokenStream>) -> Box<dyn TokenStream> + Send + Sync;
+pub type Normalize =
+    dyn Fn(Option<&str>, Box<dyn TokenStream>) -> Box<dyn TokenStream> + Send + Sync;
 
 /// The `initReader(String, Reader)` body of an anonymous analyzer.
-pub type InitReader = dyn Fn(&str, Box<dyn CharReader>) -> Box<dyn CharReader> + Send + Sync;
+pub type InitReader =
+    dyn Fn(Option<&str>, Box<dyn CharReader>) -> Box<dyn CharReader> + Send + Sync;
 
 /// An anonymous `new Analyzer() { ... }` of a test: its Java binary name and
 /// the bodies of the methods it overrides.
@@ -348,7 +350,7 @@ impl FnAnalyzer {
     /// `new Analyzer() { createComponents }` (`GLOBAL_REUSE_STRATEGY`).
     pub fn new(
         name: &'static str,
-        create: impl Fn(&str) -> Result<TokenStreamComponents> + Send + Sync + 'static,
+        create: impl Fn(Option<&str>) -> Result<TokenStreamComponents> + Send + Sync + 'static,
     ) -> FnAnalyzer {
         FnAnalyzer::with_strategy(name, Box::new(GlobalReuseStrategy), create)
     }
@@ -357,7 +359,7 @@ impl FnAnalyzer {
     pub fn with_strategy(
         name: &'static str,
         strategy: Box<dyn ReuseStrategy>,
-        create: impl Fn(&str) -> Result<TokenStreamComponents> + Send + Sync + 'static,
+        create: impl Fn(Option<&str>) -> Result<TokenStreamComponents> + Send + Sync + 'static,
     ) -> FnAnalyzer {
         FnAnalyzer {
             state: AnalyzerState::new(strategy),
@@ -372,7 +374,10 @@ impl FnAnalyzer {
     /// Overrides `normalize(String, TokenStream)`.
     pub fn normalize(
         mut self,
-        normalize: impl Fn(&str, Box<dyn TokenStream>) -> Box<dyn TokenStream> + Send + Sync + 'static,
+        normalize: impl Fn(Option<&str>, Box<dyn TokenStream>) -> Box<dyn TokenStream>
+            + Send
+            + Sync
+            + 'static,
     ) -> FnAnalyzer {
         self.normalize = Some(Box::new(normalize));
         self
@@ -381,7 +386,10 @@ impl FnAnalyzer {
     /// Overrides `initReader(String, Reader)`.
     pub fn init_reader(
         mut self,
-        init_reader: impl Fn(&str, Box<dyn CharReader>) -> Box<dyn CharReader> + Send + Sync + 'static,
+        init_reader: impl Fn(Option<&str>, Box<dyn CharReader>) -> Box<dyn CharReader>
+            + Send
+            + Sync
+            + 'static,
     ) -> FnAnalyzer {
         self.init_reader = Some(Box::new(init_reader));
         self
@@ -408,13 +416,13 @@ impl Analyzer for FnAnalyzer {
         self.name
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         (self.create)(field_name)
     }
 
     fn normalize_token_stream(
         &self,
-        field_name: &str,
+        field_name: Option<&str>,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
         match &self.normalize {
@@ -423,14 +431,18 @@ impl Analyzer for FnAnalyzer {
         }
     }
 
-    fn init_reader(&self, field_name: &str, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
+    fn init_reader(
+        &self,
+        field_name: Option<&str>,
+        reader: Box<dyn CharReader>,
+    ) -> Box<dyn CharReader> {
         match &self.init_reader {
             Some(init_reader) => init_reader(field_name, reader),
             None => reader,
         }
     }
 
-    fn get_position_increment_gap(&self, field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, field_name: Option<&str>) -> i32 {
         match self.position_increment_gap {
             Some(gap) => gap,
             None => {

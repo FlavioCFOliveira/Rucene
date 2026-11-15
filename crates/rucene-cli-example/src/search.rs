@@ -251,9 +251,9 @@ fn criterion_query(criterion: &Criterion) -> Result<Arc<dyn Query>> {
 fn analysed_query(text: &str, phrase: bool) -> Result<Arc<dyn Query>> {
     let builder = QueryBuilder::new(Some(Arc::new(StandardAnalyzer::new())));
     let query = if phrase {
-        builder.create_phrase_query(PLACE_FIELD, text)?
+        builder.create_phrase_query(Some(PLACE_FIELD), text)?
     } else {
-        builder.create_boolean_query_with_operator(PLACE_FIELD, text, Occur::MUST)?
+        builder.create_boolean_query_with_operator(Some(PLACE_FIELD), text, Occur::MUST)?
     };
     query.ok_or_else(|| {
         CliError::Input(format!(

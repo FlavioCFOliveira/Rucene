@@ -110,7 +110,7 @@ impl<F> std::fmt::Debug for FnAnalyzer<F> {
     }
 }
 
-impl<F: Fn(&str) -> Result<TokenStreamComponents> + Send + Sync> FnAnalyzer<F> {
+impl<F: Fn(Option<&str>) -> Result<TokenStreamComponents> + Send + Sync> FnAnalyzer<F> {
     fn new(create: F) -> Self {
         FnAnalyzer {
             state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
@@ -119,14 +119,16 @@ impl<F: Fn(&str) -> Result<TokenStreamComponents> + Send + Sync> FnAnalyzer<F> {
     }
 }
 
-impl<F: Fn(&str) -> Result<TokenStreamComponents> + Send + Sync> Analyzer for FnAnalyzer<F> {
+impl<F: Fn(Option<&str>) -> Result<TokenStreamComponents> + Send + Sync> Analyzer
+    for FnAnalyzer<F>
+{
     fn analyzer_state(&self) -> &AnalyzerState {
         &self.state
     }
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.analysis.Analyzer$Anonymous"
     }
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         (self.create)(field_name)
     }
 }
@@ -402,12 +404,12 @@ mod test_mock_analyzer {
     }
 
     impl AnalyzerWrapperLogic for WrapReader {
-        fn get_wrapped_analyzer(&self, _field_name: &str) -> &dyn Analyzer {
+        fn get_wrapped_analyzer(&self, _field_name: Option<&str>) -> &dyn Analyzer {
             &*self.delegate
         }
         fn wrap_reader(
             &self,
-            _field_name: &str,
+            _field_name: Option<&str>,
             reader: Box<dyn CharReader>,
         ) -> Box<dyn CharReader> {
             Box::new(MockCharFilter::new(reader, 7).unwrap())
@@ -435,13 +437,13 @@ mod test_mock_analyzer {
     }
 
     impl rucene::analysis::DelegatingAnalyzerWrapperLogic for ChangeGaps {
-        fn get_wrapped_analyzer(&self, _field_name: &str) -> &dyn Analyzer {
+        fn get_wrapped_analyzer(&self, _field_name: Option<&str>) -> &dyn Analyzer {
             &*self.delegate
         }
-        fn get_position_increment_gap(&self, _field_name: &str) -> i32 {
+        fn get_position_increment_gap(&self, _field_name: Option<&str>) -> i32 {
             self.position_gap
         }
-        fn get_offset_gap(&self, _field_name: &str) -> i32 {
+        fn get_offset_gap(&self, _field_name: Option<&str>) -> i32 {
             self.offset_gap
         }
     }
@@ -565,13 +567,17 @@ impl Analyzer for CharFilterAnalyzer {
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.tests.analysis.TestMockCharFilter$1"
     }
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = MockTokenizer::new(Arc::clone(&WHITESPACE), false)?;
         Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
             tokenizer,
         ))))
     }
-    fn init_reader(&self, _field_name: &str, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
+    fn init_reader(
+        &self,
+        _field_name: Option<&str>,
+        reader: Box<dyn CharReader>,
+    ) -> Box<dyn CharReader> {
         Box::new(MockCharFilter::new(reader, 7).unwrap())
     }
 }

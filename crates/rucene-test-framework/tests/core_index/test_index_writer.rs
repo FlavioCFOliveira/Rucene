@@ -2364,7 +2364,7 @@ impl Analyzer for StringSplitAnalyzer {
         "org.apache.lucene.index.TestIndexWriter$StringSplitAnalyzer"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let mut source = AttributeSource::new_with_factory(default_token_attribute_factory());
         let term_att = Att::add(&mut source, char_term_id())?;
         let t = Tokenizer::with_source(
@@ -2871,15 +2871,15 @@ impl Analyzer for DontInvokeMeAnalyzer {
         "org.apache.lucene.index.TestIndexWriter$4"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         Err(LuceneError::illegal_state("don't invoke me!"))
     }
 
-    fn get_position_increment_gap(&self, _field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, _field_name: Option<&str>) -> i32 {
         Throwable::new("java.lang.IllegalStateException", "don't invoke me!").throw()
     }
 
-    fn get_offset_gap(&self, _field_name: &str) -> i32 {
+    fn get_offset_gap(&self, _field_name: Option<&str>) -> i32 {
         Throwable::new("java.lang.IllegalStateException", "don't invoke me!").throw()
     }
 }
@@ -2961,7 +2961,7 @@ impl Analyzer for StopwordsAnalyzer {
         }
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::whitespace_lower_case()?));
         let stream = MockTokenFilter::new(shared(&tokenizer), Arc::clone(&ENGLISH_STOPSET))?;
         let stream: Arc<AtomicRefCell<dyn TokenStream>> = match &self.second_set {

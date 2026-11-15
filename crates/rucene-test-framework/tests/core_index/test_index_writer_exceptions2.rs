@@ -75,11 +75,13 @@ impl Analyzer for BrokenAnalyzer {
         "org.apache.lucene.index.TestIndexWriterExceptions2$1"
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let mut tokenizer = MockTokenizer::new(Arc::clone(&SIMPLE), false)?;
         tokenizer.set_enable_checks(false); // TODO: can we turn this on? our filter is probably too evil
         let tokenizer = Arc::new(AtomicRefCell::new(tokenizer));
         let mut stream: Box<dyn TokenStream> = shared(&tokenizer);
+        // Java dereferences the field name (`fieldName.contains(...)`).
+        let field_name = field_name.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         // emit some payloads
         if field_name.contains("payloads") {
             stream = Box::new(MockVariableLengthPayloadFilter::new(

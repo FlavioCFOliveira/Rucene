@@ -53,7 +53,7 @@ impl Analyzer for WhitespaceAnalyzer {
     }
 
     /// Equivalent to `WhitespaceAnalyzer.createComponents(String)`.
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         Ok(TokenStreamComponents::from_tokenizer(Arc::new(
             AtomicRefCell::new(new_whitespace_tokenizer_with_max_token_len(
                 self.max_token_length,

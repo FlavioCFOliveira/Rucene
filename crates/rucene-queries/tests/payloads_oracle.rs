@@ -113,7 +113,7 @@ impl Analyzer for OraclePayloadAnalyzer {
         "org.apache.rucene.tests.OraclePayloadAnalyzer"
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = Arc::new(AtomicRefCell::new(new_standard_tokenizer()));
         let mut input = shared(&tokenizer);
         let source = input.attribute_source_mut();
@@ -122,7 +122,11 @@ impl Analyzer for OraclePayloadAnalyzer {
         let filter = TokenFilter::new(
             input,
             PayloadRule {
-                field: field_name.to_string(),
+                // Java switches on the field name, which a `null` one
+                // dereferences; the oracle analyses named fields only.
+                field: field_name
+                    .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+                    .to_string(),
                 pos: -1,
                 term_att,
                 payload_att,

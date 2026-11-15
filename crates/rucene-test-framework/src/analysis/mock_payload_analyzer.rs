@@ -66,7 +66,7 @@ impl Analyzer for MockPayloadAnalyzer {
         "org.apache.lucene.tests.analysis.MockPayloadAnalyzer"
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let result = Arc::new(AtomicRefCell::new(MockTokenizer::new(
             Arc::clone(&WHITESPACE),
             true,
@@ -79,8 +79,9 @@ impl Analyzer for MockPayloadAnalyzer {
 /// The logic of the package-private `MockPayloadFilter`.
 #[derive(Debug)]
 pub struct MockPayloadFilterLogic {
+    /// The `fieldName` field, `None` for Java's `null`.
     #[allow(dead_code)]
-    field_name: String,
+    field_name: Option<String>,
     pos: i32,
     i: i32,
     pos_incr_attr: Att,
@@ -138,7 +139,7 @@ impl MockPayloadFilter {
     #[allow(clippy::new_ret_no_self)]
     pub fn new(
         mut input: Box<dyn TokenStream>,
-        field_name: &str,
+        field_name: Option<&str>,
     ) -> Result<TokenFilter<MockPayloadFilterLogic>> {
         let source = input.attribute_source_mut();
         let pos_incr_attr = Att::add(source, pos_inc_id())?;
@@ -147,7 +148,7 @@ impl MockPayloadFilter {
         Ok(TokenFilter::new(
             input,
             MockPayloadFilterLogic {
-                field_name: field_name.to_string(),
+                field_name: field_name.map(str::to_string),
                 pos: 0,
                 i: 0,
                 pos_incr_attr,

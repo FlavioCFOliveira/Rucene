@@ -70,11 +70,6 @@ use crate::jdk::char_sequence::CharSequence;
 /// is returned.
 ///
 /// Equivalent to `org.apache.lucene.queryparser.flexible.standard.processors.AnalyzerQueryNodeProcessor`.
-///
-/// **Divergence.** Java's `Analyzer.tokenStream` accepts a `null` field;
-/// the core `Analyzer` takes a field name, so a node without a field (only
-/// when the configured `MULTI_FIELDS` is empty) throws a
-/// `NullPointerException`.
 #[derive(Default)]
 pub struct AnalyzerQueryNodeProcessor {
     base: QueryNodeProcessorImpl,
@@ -248,9 +243,9 @@ impl AnalyzerQueryNodeProcessor {
         // try (TokenStream source = this.analyzer.tokenStream(field, text)) { ... }
         // catch (IOException e) { throw new RuntimeException(e); }
         let analyzed = (|| -> Result<()> {
-            let field = field.as_deref().ok_or_else(LuceneError::null_pointer)?;
             let text = text.as_deref().ok_or_else(LuceneError::null_pointer)?;
-            let source = analyzer.token_stream_from_str(field, text)?;
+            // the field may be `null` (an empty `MULTI_FIELDS`)
+            let source = analyzer.token_stream_from_str_nullable_field(field.as_deref(), text)?;
             let body = Self::count_tokens(&source, slot, &mut counts);
             let closed = source.borrow_mut().close();
             close_after(body, closed)

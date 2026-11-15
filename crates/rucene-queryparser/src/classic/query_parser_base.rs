@@ -30,11 +30,10 @@
 //! constructors reject with `MultiTermQuery`'s
 //! `NullPointerException("field must not be null")`.
 //!
-//! **Divergence.** Java's `Analyzer.normalize` and `Analyzer.tokenStream`
-//! (through `QueryBuilder.createFieldQuery`) accept a `null` field; the core
-//! [`Analyzer`] and `QueryBuilder` take a field name, so where Lucene hands
-//! the analyzer a `null` field (`QueryParserBase.java` `normalize` and
-//! `newFieldQuery`) this port raises a `NullPointerException` instead.
+//! The analyzer receives that `null` field as Lucene's does
+//! (`Analyzer.normalize`, and `Analyzer.tokenStream` through
+//! `QueryBuilder.createFieldQuery`), so an analyzed term of a parser without
+//! a default field becomes a term of a `null` field, as in Lucene.
 //! `MultiFieldQueryParser`, which passes `null` on purpose, handles it before
 //! the analyzer is reached, as in Lucene.
 
@@ -906,7 +905,6 @@ pub fn new_field_query<P: QueryParserBaseOps + ?Sized>(
     };
     let quoted = quoted || base.auto_generate_phrase_queries;
     let phrase_slop = base.phrase_slop;
-    let field = crate::javacc::nn_str(field)?;
     this.create_field_query_with_analyzer(
         analyzer.as_ref(),
         occur,
@@ -1185,7 +1183,7 @@ fn normalize<P: QueryParserBaseOps + ?Sized>(
     text: &str,
 ) -> Result<BytesRef> {
     let analyzer = crate::javacc::nn(this.query_builder().get_analyzer())?;
-    analyzer.normalize(crate::javacc::nn_str(field)?, text)
+    analyzer.normalize_nullable_field(field, text)
 }
 
 /// `QueryParserBase.newWildcardQuery`: the body of

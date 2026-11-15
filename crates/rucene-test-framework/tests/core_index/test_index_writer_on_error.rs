@@ -83,10 +83,12 @@ impl Analyzer for AngryAnalyzer {
         "org.apache.lucene.index.TestIndexWriterOnError$1"
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let mut tokenizer = MockTokenizer::new(Arc::clone(&WHITESPACE), false)?;
         tokenizer.set_enable_checks(false); // we are going to make it angry
         let tokenizer = Arc::new(AtomicRefCell::new(tokenizer));
+        // Java dereferences the field name (`fieldName.contains(...)`).
+        let field_name = field_name.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         // emit some payloads
         if field_name.contains("payloads") {
             let stream: Box<dyn TokenStream> = shared(&tokenizer);

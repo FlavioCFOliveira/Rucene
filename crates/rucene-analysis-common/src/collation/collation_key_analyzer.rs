@@ -98,13 +98,13 @@ impl Analyzer for CollationKeyAnalyzer {
 
     /// Equivalent to `CollationKeyAnalyzer.attributeFactory(String)`: the
     /// analyzer's `CollationAttributeFactory`.
-    fn attribute_factory(&self, _field_name: &str) -> Arc<dyn AttributeFactory> {
+    fn attribute_factory(&self, _field_name: Option<&str>) -> Arc<dyn AttributeFactory> {
         self.factory.clone()
     }
 
     /// Equivalent to `CollationKeyAnalyzer.createComponents(String)`: a
     /// `KeywordTokenizer(factory, KeywordTokenizer.DEFAULT_BUFFER_SIZE)`.
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer =
             new_keyword_tokenizer_with_factory(self.factory.clone(), DEFAULT_BUFFER_SIZE)?;
         Ok(TokenStreamComponents::from_tokenizer(Arc::new(

@@ -619,3 +619,71 @@ fn caching_token_filter_keeps_the_states_cached_before_an_error() {
     }
     assert_eq!(replayed, vec!["a".to_string(), "b".to_string()]);
 }
+
+// ---------------------------------------------------------------------------
+// #496: a null field name through Analyzer and QueryBuilder
+// ---------------------------------------------------------------------------
+
+/// rmp #496: Java's `Analyzer.tokenStream(null, text)` and
+/// `normalize(null, text)` hand the `null` field to the reuse strategy and
+/// the hooks (`Analyzer.java:139-264`); `PER_FIELD_REUSE_STRATEGY`'s
+/// `HashMap` keeps the `null` field as a key of its own; `QueryBuilder`
+/// builds terms of the `null` field (`QueryBuilder.java:244-411`).
+#[test]
+fn analyzer_and_query_builder_accept_a_null_field_name() {
+    use rucene::analysis::standard::StandardAnalyzer;
+    use rucene::analysis::{Analyzer, PerFieldReuseStrategy, ReuseStrategy};
+    use rucene::util::query_builder::{QueryBuilder, QueryBuilderOps};
+
+    let analyzer = StandardAnalyzer::new();
+    assert_eq!(
+        analyzer
+            .normalize_nullable_field(None, "FoO")
+            .unwrap()
+            .utf8_to_string()
+            .unwrap(),
+        "foo"
+    );
+    let stream = analyzer
+        .token_stream_from_str_nullable_field(None, "Hello World")
+        .unwrap();
+    let mut stream = stream.borrow_mut();
+    stream.reset().unwrap();
+    let mut n = 0;
+    while stream.increment_token().unwrap() {
+        n += 1;
+    }
+    stream.end().unwrap();
+    stream.close().unwrap();
+    assert_eq!(n, 2);
+    drop(stream);
+
+    // The per-field strategy stores the `null` field's components apart (on
+    // a fresh analyzer, whose stored value the global strategy has not set).
+    let analyzer = StandardAnalyzer::new();
+    let state = analyzer.analyzer_state();
+    let per_field = PerFieldReuseStrategy;
+    let components = std::sync::Arc::new(rucene::util::atomic_ref_cell::AtomicRefCell::new(
+        analyzer.create_components(None).unwrap(),
+    ));
+    per_field.set_reusable_components(state, None, std::sync::Arc::clone(&components));
+    assert!(per_field.get_reusable_components(state, None).is_some());
+    assert!(per_field
+        .get_reusable_components(state, Some("f"))
+        .is_none());
+
+    // `createBooleanQuery(null, "Foo bar")`: two term queries of the null
+    // field, whose `toString` dereferences it.
+    let builder = QueryBuilder::new(Some(std::sync::Arc::new(StandardAnalyzer::new())));
+    let q = builder
+        .create_boolean_query(None, "Foo bar")
+        .unwrap()
+        .expect("a query");
+    let mut terms = Vec::new();
+    q.visit(&mut rucene::search::query_visitor::TermCollectorVisitor::new(&mut terms));
+    let mut terms: Vec<String> = terms.iter().map(Term::to_string).collect();
+    terms.sort();
+    assert_eq!(terms, vec!["null:bar".to_string(), "null:foo".to_string()]);
+    let (class, _) = thrown(|| Ok(q.to_query_string("body")));
+    assert_eq!(class, "java.lang.NullPointerException");
+}

@@ -35,11 +35,6 @@ use crate::jdk::char_sequence::CharSequence;
 /// For more information about fuzzy prefix length check: `FuzzyQuery`.
 ///
 /// Equivalent to `org.apache.lucene.queryparser.flexible.standard.processors.FuzzyQueryNodeProcessor`.
-///
-/// **Divergence.** Java's `Analyzer.normalize` accepts a `null` field; the
-/// core `Analyzer` takes a field name, so a node without a field (only when
-/// the configured `MULTI_FIELDS` is empty) throws a `NullPointerException`
-/// when there is an analyzer.
 #[derive(Debug, Default)]
 pub struct FuzzyQueryNodeProcessor {
     base: QueryNodeProcessorImpl,
@@ -75,12 +70,11 @@ impl QueryNodeProcessorImplOps for FuzzyQueryNodeProcessor {
                 // because we call utf8ToString, this will only work with the default
                 // TermToBytesRefAttribute
                 let text = field_node.get_text_as_string();
-                let field = field_node
-                    .get_field_as_string()
-                    .ok_or_else(LuceneError::null_pointer)?;
+                // the field may be `null` (an empty `MULTI_FIELDS`)
+                let field = field_node.get_field_as_string();
                 let text = analyzer
-                    .normalize(
-                        &field,
+                    .normalize_nullable_field(
+                        field.as_deref(),
                         text.as_deref().ok_or_else(LuceneError::null_pointer)?,
                     )?
                     .utf8_to_string()?;

@@ -95,7 +95,7 @@ impl Analyzer for PayloadAnalyzer {
         "org.apache.lucene.queries.payloads.PayloadHelper$PayloadAnalyzer"
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let result = Arc::new(AtomicRefCell::new(MockTokenizer::new(
             Arc::clone(&SIMPLE),
             true,
@@ -108,7 +108,8 @@ impl Analyzer for PayloadAnalyzer {
 /// The logic of `PayloadHelper.PayloadFilter`.
 #[derive(Debug)]
 pub struct PayloadFilterLogic {
-    field_name: String,
+    /// `fieldName`, `None` for Java's `null`.
+    field_name: Option<String>,
     num_seen: i32,
     payload_att: Att,
 }
@@ -120,11 +121,17 @@ impl TokenFilterLogic for PayloadFilterLogic {
         input: &mut dyn TokenStream,
     ) -> Result<bool> {
         if input.increment_token()? {
-            if self.field_name == FIELD {
+            // `fieldName.equals(FIELD)` dereferences a `null` field name.
+            let field_name = self.field_name.as_deref().ok_or_else(|| {
+                rucene::error::LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"String.equals(Object)\" because \"this.fieldName\" is null",
+                )
+            })?;
+            if field_name == FIELD {
                 self.payload_att
                     .payload_mut()
                     .set_payload(Some(BytesRef::new(PAYLOAD_FIELD.to_vec())));
-            } else if self.field_name == MULTI_FIELD {
+            } else if field_name == MULTI_FIELD {
                 if self.num_seen % 2 == 0 {
                     self.payload_att
                         .payload_mut()
@@ -160,13 +167,13 @@ impl PayloadFilter {
     #[allow(clippy::new_ret_no_self)]
     pub fn new(
         mut input: Box<dyn TokenStream>,
-        field_name: &str,
+        field_name: Option<&str>,
     ) -> Result<TokenFilter<PayloadFilterLogic>> {
         let payload_att = Att::add(input.attribute_source_mut(), payload_id())?;
         Ok(TokenFilter::new(
             input,
             PayloadFilterLogic {
-                field_name: field_name.to_string(),
+                field_name: field_name.map(str::to_string),
                 num_seen: 0,
                 payload_att,
             },

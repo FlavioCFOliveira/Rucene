@@ -44,10 +44,6 @@ const fn unit(c: u8) -> u16 {
 /// `PrefixWildcardQueryNode`, simulating the old query parser.
 ///
 /// Equivalent to `org.apache.lucene.queryparser.flexible.standard.processors.WildcardQueryNodeProcessor`.
-///
-/// **Divergence.** As in `FuzzyQueryNodeProcessor`, a node without a field
-/// throws a `NullPointerException` when the analyzer normalizes a chunk,
-/// where Java's `Analyzer.normalize` accepts a `null` field.
 #[derive(Debug, Default)]
 pub struct WildcardQueryNodeProcessor {
     base: QueryNodeProcessorImpl,
@@ -71,7 +67,7 @@ impl WildcardQueryNodeProcessor {
     /// # Errors
     ///
     /// The exceptions of `Analyzer.normalize` and of the UTF-8 decoding.
-    fn analyze_wildcard(a: &dyn Analyzer, field: &str, wildcard: &str) -> Result<String> {
+    fn analyze_wildcard(a: &dyn Analyzer, field: Option<&str>, wildcard: &str) -> Result<String> {
         // best effort to not pass the wildcard characters through #normalize
         let units: Vec<u16> = wildcard.encode_utf16().collect();
         let mut sb = String::new();
@@ -92,7 +88,7 @@ impl WildcardQueryNodeProcessor {
                 }
                 if start > 0 {
                     let chunk = String::from_utf16_lossy(&units[last..start]);
-                    let normalized = a.normalize(field, &chunk)?;
+                    let normalized = a.normalize_nullable_field(field, &chunk)?;
                     sb.push_str(&normalized.utf8_to_string()?);
                 }
                 // append the wildcard character
@@ -105,7 +101,7 @@ impl WildcardQueryNodeProcessor {
         }
         if last < units.len() {
             let chunk = String::from_utf16_lossy(&units[last..]);
-            let normalized = a.normalize(field, &chunk)?;
+            let normalized = a.normalize_nullable_field(field, &chunk)?;
             sb.push_str(&normalized.utf8_to_string()?);
         }
         Ok(sb)
@@ -204,16 +200,15 @@ impl QueryNodeProcessorImplOps for WildcardQueryNodeProcessor {
                 .ok_or_else(LuceneError::null_pointer)?
                 .get(ConfigurationKeys::ANALYZER);
             if let Some(analyzer) = analyzer {
-                let field = fqn
-                    .get_field_as_string()
-                    .ok_or_else(LuceneError::null_pointer)?;
+                // the field may be `null` (an empty `MULTI_FIELDS`)
+                let field = fqn.get_field_as_string();
                 let wildcard = text
                     .as_ref()
                     .map(CharSequence::to_string)
                     .unwrap_or_default();
                 text = Some(CharSequence::from(Self::analyze_wildcard(
                     analyzer.as_ref(),
-                    &field,
+                    field.as_deref(),
                     &wildcard,
                 )?));
             }

@@ -100,7 +100,7 @@ impl Analyzer for SimplePayloadAnalyzer {
         "org.apache.lucene.queries.payloads.TestPayloadCheckQuery$1"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::new(
             Arc::clone(&SIMPLE),
             true,

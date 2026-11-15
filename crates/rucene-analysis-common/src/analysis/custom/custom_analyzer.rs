@@ -250,7 +250,11 @@ impl Analyzer for CustomAnalyzer {
     ///
     /// With the exception a char filter factory's `create` throws (the hook
     /// returns no error, and Java's exception is unchecked).
-    fn init_reader(&self, _field_name: &str, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
+    fn init_reader(
+        &self,
+        _field_name: Option<&str>,
+        reader: Box<dyn CharReader>,
+    ) -> Box<dyn CharReader> {
         let mut reader = reader;
         for char_filter in &self.char_filters {
             reader = char_filter
@@ -268,7 +272,7 @@ impl Analyzer for CustomAnalyzer {
     /// As [`init_reader`](Self::init_reader).
     fn init_reader_for_normalization(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         reader: Box<dyn CharReader>,
     ) -> Box<dyn CharReader> {
         let mut reader = reader;
@@ -283,7 +287,7 @@ impl Analyzer for CustomAnalyzer {
     /// Equivalent to `CustomAnalyzer.createComponents(String)`: the
     /// tokenizer over `attributeFactory(fieldName)`, wrapped by each token
     /// filter in order; the tokenizer's `setReader` is the source.
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tk = Arc::new(AtomicRefCell::new(
             self.tokenizer
                 .create_with_factory(self.attribute_factory(field_name))?,
@@ -310,7 +314,7 @@ impl Analyzer for CustomAnalyzer {
     /// hook returns no error, and Java's exception is unchecked).
     fn normalize_token_stream(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
         let mut result = input;
@@ -324,14 +328,14 @@ impl Analyzer for CustomAnalyzer {
 
     /// Equivalent to `CustomAnalyzer.getPositionIncrementGap(String)`: the
     /// gap set on the builder, else `Analyzer`'s default, 0.
-    fn get_position_increment_gap(&self, _field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, _field_name: Option<&str>) -> i32 {
         // use default from Analyzer base class if null
         self.pos_inc_gap.unwrap_or(0)
     }
 
     /// Equivalent to `CustomAnalyzer.getOffsetGap(String)`: the gap set on
     /// the builder, else `Analyzer`'s default, 1.
-    fn get_offset_gap(&self, _field_name: &str) -> i32 {
+    fn get_offset_gap(&self, _field_name: Option<&str>) -> i32 {
         // use default from Analyzer base class if null
         self.offset_gap.unwrap_or(1)
     }

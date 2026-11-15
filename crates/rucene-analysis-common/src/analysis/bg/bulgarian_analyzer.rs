@@ -178,7 +178,7 @@ impl Analyzer for BulgarianAnalyzer {
     ///   provided and `BulgarianStemFilter`.
     ///
     /// Equivalent to `BulgarianAnalyzer.createComponents(String)`.
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let source = Arc::new(AtomicRefCell::new(new_standard_tokenizer()));
         let source_for_reader = Arc::clone(&source);
         let set_reader = Box::new(move |reader: Box<dyn CharReader>| {
@@ -202,7 +202,7 @@ impl Analyzer for BulgarianAnalyzer {
     /// Equivalent to `BulgarianAnalyzer.normalize(String, TokenStream)`.
     fn normalize_token_stream(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
         // `Analyzer.normalize` hands this a `StringTokenStream`, which holds

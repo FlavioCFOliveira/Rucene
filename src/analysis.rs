@@ -1163,18 +1163,19 @@ impl AnalyzerState {
 ///
 /// Equivalent to `Analyzer.ReuseStrategy`.
 pub trait ReuseStrategy: Debug + Send + Sync {
-    /// Gets reusable components for `field_name`, if any exist.
+    /// Gets reusable components for `field_name` (`None` for Java's `null`),
+    /// if any exist.
     fn get_reusable_components(
         &self,
         state: &AnalyzerState,
-        field_name: &str,
+        field_name: Option<&str>,
     ) -> Option<Arc<AtomicRefCell<TokenStreamComponents>>>;
 
     /// Stores `components` as the reusable components for `field_name`.
     fn set_reusable_components(
         &self,
         state: &AnalyzerState,
-        field_name: &str,
+        field_name: Option<&str>,
         components: Arc<AtomicRefCell<TokenStreamComponents>>,
     );
 }
@@ -1189,7 +1190,7 @@ impl ReuseStrategy for GlobalReuseStrategy {
     fn get_reusable_components(
         &self,
         state: &AnalyzerState,
-        _field_name: &str,
+        _field_name: Option<&str>,
     ) -> Option<Arc<AtomicRefCell<TokenStreamComponents>>> {
         let stored = state.stored_value().get();
         let borrow = stored.borrow();
@@ -1202,7 +1203,7 @@ impl ReuseStrategy for GlobalReuseStrategy {
     fn set_reusable_components(
         &self,
         state: &AnalyzerState,
-        _field_name: &str,
+        _field_name: Option<&str>,
         components: Arc<AtomicRefCell<TokenStreamComponents>>,
     ) {
         state.stored_value().set(Some(Box::new(components)));
@@ -1211,7 +1212,8 @@ impl ReuseStrategy for GlobalReuseStrategy {
 
 /// Reuses components per field name.
 ///
-/// Equivalent to `Analyzer.PER_FIELD_REUSE_STRATEGY`.
+/// Equivalent to `Analyzer.PER_FIELD_REUSE_STRATEGY`, whose per-field
+/// `HashMap` accepts the `null` field name as a key of its own (`None`).
 #[derive(Debug)]
 pub struct PerFieldReuseStrategy;
 
@@ -1219,35 +1221,36 @@ impl ReuseStrategy for PerFieldReuseStrategy {
     fn get_reusable_components(
         &self,
         state: &AnalyzerState,
-        field_name: &str,
+        field_name: Option<&str>,
     ) -> Option<Arc<AtomicRefCell<TokenStreamComponents>>> {
         let stored = state.stored_value().get();
         let borrow = stored.borrow();
         borrow.as_ref().and_then(|any| {
-            any.downcast_ref::<HashMap<String, Arc<AtomicRefCell<TokenStreamComponents>>>>()
-                .and_then(|map| map.get(field_name).cloned())
+            any.downcast_ref::<HashMap<Option<String>, Arc<AtomicRefCell<TokenStreamComponents>>>>()
+                .and_then(|map| map.get(&field_name.map(str::to_string)).cloned())
         })
     }
 
     fn set_reusable_components(
         &self,
         state: &AnalyzerState,
-        field_name: &str,
+        field_name: Option<&str>,
         components: Arc<AtomicRefCell<TokenStreamComponents>>,
     ) {
         let stored = state.stored_value().get();
         let mut borrow = stored.borrow_mut();
         if borrow.is_none() {
             *borrow = Some(Box::new(HashMap::<
-                String,
+                Option<String>,
                 Arc<AtomicRefCell<TokenStreamComponents>>,
             >::new()));
         }
         if let Some(any) = borrow.as_mut() {
-            if let Some(map) =
-                any.downcast_mut::<HashMap<String, Arc<AtomicRefCell<TokenStreamComponents>>>>()
+            if let Some(map) = any
+                .downcast_mut::<HashMap<Option<String>, Arc<AtomicRefCell<TokenStreamComponents>>>>(
+                )
             {
-                map.insert(field_name.to_string(), components);
+                map.insert(field_name.map(str::to_string), components);
             }
         }
     }
@@ -1301,14 +1304,14 @@ pub trait Analyzer: Debug + Send + Sync {
     ///
     /// Returns what the implementation's construction of the components
     /// raises.
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents>;
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents>;
 
     /// Wraps `input` with normalization filters.
     ///
     /// The default returns `input` unchanged.
     fn normalize_token_stream(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
         input
@@ -1317,7 +1320,11 @@ pub trait Analyzer: Debug + Send + Sync {
     /// Applies char filters before tokenization.
     ///
     /// The default returns `reader` unchanged.
-    fn init_reader(&self, _field_name: &str, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
+    fn init_reader(
+        &self,
+        _field_name: Option<&str>,
+        reader: Box<dyn CharReader>,
+    ) -> Box<dyn CharReader> {
         reader
     }
 
@@ -1326,7 +1333,7 @@ pub trait Analyzer: Debug + Send + Sync {
     /// The default returns `reader` unchanged.
     fn init_reader_for_normalization(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         reader: Box<dyn CharReader>,
     ) -> Box<dyn CharReader> {
         reader
@@ -1335,30 +1342,46 @@ pub trait Analyzer: Debug + Send + Sync {
     /// Returns the attribute factory for `field_name`.
     ///
     /// The default returns [`default_token_attribute_factory`].
-    fn attribute_factory(&self, _field_name: &str) -> Arc<dyn AttributeFactory> {
+    fn attribute_factory(&self, _field_name: Option<&str>) -> Arc<dyn AttributeFactory> {
         default_token_attribute_factory()
     }
 
     /// Returns the position increment gap for multi-valued fields.
     ///
     /// The default returns `0`.
-    fn get_position_increment_gap(&self, _field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, _field_name: Option<&str>) -> i32 {
         0
     }
 
     /// Returns the offset gap for multi-valued fields.
     ///
     /// The default returns `1`.
-    fn get_offset_gap(&self, _field_name: &str) -> i32 {
+    fn get_offset_gap(&self, _field_name: Option<&str>) -> i32 {
         1
     }
 
     /// Returns a token stream for `field_name` tokenizing the contents of `reader`.
     ///
-    /// Equivalent to `Analyzer.tokenStream(String, Reader)`.
+    /// Equivalent to `Analyzer.tokenStream(String, Reader)` with a non-`null`
+    /// field name; see
+    /// [`token_stream_nullable_field`](Self::token_stream_nullable_field).
     fn token_stream(
         &self,
         field_name: &str,
+        reader: Box<dyn CharReader>,
+    ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
+        self.token_stream_nullable_field(Some(field_name), reader)
+    }
+
+    /// Returns a token stream for `field_name` (`None` for Java's `null`)
+    /// tokenizing the contents of `reader`.
+    ///
+    /// Equivalent to `Analyzer.tokenStream(String, Reader)`
+    /// (`Analyzer.java:139-150`): the field name, `null` included, is handed
+    /// as is to the reuse strategy, `initReader` and `createComponents`.
+    fn token_stream_nullable_field(
+        &self,
+        field_name: Option<&str>,
         reader: Box<dyn CharReader>,
     ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
         if self.analyzer_state().is_closed() {
@@ -1391,10 +1414,25 @@ pub trait Analyzer: Debug + Send + Sync {
 
     /// Returns a token stream for `field_name` tokenizing `text`.
     ///
-    /// Equivalent to `Analyzer.tokenStream(String, String)`.
+    /// Equivalent to `Analyzer.tokenStream(String, String)` with a non-`null`
+    /// field name; see
+    /// [`token_stream_from_str_nullable_field`](Self::token_stream_from_str_nullable_field).
     fn token_stream_from_str(
         &self,
         field_name: &str,
+        text: &str,
+    ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
+        self.token_stream_from_str_nullable_field(Some(field_name), text)
+    }
+
+    /// Returns a token stream for `field_name` (`None` for Java's `null`)
+    /// tokenizing `text`.
+    ///
+    /// Equivalent to `Analyzer.tokenStream(String, String)`
+    /// (`Analyzer.java:172-190`).
+    fn token_stream_from_str_nullable_field(
+        &self,
+        field_name: Option<&str>,
         text: &str,
     ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
         if self.analyzer_state().is_closed() {
@@ -1440,6 +1478,21 @@ pub trait Analyzer: Debug + Send + Sync {
     /// `IllegalStateException("Normalization threw an unexpected exception",
     /// e)` around an `IOException` `e`; any other failure propagates.
     fn normalize(&self, field_name: &str, text: &str) -> Result<BytesRef> {
+        self.normalize_nullable_field(Some(field_name), text)
+    }
+
+    /// Normalizes `text` for `field_name` (`None` for Java's `null`).
+    ///
+    /// Equivalent to `Analyzer.normalize(String, String)`
+    /// (`Analyzer.java:213-264`): the field name, `null` included, is handed
+    /// as is to `initReaderForNormalization`, `attributeFactory` and
+    /// `normalize(String, TokenStream)`. See [`normalize`](Self::normalize)
+    /// for the errors.
+    ///
+    /// # Errors
+    ///
+    /// As [`normalize`](Self::normalize).
+    fn normalize_nullable_field(&self, field_name: Option<&str>, text: &str) -> Result<BytesRef> {
         // `catch (IOException e) { throw new IllegalStateException(
         // "Normalization threw an unexpected exception", e); }`, around the
         // char filters and around the token stream.
@@ -1529,14 +1582,14 @@ pub trait Analyzer: Debug + Send + Sync {
 /// Equivalent to the abstract parts of `AnalyzerWrapper`.
 pub trait AnalyzerWrapperLogic: Debug + Send + Sync {
     /// Returns the analyzer to delegate to for `field_name`.
-    fn get_wrapped_analyzer(&self, field_name: &str) -> &dyn Analyzer;
+    fn get_wrapped_analyzer(&self, field_name: Option<&str>) -> &dyn Analyzer;
 
     /// The wrapper's position increment gap for `field_name`.
     ///
     /// Equivalent to `AnalyzerWrapper.getPositionIncrementGap(String)`
     /// (`AnalyzerWrapper.java:129-132`), which a subclass may override
     /// (LUCENE-5324); the default asks the wrapped analyzer.
-    fn get_position_increment_gap(&self, field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, field_name: Option<&str>) -> i32 {
         self.get_wrapped_analyzer(field_name)
             .get_position_increment_gap(field_name)
     }
@@ -1546,7 +1599,7 @@ pub trait AnalyzerWrapperLogic: Debug + Send + Sync {
     /// Equivalent to `AnalyzerWrapper.getOffsetGap(String)`
     /// (`AnalyzerWrapper.java:134-137`), which a subclass may override
     /// (LUCENE-5324); the default asks the wrapped analyzer.
-    fn get_offset_gap(&self, field_name: &str) -> i32 {
+    fn get_offset_gap(&self, field_name: Option<&str>) -> i32 {
         self.get_wrapped_analyzer(field_name)
             .get_offset_gap(field_name)
     }
@@ -1556,7 +1609,7 @@ pub trait AnalyzerWrapperLogic: Debug + Send + Sync {
     /// The default returns `components` unchanged.
     fn wrap_components(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         components: TokenStreamComponents,
     ) -> TokenStreamComponents {
         components
@@ -1567,7 +1620,7 @@ pub trait AnalyzerWrapperLogic: Debug + Send + Sync {
     /// The default returns `input` unchanged.
     fn wrap_token_stream_for_normalization(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
         input
@@ -1576,7 +1629,11 @@ pub trait AnalyzerWrapperLogic: Debug + Send + Sync {
     /// Wraps the reader passed to the wrapped analyzer.
     ///
     /// The default returns `reader` unchanged.
-    fn wrap_reader(&self, _field_name: &str, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
+    fn wrap_reader(
+        &self,
+        _field_name: Option<&str>,
+        reader: Box<dyn CharReader>,
+    ) -> Box<dyn CharReader> {
         reader
     }
 
@@ -1585,7 +1642,7 @@ pub trait AnalyzerWrapperLogic: Debug + Send + Sync {
     /// The default returns `reader` unchanged.
     fn wrap_reader_for_normalization(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         reader: Box<dyn CharReader>,
     ) -> Box<dyn CharReader> {
         reader
@@ -1624,7 +1681,7 @@ impl Analyzer for AnalyzerWrapper {
         "org.apache.lucene.analysis.AnalyzerWrapper"
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let wrapped = self.logic.get_wrapped_analyzer(field_name);
         let components = wrapped.create_components(field_name)?;
         Ok(self.logic.wrap_components(field_name, components))
@@ -1632,7 +1689,7 @@ impl Analyzer for AnalyzerWrapper {
 
     fn normalize_token_stream(
         &self,
-        field_name: &str,
+        field_name: Option<&str>,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
         let wrapped = self.logic.get_wrapped_analyzer(field_name);
@@ -1641,14 +1698,18 @@ impl Analyzer for AnalyzerWrapper {
             .wrap_token_stream_for_normalization(field_name, normalized)
     }
 
-    fn init_reader(&self, field_name: &str, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
+    fn init_reader(
+        &self,
+        field_name: Option<&str>,
+        reader: Box<dyn CharReader>,
+    ) -> Box<dyn CharReader> {
         let wrapped = self.logic.get_wrapped_analyzer(field_name);
         wrapped.init_reader(field_name, self.logic.wrap_reader(field_name, reader))
     }
 
     fn init_reader_for_normalization(
         &self,
-        field_name: &str,
+        field_name: Option<&str>,
         reader: Box<dyn CharReader>,
     ) -> Box<dyn CharReader> {
         let wrapped = self.logic.get_wrapped_analyzer(field_name);
@@ -1658,17 +1719,17 @@ impl Analyzer for AnalyzerWrapper {
         )
     }
 
-    fn attribute_factory(&self, field_name: &str) -> Arc<dyn AttributeFactory> {
+    fn attribute_factory(&self, field_name: Option<&str>) -> Arc<dyn AttributeFactory> {
         self.logic
             .get_wrapped_analyzer(field_name)
             .attribute_factory(field_name)
     }
 
-    fn get_position_increment_gap(&self, field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, field_name: Option<&str>) -> i32 {
         self.logic.get_position_increment_gap(field_name)
     }
 
-    fn get_offset_gap(&self, field_name: &str) -> i32 {
+    fn get_offset_gap(&self, field_name: Option<&str>) -> i32 {
         self.logic.get_offset_gap(field_name)
     }
 }
@@ -1680,14 +1741,14 @@ impl Analyzer for AnalyzerWrapper {
 /// Customizable behavior for a [`DelegatingAnalyzerWrapper`].
 pub trait DelegatingAnalyzerWrapperLogic: Debug + Send + Sync {
     /// Returns the analyzer to delegate to for `field_name`.
-    fn get_wrapped_analyzer(&self, field_name: &str) -> &dyn Analyzer;
+    fn get_wrapped_analyzer(&self, field_name: Option<&str>) -> &dyn Analyzer;
 
     /// The wrapper's position increment gap for `field_name`.
     ///
     /// Equivalent to `AnalyzerWrapper.getPositionIncrementGap(String)`
     /// (`AnalyzerWrapper.java:129-132`), which a subclass may override
     /// (LUCENE-5324); the default asks the wrapped analyzer.
-    fn get_position_increment_gap(&self, field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, field_name: Option<&str>) -> i32 {
         self.get_wrapped_analyzer(field_name)
             .get_position_increment_gap(field_name)
     }
@@ -1697,7 +1758,7 @@ pub trait DelegatingAnalyzerWrapperLogic: Debug + Send + Sync {
     /// Equivalent to `AnalyzerWrapper.getOffsetGap(String)`
     /// (`AnalyzerWrapper.java:134-137`), which a subclass may override
     /// (LUCENE-5324); the default asks the wrapped analyzer.
-    fn get_offset_gap(&self, field_name: &str) -> i32 {
+    fn get_offset_gap(&self, field_name: Option<&str>) -> i32 {
         self.get_wrapped_analyzer(field_name)
             .get_offset_gap(field_name)
     }
@@ -1740,7 +1801,7 @@ impl ReuseStrategy for DelegatingReuseStrategy {
     fn get_reusable_components(
         &self,
         state: &AnalyzerState,
-        field_name: &str,
+        field_name: Option<&str>,
     ) -> Option<Arc<AtomicRefCell<TokenStreamComponents>>> {
         if self.is_wrapper(state) {
             let wrapped_analyzer = self.logic.get_wrapped_analyzer(field_name);
@@ -1759,7 +1820,7 @@ impl ReuseStrategy for DelegatingReuseStrategy {
     fn set_reusable_components(
         &self,
         state: &AnalyzerState,
-        field_name: &str,
+        field_name: Option<&str>,
         components: Arc<AtomicRefCell<TokenStreamComponents>>,
     ) {
         if self.is_wrapper(state) {
@@ -1786,15 +1847,15 @@ impl ReuseStrategy for DelegatingReuseStrategy {
 struct DelegatingWrapperLogic(Arc<dyn DelegatingAnalyzerWrapperLogic>);
 
 impl AnalyzerWrapperLogic for DelegatingWrapperLogic {
-    fn get_wrapped_analyzer(&self, field_name: &str) -> &dyn Analyzer {
+    fn get_wrapped_analyzer(&self, field_name: Option<&str>) -> &dyn Analyzer {
         self.0.get_wrapped_analyzer(field_name)
     }
 
-    fn get_position_increment_gap(&self, field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, field_name: Option<&str>) -> i32 {
         self.0.get_position_increment_gap(field_name)
     }
 
-    fn get_offset_gap(&self, field_name: &str) -> i32 {
+    fn get_offset_gap(&self, field_name: Option<&str>) -> i32 {
         self.0.get_offset_gap(field_name)
     }
 }
@@ -1846,39 +1907,43 @@ impl Analyzer for DelegatingAnalyzerWrapper {
         "org.apache.lucene.analysis.DelegatingAnalyzerWrapper"
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         self.inner.create_components(field_name)
     }
 
     fn normalize_token_stream(
         &self,
-        field_name: &str,
+        field_name: Option<&str>,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
         self.inner.normalize_token_stream(field_name, input)
     }
 
-    fn init_reader(&self, field_name: &str, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
+    fn init_reader(
+        &self,
+        field_name: Option<&str>,
+        reader: Box<dyn CharReader>,
+    ) -> Box<dyn CharReader> {
         self.inner.init_reader(field_name, reader)
     }
 
     fn init_reader_for_normalization(
         &self,
-        field_name: &str,
+        field_name: Option<&str>,
         reader: Box<dyn CharReader>,
     ) -> Box<dyn CharReader> {
         self.inner.init_reader_for_normalization(field_name, reader)
     }
 
-    fn attribute_factory(&self, field_name: &str) -> Arc<dyn AttributeFactory> {
+    fn attribute_factory(&self, field_name: Option<&str>) -> Arc<dyn AttributeFactory> {
         self.inner.attribute_factory(field_name)
     }
 
-    fn get_position_increment_gap(&self, field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, field_name: Option<&str>) -> i32 {
         self.inner.get_position_increment_gap(field_name)
     }
 
-    fn get_offset_gap(&self, field_name: &str) -> i32 {
+    fn get_offset_gap(&self, field_name: Option<&str>) -> i32 {
         self.inner.get_offset_gap(field_name)
     }
 }
@@ -2477,7 +2542,7 @@ mod tests {
             "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
         }
 
-        fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+        fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
             let tokenizer = Arc::new(AtomicRefCell::new(Tokenizer::new(
                 WhitespaceTokenizer::default(),
             )));
@@ -2554,12 +2619,12 @@ mod tests {
             fn java_class_name(&self) -> &'static str {
                 "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
             }
-            fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+            fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
                 self.inner.create_components(field_name)
             }
             fn init_reader_for_normalization(
                 &self,
-                _field_name: &str,
+                _field_name: Option<&str>,
                 _reader: Box<dyn CharReader>,
             ) -> Box<dyn CharReader> {
                 Box::new(FailingReader(self.io))
@@ -2614,12 +2679,12 @@ mod tests {
             fn java_class_name(&self) -> &'static str {
                 "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
             }
-            fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+            fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
                 self.0.create_components(field_name)
             }
             fn init_reader(
                 &self,
-                _field_name: &str,
+                _field_name: Option<&str>,
                 _reader: Box<dyn CharReader>,
             ) -> Box<dyn CharReader> {
                 Box::new(FailingReader)
@@ -2627,7 +2692,7 @@ mod tests {
         }
         let builder = QueryBuilder::new(Some(Arc::new(FailingAnalyzer(WhitespaceAnalyzer::new()))));
         let error = builder
-            .create_boolean_query("f", "a b")
+            .create_boolean_query(Some("f"), "a b")
             .expect_err("the analysis fails");
         match &error.kind {
             LuceneErrorKind::Unchecked {
@@ -2663,7 +2728,7 @@ mod tests {
             fn java_class_name(&self) -> &'static str {
                 "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
             }
-            fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+            fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
                 self.created.fetch_add(1, Ordering::SeqCst);
                 self.inner.create_components(field_name)
             }
@@ -2671,7 +2736,7 @@ mod tests {
         #[derive(Debug)]
         struct Logic(Arc<Counting>);
         impl DelegatingAnalyzerWrapperLogic for Logic {
-            fn get_wrapped_analyzer(&self, _field_name: &str) -> &dyn Analyzer {
+            fn get_wrapped_analyzer(&self, _field_name: Option<&str>) -> &dyn Analyzer {
                 &*self.0
             }
         }
@@ -2699,12 +2764,12 @@ mod tests {
         let components1 = analyzer
             .analyzer_state()
             .reuse_strategy()
-            .get_reusable_components(analyzer.analyzer_state(), "field");
+            .get_reusable_components(analyzer.analyzer_state(), Some("field"));
         let _stream2 = analyzer.token_stream_from_str("field", "world")?;
         let components2 = analyzer
             .analyzer_state()
             .reuse_strategy()
-            .get_reusable_components(analyzer.analyzer_state(), "field");
+            .get_reusable_components(analyzer.analyzer_state(), Some("field"));
         assert!(components1.is_some());
         assert!(components2.is_some());
         assert!(Arc::ptr_eq(
@@ -2736,7 +2801,7 @@ mod tests {
             "org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper"
         }
 
-        fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+        fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
             let tokenizer = Arc::new(AtomicRefCell::new(Tokenizer::new(
                 WhitespaceTokenizer::default(),
             )));
@@ -2752,11 +2817,11 @@ mod tests {
         let title_components = analyzer
             .analyzer_state()
             .reuse_strategy()
-            .get_reusable_components(analyzer.analyzer_state(), "title");
+            .get_reusable_components(analyzer.analyzer_state(), Some("title"));
         let body_components = analyzer
             .analyzer_state()
             .reuse_strategy()
-            .get_reusable_components(analyzer.analyzer_state(), "body");
+            .get_reusable_components(analyzer.analyzer_state(), Some("body"));
         assert!(title_components.is_some());
         assert!(body_components.is_some());
         assert!(!Arc::ptr_eq(
@@ -2774,13 +2839,13 @@ mod tests {
         }
 
         impl AnalyzerWrapperLogic for UpperCaseWrappingLogic {
-            fn get_wrapped_analyzer(&self, _field_name: &str) -> &dyn Analyzer {
+            fn get_wrapped_analyzer(&self, _field_name: Option<&str>) -> &dyn Analyzer {
                 &self.delegate
             }
 
             fn wrap_components(
                 &self,
-                _field_name: &str,
+                _field_name: Option<&str>,
                 components: TokenStreamComponents,
             ) -> TokenStreamComponents {
                 let sink = components.token_stream();
@@ -2811,9 +2876,9 @@ mod tests {
         }
 
         impl DelegatingAnalyzerWrapperLogic for PerFieldLogic {
-            fn get_wrapped_analyzer(&self, field_name: &str) -> &dyn Analyzer {
+            fn get_wrapped_analyzer(&self, field_name: Option<&str>) -> &dyn Analyzer {
                 match field_name {
-                    "title" => &self.title,
+                    Some("title") => &self.title,
                     _ => &self.body,
                 }
             }

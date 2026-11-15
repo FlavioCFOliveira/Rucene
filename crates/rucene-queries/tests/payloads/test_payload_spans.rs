@@ -578,7 +578,7 @@ impl Analyzer for PayloadAnalyzer {
         self.class_name
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let result = Arc::new(AtomicRefCell::new(MockTokenizer::new(
             Arc::clone(&SIMPLE),
             true,

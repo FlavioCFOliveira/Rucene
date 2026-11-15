@@ -35,12 +35,15 @@
 //!   dereferences the `null` field of every `FieldQueryNode`
 //!   (`MatchAllDocsQueryNodeProcessor.java:45`), so these give its helpful
 //!   `NullPointerException` or a syntax error;
-//! * `new QueryParser(null, new StandardAnalyzer())` over the strings whose
-//!   `null`-field terms are built without the analyzer (pure wildcards,
-//!   open ranges, `*:*`, field-qualified clauses). Where Lucene hands the
-//!   analyzer a `null` field, the core `Analyzer` takes a field name and the
-//!   port raises a `NullPointerException` instead (the divergence declared in
-//!   `classic/query_parser_base.rs`), so those strings are not compared.
+//! * `new QueryParser(null, new StandardAnalyzer())` (leading wildcards
+//!   allowed) over the strings whose `null`-field terms are built without
+//!   the analyzer (pure wildcards, open ranges, `*:*`, field-qualified
+//!   clauses) and over the whole classic corpus: the analyzer receives the
+//!   `null` field (`normalize`, `tokenStream` through
+//!   `QueryBuilder.createFieldQuery`), so an analyzed term becomes a
+//!   `TermQuery(null:term)`, a phrase a `PhraseQuery` builder NPE;
+//! * `new QueryBuilder(new StandardAnalyzer())` building boolean and phrase
+//!   queries for a `null` field.
 //!
 //! A perturbed Rust dump must fail at the perturbed record (positive control).
 
@@ -56,6 +59,7 @@ use rucene::search::fuzzy_query::FuzzyQuery;
 use rucene::search::prefix_query::PrefixQuery;
 use rucene::search::regexp_query::RegexpQuery;
 use rucene::search::wildcard_query::WildcardQuery;
+use rucene::util::query_builder::{QueryBuilder, QueryBuilderOps};
 use rucene_queryparser::classic::query_parser::QueryParser;
 use rucene_queryparser::classic::query_parser_base::QueryParserBaseOps;
 use rucene_queryparser::flexible::standard::common_query_parser_configuration::CommonQueryParserConfiguration;
@@ -127,6 +131,31 @@ fn registry() -> Registry {
             p.set_multi_fields(Some(Arc::new(RwLock::new(fields))))
         })?;
         Ok(Value::Null)
+    });
+    const QB: &str = "org.apache.lucene.util.QueryBuilder";
+    r.new_fn(QB, 1, |a| {
+        Ok(Value::object(
+            QB,
+            QueryBuilder::new(Some(a[0].get::<Arc<dyn Analyzer>>())),
+        ))
+    });
+    r.call_fn(QB, "createBooleanQuery", 2, |b, a| {
+        let (field, text) = (
+            a[0].as_opt_str().map(str::to_string),
+            a[1].as_str().to_string(),
+        );
+        let q =
+            b.with_mut(|b: &mut QueryBuilder| b.create_boolean_query(field.as_deref(), &text))?;
+        Ok(q.map_or(Value::Null, Value::query))
+    });
+    r.call_fn(QB, "createPhraseQuery", 2, |b, a| {
+        let (field, text) = (
+            a[0].as_opt_str().map(str::to_string),
+            a[1].as_str().to_string(),
+        );
+        let q =
+            b.with_mut(|b: &mut QueryBuilder| b.create_phrase_query(field.as_deref(), &text))?;
+        Ok(q.map_or(Value::Null, Value::query))
     });
     r.new_fn("org.apache.lucene.search.WildcardQuery", 1, |a| {
         Ok(Value::query(Arc::new(WildcardQuery::new(
@@ -335,6 +364,38 @@ fn oracle() -> (ParseOracle, Vec<String>) {
             &["org.apache.lucene.search.FuzzyQuery", &null_term()],
         ),
     ];
+    const QB: &str = "org.apache.lucene.util.QueryBuilder";
+    let query_builder = || {
+        expr(
+            "new",
+            &[
+                QB,
+                &expr(
+                    "new",
+                    &["org.apache.lucene.analysis.standard.StandardAnalyzer"],
+                ),
+            ],
+        )
+    };
+    let direct: Vec<String> = direct
+        .into_iter()
+        .chain(
+            ["Foo", "Foo bar", "The quick brown fox"]
+                .iter()
+                .flat_map(|text| {
+                    [
+                        expr(
+                            "call",
+                            &["createBooleanQuery", &query_builder(), "null", &lit(text)],
+                        ),
+                        expr(
+                            "call",
+                            &["createPhraseQuery", &query_builder(), "null", &lit(text)],
+                        ),
+                    ]
+                }),
+        )
+        .collect();
     for (i, e) in direct.iter().enumerate() {
         let id = format!("direct{i}");
         oracle.parse(&id, e, &[], Some("body"));
@@ -355,7 +416,12 @@ fn oracle() -> (ParseOracle, Vec<String>) {
         );
         ids.push(id);
     }
-    for (i, input) in classic_inputs().iter().enumerate() {
+    let classic: Vec<String> = classic_inputs()
+        .into_iter()
+        .chain(corpus::classic_edge_cases())
+        .chain(corpus::classic_random(SEED + 1, 200))
+        .collect();
+    for (i, input) in classic.iter().enumerate() {
         let id = format!("qp{i}");
         let units: Vec<u16> = input.encode_utf16().collect();
         oracle.parse(
@@ -400,7 +466,7 @@ fn parsers_without_a_default_field_match_lucene() {
         count(&|l| l.starts_with("error\ttostring\tjava.lang.NullPointerException\t"));
     let field_npes =
         count(&|l| l == "error\tjava.lang.NullPointerException\tfield must not be null");
-    let null_field_trees = count(&|l| l.starts_with("classtree\t") && l.contains("null:foo"));
+    let null_field_trees = count(&|l| l.starts_with("classtree\t") && l.contains(":[null:"));
     let flexible_npes = count(&|l| {
         l.starts_with("error\tjava.lang.NullPointerException\t")
             && l.contains("FieldQueryNode.getField()")
@@ -413,7 +479,7 @@ fn parsers_without_a_default_field_match_lucene() {
         java.lines().count()
     );
     assert!(
-        to_string_npes >= 3 && field_npes >= 4 && null_field_trees >= 3 && flexible_npes > 20,
+        to_string_npes >= 30 && field_npes >= 4 && null_field_trees >= 30 && flexible_npes > 20,
         "the corpus must reach terms of a null field; Lucene's dump begins:\n{}",
         java.lines().take(60).collect::<Vec<_>>().join("\n")
     );

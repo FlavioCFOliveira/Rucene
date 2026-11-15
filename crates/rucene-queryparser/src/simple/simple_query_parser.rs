@@ -235,7 +235,7 @@ pub trait SimpleQueryParserOps: QueryBuilderOps {
         let weights = self.simple_query_parser().weights.clone();
         let default_operator = self.simple_query_parser().default_operator;
         for (key, boost) in &weights {
-            let q = self.create_boolean_query_with_operator(key, text, default_operator)?;
+            let q = self.create_boolean_query_with_operator(Some(key), text, default_operator)?;
             if let Some(mut q) = q {
                 if *boost != 1.0 {
                     q = Arc::new(BoostQuery::new(q, *boost)?);
@@ -282,7 +282,7 @@ pub trait SimpleQueryParserOps: QueryBuilderOps {
         let mut bq = boolean_query::Builder::new();
         let weights = self.simple_query_parser().weights.clone();
         for (key, boost) in &weights {
-            let q = self.create_phrase_query_with_slop(key, text, slop)?;
+            let q = self.create_phrase_query_with_slop(Some(key), text, slop)?;
             if let Some(mut q) = q {
                 if *boost != 1.0 {
                     q = Arc::new(BoostQuery::new(q, *boost)?);

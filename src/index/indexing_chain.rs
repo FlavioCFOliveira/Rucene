@@ -2760,8 +2760,8 @@ impl DefaultIndexingChain {
 
         if let (true, Some(analyzer)) = (analyzed, analyzer) {
             per_field.invert_state.position +=
-                analyzer.get_position_increment_gap(&per_field.field_name);
-            per_field.invert_state.offset += analyzer.get_offset_gap(&per_field.field_name);
+                analyzer.get_position_increment_gap(Some(&per_field.field_name));
+            per_field.invert_state.offset += analyzer.get_offset_gap(Some(&per_field.field_name));
         }
         Ok(())
     }

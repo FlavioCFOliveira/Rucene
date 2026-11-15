@@ -454,7 +454,7 @@ impl Analyzer for SingleCharAnalyzer {
         "org.apache.lucene.search.TestTermRangeQuery$SingleCharAnalyzer"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let mut source =
             AttributeSource::new_with_factory(rucene::analysis::default_token_attribute_factory());
         let term_att = Att::add(&mut source, char_term_id())?;

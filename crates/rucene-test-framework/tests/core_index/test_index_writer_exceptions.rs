@@ -771,7 +771,7 @@ impl Analyzer for CrashingAnalyzer {
         self.class_name
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let mut tokenizer = MockTokenizer::new(Arc::clone(&WHITESPACE), false)?;
         tokenizer.set_enable_checks(false); // disable workflow checking as we forcefully close() in exceptional cases.
         let tokenizer = Arc::new(AtomicRefCell::new(tokenizer));
@@ -780,6 +780,9 @@ impl Analyzer for CrashingAnalyzer {
             None => true,
         };
         if crash {
+            // `new CrashingFilter(fieldName, ...)` later compares the field
+            // name, which a `null` one dereferences.
+            let field_name = field_name.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
             let stream = crashing_filter(field_name, shared(&tokenizer));
             Ok(components(tokenizer, sink(stream)))
         } else {
@@ -959,7 +962,7 @@ impl Analyzer for TokenStreamFailureAnalyzer {
         "org.apache.lucene.index.TestIndexWriterExceptions$2"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let mut tokenizer = MockTokenizer::new(Arc::clone(&SIMPLE), true)?;
         tokenizer.set_enable_checks(false); // disable workflow checking as we forcefully close() in exceptional
                                             // cases.
@@ -2427,7 +2430,7 @@ impl Analyzer for CrazyGapAnalyzer {
         "org.apache.lucene.index.TestIndexWriterExceptions$11"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::new(
             Arc::clone(&KEYWORD),
             false,
@@ -2435,7 +2438,7 @@ impl Analyzer for CrazyGapAnalyzer {
         Ok(tokenizer_components(tokenizer))
     }
 
-    fn get_position_increment_gap(&self, _field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, _field_name: Option<&str>) -> i32 {
         -2
     }
 }

@@ -69,7 +69,7 @@ impl Analyzer for PayloadAnalyzer {
         "org.apache.lucene.queries.intervals.TestPayloadFilteredInterval$1"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tok = Arc::new(AtomicRefCell::new(MockTokenizer::new(
             Arc::clone(&SIMPLE),
             true,

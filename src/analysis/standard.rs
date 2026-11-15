@@ -447,7 +447,7 @@ impl Analyzer for StandardAnalyzer {
     /// length again before every reader, as Java's
     /// `src.setMaxTokenLength(StandardAnalyzer.this.maxTokenLength)` lambda
     /// does.
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = Arc::new(AtomicRefCell::new(new_standard_tokenizer()));
         let max_token_length = Arc::clone(&self.max_token_length);
         tokenizer
@@ -471,7 +471,7 @@ impl Analyzer for StandardAnalyzer {
 
     fn normalize_token_stream(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
         // `Analyzer.normalize` hands this a `StringTokenStream`, which holds
@@ -881,7 +881,7 @@ mod tests {
         let state = analyzer.analyzer_state();
         assert!(state
             .reuse_strategy()
-            .get_reusable_components(state, "f")
+            .get_reusable_components(state, Some("f"))
             .is_none());
         analyzer.set_max_token_length(2);
         assert_eq!(
@@ -891,7 +891,7 @@ mod tests {
         let state = analyzer.analyzer_state();
         assert!(state
             .reuse_strategy()
-            .get_reusable_components(state, "f")
+            .get_reusable_components(state, Some("f"))
             .is_some());
     }
 

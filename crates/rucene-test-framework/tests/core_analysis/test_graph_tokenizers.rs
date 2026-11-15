@@ -248,7 +248,7 @@ impl Analyzer for ChainAnalyzer {
         self.class_name
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         (self.make)()
     }
 }

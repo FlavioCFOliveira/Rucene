@@ -67,7 +67,7 @@ impl Analyzer for SynonymFactoryAnalyzer {
     }
 
     /// Equivalent to the anonymous analyzer's `createComponents(String)`.
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         match &self.factory {
             None => {
                 let tokenizer = Arc::new(AtomicRefCell::new(new_whitespace_tokenizer()));

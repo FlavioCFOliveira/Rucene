@@ -50,7 +50,7 @@ impl Analyzer for StandardTokenizerAnalyzer {
         "org.apache.lucene.analysis.standard.TestStandardAnalyzer$1"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer =
             new_standard_tokenizer_with_factory(BaseTokenStreamTestCase::new_attribute_factory())?;
         Ok(tokenizer_components(std::sync::Arc::new(
@@ -764,7 +764,7 @@ impl Analyzer for GraphAfterAnalyzer {
         "org.apache.lucene.analysis.standard.TestStandardAnalyzer$2"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = Arc::new(AtomicRefCell::new(new_standard_tokenizer_with_factory(
             BaseTokenStreamTestCase::new_attribute_factory(),
         )?));

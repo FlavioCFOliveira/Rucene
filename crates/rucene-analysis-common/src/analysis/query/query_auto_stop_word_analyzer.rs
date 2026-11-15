@@ -47,7 +47,7 @@ struct QueryAutoStopWordAnalyzerLogic {
 
 impl AnalyzerWrapperLogic for QueryAutoStopWordAnalyzerLogic {
     /// Equivalent to `QueryAutoStopWordAnalyzer.getWrappedAnalyzer(String)`.
-    fn get_wrapped_analyzer(&self, _field_name: &str) -> &dyn Analyzer {
+    fn get_wrapped_analyzer(&self, _field_name: Option<&str>) -> &dyn Analyzer {
         self.delegate.as_ref()
     }
 
@@ -63,10 +63,11 @@ impl AnalyzerWrapperLogic for QueryAutoStopWordAnalyzerLogic {
     /// only an attribute the stream's factory cannot implement causes.
     fn wrap_components(
         &self,
-        field_name: &str,
+        field_name: Option<&str>,
         components: TokenStreamComponents,
     ) -> TokenStreamComponents {
-        let Some(stop_words) = self.stop_words_per_field.get(field_name) else {
+        // `stopWordsPerField.get(fieldName)`: a `null` field has no entry.
+        let Some(stop_words) = field_name.and_then(|f| self.stop_words_per_field.get(f)) else {
             return components;
         };
         let input: Box<dyn TokenStream> =
@@ -298,39 +299,43 @@ impl Analyzer for QueryAutoStopWordAnalyzer {
         "org.apache.lucene.analysis.query.QueryAutoStopWordAnalyzer"
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         self.inner.create_components(field_name)
     }
 
     fn normalize_token_stream(
         &self,
-        field_name: &str,
+        field_name: Option<&str>,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
         self.inner.normalize_token_stream(field_name, input)
     }
 
-    fn init_reader(&self, field_name: &str, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
+    fn init_reader(
+        &self,
+        field_name: Option<&str>,
+        reader: Box<dyn CharReader>,
+    ) -> Box<dyn CharReader> {
         self.inner.init_reader(field_name, reader)
     }
 
     fn init_reader_for_normalization(
         &self,
-        field_name: &str,
+        field_name: Option<&str>,
         reader: Box<dyn CharReader>,
     ) -> Box<dyn CharReader> {
         self.inner.init_reader_for_normalization(field_name, reader)
     }
 
-    fn attribute_factory(&self, field_name: &str) -> Arc<dyn AttributeFactory> {
+    fn attribute_factory(&self, field_name: Option<&str>) -> Arc<dyn AttributeFactory> {
         self.inner.attribute_factory(field_name)
     }
 
-    fn get_position_increment_gap(&self, field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, field_name: Option<&str>) -> i32 {
         self.inner.get_position_increment_gap(field_name)
     }
 
-    fn get_offset_gap(&self, field_name: &str) -> i32 {
+    fn get_offset_gap(&self, field_name: Option<&str>) -> i32 {
         self.inner.get_offset_gap(field_name)
     }
 }

@@ -60,7 +60,7 @@ impl Analyzer for MockBytesAnalyzer {
         "org.apache.lucene.tests.analysis.MockBytesAnalyzer"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let t = MockTokenizer::with_factory(
             MockUTF16TermAttributeImpl::utf16_term_attribute_factory(),
             Arc::clone(&KEYWORD),
@@ -70,7 +70,7 @@ impl Analyzer for MockBytesAnalyzer {
         Ok(tokenizer_components(Arc::new(AtomicRefCell::new(t))))
     }
 
-    fn attribute_factory(&self, _field_name: &str) -> Arc<dyn AttributeFactory> {
+    fn attribute_factory(&self, _field_name: Option<&str>) -> Arc<dyn AttributeFactory> {
         MockUTF16TermAttributeImpl::utf16_term_attribute_factory()
     }
 }

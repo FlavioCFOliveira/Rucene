@@ -178,7 +178,7 @@ impl Analyzer for WhitespaceAnalyzer {
         "org.apache.lucene.index.TestIndexWriterForceMerge$1"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
             MockTokenizer::new(Arc::clone(&WHITESPACE), true)?,
         ))))

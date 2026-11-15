@@ -776,7 +776,7 @@ impl Analyzer for CannedAnalyzer {
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.tests.analysis.AnalysisMocksOracle$1"
     }
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let mut source =
             AttributeSource::new_with_factory(rucene::analysis::default_token_attribute_factory());
         let term = Att::add(&mut source, char_term_id())?;
@@ -1177,7 +1177,7 @@ impl Analyzer for RecordingAnalyzer {
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.tests.analysis.AnalysisMocksOracle$2"
     }
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let t = Arc::new(AtomicRefCell::new(MockTokenizer::with_max_token_length(
             Arc::clone(&KEYWORD),
             false,
@@ -1468,7 +1468,7 @@ impl Analyzer for FacAnalyzer {
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.tests.analysis.AnalysisMocksOracle$2"
     }
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let t = Arc::new(AtomicRefCell::new(
             rucene::analysis::new_standard_tokenizer_with_factory(factory(self.f))?,
         ));
@@ -1579,10 +1579,10 @@ fn factories() {
                     let qb = QueryBuilder::new(Some(a));
                     format!(
                         "{}\t{}\t{}",
-                        query_string(qb.create_boolean_query("f", text)),
-                        query_string(qb.create_phrase_query("f", text)),
+                        query_string(qb.create_boolean_query(Some("f"), text)),
+                        query_string(qb.create_phrase_query(Some("f"), text)),
                         query_string(qb.create_boolean_query_with_operator(
-                            "f",
+                            Some("f"),
                             text,
                             rucene::search::Occur::MUST
                         ))

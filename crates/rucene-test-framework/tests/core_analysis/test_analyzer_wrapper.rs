@@ -32,7 +32,7 @@ impl Analyzer for SourceRecordingAnalyzer {
         "org.apache.lucene.analysis.TestAnalyzerWrapper$1"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let source_called = Arc::clone(&self.source_called);
         let sink: Arc<AtomicRefCell<dyn TokenStream>> =
             Arc::new(AtomicRefCell::new(CannedTokenStream::new(Vec::new())));
@@ -53,13 +53,13 @@ struct LowerCasingWrapper {
 }
 
 impl AnalyzerWrapperLogic for LowerCasingWrapper {
-    fn get_wrapped_analyzer(&self, _field_name: &str) -> &dyn Analyzer {
+    fn get_wrapped_analyzer(&self, _field_name: Option<&str>) -> &dyn Analyzer {
         &self.analyzer
     }
 
     fn wrap_components(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         components: TokenStreamComponents,
     ) -> TokenStreamComponents {
         // `new TokenStreamComponents(components.getSource(), new

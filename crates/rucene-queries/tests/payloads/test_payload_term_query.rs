@@ -126,7 +126,7 @@ impl Analyzer for PayloadAnalyzer {
         "org.apache.lucene.queries.payloads.TestPayloadTermQuery$PayloadAnalyzer"
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let result = Arc::new(AtomicRefCell::new(MockTokenizer::new(
             Arc::clone(&SIMPLE),
             true,
@@ -136,7 +136,7 @@ impl Analyzer for PayloadAnalyzer {
         let filter = TokenFilter::new(
             input,
             PayloadFilter {
-                field_name: field_name.to_string(),
+                field_name: field_name.map(str::to_string),
                 num_seen: 0,
                 payload_att,
             },
@@ -148,7 +148,8 @@ impl Analyzer for PayloadAnalyzer {
 /// `TestPayloadTermQuery.PayloadFilter`.
 #[derive(Debug)]
 struct PayloadFilter {
-    field_name: String,
+    /// `fieldName`, `None` for Java's `null`.
+    field_name: Option<String>,
     num_seen: i32,
     payload_att: Att,
 }
@@ -161,11 +162,17 @@ impl TokenFilterLogic for PayloadFilter {
     ) -> Result<bool> {
         let has_next = input.increment_token()?;
         if has_next {
-            if self.field_name == "field" {
+            // `fieldName.equals("field")` dereferences a `null` field name.
+            let field_name = self.field_name.as_deref().ok_or_else(|| {
+                rucene::error::LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"String.equals(Object)\" because \"this.fieldName\" is null",
+                )
+            })?;
+            if field_name == "field" {
                 self.payload_att
                     .payload_mut()
                     .set_payload(Some(BytesRef::new(PAYLOAD_FIELD.to_vec())));
-            } else if self.field_name == "multiField" {
+            } else if field_name == "multiField" {
                 if self.num_seen % 2 == 0 {
                     self.payload_att
                         .payload_mut()

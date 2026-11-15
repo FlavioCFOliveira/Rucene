@@ -376,7 +376,7 @@ impl Analyzer for PayloadAnalyzer {
         "org.apache.lucene.queries.payloads.TestPayloadScoreQuery$PayloadAnalyzer"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let result = Arc::new(AtomicRefCell::new(MockTokenizer::new(
             Arc::clone(&SIMPLE),
             true,

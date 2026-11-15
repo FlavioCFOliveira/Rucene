@@ -202,8 +202,12 @@ fn test_bogus_params() -> Result<()> {
             .map(|_| ())
     });
 
-    expect_throws_panic("java.lang.NullPointerException", || {
-        let _ = SynonymQueryBuilder::new(None).add_term_with_boost(&t("field1", "a"), -0f32);
+    // `field.equals(term.field())` of the `null` builder field throws
+    // (`SynonymQuery.java:80-83`): an error of `add_term_with_boost`.
+    expect_throws("java.lang.NullPointerException", || {
+        SynonymQueryBuilder::new(None)
+            .add_term_with_boost(&t("field1", "a"), -0f32)
+            .map(|_| ())
     });
 
     expect_throws_panic("java.lang.NullPointerException", || {

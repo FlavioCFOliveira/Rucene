@@ -51,7 +51,7 @@ impl Analyzer for UnicodeWhitespaceAnalyzer {
     }
 
     /// Equivalent to `UnicodeWhitespaceAnalyzer.createComponents(String)`.
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         Ok(TokenStreamComponents::from_tokenizer(Arc::new(
             AtomicRefCell::new(new_unicode_whitespace_tokenizer()),
         )))

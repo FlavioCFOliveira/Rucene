@@ -106,7 +106,7 @@ impl Analyzer for StopAnalyzer {
     /// `LowerCaseFilter` and `StopFilter`.
     ///
     /// Equivalent to `StopAnalyzer.createComponents(String)`.
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = Arc::new(AtomicRefCell::new(new_letter_tokenizer()));
         let tokenizer_for_source = Arc::clone(&tokenizer);
         let source = Box::new(move |reader: Box<dyn CharReader>| {
@@ -122,7 +122,7 @@ impl Analyzer for StopAnalyzer {
     /// LowerCaseFilter(in)`.
     fn normalize_token_stream(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
         // `Analyzer.normalize` hands this a `StringTokenStream`, which holds
