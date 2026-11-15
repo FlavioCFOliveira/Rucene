@@ -17,3 +17,10 @@ name = "rucene_sandbox"
 # `lucene/core` only.
 [dependencies]
 rucene = { path = "../.." }
+
+[dev-dependencies]
+# The tests port Lucene's sandbox test of `FuzzyLikeThisQuery` onto
+# lucene/test-framework (and its randomized-testing base); the Java-oracle
+# harness they share with `rucene-queries` (rmp #475) draws on both.
+rucene-test-framework = { path = "../rucene-test-framework" }
+randomizedtesting = { path = "../randomizedtesting" }

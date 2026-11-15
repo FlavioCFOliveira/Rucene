@@ -25,7 +25,9 @@ use rucene::index::LeafReaderContext;
 use rucene::search::index_searcher::IndexSearcher;
 
 use crate::function::function_values::FunctionValues;
-use crate::function::value_source::{sources_eq, sources_hash, ValueSource, ValueSourceContext};
+use crate::function::value_source::{
+    same_object, sources_eq, sources_hash, ValueSource, ValueSourceContext,
+};
 use crate::function::valuesource::multi_value_source::MultiValueSource;
 
 /// `vals[i] = value`, with the `ArrayIndexOutOfBoundsException` Java raises
@@ -265,10 +267,11 @@ impl ValueSource for VectorValueSource {
 
     /// `o instanceof VectorValueSource` with equal sources.
     fn value_source_eq(&self, other: &dyn ValueSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<VectorValueSource>()
-            .is_some_and(|that| sources_eq(&self.sources, &that.sources))
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<VectorValueSource>()
+                .is_some_and(|that| sources_eq(&self.sources, &that.sources))
     }
 
     /// `sources.hashCode()`.

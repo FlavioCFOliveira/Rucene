@@ -413,8 +413,13 @@ impl DoubleValuesSource for ConstantValuesSource {
         ))
     }
 
+    /// `"constant(" + value + ")"`, the `double` printed by `Double.toString`
+    /// (`DoubleValuesSource.java:428`).
     fn to_source_string(&self) -> String {
-        format!("constant({})", self.value)
+        format!(
+            "constant({})",
+            crate::util::java_fmt::double_to_string(self.value)
+        )
     }
 
     fn explain(
@@ -423,9 +428,13 @@ impl DoubleValuesSource for ConstantValuesSource {
         _doc_id: i32,
         _score_explanation: &Explanation,
     ) -> Result<Explanation> {
+        // `"constant(" + value + ")"` (`DoubleValuesSource.java:410`).
         Ok(Explanation::matched(
             self.value,
-            format!("constant({})", self.value),
+            format!(
+                "constant({})",
+                crate::util::java_fmt::double_to_string(self.value)
+            ),
             Vec::new(),
         ))
     }

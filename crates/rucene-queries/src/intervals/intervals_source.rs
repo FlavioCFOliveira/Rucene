@@ -154,8 +154,10 @@ impl fmt::Display for dyn IntervalsSource {
 pub struct IntervalsSourceKey(pub Arc<dyn IntervalsSource>);
 
 impl PartialEq for IntervalsSourceKey {
+    /// The key comparison of Java's hash collections (`HashMap.getNode`):
+    /// `k == key || key.equals(k)`, the identity first.
     fn eq(&self, other: &Self) -> bool {
-        self.0.source_eq(&*other.0)
+        objects_equals(&self.0, &other.0)
     }
 }
 
@@ -174,12 +176,25 @@ pub(crate) fn sources_list_hash(sources: &[Arc<dyn IntervalsSource>]) -> i32 {
     })
 }
 
-/// `List.equals` (or `Arrays.equals`) of two lists of sources.
+/// `List.equals` (or `Arrays.equals`) of two lists of sources: each pair of
+/// elements compared with `Objects.equals`, the identity first.
 pub(crate) fn sources_list_eq(
     a: &[Arc<dyn IntervalsSource>],
     b: &[Arc<dyn IntervalsSource>],
 ) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.source_eq(&**y))
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| objects_equals(x, y))
+}
+
+/// `Objects.equals(a, b)` over two sources: `a == b || a.equals(b)`, the
+/// identity first, so that a source whose `equals` is not reflexive still
+/// equals itself.
+pub(crate) fn objects_equals(a: &Arc<dyn IntervalsSource>, b: &Arc<dyn IntervalsSource>) -> bool {
+    std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b)) || a.source_eq(&**b)
+}
+
+/// `this == o`: whether `other` is the very object `this`.
+pub(crate) fn same_object<T>(this: &T, other: &dyn IntervalsSource) -> bool {
+    std::ptr::addr_eq(this as *const T, other as *const dyn IntervalsSource)
 }
 
 /// `Objects.hash(values...)`: `31 * h + v` folded from `1`.

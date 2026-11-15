@@ -71,8 +71,13 @@ fn current_term(ts: &dyn TokenStream) -> BytesRef {
 /// Equivalent to the final class
 /// `org.apache.lucene.queries.intervals.IntervalBuilder`, code adopted from
 /// ASL-licensed Elasticsearch.
+///
+/// Java's class is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct IntervalBuilder;
+pub struct IntervalBuilder;
 
 impl IntervalBuilder {
     /// Equivalent to the package-private static
@@ -82,7 +87,7 @@ impl IntervalBuilder {
     ///
     /// Propagates any error of the analysis chain, and the `TooManyClauses`
     /// of a graph with too many paths.
-    pub(crate) fn analyze_text(
+    pub fn analyze_text(
         stream: &mut CachingTokenFilter,
         max_gaps: i32,
         ordered: bool,

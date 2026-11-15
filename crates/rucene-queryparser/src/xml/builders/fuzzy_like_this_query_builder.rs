@@ -45,13 +45,10 @@ const DEFAULT_IGNORE_TF: bool = false;
 /// Equivalent to
 /// `org.apache.lucene.queryparser.xml.builders.FuzzyLikeThisQueryBuilder`.
 ///
-/// **Divergences.** A `Field` without a `fieldName` (its own or an
-/// ancestor's) gives Java's `addTerms` a `null` field; the sandbox port's
-/// `FuzzyLikeThisQuery::add_terms` takes a field name, so the port passes
-/// the empty name there. Java builds a `FuzzyLikeThisQuery` with a `null`
-/// analyzer and fails when it rewrites it; the sandbox port's constructor
-/// takes an analyzer, so a `None` analyzer throws the
-/// `NullPointerException` when the query is built.
+/// A `Field` without a `fieldName` (its own or an ancestor's) and a `None`
+/// analyzer reach `FuzzyLikeThisQuery` as Java's `null`s
+/// (`FuzzyLikeThisQueryBuilder.java:48,57,60`); the query answers them as
+/// Java does when it rewrites.
 #[derive(Debug)]
 pub struct FuzzyLikeThisQueryBuilder {
     analyzer: Option<Arc<dyn Analyzer>>,
@@ -71,11 +68,7 @@ impl QueryBuilder for FuzzyLikeThisQueryBuilder {
     fn get_query(&self, e: &Element) -> Result<Arc<dyn Query>> {
         let nl = e.get_elements_by_tag_name("Field");
         let max_num_terms = DOMUtils::get_attribute_int(e, "maxNumTerms", DEFAULT_MAX_NUM_TERMS)?;
-        let analyzer = self
-            .analyzer
-            .clone()
-            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
-        let mut fbq = FuzzyLikeThisQuery::new(max_num_terms, analyzer);
+        let mut fbq = FuzzyLikeThisQuery::new(max_num_terms, self.analyzer.clone());
         fbq.set_ignore_tf(DOMUtils::get_attribute_boolean(
             e,
             "ignoreTF",
@@ -96,12 +89,7 @@ impl QueryBuilder for FuzzyLikeThisQueryBuilder {
                 DOMUtils::get_attribute_int(&field_elem, "prefixLength", DEFAULT_PREFIX_LENGTH)?;
             let field_name = DOMUtils::get_attribute_with_inheritance(&field_elem, "fieldName");
             let value = DOMUtils::get_text(&field_elem);
-            fbq.add_terms(
-                Some(value),
-                field_name.unwrap_or_default(),
-                min_similarity,
-                prefix_length,
-            )?;
+            fbq.add_terms(Some(value), field_name, min_similarity, prefix_length)?;
         }
         let fbq = Arc::new(fbq);
         let mut q: Arc<dyn Query> = fbq.clone();

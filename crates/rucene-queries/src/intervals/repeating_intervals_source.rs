@@ -32,7 +32,7 @@ use crate::intervals::interval_iterator::{IntervalIterator, NO_MORE_INTERVALS};
 use crate::intervals::interval_matches_iterator::{
     IntervalMatchesIterator, SharedIntervalMatchesIterator,
 };
-use crate::intervals::intervals_source::{objects_hash, IntervalsSource};
+use crate::intervals::intervals_source::{objects_equals, objects_hash, IntervalsSource};
 
 /// Generates an iterator that spans repeating instances of a sub-iterator,
 /// avoiding minimisation. This is useful for repeated terms within an
@@ -136,7 +136,7 @@ impl IntervalsSource for RepeatingIntervalsSource {
         other
             .as_any()
             .downcast_ref::<RepeatingIntervalsSource>()
-            .is_some_and(|o| self.in_.source_eq(&*o.in_) && self.child_count == o.child_count)
+            .is_some_and(|o| objects_equals(&self.in_, &o.in_) && self.child_count == o.child_count)
     }
 
     fn to_source_string(&self) -> String {

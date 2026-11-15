@@ -38,7 +38,7 @@ use rucene::util::java_collections::java_string_hash_code;
 use crate::intervals::interval_matches_iterator::IntervalMatchesIterator;
 use crate::intervals::interval_score_function::{self, IntervalScoreFunction, SaturationFunction};
 use crate::intervals::interval_scorer::IntervalScorer;
-use crate::intervals::intervals_source::{objects_hash, IntervalsSource};
+use crate::intervals::intervals_source::{objects_equals, objects_hash, IntervalsSource};
 
 /// A query that retrieves documents containing intervals returned from an
 /// [`IntervalsSource`].
@@ -175,12 +175,15 @@ impl Query for IntervalQuery {
     /// The same class, an equal field and an equal source; the score function
     /// takes no part.
     fn query_eq(&self, other: &dyn Query) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<IntervalQuery>()
-            .is_some_and(|that| {
-                self.field == that.field && self.intervals_source.source_eq(&*that.intervals_source)
-            })
+        // `if (this == o) return true;`
+        std::ptr::addr_eq(self as *const Self, other as *const dyn Query)
+            || other
+                .as_any()
+                .downcast_ref::<IntervalQuery>()
+                .is_some_and(|that| {
+                    self.field == that.field
+                        && objects_equals(&self.intervals_source, &that.intervals_source)
+                })
     }
 
     /// `Objects.hash(field, intervalsSource)`.

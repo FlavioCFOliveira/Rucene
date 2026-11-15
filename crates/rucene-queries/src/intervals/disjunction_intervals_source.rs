@@ -41,7 +41,7 @@ use crate::intervals::interval_matches_iterator::{
     IntervalMatchesIterator, SharedIntervalMatchesIterator,
 };
 use crate::intervals::interval_query::IntervalQuery;
-use crate::intervals::intervals_source::{IntervalsSource, IntervalsSourceKey};
+use crate::intervals::intervals_source::{same_object, IntervalsSource, IntervalsSourceKey};
 
 /// The disjunction of a set of sources.
 ///
@@ -172,10 +172,11 @@ impl IntervalsSource for DisjunctionIntervalsSource {
     }
 
     fn source_eq(&self, other: &dyn IntervalsSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<DisjunctionIntervalsSource>()
-            .is_some_and(|that| self.sub_sources == that.sub_sources)
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<DisjunctionIntervalsSource>()
+                .is_some_and(|that| self.sub_sources == that.sub_sources)
     }
 
     /// `Objects.hash(subSources)`: `31 + subSources.hashCode()`.

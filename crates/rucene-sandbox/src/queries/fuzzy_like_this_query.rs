@@ -24,7 +24,7 @@ use std::sync::{Arc, LazyLock};
 
 use rucene::analysis::tokenattributes::CharTermAttribute;
 use rucene::analysis::Analyzer;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::TermsEnum;
 use rucene::index::{IndexReader, MultiTerms, Term, TermStates, Terms};
 use rucene::search::boolean_clause::Occur;
@@ -96,15 +96,19 @@ fn close_after<T>(result: Result<T>, closed: Result<()>) -> Result<T> {
 ///   the identity hash is
 ///   [`java_identity_hash_code_stand_in`] over the analyzer's Java class name,
 ///   which is consistent with it.
-/// * Java accepts a `null` analyzer, which fails with a
-///   `NullPointerException` once a non-`null` query string is analyzed at
-///   rewrite; the analyzer is required here.
+///
+/// Java's `null` analyzer and `null` field name are `None`: a `null` field
+/// has no terms (`MultiTerms.getTerms(reader, null)` is `null` through
+/// `FieldInfos.fieldInfo(null)`, `FieldInfos.java:330-331`,
+/// `CodecReader.java:119-122`), and a `null` analyzer throws Java's
+/// `NullPointerException` where `addTerms` dereferences it
+/// (`FuzzyLikeThisQuery.java:198`).
 #[derive(Debug, Clone)]
 pub struct FuzzyLikeThisQuery {
     /// The package-private `fieldVals` field.
     field_vals: Vec<FieldVals>,
-    /// The package-private `analyzer` field.
-    analyzer: Arc<dyn Analyzer>,
+    /// The package-private `analyzer` field, `None` for `null`.
+    analyzer: Option<Arc<dyn Analyzer>>,
     /// The package-private `MAX_VARIANTS_PER_TERM` field.
     max_variants_per_term: i32,
     /// The package-private `ignoreTF` field.
@@ -118,8 +122,9 @@ impl FuzzyLikeThisQuery {
     /// Equivalent to `FuzzyLikeThisQuery(int, Analyzer)`.
     ///
     /// * `max_num_terms` — the total number of terms clauses that will appear
-    ///   once rewritten as a boolean query.
-    pub fn new(max_num_terms: i32, analyzer: Arc<dyn Analyzer>) -> Self {
+    ///   once rewritten as a boolean query;
+    /// * `analyzer` — `None` for Java's `null`, which fails at rewrite.
+    pub fn new(max_num_terms: i32, analyzer: Option<Arc<dyn Analyzer>>) -> Self {
         Self {
             field_vals: Vec::new(),
             analyzer,
@@ -131,7 +136,13 @@ impl FuzzyLikeThisQuery {
 
     /// Equivalent to the private `FuzzyLikeThisQuery.equalsTo(FuzzyLikeThisQuery)`.
     fn equals_to(&self, other: &FuzzyLikeThisQuery) -> bool {
-        Arc::ptr_eq(&self.analyzer, &other.analyzer)
+        // `Objects.equals(analyzer, other.analyzer)`: identity, `null`-safe
+        let same_analyzer = match (&self.analyzer, &other.analyzer) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        same_analyzer
             && self.field_vals == other.field_vals
             && self.ignore_tf == other.ignore_tf
             && self.max_num_terms == other.max_num_terms
@@ -140,7 +151,7 @@ impl FuzzyLikeThisQuery {
     /// Adds user input for "fuzzification".
     ///
     /// Equivalent to `FuzzyLikeThisQuery.addTerms(String, String, float, int)`;
-    /// Java's `null` query string is `None`.
+    /// Java's `null` query string and field name are `None`.
     ///
     /// * `query_string` — the string which will be parsed by the analyzer and
     ///   for which fuzzy variants will be parsed;
@@ -151,13 +162,13 @@ impl FuzzyLikeThisQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](rucene::error::LuceneErrorKind::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`]
     /// when `min_similarity` is not an integer between 0 and
     /// `LevenshteinAutomata.MAXIMUM_SUPPORTED_DISTANCE`.
     pub fn add_terms(
         &mut self,
         query_string: Option<String>,
-        field_name: impl Into<String>,
+        field_name: Option<String>,
         min_similarity: f32,
         prefix_length: i32,
     ) -> Result<()> {
@@ -172,7 +183,7 @@ impl FuzzyLikeThisQuery {
             )));
         }
         self.field_vals.push(FieldVals::new(
-            field_name.into(),
+            field_name,
             max_edits,
             prefix_length,
             query_string,
@@ -191,13 +202,30 @@ impl FuzzyLikeThisQuery {
         let Some(query_string) = f.query_string.as_deref() else {
             return Ok(());
         };
-        let Some(terms) = MultiTerms::get_terms(reader, &f.field_name)? else {
+        // `MultiTerms.getTerms(reader, f.fieldName)`: a `null` field has no
+        // terms (`FieldInfos.fieldInfo(null)` is a `HashMap` lookup that
+        // answers `null`, so `CodecReader.terms(null)` returns `null`)
+        let Some(field_name) = f.field_name.as_deref() else {
+            return Ok(());
+        };
+        let Some(terms) = MultiTerms::get_terms(reader, field_name)? else {
             return Ok(());
         };
         let terms: Arc<dyn Terms> = Arc::from(terms);
-        let ts = self
-            .analyzer
-            .token_stream_from_str(&f.field_name, query_string)?;
+        // `analyzer.tokenStream(...)` dereferences a `null` analyzer; the
+        // message is JDK 25's helpful one
+        let analyzer = self.analyzer.as_ref().ok_or_else(|| {
+            LuceneError::from(LuceneErrorKind::Unchecked {
+                class: "java.lang.NullPointerException",
+                message: Some(
+                    "Cannot invoke \"org.apache.lucene.analysis.Analyzer.tokenStream(String, \
+                     String)\" because \"this.analyzer\" is null"
+                        .to_string(),
+                ),
+                cause: None,
+            })
+        })?;
+        let ts = analyzer.token_stream_from_str(field_name, query_string)?;
         let mut ts = ts.borrow_mut();
         let result = (|| -> Result<()> {
             ts.attribute_source_mut()
@@ -219,7 +247,7 @@ impl FuzzyLikeThisQuery {
                     // maxNum variants considered for any one term
                     let mut variants_q = ScoreTermQueue::new(self.max_variants_per_term)?;
                     let mut min_score = 0f32;
-                    let start_term = Term::from_text(&f.field_name, &term);
+                    let start_term = Term::from_text(field_name, &term);
                     let mut fe = FuzzyTermsEnum::new(
                         Arc::clone(&terms),
                         start_term.clone(),
@@ -408,9 +436,12 @@ impl Query for FuzzyLikeThisQuery {
         let mut result = self.class_hash();
         result = prime
             .wrapping_mul(result)
-            .wrapping_add(java_identity_hash_code_stand_in(
-                self.analyzer.java_class_name(),
-            ));
+            // `Objects.hashCode(analyzer)`: `0` for `null`
+            .wrapping_add(
+                self.analyzer
+                    .as_ref()
+                    .map_or(0, |a| java_identity_hash_code_stand_in(a.java_class_name())),
+            );
         let field_vals_hash = self
             .field_vals
             .iter()
@@ -435,14 +466,19 @@ impl Query for FuzzyLikeThisQuery {
 #[derive(Debug, Clone)]
 pub(crate) struct FieldVals {
     query_string: Option<String>,
-    field_name: String,
+    field_name: Option<String>,
     max_edits: i32,
     prefix_length: i32,
 }
 
 impl FieldVals {
     /// Equivalent to `FieldVals(String, int, int, String)`.
-    fn new(name: String, max_edits: i32, length: i32, query_string: Option<String>) -> Self {
+    fn new(
+        name: Option<String>,
+        max_edits: i32,
+        length: i32,
+        query_string: Option<String>,
+    ) -> Self {
         Self {
             field_name: name,
             max_edits,
@@ -457,7 +493,7 @@ impl FieldVals {
         let mut result = 1i32;
         result = prime
             .wrapping_mul(result)
-            .wrapping_add(java_string_hash_code(&self.field_name));
+            .wrapping_add(self.field_name.as_deref().map_or(0, java_string_hash_code));
         result = prime.wrapping_mul(result).wrapping_add(self.max_edits);
         result = prime.wrapping_mul(result).wrapping_add(self.prefix_length);
         result = prime.wrapping_mul(result).wrapping_add(

@@ -34,7 +34,9 @@ use crate::intervals::interval_matches_iterator::{
     IntervalMatchesIterator, SharedIntervalMatchesIterator,
 };
 use crate::intervals::intervals::Intervals;
-use crate::intervals::intervals_source::{objects_hash, IntervalsSource};
+use crate::intervals::intervals_source::{
+    objects_equals, objects_hash, same_object, IntervalsSource,
+};
 
 /// The members a subclass of [`FilteredIntervalsSource`] overrides: its
 /// abstract `accept`, and optionally `pullUpDisjunctions`.
@@ -175,10 +177,11 @@ impl IntervalsSource for FilteredIntervalsSource {
 
     /// `o instanceof FilteredIntervalsSource` with an equal name and source.
     fn source_eq(&self, other: &dyn IntervalsSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<FilteredIntervalsSource>()
-            .is_some_and(|that| self.name == that.name && self.in_.source_eq(&*that.in_))
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<FilteredIntervalsSource>()
+                .is_some_and(|that| self.name == that.name && objects_equals(&self.in_, &that.in_))
     }
 
     /// `Objects.hash(name, in)`.

@@ -33,7 +33,9 @@ use crate::intervals::interval_matches_iterator::{
     IntervalMatchesIterator, SharedIntervalMatchesIterator,
 };
 use crate::intervals::interval_query::IntervalQuery;
-use crate::intervals::intervals_source::{objects_hash, IntervalsSource};
+use crate::intervals::intervals_source::{
+    objects_equals, objects_hash, same_object, IntervalsSource,
+};
 
 /// Tracks a reference intervals source, and produces a pseudo-interval that
 /// appears either one position before or one position after each interval
@@ -41,15 +43,20 @@ use crate::intervals::intervals_source::{objects_hash, IntervalsSource};
 ///
 /// Equivalent to the class
 /// `org.apache.lucene.queries.intervals.OffsetIntervalsSource`.
+///
+/// Java's class is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug, Clone)]
-pub(crate) struct OffsetIntervalsSource {
+pub struct OffsetIntervalsSource {
     in_: Arc<dyn IntervalsSource>,
     before: bool,
 }
 
 impl OffsetIntervalsSource {
     /// Equivalent to `OffsetIntervalsSource(IntervalsSource, boolean)`.
-    pub(crate) fn new(in_: Arc<dyn IntervalsSource>, before: bool) -> Self {
+    pub fn new(in_: Arc<dyn IntervalsSource>, before: bool) -> Self {
         Self { in_, before }
     }
 
@@ -180,10 +187,13 @@ impl IntervalsSource for OffsetIntervalsSource {
     }
 
     fn source_eq(&self, other: &dyn IntervalsSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<OffsetIntervalsSource>()
-            .is_some_and(|that| self.before == that.before && self.in_.source_eq(&*that.in_))
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<OffsetIntervalsSource>()
+                .is_some_and(|that| {
+                    self.before == that.before && objects_equals(&self.in_, &that.in_)
+                })
     }
 
     /// `Objects.hash(in, before)`.

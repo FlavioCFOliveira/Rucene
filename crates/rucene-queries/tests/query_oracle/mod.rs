@@ -110,7 +110,8 @@ use rucene::store::{Directory, FSDirectory};
 use rucene::util::automaton::ByteRunAutomaton;
 use rucene::util::java_collections::java_string_hash_code;
 use rucene::util::{BytesRef, StringHelper};
-use rucene_test_framework::util::java_exceptions::java_throwable;
+use rucene_test_framework::analysis::base_token_stream_test_case::java_message;
+use rucene_test_framework::util::java_exceptions::java_class_name;
 
 // ---------------------------------------------------------------------------
 // Escaping
@@ -834,10 +835,17 @@ fn eval_atom(atom: &str, vars: &HashMap<String, Value>) -> Value {
 /// Runs one stage of a dump: the Java exception it throws, as a
 /// `Throwable`, whether it returns a Lucene error or panics with a Java
 /// exception; a [`HarnessError`] is re-raised.
-fn stage<T>(f: impl FnOnce() -> Result<T>) -> std::result::Result<T, Throwable> {
+/// Runs one stage of a dump: its value, or the Java throwable its error or
+/// panic stands for (a harness failure aborts the comparison).
+pub fn stage<T>(f: impl FnOnce() -> Result<T>) -> std::result::Result<T, Throwable> {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(Ok(v)) => Ok(v),
-        Ok(Err(e)) => Err(java_throwable(&e)),
+        // the class and the message, a `null` message kept as `None`
+        // (`java_throwable` renders it as `<null>`)
+        Ok(Err(e)) => Err(Throwable::with_message(
+            java_class_name(&e),
+            java_message(&e),
+        )),
         Err(payload) => {
             if let Some(h) = payload.downcast_ref::<HarnessError>() {
                 panic!("query oracle harness: {}", h.0);
@@ -1316,6 +1324,11 @@ pub fn run_java(spec: &str) -> String {
         .current_dir(work.path())
         .arg(format!("-Djava.io.tmpdir={}", work.path().display()))
         .arg("-Xmx1g")
+        // Lucene's test JVMs run with assertions on (`tests.asserts` defaults
+        // to true: `jvmArgs("-ea", "-esa")`, `gradle/testing/randomization.gradle:76,182-183`),
+        // as Rucene's test builds evaluate Java's `assert` (`debug_assertions`)
+        .arg("-ea")
+        .arg("-esa")
         .arg(format!("-Dtests.seed={seed}"))
         .arg("-cp")
         .arg(class_path)
@@ -1393,6 +1406,7 @@ enum Stmt {
     Do(String),
     Query(String, String),
     Spans(String, String, String),
+    Custom(String, String, String, String),
     Parse(String, String, Vec<u16>, Option<String>),
 }
 
@@ -1403,6 +1417,7 @@ fn write_stmts(out: &mut String, stmts: &[Stmt]) {
             Stmt::Do(e) => line(out, &["do", e]),
             Stmt::Query(id, e) => line(out, &["query", id, e]),
             Stmt::Spans(id, e, postings) => line(out, &["spans", id, e, postings]),
+            Stmt::Custom(kind, id, e, arg) => line(out, &["custom", kind, id, e, arg]),
             Stmt::Parse(id, e, input, field) => {
                 let input = escape_units(input);
                 match field {
@@ -1420,6 +1435,7 @@ fn records(dump: &str) -> Vec<Vec<&str>> {
     for l in dump.lines() {
         if l.starts_with("query\t")
             || l.starts_with("spans\t")
+            || l.starts_with("custom\t")
             || l.starts_with("parse\t")
             || out.is_empty()
         {
@@ -1476,6 +1492,7 @@ pub struct SearchOracle {
     stmts: Vec<Stmt>,
     registry: Registry,
     spans_fn: Option<SpansFn>,
+    custom_fns: HashMap<String, SpansFn>,
 }
 
 impl SearchOracle {
@@ -1488,7 +1505,36 @@ impl SearchOracle {
             stmts: Vec::new(),
             registry,
             spans_fn: None,
+            custom_fns: HashMap::new(),
         }
+    }
+
+    /// Installs Rucene's side of the `custom` records of kind `kind`: given
+    /// the record's value, the searcher and its argument, appends the lines
+    /// that follow the record's head, as `QueryOracle.custom` prints them for
+    /// that kind (`intervals`, `values`).
+    pub fn custom_dumper(&mut self, kind: &str, f: SpansFn) -> &mut SearchOracle {
+        self.custom_fns.insert(kind.to_string(), f);
+        self
+    }
+
+    /// A custom record of kind `kind`: `expr` builds the value, `arg` is the
+    /// kind's argument (a field name, or `-`).
+    pub fn custom(&mut self, kind: &str, id: &str, expr: &str, arg: &str) -> &mut SearchOracle {
+        self.stmts.push(Stmt::Custom(
+            kind.into(),
+            id.into(),
+            expr.into(),
+            arg.into(),
+        ));
+        self
+    }
+
+    /// Evaluates `expr` for its effect (a `do` statement: a setter, an
+    /// `add`).
+    pub fn exec(&mut self, expr: &str) -> &mut SearchOracle {
+        self.stmts.push(Stmt::Do(expr.into()));
+        self
     }
 
     /// Installs Rucene's side of the `spans` records ([`SpansFn`]).
@@ -1589,6 +1635,9 @@ impl SearchOracle {
                 Stmt::Spans(id, e, postings) => {
                     self.dump_spans(&mut out, &searcher, &vars, id, e, postings)
                 }
+                Stmt::Custom(kind, id, e, arg) => {
+                    self.dump_custom(&mut out, &searcher, &vars, kind, id, e, arg)
+                }
                 Stmt::Parse(..) => unreachable!("no parse record in a search oracle"),
             }
         }
@@ -1688,6 +1737,37 @@ impl SearchOracle {
         }
         if let Err(t) = result {
             error_line(out, Some("spans"), &t);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dump_custom(
+        &self,
+        out: &mut String,
+        searcher: &IndexSearcher,
+        vars: &HashMap<String, Value>,
+        kind: &str,
+        id: &str,
+        e: &str,
+        arg: &str,
+    ) {
+        line(out, &["custom", kind, id]);
+        let v = match stage(|| self.registry.eval_text(e, vars)) {
+            Ok(v) => v,
+            Err(t) => return error_line(out, Some("build"), &t),
+        };
+        let f = self
+            .custom_fns
+            .get(kind)
+            .unwrap_or_else(|| harness_fail(format!("a {kind} record needs a custom dumper")));
+        let mut lines = Vec::new();
+        let result = stage(|| f(&v, searcher, arg, &mut lines));
+        for l in &lines {
+            out.push_str(l);
+            out.push('\n');
+        }
+        if let Err(t) = result {
+            error_line(out, Some(kind), &t);
         }
     }
 
@@ -1810,7 +1890,7 @@ impl ParseOracle {
                         line(&mut out, &["value", &result.class_name(), &escape(&s)]);
                     }
                 }
-                Stmt::Query(..) | Stmt::Spans(..) => {
+                Stmt::Query(..) | Stmt::Spans(..) | Stmt::Custom(..) => {
                     unreachable!("no query or spans record in a parse oracle")
                 }
             }

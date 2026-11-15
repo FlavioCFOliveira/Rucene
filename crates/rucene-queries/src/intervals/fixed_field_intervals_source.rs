@@ -27,7 +27,9 @@ use rucene::util::java_collections::java_string_hash_code;
 
 use crate::intervals::interval_iterator::IntervalIterator;
 use crate::intervals::interval_matches_iterator::IntervalMatchesIterator;
-use crate::intervals::intervals_source::{objects_hash, to_java_hash_set, IntervalsSource};
+use crate::intervals::intervals_source::{
+    objects_equals, objects_hash, same_object, to_java_hash_set, IntervalsSource,
+};
 
 /// A source that always reads its intervals from a specific field.
 ///
@@ -86,10 +88,13 @@ impl IntervalsSource for FixedFieldIntervalsSource {
     }
 
     fn source_eq(&self, other: &dyn IntervalsSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<FixedFieldIntervalsSource>()
-            .is_some_and(|that| self.field == that.field && self.source.source_eq(&*that.source))
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<FixedFieldIntervalsSource>()
+                .is_some_and(|that| {
+                    self.field == that.field && objects_equals(&self.source, &that.source)
+                })
     }
 
     /// `Objects.hash(field, source)`.

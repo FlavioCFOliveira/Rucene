@@ -55,6 +55,15 @@ use rucene::util::java_fmt::float_to_string;
 /// **Note:** if the query only contains high-frequency terms the query is
 /// rewritten into a plain conjunction query, i.e. all high-frequency terms
 /// need to match in order to match a document.
+///
+/// **Divergence.** A Java subclass overrides the protected
+/// `newTermQuery(Term, TermStates)` (`CommonTermsQuery.java:387-389`); Rust
+/// has no inheritance, so a subclass is a [`CommonTermsQueryOverrides`]
+/// object given to [`with_overrides`](Self::with_overrides), as
+/// `IndexSearcherOverrides` stands for an `IndexSearcher` subclass. Its
+/// `getClass()` is the override's
+/// [`java_class_name`](CommonTermsQueryOverrides::java_class_name), which
+/// `equals` (`sameClassAs`) and `hashCode` (`classHash`) use as Java does.
 #[derive(Debug, Clone)]
 pub struct CommonTermsQuery {
     /// The protected final `terms` field.
@@ -73,6 +82,30 @@ pub struct CommonTermsQuery {
     low_freq_min_nr_should_match: f32,
     /// The protected `highFreqMinNrShouldMatch` field.
     high_freq_min_nr_should_match: f32,
+    /// The subclass, `None` for `CommonTermsQuery` itself.
+    overrides: Option<Arc<dyn CommonTermsQueryOverrides>>,
+}
+
+/// The protected members of [`CommonTermsQuery`] a Java subclass overrides,
+/// and the subclass's class name.
+///
+/// **This has no counterpart in Lucene 10.5.0** beyond subclassing: see the
+/// divergence on [`CommonTermsQuery`].
+pub trait CommonTermsQueryOverrides: std::fmt::Debug + Send + Sync {
+    /// `getClass().getName()` of the subclass.
+    fn java_class_name(&self) -> &'static str;
+
+    /// The subclass's `newTermQuery(Term, TermStates)`; by default
+    /// `super.newTermQuery(term, termStates)`
+    /// ([`CommonTermsQuery::super_new_term_query`]).
+    fn new_term_query(
+        &self,
+        query: &CommonTermsQuery,
+        term: Term,
+        term_states: Option<Arc<TermStates>>,
+    ) -> Arc<dyn Query> {
+        query.super_new_term_query(term, term_states)
+    }
 }
 
 impl CommonTermsQuery {
@@ -115,7 +148,27 @@ impl CommonTermsQuery {
             high_freq_boost: 1.0,
             low_freq_min_nr_should_match: 0.0,
             high_freq_min_nr_should_match: 0.0,
+            overrides: None,
         })
+    }
+
+    /// Creates a new common terms query of the subclass `overrides`.
+    ///
+    /// Equivalent to a subclass constructor calling `super(highFreqOccur,
+    /// lowFreqOccur, maxTermFrequency)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn with_overrides(
+        high_freq_occur: Occur,
+        low_freq_occur: Occur,
+        max_term_frequency: f32,
+        overrides: Arc<dyn CommonTermsQueryOverrides>,
+    ) -> Result<Self> {
+        let mut query = Self::new(high_freq_occur, low_freq_occur, max_term_frequency)?;
+        query.overrides = Some(overrides);
+        Ok(query)
     }
 
     /// Adds a term to the query.
@@ -385,6 +438,19 @@ impl CommonTermsQuery {
         term: Term,
         term_states: Option<Arc<TermStates>>,
     ) -> Arc<dyn Query> {
+        match &self.overrides {
+            Some(overrides) => overrides.new_term_query(self, term, term_states),
+            None => self.super_new_term_query(term, term_states),
+        }
+    }
+
+    /// `CommonTermsQuery.newTermQuery(Term, TermStates)` itself, which a
+    /// subclass reaches as `super.newTermQuery`.
+    pub fn super_new_term_query(
+        &self,
+        term: Term,
+        term_states: Option<Arc<TermStates>>,
+    ) -> Arc<dyn Query> {
         match term_states {
             None => Arc::new(TermQuery::new(term)),
             Some(term_states) => Arc::new(TermQuery::with_states(term, term_states)),
@@ -507,7 +573,9 @@ impl Query for CommonTermsQuery {
     }
 
     fn query_eq(&self, other: &dyn Query) -> bool {
+        // `sameClassAs(other)`: the same Rust type and the same Java class
         self.same_class_as(other)
+            && self.java_class_name() == other.java_class_name()
             && other
                 .as_any()
                 .downcast_ref::<CommonTermsQuery>()
@@ -547,6 +615,10 @@ impl Query for CommonTermsQuery {
     }
 
     fn java_class_name(&self) -> &'static str {
-        "org.apache.lucene.queries.CommonTermsQuery"
+        self.overrides
+            .as_ref()
+            .map_or("org.apache.lucene.queries.CommonTermsQuery", |overrides| {
+                overrides.java_class_name()
+            })
     }
 }

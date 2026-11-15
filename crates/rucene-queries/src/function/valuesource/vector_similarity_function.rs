@@ -28,7 +28,9 @@ use rucene::index::{LeafReaderContext, VectorSimilarityFunction as IndexVectorSi
 use rucene::util::java_fmt::float_to_string;
 
 use crate::function::function_values::FunctionValues;
-use crate::function::value_source::{class_hash, objects_hash, ValueSource, ValueSourceContext};
+use crate::function::value_source::{
+    class_hash, objects_equals, objects_hash, same_object, ValueSource, ValueSourceContext,
+};
 use crate::function::valuesource::multi_function;
 
 /// The Java name of a similarity function, `similarityFunction.name()`.
@@ -124,10 +126,12 @@ impl<T: VectorSimilarityFunction> FunctionValues for VectorSimilarityValues<'_, 
 /// Equivalent to `VectorSimilarityFunction.equals(Object)`: the same class and
 /// equal vectors; the similarity function takes no part.
 pub fn value_source_eq<T: VectorSimilarityFunction>(this: &T, other: &dyn ValueSource) -> bool {
-    other.as_any().downcast_ref::<T>().is_some_and(|other| {
-        this.vector1().value_source_eq(&**other.vector1())
-            && this.vector2().value_source_eq(&**other.vector2())
-    })
+    // `if (this == o) return true;`, then `Objects.equals` of the vectors
+    same_object(this, other)
+        || other.as_any().downcast_ref::<T>().is_some_and(|other| {
+            objects_equals(this.vector1(), other.vector1())
+                && objects_equals(this.vector2(), other.vector2())
+        })
 }
 
 /// Equivalent to `VectorSimilarityFunction.hashCode()`:

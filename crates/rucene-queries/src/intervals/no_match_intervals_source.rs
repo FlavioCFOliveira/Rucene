@@ -27,7 +27,7 @@ use rucene::util::java_collections::java_string_hash_code;
 
 use crate::intervals::interval_iterator::IntervalIterator;
 use crate::intervals::interval_matches_iterator::IntervalMatchesIterator;
-use crate::intervals::intervals_source::{objects_hash, IntervalsSource};
+use crate::intervals::intervals_source::{objects_hash, same_object, IntervalsSource};
 
 /// A source returning no matches.
 ///
@@ -75,10 +75,11 @@ impl IntervalsSource for NoMatchIntervalsSource {
     }
 
     fn source_eq(&self, other: &dyn IntervalsSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<NoMatchIntervalsSource>()
-            .is_some_and(|that| self.reason == that.reason)
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<NoMatchIntervalsSource>()
+                .is_some_and(|that| self.reason == that.reason)
     }
 
     /// `Objects.hash(reason)`.

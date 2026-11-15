@@ -98,9 +98,47 @@ pub(crate) fn sources_hash(sources: &[Arc<dyn ValueSource>]) -> i32 {
 }
 
 /// `Arrays.equals(ValueSource[], ValueSource[])`, which is also
-/// `List.equals` of two lists of value sources.
+/// `List.equals` of two lists of value sources: each pair of elements
+/// compared with `Objects.equals`, the identity first.
 pub(crate) fn sources_eq(a: &[Arc<dyn ValueSource>], b: &[Arc<dyn ValueSource>]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.value_source_eq(&**y))
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| objects_equals(x, y))
+}
+
+/// `Objects.equals(a, b)` over two value sources: `a == b || a.equals(b)`,
+/// the identity first, so that a source whose `equals` is not reflexive
+/// still equals itself.
+pub(crate) fn objects_equals(a: &Arc<dyn ValueSource>, b: &Arc<dyn ValueSource>) -> bool {
+    std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b)) || a.value_source_eq(&**b)
+}
+
+/// `Objects.equals(a, b)` over two queries, the identity first.
+pub(crate) fn objects_equals_query(
+    a: &Arc<dyn rucene::search::query::Query>,
+    b: &Arc<dyn rucene::search::query::Query>,
+) -> bool {
+    std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b)) || a.query_eq(&**b)
+}
+
+/// `Objects.equals(a, b)` over two double values sources, the identity
+/// first.
+pub(crate) fn objects_equals_double(
+    a: &Arc<dyn DoubleValuesSource>,
+    b: &Arc<dyn DoubleValuesSource>,
+) -> bool {
+    std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b)) || a.source_eq(&**b)
+}
+
+/// `Objects.equals(a, b)` over two long values sources, the identity first.
+pub(crate) fn objects_equals_long(
+    a: &Arc<dyn LongValuesSource>,
+    b: &Arc<dyn LongValuesSource>,
+) -> bool {
+    std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b)) || a.source_eq(&**b)
+}
+
+/// `this == o`: whether `other` is the very object `this`.
+pub(crate) fn same_object<T, U: ?Sized>(this: &T, other: &U) -> bool {
+    std::ptr::addr_eq(this as *const T, other as *const U)
 }
 
 /// `ReaderUtil.getTopLevelContext(readerContext)`: the root of the context
@@ -312,8 +350,10 @@ impl fmt::Display for dyn ValueSource {
 pub struct ValueSourceKey(pub Arc<dyn ValueSource>);
 
 impl PartialEq for ValueSourceKey {
+    /// The key comparison of Java's hash collections (`HashMap.getNode`):
+    /// `k == key || key.equals(k)`, the identity first.
     fn eq(&self, other: &Self) -> bool {
-        self.0.value_source_eq(&*other.0)
+        objects_equals(&self.0, &other.0)
     }
 }
 
@@ -616,10 +656,11 @@ impl LongValuesSource for WrappedLongValuesSource {
     }
 
     fn source_eq(&self, other: &dyn LongValuesSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<WrappedLongValuesSource>()
-            .is_some_and(|that| self.in_.value_source_eq(&*that.in_))
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<WrappedLongValuesSource>()
+                .is_some_and(|that| objects_equals(&self.in_, &that.in_))
     }
 
     /// `Objects.hash(in)`.
@@ -636,12 +677,19 @@ impl LongValuesSource for WrappedLongValuesSource {
 ///
 /// Equivalent to the package-private static class
 /// `org.apache.lucene.queries.function.ValueSource.WrappedDoubleValuesSource`.
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug)]
-pub(crate) struct WrappedDoubleValuesSource {
+pub struct WrappedDoubleValuesSource {
     /// The `in` field.
     pub(crate) in_: Arc<dyn ValueSource>,
-    /// The `searcher` field.
-    searcher: Option<IndexSearcher>,
+    /// The package-private `searcher` field, read by the same package's
+    /// tests.
+    #[doc(hidden)]
+    pub searcher: Option<IndexSearcher>,
 }
 
 impl WrappedDoubleValuesSource {
@@ -706,10 +754,11 @@ impl DoubleValuesSource for WrappedDoubleValuesSource {
     }
 
     fn source_eq(&self, other: &dyn DoubleValuesSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<WrappedDoubleValuesSource>()
-            .is_some_and(|that| self.in_.value_source_eq(&*that.in_))
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<WrappedDoubleValuesSource>()
+                .is_some_and(|that| objects_equals(&self.in_, &that.in_))
     }
 
     /// `Objects.hash(in)`.
@@ -842,10 +891,11 @@ impl ValueSource for FromDoubleValuesSource {
     }
 
     fn value_source_eq(&self, other: &dyn ValueSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<FromDoubleValuesSource>()
-            .is_some_and(|that| self.in_.source_eq(&*that.in_))
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<FromDoubleValuesSource>()
+                .is_some_and(|that| objects_equals_double(&self.in_, &that.in_))
     }
 
     /// `Objects.hash(in)`.

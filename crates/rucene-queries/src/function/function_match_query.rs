@@ -38,12 +38,17 @@ use rucene::search::two_phase_iterator::TwoPhaseIterator;
 use rucene::search::weight::{DefaultScorerSupplier, Weight};
 use rucene::util::java_collections::java_identity_hash_code_stand_in;
 
-use crate::function::value_source::objects_hash;
+use crate::function::value_source::{objects_equals_double, objects_hash, same_object};
 
 /// The default match cost of the two-phase iterator.
 ///
 /// Equivalent to the package-private `FunctionMatchQuery.DEFAULT_MATCH_COST`.
-pub(crate) const DEFAULT_MATCH_COST: f32 = 100.0;
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub const DEFAULT_MATCH_COST: f32 = 100.0;
 
 /// The `java.util.function.DoublePredicate` a [`FunctionMatchQuery`] tests
 /// values with.
@@ -139,12 +144,14 @@ impl Query for FunctionMatchQuery {
     }
 
     fn query_eq(&self, other: &dyn Query) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<FunctionMatchQuery>()
-            .is_some_and(|that| {
-                self.source.source_eq(&*that.source) && Arc::ptr_eq(&self.filter, &that.filter)
-            })
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<FunctionMatchQuery>()
+                .is_some_and(|that| {
+                    objects_equals_double(&self.source, &that.source)
+                        && Arc::ptr_eq(&self.filter, &that.filter)
+                })
     }
 
     /// `Objects.hash(source, filter)`.

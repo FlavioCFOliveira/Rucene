@@ -34,19 +34,27 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.DoublePredicate;
 import java.util.function.Supplier;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.PostingsEnum;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.queries.function.FunctionValues;
+import org.apache.lucene.queries.function.ValueSource;
+import org.apache.lucene.queries.intervals.IntervalIterator;
+import org.apache.lucene.queries.intervals.IntervalMatchesIterator;
+import org.apache.lucene.queries.intervals.IntervalsSource;
 import org.apache.lucene.queries.spans.SpanCollector;
 import org.apache.lucene.queries.spans.SpanQuery;
 import org.apache.lucene.queries.spans.SpanWeight;
 import org.apache.lucene.queries.spans.Spans;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.Explanation;
+import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.MatchesIterator;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.ScoreDoc;
@@ -55,6 +63,7 @@ import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.lucene.util.automaton.ByteRunAutomaton;
 
 /**
@@ -715,6 +724,230 @@ public final class QueryOracle {
     }
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // Custom records: intervals and function values
+  // ---------------------------------------------------------------------------------------------
+
+  /** A {@code DoublePredicate} the expressions can name: {@code lo <= d && d < hi}. */
+  public static DoublePredicate between(double lo, double hi) {
+    return d -> d >= lo && d < hi;
+  }
+
+  /** A payload filter the expressions can name: accepts a {@code null} payload. */
+  public static java.util.function.Predicate<BytesRef> nullPayload() {
+    return b -> b == null;
+  }
+
+  /** The {@code Map<Integer, String>} of an enum field: name {@code i} has value {@code i}. */
+  public static Map<Integer, String> enumIntToString(String[] names) {
+    Map<Integer, String> out = new HashMap<>();
+    for (int i = 0; i < names.length; i++) {
+      out.put(i, names[i]);
+    }
+    return out;
+  }
+
+  /** The {@code Map<String, Integer>} of an enum field: name {@code i} has value {@code i}. */
+  public static Map<String, Integer> enumStringToInt(String[] names) {
+    Map<String, Integer> out = new HashMap<>();
+    for (int i = 0; i < names.length; i++) {
+      out.put(names[i], i);
+    }
+    return out;
+  }
+
+  void custom(String kind, String id, String expr, String arg) {
+    line("custom", kind, id);
+    Object v;
+    try {
+      v = eval(parse(expr));
+    } catch (Throwable t) {
+      error("build", t);
+      return;
+    }
+    try {
+      switch (kind) {
+        case "intervals" -> intervals((IntervalsSource) v, arg);
+        case "values" -> values((ValueSource) v);
+        default -> throw new IllegalStateException("harness: bad custom kind " + kind);
+      }
+    } catch (Throwable t) {
+      error(kind, t);
+    }
+  }
+
+  /**
+   * Per leaf: every document the source's {@code IntervalIterator} visits, every interval (start,
+   * end, gaps, width), then the {@code matches} of every document of the leaf (positions, offsets,
+   * gaps and width of the top-level matches, and the sub-matches, depth first).
+   */
+  void intervals(IntervalsSource src, String field) throws java.io.IOException {
+    line("tostring", escape(src.toString()));
+    line("minextent", Integer.toString(src.minExtent()));
+    for (LeafReaderContext ctx : reader.leaves()) {
+      IntervalIterator it = src.intervals(field, ctx);
+      if (it == null) {
+        line("leaf", Integer.toString(ctx.ord), "null");
+      } else {
+        line("leaf", Integer.toString(ctx.ord), Integer.toString(ctx.docBase));
+        int doc;
+        while ((doc = it.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+          line("idoc", Integer.toString(doc), Integer.toString(it.start()), Integer.toString(it.end()));
+          int pos;
+          while ((pos = it.nextInterval()) != IntervalIterator.NO_MORE_INTERVALS) {
+            line(
+                "iv",
+                Integer.toString(pos),
+                Integer.toString(it.start()),
+                Integer.toString(it.end()),
+                Integer.toString(it.gaps()),
+                Integer.toString(it.width()));
+          }
+          line("ivend", Integer.toString(it.start()), Integer.toString(it.end()));
+        }
+      }
+      for (int doc = 0; doc < ctx.reader().maxDoc(); doc++) {
+        IntervalMatchesIterator mi = src.matches(field, ctx, doc);
+        if (mi == null) {
+          continue;
+        }
+        line("mdoc", Integer.toString(doc));
+        while (mi.next()) {
+          line(
+              "m",
+              "0",
+              Integer.toString(mi.startPosition()),
+              Integer.toString(mi.endPosition()),
+              Integer.toString(mi.startOffset()),
+              Integer.toString(mi.endOffset()),
+              Integer.toString(mi.gaps()),
+              Integer.toString(mi.width()));
+          subMatches(mi.getSubMatches(), 1);
+        }
+      }
+    }
+  }
+
+  void subMatches(MatchesIterator mi, int depth) throws java.io.IOException {
+    if (mi == null) {
+      return;
+    }
+    while (mi.next()) {
+      line(
+          "m",
+          Integer.toString(depth),
+          Integer.toString(mi.startPosition()),
+          Integer.toString(mi.endPosition()),
+          Integer.toString(mi.startOffset()),
+          Integer.toString(mi.endOffset()));
+      subMatches(mi.getSubMatches(), depth + 1);
+    }
+  }
+
+  interface Getter {
+    String get() throws Exception;
+  }
+
+  void val(String name, Getter g) {
+    try {
+      line("val", name, g.get());
+    } catch (Throwable t) {
+      line("val", name, "err", t.getClass().getName(), escape(t.getMessage()));
+    }
+  }
+
+  static String objectValue(Object o) {
+    if (o == null) {
+      return "null";
+    }
+    if (o instanceof Float f) {
+      return "F" + String.format("%08x", Float.floatToRawIntBits(f));
+    }
+    if (o instanceof Double d) {
+      return "D" + String.format("%016x", Double.doubleToRawLongBits(d));
+    }
+    if (o instanceof Integer i) {
+      return "I" + i;
+    }
+    if (o instanceof Long l) {
+      return "L" + l;
+    }
+    if (o instanceof Boolean b) {
+      return "Z" + b;
+    }
+    if (o instanceof String str) {
+      return "S" + escape(str);
+    }
+    if (o instanceof java.util.Date date) {
+      return "T" + date.getTime();
+    }
+    return o.getClass().getName() + ":" + escape(o.toString());
+  }
+
+  /**
+   * Per leaf and document: every {@code FunctionValues} getter, its value or the exception it
+   * throws, after {@code createWeight} with {@code ValueSource.newContext(searcher)}.
+   */
+  void values(ValueSource vs) throws java.io.IOException {
+    line("tostring", escape(vs.description()));
+    Map<Object, Object> context = ValueSource.newContext(searcher);
+    vs.createWeight(context, searcher);
+    for (LeafReaderContext ctx : reader.leaves()) {
+      line("leaf", Integer.toString(ctx.ord), Integer.toString(ctx.docBase));
+      FunctionValues fv = vs.getValues(context, ctx);
+      for (int d = 0; d < ctx.reader().maxDoc(); d++) {
+        final int doc = d;
+        line("vdoc", Integer.toString(doc));
+        val("exists", () -> Boolean.toString(fv.exists(doc)));
+        val("float", () -> "F" + String.format("%08x", Float.floatToRawIntBits(fv.floatVal(doc))));
+        val(
+            "double",
+            () -> "D" + String.format("%016x", Double.doubleToRawLongBits(fv.doubleVal(doc))));
+        val("int", () -> Integer.toString(fv.intVal(doc)));
+        val("long", () -> Long.toString(fv.longVal(doc)));
+        val("bool", () -> Boolean.toString(fv.boolVal(doc)));
+        val("str", () -> escape(fv.strVal(doc)));
+        val("object", () -> objectValue(fv.objectVal(doc)));
+        val("ord", () -> Integer.toString(fv.ordVal(doc)));
+        val("numord", () -> Integer.toString(fv.numOrd()));
+        val(
+            "fvec",
+            () -> {
+              float[] v = fv.floatVectorVal(doc);
+              if (v == null) {
+                return "null";
+              }
+              StringBuilder b = new StringBuilder();
+              for (float x : v) {
+                b.append(String.format("%08x,", Float.floatToRawIntBits(x)));
+              }
+              return b.toString();
+            });
+        val(
+            "bvec",
+            () -> {
+              byte[] v = fv.byteVectorVal(doc);
+              if (v == null) {
+                return "null";
+              }
+              StringBuilder b = new StringBuilder();
+              for (byte x : v) {
+                b.append(x).append(',');
+              }
+              return b.toString();
+            });
+        val(
+            "bytes",
+            () -> {
+              BytesRefBuilder b = new BytesRefBuilder();
+              boolean r = fv.bytesVal(doc, b);
+              return r + ":" + hex(b.get());
+            });
+        val("tostring", () -> escape(fv.toString(doc)));
+      }
+    }
+  }
+
   void parseRecord(String id, String expr, String input, String field) {
     line("parse", id);
     vars.put("input", input);
@@ -758,6 +991,7 @@ public final class QueryOracle {
         case "do" -> eval(parse(f[1]));
         case "query" -> query(f[1], f[2]);
         case "spans" -> spans(f[1], f[2], f[3]);
+        case "custom" -> custom(f[1], f[2], f[3], f[4]);
         case "parse" -> parseRecord(f[1], f[2], unescape(f[3]), f.length > 4 ? unescape(f[4]) : null);
         default -> throw new IllegalStateException("harness: bad spec line " + l);
       }

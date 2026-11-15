@@ -33,7 +33,7 @@ use crate::intervals::disjunction_intervals_source::DisjunctionIntervalIterator;
 use crate::intervals::interval_iterator::IntervalIterator;
 use crate::intervals::interval_matches_iterator::IntervalMatchesIterator;
 use crate::intervals::interval_query::IntervalQuery;
-use crate::intervals::intervals_source::{objects_hash, IntervalsSource};
+use crate::intervals::intervals_source::{objects_hash, same_object, IntervalsSource};
 use crate::intervals::term_intervals_source::TermIntervalsSource;
 
 /// The intervals of the terms an automaton accepts, at most `maxExpansions`
@@ -198,14 +198,15 @@ impl IntervalsSource for MultiTermIntervalsSource {
     }
 
     fn source_eq(&self, other: &dyn IntervalsSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<MultiTermIntervalsSource>()
-            .is_some_and(|that| {
-                self.max_expansions == that.max_expansions
-                    && self.automaton == that.automaton
-                    && self.pattern == that.pattern
-            })
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<MultiTermIntervalsSource>()
+                .is_some_and(|that| {
+                    self.max_expansions == that.max_expansions
+                        && self.automaton == that.automaton
+                        && self.pattern == that.pattern
+                })
     }
 
     /// `Objects.hash(automaton, maxExpansions, pattern)`.

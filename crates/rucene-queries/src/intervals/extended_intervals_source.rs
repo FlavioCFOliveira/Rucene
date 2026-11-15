@@ -32,7 +32,9 @@ use crate::intervals::interval_matches::IntervalMatches;
 use crate::intervals::interval_matches_iterator::{
     IntervalMatchesIterator, SharedIntervalMatchesIterator,
 };
-use crate::intervals::intervals_source::{objects_hash, to_java_hash_set, IntervalsSource};
+use crate::intervals::intervals_source::{
+    objects_equals, objects_hash, same_object, to_java_hash_set, IntervalsSource,
+};
 
 /// A source whose intervals are those of another, extended by a number of
 /// positions before and after.
@@ -175,14 +177,15 @@ impl IntervalsSource for ExtendedIntervalsSource {
     }
 
     fn source_eq(&self, other: &dyn IntervalsSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<ExtendedIntervalsSource>()
-            .is_some_and(|that| {
-                self.before == that.before
-                    && self.after == that.after
-                    && self.source.source_eq(&*that.source)
-            })
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<ExtendedIntervalsSource>()
+                .is_some_and(|that| {
+                    self.before == that.before
+                        && self.after == that.after
+                        && objects_equals(&self.source, &that.source)
+                })
     }
 
     /// `Objects.hash(source, before, after)`.

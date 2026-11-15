@@ -37,7 +37,7 @@ use rucene::util::java_collections::{java_boolean_hash_code, java_string_hash_co
 
 use crate::function::function_values::get_range_scorer;
 use crate::function::value_source::{
-    new_context, objects_hash, ContextMap, ValueSource, ValueSourceContext,
+    new_context, objects_equals, objects_hash, ContextMap, ValueSource, ValueSourceContext,
 };
 use crate::function::value_source_scorer::ValueSourceScorer;
 
@@ -129,7 +129,7 @@ impl FunctionRangeQuery {
     fn equals_to(&self, other: &FunctionRangeQuery) -> bool {
         self.include_lower == other.include_lower
             && self.include_upper == other.include_upper
-            && self.value_source.value_source_eq(&*other.value_source)
+            && objects_equals(&self.value_source, &other.value_source)
             && self.lower_val == other.lower_val
             && self.upper_val == other.upper_val
     }

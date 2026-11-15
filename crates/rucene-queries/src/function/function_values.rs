@@ -34,9 +34,14 @@ use rucene::util::BytesRefBuilder;
 
 use crate::function::value_source_scorer::{ValueSourceScorer, ValueSourceScorerMatcher};
 
-/// `new UnsupportedOperationException()`, which carries no message.
+/// `new UnsupportedOperationException()`, which carries no message: its
+/// `getMessage()` is `null` (the form `java_collections::uoe` uses).
 pub(crate) fn unsupported() -> LuceneError {
-    LuceneError::unsupported_operation(String::new())
+    LuceneError::from(LuceneErrorKind::Unchecked {
+        class: "java.lang.UnsupportedOperationException",
+        message: None,
+        cause: None,
+    })
 }
 
 /// `new RuntimeException(message, cause)`.

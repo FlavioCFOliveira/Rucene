@@ -34,7 +34,9 @@ use rucene::util::BytesRef;
 use crate::intervals::interval_iterator::{IntervalIterator, NO_MORE_INTERVALS};
 use crate::intervals::interval_matches_iterator::IntervalMatchesIterator;
 use crate::intervals::interval_query::IntervalQuery;
-use crate::intervals::intervals_source::{objects_hash, utf8_to_string, IntervalsSource};
+use crate::intervals::intervals_source::{
+    objects_hash, same_object, utf8_to_string, IntervalsSource,
+};
 use crate::intervals::term_intervals_source::{no_positions, TermIntervalsSource};
 
 /// The `java.util.function.Predicate<BytesRef>` that filters the payload of
@@ -339,10 +341,11 @@ impl IntervalsSource for PayloadFilteredTermIntervalsSource {
     }
 
     fn source_eq(&self, other: &dyn IntervalsSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<PayloadFilteredTermIntervalsSource>()
-            .is_some_and(|that| self.term == that.term)
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<PayloadFilteredTermIntervalsSource>()
+                .is_some_and(|that| self.term == that.term)
     }
 
     fn to_source_string(&self) -> String {

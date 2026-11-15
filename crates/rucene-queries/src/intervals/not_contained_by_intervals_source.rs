@@ -29,7 +29,7 @@ use crate::intervals::disjunctions::Disjunctions;
 use crate::intervals::interval_iterator::{IntervalIterator, NO_MORE_INTERVALS};
 use crate::intervals::interval_matches_iterator::IntervalMatchesIterator;
 use crate::intervals::intervals::Intervals;
-use crate::intervals::intervals_source::{objects_hash, IntervalsSource};
+use crate::intervals::intervals_source::{objects_equals, objects_hash, IntervalsSource};
 use crate::intervals::relative_iterator::{relative_iterator_impl, RelativeIterator};
 
 /// The intervals of the minuend that do not appear within an interval of the subtrahend.
@@ -130,7 +130,8 @@ impl IntervalsSource for NotContainedByIntervalsSource {
             .as_any()
             .downcast_ref::<NotContainedByIntervalsSource>()
             .is_some_and(|o| {
-                self.minuend.source_eq(&*o.minuend) && self.subtrahend.source_eq(&*o.subtrahend)
+                objects_equals(&self.minuend, &o.minuend)
+                    && objects_equals(&self.subtrahend, &o.subtrahend)
             })
     }
 

@@ -35,7 +35,9 @@ use rucene::util::BytesRef;
 use crate::intervals::interval_iterator::{IntervalIterator, NO_MORE_INTERVALS};
 use crate::intervals::interval_matches_iterator::IntervalMatchesIterator;
 use crate::intervals::interval_query::IntervalQuery;
-use crate::intervals::intervals_source::{objects_hash, utf8_to_string, IntervalsSource};
+use crate::intervals::intervals_source::{
+    objects_hash, same_object, utf8_to_string, IntervalsSource,
+};
 
 /// A guess of the average number of simple operations for the initial seek
 /// and buffer refill per document for the positions of a term.
@@ -347,10 +349,11 @@ impl IntervalsSource for TermIntervalsSource {
     }
 
     fn source_eq(&self, other: &dyn IntervalsSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<TermIntervalsSource>()
-            .is_some_and(|that| self.term == that.term)
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<TermIntervalsSource>()
+                .is_some_and(|that| self.term == that.term)
     }
 
     fn to_source_string(&self) -> String {

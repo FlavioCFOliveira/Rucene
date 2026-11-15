@@ -43,7 +43,9 @@ use crate::intervals::interval_matches_iterator::{
     IntervalMatchesIterator, SharedIntervalMatchesIterator,
 };
 use crate::intervals::interval_query::IntervalQuery;
-use crate::intervals::intervals_source::{sources_list_eq, sources_list_hash, IntervalsSource};
+use crate::intervals::intervals_source::{
+    same_object, sources_list_eq, sources_list_hash, IntervalsSource,
+};
 use crate::intervals::minimizing_conjunction_intervals_source::{
     cache_iterators, MatchCallback, NoOpMatchCallback,
 };
@@ -173,13 +175,14 @@ impl IntervalsSource for MinimumShouldMatchIntervalsSource {
     }
 
     fn source_eq(&self, other: &dyn IntervalsSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<MinimumShouldMatchIntervalsSource>()
-            .is_some_and(|that| {
-                self.min_should_match == that.min_should_match
-                    && sources_list_eq(&self.sources, &that.sources)
-            })
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<MinimumShouldMatchIntervalsSource>()
+                .is_some_and(|that| {
+                    self.min_should_match == that.min_should_match
+                        && sources_list_eq(&self.sources, &that.sources)
+                })
     }
 
     /// `31 * Objects.hash(minShouldMatch) + Arrays.hashCode(sources)`.

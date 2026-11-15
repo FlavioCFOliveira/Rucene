@@ -36,7 +36,9 @@ use rucene::util::java_collections::{
     java_string_hash_code,
 };
 
-use crate::function::value_source::{java_double_compare, objects_hash};
+use crate::function::value_source::{
+    java_double_compare, objects_equals_double, objects_equals_long, objects_hash, same_object,
+};
 
 /// Class that exposes index-reader statistics as value sources.
 ///
@@ -270,10 +272,13 @@ impl LongValuesSource for NoCacheConstantLongValuesSource {
     /// `o instanceof NoCacheConstantLongValuesSource` with equal value and
     /// parent.
     fn source_eq(&self, other: &dyn LongValuesSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<NoCacheConstantLongValuesSource>()
-            .is_some_and(|that| self.value == that.value && self.parent.source_eq(&*that.parent))
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<NoCacheConstantLongValuesSource>()
+                .is_some_and(|that| {
+                    self.value == that.value && objects_equals_long(&self.parent, &that.parent)
+                })
     }
 
     /// `Objects.hash(value, parent)`.
@@ -641,13 +646,14 @@ impl DoubleValuesSource for NoCacheConstantDoubleValuesSource {
     /// `o instanceof NoCacheConstantDoubleValuesSource`,
     /// `Double.compare(that.value, value) == 0` and equal parents.
     fn source_eq(&self, other: &dyn DoubleValuesSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<NoCacheConstantDoubleValuesSource>()
-            .is_some_and(|that| {
-                java_double_compare(that.value, self.value) == 0
-                    && self.parent.source_eq(&*that.parent)
-            })
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<NoCacheConstantDoubleValuesSource>()
+                .is_some_and(|that| {
+                    java_double_compare(that.value, self.value) == 0
+                        && objects_equals_double(&self.parent, &that.parent)
+                })
     }
 
     /// `Objects.hash(value, parent)`.

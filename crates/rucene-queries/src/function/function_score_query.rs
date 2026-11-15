@@ -52,7 +52,9 @@ use rucene::search::weight::{DefaultScorerSupplier, Weight};
 use rucene::util::java_collections::java_float_hash_code;
 use rucene::util::java_fmt;
 
-use crate::function::value_source::{java_float_compare, objects_hash};
+use crate::function::value_source::{
+    java_float_compare, objects_equals_double, objects_equals_query, objects_hash, same_object,
+};
 
 /// A query that wraps another query, and uses a [`DoubleValuesSource`] to
 /// replace or modify the wrapped query's score.
@@ -172,12 +174,14 @@ impl Query for FunctionScoreQuery {
     }
 
     fn query_eq(&self, other: &dyn Query) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<FunctionScoreQuery>()
-            .is_some_and(|that| {
-                self.in_.query_eq(&*that.in_) && self.source.source_eq(&*that.source)
-            })
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<FunctionScoreQuery>()
+                .is_some_and(|that| {
+                    objects_equals_query(&self.in_, &that.in_)
+                        && objects_equals_double(&self.source, &that.source)
+                })
     }
 
     /// `Objects.hash(in, source)`.
@@ -529,9 +533,16 @@ impl DoubleValues for SharedScores<'_> {
 ///
 /// Equivalent to the package-private static class
 /// `org.apache.lucene.queries.function.FunctionScoreQuery.MultiplicativeBoostValuesSource`.
+///
+/// Java's member is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug)]
-pub(crate) struct MultiplicativeBoostValuesSource {
-    boost: Arc<dyn DoubleValuesSource>,
+pub struct MultiplicativeBoostValuesSource {
+    /// The package-private `boost` field, read by the same package's tests.
+    #[doc(hidden)]
+    pub boost: Arc<dyn DoubleValuesSource>,
 }
 
 impl MultiplicativeBoostValuesSource {
@@ -608,10 +619,11 @@ impl DoubleValuesSource for MultiplicativeBoostValuesSource {
     }
 
     fn source_eq(&self, other: &dyn DoubleValuesSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<MultiplicativeBoostValuesSource>()
-            .is_some_and(|that| self.boost.source_eq(&*that.boost))
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<MultiplicativeBoostValuesSource>()
+                .is_some_and(|that| objects_equals_double(&self.boost, &that.boost))
     }
 
     /// `Objects.hash(boost)`.
@@ -716,13 +728,14 @@ impl DoubleValuesSource for QueryBoostValuesSource {
     }
 
     fn source_eq(&self, other: &dyn DoubleValuesSource) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<QueryBoostValuesSource>()
-            .is_some_and(|that| {
-                java_float_compare(that.boost, self.boost) == 0
-                    && self.query.source_eq(&*that.query)
-            })
+        same_object(self, other)
+            || other
+                .as_any()
+                .downcast_ref::<QueryBoostValuesSource>()
+                .is_some_and(|that| {
+                    java_float_compare(that.boost, self.boost) == 0
+                        && objects_equals_double(&self.query, &that.query)
+                })
     }
 
     /// `Objects.hash(query, boost)`.
