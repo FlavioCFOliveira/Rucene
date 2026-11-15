@@ -126,7 +126,9 @@ impl TokenFilterLogic for MockPayloadFilterLogic {
     }
 }
 
-/// The package-private `MockPayloadFilter` of `MockPayloadAnalyzer.java`.
+/// Equivalent to the package-private class
+/// `org.apache.lucene.tests.analysis.MockPayloadFilter` of
+/// `MockPayloadAnalyzer.java`.
 pub struct MockPayloadFilter;
 
 impl MockPayloadFilter {

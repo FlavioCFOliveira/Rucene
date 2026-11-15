@@ -24,7 +24,7 @@
 //! ```
 //!
 //! The C macros `__HI(x)` and `__LO(x)` (the high and low 32-bit words of a
-//! `double`) are [`hi`] and [`lo`]; writing them is [`from_words`]. C `int`
+//! `double`) are `hi` and `lo`; writing them is `from_words`. C `int`
 //! arithmetic is reproduced with `i32` and C `unsigned` arithmetic with
 //! wrapping `u32`. `floor` and `fabs` are the exact IEEE operations
 //! [`f64::floor`] and [`f64::abs`].

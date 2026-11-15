@@ -12,11 +12,11 @@ use crate::store::{DataInput, DataOutput};
 
 /// Sorts by a field that indexes several terms per document, reducing each
 /// document's ordinals to one with a
-/// [`SortedSetSelectorType`](crate::search::SortedSetSelectorType).
+/// [`SortedSetSelectorType`].
 ///
 /// Equivalent to `org.apache.lucene.search.SortedSetSortField`, a subclass of
 /// `SortField` that declares
-/// [`SortFieldType::Custom`](crate::search::SortFieldType::Custom) and
+/// [`SortFieldType::Custom`] and
 /// overrides the comparator it builds; see
 /// [`SortedNumericSortField`](crate::search::SortedNumericSortField) for how
 /// the subclass identity is carried.

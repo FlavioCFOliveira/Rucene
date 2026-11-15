@@ -291,11 +291,27 @@ def scan_file(root: Path, rel: str):
     #
     # A paragraph that asserts a port names every Lucene type that file ports,
     # so each name in it becomes a claim about the file.
-    para, para_line = [], None
+    #
+    # The module doc is the file's leading run of `//!` lines, which may follow
+    # a licence header: the workspace crates open every file with the ASF
+    # `/* ... */` block, and stopping at its first line hid every module claim
+    # of 7 `lucene/codecs` and 93 `lucene/test-framework` classes (rmp #505).
+    # A plain comment (`/* ... */` or `//` that is not `///`/`//!`) is therefore
+    # a paragraph separator, like a blank line, never the end of the module doc.
+    para, para_line, in_block = [], None, False
     for i, line in enumerate(lines + [""]):
-        m = RE_DOC_INNER.match(line)
-        if m:
-            text = m.group(1).strip()
+        stripped = line.strip()
+        plain_comment = in_block
+        if in_block:
+            in_block = "*/" not in stripped
+        elif (stripped.startswith("/*") and not stripped.startswith("/*!")
+              and not stripped.startswith("/**")):
+            plain_comment, in_block = True, "*/" not in stripped[2:]
+        elif stripped.startswith("//") and not stripped.startswith(("///", "//!")):
+            plain_comment = True
+        doc = None if plain_comment else RE_DOC_INNER.match(line)
+        if doc:
+            text = doc.group(1).strip()
             if text:
                 para.append(text)
                 if para_line is None:
@@ -324,7 +340,7 @@ def scan_file(root: Path, rel: str):
                             "lucene": m.group(1), "scope": "module",
                             "note": note})
         para, para_line = [], None
-        if not m and line.strip() and not RE_ATTR.match(line):
+        if not doc and not plain_comment and stripped and not RE_ATTR.match(line):
             break
 
     # Item-level `///` claims describe the declaration that follows the block.

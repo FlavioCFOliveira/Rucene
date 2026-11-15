@@ -47,6 +47,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from load_rucene_kg import esc, read, rmp, run_unwind  # noqa: E402
 from kgio import PER_ROW_SCAN_BATCH, kg_target  # noqa: E402
+from javatext import strip_java  # noqa: E402
+from extract_lucene_kg import DECL_HEAD  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Extraccao
@@ -55,8 +57,13 @@ from kgio import PER_ROW_SCAN_BATCH, kg_target  # noqa: E402
 # Uma declaracao de tipo de topo: comeca na coluna 0, porque um tipo aninhado
 # vem sempre indentado. E a mesma regra que `extract_lucene_kg.py` usa para o
 # lado do codigo, para que os dois lados sejam comparaveis.
+#
+# A cabeca e `extract_lucene_kg.DECL_HEAD` -- anotacoes e modificadores, em
+# qualquer ordem --, porque uma cabeca so de modificadores nao ve um tipo cuja
+# anotacao partilha a linha (`@SuppressForbidden(reason = "...") public class`),
+# o defeito que `extract_lucene_kg.py` ja corrigiu do lado do codigo (rmp #505).
 TYPE_RE = re.compile(
-    r"^(?P<mods>(?:(?:public|final|abstract|strictfp|sealed|non-sealed)\s+)*)"
+    r"^(?P<mods>" + DECL_HEAD + r")"
     r"(?P<kind>class|interface|enum|record|@interface)\s+"
     r"(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)",
     re.M,
@@ -66,15 +73,19 @@ EXTENDS_RE = re.compile(r"\bextends\s+([A-Za-z_$][A-Za-z0-9_$.]*)")
 IMPLEMENTS_RE = re.compile(r"\bimplements\s+([^{]+)")
 PACKAGE_RE = re.compile(r"^\s*package\s+([A-Za-z0-9_.]+)\s*;", re.M)
 
-# Um metodo de teste do JUnit 4 tal como o Lucene os escreve: `public void
-# testXxx()`, com ou sem `@Test`. O Lucene ainda usa a convencao do nome, por
-# isso ela e o criterio; `@Test` sozinho (num metodo com outro nome) tambem
-# conta, e por isso e procurado a parte.
+# Um metodo de teste tal como o Lucene os corre: `LuceneJUnit3MethodProvider`
+# (`lucene/test-framework/.../LuceneJUnit3MethodProvider.java:39-42`) aceita um
+# metodo cujo nome comeca por `test`, `public`, nao `static` e sem parametros;
+# `@Test` sozinho (num metodo com outro nome) tambem conta, e por isso e
+# procurado a parte. Um auxiliar `test*` com parametros, ou que nao e publico,
+# nao e corrido e nao conta (`TestPayloadExplanations.testAllFunctions(SpanQuery,
+# int[])`, rmp #505).
 TEST_METHOD_RE = re.compile(
     r"^\s*(?:@[A-Za-z][A-Za-z0-9_.]*(?:\([^)]*\))?\s*)*"
-    r"(?:public\s+|protected\s+|private\s+)?"
-    r"(?:final\s+|static\s+|synchronized\s+)*"
-    r"void\s+(test[A-Za-z0-9_$]*)\s*\(",
+    r"(?:(?:@[A-Za-z][A-Za-z0-9_.]*(?:\([^)]*\))?|final|synchronized|strictfp)\s+)*"
+    r"public\s+"
+    r"(?:(?:@[A-Za-z][A-Za-z0-9_.]*(?:\([^)]*\))?|final|synchronized|strictfp)\s+)*"
+    r"void\s+(test[A-Za-z0-9_$]*)\s*\(\s*\)",
     re.M,
 )
 ANNOTATED_TEST_RE = re.compile(
@@ -84,26 +95,20 @@ ANNOTATED_TEST_RE = re.compile(
     r"void\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(",
 )
 
-# Comentarios e literais fora do caminho, para que uma classe citada num
-# javadoc nao seja lida como uma declaracao.
-BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
-LINE_COMMENT_RE = re.compile(r"//[^\n]*")
-STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"')
-CHAR_RE = re.compile(r"'(?:\\.|[^'\\])'")
 
 
 def strip_noise(text: str) -> str:
     """Substitui comentarios e literais por espacos, preservando as quebras de
-    linha para que os numeros de linha continuem a bater certo."""
+    linha para que os numeros de linha continuem a bater certo.
 
-    def blank(m):
-        return re.sub(r"[^\n]", " ", m.group(0))
-
-    text = BLOCK_COMMENT_RE.sub(blank, text)
-    text = LINE_COMMENT_RE.sub(blank, text)
-    text = STRING_RE.sub(blank, text)
-    text = CHAR_RE.sub(blank, text)
-    return text
+    Uma passagem unica da esquerda para a direita (`javatext.strip_java`): as
+    quatro classes de token excluem-se pela ordem no codigo, nao pela ordem de
+    substituicao. Substituir os comentarios de bloco antes das strings deixava
+    um `"/*"` abrir um comentario fantasma que apagava codigo real ate ao `*/`
+    seguinte -- 34 metodos de teste em 8 ficheiros (rmp #505).
+    """
+    stripped = strip_java(text)
+    return "".join("\n" if c == "\n" else s for c, s in zip(text, stripped))
 
 
 def classify_role(name: str, path: str, kind: str, is_framework: bool) -> str:
@@ -205,7 +210,7 @@ def scan_tree(root: str, repo_root: str, module: str, kind: str):
                         "module": module,
                         "testKind": kind,
                         "role": classify_role(name, rel_path, java_kind, is_framework),
-                        "abstract": "abstract" in m.group("mods"),
+                        "abstract": bool(re.search(r"\babstract\b", m.group("mods"))),
                         "extends": ext.group(1).split("<")[0] if ext else "",
                         "implements": implements,
                     }

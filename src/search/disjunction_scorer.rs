@@ -82,7 +82,7 @@ pub trait DisjunctionScorerImpl {
 ///   [`Scorable::score`](crate::search::Scorable::score) calls;
 /// * `twoPhaseIterator()`, which returns the `twoPhase` field or `null`,
 ///   becomes each scorer's
-///   [`Scorer::two_phase_iterator`](crate::search::Scorer::two_phase_iterator),
+///   [`Scorer::two_phase_iterator`],
 ///   answering `Some(self.base)` exactly when
 ///   [`has_two_phase`](Self::has_two_phase) holds.
 pub struct DisjunctionScorer {

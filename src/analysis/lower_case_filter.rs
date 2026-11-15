@@ -1,7 +1,7 @@
 //! Lowercase token filter ported from `org.apache.lucene.analysis.LowerCaseFilter`.
 //!
 //! The filter lowercases the term text of each token in place with
-//! [`to_lower_case`](crate::analysis::character_utils::to_lower_case), Java's
+//! [`to_lower_case`], Java's
 //! `CharacterUtils.toLowerCase`: the simple, one-for-one mapping of
 //! `Character.toLowerCase(int)`.
 

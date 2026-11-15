@@ -2944,7 +2944,7 @@ impl LuceneTestCase {
 
     /// `new TestConcurrentMergeScheduler()`: the package-private
     /// `LuceneTestCase.TestConcurrentMergeScheduler extends
-    /// ConcurrentMergeScheduler`, whose `getIntraMergeExecutor` "Always do[es]
+    /// ConcurrentMergeScheduler`, whose `getIntraMergeExecutor` "Always do\[es\]
     /// the intra merge executor to ensure we test it". The override is the
     /// scheduler's hook, as every `ConcurrentMergeScheduler` subclass is in
     /// this port.

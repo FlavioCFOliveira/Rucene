@@ -38,7 +38,7 @@ use crate::util::{BytesRef, NumericUtils};
 /// `InetAddress.getByName` and `InetAddress.getByAddress` both return the
 /// `Inet4Address` `a.b.c.d` for it — while an [`IpAddr::V6`] can hold one. This
 /// port therefore reads an IPv4-mapped [`IpAddr::V6`] as the `Inet4Address`
-/// Java would hold (see [`get_address`]), so `getAddress()` is four bytes long,
+/// Java would hold (see `get_address`), so `getAddress()` is four bytes long,
 /// as in Java, for the prefix-length check of
 /// [`new_prefix_query`](Self::new_prefix_query) and for every rendering.
 ///
@@ -211,7 +211,7 @@ impl InetAddressPoint {
     ///
     /// Equivalent to `InetAddressPoint.encode(InetAddress)`
     /// (`InetAddressPoint.java:170-182`): an IPv4 address is prefixed with
-    /// [`IPV4_PREFIX`](Self::IPV4_PREFIX), an IPv6 address is its sixteen
+    /// `IPV4_PREFIX`, an IPv6 address is its sixteen
     /// bytes. Java's `UnsupportedOperationException` for an address that is
     /// neither four nor sixteen bytes long cannot arise from an [`IpAddr`].
     pub fn encode(value: IpAddr) -> Vec<u8> {

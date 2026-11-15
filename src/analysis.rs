@@ -615,7 +615,7 @@ impl<T: TokenizerLogic> Tokenizer<T> {
     /// port has no reader at all in that state, which answers the same.
     ///
     /// This is the offset a tokenizer must report on
-    /// [`OffsetAttribute`](crate::analysis::OffsetAttribute): the positions its
+    /// [`OffsetAttribute`]: the positions its
     /// scanner sees are positions in the *filtered* text, and a consumer such
     /// as a highlighter needs positions in the text the user supplied.
     pub fn correct_offset(&self, current_off: i32) -> i32 {
@@ -1263,7 +1263,7 @@ impl ReuseStrategy for PerFieldReuseStrategy {
 /// Builds [`TokenStream`]s that analyze text, equivalent to
 /// `org.apache.lucene.analysis.Analyzer`.
 ///
-/// Implementors supply an [`AnalyzerState`] and override [`create_components`]
+/// Implementors supply an [`AnalyzerState`] and override [`create_components`](Analyzer::create_components)
 /// to define the analysis pipeline. All other methods have default
 /// implementations that match Lucene's defaults.
 pub trait Analyzer: Debug + Send + Sync {
@@ -1866,7 +1866,7 @@ impl AnalyzerWrapperLogic for DelegatingWrapperLogic {
 ///
 /// Equivalent to `org.apache.lucene.analysis.DelegatingAnalyzerWrapper`, an
 /// `AnalyzerWrapper` subclass: this type is built on an [`AnalyzerWrapper`]
-/// whose reuse strategy is a [`DelegatingReuseStrategy`].
+/// whose reuse strategy is a `DelegatingReuseStrategy`.
 #[derive(Debug)]
 pub struct DelegatingAnalyzerWrapper {
     /// The `AnalyzerWrapper` superclass state and behaviour.

@@ -30,7 +30,7 @@
 //! 2. `<home>/lib/modules` of the `java` executable found on `PATH`, symbolic
 //!    links resolved (`<home>/bin/java`);
 //! 3. the first of these whose image holds a readable `thai_dict` wins. The
-//!    image is read with [`jimage`](super::jimage) and the dictionary data
+//!    image is read with `jimage` and the dictionary data
 //!    parsed as `BreakDictionary.setupDictionary` reads it; the JDK's version
 //!    is not checked (the dictionary is the one of whichever JDK is found).
 //! 4. Otherwise (no JDK, or its image or dictionary cannot be read), the

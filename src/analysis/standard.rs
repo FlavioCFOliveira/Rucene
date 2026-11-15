@@ -74,7 +74,7 @@ pub const DEFAULT_MAX_TOKEN_LENGTH: usize = 255;
 /// `Tokenizer`.
 ///
 /// Equivalent to the members of `org.apache.lucene.analysis.standard.StandardTokenizer`;
-/// the `Tokenizer` half is [`Tokenizer`](crate::analysis::Tokenizer).
+/// the `Tokenizer` half is [`Tokenizer`].
 #[derive(Debug)]
 pub struct StandardTokenizerLogic {
     /// A private instance of the JFlex-constructed scanner.
@@ -337,9 +337,9 @@ impl StopwordAnalyzerBase {
     /// Divergence: Java streams the file through
     /// `Files.newBufferedReader(path, StandardCharsets.UTF_8)`
     /// (`StopwordAnalyzerBase.java` lines 70-74). This crate's
-    /// [`CharReader`](crate::analysis::CharReader) has no file-backed
+    /// [`CharReader`] has no file-backed
     /// implementation, so the port decodes the file into memory and reads it
-    /// through a [`StringCharReader`](crate::analysis::StringCharReader). The
+    /// through a [`StringCharReader`]. The
     /// resulting set is the same; only the peak memory differs.
     ///
     /// # Errors

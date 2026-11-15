@@ -9,7 +9,7 @@
 //! itself. They were ported here before the search package existed, and moving
 //! them now would break every codec and HNSW caller for no functional gain, so
 //! they stay and are re-exported from [`crate::search`] under their Lucene
-//! names. [`AbstractKnnCollector`], the third member of that family, does live
+//! names. [`AbstractKnnCollector`](crate::search::AbstractKnnCollector), the third member of that family, does live
 //! in [`crate::search::abstract_knn_collector`].
 
 #![deny(unsafe_code)]

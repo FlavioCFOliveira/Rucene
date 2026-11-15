@@ -53,7 +53,7 @@ pub trait DocIdSet: Accountable {
     /// `instanceof` (for example `TestDocIdSetBuilder`'s `result instanceof
     /// IntArrayDocIdSet`). Rust cannot narrow a `dyn DocIdSet`, so the
     /// question is asked of the set itself, in the shape of
-    /// [`DocIdSetIterator::disi_as_any`](crate::search::DocIdSetIterator::disi_as_any).
+    /// [`DocIdSetIterator::disi_as_any`].
     /// The default answers `None`, the `false` branch of every `instanceof`;
     /// [`BitDocIdSet`](crate::util::doc_id_set::BitDocIdSet) and
     /// [`IntArrayDocIdSet`](crate::util::doc_id_set::IntArrayDocIdSet)

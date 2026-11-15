@@ -2417,7 +2417,7 @@ impl FilterIndexOutput {
     ///
     /// Java exposes the delegate as the `protected final IndexOutput out`
     /// field, which subclasses such as
-    /// [`RateLimitedIndexOutput`](crate::store::RateLimitedIndexOutput) write
+    /// [`RateLimitedIndexOutput`] write
     /// through directly. Rust has no protected fields, so this accessor takes
     /// its place; `get_delegate` remains the read-only equivalent of
     /// `getDelegate()`.
@@ -3095,7 +3095,7 @@ impl<R: Read> InputStreamDataInput<R> {
     /// **Divergence from Lucene 10.5.0.** Java's `close()` leaves the
     /// `InputStreamDataInput` alive, and a read after it fails at run time with
     /// whatever the closed stream raises. Rust has no `close` on
-    /// [`Read`](std::io::Read) — a handle is released when its owner is dropped
+    /// [`Read`] — a handle is released when its owner is dropped
     /// — so this takes `self`, drops the owned stream, and turns "no reads
     /// after close" into a compile error instead of a run-time one. The
     /// signature still returns [`Result`] so that a stream whose release can
@@ -3103,7 +3103,7 @@ impl<R: Read> InputStreamDataInput<R> {
     ///
     /// # Errors
     ///
-    /// Never fails for a plain [`Read`](std::io::Read); the result is part of
+    /// Never fails for a plain [`Read`]; the result is part of
     /// the ported signature.
     pub fn close(self) -> Result<()> {
         drop(self.input);
@@ -3367,7 +3367,7 @@ impl DataInput for MockIndexInput {
     ///
     /// Routing the skip through the [`ByteArrayDataInput`] view instead would
     /// take its unchecked `pos += count` and leave `pos` past `data`, which the
-    /// next [`Self::view`] cannot window.
+    /// next `Self::view` cannot window.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         self.ensure_open()?;
         if num_bytes < 0 {
@@ -9695,7 +9695,7 @@ impl<W: Write + Send + Sync> OutputStreamIndexOutput<W> {
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`] if `buffer_size` is smaller than
-    /// [`OUTPUT_STREAM_MIN_BUFFER_SIZE`].
+    /// `OUTPUT_STREAM_MIN_BUFFER_SIZE`.
     pub fn new(
         resource_description: impl Into<String>,
         name: impl Into<String>,

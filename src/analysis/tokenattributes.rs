@@ -2,7 +2,7 @@
 //! `org.apache.lucene.analysis.tokenattributes`.
 //!
 //! These attributes carry per-token metadata through the analysis pipeline.
-//! Every implementation satisfies [`AttributeImpl`](crate::util::attribute::AttributeImpl)
+//! Every implementation satisfies [`AttributeImpl`]
 //! so it can be stored in an [`AttributeSource`](crate::util::attribute::AttributeSource).
 
 #![deny(unsafe_code)]
@@ -2056,7 +2056,7 @@ impl AttributeImpl for PayloadAttributeImpl {
     /// Divergence: Java delegates to `BytesRef.hashCode()`, which hashes with
     /// `StringHelper.GOOD_FAST_HASH_SEED` — a seed randomised per JVM, so the
     /// value is not reproducible across runs. This port uses the crate's
-    /// fixed-seed [`hash_bytes`](crate::util::byte_block_pool::hash_bytes),
+    /// fixed-seed [`hash_bytes`],
     /// which is deterministic and never reaches a file.
     ///
     /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PayloadAttributeImpl#hashCode`.
@@ -2241,7 +2241,7 @@ impl AttributeImpl for BytesTermAttributeImpl {
     ///
     /// Divergence: the element hash is Java's `BytesRef.hashCode()`, seeded
     /// with the per-JVM `StringHelper.GOOD_FAST_HASH_SEED`. This port uses the
-    /// crate's fixed-seed [`hash_bytes`](crate::util::byte_block_pool::hash_bytes)
+    /// crate's fixed-seed [`hash_bytes`]
     /// for the same reason [`PayloadAttributeImpl`] does.
     fn hash_code(&self) -> i32 {
         let element = match &self.bytes {

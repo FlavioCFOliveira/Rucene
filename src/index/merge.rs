@@ -847,7 +847,7 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
     /// returns and keeps holding it while it pulls values. Rust's borrow rules do
     /// not allow a merged view to hold that `&mut` across later calls, so the
     /// view records the index instead and reaches the sub through
-    /// [`sub_mut`](Self::sub_mut) when it needs a value.
+    /// [`sub`](Self::sub) when it needs a value.
     pub fn current_index(&self) -> Option<usize> {
         match &self.state {
             MergerState::Sequential { current, .. } => *current,

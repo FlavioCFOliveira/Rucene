@@ -15,7 +15,7 @@ use crate::search::scorable::Scorable;
 ///
 /// Equivalent to the fields of the private inner class
 /// `DocComparator.DocLeafComparator`, which
-/// [`SlotComparator`](crate::search::SlotComparator) pairs with the
+/// [`SlotComparator`] pairs with the
 /// comparator's own fields.
 #[derive(Debug)]
 pub struct DocLeafState {

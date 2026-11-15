@@ -1028,7 +1028,7 @@ impl SegmentInfos {
     /// Installs the sink that commit-file retries are reported to.
     ///
     /// Equivalent to `org.apache.lucene.index.SegmentInfos#setInfoStream`, whose
-    /// argument is a `PrintStream`; see the note on [`INFO_STREAM`] for why this
+    /// argument is a `PrintStream`; see the note on `INFO_STREAM` for why this
     /// port takes an [`InfoStream`] instead. Pass `None` for Java's `null`.
     pub fn set_info_stream(info_stream: Option<Arc<dyn InfoStream>>) {
         {
@@ -2255,7 +2255,7 @@ impl SegmentInfos {
     /// every [`SegmentCommitInfo`] — so that a later mutation of the live list
     /// does not reach the backup — and asserts that each carries a codec.
     ///
-    /// The codec assertion has no counterpart here: [`SegmentInfo`]'s codec is
+    /// The codec assertion has no counterpart here: [`SegmentInfo`](crate::index::segment_info::SegmentInfo)'s codec is
     /// a non-optional `Arc<dyn Codec>`, so a `SegmentCommitInfo` without one
     /// cannot be built.
     pub fn create_backup_segment_infos(&self) -> Vec<SegmentCommitInfo> {

@@ -254,7 +254,7 @@ pub const FROZEN_BYTES_PER_DEL_QUERY: i64 = 32;
 /// Equivalent to `BufferedUpdates.DeletedTerms` (`BufferedUpdates.java:180-310`):
 /// the term bytes live in one `ByteBlockPool` whose blocks a
 /// `DirectTrackingAllocator` charges to the buffer's counter, and each field
-/// has its own [`BytesRefIntMap`] over that pool. The counter is what
+/// has its own `BytesRefIntMap` over that pool. The counter is what
 /// [`ram_bytes_used`](Accountable::ram_bytes_used) reports, so the first
 /// deleted term costs a whole 32 KB block, as in Lucene.
 #[derive(Debug)]
@@ -302,7 +302,7 @@ impl DeletedTerms {
     ///
     /// Equivalent to `DeletedTerms.put(Term, int)`: the first term of a field
     /// charges `RamUsageEstimator.sizeOf(term.field)` and a fresh
-    /// [`BytesRefIntMap`].
+    /// `BytesRefIntMap`.
     ///
     /// # Errors
     ///
@@ -3711,7 +3711,7 @@ impl Display for DocumentsWriterPerThread {
     /// **Divergence from Lucene 10.5.0.** Java reads `pendingUpdates` and
     /// `numDeletedDocIds` as plain fields, without synchronisation, so its
     /// `toString()` never blocks. In this port both live in the lock-guarded
-    /// [`DwptState`], so rendering waits for whichever [`DwptGuard`] currently
+    /// `DwptState`, so rendering waits for whichever [`DwptGuard`] currently
     /// holds it. A thread that already holds the guard must render **the
     /// guard**, not the DWPT — [`DwptGuard`] carries its own [`Display`] that
     /// produces the identical string from the state it is holding; going

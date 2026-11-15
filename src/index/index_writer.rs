@@ -2024,7 +2024,7 @@ impl IndexWriter {
     /// (`IndexWriter.java:1499-1501`). Returns the sequence number the
     /// operation was assigned.
     ///
-    /// `doc` is any [`IndexableFieldIterable`] (a [`Document`], a list of
+    /// `doc` is any [`IndexableFieldIterable`] (a [`Document`](crate::document::Document), a list of
     /// fields, or an iterable that fails mid-way); `None` is Java's `null`.
     ///
     /// # Errors
@@ -8987,7 +8987,7 @@ impl IndexWriter {
     /// writer's monitor, which is reentrant; this port's state lock is not, so
     /// it is released while the policy runs — a policy asks the writer which
     /// segments are merging — and taken again to register what it returned,
-    /// as [`update_pending_merges_with_policy`](Self::update_pending_merges_with_policy)
+    /// as `update_pending_merges_with_policy`
     /// does.
     ///
     /// # Errors
@@ -9826,7 +9826,7 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.forceApply(FrozenBufferedUpdates)`. It is
     /// deliberately optimistic: the packet is resolved against every segment
     /// the index holds now, and resolved again against any segment a merge
-    /// committed meanwhile; see [`apply_to_segments`](Self::apply_to_segments).
+    /// committed meanwhile; see `apply_to_segments`.
     pub fn force_apply(
         &self,
         updates: &Arc<crate::index::documents_writer::FrozenBufferedUpdates>,
@@ -10885,7 +10885,7 @@ impl IndexWriterTrait for IndexWriter {
     /// (`IndexWriter.java:713-715`); this port does so for
     /// [`LuceneErrorKind::AssertionError`], its only counterpart of `Error`. Every
     /// other failure is acted on through
-    /// [`maybe_close_on_tragic_event`](IndexWriter::maybe_close_on_tragic_event),
+    /// `maybe_close_on_tragic_event`,
     /// which is what Java's `finally` does on every failing path.
     ///
     /// # Errors

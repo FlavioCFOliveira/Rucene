@@ -33,7 +33,7 @@ const JAVA_FLOAT_MIN_VALUE: f32 = 1.4e-45;
 /// for re-ranking query results with late-interaction models, where documents
 /// and queries are represented as multi-vectors of composing token vectors.
 /// Document vectors are indexed with
-/// [`LateInteractionField`](crate::document::shape_field::LateInteractionField).
+/// [`LateInteractionField`].
 #[derive(Debug, Clone)]
 pub struct LateInteractionFloatValuesSource {
     field_name: String,

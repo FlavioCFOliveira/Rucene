@@ -25,7 +25,7 @@ use crate::error::{LuceneError, LuceneErrorKind};
 /// Java's variadic `String.format` constructors take a format string and its
 /// arguments separately; the Rust counterpart of that pair is
 /// [`std::fmt::Arguments`], which [`BufferAllocationException::with_args`]
-/// accepts and [`BufferAllocationException::format_message`] renders. Because
+/// accepts and `BufferAllocationException::format_message` renders. Because
 /// `format_args!` is validated by the compiler, the `IllegalFormatException`
 /// fallback of the Java version cannot occur here, and neither can the
 /// `Throwable` it would suppress: the third Java constructor,

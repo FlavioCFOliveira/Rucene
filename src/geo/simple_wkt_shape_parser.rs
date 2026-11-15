@@ -16,7 +16,7 @@
 //!   becomes `Option::None`, so `MULTILINESTRING (EMPTY)` still parses to a
 //!   one-element collection holding nothing, as it does in Java.
 //! * **`java.io.StreamTokenizer` is reimplemented here.** It has no Rust
-//!   analogue. [`StreamTokenizer`] reproduces the tokenizer *as Lucene
+//!   analogue. `StreamTokenizer` reproduces the tokenizer *as Lucene
 //!   configures it* — `resetSyntax`, word characters `a-z`, `A-Z`, `0-9`, `-`,
 //!   `+`, `.` and `160..=255`, whitespace `0..=32`, `#` as the comment
 //!   character, and every character at or above 256 treated as alphabetic,
@@ -220,7 +220,7 @@ impl SimpleWKTShapeParser {
     ///
     /// # Errors
     ///
-    /// Returns a [`ParseException`] naming the offending token and the line it
+    /// Returns a `ParseException` naming the offending token and the line it
     /// was found on.
     pub fn parse(wkt: &str) -> Result<Option<WktGeometry>, LuceneError> {
         Self::parse_expected_type(wkt, None)
@@ -232,7 +232,7 @@ impl SimpleWKTShapeParser {
     ///
     /// # Errors
     ///
-    /// Returns a [`ParseException`] when the geometry is malformed, or when it
+    /// Returns a `ParseException` when the geometry is malformed, or when it
     /// is not of `shape_type`.
     pub fn parse_expected_type(
         wkt: &str,

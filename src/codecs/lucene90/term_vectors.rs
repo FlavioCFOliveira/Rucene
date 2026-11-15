@@ -1533,10 +1533,10 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
     /// Copies every document's term vectors from the segments being merged,
     /// copying whole compressed chunks for the segments that allow it.
     ///
-    /// [`can_perform_bulk_merge`](Self::can_perform_bulk_merge) makes that
+    /// `can_perform_bulk_merge` makes that
     /// choice once per segment. When it holds, a run of consecutive documents
     /// from that segment is gathered first — a chunk can only be copied as a
-    /// whole — and handed to [`copy_chunks`](Self::copy_chunks), which moves
+    /// whole — and handed to `copy_chunks`, which moves
     /// the compressed bytes verbatim. Otherwise the document's vectors are
     /// decoded and written again through
     /// [`add_all_doc_vectors`](TermVectorsWriter::add_all_doc_vectors), which

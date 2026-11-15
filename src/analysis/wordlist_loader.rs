@@ -4,7 +4,7 @@
 //! word-set entry points accept an iterator of `&str` lines, which is what
 //! Java's `BufferedReader.readLine()` loop yields;
 //! [`get_buffered_reader`] produces those lines from a
-//! [`CharReader`](crate::analysis::CharReader).
+//! [`CharReader`].
 
 #![deny(unsafe_code)]
 
@@ -125,7 +125,7 @@ pub fn get_snowball_word_set(lines: impl IntoIterator<Item = impl AsRef<str>>) -
 /// Divergence: Java's `WordlistLoader.getBufferedReader(Reader)` only wraps the
 /// reader — `new BufferedReader(reader)` unless it already is one
 /// (`WordlistLoader.java` lines 316-320) — so the caller can then pull lines
-/// with `readLine()`. This crate's [`CharReader`](crate::analysis::CharReader)
+/// with `readLine()`. This crate's [`CharReader`]
 /// has no line-oriented layer to wrap it in, so the port reads the characters
 /// and returns the lines themselves, which is what every caller of the Java
 /// method goes on to do.
@@ -192,7 +192,7 @@ pub(crate) fn read_lines(text: &str) -> Vec<String> {
 ///    whichever line is first to survive;
 /// 2. the comment test runs **before** the trim, so `"   # x"` is not a comment
 ///    — it becomes the word `"# x"`;
-/// 3. the line is trimmed with [`java_trim`], i.e. `String.trim()`'s rule;
+/// 3. the line is trimmed with `java_trim`, i.e. `String.trim()`'s rule;
 /// 4. only then is a line that has become empty dropped.
 ///
 /// # Errors

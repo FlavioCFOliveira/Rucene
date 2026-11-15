@@ -46,7 +46,7 @@ pub(crate) struct GlobalOrder<'a> {
 /// `FilterLeafCollector`. The anonymous subclass that
 /// `AssertingCollector.getLeafCollector` returns — global order across leaves,
 /// and the end-of-leaf flag set by `finish` — is the same type built with
-/// [`new_for_collector`](Self::new_for_collector).
+/// `new_for_collector`.
 ///
 /// `setScorer` wraps the scorable with [`AssertingScorable::wrap`]; when the
 /// result is a `Scorer`, the wrapped collector receives Java's anonymous

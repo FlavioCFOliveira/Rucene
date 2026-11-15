@@ -2,7 +2,7 @@
 //! `org.apache.lucene.document`.
 //!
 //! A range doc-values field stores the same packed interval a
-//! [`IntRange`](crate::document::IntRange)-style point field stores, but as
+//! [`IntRange`]-style point field stores, but as
 //! binary doc values, so a range relation can be answered by scanning the
 //! values instead of descending a BKD tree. It is slower, and it is the only
 //! way when the field carries no points index.

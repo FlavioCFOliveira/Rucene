@@ -12,7 +12,7 @@ use crate::util::vector_util;
 /// `org.apache.lucene.util.quantization.ScalarQuantizedVectorSimilarity`
 /// (`ScalarQuantizedVectorSimilarity.java:28`). Lucene ships three
 /// implementations, [`Euclidean`], [`DotProduct`] and [`MaximumInnerProduct`],
-/// which [`from_vector_similarity`](<dyn ScalarQuantizedVectorSimilarity>::from_vector_similarity)
+/// which `<dyn ScalarQuantizedVectorSimilarity>::from_vector_similarity`
 /// selects; a user may implement the trait for a similarity of their own.
 ///
 /// `Send + Sync` lets the scorers that hold one be handed across threads, as

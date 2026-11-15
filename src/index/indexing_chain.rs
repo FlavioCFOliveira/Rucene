@@ -10,7 +10,7 @@
 //! back from the files it has just written, as Lucene does
 //! (`IndexingChain.java:358-370`).
 //!
-//! The chain turns a [`Document`] into buffered postings, a stored-fields
+//! The chain turns a [`Document`](crate::document::Document) into buffered postings, a stored-fields
 //! stream and a term-vectors stream: it registers each field in the segment's
 //! [`FieldInfosBuilder`], runs the analysis pipeline, validates positions and
 //! offsets, feeds every token to [`FreqProxTermsWriter`] and — for the fields

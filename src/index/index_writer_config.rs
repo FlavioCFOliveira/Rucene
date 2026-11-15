@@ -635,7 +635,7 @@ impl LiveIndexWriterConfig {
     /// Returns the index sort, if one was configured.
     ///
     /// Java returns the configuration's own `Sort`; the setting changes
-    /// through `&self` (see [`Setting`]), so this returns a copy of it.
+    /// through `&self` (see `Setting`), so this returns a copy of it.
     pub fn index_sort(&self) -> Option<Sort> {
         self.index_sort.get()
     }
@@ -1029,7 +1029,7 @@ impl IndexWriterConfig {
         Ok(self)
     }
 
-    /// Sets the info stream to a [`PrintStreamInfoStream`] over `print_stream`.
+    /// Sets the info stream to a [`PrintStreamInfoStream`](crate::util::PrintStreamInfoStream) over `print_stream`.
     ///
     /// Equivalent to `IndexWriterConfig.setInfoStream(PrintStream)`
     /// (`IndexWriterConfig.java:410-415`), "a convenience method that uses

@@ -77,12 +77,12 @@ enum Layout {
 /// memory-mapped input behind `MMapDirectory`. For efficiency the segment size
 /// must be a power of two, given as `chunk_size_power`.
 ///
-/// Create instances with [`MemorySegmentIndexInputProvider`], which maps the
+/// Create instances with [`MemorySegmentIndexInputProvider`](crate::store::MemorySegmentIndexInputProvider), which maps the
 /// file and chooses the layout.
 ///
 /// # Divergences from Lucene 10.5.0
 ///
-/// * **Java's two subclasses are one type here.** See [`Layout`].
+/// * **Java's two subclasses are one type here.** See `Layout`.
 /// * **Java signals out-of-bounds access with exceptions used as control
 ///   flow** — `IndexOutOfBoundsException` from `MemorySegment` selects the
 ///   boundary-crossing path, and `NullPointerException` marks a closed input.
@@ -565,7 +565,7 @@ impl MemorySegmentIndexInput {
     ///
     /// Equivalent to `MemorySegmentIndexInput.slice(String, long, long)`, and
     /// the concretely typed counterpart of
-    /// [`IndexInput::slice`](IndexInput::slice).
+    /// [`IndexInput::slice`].
     ///
     /// # Errors
     ///

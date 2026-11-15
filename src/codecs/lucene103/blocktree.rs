@@ -624,7 +624,7 @@ impl TrieBuilder {
     /// The iteration is in two phases: reading an entry's header exposes the
     /// length of the prefix it shares with its predecessor while the key buffer
     /// still holds that predecessor, which is exactly what
-    /// [`Self::freeze_from`] needs to read the labels off; reading the body then
+    /// `Self::freeze_from` needs to read the labels off; reading the body then
     /// overwrites the key buffer with the current entry.
     ///
     /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder#saveNodes`.

@@ -56,13 +56,11 @@ pub mod strict_math;
 pub mod string_helper;
 pub mod unicode_util;
 
-/// Block KD-tree utilities ported from `org.apache.lucene.util.bkd`.
 pub mod bkd;
 
 /// Additional bitset and live-docs variants.
 pub mod bit_sets;
 
-/// HNSW graph utilities for vector search.
 pub mod hnsw;
 
 /// Vector arithmetic primitives ported from `org.apache.lucene.util.VectorUtil`.
@@ -1779,7 +1777,7 @@ impl ArrayUtil {
     ///
     /// # Errors
     ///
-    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
+    /// [`LuceneErrorKind::IllegalArgument`]
     /// as described above.
     pub fn oversize_int(
         min_target_size: i32,
@@ -2475,7 +2473,7 @@ impl IOUtils {
     /// Equivalent to `IOUtils.close(Closeable...)` and `IOUtils.close(Iterable)`
     /// (`IOUtils.java:69-93`): every closeable is closed even after one fails,
     /// and the first throwable is rethrown, the later ones suppressed into it
-    /// ([`use_or_suppress`](Self::use_or_suppress)). A closeable that panics is
+    /// (`use_or_suppress`). A closeable that panics is
     /// caught like any `Throwable`; the panic is resumed once every closeable
     /// is closed when it was the first failure, and dropped, as Java
     /// suppresses it, when it was not.
@@ -2509,7 +2507,7 @@ impl IOUtils {
     /// Java's method returns nothing and throws only the first `Error`, which
     /// is unchecked; the port models Java's `AssertionError` as
     /// [`LuceneErrorKind::AssertionError`], so that one comes back as `Err`, and a
-    /// panic is resumed (see [`Thrown::is_java_error`]). A caller propagates
+    /// panic is resumed (see `Thrown::is_java_error`). A caller propagates
     /// the `Err` with `?`, as the `Error` propagates out of the Java caller —
     /// out of a `finally` block too, where it replaces the exception in
     /// flight.
@@ -2678,7 +2676,7 @@ impl IOUtils {
     /// closeable hits one — that first `Error`, which Java throws with `ex`
     /// suppressed into it. Java's `Error` is [`LuceneErrorKind::AssertionError`],
     /// or a panic, which is resumed once every closeable is closed (see
-    /// [`Thrown::is_java_error`]). Every other failure is suppressed into
+    /// `Thrown::is_java_error`). Every other failure is suppressed into
     /// `ex`.
     ///
     /// Java suppresses `ex` into the first `Error` as soon as it is hit, and
@@ -3786,13 +3784,11 @@ pub fn system_property(key: &str) -> Option<String> {
 /// Equivalent to `org.apache.lucene.util.Constants`.
 ///
 /// Lucene reads every value through `System.getProperty`. Rust's equivalent of
-/// the JVM system-property table is the process environment, so [`get_sys_prop`]
+/// the JVM system-property table is the process environment, so `get_sys_prop`
 /// consults it first and falls back to what the Rust runtime itself knows
 /// (`std::env::consts`) for the handful of properties the JVM answers from the
 /// platform rather than from the command line. Every derived constant is then
 /// computed exactly as Lucene computes it.
-///
-/// [`get_sys_prop`]: Constants::get_sys_prop
 #[derive(Debug, Copy, Clone)]
 pub struct Constants;
 
@@ -4271,7 +4267,7 @@ pub trait Bits: Send + Sync + Debug {
     fn get(&self, index: usize) -> bool;
 
     /// Answers `this instanceof BitSet` with the cast: `Some(self)` for a
-    /// [`BitSet`](crate::util::bit_set::BitSet) implementation, `None` (the
+    /// [`BitSet`] implementation, `None` (the
     /// default) for every other `Bits`.
     ///
     /// **This has no counterpart in Lucene 10.5.0.** Java tests the runtime
@@ -4285,7 +4281,7 @@ pub trait Bits: Send + Sync + Debug {
 
     /// [`as_bit_set`](Self::as_bit_set) of shared bits, keeping the share:
     /// `Some` of the same object as a `BitSet` for a
-    /// [`BitSet`](crate::util::bit_set::BitSet) implementation, `None` (the
+    /// [`BitSet`] implementation, `None` (the
     /// default) for every other `Bits`.
     ///
     /// **This has no counterpart in Lucene 10.5.0**, for the reason given on
@@ -4328,7 +4324,7 @@ pub trait Bits: Send + Sync + Debug {
     /// Equivalent to the default `Bits.applyMask(FixedBitSet, int)`
     /// (`Bits.java:55-63`), which walks the set bits of `bit_set` and clears
     /// those whose bit is clear. [`FixedBitSet`] and
-    /// [`FixedBits`](crate::util::bit_set::FixedBits) override it with a
+    /// [`FixedBits`] override it with a
     /// word-at-a-time intersection, as in Java (`FixedBitSet.java:897-909`,
     /// `FixedBits.java:33-36`).
     ///
@@ -4359,7 +4355,7 @@ pub trait Bits: Send + Sync + Debug {
     }
 
     /// Consumes these bits and returns them as
-    /// [`LiveDocs`](crate::util::bit_set::LiveDocs) when they are one, or
+    /// [`LiveDocs`] when they are one, or
     /// `None` when they are not.
     ///
     /// **Divergence from Lucene 10.5.0.** Java asks `bits instanceof LiveDocs`
@@ -4506,7 +4502,7 @@ fn load_word_chunk(words: &[AtomicU64; WORD_CHUNK]) -> [u64; WORD_CHUNK] {
 /// A fixed-size bit set, equivalent to Lucene's `FixedBitSet`.
 ///
 /// The words are shared, as Java's `long[]` is, with the
-/// [`FixedBits`](crate::util::bit_set::FixedBits) views
+/// [`FixedBits`] views
 /// [`as_read_only_bits`](Self::as_read_only_bits) returns: they are atomics
 /// behind an `Arc`, each read and written with a `Relaxed` load or store.
 /// [`Clone`] copies them, as `FixedBitSet.clone()` does
@@ -4853,7 +4849,7 @@ impl FixedBitSet {
     ///
     /// Equivalent to `FixedBitSet.cardinality()` (`FixedBitSet.java:217-224`),
     /// `Long.bitCount` summed over the words, which are loaded a chunk at a time
-    /// (see [`Words`]).
+    /// (see `Words`).
     pub fn cardinality(&self) -> usize {
         // Depends on the ghost bits being clear!
         let (chunks, rest) = self.bits[..self.num_words].as_chunks::<WORD_CHUNK>();
@@ -4937,7 +4933,7 @@ impl FixedBitSet {
     ///
     /// Equivalent to `FixedBitSet.intersectionCount(FixedBitSet, FixedBitSet)`.
     ///
-    /// The words are loaded a chunk at a time (see [`Words`]).
+    /// The words are loaded a chunk at a time (see `Words`).
     pub fn intersection_count(a: &FixedBitSet, b: &FixedBitSet) -> u64 {
         // Depends on the ghost bits being clear!
         let common = a.num_words.min(b.num_words);
@@ -5270,7 +5266,7 @@ impl FixedBitSet {
     /// **Divergence from Lucene 10.5.0, in the name only.** Java overloads `or`
     /// for both a `FixedBitSet` and a `DocIdSetIterator`. Rust has no
     /// overloading, and `or` is already taken on this type by
-    /// [`BitSet::or`](crate::util::bit_set::BitSet::or), which is the iterator
+    /// [`BitSet::or`], which is the iterator
     /// form. The set form therefore carries the `_set` suffix; the behaviour is
     /// Java's, delegating to [`or_range`](Self::or_range).
     pub fn or_set(&mut self, other: &FixedBitSet) {

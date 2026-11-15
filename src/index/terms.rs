@@ -898,7 +898,7 @@ pub trait Terms: Send + Sync {
     /// starting after `start_term`.
     ///
     /// Equivalent to the default `Terms.intersect(CompiledAutomaton, BytesRef)`
-    /// (`Terms.java:64-96`); see [`default_intersect`].
+    /// (`Terms.java:64-96`); see `default_intersect`.
     ///
     /// # Errors
     ///
@@ -1102,7 +1102,7 @@ impl<T: Fields + ?Sized> Fields for &T {
 /// blocktree [`Stats`](crate::codecs::lucene103::blocktree::Stats) for a
 /// `FieldReader` — as Java's caller casts the `Object`.
 pub trait StatsObject: std::fmt::Display + Send + Sync + 'static {
-    /// This object as [`Any`](std::any::Any), for downcasting.
+    /// This object as [`Any`], for downcasting.
     fn as_any(&self) -> &dyn std::any::Any;
 }
 

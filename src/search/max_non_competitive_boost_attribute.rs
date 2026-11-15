@@ -15,9 +15,9 @@ use crate::util::BytesRef;
 /// enum which boosts are no longer competitive.
 ///
 /// Equivalent to `org.apache.lucene.search.MaxNonCompetitiveBoostAttribute`.
-/// Add it to a fresh [`AttributeSource`](crate::util::attribute::AttributeSource)
+/// Add it to a fresh [`AttributeSource`]
 /// before calling
-/// [`MultiTermQuery::get_terms_enum`](crate::search::MultiTermQuery::get_terms_enum);
+/// [`MultiTermQuery::get_terms_enum`](crate::search::multi_term_query::get_terms_enum);
 /// [`FuzzyQuery`](crate::search::FuzzyQuery) uses it to control its internal
 /// behaviour so that only competitive terms are returned.
 ///
@@ -25,7 +25,7 @@ use crate::util::BytesRef;
 /// [`RewriteMethod`](crate::search::RewriteMethod) to an empty attribute source
 /// that is shared by all segments during query rewrite. That attribute source
 /// is passed to every segment enum by
-/// [`MultiTermQuery::get_terms_enum`](crate::search::MultiTermQuery::get_terms_enum).
+/// [`MultiTermQuery::get_terms_enum`](crate::search::multi_term_query::get_terms_enum).
 /// [`TopTermsRewrite`](crate::search::TopTermsRewrite) uses this attribute to
 /// inform all enums about the current boost that is not competitive.
 pub trait MaxNonCompetitiveBoostAttribute: Attribute {

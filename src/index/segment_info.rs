@@ -554,7 +554,7 @@ impl SegmentInfo {
     ///
     /// The two maps render as `java.util.AbstractMap.toString()` does, in their
     /// own iteration order — which is why they are held as
-    /// [`JavaStringMap`](crate::util::java_collections::JavaStringMap) rather
+    /// [`JavaStringMap`] rather
     /// than as a Rust `HashMap`. For a map built by `Map.copyOf`, that order is
     /// the one already declared on
     /// [`JavaStringMap::immutable_copy_of`](crate::util::java_collections::JavaStringMap::immutable_copy_of):
@@ -1765,7 +1765,7 @@ impl SegmentCommitInfo {
     /// Port of `SegmentCommitInfo.toString(int pendingDelCount)`, which is
     /// `info.toString(delCount + pendingDelCount)`.
     ///
-    /// Unlike [`Display`](std::fmt::Display), this *does* fold in this commit's
+    /// Unlike [`Display`], this *does* fold in this commit's
     /// own deletion count.
     pub fn to_string_with_pending_del_count(&self, pending_del_count: i32) -> String {
         self.info

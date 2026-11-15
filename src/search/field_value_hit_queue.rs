@@ -15,7 +15,7 @@ use crate::search::score_doc::ScoreDoc;
 use crate::search::sort::SortField;
 
 /// Extension of [`ScoreDoc`] that also stores the
-/// [`FieldComparator`](crate::search::FieldComparator) slot.
+/// [`FieldComparator`] slot.
 ///
 /// Equivalent to `org.apache.lucene.search.FieldValueHitQueue.Entry`, which
 /// extends `ScoreDoc` with a score of `NaN`. Rust has no implementation

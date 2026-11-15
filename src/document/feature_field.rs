@@ -757,8 +757,8 @@ impl FeatureQuery {
 /// always reversed, that carries the feature name, refuses a missing value and
 /// sorts with a [`FeatureComparator`]. The subclass identity travels with the
 /// sort field as
-/// [`SortFieldKind::Feature`](crate::search::SortFieldKind::Feature), for the
-/// reason given on [`SortFieldKind`](crate::search::SortFieldKind); this type
+/// [`SortFieldKind::Feature`], for the
+/// reason given on [`SortFieldKind`]; this type
 /// builds and reads back the sort fields that carry it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FeatureSortField {

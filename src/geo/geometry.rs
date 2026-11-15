@@ -1379,7 +1379,7 @@ impl std::fmt::Display for Rectangle {
     /// Equivalent to `Rectangle.toString()`.
     ///
     /// The coordinates go through
-    /// [`double_to_string`](crate::search::similarities::java_fmt::double_to_string)
+    /// `double_to_string`
     /// because Java concatenates them with `Double.toString`, which prints
     /// `10.0` where Rust's `Display` prints `10`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

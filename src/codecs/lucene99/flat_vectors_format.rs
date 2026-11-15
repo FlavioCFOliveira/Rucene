@@ -2086,7 +2086,7 @@ impl ByteVectorValues for EmptyOffHeapByteVectorValues {
 /// byteSize, flatVectorsScorer, similarityFunction)`
 /// (`OffHeapFloatVectorValues.java:145-155`), which `load` calls for a dense
 /// configuration and Lucene's tests call directly. The values class itself
-/// is private to this module (see [`OffHeapFloatVectorValues`]), so it is
+/// is private to this module (see `OffHeapFloatVectorValues`), so it is
 /// handed back as the [`FloatVectorValues`] it implements.
 pub fn new_dense_off_heap_float_vector_values(
     dimension: i32,
@@ -2119,7 +2119,7 @@ pub fn new_dense_off_heap_float_vector_values(
 /// byteSize, flatVectorsScorer, vectorSimilarityFunction)`
 /// (`OffHeapByteVectorValues.java:149-158`), which `load` calls for a dense
 /// configuration and Lucene's tests call directly. The values class itself
-/// is private to this module (see [`OffHeapByteVectorValues`]), so it is
+/// is private to this module (see `OffHeapByteVectorValues`), so it is
 /// handed back as the [`ByteVectorValues`] it implements.
 pub fn new_dense_off_heap_byte_vector_values(
     dimension: i32,

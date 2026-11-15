@@ -844,7 +844,7 @@ impl IndexFileDeleter {
     ///
     /// # Errors
     ///
-    /// [`LuceneErrorKind::AlreadyClosed`] when the writer is closed, and also when
+    /// [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) when the writer is closed, and also when
     /// it hit a tragic error, with that error as its cause.
     pub fn ensure_open(&self, writer: &IndexWriter) -> Result<()> {
         writer.ensure_open_with(false)?;
@@ -932,7 +932,7 @@ impl IndexFileDeleter {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneErrorKind::CorruptIndex`] if a per-segment file name carries a
+/// Returns [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) if a per-segment file name carries a
 /// segment ordinal that does not fit in an `i64`. Java lets the resulting
 /// `NumberFormatException` escape at the same point
 /// (`IndexFileDeleter.java:303-304` is deliberately *not* inside a `try`, unlike

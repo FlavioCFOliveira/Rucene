@@ -123,7 +123,7 @@ impl std::fmt::Display for NumericValue {
     /// what `Field.toString()` reaches when `fieldsData` holds a boxed number.
     ///
     /// The float and double arms go through
-    /// [`java_fmt`](crate::search::similarities::java_fmt) rather than Rust's
+    /// `java_fmt` rather than Rust's
     /// own `Display`, which prints `100` where `Double.toString` prints
     /// `100.0` and `0.0001` where it prints `1.0E-4`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1879,7 +1879,7 @@ impl std::fmt::Display for Document {
     ///
     /// The rendering is polymorphic in Java and is polymorphic here too, over
     /// the [`Display`](std::fmt::Display) supertrait of
-    /// [`IndexableField`](crate::index::IndexableField). Measured against
+    /// [`IndexableField`]. Measured against
     /// `lucene-core-10.5.0.jar`: an empty document is `Document<>`, and a
     /// document holding a `StringField` and an `IntPoint` is
     /// `Document<indexed,omitNorms,indexOptions=DOCS<id:1> IntPoint <count:42>>`.
@@ -4824,7 +4824,7 @@ impl NumericDocValuesField {
     /// Equivalent to `NumericDocValuesField.newSlowRangeQuery(String, long,
     /// long)`. Such a query cannot advance efficiently to the next match, so it
     /// is best used inside an
-    /// [`IndexOrDocValuesQuery`](crate::search::IndexOrDocValuesQuery)
+    /// [`IndexOrDocValuesQuery`]
     /// alongside a range query that runs on points.
     pub fn new_slow_range_query(field: &str, lower_value: i64, upper_value: i64) -> Arc<dyn Query> {
         Arc::new(SortedNumericDocValuesRangeQuery::new(

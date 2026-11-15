@@ -27,7 +27,6 @@ pub mod lucene99;
 /// Bundled Lucene 10.3 sub-formats reused by the default `Lucene104` codec.
 pub mod lucene103;
 
-/// Low-level helpers for the `Lucene104` postings format.
 pub mod lucene104;
 
 pub mod norms;

@@ -17,7 +17,7 @@
 
 //! Port of `org.apache.lucene.tests.index.BaseCompoundFormatTestCase`:
 //! abstract class to do basic tests for a compound format. NOTE: This test
-//! focuses on the compound impl, nothing else. The [stretch] goal is for this
+//! focuses on the compound impl, nothing else. The \[stretch\] goal is for this
 //! test to be so thorough in testing a new `CompoundFormat` that if this test
 //! passes, then all Lucene tests should also pass. Ie, if there is some bug in
 //! a given `CompoundFormat` that this test fails to catch then this test needs
@@ -32,7 +32,7 @@
 //! * `testPassIOContext`, `testLargeCFS`: Java wraps the test directory in an
 //!   anonymous `FilterDirectory` / an `NRTCachingDirectory` that own it. The
 //!   port's wrappers own a `Box<dyn Directory>`, while the test directory is
-//!   shared (`TestDirectory`); [`OwningTestDirectory`] delegates every call to
+//!   shared (`TestDirectory`); `OwningTestDirectory` delegates every call to
 //!   it and closes it when closed, which is what Java's `FilterDirectory`
 //!   does.
 //! * `assertSame(myContext, context)` (`testPassIOContext`): Java compares

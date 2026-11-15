@@ -6,7 +6,7 @@
 //! * [`ForUtil`] — bit-packs 256 integers per block.
 //! * [`PForUtil`] — patched frame-of-reference encoder/decoder.
 //! * [`PostingIndexInput`] — `IndexInput` + `ForUtil` decoding wrapper.
-//! * [`PostingsUtil`] — variable-length postings block helpers.
+//! * [`postings_util`] (`PostingsUtil`) — variable-length postings block helpers.
 //! * [`Lucene104PostingsFormat`] — the postings format wrapper.
 //! * [`Lucene104PostingsWriter`] / [`Lucene104PostingsReader`] — low-level
 //!   postings encode/decode skeletons.

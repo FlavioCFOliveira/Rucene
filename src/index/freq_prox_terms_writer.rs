@@ -493,7 +493,7 @@ impl DataInput for PooledSliceReader<'_> {
 /// One [`TermsHashPerField`] backs both consumers of the terms hash, so this
 /// struct is the union of the two Java posting arrays. The term-vectors
 /// consumer uses exactly the columns of `TermVectorsPostingsArray` —
-/// [`stream_address`](Self::stream_address), [`byte_start`](Self::byte_start),
+/// [`address_offset`](Self::address_offset), [`byte_start`](Self::byte_start),
 /// [`term_freq`](Self::term_freq) (`freqs`),
 /// [`last_position`](Self::last_position) (`lastPositions`) and
 /// [`last_offset`](Self::last_offset) (`lastOffsets`) — and leaves
@@ -1509,7 +1509,7 @@ impl FreqProxTermsWriterPerField {
     /// and when a custom term frequency is combined with positions or with a
     /// field that does not index frequencies, and
     /// [`LuceneErrorKind::Arithmetic`] when a term's frequency overflows an `int`.
-    /// [`Self::add_classified`] reports the same failures with the duplicate
+    /// `Self::add_classified` reports the same failures with the duplicate
     /// term told apart.
     pub fn add(
         &mut self,

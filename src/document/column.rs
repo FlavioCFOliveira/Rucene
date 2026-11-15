@@ -366,7 +366,7 @@ pub trait VectorColumn<T>: ColumnValues {
 /// `Arc<AtomicRefCell<dyn TokenStream>>` that [`Field`](crate::document::Field)
 /// already uses for a pre-analysed value; the inverter still drives the very
 /// stream the caller supplied, through
-/// [`SharedTokenStream`](crate::analysis::SharedTokenStream).
+/// [`SharedTokenStream`].
 pub trait TokenStreamColumn: ColumnValues {
     /// Returns a cursor over the `(document, stream)` pairs.
     fn tuples(&self) -> Result<Box<dyn ObjectTupleCursor<SharedTokenStreamHandle> + '_>>;
@@ -822,7 +822,7 @@ impl TypedColumn<'_> {
 }
 
 /// Presents a [`Column`]'s current cursor value as an
-/// [`IndexableField`](crate::index::IndexableField), so it can be fed through
+/// [`IndexableField`], so it can be fed through
 /// the row-oriented indexing pass.
 ///
 /// Equivalent to the abstract sealed class

@@ -1108,7 +1108,7 @@ impl CheckIndex {
     /// `shutdown()`, `awaitTermination(5, SECONDS)` — reporting an
     /// `InterruptedException` — and `shutdownNow()`, once the check, "Took …
     /// total." included, is over, however it ended. The pool's threads are
-    /// scoped ([`SegmentCheckPool`]), so the scope spans that `try`.
+    /// scoped (`SegmentCheckPool`), so the scope spans that `try`.
     ///
     /// # Errors
     ///
@@ -5036,7 +5036,7 @@ fn test_asserts() -> bool {
 /// Returns whether debug assertions are compiled in.
 ///
 /// Equivalent to `CheckIndex.assertsOn()`, which probes for assertions by
-/// running [`test_asserts`] inside an `assert` and then reporting the flag it
+/// running `test_asserts` inside an `assert` and then reporting the flag it
 /// set. This port probes the same way, through a `debug_assert!`; the answer is
 /// therefore `true` exactly in a build with debug assertions on, which is where
 /// this crate's own `debug_assert!`s run.
@@ -5393,7 +5393,7 @@ impl crate::index::point_values::IntersectVisitor for VerifyPointsVisitor {
     /// (`CheckIndex.java:3167-3246`): records the cell's bounds for `visit`,
     /// checks that the cell is well formed and inside the global bounds, and
     /// claims the query crosses every cell, so that the codec hands every
-    /// point to [`visit_with_value`](Self::visit_with_value).
+    /// point to [`visit_with_value`](crate::index::point_values::IntersectVisitor::visit_with_value).
     fn compare(
         &self,
         min_packed_value: &[u8],

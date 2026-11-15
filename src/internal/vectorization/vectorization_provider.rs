@@ -131,7 +131,7 @@ pub const VALID_CALLERS: &[&str] = &[
 ///
 /// `org.apache.lucene.tests.util.TestSysoutsLimits`, the last of Lucene's valid
 /// callers, is a class of the test framework with no counterpart in this crate;
-/// [`TEST_DIR`] stands in for it, exactly as
+/// `TEST_DIR` stands in for it, exactly as
 /// [`TestSecrets`](crate::internal::tests_hooks::TestSecrets) substitutes a
 /// directory for Lucene's test-framework package.
 pub const VALID_CALLER_FILES: &[&str] = &[

@@ -182,7 +182,7 @@ impl<T: LeafReader> AsIndexReader for T {
 /// One inherited member is answered by that blanket implementation rather than
 /// declared here. Equivalent to `LeafReader.getContext()` — which Java declares
 /// `final`, returning the `LeafReaderContext` the reader built for itself — is
-/// [`IndexReader::get_context`](crate::index::index_reader::IndexReader::get_context),
+/// [`IndexReader::get_context`],
 /// whose body is `build_context(...)`; the `build_context` in
 /// `impl<T: LeafReader> IndexReader for T` below is the one that builds a
 /// `LeafReaderContext`, so every leaf answers `getContext()` exactly as Java's
@@ -396,7 +396,7 @@ pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
         Ok(None)
     }
 
-    /// Returns a postings enum with [`POSTINGS_ENUM_FREQS`].
+    /// Returns a postings enum with [`POSTINGS_ENUM_FREQS`](crate::index::POSTINGS_ENUM_FREQS).
     fn postings_default(&self, term: &Term) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.postings(term, crate::index::POSTINGS_ENUM_FREQS)
     }

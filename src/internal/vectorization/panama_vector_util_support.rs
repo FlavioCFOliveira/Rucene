@@ -22,7 +22,7 @@ static HAS_FAST_VECTOR_FMA: LazyLock<bool> = LazyLock::new(Constants::has_fast_v
 static HAS_FAST_COMPRESS_MASK_CAST: LazyLock<bool> =
     LazyLock::new(Constants::has_fast_compress_mask_cast);
 
-/// Whether the vector form of [`fma_vec`] fuses: `Constants.HAS_FAST_VECTOR_FMA`.
+/// Whether the vector form of `fma_vec` fuses: `Constants.HAS_FAST_VECTOR_FMA`.
 pub fn use_vector_fma() -> bool {
     *HAS_FAST_VECTOR_FMA
 }
@@ -330,9 +330,9 @@ fn int4_lanes(limit: usize, lane: impl Fn(usize) -> (i16, i16)) -> i32 {
 /// `Constants.HAS_FAST_COMPRESS_MASK_CAST` for `filterByScore`), the species
 /// lane counts, the loop bounds, the unrolling, the per-lane accumulators and
 /// the scalar tails. The vectors are fixed-width lane arrays
-/// ([`FloatVector`]) whose lanes compute what Java's lanes compute, and the
+/// (`FloatVector`) whose lanes compute what Java's lanes compute, and the
 /// float reductions use the order HotSpot's C2 uses
-/// ([`FloatVector::reduce_add`]), so float results are Java's bit for bit
+/// (`FloatVector::reduce_add`), so float results are Java's bit for bit
 /// under the same gate values.
 ///
 /// # Divergence from Lucene 10.5.0: the overloads unify

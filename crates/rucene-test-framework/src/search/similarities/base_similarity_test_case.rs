@@ -17,7 +17,7 @@
 
 //! Port of `org.apache.lucene.tests.search.similarities.BaseSimilarityTestCase`:
 //! abstract class to do basic tests for a similarity. NOTE: This test focuses
-//! on the similarity impl, nothing else. The [stretch] goal is for this test
+//! on the similarity impl, nothing else. The \[stretch\] goal is for this test
 //! to be so thorough in testing a new Similarity that if this test passes,
 //! then all Lucene tests should also pass. Ie, if there is some bug in a
 //! given Similarity that this test fails to catch then this test needs to be

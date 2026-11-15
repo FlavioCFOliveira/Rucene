@@ -648,6 +648,25 @@ fn consume_token<P: SimpleQueryParserOps + ?Sized>(
     Ok(())
 }
 
+/// The `ClassCastException` of the cast `(BooleanQuery) state.top`
+/// (`SimpleQueryParser.java:481`), with JDK 25's message
+/// ([`class_cast_message`](crate::jdk::class::class_cast_message)).
+///
+/// Lucene never reaches it: `currentOperation` is never null at that point
+/// (`SimpleQueryParser.java:466-468`), so `previousOperation ==
+/// currentOperation` only after an earlier `addClause` made `state.top` a
+/// `BooleanQuery` (`SimpleQueryParser.java:474-482`).
+fn boolean_query_class_cast(top: &dyn Query) -> LuceneError {
+    LuceneError::from(LuceneErrorKind::Unchecked {
+        class: "java.lang.ClassCastException",
+        message: Some(crate::jdk::class::class_cast_message(
+            top.java_class_name(),
+            "org.apache.lucene.search.BooleanQuery",
+        )),
+        cause: None,
+    })
+}
+
 /// Adds a clause to the end of a copy of `bq`.
 ///
 /// Equivalent to the private static `addClause(BooleanQuery, Query,
@@ -711,14 +730,7 @@ fn build_query_tree<P: SimpleQueryParserOps + ?Sized>(
             // reset all of the state for reuse
             // `(BooleanQuery) state.top`
             let Some(bq) = top.as_any().downcast_ref::<BooleanQuery>() else {
-                return Err(LuceneError::from(LuceneErrorKind::Unchecked {
-                    class: "java.lang.ClassCastException",
-                    message: Some(format!(
-                        "class {} cannot be cast to class org.apache.lucene.search.BooleanQuery",
-                        top.java_class_name()
-                    )),
-                    cause: None,
-                }));
+                return Err(boolean_query_class_cast(top.as_ref()));
             };
             state.top = Some(Arc::new(add_clause(bq, branch, current_operation)?));
             state.previous_operation = state.current_operation;
@@ -783,4 +795,32 @@ fn token_finished<P: SimpleQueryParserOps + ?Sized>(this: &P, state: &State<'_>)
         || (c == u(')') && has(this, PRECEDENCE_OPERATORS))
         || ((c == u(' ') || c == u('\t') || c == u('\n') || c == u('\r'))
             && has(this, WHITESPACE_OPERATOR))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The cast failure carries JDK 25's message with its module suffix, as
+    /// a JDK 25.0.5 probe prints it for two classes of the Lucene jars on the
+    /// class path.
+    #[test]
+    fn boolean_query_class_cast_has_the_jdk_25_message() {
+        let err = boolean_query_class_cast(&MatchAllDocsQuery::instance());
+        match err.kind() {
+            LuceneErrorKind::Unchecked { class, message, .. } => {
+                assert_eq!(*class, "java.lang.ClassCastException");
+                assert_eq!(
+                    message.as_deref(),
+                    Some(
+                        "class org.apache.lucene.search.MatchAllDocsQuery cannot be cast to class \
+                         org.apache.lucene.search.BooleanQuery \
+                         (org.apache.lucene.search.MatchAllDocsQuery and \
+                         org.apache.lucene.search.BooleanQuery are in unnamed module of loader 'app')"
+                    )
+                );
+            }
+            other => panic!("expected a ClassCastException, found {other:?}"),
+        }
+    }
 }

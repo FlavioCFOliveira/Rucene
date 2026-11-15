@@ -5,7 +5,7 @@
 //! | [`SloppyMath`] | `SloppyMath` |
 //!
 //! The lookup tables are seeded at first use from
-//! [`StrictMath`](crate::util::strict_math::StrictMath) `sin`, `cos`, `asin`
+//! [`StrictMath`] `sin`, `cos`, `asin`
 //! and `sqrt`, as Java's static initialiser seeds them from
 //! `java.lang.StrictMath` (`SloppyMath.java:239`, `285-286`, `306-308`), whose
 //! fdlibm algorithms give the same bits on every platform.

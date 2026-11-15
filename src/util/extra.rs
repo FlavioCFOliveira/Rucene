@@ -1514,7 +1514,7 @@ pub const PARSE_EXCEPTION: &str = "java.text.ParseException";
 /// A `java.text.ParseException` with its `errorOffset`.
 ///
 /// Equivalent to `new ParseException(message, errorOffset)`, carried as
-/// [`LuceneErrorKind::Throwable`](crate::error::LuceneErrorKind::Throwable);
+/// [`LuceneErrorKind::Throwable`];
 /// build one with [`ParseException::error`] and read it back with
 /// [`ParseException::of`]. The parse exceptions this crate raised before it
 /// existed are [`LuceneErrorKind::Unchecked`] values of class
@@ -1570,7 +1570,7 @@ impl crate::error::JavaThrowable for ParseException {
 
 /// Whether `error` is a `java.text.ParseException`: one built by
 /// [`ParseException::error`], or an
-/// [`LuceneErrorKind::Unchecked`](crate::error::LuceneErrorKind::Unchecked)
+/// [`LuceneErrorKind::Unchecked`]
 /// value of class [`PARSE_EXCEPTION`].
 pub fn is_parse_exception(error: &LuceneError) -> bool {
     match error.kind() {

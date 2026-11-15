@@ -308,9 +308,9 @@ impl Eq for MissingValue {}
 /// implementation inheritance, and [`Sort`] must still hold a homogeneous list,
 /// so the subclass identity travels with the sort field as this enum and the
 /// overridden behaviour is dispatched on it. The wrapper types
-/// [`SortedNumericSortField`](crate::search::SortedNumericSortField),
-/// [`SortedSetSortField`](crate::search::SortedSetSortField) and
-/// [`BinarySortField`](crate::search::BinarySortField) build and read back the
+/// [`SortedNumericSortField`],
+/// [`SortedSetSortField`] and
+/// [`BinarySortField`] build and read back the
 /// sort fields that carry each variant.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SortFieldKind {
@@ -539,7 +539,7 @@ impl SortField {
     /// Equivalent to `SortField.Provider.NAME`.
     pub const NAME: &'static str = "SortField";
 
-    /// Returns the [`IndexSorter`] that sorts a segment by this field, or
+    /// Returns the [`IndexSorter`](crate::index::index_sorter::IndexSorter) that sorts a segment by this field, or
     /// `None` when the field cannot sort an index.
     ///
     /// Equivalent to `SortField.getIndexSorter()`. `SCORE`, `DOC`, `CUSTOM`,
@@ -1181,9 +1181,9 @@ impl SortField {
 
     /// Builds a sort field carrying a subclass identity.
     ///
-    /// Used by [`SortedNumericSortField`](crate::search::SortedNumericSortField),
-    /// [`SortedSetSortField`](crate::search::SortedSetSortField) and
-    /// [`BinarySortField`](crate::search::BinarySortField), all of which pass
+    /// Used by [`SortedNumericSortField`],
+    /// [`SortedSetSortField`] and
+    /// [`BinarySortField`], all of which pass
     /// [`SortFieldType::Custom`] to the `SortField` constructor and then
     /// override the behaviour selected by `kind`.
     ///

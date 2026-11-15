@@ -175,7 +175,7 @@ impl<V> CharArrayMap<V> {
     /// Returns the hash Lucene computes for a key.
     ///
     /// Equivalent to `CharArrayMap.getHashCode(char[], int, int)`
-    /// (`CharArrayMap.java:266-279`), the hash [`get_slot`](Self::get_slot)
+    /// (`CharArrayMap.java:266-279`), the hash `get_slot`
     /// probes from: when the map ignores case, a `31 * h + c` walk over the
     /// code points (`Character.codePointAt(text, i, stop)`, so a lone
     /// surrogate is a code point of its own), each replaced by

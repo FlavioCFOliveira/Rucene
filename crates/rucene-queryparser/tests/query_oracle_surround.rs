@@ -42,12 +42,16 @@ use query_oracle::{
 use randomizedtesting::jdk::random::{JdkRandom, Random};
 use rucene_queryparser::surround::parser::query_parser::QueryParser;
 use rucene_queryparser::surround::query::basic_query_factory::BasicQueryFactory;
+use rucene_queryparser::surround::query::distance_query::DistanceQuery;
+use rucene_queryparser::surround::query::or_query::OrQuery;
 use rucene_queryparser::surround::query::srnd_query::SrndQuery;
 
 const SEED: i64 = 0x0492_5352;
 
 const SQP: &str = "org.apache.lucene.queryparser.surround.parser.QueryParser";
 const BQF: &str = "org.apache.lucene.queryparser.surround.query.BasicQueryFactory";
+const OR_QUERY: &str = "org.apache.lucene.queryparser.surround.query.OrQuery";
+const DISTANCE_QUERY: &str = "org.apache.lucene.queryparser.surround.query.DistanceQuery";
 
 /// The concrete `SrndQuery` classes the parser builds.
 const SRND_CLASSES: [&str; 8] = [
@@ -73,6 +77,25 @@ fn registry() -> Registry {
             Arc::new(BasicQueryFactory::with_max_basic_queries(a[0].as_int())),
         ))
     });
+    // The public constructors, for trees the parser never builds.
+    r.new_fn(OR_QUERY, 3, |a| {
+        let q: Arc<dyn SrndQuery> = Arc::new(OrQuery::new(
+            srnd_queries(&a[0]),
+            a[1].as_bool(),
+            a[2].as_str(),
+        )?);
+        Ok(Value::object(OR_QUERY, q))
+    });
+    r.new_fn(DISTANCE_QUERY, 5, |a| {
+        let q: Arc<dyn SrndQuery> = Arc::new(DistanceQuery::new(
+            srnd_queries(&a[0]),
+            a[1].as_bool(),
+            a[2].as_int(),
+            a[3].as_str(),
+            a[4].as_bool(),
+        )?);
+        Ok(Value::object(DISTANCE_QUERY, q))
+    });
     for class in SRND_CLASSES {
         r.call_fn(class, "makeLuceneQueryField", 2, |q, a| {
             let q = q.get::<Arc<dyn SrndQuery>>();
@@ -86,6 +109,14 @@ fn registry() -> Registry {
         });
     }
     r
+}
+
+/// The `List<SrndQuery>` argument of a surround constructor.
+fn srnd_queries(list: &Value) -> Vec<Arc<dyn SrndQuery>> {
+    list.as_values()
+        .iter()
+        .map(|v| v.get::<Arc<dyn SrndQuery>>())
+        .collect()
 }
 
 /// Fixed edge cases: the queries of Lucene's surround tests, operators
@@ -231,6 +262,61 @@ fn surround_queries_search_like_lucene_1() {
 #[test]
 fn surround_queries_search_like_lucene_2() {
     search_shard(2);
+}
+
+/// The `ClassCastException` of the casts `(DistanceSubQuery) q` in
+/// `OrQuery.addSpanQueries` (`OrQuery.java:60`) and
+/// `DistanceQuery.getSpanNearQuery` (`DistanceQuery.java:81,86`). The parser
+/// rejects such trees (`QueryParser.checkDistanceSubQueries`), so they are
+/// built with the public constructors: a distance query whose subquery is an
+/// `OrQuery` holding a `NotQuery`, and one whose subquery is the `NotQuery`
+/// itself. Both throw when the rewrite builds the span query, with JDK 25's
+/// message and its module suffix.
+#[test]
+fn surround_distance_cast_failures_match_lucene() {
+    let index = OracleIndex::standard(SEED, 60);
+    let mut oracle = SearchOracle::new(&index, registry());
+    let parse = |q: &str| expr("static", &[SQP, "parse", &lit(q)]);
+    let or_with_not = expr(
+        "new",
+        &[
+            OR_QUERY,
+            &expr("list", &[&parse("alpha NOT bravo"), &parse("charlie")]),
+            "z:true",
+            &lit("OR"),
+        ],
+    );
+    let subqueries = [
+        expr("list", &[&or_with_not, &parse("delta")]),
+        expr("list", &[&parse("alpha NOT bravo"), &parse("delta")]),
+        expr("list", &[&parse("delta"), &parse("alpha NOT bravo")]),
+    ];
+    for (i, list) in subqueries.iter().enumerate() {
+        let distance = expr(
+            "new",
+            &[DISTANCE_QUERY, list, "z:true", "i:1", &lit("W"), "z:true"],
+        );
+        let q = expr(
+            "call",
+            &[
+                "makeLuceneQueryField",
+                &distance,
+                &lit("body"),
+                &expr("new", &[BQF, "i:1024"]),
+            ],
+        );
+        oracle.query(&format!("c{i}"), &q);
+    }
+    let java = oracle.java_dump();
+    let rust = oracle.rust_dump();
+    let casts = java
+        .lines()
+        .filter(|l| l.starts_with("error\t") && l.contains("java.lang.ClassCastException"))
+        .count();
+    assert_eq!(casts, 3, "each tree must throw the cast exception:\n{java}");
+    if let Err(diff) = compare(&java, &rust) {
+        panic!("surround cast-failure parity with Lucene 10.5.0 fails:\n{diff}");
+    }
 }
 
 #[test]

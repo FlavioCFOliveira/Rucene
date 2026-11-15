@@ -18,7 +18,7 @@
 //! Port of `org.apache.lucene.tests.index.BasePostingsFormatTestCase`:
 //! abstract class to do basic tests for a postings format. NOTE: this test
 //! focuses on the postings (docs/freqs/positions/payloads/offsets) impl, not
-//! the terms dict. The [stretch] goal is for this test to be so thorough in
+//! the terms dict. The \[stretch\] goal is for this test to be so thorough in
 //! testing a new PostingsFormat that if this test passes, then all Lucene
 //! tests should also pass. Ie, if there is some bug in a given PostingsFormat
 //! that this test fails to catch then this test needs to be improved!

@@ -3511,7 +3511,7 @@ macro_rules! impl_shape_query_exec {
             /// Equivalent to `SpatialQuery.hashCode()` (`SpatialQuery.java`):
             /// `classHash()`, `field.hashCode()`, `queryRelation.hashCode()`
             /// and `Arrays.hashCode(geometries)`, followed by the subclass's
-            /// own additions ([`ShapeQueryHashTail`]).
+            /// own additions (`ShapeQueryHashTail`).
             fn query_hash(&self) -> i32 {
                 let hash = spatial_query_hash_code(
                     self.class_hash(),

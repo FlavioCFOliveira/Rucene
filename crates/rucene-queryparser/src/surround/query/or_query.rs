@@ -127,13 +127,14 @@ impl DistanceSubQuery for OrQuery {
     }
 }
 
-/// The `ClassCastException` of the cast `(DistanceSubQuery) q`.
+/// The `ClassCastException` of the cast `(DistanceSubQuery) q`, with JDK
+/// 25's message ([`class_cast_message`](crate::jdk::class::class_cast_message)).
 pub(crate) fn class_cast(q: &dyn SrndQuery) -> LuceneError {
     LuceneError::from(rucene::error::LuceneErrorKind::Unchecked {
         class: "java.lang.ClassCastException",
-        message: Some(format!(
-            "class {} cannot be cast to class org.apache.lucene.queryparser.surround.query.DistanceSubQuery",
-            q.java_class_name()
+        message: Some(crate::jdk::class::class_cast_message(
+            q.java_class_name(),
+            "org.apache.lucene.queryparser.surround.query.DistanceSubQuery",
         )),
         cause: None,
     })

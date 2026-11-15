@@ -42,6 +42,20 @@ DECL_HEAD = (r'(?:' + ANNOTATION + r'\s*'
 
 args = None
 
+
+def is_exception_decl(name, extends_clause):
+    """Whether a class declaration is an exception: by the name convention
+    (`...Exception`, `...Error`) or by a superclass naming `Throwable`,
+    `Exception` or `Error` -- the rule `discover` applies to a top-level type,
+    shared with the nested-type extractor of `enrich_lucene_kg.py`."""
+    if name.endswith('Exception') or name.endswith('Error'):
+        return True
+    if not extends_clause:
+        return False
+    ext = extends_clause.strip().split()[0].split('<')[0].strip()
+    return 'Throwable' in ext or 'Exception' in ext or 'Error' in ext
+
+
 def clean_for_brace_count(text):
     """Return a copy of text with strings and comments replaced by spaces,
     so that brace counting is not confused by their contents."""

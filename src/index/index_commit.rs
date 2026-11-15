@@ -328,7 +328,7 @@ fn rollback_all(objects: &[Option<&dyn TwoPhaseCommit>]) {
 /// runtime failures and `Error`s — triggers the rollback of every object.
 ///
 /// Rucene's guarantee covers every failure reported as
-/// [`Err`](std::result::Result::Err), which is the counterpart of Java's checked
+/// [`Err`], which is the counterpart of Java's checked
 /// `IOException` and the only failure channel the [`TwoPhaseCommit`] trait
 /// defines. It does **not** cover a `panic!` inside an implementation: the
 /// unwind passes straight through `execute`, so no object is rolled back.

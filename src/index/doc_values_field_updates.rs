@@ -403,7 +403,7 @@ impl DocValuesFieldUpdates {
     /// # Errors
     ///
     /// `IllegalState` when this buffer is already finished or already holds
-    /// `Integer.MAX_VALUE` entries ([`add_internal`](Self::add_internal)).
+    /// `Integer.MAX_VALUE` entries (`add_internal`).
     ///
     /// # Panics
     ///
@@ -436,7 +436,7 @@ impl DocValuesFieldUpdates {
     /// # Errors
     ///
     /// `IllegalState` when this buffer is already finished or already holds
-    /// `Integer.MAX_VALUE` entries ([`add_internal`](Self::add_internal)).
+    /// `Integer.MAX_VALUE` entries (`add_internal`).
     ///
     /// # Panics
     ///
@@ -474,7 +474,7 @@ impl DocValuesFieldUpdates {
     ///
     /// # Errors
     ///
-    /// As [`add_internal`](Self::add_internal).
+    /// As `add_internal`.
     pub fn add_doc(&mut self, doc: i32) -> Result<usize> {
         self.add_internal(doc, HAS_VALUE_MASK)
     }
@@ -485,7 +485,7 @@ impl DocValuesFieldUpdates {
     ///
     /// # Errors
     ///
-    /// As [`add_internal`](Self::add_internal).
+    /// As `add_internal`.
     ///
     pub fn reset(&mut self, doc: i32) -> Result<()> {
         // `SingleValueNumericDocValuesFieldUpdates.reset(int)` marks the

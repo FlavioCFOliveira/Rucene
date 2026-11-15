@@ -314,14 +314,23 @@ def package_root(module, package):
     return max(hits, key=len) if hits else None
 
 
+def snake_case(segment):
+    """A Java package segment as the crate names its module: `complexPhrase`
+    -> `complex_phrase` (the crate's `src/complex_phrase/`)."""
+    s = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", segment)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s).lower()
+
+
 def crate_destination(module, package):
     """The crate directory a type of `package` is ported into (`src/` mirrors
-    the package below the module's `packageRoot`)."""
+    the package below the module's `packageRoot`, each segment snake-cased as
+    a Rust module name: `queryparser.complexPhrase` is `src/complex_phrase/`)."""
     m = BY_NAME[module]
     root = package_root(module, package)
     rel = package[len(root):].lstrip(".") if root else package
     base = "src" if m["cratePath"] == "." else f"{m['cratePath']}/src"
-    return "/".join([base] + ([rel.replace(".", "/")] if rel else [])) + "/"
+    segs = [snake_case(p) for p in rel.split(".")] if rel else []
+    return "/".join([base] + segs) + "/"
 
 
 REQUIRES_RE = re.compile(r"(?<![\w.])requires\s+(?:(?:transitive|static)\s+)*([\w.]+)\s*;")

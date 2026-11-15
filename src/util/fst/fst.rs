@@ -447,7 +447,7 @@ impl<A: OutputToString, B: OutputToString> OutputToString for super::pair_output
 }
 
 /// Equivalent to `FST.Arc.toString` (`FST.java:236-273`); outputs are
-/// appended through their Java `toString()` form ([`OutputToString`]).
+/// appended through their Java `toString()` form (`OutputToString`).
 impl<T: OutputToString> fmt::Display for Arc<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, " target={}", self.target())?;

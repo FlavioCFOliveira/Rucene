@@ -17,7 +17,7 @@
 
 //! Port of `org.apache.lucene.tests.index.BasePointsFormatTestCase`:
 //! abstract class to do basic tests for a points format. NOTE: This test
-//! focuses on the points impl, nothing else. The [stretch] goal is for this
+//! focuses on the points impl, nothing else. The \[stretch\] goal is for this
 //! test to be so thorough in testing a new PointsFormat that if this test
 //! passes, then all Lucene tests should also pass. Ie, if there is some bug
 //! in a given PointsFormat that this test fails to catch then this test needs

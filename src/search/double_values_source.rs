@@ -180,7 +180,7 @@ pub fn get_sort_field(source: Arc<dyn DoubleValuesSource>, reverse: bool) -> Res
 /// **Divergence from Lucene 10.5.0.** `DoubleValuesSortField` is a `SortField`
 /// subclass that only overrides `needsScores`, `toString`, `setMissingValue`
 /// and `rewrite`. This port has no `SortField` subclassing, so the sort field
-/// is a plain [`SortFieldType::Custom`] sort over the
+/// is a plain [`SortFieldType::Custom`](crate::search::sort::SortFieldType::Custom) sort over the
 /// [`DoubleValuesComparatorSource`] Java installs, which is what decides the
 /// order. `needsScores` and `rewrite` are Java's: [`SortField::needs_scores`]
 /// and [`SortField::rewrite`] recognise the comparator source and answer the

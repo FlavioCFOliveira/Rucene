@@ -2946,7 +2946,7 @@ impl fmt::Display for DenseLiveDocs {
     ///
     /// The deletion rate goes through `String.format(Locale.ROOT, "%.2f%%",
     /// ...)`, whose ties round away from zero; see
-    /// [`java_fmt::format_fixed`].
+    /// `java_fmt::format_fixed`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,

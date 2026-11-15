@@ -106,7 +106,7 @@
 //! and partitions the points in place instead of streaming them through
 //! `BKDWriter.add` and re-sorting them offline
 //! (`Lucene90PointsWriter.java:157-167`). This crate takes that path:
-//! [`crate::codecs::Lucene90PointsWriter`] asks the tree for
+//! [`Lucene90PointsWriter`](crate::codecs::lucene90::Lucene90PointsWriter) asks the tree for
 //! [`PointTree::as_mutable`] and hands it to `BKDWriter::write_field`, which
 //! forks on `numDims` exactly as Java's does.
 //!
@@ -144,7 +144,7 @@
 //!
 //! `BKDWriter::build` is split into `build_mutable` and `build_offline`,
 //! mirroring Java's two overloads, which are **not** the same algorithm. The
-//! offline half is the one [`crate::codecs::Lucene90PointsWriter`] falls back
+//! offline half is the one [`Lucene90PointsWriter`](crate::codecs::lucene90::Lucene90PointsWriter) falls back
 //! to for a tree that is not mutable; what it still owes Lucene is declared on
 //! the method.
 //!

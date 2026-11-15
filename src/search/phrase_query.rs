@@ -72,7 +72,7 @@ pub fn term_positions_cost(terms_enum: &mut dyn TermsEnum) -> Result<f32> {
 /// wrapping it otherwise. Rust cannot alias one object through two fields, so
 /// this type keeps a single [`SharedPostings`] that answers both roles: the
 /// non-`TOP_SCORES` case wraps the postings in a
-/// [`SlowImpactsEnum`](crate::index::SlowImpactsEnum) first, which delegates
+/// [`SlowImpactsEnum`] first, which delegates
 /// every postings method to it, so the enum the matcher reads positions from is
 /// the one Java reads them from.
 #[derive(Debug)]

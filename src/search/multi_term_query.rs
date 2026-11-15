@@ -488,7 +488,7 @@ impl RewriteMethod for TopTermsScoringBooleanQueryRewrite {
 ///
 /// Equivalent to that class's `getTopLevelBuilder`, `addClause` and `build`
 /// overrides taken together; see
-/// [`TopLevelBuilder`](crate::search::TopLevelBuilder) for why they live on the
+/// [`TopLevelBuilder`] for why they live on the
 /// builder here.
 #[derive(Debug, Default)]
 pub struct BoostOnlyBooleanQueryBuilder {
@@ -613,7 +613,7 @@ impl Default for BlendedFreqScoringBuilder {
 
 impl BlendedFreqScoringBuilder {
     /// Creates a builder whose blended query uses
-    /// [`boolean_rewrite`](crate::search::boolean_rewrite).
+    /// [`boolean_rewrite`].
     pub fn new() -> Self {
         let mut builder = BlendedTermQueryBuilder::new();
         builder.set_rewrite_method(boolean_rewrite());
