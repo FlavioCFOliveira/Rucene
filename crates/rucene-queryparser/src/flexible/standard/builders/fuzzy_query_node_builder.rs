@@ -15,10 +15,54 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FuzzyQueryNodeBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.builders`.
+//! Port of `FuzzyQueryNodeBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.builders`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::{LuceneError, Result};
+use rucene::index::Term;
+use rucene::search::fuzzy_query::FuzzyQuery;
+use rucene::search::Query;
+
+use super::standard_query_builder::{cast, multi_term_field, StandardQueryBuilder};
+use crate::flexible::core::nodes::fuzzy_query_node::{FuzzyQueryNode, FUZZY_QUERY_NODE_CLASS};
+use crate::flexible::core::nodes::query_node::{QueryNode, QueryNodeRef};
+
+/// Builds a `FuzzyQuery` object from a `FuzzyQueryNode` object.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.builders.FuzzyQueryNodeBuilder`; ported by rmp task #490.
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.builders.FuzzyQueryNodeBuilder`.
+#[derive(Debug, Default)]
 pub struct FuzzyQueryNodeBuilder;
+
+impl FuzzyQueryNodeBuilder {
+    /// Equivalent to `new FuzzyQueryNodeBuilder()`.
+    pub fn new() -> Self {
+        // empty constructor
+        Self
+    }
+}
+
+impl StandardQueryBuilder for FuzzyQueryNodeBuilder {
+    fn build(&self, query_node: &QueryNodeRef) -> Result<Option<Arc<dyn Query>>> {
+        let fuzzy_node: &FuzzyQueryNode = cast(query_node, &FUZZY_QUERY_NODE_CLASS)?;
+        let field_node = fuzzy_node
+            .as_field_query_node()
+            .ok_or_else(LuceneError::null_pointer)?;
+        let text = field_node
+            .get_text_as_string()
+            .ok_or_else(LuceneError::null_pointer)?;
+        // `text.codePointCount(0, text.length())`
+        let num_edits =
+            FuzzyQuery::float_to_edits(fuzzy_node.get_similarity(), text.chars().count() as i32);
+        // `new Term(field, text)`, then the `MultiTermQuery` constructor's
+        // check of `term.field()`.
+        let field = multi_term_field(field_node.get_field_as_string())?;
+        let term = Term::from_text(field, &text);
+        Ok(Some(Arc::new(FuzzyQuery::with_prefix_length(
+            term,
+            num_edits,
+            fuzzy_node.get_prefix_length(),
+        )?)))
+    }
+}

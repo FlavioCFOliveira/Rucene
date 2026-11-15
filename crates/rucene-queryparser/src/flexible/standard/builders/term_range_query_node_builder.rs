@@ -15,10 +15,83 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `TermRangeQueryNodeBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.builders`.
+//! Port of `TermRangeQueryNodeBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.builders`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::{LuceneError, Result};
+use rucene::search::term_range_query::TermRangeQuery;
+use rucene::search::Query;
+
+use super::standard_query_builder::{
+    cast, multi_term_field, rewrite_method_of, StandardQueryBuilder,
+};
+use crate::flexible::core::nodes::field_query_node::FIELD_QUERY_NODE_CLASS;
+use crate::flexible::core::nodes::query_node::{class_cast, QueryNodeRef};
+use crate::flexible::core::util::string_utils::StringUtils;
+use crate::flexible::standard::nodes::term_range_query_node::{
+    TermRangeQueryNode, TERM_RANGE_QUERY_NODE_CLASS,
+};
+
+/// Builds a `TermRangeQuery` object from a `TermRangeQueryNode` object.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.builders.TermRangeQueryNodeBuilder`; ported by rmp task #490.
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.builders.TermRangeQueryNodeBuilder`.
+#[derive(Debug, Default)]
 pub struct TermRangeQueryNodeBuilder;
+
+impl TermRangeQueryNodeBuilder {
+    /// Equivalent to `new TermRangeQueryNodeBuilder()`.
+    pub fn new() -> Self {
+        // empty constructor
+        Self
+    }
+}
+
+impl StandardQueryBuilder for TermRangeQueryNodeBuilder {
+    fn build(&self, query_node: &QueryNodeRef) -> Result<Option<Arc<dyn Query>>> {
+        let range_node: &TermRangeQueryNode = cast(query_node, &TERM_RANGE_QUERY_NODE_CLASS)?;
+        let range = range_node.abstract_range_query_node();
+        let upper_bound = range.get_upper_bound()?;
+        let upper = upper_bound
+            .as_field_query_node()
+            .ok_or_else(|| class_cast(upper_bound.as_ref(), &FIELD_QUERY_NODE_CLASS))?;
+        let lower_bound = range.get_lower_bound()?;
+        let lower = lower_bound
+            .as_field_query_node()
+            .ok_or_else(|| class_cast(lower_bound.as_ref(), &FIELD_QUERY_NODE_CLASS))?;
+
+        let field = StringUtils::to_string(range.get_field()?.as_ref());
+        let mut lower_text = lower.get_text_as_string();
+        let mut upper_text = upper.get_text_as_string();
+
+        if lower_text
+            .as_deref()
+            .ok_or_else(LuceneError::null_pointer)?
+            .is_empty()
+        {
+            lower_text = None;
+        }
+
+        if upper_text
+            .as_deref()
+            .ok_or_else(LuceneError::null_pointer)?
+            .is_empty()
+        {
+            upper_text = None;
+        }
+
+        let method = rewrite_method_of(query_node.as_ref())?;
+
+        Ok(Some(Arc::new(
+            TermRangeQuery::new_string_range_with_rewrite_method(
+                multi_term_field(field)?,
+                lower_text.as_deref(),
+                upper_text.as_deref(),
+                range.is_lower_inclusive(),
+                range.is_upper_inclusive(),
+                method,
+            )?,
+        )))
+    }
+}

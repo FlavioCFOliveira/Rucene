@@ -15,23 +15,26 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `EscapeQuerySyntaxImpl.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.parser`, with the
-//! members ported early by rmp task #487 (the constructor and `escape`, which
-//! `QueryTreeBuilder` and the query nodes call), as the rules of sprint 13
-//! port the members a task calls before their owner task runs.
+//! Port of `EscapeQuerySyntaxImpl.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.parser`.
+
+use std::sync::Arc;
 
 use rucene::error::{LuceneError, Result};
 
+use super::parse_exception::ParseException;
+use crate::flexible::core::messages::query_parser_messages::QueryParserMessages;
 use crate::flexible::core::parser::escape_query_syntax::{EscapeQuerySyntax, Type};
 use crate::flexible::core::util::unescaped_char_sequence::UnescapedCharSequence;
+use crate::flexible::messages::message_impl::MessageImpl;
 use crate::jdk::char_sequence::CharSequence;
 use crate::jdk::locale::Locale;
+use crate::jdk::object::JavaObject;
 use crate::jdk::string::to_lower_case;
 
-/// Java: `public class`.
+/// Implementation of [`EscapeQuerySyntax`] for the standard lucene syntax.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.parser.EscapeQuerySyntaxImpl`; ported by rmp task #489.
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.parser.EscapeQuerySyntaxImpl`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct EscapeQuerySyntaxImpl;
 
@@ -93,16 +96,12 @@ fn append_range(result: &mut Vec<u16>, s: &[u16], start: usize, end: usize) -> R
 
 impl EscapeQuerySyntaxImpl {
     /// Equivalent to `new EscapeQuerySyntaxImpl()`.
-    ///
-    /// Ported early by rmp task #487.
     pub fn new() -> Self {
         Self
     }
 
     /// Equivalent to the private static `escapeChar(CharSequence str, Locale
     /// locale)`.
-    ///
-    /// Ported early by rmp task #487.
     fn escape_char(str: Vec<u16>, locale: &Locale) -> Result<Vec<u16>> {
         if str.is_empty() {
             return Ok(str);
@@ -131,8 +130,6 @@ impl EscapeQuerySyntaxImpl {
 
     /// Equivalent to the private static `escapeQuoted(CharSequence str,
     /// Locale locale)`.
-    ///
-    /// Ported early by rmp task #487.
     fn escape_quoted(str: Vec<u16>, locale: &Locale) -> Result<Vec<u16>> {
         if str.is_empty() {
             return Ok(str);
@@ -151,8 +148,6 @@ impl EscapeQuerySyntaxImpl {
 
     /// Equivalent to the private static `escapeTerm(CharSequence term,
     /// Locale locale)`.
-    ///
-    /// Ported early by rmp task #487.
     fn escape_term(term: Vec<u16>, locale: &Locale) -> Result<Vec<u16>> {
         if term.is_empty() {
             return Ok(term);
@@ -183,8 +178,6 @@ impl EscapeQuerySyntaxImpl {
     /// locale)`, over UTF-16 units: the occurrences are searched in the
     /// lower-cased string and copied from the original one at the same
     /// indexes.
-    ///
-    /// Ported early by rmp task #487.
     fn escape_ignoring_case(
         string: Vec<u16>,
         sequence1: &[u16],
@@ -260,8 +253,6 @@ impl EscapeQuerySyntaxImpl {
     ///
     /// Equivalent to the private static `escapeWhiteChar(CharSequence str,
     /// Locale locale)`.
-    ///
-    /// Ported early by rmp task #487.
     fn escape_white_char(str: Vec<u16>, locale: &Locale) -> Result<Vec<u16>> {
         if str.is_empty() {
             return Ok(str);
@@ -279,12 +270,121 @@ impl EscapeQuerySyntaxImpl {
     }
 }
 
+impl EscapeQuerySyntaxImpl {
+    /// Returns a String where the escape char has been removed, or kept only
+    /// once if there was a double escape.
+    ///
+    /// Supports escaped Unicode characters, e.g. translates `\\u0041` to
+    /// `A`.
+    ///
+    /// Equivalent to the static `discardEscapeChar(CharSequence input)`.
+    ///
+    /// # Errors
+    ///
+    /// The `ParseException` `INVALID_SYNTAX_ESCAPE_UNICODE_TRUNCATION` of a
+    /// truncated `\\u` escape, `INVALID_SYNTAX_ESCAPE_CHARACTER` of a
+    /// trailing escape character, and the one of
+    /// `hexToInt`.
+    pub fn discard_escape_char(input: &CharSequence) -> Result<UnescapedCharSequence> {
+        let input_length = input.length();
+        // Create char array to hold unescaped char sequence
+        let mut output = vec![0u16; input_length];
+        let mut was_escaped = vec![false; input_length];
+
+        // The length of the output can be less than the input
+        // due to discarded escape chars. This variable holds
+        // the actual length of the output
+        let mut length = 0usize;
+
+        // We remember whether the last processed character was
+        // an escape character
+        let mut last_char_was_escape_char = false;
+
+        // The multiplier the current unicode digit must be multiplied with.
+        // E.g. the first digit must be multiplied with 16^3, the second with 16^2...
+        let mut code_point_multiplier: i32 = 0;
+
+        // Used to calculate the codepoint of the escaped unicode character
+        let mut code_point: i32 = 0;
+
+        for i in 0..input_length {
+            let cur_char = input.char_at(i)?;
+            if code_point_multiplier > 0 {
+                code_point = code_point
+                    .wrapping_add(Self::hex_to_int(cur_char)?.wrapping_mul(code_point_multiplier));
+                code_point_multiplier = ((code_point_multiplier as u32) >> 4) as i32;
+                if code_point_multiplier == 0 {
+                    output[length] = code_point as u16;
+                    length += 1;
+                    code_point = 0;
+                }
+            } else if last_char_was_escape_char {
+                if cur_char == u16::from(b'u') {
+                    // found an escaped unicode character
+                    code_point_multiplier = 16 * 16 * 16;
+                } else {
+                    // this character was escaped
+                    output[length] = cur_char;
+                    was_escaped[length] = true;
+                    length += 1;
+                }
+                last_char_was_escape_char = false;
+            } else if cur_char == u16::from(b'\\') {
+                last_char_was_escape_char = true;
+            } else {
+                output[length] = cur_char;
+                length += 1;
+            }
+        }
+
+        if code_point_multiplier > 0 {
+            return Err(ParseException::with_message(Arc::new(MessageImpl::new(
+                QueryParserMessages::INVALID_SYNTAX_ESCAPE_UNICODE_TRUNCATION.get(),
+            )))
+            .error());
+        }
+
+        if last_char_was_escape_char {
+            return Err(ParseException::with_message(Arc::new(MessageImpl::new(
+                QueryParserMessages::INVALID_SYNTAX_ESCAPE_CHARACTER.get(),
+            )))
+            .error());
+        }
+
+        UnescapedCharSequence::new(&output, &was_escaped, 0, length)
+    }
+
+    /// Returns the numeric value of the hexadecimal character
+    ///
+    /// Equivalent to the private static `hexToInt(char c)`.
+    ///
+    /// # Errors
+    ///
+    /// The `ParseException` `INVALID_SYNTAX_ESCAPE_NONE_HEX_UNICODE` (with
+    /// the character) of a character that is not a hexadecimal digit.
+    fn hex_to_int(c: u16) -> Result<i32> {
+        if (u16::from(b'0')..=u16::from(b'9')).contains(&c) {
+            Ok(i32::from(c - u16::from(b'0')))
+        } else if (u16::from(b'a')..=u16::from(b'f')).contains(&c) {
+            Ok(i32::from(c - u16::from(b'a')) + 10)
+        } else if (u16::from(b'A')..=u16::from(b'F')).contains(&c) {
+            Ok(i32::from(c - u16::from(b'A')) + 10)
+        } else {
+            Err(
+                ParseException::with_message(Arc::new(MessageImpl::with_args(
+                    QueryParserMessages::INVALID_SYNTAX_ESCAPE_NONE_HEX_UNICODE.get(),
+                    vec![JavaObject::character(c)],
+                )))
+                .error(),
+            )
+        }
+    }
+}
+
 impl EscapeQuerySyntax for EscapeQuerySyntaxImpl {
     /// Equivalent to `escape(CharSequence text, Locale locale, Type type)`:
     /// the wildcards that were escaped and the backslashes escaped again,
     /// then the text escaped as a quoted string (`STRING`) or as a term.
-    ///
-    /// Ported early by rmp task #487.
     fn escape(
         &self,
         text: Option<&CharSequence>,

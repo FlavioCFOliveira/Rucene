@@ -388,4 +388,8 @@ impl QueryNodeProcessor for QueryNodeProcessorPipeline {
     fn get_query_config_handler(&self) -> Option<Arc<QueryConfigHandler>> {
         self.config()
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }

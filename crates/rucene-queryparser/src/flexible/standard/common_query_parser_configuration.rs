@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use rucene::analysis::Analyzer;
 use rucene::document::Resolution;
+use rucene::error::Result;
 use rucene::search::multi_term_query::RewriteMethod;
 
 use crate::jdk::locale::Locale;
@@ -33,7 +34,16 @@ use crate::jdk::time_zone::TimeZone;
 /// `org.apache.lucene.queryparser.flexible.standard.CommonQueryParserConfiguration`.
 /// Every classic parser implements it through
 /// [`QueryParserBaseOps`](crate::classic::query_parser_base::QueryParserBaseOps),
-/// as Java's `QueryParserBase` does.
+/// as Java's `QueryParserBase` does, and so does
+/// [`StandardQueryParser`](crate::flexible::standard::standard_query_parser::StandardQueryParser).
+/// Each method returns a [`Result`] for the unchecked exceptions an
+/// implementation throws (the `NullPointerException` of
+/// `StandardQueryParser` without a configuration handler). The locale, the
+/// time zone, the rewrite method and the date resolution are nullable
+/// references, `None` for Java's `null`, in the setters and the getters:
+/// `QueryParserBase` stores a `null` and fails where it uses it,
+/// `StandardQueryParser` unsets the configuration key
+/// (`AbstractQueryConfig.set`) and has no time zone until one is set.
 pub trait CommonQueryParserConfiguration {
     /// Set to `true` to allow leading wildcard characters.
     ///
@@ -44,7 +54,7 @@ pub trait CommonQueryParserConfiguration {
     /// Default: false.
     ///
     /// Equivalent to `setAllowLeadingWildcard(boolean)`.
-    fn set_allow_leading_wildcard(&mut self, allow_leading_wildcard: bool);
+    fn set_allow_leading_wildcard(&mut self, allow_leading_wildcard: bool) -> Result<()>;
 
     /// Set to `true` to enable position increments in result query.
     ///
@@ -55,12 +65,12 @@ pub trait CommonQueryParserConfiguration {
     /// Default: false.
     ///
     /// Equivalent to `setEnablePositionIncrements(boolean)`.
-    fn set_enable_position_increments(&mut self, enabled: bool);
+    fn set_enable_position_increments(&mut self, enabled: bool) -> Result<()>;
 
     /// See [`set_enable_position_increments`](Self::set_enable_position_increments).
     ///
     /// Equivalent to `getEnablePositionIncrements()`.
-    fn get_enable_position_increments(&self) -> bool;
+    fn get_enable_position_increments(&self) -> Result<bool>;
 
     /// By default, it uses `MultiTermQuery.CONSTANT_SCORE_BLENDED_REWRITE`
     /// when creating a prefix, wildcard and range queries. This
@@ -72,72 +82,75 @@ pub trait CommonQueryParserConfiguration {
     /// this change the rewrite method.
     ///
     /// Equivalent to `setMultiTermRewriteMethod(MultiTermQuery.RewriteMethod)`.
-    fn set_multi_term_rewrite_method(&mut self, method: Arc<dyn RewriteMethod>);
+    fn set_multi_term_rewrite_method(
+        &mut self,
+        method: Option<Arc<dyn RewriteMethod>>,
+    ) -> Result<()>;
 
     /// See [`set_multi_term_rewrite_method`](Self::set_multi_term_rewrite_method).
     ///
     /// Equivalent to `getMultiTermRewriteMethod()`.
-    fn get_multi_term_rewrite_method(&self) -> Arc<dyn RewriteMethod>;
+    fn get_multi_term_rewrite_method(&self) -> Result<Option<Arc<dyn RewriteMethod>>>;
 
     /// Set the prefix length for fuzzy queries. Default is 0.
     ///
     /// Equivalent to `setFuzzyPrefixLength(int)`.
-    fn set_fuzzy_prefix_length(&mut self, fuzzy_prefix_length: i32);
+    fn set_fuzzy_prefix_length(&mut self, fuzzy_prefix_length: i32) -> Result<()>;
 
     /// Set locale used by date range parsing.
     ///
     /// Equivalent to `setLocale(Locale)`.
-    fn set_locale(&mut self, locale: Locale);
+    fn set_locale(&mut self, locale: Option<Locale>) -> Result<()>;
 
     /// Returns current locale, allowing access by subclasses.
     ///
     /// Equivalent to `getLocale()`.
-    fn get_locale(&self) -> Locale;
+    fn get_locale(&self) -> Result<Option<Locale>>;
 
     /// Equivalent to `setTimeZone(TimeZone)`.
-    fn set_time_zone(&mut self, time_zone: TimeZone);
+    fn set_time_zone(&mut self, time_zone: Option<TimeZone>) -> Result<()>;
 
     /// Equivalent to `getTimeZone()`.
-    fn get_time_zone(&self) -> TimeZone;
+    fn get_time_zone(&self) -> Result<Option<TimeZone>>;
 
     /// Sets the default slop for phrases. If zero, then exact phrase matches
     /// are required. Default value is zero.
     ///
     /// Equivalent to `setPhraseSlop(int)`.
-    fn set_phrase_slop(&mut self, default_phrase_slop: i32);
+    fn set_phrase_slop(&mut self, default_phrase_slop: i32) -> Result<()>;
 
     /// Equivalent to `getAnalyzer()`; `None` for `null`.
-    fn get_analyzer(&self) -> Option<Arc<dyn Analyzer>>;
+    fn get_analyzer(&self) -> Result<Option<Arc<dyn Analyzer>>>;
 
     /// See [`set_allow_leading_wildcard`](Self::set_allow_leading_wildcard).
     ///
     /// Equivalent to `getAllowLeadingWildcard()`.
-    fn get_allow_leading_wildcard(&self) -> bool;
+    fn get_allow_leading_wildcard(&self) -> Result<bool>;
 
     /// Get the minimal similarity for fuzzy queries.
     ///
     /// Equivalent to `getFuzzyMinSim()`.
-    fn get_fuzzy_min_sim(&self) -> f32;
+    fn get_fuzzy_min_sim(&self) -> Result<f32>;
 
     /// Get the prefix length for fuzzy queries.
     ///
     /// Equivalent to `getFuzzyPrefixLength()`.
-    fn get_fuzzy_prefix_length(&self) -> i32;
+    fn get_fuzzy_prefix_length(&self) -> Result<i32>;
 
     /// Gets the default slop for phrases.
     ///
     /// Equivalent to `getPhraseSlop()`.
-    fn get_phrase_slop(&self) -> i32;
+    fn get_phrase_slop(&self) -> Result<i32>;
 
     /// Set the minimum similarity for fuzzy queries. Default is defined on
     /// `FuzzyQuery.defaultMaxEdits`.
     ///
     /// Equivalent to `setFuzzyMinSim(float)`.
-    fn set_fuzzy_min_sim(&mut self, fuzzy_min_sim: f32);
+    fn set_fuzzy_min_sim(&mut self, fuzzy_min_sim: f32) -> Result<()>;
 
     /// Sets the default `Resolution` used for certain field when no
     /// `Resolution` is defined for this field; `None` for `null`.
     ///
     /// Equivalent to `setDateResolution(DateTools.Resolution)`.
-    fn set_date_resolution(&mut self, date_resolution: Option<Resolution>);
+    fn set_date_resolution(&mut self, date_resolution: Option<Resolution>) -> Result<()>;
 }

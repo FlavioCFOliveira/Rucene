@@ -68,8 +68,6 @@ const TRANSITION_NSHIFT: u32 = 12;
 const DAY_IN_MILLIS: i64 = 86_400_000;
 /// `AbstractCalendar.EPOCH_OFFSET`: the fixed date of 1970-01-01.
 const EPOCH_OFFSET: i64 = 719_163;
-/// `GregorianCalendar.ONE_HOUR`.
-const ONE_HOUR: i32 = 3_600_000;
 
 /// `SimpleTimeZone.DOM_MODE`: "Mar 1".
 const DOM_MODE: i32 = 1;

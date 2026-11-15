@@ -15,10 +15,39 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ModifierQueryNodeBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.builders`.
+//! Port of `ModifierQueryNodeBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.builders`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::Query;
+
+use super::standard_query_builder::{built_query, StandardQueryBuilder};
+use crate::flexible::core::nodes::modifier_query_node::MODIFIER_QUERY_NODE_CLASS;
+use crate::flexible::core::nodes::query_node::{class_cast, QueryNodeRef};
+
+/// Builds no object, it only returns the [`Query`] object set on the
+/// `ModifierQueryNode` object using a
+/// `QueryTreeBuilder.QUERY_TREE_BUILDER_TAGID` tag.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.builders.ModifierQueryNodeBuilder`; ported by rmp task #490.
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.builders.ModifierQueryNodeBuilder`.
+#[derive(Debug, Default)]
 pub struct ModifierQueryNodeBuilder;
+
+impl ModifierQueryNodeBuilder {
+    /// Equivalent to `new ModifierQueryNodeBuilder()`.
+    pub fn new() -> Self {
+        // empty constructor
+        Self
+    }
+}
+
+impl StandardQueryBuilder for ModifierQueryNodeBuilder {
+    fn build(&self, query_node: &QueryNodeRef) -> Result<Option<Arc<dyn Query>>> {
+        let modifier_node = query_node
+            .as_modifier_query_node()
+            .ok_or_else(|| class_cast(query_node.as_ref(), &MODIFIER_QUERY_NODE_CLASS))?;
+        built_query(modifier_node.get_child()?.as_ref())
+    }
+}

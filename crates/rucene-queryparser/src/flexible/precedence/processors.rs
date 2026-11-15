@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.flexible.precedence.processors`.
+//! Port of the Java package `org.apache.lucene.queryparser.flexible.precedence.processors`.
 
 pub mod boolean_modifiers_query_node_processor;
 pub mod precedence_query_node_processor_pipeline;

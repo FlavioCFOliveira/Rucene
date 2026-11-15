@@ -293,6 +293,20 @@ pub fn instance_of(node: &dyn QueryNode, class: &JavaClass) -> bool {
     class.is_assignable_from(node.java_class())
 }
 
+/// The `ClassCastException` of the reference cast `(class) node` of a node
+/// of another class, in the form `class <from> cannot be cast to class
+/// <to>` the port's casts use.
+pub fn class_cast(node: &dyn QueryNode, class: &JavaClass) -> rucene::error::LuceneError {
+    rucene::error::LuceneError::unchecked(
+        "java.lang.ClassCastException",
+        format!(
+            "class {} cannot be cast to class {}",
+            node.java_class().get_name(),
+            class.get_name()
+        ),
+    )
+}
+
 /// Java's `==` on two nullable node references.
 pub fn same_node(a: Option<&QueryNodeRef>, b: Option<&QueryNodeRef>) -> bool {
     match (a, b) {

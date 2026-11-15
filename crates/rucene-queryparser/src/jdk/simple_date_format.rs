@@ -178,11 +178,6 @@ fn is_latin1(units: &[u16]) -> bool {
     units.iter().all(|&u| u < 0x100)
 }
 
-/// `String.regionMatches(toffset, other, 0, other.length())`.
-fn region_matches(text: &[u16], toffset: usize, other: &[u16]) -> bool {
-    toffset + other.len() <= text.len() && text[toffset..toffset + other.len()] == *other
-}
-
 /// `CharacterDataLatin1.equalsIgnoreCase(byte, byte)`.
 fn latin1_equals_ignore_case(b1: u16, b2: u16) -> bool {
     if b1 == b2 {

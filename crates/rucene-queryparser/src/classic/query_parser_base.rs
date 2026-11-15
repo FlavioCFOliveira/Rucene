@@ -53,7 +53,7 @@ use rucene::search::regexp_query::{DefaultProvider, RegexpQuery};
 use rucene::search::term_range_query::TermRangeQuery;
 use rucene::search::wildcard_query::WildcardQuery;
 use rucene::search::{Occur, Query};
-use rucene::util::automaton::{RegExp, DEFAULT_DETERMINIZE_WORK_LIMIT};
+use rucene::util::automaton::{Operations, RegExp, DEFAULT_DETERMINIZE_WORK_LIMIT};
 use rucene::util::query_builder::{QueryBuilder, QueryBuilderOps};
 use rucene::util::{BytesRef, BytesRefBuilder};
 
@@ -99,15 +99,19 @@ pub struct QueryParserBase {
     pub(crate) builder: QueryBuilder,
     /// The default operator for parsing queries.
     pub(crate) operator: Operator,
-    pub(crate) multi_term_rewrite_method: Arc<dyn RewriteMethod>,
+    /// The rewrite method of multi-term queries; `None` for Java's `null`,
+    /// which the query constructors reject.
+    pub(crate) multi_term_rewrite_method: Option<Arc<dyn RewriteMethod>>,
     pub(crate) allow_leading_wildcard: bool,
     /// `protected String field`: the default field, `None` for `null`.
     pub field: Option<String>,
     pub(crate) phrase_slop: i32,
     pub(crate) fuzzy_min_sim: f32,
     pub(crate) fuzzy_prefix_length: i32,
-    pub(crate) locale: Locale,
-    pub(crate) time_zone: TimeZone,
+    /// The locale of date range parsing; `None` for Java's `null`.
+    pub(crate) locale: Option<Locale>,
+    /// The time zone of date range parsing; `None` for Java's `null`.
+    pub(crate) time_zone: Option<TimeZone>,
     /// The default date resolution.
     pub(crate) date_resolution: Option<Resolution>,
     /// Maps field names to date resolutions; `None` until the first
@@ -128,14 +132,14 @@ impl QueryParserBase {
         Self {
             builder: QueryBuilder::new(None),
             operator: OR_OPERATOR,
-            multi_term_rewrite_method: constant_score_blended_rewrite(),
+            multi_term_rewrite_method: Some(constant_score_blended_rewrite()),
             allow_leading_wildcard: false,
             field: None,
             phrase_slop: 0,
             fuzzy_min_sim: fuzzy_query::DEFAULT_MAX_EDITS as f32,
             fuzzy_prefix_length: fuzzy_query::DEFAULT_PREFIX_LENGTH,
-            locale: Locale::get_default(),
-            time_zone: TimeZone::get_default(),
+            locale: Some(Locale::get_default()),
+            time_zone: Some(TimeZone::get_default()),
             date_resolution: None,
             field_to_date_resolution: None,
             auto_generate_phrase_queries: false,
@@ -968,6 +972,9 @@ pub fn get_range_query<P: QueryParserBaseOps + ?Sized>(
 ) -> Result<Option<Arc<dyn Query>>> {
     let locale = this.query_parser_base().locale.clone();
     let time_zone = this.query_parser_base().time_zone.clone();
+    // `DateFormat.getDateInstance(DateFormat.SHORT, locale)` dereferences a
+    // `null` locale (`QueryParserBase.java:510`), outside the `try` blocks.
+    let locale = crate::javacc::nn_owned(locale)?;
     let df = date_format::get_date_instance(date_format::SHORT, &locale)?;
     df.set_lenient(true);
     let resolution = this.get_date_resolution(field)?;
@@ -997,7 +1004,10 @@ pub fn get_range_query<P: QueryParserBaseOps + ?Sized>(
             // The user can only specify the date, not the time, so make sure
             // the time is set to the latest possible time of that date to
             // really include all documents:
-            let mut cal = Calendar::get_instance(&time_zone, &locale)?;
+            // `Calendar.getInstance(timeZone, locale)` dereferences a `null`
+            // time zone (`QueryParserBase.java:527`), inside the `try`.
+            let time_zone = crate::javacc::nn(time_zone.as_ref())?;
+            let mut cal = Calendar::get_instance(time_zone, &locale)?;
             cal.set_time(d2);
             cal.set(calendar::HOUR_OF_DAY, 23);
             cal.set(calendar::MINUTE, 59);
@@ -1034,7 +1044,9 @@ pub fn new_prefix_query<P: QueryParserBaseOps + ?Sized>(
     this: &mut P,
     prefix: Term,
 ) -> Result<Arc<dyn Query>> {
-    let method = Arc::clone(&this.query_parser_base().multi_term_rewrite_method);
+    // `new PrefixQuery(prefix, multiTermRewriteMethod)`: the automaton of a
+    // prefix cannot fail, then `MultiTermQuery` rejects a `null` method.
+    let method = rewrite_method(this.query_parser_base())?;
     Ok(Arc::new(PrefixQuery::with_rewrite_method(prefix, method)?))
 }
 
@@ -1049,13 +1061,23 @@ pub fn new_regexp_query<P: QueryParserBaseOps + ?Sized>(
     regexp: Term,
 ) -> Result<Arc<dyn Query>> {
     let base = this.query_parser_base();
+    let Some(method) = base.multi_term_rewrite_method.clone() else {
+        // Java builds the automaton (`new RegExp(...)` and the private
+        // `RegexpQuery.toAutomaton`, which determinizes it) as the argument of
+        // the `AutomatonQuery` constructor, before `MultiTermQuery` rejects
+        // the `null` method: its errors come first.
+        let automaton = RegExp::with_match_flags(&regexp.text(), RegExp::ALL, 0)?
+            .to_automaton_with(None, Some(&DefaultProvider))?;
+        Operations::determinize(&automaton, base.determinize_work_limit)?;
+        return Err(null_rewrite_method());
+    };
     Ok(Arc::new(RegexpQuery::with_everything(
         regexp,
         RegExp::ALL,
         0,
         &DefaultProvider,
         base.determinize_work_limit,
-        Arc::clone(&base.multi_term_rewrite_method),
+        method,
         true,
     )?))
 }
@@ -1105,15 +1127,35 @@ pub fn new_range_query<P: QueryParserBaseOps + ?Sized>(
         None => None,
         Some(part2) => Some(normalize(this, field, part2)?),
     };
-    let method = Arc::clone(&this.query_parser_base().multi_term_rewrite_method);
+    // `new TermRangeQuery(field, start, end, ..., multiTermRewriteMethod)`:
+    // `MultiTermQuery` checks the field, then the method.
+    let field = crate::javacc::nn_str(field)?;
+    let method = rewrite_method(this.query_parser_base())?;
     Ok(Arc::new(TermRangeQuery::with_rewrite_method(
-        crate::javacc::nn_str(field)?,
+        field,
         start,
         end,
         start_inclusive,
         end_inclusive,
         method,
     )?))
+}
+
+/// The `NullPointerException` of `MultiTermQuery`'s
+/// `Objects.requireNonNull(rewriteMethod, "rewriteMethod must not be null")`.
+fn null_rewrite_method() -> LuceneError {
+    LuceneError::null_pointer_with_message("rewriteMethod must not be null")
+}
+
+/// The parser's rewrite method, as a multi-term query constructor takes it.
+///
+/// # Errors
+///
+/// [`null_rewrite_method`] for `None` (Java's `null`).
+fn rewrite_method(base: &QueryParserBase) -> Result<Arc<dyn RewriteMethod>> {
+    base.multi_term_rewrite_method
+        .clone()
+        .ok_or_else(null_rewrite_method)
 }
 
 /// `getAnalyzer().normalize(field, text)`.
@@ -1137,10 +1179,17 @@ pub fn new_wildcard_query<P: QueryParserBaseOps + ?Sized>(
     t: Term,
 ) -> Result<Arc<dyn Query>> {
     let base = this.query_parser_base();
+    let Some(method) = base.multi_term_rewrite_method.clone() else {
+        // Java builds the automaton (`WildcardQuery.toAutomaton`) as the
+        // argument of the `AutomatonQuery` constructor, before
+        // `MultiTermQuery` rejects the `null` method: its errors come first.
+        WildcardQuery::to_automaton(&t, base.determinize_work_limit)?;
+        return Err(null_rewrite_method());
+    };
     Ok(Arc::new(WildcardQuery::with_rewrite_method(
         t,
         base.determinize_work_limit,
-        Arc::clone(&base.multi_term_rewrite_method),
+        method,
     )?))
 }
 
@@ -1567,79 +1616,94 @@ pub fn escape(s: &str) -> String {
 }
 
 /// The `CommonQueryParserConfiguration` methods of Java's
-/// `QueryParserBase`, for every classic parser.
+/// `QueryParserBase`, for every classic parser. None of them fails; the
+/// locale, the time zone and the rewrite method are stored as given, `None`
+/// for Java's `null` (`QueryParserBase.java:262-293`), and the parser throws
+/// the `NullPointerException` where it uses them.
 impl<T: QueryParserBaseOps + ?Sized> CommonQueryParserConfiguration for T {
-    fn set_allow_leading_wildcard(&mut self, allow_leading_wildcard: bool) {
+    fn set_allow_leading_wildcard(&mut self, allow_leading_wildcard: bool) -> Result<()> {
         self.query_parser_base_mut().allow_leading_wildcard = allow_leading_wildcard;
+        Ok(())
     }
 
-    fn set_enable_position_increments(&mut self, enabled: bool) {
+    fn set_enable_position_increments(&mut self, enabled: bool) -> Result<()> {
         self.query_parser_base_mut()
             .builder
             .set_enable_position_increments(enabled);
+        Ok(())
     }
 
-    fn get_enable_position_increments(&self) -> bool {
-        self.query_builder().get_enable_position_increments()
+    fn get_enable_position_increments(&self) -> Result<bool> {
+        Ok(self.query_builder().get_enable_position_increments())
     }
 
-    fn set_multi_term_rewrite_method(&mut self, method: Arc<dyn RewriteMethod>) {
+    fn set_multi_term_rewrite_method(
+        &mut self,
+        method: Option<Arc<dyn RewriteMethod>>,
+    ) -> Result<()> {
         self.query_parser_base_mut().multi_term_rewrite_method = method;
+        Ok(())
     }
 
-    fn get_multi_term_rewrite_method(&self) -> Arc<dyn RewriteMethod> {
-        Arc::clone(&self.query_parser_base().multi_term_rewrite_method)
+    fn get_multi_term_rewrite_method(&self) -> Result<Option<Arc<dyn RewriteMethod>>> {
+        Ok(self.query_parser_base().multi_term_rewrite_method.clone())
     }
 
-    fn set_fuzzy_prefix_length(&mut self, fuzzy_prefix_length: i32) {
+    fn set_fuzzy_prefix_length(&mut self, fuzzy_prefix_length: i32) -> Result<()> {
         self.query_parser_base_mut().fuzzy_prefix_length = fuzzy_prefix_length;
+        Ok(())
     }
 
-    fn set_locale(&mut self, locale: Locale) {
+    fn set_locale(&mut self, locale: Option<Locale>) -> Result<()> {
         self.query_parser_base_mut().locale = locale;
+        Ok(())
     }
 
-    fn get_locale(&self) -> Locale {
-        self.query_parser_base().locale.clone()
+    fn get_locale(&self) -> Result<Option<Locale>> {
+        Ok(self.query_parser_base().locale.clone())
     }
 
-    fn set_time_zone(&mut self, time_zone: TimeZone) {
+    fn set_time_zone(&mut self, time_zone: Option<TimeZone>) -> Result<()> {
         self.query_parser_base_mut().time_zone = time_zone;
+        Ok(())
     }
 
-    fn get_time_zone(&self) -> TimeZone {
-        self.query_parser_base().time_zone.clone()
+    fn get_time_zone(&self) -> Result<Option<TimeZone>> {
+        Ok(self.query_parser_base().time_zone.clone())
     }
 
-    fn set_phrase_slop(&mut self, phrase_slop: i32) {
+    fn set_phrase_slop(&mut self, phrase_slop: i32) -> Result<()> {
         self.query_parser_base_mut().phrase_slop = phrase_slop;
+        Ok(())
     }
 
-    fn get_analyzer(&self) -> Option<Arc<dyn Analyzer>> {
-        self.query_builder().get_analyzer().cloned()
+    fn get_analyzer(&self) -> Result<Option<Arc<dyn Analyzer>>> {
+        Ok(self.query_builder().get_analyzer().cloned())
     }
 
-    fn get_allow_leading_wildcard(&self) -> bool {
-        self.query_parser_base().allow_leading_wildcard
+    fn get_allow_leading_wildcard(&self) -> Result<bool> {
+        Ok(self.query_parser_base().allow_leading_wildcard)
     }
 
-    fn get_fuzzy_min_sim(&self) -> f32 {
-        self.query_parser_base().fuzzy_min_sim
+    fn get_fuzzy_min_sim(&self) -> Result<f32> {
+        Ok(self.query_parser_base().fuzzy_min_sim)
     }
 
-    fn get_fuzzy_prefix_length(&self) -> i32 {
-        self.query_parser_base().fuzzy_prefix_length
+    fn get_fuzzy_prefix_length(&self) -> Result<i32> {
+        Ok(self.query_parser_base().fuzzy_prefix_length)
     }
 
-    fn get_phrase_slop(&self) -> i32 {
-        self.query_parser_base().phrase_slop
+    fn get_phrase_slop(&self) -> Result<i32> {
+        Ok(self.query_parser_base().phrase_slop)
     }
 
-    fn set_fuzzy_min_sim(&mut self, fuzzy_min_sim: f32) {
+    fn set_fuzzy_min_sim(&mut self, fuzzy_min_sim: f32) -> Result<()> {
         self.query_parser_base_mut().fuzzy_min_sim = fuzzy_min_sim;
+        Ok(())
     }
 
-    fn set_date_resolution(&mut self, date_resolution: Option<Resolution>) {
+    fn set_date_resolution(&mut self, date_resolution: Option<Resolution>) -> Result<()> {
         self.query_parser_base_mut().date_resolution = date_resolution;
+        Ok(())
     }
 }

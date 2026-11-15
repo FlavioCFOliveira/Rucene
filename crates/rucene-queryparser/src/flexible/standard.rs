@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.flexible.standard`.
+//! Port of the Java package `org.apache.lucene.queryparser.flexible.standard`.
 
 pub mod builders;
 pub mod common_query_parser_configuration;

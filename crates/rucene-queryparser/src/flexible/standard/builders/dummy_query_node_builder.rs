@@ -15,10 +15,40 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `DummyQueryNodeBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.builders`.
+//! Port of `DummyQueryNodeBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.builders`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::Query;
+
+use super::standard_query_builder::StandardQueryBuilder;
+use crate::flexible::core::nodes::query_node::QueryNodeRef;
+
+/// This builder does nothing. Commonly used for `QueryNode` objects that are
+/// built by its parent's builder.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.builders.DummyQueryNodeBuilder`; ported by rmp task #490.
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.builders.DummyQueryNodeBuilder`.
+#[derive(Debug, Default)]
 pub struct DummyQueryNodeBuilder;
+
+impl DummyQueryNodeBuilder {
+    /// Constructs a [`DummyQueryNodeBuilder`] object.
+    ///
+    /// Equivalent to `new DummyQueryNodeBuilder()`.
+    pub fn new() -> Self {
+        // empty constructor
+        Self
+    }
+}
+
+impl StandardQueryBuilder for DummyQueryNodeBuilder {
+    /// Always return `null`.
+    ///
+    /// Equivalent to `build(QueryNode queryNode)`, which returns a `null`
+    /// `TermQuery`.
+    fn build(&self, _query_node: &QueryNodeRef) -> Result<Option<Arc<dyn Query>>> {
+        Ok(None)
+    }
+}

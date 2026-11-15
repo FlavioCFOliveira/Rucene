@@ -15,10 +15,41 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FieldQueryNodeBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.builders`.
+//! Port of `FieldQueryNodeBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.builders`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::term_query::TermQuery;
+use rucene::search::Query;
+
+use super::standard_query_builder::{new_term, StandardQueryBuilder};
+use crate::flexible::core::nodes::field_query_node::FIELD_QUERY_NODE_CLASS;
+use crate::flexible::core::nodes::query_node::{class_cast, QueryNodeRef};
+
+/// Builds a `TermQuery` object from a `FieldQueryNode` object.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.builders.FieldQueryNodeBuilder`; ported by rmp task #490.
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.builders.FieldQueryNodeBuilder`.
+#[derive(Debug, Default)]
 pub struct FieldQueryNodeBuilder;
+
+impl FieldQueryNodeBuilder {
+    /// Equivalent to `new FieldQueryNodeBuilder()`.
+    pub fn new() -> Self {
+        // empty constructor
+        Self
+    }
+}
+
+impl StandardQueryBuilder for FieldQueryNodeBuilder {
+    fn build(&self, query_node: &QueryNodeRef) -> Result<Option<Arc<dyn Query>>> {
+        let field_node = query_node
+            .as_field_query_node()
+            .ok_or_else(|| class_cast(query_node.as_ref(), &FIELD_QUERY_NODE_CLASS))?;
+        Ok(Some(Arc::new(TermQuery::new(new_term(
+            field_node.get_field_as_string(),
+            field_node.get_text_as_string(),
+        )?))))
+    }
+}

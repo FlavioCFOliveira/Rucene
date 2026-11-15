@@ -15,10 +15,59 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `MatchAllDocsQueryNodeBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.builders`.
+//! Port of `MatchAllDocsQueryNodeBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.builders`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::match_all_docs_query::MatchAllDocsQuery;
+use rucene::search::Query;
+
+use super::standard_query_builder::StandardQueryBuilder;
+use crate::flexible::core::messages::query_parser_messages::QueryParserMessages;
+use crate::flexible::core::nodes::match_all_docs_query_node::MATCH_ALL_DOCS_QUERY_NODE_CLASS;
+use crate::flexible::core::nodes::query_node::{instance_of, QueryNodeRef};
+use crate::flexible::core::query_node_exception::QueryNodeException;
+use crate::flexible::messages::message_impl::MessageImpl;
+use crate::flexible::standard::parser::escape_query_syntax_impl::EscapeQuerySyntaxImpl;
+use crate::jdk::object::JavaObject;
+
+/// Builds a `MatchAllDocsQuery` object from a `MatchAllDocsQueryNode`
+/// object.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.builders.MatchAllDocsQueryNodeBuilder`; ported by rmp task #490.
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.builders.MatchAllDocsQueryNodeBuilder`.
+#[derive(Debug, Default)]
 pub struct MatchAllDocsQueryNodeBuilder;
+
+impl MatchAllDocsQueryNodeBuilder {
+    /// Equivalent to `new MatchAllDocsQueryNodeBuilder()`.
+    pub fn new() -> Self {
+        // empty constructor
+        Self
+    }
+}
+
+impl StandardQueryBuilder for MatchAllDocsQueryNodeBuilder {
+    /// Equivalent to `build(QueryNode queryNode)`: `MatchAllDocsQuery.INSTANCE`.
+    ///
+    /// # Errors
+    ///
+    /// The `QueryNodeException` `LUCENE_QUERY_CONVERSION_ERROR` of a node
+    /// that is not a `MatchAllDocsQueryNode`.
+    fn build(&self, query_node: &QueryNodeRef) -> Result<Option<Arc<dyn Query>>> {
+        // validates node
+        if !instance_of(query_node.as_ref(), &MATCH_ALL_DOCS_QUERY_NODE_CLASS) {
+            let query_string = query_node.to_query_string(&EscapeQuerySyntaxImpl::new())?;
+            return Err(QueryNodeException::new(Arc::new(MessageImpl::with_args(
+                QueryParserMessages::LUCENE_QUERY_CONVERSION_ERROR.get(),
+                vec![
+                    JavaObject::from(query_string),
+                    JavaObject::from(query_node.java_class().get_name()),
+                ],
+            )))
+            .error());
+        }
+        Ok(Some(Arc::new(MatchAllDocsQuery::instance())))
+    }
+}

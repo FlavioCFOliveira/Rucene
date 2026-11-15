@@ -198,7 +198,7 @@ impl QueryParserBaseOps for ComplexPhraseQueryParser {
 
     fn parse(&mut self, query: &str) -> Result<Arc<dyn Query>> {
         if self.is_pass2_resolving_phrases {
-            let old_method = self.get_multi_term_rewrite_method();
+            let old_method = self.get_multi_term_rewrite_method()?;
             // Temporarily force BooleanQuery rewrite so that Parser will
             // generate visible collection of terms which we can convert into
             // SpanQueries. ConstantScoreRewrite mode produces an opaque
@@ -206,9 +206,9 @@ impl QueryParserBaseOps for ComplexPhraseQueryParser {
             // in the same way a BooleanQuery can. QueryParser is not
             // guaranteed threadsafe anyway so this temporary state change
             // should not present an issue
-            self.set_multi_term_rewrite_method(scoring_boolean_rewrite());
+            self.set_multi_term_rewrite_method(Some(scoring_boolean_rewrite()))?;
             let result = base::parse(self, query);
-            self.set_multi_term_rewrite_method(old_method);
+            self.set_multi_term_rewrite_method(old_method)?;
             return result;
         }
 
@@ -285,13 +285,13 @@ impl QueryParserBaseOps for ComplexPhraseQueryParser {
         start_inclusive: bool,
         end_inclusive: bool,
     ) -> Result<Arc<dyn Query>> {
-        let original_rewrite_method = self.get_multi_term_rewrite_method();
+        let original_rewrite_method = self.get_multi_term_rewrite_method()?;
         if self.is_pass2_resolving_phrases {
-            self.set_multi_term_rewrite_method(scoring_boolean_rewrite());
+            self.set_multi_term_rewrite_method(Some(scoring_boolean_rewrite()))?;
         }
         let result =
             base::new_range_query(self, field, part1, part2, start_inclusive, end_inclusive);
-        self.set_multi_term_rewrite_method(original_rewrite_method);
+        self.set_multi_term_rewrite_method(original_rewrite_method)?;
         result
     }
 

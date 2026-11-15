@@ -128,19 +128,25 @@ the committed file, and rerunning it must leave that file unchanged.
   `java.text.Collator` emulation: the root rules, the decompositions and combining classes, and
   the locale tailorings of `Collator.getInstance(Locale)`, with a check of the locale resolution
   on every available locale; see its header for the command.
-* `javacc_java_to_rust.py` — translates the JavaCC 7 output Lucene commits for the classic and
-  surround query parsers (`lucene/queryparser/src/java/org/apache/lucene/queryparser/{classic,surround/parser}`):
-  `QueryParserConstants.java` and `QueryParserTokenManager.java` into the wholly generated
-  `crates/rucene-queryparser/src/<parser>/query_parser_{constants,token_manager}.rs`, the
-  `Token`, `TokenMgrError` and `ParseException` templates into `token.rs`, `token_mgr_error.rs`
-  and `parse_exception.rs` (each Java file must equal the JavaCC 7 template token for token,
-  pinned by SHA-256), and the generated members of `QueryParser.java` into the `// @generated
-  begin/end` regions (`state`, `productions`, `private`) of the hand-written `query_parser.rs`.
-  The grammar's user code is translated by hand and pinned by the SHA-256 of its Java tokens.
-  The translator accepts only the Java those files use and fails, naming the file and line, on
-  any other construct; the output is formatted by `rustfmt`. Rerun:
+* `javacc_java_to_rust.py` — translates the JavaCC 7 output Lucene commits for the classic,
+  surround and flexible standard query parsers
+  (`lucene/queryparser/src/java/org/apache/lucene/queryparser/{classic,surround/parser,flexible/standard/parser}`):
+  `<Parser>Constants.java` and `<Parser>TokenManager.java` into the wholly generated
+  `crates/rucene-queryparser/src/<parser>/<parser>_{constants,token_manager}.rs` (`query_parser_*`
+  for classic and surround, `standard_syntax_parser_*` for the flexible parser), the `Token`,
+  `TokenMgrError` and `ParseException` templates into `token.rs`, `token_mgr_error.rs` and
+  `parse_exception.rs` (each Java file must equal the JavaCC 7 template token for token, pinned
+  by SHA-256; the flexible parser's `ParseException.java`, which Lucene edits into a
+  `QueryNodeParseException` reporting an NLS message, has its own template and pin), and the
+  generated members of `<Parser>.java` into the `// @generated begin/end` regions (`state`,
+  `productions`, `private`) of the hand-written `<parser>.rs`. The grammar's user code is
+  translated by hand and pinned by the SHA-256 of its Java tokens. The members, constructors,
+  casts and fields the grammar actions use are described per profile. The translator accepts
+  only the Java those files use and fails, naming the file and line, on any other construct;
+  the output is formatted by `rustfmt`. Rerun:
   `python3 tools/translate/javacc_java_to_rust.py [/tmp/lucene1050]` (`--check` compares instead
-  of writing, `--only classic|surround` limits the run to one parser, `--hashes` prints the pins).
+  of writing, `--only classic|surround|standard` limits the run to one parser, `--hashes` prints
+  the pins).
 * `JdkFormatData.java` — writes `crates/rucene-queryparser/src/jdk/format_data.bin` (zlib), the
   JDK 25 locale data the queryparser's `java.text` emulation reads (`DateFormat.getDateInstance`,
   `NumberFormat`, `Calendar`): the CLDR resolution metadata, the display names and

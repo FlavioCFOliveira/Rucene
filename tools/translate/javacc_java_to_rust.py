@@ -5,9 +5,9 @@ Input: the generated Java of a JavaCC 7 grammar of `lucene/queryparser`, as
 Lucene commits it (`gradle/generation/javacc.gradle` edits JavaCC's output):
 `<Parser>.java`, `<Parser>TokenManager.java`, `<Parser>Constants.java`,
 `Token.java`, `TokenMgrError.java` and `ParseException.java`. Each parser is a
-*profile* (below): `classic` (`queryparser.classic.QueryParser`) and
-`surround` (`queryparser.surround.parser.QueryParser`); the flexible
-`StandardSyntaxParser` is to be added as a third.
+*profile* (below): `classic` (`queryparser.classic.QueryParser`),
+`surround` (`queryparser.surround.parser.QueryParser`) and `standard`
+(`queryparser.flexible.standard.parser.StandardSyntaxParser`).
 
 Output, per profile:
 
@@ -19,7 +19,10 @@ Output, per profile:
 * `token.rs`, `token_mgr_error.rs`, `parse_exception.rs`, wholly generated
   from Rust templates of the JavaCC 7 classes: the Java file must equal the
   JavaCC 7 template token for token (its package line aside; the SHA-256 of
-  its tokens is pinned below), otherwise the run fails;
+  its tokens is pinned below), otherwise the run fails. The flexible parser's
+  `ParseException.java`, which Lucene edits into a `QueryNodeParseException`
+  reporting an NLS message, has its own template and pin
+  (`ParseException:flexible`);
 * the regions between `// @generated begin <region>` and
   `// @generated end <region>` of the hand-written `<parser>.rs`: `state` (the
   JavaCC state, a struct), `productions` (the public members, as provided
@@ -29,7 +32,10 @@ Output, per profile:
   that file; its Java tokens are pinned by SHA-256 below.
 
 The grammar actions inside the productions are translated with the members
-they call described per profile (`EXTERNALS`). The lookahead machinery maps to
+they call described per profile: the external methods (`EXTERNALS`), and for
+the flexible parser the constructors (`news`), static and instance calls,
+static fields, reference casts, `instanceof` tests, widening conversions and
+enum types of its query node and interval function classes. The lookahead machinery maps to
 Rust control flow: the `jj_3*` routines and `jj_scan_token` return
 `Result<bool, Raised>`, `throw jj_ls` is `Err(Raised::LookaheadSuccess)`, and
 the `try { return !jj_3_N(); } catch (LookaheadSuccess ls) { return true; }
@@ -950,6 +956,37 @@ class Profile:
     ops_trait: str
     base_ops: str
     tm_fallible: set = field(default_factory=set)
+    # The classes the actions construct: "Class/arity" -> Ext ({0}, {1}, ...
+    # the arguments). A JavaCC class listed here (`ParseException/1`)
+    # replaces the JavaCC 7 rule for that constructor.
+    news: dict = field(default_factory=dict)
+    # The static methods the actions call on a class: "Class.method" -> Ext.
+    static_calls: dict = field(default_factory=dict)
+    # The methods the actions call on a value of a mapped type:
+    # "Type.method" -> Ext, `{r}` being the receiver (a place, not cloned).
+    instance_calls: dict = field(default_factory=dict)
+    # The static fields the actions read by their qualified name, as Java
+    # wrote it: "A.B.C" -> (Rust read expression, JType, nullable).
+    static_fields: dict = field(default_factory=dict)
+    # Reference casts `(Class) x`: Java class -> template over {0} (the
+    # value), giving a value of the type `Class` maps to.
+    casts: dict = field(default_factory=dict)
+    # `x instanceof Class`: Java class -> template over {0} (a place).
+    instanceofs: dict = field(default_factory=dict)
+    # Widening reference conversions between mapped types whose Rust types
+    # differ: (from, to) -> template over {0}.
+    upcasts: dict = field(default_factory=dict)
+    # Enum types the actions compare with `==` and `!=`.
+    enums: set = field(default_factory=set)
+    # The template of `ParseException.java`: "javacc" (the JavaCC 7 one) or
+    # "flexible" (the flexible parser's subclass of
+    # `QueryNodeParseException`, which reports an NLS message).
+    parse_exception: str = "javacc"
+
+    @property
+    def tm_class(self) -> str:
+        """The generated token manager class."""
+        return f"{self.parser_class}TokenManager"
 
 
 CLASSIC_EXTERNALS = {
@@ -992,6 +1029,96 @@ SURROUND_EXT_FIELDS = {
     "MINIMUM_PREFIX_LENGTH": ("MINIMUM_PREFIX_LENGTH", T_INT, False),
     "TRUNCATION_ERROR_MESSAGE": ("TRUNCATION_ERROR_MESSAGE.to_string()", T_STRING, False),
     "BOOST_ERROR_MESSAGE": ("BOOST_ERROR_MESSAGE.to_string()", T_STRING, False),
+}
+
+T_QUERY_NODE = JType("QueryNode")
+T_CHAR_SEQUENCE = JType("CharSequence")
+T_INTERVAL_FUNCTION = JType("IntervalFunction")
+T_MODIFIER = JType("ModifierQueryNode.Modifier")
+T_MESSAGE_IMPL = JType("MessageImpl")
+
+# The flexible standard parser: the node and interval function classes its
+# actions construct, each a `QueryNode` (an `Option<QueryNodeRef>`) or an
+# `IntervalFunction` (an `Option<Arc<dyn IntervalFunction>>`) reference. The
+# helpers `query_nodes`, `interval_functions`, `is_instance`, `cast_node`,
+# `modifier_of` and the associated `parse_int` and `parse_float` are the
+# hand-written part of `standard_syntax_parser.rs`.
+_NODE = "Some({0} as QueryNodeRef)"
+_FN = "Some(Arc::new({0}) as Arc<dyn IntervalFunction>)"
+_CS = (T_CHAR_SEQUENCE, True)
+_QN = (T_QUERY_NODE, True)
+_IF = (T_INTERVAL_FUNCTION, True)
+
+
+def _node(rust, params, result=True):
+    return Ext(_NODE.replace("{0}", rust), params, T_QUERY_NODE, True, result=result)
+
+
+def _fn(rust, params, result=True):
+    return Ext(_FN.replace("{0}", rust), params, T_INTERVAL_FUNCTION, True, result=result)
+
+
+STANDARD_EXTERNALS = {
+    "discardEscapeChar": Ext("Some(EscapeQuerySyntaxImpl::discard_escape_char(&CharSequence::from({0}))?.into_char_sequence())",
+                             ["str"], T_CHAR_SEQUENCE, True, result=True),
+    "parseInt": Ext("StandardSyntaxParser::parse_int(&{0})?", ["token"], T_INT, result=True),
+    "parseFloat": Ext("StandardSyntaxParser::parse_float(&{0})?", ["token"], T_FLOAT, result=True),
+}
+
+STANDARD_NEWS = {
+    "BooleanQueryNode/1": _node("BooleanQueryNode::new(Some(query_nodes({0})?))?", ["val"]),
+    "OrQueryNode/1": _node("OrQueryNode::new(Some(query_nodes({0})?))?", ["val"]),
+    "AndQueryNode/1": _node("AndQueryNode::new(Some(query_nodes({0})?))?", ["val"]),
+    "ModifierQueryNode/2": _node("ModifierQueryNode::new({0}, {1})?", [_QN, (T_MODIFIER, False)]),
+    "GroupQueryNode/1": Ext("Some(GroupQueryNode::new({0})?)", [_QN], JType("GroupQueryNode"), True, result=True),
+    "MinShouldMatchNode/2": _node("MinShouldMatchNode::new({0}, {1})?", [(T_INT, False), (JType("GroupQueryNode"), True)]),
+    "IntervalQueryNode/2": _node("IntervalQueryNode::new({0}, {1})?", [(T_STRING, True), _IF]),
+    "BoostQueryNode/2": _node("BoostQueryNode::new({0}, {1})?", [_QN, (T_FLOAT, False)]),
+    "FuzzyQueryNode/5": _node("FuzzyQueryNode::new({0}, {1}, {2}, {3}, {4})",
+                              [_CS, _CS, (T_FLOAT, False), (T_INT, False), (T_INT, False)], result=False),
+    "FieldQueryNode/4": _node("FieldQueryNode::new({0}, {1}, {2}, {3})", [_CS, _CS, (T_INT, False), (T_INT, False)],
+                              result=False),
+    "QuotedFieldQueryNode/4": _node("QuotedFieldQueryNode::new({0}, {1}, {2}, {3})",
+                                    [_CS, _CS, (T_INT, False), (T_INT, False)], result=False),
+    "RegexpQueryNode/4": _node("RegexpQueryNode::new({0}, &CharSequence::from({1}), ({2}) as usize, ({3}) as usize)?",
+                               [_CS, "str", (T_INT, False), (T_INT, False)]),
+    "TermRangeQueryNode/4": _node("TermRangeQueryNode::new({0}, {1}, {2}, {3})?",
+                                  [_QN, _QN, (T_BOOL, False), (T_BOOL, False)]),
+    "SlopQueryNode/2": _node("SlopQueryNode::new({0}, {1})?", [_QN, (T_INT, False)]),
+    "AtLeast/2": _fn("AtLeast::new({0}, Some(interval_functions({1})?))?", [(T_INT, False), "val"]),
+    "MaxWidth/2": _fn("MaxWidth::new({0}, {1})?", [(T_INT, False), _IF]),
+    "MaxGaps/2": _fn("MaxGaps::new({0}, {1})?", [(T_INT, False), _IF]),
+    "Unordered/1": _fn("Unordered::new(Some(interval_functions({0})?))?", ["val"]),
+    "UnorderedNoOverlaps/2": _fn("UnorderedNoOverlaps::new({0}, {1})?", [_IF, _IF]),
+    "Ordered/1": _fn("Ordered::new(Some(interval_functions({0})?))?", ["val"]),
+    "Or/1": _fn("Or::new(Some(interval_functions({0})?))?", ["val"]),
+    "Phrase/1": _fn("Phrase::new(Some(interval_functions({0})?))?", ["val"]),
+    "Before/2": _fn("Before::new({0}, {1})?", [_IF, _IF]),
+    "After/2": _fn("After::new({0}, {1})?", [_IF, _IF]),
+    "Containing/2": _fn("Containing::new({0}, {1})?", [_IF, _IF]),
+    "NotContaining/2": _fn("NotContaining::new({0}, {1})?", [_IF, _IF]),
+    "ContainedBy/2": _fn("ContainedBy::new({0}, {1})?", [_IF, _IF]),
+    "NotContainedBy/2": _fn("NotContainedBy::new({0}, {1})?", [_IF, _IF]),
+    "Within/3": _fn("Within::new({0}, {1}, {2})?", [_IF, (T_INT, False), _IF]),
+    "NotWithin/3": _fn("NotWithin::new({0}, {1}, {2})?", [_IF, (T_INT, False), _IF]),
+    "Extend/3": _fn("Extend::new({0}, {1}, {2})?", [_IF, (T_INT, False), (T_INT, False)]),
+    "Overlapping/2": _fn("Overlapping::new({0}, {1})?", [_IF, _IF]),
+    "NonOverlapping/2": _fn("NonOverlapping::new({0}, {1})?", [_IF, _IF]),
+    "Wildcard/2": _fn("Wildcard::new({0}, {1})", ["str", (T_INT, False)], result=False),
+    "FuzzyTerm/3": _fn("FuzzyTerm::new({0}, {1}, {2})", ["str", "val", "val"], result=False),
+    "AnalyzedText/1": _fn("AnalyzedText::new({0})", ["str"], result=False),
+    "MessageImpl/1": Ext("MessageImpl::new({0})", [(T_STRING, True)], T_MESSAGE_IMPL),
+    "ParseException/1": Ext("ParseException::with_message(Arc::new({0}))", [(T_MESSAGE_IMPL, False)],
+                            JType("ParseException")),
+}
+
+STANDARD_STATIC_FIELDS = {
+    "ModifierQueryNode.Modifier.MOD_NONE": ("Modifier::ModNone", T_MODIFIER, False),
+    "ModifierQueryNode.Modifier.MOD_NOT": ("Modifier::ModNot", T_MODIFIER, False),
+    "ModifierQueryNode.Modifier.MOD_REQ": ("Modifier::ModReq", T_MODIFIER, False),
+    "org.apache.lucene.search.FuzzyQuery.defaultMaxEdits": ("fuzzy_query::DEFAULT_MAX_EDITS", T_INT, False),
+    "QueryParserMessages.INVALID_SYNTAX_FUZZY_LIMITS": ("QueryParserMessages::INVALID_SYNTAX_FUZZY_LIMITS.get()", T_STRING, True),
+    "QueryParserMessages.INVALID_SYNTAX_FUZZY_EDITS": ("QueryParserMessages::INVALID_SYNTAX_FUZZY_EDITS.get()", T_STRING, True),
 }
 
 PROFILES = [
@@ -1038,6 +1165,46 @@ PROFILES = [
         ops_trait="QueryParserOps",
         base_ops="",
     ),
+    Profile(
+        name="standard",
+        java_pkg="flexible/standard/parser",
+        parser_class="StandardSyntaxParser",
+        rust_dir="flexible/standard/parser",
+        java_package="org.apache.lucene.queryparser.flexible.standard.parser",
+        types={
+            "QueryNode": ("Option<QueryNodeRef>", True),
+            "FieldQueryNode": ("Option<QueryNodeRef>", True),
+            "TermRangeQueryNode": ("Option<QueryNodeRef>", True),
+            "IntervalQueryNode": ("Option<QueryNodeRef>", True),
+            "ModifierQueryNode": ("Option<QueryNodeRef>", True),
+            "GroupQueryNode": ("Option<Arc<GroupQueryNode>>", True),
+            "IntervalFunction": ("Option<Arc<dyn IntervalFunction>>", True),
+            "CharSequence": ("Option<CharSequence>", True),
+            "ModifierQueryNode.Modifier": ("Modifier", False),
+            "MessageImpl": ("MessageImpl", False),
+        },
+        externals=STANDARD_EXTERNALS,
+        ext_fields={},
+        user_members=["StandardSyntaxParser()", "parse", "parseFloat", "parseInt"],
+        user_sha="",
+        nullable_params={},
+        ops_trait="StandardSyntaxParserOps",
+        base_ops="",
+        news=STANDARD_NEWS,
+        static_calls={
+            "Collections.singletonList": Ext("vec![{0}]", [_QN], JType("List", (T_QUERY_NODE,))),
+        },
+        instance_calls={
+            "CharSequence.toString": Ext("crate::javacc::nn({r}.as_ref())?.to_string()", [], T_STRING, result=True),
+            "ModifierQueryNode.getModifier": Ext("modifier_of(&{r})?", [], T_MODIFIER, result=True),
+        },
+        static_fields=STANDARD_STATIC_FIELDS,
+        casts={"ModifierQueryNode": "cast_node({0}, &MODIFIER_QUERY_NODE_CLASS)?"},
+        instanceofs={"ModifierQueryNode": "is_instance(&{0}, &MODIFIER_QUERY_NODE_CLASS)"},
+        upcasts={("GroupQueryNode", "QueryNode"): "{0}.map(|n| n as QueryNodeRef)"},
+        enums={"ModifierQueryNode.Modifier"},
+        parse_exception="flexible",
+    ),
 ]
 
 # SHA-256 of the Java tokens of the JavaCC 7 templates (the package statement
@@ -1047,10 +1214,12 @@ TEMPLATE_SHA = {
     "Token": "3cd61ae22718671ea69c5f1cb9f0b5eb91f4dbae31889b584018a0eb3306b671",
     "TokenMgrError": "7ae2f5c6bf062dd0fb14f849066508d55b2eccdf5317080983263c3458c22f0c",
     "ParseException": "d20c4dd0eb22bd3b4635a43afd18f2ff8e59bcbce09fd9d3692113f7e7e57fc2",
+    "ParseException:flexible": "e5ff39d6a6eb60653cf4eb6b193585d7f3ced3ab6a201701722b19862c61ca08",
 }
 USER_SHA = {
     "classic": "dcd91f0c8f87c0627994e55a08b97bfffa7510b7977f5fa7a917d6a0d1999cc6",
     "surround": "01ada236a4427be580a15bb761613658a0632bd395b451e34593885c492cf5d4",
+    "standard": "3e4fd443c53c5bbec151ce11501f3e9a02ecf02964d11e6dfa9068949d50bc4b",
 }
 PRINT_HASHES = False
 
@@ -1100,6 +1269,14 @@ class Scope:
 
     def put(self, name, info):
         self.vars[name] = info
+
+    def has_rust_name(self, rust):
+        s = self
+        while s:
+            if any(v.rust == rust for v in s.vars.values()):
+                return True
+            s = s.parent
+        return False
 
 
 @dataclass
@@ -1173,7 +1350,7 @@ class Emitter:
                 return "Box<dyn CharStream>"
             if ty.name == "StringBuilder":
                 return "String"
-            if ty.name in ("QueryParserTokenManager", "ParseException"):
+            if ty.name in (self.profile.tm_class, "ParseException"):
                 return ty.name
             if ty.name in ("List", "ArrayList"):
                 inner = self.rust_type(ty.args[0], False, line)
@@ -1355,6 +1532,9 @@ class Emitter:
             target = e[1]
             if target.is_prim():
                 return p, cast_num(c, t, target), target, False
+            if target.name in self.profile.casts and target.dims == 0:
+                code = self.profile.casts[target.name].replace("{0}", c)
+                return p, code, target, self.type_nullable(target)
             self.err(line, f"a reference cast to {target}")
         if k == "bin":
             return self.emit_binary(e, scope)
@@ -1396,6 +1576,10 @@ class Emitter:
                 items.append(c)
             return pre, "vec![" + ", ".join(items) + "]", ty, False
         if k == "instanceof":
+            target = e[2]
+            if target.name in self.profile.instanceofs and target.dims == 0:
+                p, c, t, n = self.emit_place(e[1], scope)
+                return p, self.profile.instanceofs[target.name].replace("{0}", c), T_BOOL, False
             self.err(line, "instanceof")
         self.err(line, f"unsupported expression {k}")
 
@@ -1422,7 +1606,7 @@ class Emitter:
         v = scope.get(name)
         if v is not None:
             code = v.rust
-            if v.ty.name in ("CharStream", "QueryParserTokenManager", "Exception"):
+            if v.ty.name in ("CharStream", self.profile.tm_class, "Exception"):
                 # passed on, never read twice
                 return [], code, v.ty, v.nullable
             if not v.ty.is_prim():
@@ -1463,10 +1647,26 @@ class Emitter:
                 return [], code, ty, nullable
         return self.emit_expr(e, scope)
 
+    def dotted(self, e, scope):
+        """The qualified name a chain of field accesses on a name spells,
+        when its first name is neither a variable nor a field."""
+        parts = []
+        while e[0] == "field":
+            parts.append(e[2])
+            e = e[1]
+        if e[0] != "name" or scope.get(e[1]) is not None or e[1] in self.fields:
+            return None
+        parts.append(e[1])
+        return ".".join(reversed(parts))
+
     def emit_field_read(self, e, scope):
         obj, name, line = e[1], e[2], e[3]
         if obj[0] == "this":
             return self.emit_name(name, scope, line)
+        qualified = self.dotted(e, scope)
+        if qualified is not None and qualified in self.profile.static_fields:
+            code, ty, nl = self.profile.static_fields[qualified]
+            return [], code, ty, nl
         if obj[0] == "name" and obj[1] == "TokenMgrError":
             return [], f"crate::{self.rust_mod()}::token_mgr_error::{name}", T_INT, False
         po, co, to, no = self.emit_place(obj, scope)
@@ -1530,6 +1730,8 @@ class Emitter:
                 self.err(line, "reference comparison of strings")
             if ta == T_BOOL and tb == T_BOOL:
                 return pre, f"{wrap(ca)} {op} {wrap(cb)}", T_BOOL, False
+            if ta.name in self.profile.enums and ta == tb:
+                return pre, f"{wrap(ca)} {op} {wrap(cb)}", T_BOOL, False
             t = binary_numeric(ta, tb)
             return pre, f"{wrap(cast_num(ca, ta, t))} {op} {wrap(cast_num(cb, tb, t))}", T_BOOL, False
         if op in ("<", ">", "<=", ">="):
@@ -1580,6 +1782,10 @@ class Emitter:
             return f"&rucene::util::java_fmt::float_to_string({code})"
         if ty.name == "Exception":
             return f"&{wrap(code)}.to_string()"
+        if ty.name == "Token" and ty.dims == 0:
+            # `String.valueOf(token)`: "null" for a null token, and a null
+            # `toString()` (the image) is appended as "null" too
+            return f"&crate::javacc::string_value_of({wrap(code)}.as_ref().and_then(|t| t.read(|o| o.image.clone())).as_deref())"
         self.err(0, f"string conversion of {ty}")
 
     # -------------------------------------------------------------- calls
@@ -1592,6 +1798,10 @@ class Emitter:
                 return self.emit_external(name, args, scope, line)
             self.err(line, f"unknown method {name}")
         # library calls
+        if recv[0] == "name" and scope.get(recv[1]) is None and recv[1] not in self.fields \
+                and f"{recv[1]}.{name}" in self.profile.static_calls:
+            return self.apply_ext(self.profile.static_calls[f"{recv[1]}.{name}"], args, scope, line,
+                                  f"{recv[1]}.{name}")
         if recv[0] == "name" and recv[1] in ("Token",) and name == "newToken":
             pre, cs = self.emit_args(args, scope, [T_INT, (T_STRING, True)], line)
             return pre, f"Some(Token::new_token({cs[0]}, {cs[1]}))", JType("Token"), True
@@ -1608,6 +1818,10 @@ class Emitter:
                 return pre, f"({ca}.as_deref() == Some({lit}))", T_BOOL, False
             return pre, f"({ca} == {lit})", T_BOOL, False
         pr, cr, tr, nr = self.emit_place(recv, scope, write=True)
+        if tr.dims == 0 and f"{tr.name}.{name}" in self.profile.instance_calls:
+            pre, code, rt, rn = self.apply_ext(self.profile.instance_calls[f"{tr.name}.{name}"], args,
+                                               scope, line, f"{tr.name}.{name}", receiver=cr)
+            return pr + pre, code, rt, rn
         if tr.name == "String" and tr.dims == 0:
             base = f"crate::javacc::nn_str({cr}.as_deref())?" if nr else f"{cr}"
             if name == "length" and not args:
@@ -1617,9 +1831,6 @@ class Emitter:
                 if len(args) == 2:
                     return pr + pre, f"crate::javacc::substring(&{base}, {cs[0]}, {cs[1]})?", T_STRING, False
                 return pr + pre, f"crate::javacc::substring_from(&{base}, {cs[0]})?", T_STRING, False
-            if name == "charAt":
-                pre, cs = self.emit_args(args, scope, [T_INT], line)
-                return pr + pre, f"crate::javacc::char_at(&{base}, {cs[0]})?", T_CHAR, False
             self.err(line, f"String.{name}")
         if tr.name in ("List", "ArrayList") and tr.dims == 0:
             if recv[0] != "name" and not (recv[0] == "field" and recv[1][0] == "this"):
@@ -1642,8 +1853,14 @@ class Emitter:
                 return pr + pre, f"{lst}[({cs[0]}) as usize].clone()", et, self.type_nullable(et)
             if name == "clear" and not args:
                 return pr, f"{lst}.clear()", T_VOID, False
+            if name == "set" and len(args) == 2:
+                et = tr.args[0]
+                pre, cs = self.emit_args(args, scope, [T_INT, (et, self.type_nullable(et))], line)
+                v = self.tmp("p")
+                pre.append(f"let {v} = {cs[1]};")
+                return pr + pre, f"std::mem::replace(&mut {lst}[({cs[0]}) as usize], {v})", et, self.type_nullable(et)
             self.err(line, f"List.{name}")
-        if tr.name == "QueryParserTokenManager" and tr.dims == 0:
+        if tr.name == self.profile.tm_class and tr.dims == 0:
             return self.emit_tm_call(cr, name, args, scope, line, pr)
         if tr.name == "CharStream" and tr.dims == 0:
             return self.emit_charstream_call(cr, name, args, scope, line, pr)
@@ -1681,7 +1898,7 @@ class Emitter:
             pre, ca, ta, na = self.emit_expr(args[0], scope)
             q = "?" if "ReInit/1/CharStream" in self.profile.tm_fallible else ""
             return pr + pre, f"{target}.re_init({ca}){q}", T_VOID, False
-        self.err(line, f"QueryParserTokenManager.{name}")
+        self.err(line, f"{self.profile.tm_class}.{name}")
 
     def emit_args(self, args, scope, kinds, line):
         pre = []
@@ -1703,6 +1920,17 @@ class Emitter:
             return "None"
         if target_ty.is_prim() and ty.is_prim():
             return cast_num(code, ty, target_ty)
+        if target_ty.dims == 0 and ty.dims == 0 and target_ty.name != ty.name:
+            types = self.profile.types
+            if target_ty.name == "CharSequence" and ty.name == "String" and "CharSequence" in types:
+                # a String is a CharSequence
+                if nullable:
+                    return f"{wrap(code)}.map(CharSequence::from)"
+                return f"Some(CharSequence::from({code}))"
+            if (ty.name, target_ty.name) in self.profile.upcasts:
+                return self.profile.upcasts[(ty.name, target_ty.name)].replace("{0}", code)
+            if ty.name in types and target_ty.name in types and types[ty.name][0] != types[target_ty.name][0]:
+                self.err(line, f"no conversion from {ty} to {target_ty}")
         tn = target_null or self.type_nullable(target_ty)
         if tn and not nullable:
             return f"Some({code})"
@@ -1785,6 +2013,10 @@ class Emitter:
         rname = self.rust_method_name(m)
         kind = self.method_kind(m)
         call = self.call_syntax(m, rname, codes)
+        if call.startswith(f"{rname}(") and scope.has_rust_name(rname):
+            # a local of the same name (Java's `boost` beside `Boost()`)
+            # shadows the function: name it by its path
+            call = f"self::{call}"
         if kind == "raised":
             if self.fn_kind != "raised":
                 self.err(line, f"calling the lookahead routine {name} outside one")
@@ -1795,7 +2027,12 @@ class Emitter:
         return pre, call, rt, self.type_nullable(rt) or fkey(m) in self.nullable_returns
 
     def emit_external(self, name, args, scope, line):
-        ext = self.profile.externals[name]
+        return self.apply_ext(self.profile.externals[name], args, scope, line, name)
+
+    def apply_ext(self, ext, args, scope, line, name, receiver=None):
+        """A call described by `ext`: the arguments converted by their
+        kinds, then substituted in the template (`{this}`, `{r}` the
+        receiver, `{0}`, `{1}`, ...)."""
         if len(args) != len(ext.params):
             self.err(line, f"{name} takes {len(ext.params)} arguments")
         pre = []
@@ -1815,29 +2052,38 @@ class Emitter:
                 codes.append(f"crate::javacc::nn_owned({c})?")
             elif kind == "nn":
                 codes.append(f"crate::javacc::nn_owned({c})?" if n else c)
-            else:
+            elif isinstance(kind, tuple):
+                codes.append(self.coerce(c, t, n, kind[0], kind[1], line))
+            elif kind == "val":
                 codes.append(c)
+            else:
+                self.err(line, f"unknown argument kind {kind}")
         if "{this}" in ext.rust:
             vals = [i for i, k in enumerate(ext.params) if k not in ("mutref", "ref")]
             hoisted = self.hoist(pre, [codes[i] for i in vals])
             for i, h in zip(vals, hoisted):
                 codes[i] = h
         call = ext.rust.replace("{this}", "this")
+        if receiver is not None:
+            call = call.replace("{r}", receiver)
         for i, c in enumerate(codes):
             call = call.replace("{" + str(i) + "}", c)
         return pre, call, ext.ret, ext.ret_nullable or self.type_nullable(ext.ret)
 
     def emit_new(self, e, scope):
         ty, args, line = e[1], e[2], e[3]
+        key = f"{ty.name}/{len(args)}"
+        if key in self.profile.news:
+            return self.apply_ext(self.profile.news[key], args, scope, line, f"new {key}")
         if ty.name == "Token" and not args:
             return [], "Some(TokenRef::new(Token::new()))", ty, True
         if ty.name == "JJCalls" and not args:
             return [], "Some(JJCallsRef::new(JJCalls::default()))", ty, True
         if ty.name in ("ArrayList",) and not args:
             return [], "Vec::new()", JType("ArrayList", ty.args), False
-        if ty.name == "QueryParserTokenManager" and len(args) == 1:
+        if ty.name == self.profile.tm_class and len(args) == 1:
             p, c, t, n = self.emit_expr(args[0], scope)
-            return p, f"QueryParserTokenManager::new({c})", ty, False
+            return p, f"{self.profile.tm_class}::new({c})", ty, False
         if ty.name == "ParseException":
             if not args:
                 return [], "ParseException::new()", ty, False
@@ -2646,7 +2892,7 @@ class Emitter:
                 return True
             ty = self.nonnull_field_type(recv)
             if ty is not None:
-                if ty.name == "QueryParserTokenManager":
+                if ty.name == self.profile.tm_class:
                     return name != "ReInit" or "ReInit/1/CharStream" in self.profile.tm_fallible
                 key = "List" if self.is_list(ty) else ty.name
                 if name in self.INFALLIBLE_RECEIVER_CALLS.get(key, ()):
@@ -2666,9 +2912,14 @@ class Emitter:
                 return True
             return self.body_fallible(node[2], fallible)
         if k == "new":
+            ext = self.profile.news.get(f"{node[1].name}/{len(node[2])}")
+            if ext is not None and ext.result:
+                return True
             if node[1].name == "ParseException" and len(node[2]) == 3:
                 return True
             return self.body_fallible(node[2], fallible)
+        if k == "cast" and not node[1].is_prim():
+            return True
         return any(self.body_fallible(y, fallible) for y in node[1:])
 
     def rust_method_name(self, m):
@@ -2677,7 +2928,7 @@ class Emitter:
             pt = m["params"][0][0].name if m["params"] else ""
             if len(m["params"]) == 2:
                 return "re_init_with_lex_state"
-            if pt == "QueryParserTokenManager":
+            if pt == self.profile.tm_class:
                 return "re_init_with_token_manager"
             return "re_init"
         if name == "trace_enabled":
@@ -2695,7 +2946,7 @@ class Emitter:
         return f"{rname}(this{', ' if args else ''}{args})"
 
     def is_public_parser_member(self, m):
-        return "public" in m["mods"] and m["name"] not in ("ReInit",) or (m["name"] == "ReInit" and m["params"] and m["params"][0][0].name == "QueryParserTokenManager")
+        return "public" in m["mods"] and m["name"] not in ("ReInit",) or (m["name"] == "ReInit" and m["params"] and m["params"][0][0].name == self.profile.tm_class)
 
     def emit_method(self, m, out, indent, as_trait_method=False, as_free_fn=False):
         name = m["name"]
@@ -3122,6 +3373,8 @@ def check_template(profile, lucene, java_file):
     toks = lex(text, where)
     h = token_hash(toks)
     key = java_file[:-5]
+    if key == "ParseException" and profile.parse_exception == "flexible":
+        key = "ParseException:flexible"
     if PRINT_HASHES:
         print(f"template {profile.name} {key} {h}")
         return
@@ -3651,6 +3904,287 @@ impl JavaThrowable for ParseException {{
 # ==========================================================================
 
 
+def template_parse_exception_flexible(profile):
+    """`ParseException.java` of the flexible standard parser: the JavaCC 7
+    template with Lucene's edits (a `QueryNodeParseException` whose message
+    is the NLS `INVALID_SYNTAX` message), pinned by its own SHA-256."""
+    pkg = profile.java_package
+    return LICENSE + f"""// @generated by {SCRIPT} from the JavaCC 7 template of
+// {JAVA_ROOT}/{profile.java_pkg}/ParseException.java (Lucene 10.5.0, as
+// Lucene edits it for the flexible parser). Do not edit.
+
+//! The port of `ParseException.java`, of the Java package `{pkg}`.
+
+use std::any::Any;
+use std::sync::{{Arc, Once}};
+
+use rucene::error::{{JavaThrowable, LuceneError, LuceneErrorKind, Result}};
+
+use super::token::TokenRef;
+use crate::flexible::core::messages::query_parser_messages::QueryParserMessages;
+use crate::flexible::core::query_node_parse_exception::QueryNodeParseException;
+use crate::flexible::messages::message::Message;
+use crate::flexible::messages::message_impl::MessageImpl;
+use crate::flexible::messages::nls_exception::NLSException;
+use crate::jdk::object::JavaObject;
+
+/// The Java binary class name.
+const CLASS: &str = "{pkg}.ParseException";
+
+/// The end of line string for this machine: the protected static `EOL`,
+/// `System.getProperty("line.separator", "\\n")`, the JVM's platform
+/// default.
+pub fn eol() -> &'static str {{
+    if cfg!(windows) {{
+        "\\r\\n"
+    }} else {{
+        "\\n"
+    }}
+}}
+
+/// Registers the class with [`QueryNodeParseException`], so that
+/// `catch (QueryNodeParseException e)` and `catch (QueryNodeException e)`
+/// ([`QueryNodeParseException::of`]) see through it.
+fn register() {{
+    static REGISTERED: Once = Once::new();
+    REGISTERED.call_once(|| {{
+        QueryNodeParseException::register_subclass(|any| {{
+            any.downcast_ref::<ParseException>().map(|e| &e.base)
+        }});
+    }});
+}}
+
+/// This exception is thrown when parse errors are encountered. You can
+/// explicitly create objects of this exception type by calling the method
+/// `generateParseException` in the generated parser.
+///
+/// Equivalent to `{pkg}.ParseException`, generated by JavaCC and edited by
+/// Lucene: a `QueryNodeParseException` (embedded, reached through
+/// [`query_node_parse_exception`](Self::query_node_parse_exception)); it is
+/// thrown as a [`LuceneError`] of kind [`LuceneErrorKind::Throwable`].
+#[derive(Debug, Clone)]
+pub struct ParseException {{
+    base: QueryNodeParseException,
+    /// This is the last token that has been consumed successfully. If this
+    /// object has been created due to a parse error, the token following
+    /// this token will (therefore) be the first error token.
+    pub current_token: Option<TokenRef>,
+    /// Each entry in this array is an array of integers. Each array of
+    /// integers represents a sequence of tokens (by their ordinal values)
+    /// that is expected at this point of the parse.
+    pub expected_token_sequences: Option<Vec<Vec<i32>>>,
+    /// This is a reference to the `tokenImage` array of the generated parser
+    /// within which the parse error occurred.
+    pub token_image: Option<Vec<String>>,
+}}
+
+impl ParseException {{
+    /// The exception over its `QueryNodeParseException` part.
+    fn of_base(mut base: QueryNodeParseException) -> Self {{
+        register();
+        base.query_node_exception_mut().set_java_class(CLASS);
+        Self {{
+            base,
+            current_token: None,
+            expected_token_sequences: None,
+            token_image: None,
+        }}
+    }}
+
+    /// This constructor is used by the method `generateParseException` in
+    /// the generated parser. Calling this constructor generates a new object
+    /// of this type with the fields `current_token`,
+    /// `expected_token_sequences` and `token_image` set.
+    ///
+    /// Equivalent to `new ParseException(Token, int[][], String[])`: the
+    /// message is `INVALID_SYNTAX` with the text `initialise` builds.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `initialise` reaching the end of the
+    /// token list.
+    pub fn with_tokens(
+        current_token_val: TokenRef,
+        expected_token_sequences_val: Vec<Vec<i32>>,
+        token_image_val: &[&str],
+    ) -> Result<Self> {{
+        let token_image: Vec<String> = token_image_val.iter().map(|s| s.to_string()).collect();
+        let message =
+            Self::initialise(&current_token_val, &expected_token_sequences_val, &token_image)?;
+        let mut e = Self::of_base(QueryNodeParseException::new(Arc::new(MessageImpl::with_args(
+            QueryParserMessages::INVALID_SYNTAX.get(),
+            vec![JavaObject::from(message)],
+        ))));
+        e.current_token = Some(current_token_val);
+        e.expected_token_sequences = Some(expected_token_sequences_val);
+        e.token_image = Some(token_image);
+        Ok(e)
+    }}
+
+    /// The following constructors are for use by you for whatever purpose
+    /// you can think of. Constructing the exception in this manner makes the
+    /// exception behave in the normal way - i.e., as documented in the class
+    /// `Throwable`. The fields `errorToken`, `expected_token_sequences` and
+    /// `token_image` do not contain relevant information. The JavaCC
+    /// generated code does not use these constructors.
+    ///
+    /// Equivalent to `new ParseException()`: the message is `INVALID_SYNTAX`
+    /// with the text `"Error"`.
+    pub fn new() -> Self {{
+        Self::of_base(QueryNodeParseException::new(Arc::new(MessageImpl::with_args(
+            QueryParserMessages::INVALID_SYNTAX.get(),
+            vec![JavaObject::from("Error")],
+        ))))
+    }}
+
+    /// Constructor with message.
+    ///
+    /// Equivalent to `new ParseException(Message)`.
+    pub fn with_message(message: Arc<dyn Message>) -> Self {{
+        Self::of_base(QueryNodeParseException::new(message))
+    }}
+
+    /// The `QueryNodeParseException` this exception extends.
+    pub fn query_node_parse_exception(&self) -> &QueryNodeParseException {{
+        &self.base
+    }}
+
+    /// The `QueryNodeParseException` this exception extends, for writing
+    /// its state (`setQuery`, `setNonLocalizedMessage`).
+    pub fn query_node_parse_exception_mut(&mut self) -> &mut QueryNodeParseException {{
+        &mut self.base
+    }}
+
+    /// It uses `current_token` and `expected_token_sequences` to generate a
+    /// parse error message and returns it. If this object has been created
+    /// due to a parse error, and you do not catch it (it gets thrown from the
+    /// parser) the correct error message gets displayed.
+    ///
+    /// Equivalent to `initialise(Token, int[][], String[])`.
+    fn initialise(
+        current_token: &TokenRef,
+        expected_token_sequences: &[Vec<i32>],
+        token_image: &[String],
+    ) -> Result<String> {{
+        let eol = eol();
+        let mut expected = String::new();
+        let mut max_size = 0;
+        for seq in expected_token_sequences {{
+            if max_size < seq.len() {{
+                max_size = seq.len();
+            }}
+            for &k in seq {{
+                expected.push_str(&token_image[k as usize]);
+                expected.push(' ');
+            }}
+            if seq[seq.len() - 1] != 0 {{
+                expected.push_str("...");
+            }}
+            expected.push_str(eol);
+            expected.push_str("    ");
+        }}
+        let mut retval = String::from("Encountered \\"");
+        let mut tok = current_token.lock().next.clone();
+        for i in 0..max_size {{
+            if i != 0 {{
+                retval.push(' ');
+            }}
+            let t = crate::javacc::nn(tok.as_ref())?.clone();
+            let (kind, image, next) = {{
+                let g = t.lock();
+                (g.kind, g.image.clone(), g.next.clone())
+            }};
+            if kind == 0 {{
+                retval.push_str(&token_image[0]);
+                break;
+            }}
+            retval.push(' ');
+            retval.push_str(&token_image[kind as usize]);
+            retval.push_str(" \\"");
+            retval.push_str(&add_escapes(crate::javacc::nn_str(image.as_deref())?));
+            retval.push_str(" \\"");
+            tok = next;
+        }}
+        let next = current_token.lock().next.clone();
+        if let Some(next) = next {{
+            let g = next.lock();
+            retval.push_str(&format!(
+                "\\" at line {{}}, column {{}}",
+                g.begin_line, g.begin_column
+            ));
+        }}
+        retval.push('.');
+        retval.push_str(eol);
+        if expected_token_sequences.is_empty() {{
+            // Nothing to add here
+        }} else {{
+            if expected_token_sequences.len() == 1 {{
+                retval.push_str("Was expecting:");
+            }} else {{
+                retval.push_str("Was expecting one of:");
+            }}
+            retval.push_str(eol);
+            retval.push_str("    ");
+            retval.push_str(&expected);
+        }}
+        Ok(retval)
+    }}
+
+    /// This exception as the [`LuceneError`] it is thrown as.
+    pub fn error(self) -> LuceneError {{
+        LuceneError::from(LuceneErrorKind::Throwable(Arc::new(self)))
+    }}
+
+    /// The `ParseException` `error` stands for, when it is one.
+    pub fn of(error: &LuceneError) -> Option<&ParseException> {{
+        match error.kind() {{
+            LuceneErrorKind::Throwable(t) => t.as_any().downcast_ref(),
+            _ => None,
+        }}
+    }}
+}}
+
+impl Default for ParseException {{
+    fn default() -> Self {{
+        Self::new()
+    }}
+}}
+
+/// Used to convert raw characters to their escaped version when these raw
+/// versions cannot be used as part of an ASCII string literal.
+///
+/// Equivalent to the package-private `ParseException.add_escapes(String)`,
+/// over the UTF-16 units of `str`.
+pub fn add_escapes(str: &str) -> String {{
+    crate::javacc::add_escapes(str)
+}}
+
+impl NLSException for ParseException {{
+    fn get_message_object(&self) -> Option<Arc<dyn Message>> {{
+        self.base.get_message_object()
+    }}
+}}
+
+impl JavaThrowable for ParseException {{
+    fn java_class(&self) -> &'static str {{
+        self.base.java_class()
+    }}
+
+    fn get_message(&self) -> Option<&str> {{
+        self.base.get_message()
+    }}
+
+    fn get_cause(&self) -> Option<&Arc<LuceneError>> {{
+        self.base.get_cause()
+    }}
+
+    fn as_any(&self) -> &dyn Any {{
+        self
+    }}
+}}
+"""
+
+
 def translate_parser(profile, lucene, constants):
     java_file = f"{profile.parser_class}.java"
     path = lucene / JAVA_ROOT / profile.java_pkg / java_file
@@ -3662,12 +4196,12 @@ def translate_parser(profile, lucene, constants):
     user_toks = []
     gen_members = []
     for m in cls["members"]:
-        key = member_key(m)
+        key = member_key(m, cls["name"])
         if key in profile.user_members:
             user_toks.extend(m["toks"])
         else:
             gen_members.append(m)
-    found = {member_key(m) for m in cls["members"]}
+    found = {member_key(m, cls["name"]) for m in cls["members"]}
     for u in profile.user_members:
         if u not in found:
             fail(where, f"the user member {u} is missing")
@@ -3746,12 +4280,12 @@ def translate_parser(profile, lucene, constants):
         rname = "with_char_stream" if pt == "CharStream" else "with_token_manager"
         state.append(f"impl JjState {{\n    /// The state `{profile.parser_class}({pt})` initializes.\n")
         state.append("    #[allow(unused_mut, clippy::all)]\n")
-        p_rust = "Box<dyn CharStream>" if pt == "CharStream" else "QueryParserTokenManager"
+        p_rust = "Box<dyn CharStream>" if pt == "CharStream" else profile.tm_class
         state.append(f"    pub fn {rname}(stream: {p_rust}) -> Self {{\n")
         inits = []
         for (fm, n, init, rn, ty, nullable) in fields:
             if n == "token_source":
-                inits.append(f"{rn}: {'QueryParserTokenManager::new(stream)' if pt == 'CharStream' else 'stream'}")
+                inits.append(f"{rn}: {profile.tm_class + '::new(stream)' if pt == 'CharStream' else 'stream'}")
             elif init is None:
                 inits.append(f"{rn}: {em.default_value(ty, nullable, fm['line'])}")
             else:
@@ -3821,13 +4355,13 @@ def translate_parser(profile, lucene, constants):
     }
 
 
-def member_key(m):
+def member_key(m, class_name):
     if m["kind"] == "field":
         return m["decls"][0][0]
     if m["kind"] == "method":
         return m["name"]
     if m["kind"] == "ctor":
-        return "QueryParser(" + ",".join(t.name for (t, _) in m["params"]) + ")"
+        return class_name + "(" + ",".join(t.name for (t, _) in m["params"]) + ")"
     if m["kind"] == "type":
         return m["decl"]["name"]
     return m["kind"]
@@ -3872,6 +4406,7 @@ def main(argv):
     positional = [a for a in argv[1:] if not a.startswith("--") and a != only]
     lucene = Path(positional[0] if positional else "/tmp/lucene1050")
     outputs = {}
+    parser_files = set()
     for profile in PROFILES:
         if only and profile.name != only:
             continue
@@ -3886,9 +4421,13 @@ def main(argv):
         outputs[base / f"{snake(profile.parser_class)}_token_manager.rs"] = rustfmt(translate_token_manager(profile, lucene, constants))
         outputs[base / "token.rs"] = rustfmt(template_token(profile))
         outputs[base / "token_mgr_error.rs"] = rustfmt(template_token_mgr_error(profile))
-        outputs[base / "parse_exception.rs"] = rustfmt(template_parse_exception(profile))
+        if profile.parse_exception == "flexible":
+            outputs[base / "parse_exception.rs"] = rustfmt(template_parse_exception_flexible(profile))
+        else:
+            outputs[base / "parse_exception.rs"] = rustfmt(template_parse_exception(profile))
         regions = translate_parser(profile, lucene, constants)
         parser_rs = base / f"{snake(profile.parser_class)}.rs"
+        parser_files.add(parser_rs)
         current = parser_rs.read_text(encoding="utf-8")
         new = replace_regions(current, regions, str(parser_rs))
         outputs[parser_rs] = new
@@ -3896,7 +4435,7 @@ def main(argv):
         return 0
     status = 0
     for path, text in outputs.items():
-        if path.name == f"{snake('QueryParser')}.rs":
+        if path in parser_files:
             text = rustfmt(text)
         if check:
             if not path.exists() or path.read_text(encoding="utf-8") != text:

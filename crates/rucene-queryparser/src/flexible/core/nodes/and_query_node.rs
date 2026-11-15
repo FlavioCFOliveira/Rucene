@@ -89,10 +89,6 @@ impl AndQueryNode {
             base: self.base.cloned(this, clauses),
         }
     }
-
-    pub(crate) fn boolean(&self) -> &BooleanQueryNode {
-        &self.base
-    }
 }
 
 impl QueryNode for AndQueryNode {

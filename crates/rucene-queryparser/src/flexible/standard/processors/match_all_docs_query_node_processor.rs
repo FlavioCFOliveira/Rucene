@@ -15,10 +15,58 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `MatchAllDocsQueryNodeProcessor.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.processors`.
+//! Port of `MatchAllDocsQueryNodeProcessor.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.processors`.
 
-/// Java: `public class`.
+use rucene::error::{LuceneError, Result};
+
+use crate::flexible::core::nodes::match_all_docs_query_node::MatchAllDocsQueryNode;
+use crate::flexible::core::nodes::query_node::QueryNodeRef;
+use crate::flexible::core::processors::query_node_processor_impl::{
+    QueryNodeProcessorImpl, QueryNodeProcessorImplOps,
+};
+
+/// This processor converts every `WildcardQueryNode` that is "*:*" to
+/// `MatchAllDocsQueryNode`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.processors.MatchAllDocsQueryNodeProcessor`; ported by rmp task #490.
-pub struct MatchAllDocsQueryNodeProcessor;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.processors.MatchAllDocsQueryNodeProcessor`.
+#[derive(Debug, Default)]
+pub struct MatchAllDocsQueryNodeProcessor {
+    base: QueryNodeProcessorImpl,
+}
+
+impl MatchAllDocsQueryNodeProcessor {
+    /// Equivalent to `new MatchAllDocsQueryNodeProcessor()`.
+    pub fn new() -> Self {
+        // empty constructor
+        Self::default()
+    }
+}
+
+impl QueryNodeProcessorImplOps for MatchAllDocsQueryNodeProcessor {
+    fn query_node_processor_impl(&self) -> &QueryNodeProcessorImpl {
+        &self.base
+    }
+
+    fn post_process_node(&self, node: QueryNodeRef) -> Result<QueryNodeRef> {
+        if let Some(fqn) = node.as_field_query_node() {
+            let field = fqn.get_field().ok_or_else(LuceneError::null_pointer)?;
+            if field.to_string() == "*" {
+                let text = fqn.get_text().ok_or_else(LuceneError::null_pointer)?;
+                if text.to_string() == "*" {
+                    let match_all: QueryNodeRef = MatchAllDocsQueryNode::new();
+                    return Ok(match_all);
+                }
+            }
+        }
+        Ok(node)
+    }
+
+    fn pre_process_node(&self, node: QueryNodeRef) -> Result<QueryNodeRef> {
+        Ok(node)
+    }
+
+    fn set_children_order(&self, children: Vec<QueryNodeRef>) -> Result<Vec<QueryNodeRef>> {
+        Ok(children)
+    }
+}

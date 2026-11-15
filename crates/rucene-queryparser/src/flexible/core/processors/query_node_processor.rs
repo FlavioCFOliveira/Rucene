@@ -18,6 +18,7 @@
 //! Port of `QueryNodeProcessor.java`, of the Java package
 //! `org.apache.lucene.queryparser.flexible.core.processors`.
 
+use std::any::Any;
 use std::sync::Arc;
 
 use rucene::error::Result;
@@ -66,4 +67,9 @@ pub trait QueryNodeProcessor: Send + Sync {
     ///
     /// Equivalent to `getQueryConfigHandler()`.
     fn get_query_config_handler(&self) -> Option<Arc<QueryConfigHandler>>;
+
+    /// The processor, for `getClass()`: a downcast to its type tells its
+    /// exact class (`PrecedenceQueryNodeProcessorPipeline` removes the
+    /// processors whose class is `BooleanQuery2ModifierNodeProcessor`).
+    fn as_any(&self) -> &dyn Any;
 }

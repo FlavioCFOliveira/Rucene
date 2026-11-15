@@ -21,8 +21,8 @@
 //!
 //! **Divergence.** Not a port of a Lucene file: the support of
 //! `tools/translate/javacc_java_to_rust.py`, which translates the generated
-//! Java of `classic.QueryParser`, `surround.parser.QueryParser` and their
-//! token managers. Each function states the Java operation it stands for.
+//! Java of `classic.QueryParser`, `surround.parser.QueryParser`,
+//! `flexible.standard.parser.StandardSyntaxParser` and their token managers. Each function states the Java operation it stands for.
 //! Rust strings cannot hold an unpaired surrogate: where a Java operation
 //! would split a surrogate pair (`substring` inside a pair), the half is
 //! replaced by U+FFFD.
@@ -31,6 +31,8 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
+
+use crate::flexible::core::query_node_error::QUERY_NODE_ERROR_CLASS;
 
 /// A Java object reference to a mutable value: shared, compared by identity,
 /// and rewritten in place by whoever holds it.
@@ -123,21 +125,6 @@ pub fn length(s: &str) -> i32 {
     s.encode_utf16().count() as i32
 }
 
-/// `String.charAt(int)`.
-///
-/// # Errors
-///
-/// The `StringIndexOutOfBoundsException` of an index outside the string.
-pub fn char_at(s: &str, index: i32) -> Result<u16> {
-    let units: Vec<u16> = s.encode_utf16().collect();
-    if index < 0 || index as usize >= units.len() {
-        return Err(LuceneError::from(LuceneErrorKind::StringIndexOutOfBounds(
-            format!("Index {index} out of bounds for length {}", units.len()),
-        )));
-    }
-    Ok(units[index as usize])
-}
-
 /// `String.substring(int, int)`, over UTF-16 code units.
 ///
 /// # Errors
@@ -208,15 +195,24 @@ const ERRORS: &[&str] = &[
 ];
 
 /// Whether `catch (Exception e)` catches `error`: every throwable but a
-/// `java.lang.Error` (an `AssertionError`, a JDK `Error`, or the token
-/// managers' `TokenMgrError`).
+/// `java.lang.Error` (an `AssertionError`, a JDK `Error`, the token
+/// managers' `TokenMgrError`, or the flexible parser's `QueryNodeError`).
 pub fn is_exception(error: &LuceneError) -> bool {
     match error.kind() {
         LuceneErrorKind::AssertionError(_) => false,
         LuceneErrorKind::Unchecked { class, .. } => !ERRORS.contains(class),
-        LuceneErrorKind::Throwable(t) => !t.java_class().ends_with(".TokenMgrError"),
+        LuceneErrorKind::Throwable(t) => {
+            let class = t.java_class();
+            !(class.ends_with(".TokenMgrError") || class == QUERY_NODE_ERROR_CLASS)
+        }
         _ => true,
     }
+}
+
+/// Whether `catch (Error e)` catches `error`: a `java.lang.Error`, every
+/// throwable [`is_exception`] excludes.
+pub fn is_error(error: &LuceneError) -> bool {
+    !is_exception(error)
 }
 
 /// `addEscapes(String)` of the JavaCC 7 `TokenMgrError` and `add_escapes`

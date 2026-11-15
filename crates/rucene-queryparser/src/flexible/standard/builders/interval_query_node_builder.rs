@@ -15,10 +15,36 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `IntervalQueryNodeBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.builders`.
+//! Port of `IntervalQueryNodeBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.builders`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::Query;
+
+use super::standard_query_builder::{cast, StandardQueryBuilder};
+use crate::flexible::core::nodes::query_node::QueryNodeRef;
+use crate::flexible::standard::nodes::interval_query_node::{
+    IntervalQueryNode, INTERVAL_QUERY_NODE_CLASS,
+};
+
+/// Builds a [`Query`] from an `IntervalQueryNode`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.builders.IntervalQueryNodeBuilder`; ported by rmp task #490.
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.builders.IntervalQueryNodeBuilder`.
+#[derive(Debug, Default)]
 pub struct IntervalQueryNodeBuilder;
+
+impl IntervalQueryNodeBuilder {
+    /// Equivalent to the implicit `new IntervalQueryNodeBuilder()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl StandardQueryBuilder for IntervalQueryNodeBuilder {
+    fn build(&self, query_node: &QueryNodeRef) -> Result<Option<Arc<dyn Query>>> {
+        let node: &IntervalQueryNode = cast(query_node, &INTERVAL_QUERY_NODE_CLASS)?;
+        Ok(Some(node.get_query()?))
+    }
+}

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.flexible.precedence`.
+//! Port of the Java package `org.apache.lucene.queryparser.flexible.precedence`.
 
 pub mod precedence_query_parser;
 pub mod processors;

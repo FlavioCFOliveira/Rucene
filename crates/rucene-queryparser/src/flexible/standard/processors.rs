@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.flexible.standard.processors`.
+//! Port of the Java package `org.apache.lucene.queryparser.flexible.standard.processors`.
 
 pub mod allow_leading_wildcard_processor;
 pub mod analyzer_query_node_processor;

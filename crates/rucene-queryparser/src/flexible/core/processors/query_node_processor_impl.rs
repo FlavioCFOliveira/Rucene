@@ -270,7 +270,7 @@ pub trait QueryNodeProcessorImplOps: Send + Sync {
     }
 }
 
-impl<T: QueryNodeProcessorImplOps> QueryNodeProcessor for T {
+impl<T: QueryNodeProcessorImplOps + 'static> QueryNodeProcessor for T {
     fn process(&self, query_tree: QueryNodeRef) -> Result<QueryNodeRef> {
         QueryNodeProcessorImplOps::process(self, query_tree)
     }
@@ -281,6 +281,10 @@ impl<T: QueryNodeProcessorImplOps> QueryNodeProcessor for T {
 
     fn get_query_config_handler(&self) -> Option<Arc<QueryConfigHandler>> {
         QueryNodeProcessorImplOps::get_query_config_handler(self)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
