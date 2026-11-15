@@ -44,12 +44,20 @@ use super::field_config_listener::FieldConfigListener;
 /// `org.apache.lucene.queryparser.flexible.core.config.QueryConfigHandler`,
 /// which extends `AbstractQueryConfig` (it dereferences to it). It is shared
 /// as an [`Arc`], as processors, listeners and the parser hold the same
-/// object.
+/// object. A subclass that overrides `getFieldConfig` is built by
+/// [`with_get_field_config`](Self::with_get_field_config).
 #[derive(Default)]
 pub struct QueryConfigHandler {
     config: AbstractQueryConfig,
     listeners: Mutex<Vec<Arc<dyn FieldConfigListener>>>,
+    get_field_config_override: Option<GetFieldConfigFn>,
 }
+
+/// The body of a subclass's override of `getFieldConfig(String fieldName)`:
+/// it receives the handler (`this`) and the field name, and returns the
+/// configuration or `None` (Java's `null`).
+pub type GetFieldConfigFn =
+    Arc<dyn Fn(&QueryConfigHandler, Option<&str>) -> Result<Option<FieldConfig>> + Send + Sync>;
 
 impl std::fmt::Debug for QueryConfigHandler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -66,6 +74,21 @@ impl QueryConfigHandler {
         Arc::new(Self {
             config: AbstractQueryConfig::new(),
             listeners: Mutex::new(Vec::new()),
+            get_field_config_override: None,
+        })
+    }
+
+    /// Equivalent to `new X()` of a subclass `X` that overrides
+    /// `getFieldConfig(String fieldName)` with `get_field_config` (for
+    /// example the `SpansQueryConfigHandler` of Lucene's tests, which
+    /// returns `null` for every field): a handler without configuration or
+    /// listeners whose [`get_field_config`](Self::get_field_config) is the
+    /// override.
+    pub fn with_get_field_config(get_field_config: GetFieldConfigFn) -> Arc<Self> {
+        Arc::new(Self {
+            config: AbstractQueryConfig::new(),
+            listeners: Mutex::new(Vec::new()),
+            get_field_config_override: Some(get_field_config),
         })
     }
 
@@ -76,13 +99,17 @@ impl QueryConfigHandler {
     ///
     /// Equivalent to `getFieldConfig(String fieldName)`: a new
     /// [`FieldConfig`] that each listener builds, in the order they were
-    /// added.
+    /// added; for a subclass that overrides the method, what the override
+    /// returns (`None` for Java's `null`).
     ///
     /// # Errors
     ///
     /// `IllegalArgumentException("field name must not be null!")` for a
-    /// `None` field name, and what a listener throws.
-    pub fn get_field_config(&self, field_name: Option<&str>) -> Result<FieldConfig> {
+    /// `None` field name, and what a listener (or the override) throws.
+    pub fn get_field_config(&self, field_name: Option<&str>) -> Result<Option<FieldConfig>> {
+        if let Some(get_field_config) = &self.get_field_config_override {
+            return get_field_config(self, field_name);
+        }
         let field_config = FieldConfig::new(field_name)?;
         let listeners: Vec<Arc<dyn FieldConfigListener>> = self
             .listeners
@@ -92,7 +119,7 @@ impl QueryConfigHandler {
         for listener in listeners {
             listener.build_field_config(&field_config)?;
         }
-        Ok(field_config)
+        Ok(Some(field_config))
     }
 
     /// Adds a listener. The added listeners are called in the order they are

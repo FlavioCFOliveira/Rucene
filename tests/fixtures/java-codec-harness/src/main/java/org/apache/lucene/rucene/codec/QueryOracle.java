@@ -788,6 +788,197 @@ public final class QueryOracle {
     }
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // The flexible query parser (rmp #486-#491)
+  // ---------------------------------------------------------------------------------------------
+
+  /** A call whose value or thrown exception a flexible dump prints. */
+  interface Shown {
+    Object get() throws Throwable;
+  }
+
+  /** The value as {@code String.valueOf}, or {@code !<class>: <message>} of what it throws. */
+  static String shown(Shown s) {
+    try {
+      return String.valueOf(s.get());
+    } catch (Throwable t) {
+      return "!" + t.getClass().getName() + ": " + t.getMessage();
+    }
+  }
+
+  static void collectNodes(
+      org.apache.lucene.queryparser.flexible.core.nodes.QueryNode n,
+      List<org.apache.lucene.queryparser.flexible.core.nodes.QueryNode> out) {
+    if (n == null) {
+      return;
+    }
+    out.add(n);
+    List<org.apache.lucene.queryparser.flexible.core.nodes.QueryNode> c = n.getChildren();
+    if (c != null) {
+      for (org.apache.lucene.queryparser.flexible.core.nodes.QueryNode x : c) {
+        collectNodes(x, out);
+      }
+    }
+  }
+
+  static int indexOfNode(
+      List<org.apache.lucene.queryparser.flexible.core.nodes.QueryNode> all,
+      org.apache.lucene.queryparser.flexible.core.nodes.QueryNode n) {
+    for (int i = 0; i < all.size(); i++) {
+      if (all.get(i) == n) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * One line per node, depth first: depth, class, {@code isLeaf()}, the parent ({@code null},
+   * {@code ^} for the node it was reached from, {@code #i} for the i-th collected node, {@code ?}
+   * for another), the sorted tag names, {@code toString()} and {@code
+   * toQueryString(new EscapeQuerySyntaxImpl())}.
+   */
+  static void dumpNodes(
+      StringBuilder b,
+      org.apache.lucene.queryparser.flexible.core.nodes.QueryNode n,
+      org.apache.lucene.queryparser.flexible.core.nodes.QueryNode from,
+      int depth,
+      List<org.apache.lucene.queryparser.flexible.core.nodes.QueryNode> all) {
+    if (n == null) {
+      b.append(depth).append(" null\n");
+      return;
+    }
+    org.apache.lucene.queryparser.flexible.core.nodes.QueryNode parent = n.getParent();
+    String p;
+    if (parent == null) {
+      p = "null";
+    } else if (parent == from) {
+      p = "^";
+    } else {
+      int i = indexOfNode(all, parent);
+      p = i < 0 ? "?" : "#" + i;
+    }
+    b.append(depth)
+        .append(' ')
+        .append(n.getClass().getName())
+        .append(" leaf=")
+        .append(n.isLeaf())
+        .append(" parent=")
+        .append(p)
+        .append(" tags=")
+        .append(new java.util.TreeSet<>(n.getTagMap().keySet()))
+        .append(" ts=")
+        .append(shown(n::toString))
+        .append(" qs=")
+        .append(
+            shown(
+                () ->
+                    n.toQueryString(
+                        new org.apache.lucene.queryparser.flexible.standard.parser
+                            .EscapeQuerySyntaxImpl())))
+        .append('\n');
+    List<org.apache.lucene.queryparser.flexible.core.nodes.QueryNode> c = n.getChildren();
+    if (c != null) {
+      for (org.apache.lucene.queryparser.flexible.core.nodes.QueryNode x : c) {
+        dumpNodes(b, x, n, depth + 1, all);
+      }
+    }
+  }
+
+  /** {@code Object.toString()} of every collected node, its hash replaced by its index. */
+  static String maskNodes(
+      String s, List<org.apache.lucene.queryparser.flexible.core.nodes.QueryNode> all) {
+    for (int i = 0; i < all.size(); i++) {
+      org.apache.lucene.queryparser.flexible.core.nodes.QueryNode n = all.get(i);
+      String name = n.getClass().getName();
+      s = s.replace(name + "@" + Integer.toHexString(System.identityHashCode(n)), name + "@#" + i);
+    }
+    return s;
+  }
+
+  /** The tree of {@code root} (see {@link #dumpNodes}). */
+  public static String treeDump(org.apache.lucene.queryparser.flexible.core.nodes.QueryNode root) {
+    List<org.apache.lucene.queryparser.flexible.core.nodes.QueryNode> all = new ArrayList<>();
+    collectNodes(root, all);
+    StringBuilder b = new StringBuilder();
+    dumpNodes(b, root, null, 0, all);
+    return maskNodes(b.toString(), all);
+  }
+
+  /** The tree of {@code root}, then {@code cloneTree()}'s ({@code clone new} or its exception). */
+  public static String nodeDump(org.apache.lucene.queryparser.flexible.core.nodes.QueryNode root) {
+    List<org.apache.lucene.queryparser.flexible.core.nodes.QueryNode> all = new ArrayList<>();
+    collectNodes(root, all);
+    org.apache.lucene.queryparser.flexible.core.nodes.QueryNode clone = null;
+    String cloneError = null;
+    try {
+      clone = root.cloneTree();
+      collectNodes(clone, all);
+    } catch (Throwable t) {
+      cloneError = "!" + t.getClass().getName() + ": " + t.getMessage();
+    }
+    StringBuilder b = new StringBuilder();
+    dumpNodes(b, root, null, 0, all);
+    if (clone == null) {
+      b.append("clone ").append(cloneError).append('\n');
+    } else {
+      b.append("clone ").append(clone == root ? "same" : "new").append('\n');
+      dumpNodes(b, clone, null, 0, all);
+    }
+    return maskNodes(b.toString(), all);
+  }
+
+  /** {@code node.add(children)}, then the node. */
+  public static org.apache.lucene.queryparser.flexible.core.nodes.QueryNode withChildren(
+      org.apache.lucene.queryparser.flexible.core.nodes.QueryNode node,
+      List<org.apache.lucene.queryparser.flexible.core.nodes.QueryNode> children) {
+    node.add(children);
+    return node;
+  }
+
+  /** {@code f.toString()}, then the source it builds: its {@code toString()} and min extent. */
+  public static String intervalDump(
+      org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.IntervalFunction f,
+      String field,
+      org.apache.lucene.analysis.Analyzer analyzer) {
+    StringBuilder b = new StringBuilder();
+    b.append("fn=").append(shown(f::toString));
+    IntervalsSource src;
+    try {
+      src = f.toIntervalSource(field, analyzer);
+    } catch (Throwable t) {
+      return b.append(" src=!").append(t.getClass().getName()).append(": ").append(t.getMessage())
+          .toString();
+    }
+    b.append(" src=").append(shown(src::toString));
+    b.append(" min=").append(shown(src::minExtent));
+    return b.toString();
+  }
+
+  /**
+   * Each processor of {@code pipeline} applied in turn to {@code tree}: {@code after <i>}, then the
+   * tree it returned (see {@link #treeDump}), or {@code after <i> !<class>: <message>} and the end.
+   */
+  public static String processTrace(
+      org.apache.lucene.queryparser.flexible.core.processors.QueryNodeProcessorPipeline pipeline,
+      org.apache.lucene.queryparser.flexible.core.nodes.QueryNode tree) {
+    StringBuilder b = new StringBuilder();
+    int i = 0;
+    for (org.apache.lucene.queryparser.flexible.core.processors.QueryNodeProcessor proc :
+        pipeline) {
+      try {
+        tree = proc.process(tree);
+      } catch (Throwable t) {
+        b.append("after ").append(i).append(" !").append(t.getClass().getName()).append(": ")
+            .append(t.getMessage()).append('\n');
+        return b.toString();
+      }
+      b.append("after ").append(i).append('\n').append(tree == null ? "null\n" : treeDump(tree));
+      i++;
+    }
+    return b.toString();
+  }
+
   void custom(String kind, String id, String expr, String arg) {
     line("custom", kind, id);
     Object v;

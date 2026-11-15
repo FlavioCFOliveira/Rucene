@@ -58,10 +58,9 @@ fn bound_field(bound: &QueryNodeRef) -> Result<Option<CharSequence>> {
 fn class_cast(bound: &dyn QueryNode) -> LuceneError {
     LuceneError::unchecked(
         "java.lang.ClassCastException",
-        format!(
-            "class {} cannot be cast to class {}",
+        crate::jdk::class::class_cast_message(
             bound.java_class().get_name(),
-            FIELD_VALUE_PAIR_QUERY_NODE_CLASS.get_name()
+            FIELD_VALUE_PAIR_QUERY_NODE_CLASS.get_name(),
         ),
     )
 }

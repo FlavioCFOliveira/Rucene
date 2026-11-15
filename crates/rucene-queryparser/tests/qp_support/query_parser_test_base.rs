@@ -337,7 +337,7 @@ pub fn simple_cjk_tokenizer() -> Result<Arc<AtomicRefCell<Tokenizer<SimpleCjkTok
 }
 
 /// `new SimpleCJKAnalyzer()`.
-fn simple_cjk_analyzer() -> Arc<dyn Analyzer> {
+pub fn simple_cjk_analyzer() -> Arc<dyn Analyzer> {
     FnAnalyzer::new(
         "org.apache.lucene.queryparser.util.QueryParserTestBase$SimpleCJKAnalyzer",
         |_| Ok(tokenizer_components(simple_cjk_tokenizer()?)),
@@ -914,7 +914,7 @@ fn test_cjk_sloppy_phrase<T: QueryParserTestBase>(t: &mut T) -> Result<()> {
     Ok(())
 }
 
-fn test_auto_generate_phrase_queries_on<T: QueryParserTestBase>(t: &mut T) -> Result<()> {
+pub fn test_auto_generate_phrase_queries_on<T: QueryParserTestBase>(t: &mut T) -> Result<()> {
     // individual CJK chars as terms
     let analyzer = simple_cjk_analyzer();
     let expected = PhraseQuery::from_strings("field", &["中", "国"])?;
@@ -1285,7 +1285,7 @@ fn test_range_query_requires_to<T: QueryParserTestBase>(t: &mut T) -> Result<()>
     Ok(())
 }
 
-fn escape_date_string(s: &str) -> String {
+pub fn escape_date_string(s: &str) -> String {
     if s.contains(' ') {
         format!("\"{s}\"")
     } else {
@@ -1294,18 +1294,18 @@ fn escape_date_string(s: &str) -> String {
 }
 
 /// for testing DateTools support: `getDate(String s, Resolution)`.
-fn get_date_str(s: &str, resolution: Resolution) -> Result<String> {
+pub fn get_date_str(s: &str, resolution: Resolution) -> Result<String> {
     // we use the default Locale since LuceneTestCase randomizes it
     let df = date_format::get_date_instance(date_format::SHORT, &Locale::get_default())?;
     Ok(get_date_millis(df.parse(s)?.get_time(), resolution))
 }
 
 /// for testing DateTools support: `getDate(Date d, Resolution)`.
-fn get_date_millis(d: i64, resolution: Resolution) -> String {
+pub fn get_date_millis(d: i64, resolution: Resolution) -> String {
     DateTools::time_to_string(d, resolution)
 }
 
-fn get_localized_date(year: i32, month: i32, day: i32) -> Result<String> {
+pub fn get_localized_date(year: i32, month: i32, day: i32) -> Result<String> {
     // we use the default Locale/TZ since LuceneTestCase randomizes it
     let locale = Locale::get_default();
     let df = date_format::get_date_instance(date_format::SHORT, &locale)?;

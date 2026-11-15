@@ -294,16 +294,12 @@ pub fn instance_of(node: &dyn QueryNode, class: &JavaClass) -> bool {
 }
 
 /// The `ClassCastException` of the reference cast `(class) node` of a node
-/// of another class, in the form `class <from> cannot be cast to class
-/// <to>` the port's casts use.
+/// of another class, with JDK 25's message
+/// ([`class_cast_message`](crate::jdk::class::class_cast_message)).
 pub fn class_cast(node: &dyn QueryNode, class: &JavaClass) -> rucene::error::LuceneError {
     rucene::error::LuceneError::unchecked(
         "java.lang.ClassCastException",
-        format!(
-            "class {} cannot be cast to class {}",
-            node.java_class().get_name(),
-            class.get_name()
-        ),
+        crate::jdk::class::class_cast_message(node.java_class().get_name(), class.get_name()),
     )
 }
 

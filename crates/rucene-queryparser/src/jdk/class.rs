@@ -141,6 +141,39 @@ impl JavaClass {
     }
 }
 
+/// The module and class loader of a class as JDK 25's `ClassCastException`
+/// message names them (`Klass::class_in_module_of_loader`), for the
+/// deployment Lucene runs in: the JDK classes the port names are in
+/// `java.base` or `java.xml` of the bootstrap loader, every other class (the
+/// Lucene jars on the class path) in the unnamed module of the application
+/// loader.
+fn module_of_loader(class: &str) -> &'static str {
+    if class.starts_with("java.") {
+        "module java.base of loader 'bootstrap'"
+    } else if class.starts_with("org.w3c.dom.") || class.starts_with("javax.xml.") {
+        "module java.xml of loader 'bootstrap'"
+    } else {
+        "unnamed module of loader 'app'"
+    }
+}
+
+/// The message of the `ClassCastException` of the reference cast of an
+/// object of class `from` to class `to`, as JDK 25 words it
+/// (`SharedRuntime::generate_class_cast_message`): `class <from> cannot be
+/// cast to class <to> (<from> and <to> are in <module>)`, or `(<from> is in
+/// <module>; <to> is in <module>)` when their modules differ (probed on JDK
+/// 25.0.5).
+pub fn class_cast_message(from: &str, to: &str) -> String {
+    let (m_from, m_to) = (module_of_loader(from), module_of_loader(to));
+    if m_from == m_to {
+        format!("class {from} cannot be cast to class {to} ({from} and {to} are in {m_from})")
+    } else {
+        format!(
+            "class {from} cannot be cast to class {to} ({from} is in {m_from}; {to} is in {m_to})"
+        )
+    }
+}
+
 impl PartialEq for JavaClass {
     /// `==` on two `Class` objects of one class loader.
     fn eq(&self, other: &Self) -> bool {

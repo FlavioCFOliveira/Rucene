@@ -105,7 +105,10 @@ impl QueryNodeProcessorImplOps for PointRangeQueryNodeProcessor {
         let range = term_range_node.abstract_range_query_node();
         let field_config = config
             .get_field_config(StringUtils::to_string(range.get_field()?.as_ref()).as_deref())?;
-        let Some(numeric_config) = field_config.get(ConfigurationKeys::POINTS_CONFIG) else {
+        // `if (fieldConfig != null)`, then `if (numericConfig != null)`
+        let Some(numeric_config) =
+            field_config.and_then(|c| c.get(ConfigurationKeys::POINTS_CONFIG))
+        else {
             return Ok(node);
         };
         let lower_bound = range.get_lower_bound()?;

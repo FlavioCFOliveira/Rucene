@@ -107,14 +107,11 @@ pub fn built_query(node: &dyn QueryNode) -> Result<Option<Arc<dyn Query>>> {
 }
 
 /// The `ClassCastException` of the cast of `query` to `class` (a Java binary
-/// name).
+/// name), with JDK 25's message ([`class_cast_message`](crate::jdk::class::class_cast_message)).
 pub fn query_class_cast(query: &dyn Query, class: &str) -> LuceneError {
     LuceneError::unchecked(
         "java.lang.ClassCastException",
-        format!(
-            "class {} cannot be cast to class {class}",
-            query.java_class_name()
-        ),
+        crate::jdk::class::class_cast_message(query.java_class_name(), class),
     )
 }
 

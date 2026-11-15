@@ -97,8 +97,8 @@ impl QueryNodeProcessorImplOps for TermRangeQueryNodeProcessor {
         let field_str = field.as_ref().map(CharSequence::to_string);
 
         let field_config = config.get_field_config(field_str.as_deref())?;
-        // `if (fieldConfig != null)`: the configuration is never `null`.
-        let date_res = field_config.get(ConfigurationKeys::DATE_RESOLUTION);
+        // `if (fieldConfig != null)`
+        let date_res = field_config.and_then(|c| c.get(ConfigurationKeys::DATE_RESOLUTION));
 
         if range.is_upper_inclusive() {
             inclusive = true;

@@ -127,10 +127,9 @@ impl FieldableNode for MultiPhraseQueryNode {
                 Some(fieldable) => fieldable.get_field(),
                 None => Err(LuceneError::unchecked(
                     "java.lang.ClassCastException",
-                    format!(
-                        "class {} cannot be cast to class {}",
+                    crate::jdk::class::class_cast_message(
                         children[0].java_class().get_name(),
-                        FIELDABLE_NODE_CLASS.get_name()
+                        FIELDABLE_NODE_CLASS.get_name(),
                     ),
                 )),
             },

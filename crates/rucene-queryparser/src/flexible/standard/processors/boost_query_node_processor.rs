@@ -61,7 +61,9 @@ impl QueryNodeProcessorImplOps for BoostQueryNodeProcessor {
                     let field = field_node.get_field()?;
                     let field_config = config
                         .get_field_config(StringUtils::to_string(field.as_ref()).as_deref())?;
-                    if let Some(boost) = field_config.get(ConfigurationKeys::BOOST) {
+                    // `if (fieldConfig != null)`, then `if (boost != null)`
+                    if let Some(boost) = field_config.and_then(|c| c.get(ConfigurationKeys::BOOST))
+                    {
                         let boosted: QueryNodeRef = BoostQueryNode::new(Some(node), boost)?;
                         return Ok(boosted);
                     }

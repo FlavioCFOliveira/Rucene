@@ -84,7 +84,10 @@ impl QueryNodeProcessorImplOps for PointQueryNodeProcessor {
             return Ok(node);
         };
         let field_config = config.get_field_config(field_node.get_field_as_string().as_deref())?;
-        let Some(numeric_config) = field_config.get(ConfigurationKeys::POINTS_CONFIG) else {
+        // `if (fieldConfig != null)`, then `if (numericConfig != null)`
+        let Some(numeric_config) =
+            field_config.and_then(|c| c.get(ConfigurationKeys::POINTS_CONFIG))
+        else {
             return Ok(node);
         };
         let number_format = numeric_config.get_number_format();
