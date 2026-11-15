@@ -2990,7 +2990,11 @@ class Emitter:
         elif as_trait_method:
             sig = f"fn {rname}(&mut self{', ' if params else ''}{', '.join(params)})"
         else:
-            vis = "pub(crate) " if as_free_fn else ""
+            # A free function stands for a member subclasses outside the
+            # crate need (`TopLevelQuery`, `ReInit(CharStream)`): Java's
+            # `public` keeps it public, as user subclasses of the parser call
+            # it from their trait implementations.
+            vis = ("pub " if "public" in m["mods"] else "pub(crate) ") if as_free_fn else ""
             sig = f"{vis}fn {rname}<P: {self.profile.ops_trait} + ?Sized>(this: &mut P{', ' if params else ''}{', '.join(params)})"
         if rt == "()" and kind == "plain":
             out.append(pad + sig + " {")

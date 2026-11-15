@@ -153,6 +153,15 @@ impl QueryParserBase {
     }
 }
 
+impl QueryParserBase {
+    /// The `QueryBuilder` state, for its public setters (`setAnalyzer`,
+    /// `setEnableGraphQueries`, `setAutoGenerateMultiTermSynonymsPhraseQuery`,
+    /// ...), which Java's `QueryParserBase` inherits as public methods.
+    pub fn query_builder_mut(&mut self) -> &mut QueryBuilder {
+        &mut self.builder
+    }
+}
+
 impl Default for QueryParserBase {
     fn default() -> Self {
         Self::new()

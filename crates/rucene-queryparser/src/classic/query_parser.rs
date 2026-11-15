@@ -1703,7 +1703,7 @@ impl JjState {
     unused_labels,
     clippy::all
 )]
-pub(crate) fn top_level_query<P: QueryParserOps + ?Sized>(
+pub fn top_level_query<P: QueryParserOps + ?Sized>(
     this: &mut P,
     mut field: Option<String>,
 ) -> Result<Option<Arc<dyn Query>>> {
@@ -1965,7 +1965,7 @@ fn jj_3_3<P: QueryParserOps + ?Sized>(this: &mut P) -> std::result::Result<bool,
     unused_labels,
     clippy::all
 )]
-pub(crate) fn re_init<P: QueryParserOps + ?Sized>(this: &mut P, mut stream: Box<dyn CharStream>) {
+pub fn re_init<P: QueryParserOps + ?Sized>(this: &mut P, mut stream: Box<dyn CharStream>) {
     this.jj_mut().token_source.re_init(stream);
     this.jj_mut().token = Some(TokenRef::new(Token::new()));
     this.jj_mut().jj_ntk = -1;

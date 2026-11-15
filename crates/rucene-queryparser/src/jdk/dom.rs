@@ -68,13 +68,17 @@
 //! * **Errors.** A fatal error is a [`SaxException`] of class
 //!   `SAXParseException` with the JDK's message for the well-formedness
 //!   errors listed in [`DocumentBuilder::parse`]; the error handler, when one
-//!   is set, gets `fatalError` first. What the entity resolver throws ends the
+//!   is set, gets `fatalError` first. A start tag is checked as the JDK's
+//!   `scanStartElement` scans it (whitespace before each attribute, `=`, an
+//!   open quote, no `<` in a value, the end of the input inside the tag),
+//!   with the JDK's message and position; so is an element after the root
+//!   (`MarkupNotRecognizedInMisc`, reported after the `<`). What the entity resolver throws ends the
 //!   parse unchanged.
 //!
 //! What differs, and why:
 //!
-//! * **Locations.** Line and column numbers are those of the position
-//!   `quick-xml` reports for an error (the JDK reports the position its
+//! * **Locations.** Apart from the start-tag errors above, line and column
+//!   numbers are those of the position `quick-xml` reports for an error (the JDK reports the position its
 //!   scanner reached, often a few characters further), and of the reference
 //!   for an error inside an entity's replacement text (the JDK reports the
 //!   position inside the entity). The sizes the size limits report count the
@@ -782,6 +786,128 @@ pub trait ErrorHandler: Send + Sync {
 // javax.xml.parsers
 // ----------------------------------------------------------------------
 
+/// `isValidNameStartChar` of the JDK's scanner for the characters the
+/// documents of the query parser use: letters, `_` and `:` (XML 1.0 section
+/// 2.3, `NameStartChar`, outside the ranges of ideographs and marks it
+/// spells out).
+fn is_name_start_char(c: char) -> bool {
+    c.is_alphabetic() || c == '_' || c == ':'
+}
+
+/// `isValidNameChar`: a name start character, a digit, `-`, `.` or U+00B7.
+fn is_name_char(c: char) -> bool {
+    is_name_start_char(c) || c.is_ascii_digit() || matches!(c, '-' | '.' | '\u{B7}')
+}
+
+/// The fatal error the JDK's `XMLDocumentFragmentScannerImpl.scanStartElement`
+/// reports for the start tag at byte `lt` of `text` (its `<`), as the byte
+/// offset of the character its scanner stopped before and the message, or
+/// `None` for a start tag it accepts. It walks the tag as
+/// `seekCloseOfStartTag` and `scanAttribute` do (JDK 25 source, read as
+/// specification): whitespace is required before each attribute
+/// (`ElementUnterminated`), `=` after its name (`EqRequiredInAttribute`), a
+/// quote before its value (`OpenQuoteExpected`), no `<` inside the value
+/// (`LessthanInAttValue`), `>` after `/`; the end of the input inside the tag
+/// is `XML document structures must start and end within the same entity.`.
+fn xerces_start_tag_error(text: &str, lt: usize) -> Option<(usize, String)> {
+    let eof = || {
+        Some((
+            text.len(),
+            "XML document structures must start and end within the same entity.".to_string(),
+        ))
+    };
+    let chars: Vec<(usize, char)> = text[lt..]
+        .char_indices()
+        .map(|(i, c)| (lt + i, c))
+        .collect();
+    let mut i = 1; // past `<`
+    let name_from = i;
+    while i < chars.len() && is_name_char(chars[i].1) {
+        i += 1;
+    }
+    let element: String = chars[name_from..i].iter().map(|(_, c)| *c).collect();
+    let is_space = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r');
+    loop {
+        // `seekCloseOfStartTag`.
+        let space_from = i;
+        while i < chars.len() && is_space(chars[i].1) {
+            i += 1;
+        }
+        let saw_space = i > space_from;
+        let Some(&(at, c)) = chars.get(i) else {
+            return eof();
+        };
+        if c == '>' {
+            return None;
+        }
+        if c == '/' {
+            return match chars.get(i + 1) {
+                Some((_, '>')) => None,
+                Some(&(at, _)) => Some((
+                    at,
+                    format!("Element type \"{element}\" must be followed by either attribute specifications, \">\" or \"/>\"."),
+                )),
+                None => eof(),
+            };
+        }
+        if !is_name_start_char(c) || !saw_space {
+            return Some((
+                at,
+                format!("Element type \"{element}\" must be followed by either attribute specifications, \">\" or \"/>\"."),
+            ));
+        }
+        // `scanAttribute`.
+        let attr_from = i;
+        while i < chars.len() && is_name_char(chars[i].1) {
+            i += 1;
+        }
+        let attribute: String = chars[attr_from..i].iter().map(|(_, c)| *c).collect();
+        while i < chars.len() && is_space(chars[i].1) {
+            i += 1;
+        }
+        match chars.get(i) {
+            Some((_, '=')) => i += 1,
+            Some(&(at, _)) => {
+                return Some((
+                    at,
+                    format!("Attribute name \"{attribute}\" associated with an element type \"{element}\" must be followed by the ' = ' character."),
+                ))
+            }
+            None => return eof(),
+        }
+        while i < chars.len() && is_space(chars[i].1) {
+            i += 1;
+        }
+        let quote = match chars.get(i) {
+            Some(&(_, q)) if q == '"' || q == '\'' => q,
+            Some(&(at, _)) => {
+                return Some((
+                    at,
+                    format!("Open quote is expected for attribute \"{attribute}\" associated with an  element type  \"{element}\"."),
+                ))
+            }
+            None => return eof(),
+        };
+        i += 1;
+        loop {
+            match chars.get(i) {
+                Some(&(_, c)) if c == quote => {
+                    i += 1;
+                    break;
+                }
+                Some(&(at, '<')) => {
+                    return Some((
+                        at,
+                        format!("The value of attribute \"{attribute}\" associated with an element type \"{element}\" must not contain the '<' character."),
+                    ))
+                }
+                Some(_) => i += 1,
+                None => return eof(),
+            }
+        }
+    }
+}
+
 /// Defines a factory API that enables applications to obtain a parser that
 /// produces DOM object trees from XML documents.
 ///
@@ -1203,10 +1329,16 @@ impl Builder<'_> {
                 }
                 Event::Start(start) => {
                     if self.open.len() == 1 && self.seen_root {
+                        // `TrailingMiscDriver`: `skipChar('<')` consumed the
+                        // `<`, the name start is only peeked
+                        // (`MarkupNotRecognizedInMisc`).
                         return Err(self.fatal(
-                            loc(pos),
+                            loc(pos + 1),
                             "The markup in the document following the root element must be well-formed.",
                         ));
+                    }
+                    if let Some((at, message)) = xerces_start_tag_error(text, pos as usize) {
+                        return Err(self.fatal(loc(at as u64), message));
                     }
                     let name = start.name().as_ref().to_string();
                     if name.chars().count() > MAX_XML_NAME_LIMIT {
@@ -1552,6 +1684,22 @@ impl Builder<'_> {
             }
             XmlError::IllFormed(IllFormedError::UnknownVersion) => {
                 self.fatal(pos, "XML version \"\" is not supported, only XML 1.0 is supported.")
+            }
+            XmlError::Syntax(SyntaxError::UnclosedTag)
+                if text[local.min(text.len())..].starts_with('<')
+                    && text[local.min(text.len())..]
+                        .chars()
+                        .nth(1)
+                        .is_some_and(is_name_start_char) =>
+            {
+                // An element's start tag that the input ends inside:
+                // `scanStartElement` reports what it meets first.
+                let (at, message) = xerces_start_tag_error(text, local).unwrap_or((
+                    text.len(),
+                    "XML document structures must start and end within the same entity."
+                        .to_string(),
+                ));
+                self.fatal(pos + at - local.min(at), message)
             }
             XmlError::Syntax(SyntaxError::UnclosedTag) | XmlError::Syntax(SyntaxError::InvalidBangMarkup) if !self.seen_root => self.fatal(
                 pos,

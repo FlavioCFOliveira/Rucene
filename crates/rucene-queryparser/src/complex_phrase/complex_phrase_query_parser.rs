@@ -106,8 +106,22 @@ impl ComplexPhraseQueryParser {
     ///
     /// Equivalent to the private `checkPhraseClauseIsForSameField(String)`.
     fn check_phrase_clause_is_for_same_field(&self, field: Option<&str>) -> Result<()> {
-        let field = crate::javacc::nn_str(field)?;
-        let current = crate::javacc::nn(self.current_phrase_query.as_ref())?;
+        // `!field.equals(currentPhraseQuery.field)`: the JVM evaluates the
+        // argument (`getfield` on `currentPhraseQuery`) before it invokes
+        // `equals` on `field`, so a `null` phrase is reported first; both
+        // NPEs carry the JDK's helpful message (Lucene's jars keep local
+        // variable names: `splitExtensionField`'s `"field" is null` is
+        // observed on 10.5.0).
+        let current = self.current_phrase_query.as_ref().ok_or_else(|| {
+            LuceneError::null_pointer_with_message(
+                "Cannot read field \"field\" because \"this.currentPhraseQuery\" is null",
+            )
+        })?;
+        let field = field.ok_or_else(|| {
+            LuceneError::null_pointer_with_message(
+                "Cannot invoke \"String.equals(Object)\" because \"field\" is null",
+            )
+        })?;
         if field != current.field {
             return Err(ParseException::with_message(format!(
                 "Cannot have clause for field \"{field}\" nested in phrase  for field \"{}\"",

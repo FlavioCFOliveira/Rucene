@@ -756,6 +756,38 @@ public final class QueryOracle {
     return out;
   }
 
+  /**
+   * The {@code ExtensionStub} of Lucene's {@code queryparser.ext} tests, which the jars lack: a
+   * {@code TermQuery} of the extension query's field and raw query string.
+   */
+  public static org.apache.lucene.queryparser.ext.ParserExtension termExtension() {
+    return new org.apache.lucene.queryparser.ext.ParserExtension() {
+      @Override
+      public Query parse(org.apache.lucene.queryparser.ext.ExtensionQuery components) {
+        return new org.apache.lucene.search.TermQuery(
+            new org.apache.lucene.index.Term(components.field(), components.rawQueryString()));
+      }
+    };
+  }
+
+  /**
+   * {@code CoreParser.parseAsSpanQuery(InputStream)}, which is package-private: called by
+   * reflection, its exception unwrapped.
+   */
+  public static Query parseAsSpanQuery(
+      org.apache.lucene.queryparser.xml.CoreParser parser, java.io.InputStream in)
+      throws Throwable {
+    Method m =
+        org.apache.lucene.queryparser.xml.CoreParser.class.getDeclaredMethod(
+            "parseAsSpanQuery", java.io.InputStream.class);
+    m.setAccessible(true);
+    try {
+      return (Query) m.invoke(parser, in);
+    } catch (InvocationTargetException e) {
+      throw e.getCause();
+    }
+  }
+
   void custom(String kind, String id, String expr, String arg) {
     line("custom", kind, id);
     Object v;

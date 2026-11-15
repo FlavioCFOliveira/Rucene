@@ -278,6 +278,9 @@ pub fn java_throwable(e: &LuceneError) -> Throwable {
     // for any other kind, the kind's cause, held as an `Arc<LuceneError>`.
     let cause = match e.kind() {
         LuceneErrorKind::Io(io) => rucene::store::java_nio_file::java_cause_of(io),
+        // A throwable of another crate (`ParserException(message, cause)`,
+        // `ParseException`, ...) carries its cause behind `getCause()`.
+        LuceneErrorKind::Throwable(t) => t.get_cause().map(|cause| &**cause),
         _ => std::error::Error::source(e).and_then(|source| {
             source
                 .downcast_ref::<std::sync::Arc<LuceneError>>()

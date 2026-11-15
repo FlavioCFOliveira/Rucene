@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use rucene::error::Result;
+use rucene::error::{LuceneError, Result};
 
 use super::parser_extension::ParserExtension;
 use crate::classic::query_parser_base;
@@ -47,10 +47,11 @@ pub const DEFAULT_EXTENSION_FIELD_DELIMITER: char = ':';
 ///
 /// Equivalent to `org.apache.lucene.queryparser.ext.Extensions`. A parser
 /// holds a reference to the mapping, which its creator may keep adding to,
-/// as in Java; the map is therefore behind a lock. A `null` key is `None`.
+/// as in Java; the map is therefore behind a lock. A `null` key or value is
+/// `None` (Java's `HashMap` holds both).
 #[derive(Debug)]
 pub struct Extensions {
-    extensions: Mutex<HashMap<Option<String>, Arc<dyn ParserExtension>>>,
+    extensions: Mutex<ExtensionMap>,
     extension_field_delimiter: char,
 }
 
@@ -81,8 +82,10 @@ impl Extensions {
 
     /// Adds a new `ParserExtension` instance associated with the given key.
     ///
-    /// Equivalent to `add(String, ParserExtension)`.
-    pub fn add(&self, key: Option<&str>, extension: Arc<dyn ParserExtension>) {
+    /// Equivalent to `add(String, ParserExtension)`: a `None` extension is
+    /// stored as Java stores a `null` value, so
+    /// [`get_extension`](Self::get_extension) answers `None` for its key.
+    pub fn add(&self, key: Option<&str>, extension: Option<Arc<dyn ParserExtension>>) {
         self.extensions
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -99,6 +102,7 @@ impl Extensions {
             .unwrap_or_else(PoisonError::into_inner)
             .get(&key.map(str::to_string))
             .cloned()
+            .flatten()
     }
 
     /// Returns the extension field delimiter.
@@ -126,7 +130,13 @@ impl Extensions {
         default_field: Option<&str>,
         field: Option<&str>,
     ) -> Result<Pair<Option<String>, Option<String>>> {
-        let field = crate::javacc::nn_str(field)?;
+        // `field.indexOf(this.extensionFieldDelimiter)` dereferences a `null`
+        // field: the JDK's helpful message (observed on Lucene 10.5.0).
+        let field = field.ok_or_else(|| {
+            LuceneError::null_pointer_with_message(
+                "Cannot invoke \"String.indexOf(int)\" because \"field\" is null",
+            )
+        })?;
         let Some(index_of) = field.find(self.extension_field_delimiter) else {
             return Ok(Pair::new(Some(field.to_string()), None));
         };
@@ -144,8 +154,19 @@ impl Extensions {
     /// to `QueryParserBase.escape(String)`.
     ///
     /// Equivalent to `escapeExtensionField(String)`.
-    pub fn escape_extension_field(&self, extfield: &str) -> String {
-        query_parser_base::escape(extfield)
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` `QueryParserBase.escape` throws for a
+    /// `null` string (`s.length()`, `QueryParserBase.java`), with the JDK's
+    /// helpful message.
+    pub fn escape_extension_field(&self, extfield: Option<&str>) -> Result<String> {
+        let extfield = extfield.ok_or_else(|| {
+            LuceneError::null_pointer_with_message(
+                "Cannot invoke \"String.length()\" because \"s\" is null",
+            )
+        })?;
+        Ok(query_parser_base::escape(extfield))
     }
 
     /// Builds an extension field string from a given extension key and the
@@ -173,9 +194,14 @@ impl Extensions {
         let mut builder = String::from(field);
         builder.push(self.extension_field_delimiter);
         builder.push_str(extension_key);
-        self.escape_extension_field(&builder)
+        // `escapeExtensionField(builder.toString())`: a non-null string,
+        // which never throws.
+        query_parser_base::escape(&builder)
     }
 }
+
+/// Java's `Map<String, ParserExtension>`: a `null` key or value is `None`.
+type ExtensionMap = HashMap<Option<String>, Option<Arc<dyn ParserExtension>>>;
 
 /// This class represents a generic pair.
 ///
