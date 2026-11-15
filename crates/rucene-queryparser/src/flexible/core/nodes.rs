@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.flexible.core.nodes`.
+//! Port of the Java package `org.apache.lucene.queryparser.flexible.core.nodes`.
 
 pub mod and_query_node;
 pub mod any_query_node;

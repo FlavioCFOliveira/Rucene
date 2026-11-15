@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.flexible.core.processors`.
+//! Port of the Java package `org.apache.lucene.queryparser.flexible.core.processors`.
 
 pub mod no_child_optimization_query_node_processor;
 pub mod query_node_processor;

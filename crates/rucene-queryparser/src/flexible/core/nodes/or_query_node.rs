@@ -15,10 +15,89 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `OrQueryNode.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.core.nodes`.
+//! Port of `OrQueryNode.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.nodes`.
 
-/// Java: `public class`.
+use std::any::Any;
+use std::sync::{Arc, Weak};
+
+use rucene::error::{LuceneError, Result};
+
+use super::boolean_query_node::{BooleanQueryNode, BOOLEAN_QUERY_NODE_CLASS};
+use super::query_node::{QueryNode, QueryNodeRef};
+use super::query_node_impl::QueryNodeImpl;
+use crate::flexible::core::parser::escape_query_syntax::EscapeQuerySyntax;
+use crate::jdk::char_sequence::CharSequence;
+use crate::jdk::class::JavaClass;
+
+/// `org.apache.lucene.queryparser.flexible.core.nodes.OrQueryNode`.
+pub static OR_QUERY_NODE_CLASS: JavaClass = JavaClass::class(
+    "org.apache.lucene.queryparser.flexible.core.nodes.OrQueryNode",
+    Some(&BOOLEAN_QUERY_NODE_CLASS),
+    &[],
+);
+
+/// A [`OrQueryNode`] represents an OR boolean operation performed on a list
+/// of nodes.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.nodes.OrQueryNode`; ported by rmp task #487.
-pub struct OrQueryNode;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.core.nodes.OrQueryNode`,
+/// which extends `BooleanQueryNode` (embedded).
+#[derive(Debug)]
+pub struct OrQueryNode {
+    base: BooleanQueryNode,
+}
+
+impl OrQueryNode {
+    /// Equivalent to `new OrQueryNode(List<QueryNode> clauses)`.
+    ///
+    /// # Errors
+    ///
+    /// `NullPointerException` for `None` clauses, and
+    /// `IllegalArgumentException("OR query must have at least one clause")`
+    /// for none.
+    pub fn new(clauses: Option<Vec<QueryNodeRef>>) -> Result<Arc<Self>> {
+        let empty = clauses.as_ref().is_none_or(Vec::is_empty);
+        let node = Arc::new_cyclic(|this: &Weak<Self>| Self {
+            base: BooleanQueryNode::fields(QueryNodeImpl::new(this.clone())),
+        });
+        node.base.init(clauses)?;
+        if empty {
+            return Err(LuceneError::illegal_argument(
+                "OR query must have at least one clause",
+            ));
+        }
+        Ok(node)
+    }
+}
+
+impl QueryNode for OrQueryNode {
+    fn query_node_impl(&self) -> &QueryNodeImpl {
+        self.base.query_node_impl()
+    }
+
+    fn java_class(&self) -> &'static JavaClass {
+        &OR_QUERY_NODE_CLASS
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn to_java_string(&self) -> Result<String> {
+        self.base.to_java_string_with("or")
+    }
+
+    fn to_query_string(
+        &self,
+        escape_syntax_parser: &dyn EscapeQuerySyntax,
+    ) -> Result<CharSequence> {
+        self.base.to_query_string_with(escape_syntax_parser, " OR ")
+    }
+
+    fn clone_tree(&self) -> Result<QueryNodeRef> {
+        let clauses = self.query_node_impl().clone_children()?;
+        Ok(Arc::new_cyclic(|this: &Weak<Self>| Self {
+            base: self.base.cloned(this.clone(), clauses),
+        }))
+    }
+}

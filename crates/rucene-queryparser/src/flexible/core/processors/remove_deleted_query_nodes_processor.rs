@@ -15,10 +15,78 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `RemoveDeletedQueryNodesProcessor.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.core.processors`.
+//! Port of `RemoveDeletedQueryNodesProcessor.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.processors`.
 
-/// Java: `public class`.
+use rucene::error::Result;
+
+use super::query_node_processor_impl::{QueryNodeProcessorImpl, QueryNodeProcessorImplOps};
+use crate::flexible::core::nodes::deleted_query_node::{
+    DeletedQueryNode, DELETED_QUERY_NODE_CLASS,
+};
+use crate::flexible::core::nodes::match_no_docs_query_node::{
+    MatchNoDocsQueryNode, MATCH_NO_DOCS_QUERY_NODE_CLASS,
+};
+use crate::flexible::core::nodes::query_node::{instance_of, QueryNodeRef};
+
+/// A [`RemoveDeletedQueryNodesProcessor`] removes every instance of
+/// `DeletedQueryNode` from a query node tree. If the resulting root node is
+/// a `DeletedQueryNode`, `MatchNoDocsQueryNode` is returned.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.processors.RemoveDeletedQueryNodesProcessor`; ported by rmp task #487.
-pub struct RemoveDeletedQueryNodesProcessor;
+/// Equivalent to
+/// `org.apache.lucene.queryparser.flexible.core.processors.RemoveDeletedQueryNodesProcessor`.
+#[derive(Debug, Default)]
+pub struct RemoveDeletedQueryNodesProcessor {
+    base: QueryNodeProcessorImpl,
+}
+
+impl RemoveDeletedQueryNodesProcessor {
+    /// Equivalent to `new RemoveDeletedQueryNodesProcessor()`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl QueryNodeProcessorImplOps for RemoveDeletedQueryNodesProcessor {
+    fn query_node_processor_impl(&self) -> &QueryNodeProcessorImpl {
+        &self.base
+    }
+
+    fn process(&self, query_tree: QueryNodeRef) -> Result<QueryNodeRef> {
+        let query_tree = QueryNodeProcessorImpl::process(self, query_tree)?;
+        if instance_of(query_tree.as_ref(), &DELETED_QUERY_NODE_CLASS)
+            && !instance_of(query_tree.as_ref(), &MATCH_NO_DOCS_QUERY_NODE_CLASS)
+        {
+            let replacement: QueryNodeRef = MatchNoDocsQueryNode::new();
+            return Ok(replacement);
+        }
+        Ok(query_tree)
+    }
+
+    fn post_process_node(&self, node: QueryNodeRef) -> Result<QueryNodeRef> {
+        if !node.is_leaf() {
+            let children = node.get_children();
+            let remove_boolean = match &children {
+                None => true,
+                Some(children) if children.is_empty() => true,
+                Some(children) => children
+                    .iter()
+                    .all(|c| instance_of(c.as_ref(), &DELETED_QUERY_NODE_CLASS)),
+            };
+            if remove_boolean {
+                let replacement: QueryNodeRef = DeletedQueryNode::new();
+                return Ok(replacement);
+            }
+        }
+        Ok(node)
+    }
+
+    fn set_children_order(&self, mut children: Vec<QueryNodeRef>) -> Result<Vec<QueryNodeRef>> {
+        children.retain(|c| !instance_of(c.as_ref(), &DELETED_QUERY_NODE_CLASS));
+        Ok(children)
+    }
+
+    fn pre_process_node(&self, node: QueryNodeRef) -> Result<QueryNodeRef> {
+        Ok(node)
+    }
+}

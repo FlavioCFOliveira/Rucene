@@ -15,10 +15,58 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SpanNotBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.xml.builders`.
+//! Port of `SpanNotBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.xml.builders`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::query::Query;
+use rucene_queries::spans::span_not_query::SpanNotQuery;
+use rucene_queries::spans::span_query::SpanQuery;
+
+use super::span_builder_base::SpanBuilderBase;
+use super::span_query_builder::SpanQueryBuilder;
+use crate::jdk::dom::Element;
+use crate::xml::dom_utils::DOMUtils;
+use crate::xml::query_builder::QueryBuilder;
+
+/// Builder for `SpanNotQuery`
 ///
-/// Skeleton of `org.apache.lucene.queryparser.xml.builders.SpanNotBuilder`; ported by rmp task #493.
-pub struct SpanNotBuilder;
+/// Equivalent to `org.apache.lucene.queryparser.xml.builders.SpanNotBuilder`, which extends `SpanBuilderBase`.
+pub struct SpanNotBuilder {
+    factory: Arc<dyn SpanQueryBuilder>,
+}
+
+impl std::fmt::Debug for SpanNotBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SpanNotBuilder")
+    }
+}
+
+impl SpanNotBuilder {
+    /// Equivalent to `new SpanNotBuilder(SpanQueryBuilder factory)`.
+    pub fn new(factory: Arc<dyn SpanQueryBuilder>) -> Self {
+        Self { factory }
+    }
+}
+
+impl QueryBuilder for SpanNotBuilder {
+    fn get_query(&self, e: &Element) -> Result<Arc<dyn Query>> {
+        SpanBuilderBase::get_query(self, e)
+    }
+}
+
+impl SpanQueryBuilder for SpanNotBuilder {
+    /// Equivalent to `getSpanQuery(Element e)`: a `SpanNotQuery` of the
+    /// first child of `Include` and the first child of `Exclude`.
+    fn get_span_query(&self, e: &Element) -> Result<Arc<dyn SpanQuery>> {
+        let include_elem = DOMUtils::get_child_by_tag_or_fail(e, "Include")?;
+        let include_elem = DOMUtils::get_first_child_or_fail(&include_elem)?;
+        let exclude_elem = DOMUtils::get_child_by_tag_or_fail(e, "Exclude")?;
+        let exclude_elem = DOMUtils::get_first_child_or_fail(&exclude_elem)?;
+        let include = self.factory.get_span_query(&include_elem)?;
+        let exclude = self.factory.get_span_query(&exclude_elem)?;
+        Ok(Arc::new(SpanNotQuery::new(include, exclude)?))
+    }
+}

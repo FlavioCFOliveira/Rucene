@@ -15,10 +15,60 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `IntervalFunction.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `IntervalFunction.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public abstract class`.
+use std::fmt;
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+/// Representation of an interval function that can be converted to
+/// `IntervalsSource`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.IntervalFunction`; ported by rmp task #488.
-pub struct IntervalFunction;
+/// Equivalent to the abstract class
+/// `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.IntervalFunction`;
+/// its abstract `toString()` is [`to_java_string`](IntervalFunction::to_java_string).
+pub trait IntervalFunction: fmt::Debug + Send + Sync {
+    /// Equivalent to `toIntervalSource(String field, Analyzer analyzer)`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of building the source.
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>>;
+
+    /// Equivalent to `toString()`.
+    fn to_java_string(&self) -> String;
+}
+
+/// `sources.stream().map(f -> f.toIntervalSource(field, analyzer))`.
+pub(crate) fn sources_of(
+    sources: &[Arc<dyn IntervalFunction>],
+    field: &str,
+    analyzer: &dyn Analyzer,
+) -> Result<Vec<Arc<dyn IntervalsSource>>> {
+    sources
+        .iter()
+        .map(|f| f.to_interval_source(field, analyzer))
+        .collect()
+}
+
+/// `sources.stream().map(IntervalFunction::toString).collect(Collectors.joining(" "))`.
+pub(crate) fn join(sources: &[Arc<dyn IntervalFunction>]) -> String {
+    sources
+        .iter()
+        .map(|f| f.to_java_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The `NullPointerException` of `Objects.requireNonNull`.
+pub(crate) fn require_non_null<T>(value: Option<T>) -> Result<T> {
+    value.ok_or_else(rucene::error::LuceneError::null_pointer)
+}

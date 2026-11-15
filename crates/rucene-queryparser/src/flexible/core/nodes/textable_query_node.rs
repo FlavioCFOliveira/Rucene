@@ -15,10 +15,28 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `TextableQueryNode.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.core.nodes`.
+//! Port of `TextableQueryNode.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.nodes`.
 
-/// Java: `public interface`.
+use crate::jdk::char_sequence::CharSequence;
+use crate::jdk::class::JavaClass;
+
+/// `org.apache.lucene.queryparser.flexible.core.nodes.TextableQueryNode`.
+pub static TEXTABLE_QUERY_NODE_CLASS: JavaClass = JavaClass::interface(
+    "org.apache.lucene.queryparser.flexible.core.nodes.TextableQueryNode",
+    &[],
+);
+
+/// Interface for a node that has text as a [`CharSequence`].
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.nodes.TextableQueryNode`; ported by rmp task #487.
-pub trait TextableQueryNode {}
+/// Equivalent to the interface
+/// `org.apache.lucene.queryparser.flexible.core.nodes.TextableQueryNode`; a
+/// node gives it through
+/// [`QueryNode::as_textable_query_node`](super::query_node::QueryNode::as_textable_query_node).
+pub trait TextableQueryNode: Send + Sync {
+    /// Equivalent to `getText()`; `None` for Java's `null`.
+    fn get_text(&self) -> Option<CharSequence>;
+
+    /// Equivalent to `setText(CharSequence text)`.
+    fn set_text(&self, text: Option<CharSequence>);
+}

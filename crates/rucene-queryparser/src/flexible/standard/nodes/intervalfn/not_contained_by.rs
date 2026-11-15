@@ -15,10 +15,62 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `NotContainedBy.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `NotContainedBy.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{require_non_null, IntervalFunction};
+
+/// An interval function equivalent to `Intervals.notContainedBy(IntervalsSource, IntervalsSource)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.NotContainedBy`; ported by rmp task #488.
-pub struct NotContainedBy;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.NotContainedBy`.
+#[derive(Debug)]
+pub struct NotContainedBy {
+    small: Arc<dyn IntervalFunction>,
+    big: Arc<dyn IntervalFunction>,
+}
+
+impl NotContainedBy {
+    /// Equivalent to `new NotContainedBy(IntervalFunction small, IntervalFunction big)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for a `None`
+    /// argument.
+    pub fn new(
+        small: Option<Arc<dyn IntervalFunction>>,
+        big: Option<Arc<dyn IntervalFunction>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            small: require_non_null(small)?,
+            big: require_non_null(big)?,
+        })
+    }
+}
+
+impl IntervalFunction for NotContainedBy {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Intervals::not_contained_by(
+            self.small.to_interval_source(field, analyzer)?,
+            self.big.to_interval_source(field, analyzer)?,
+        )
+    }
+
+    fn to_java_string(&self) -> String {
+        format!(
+            "fn:notContainedBy({} {})",
+            self.small.to_java_string(),
+            self.big.to_java_string()
+        )
+    }
+}

@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.xml.builders`.
+//! Port of the Java package `org.apache.lucene.queryparser.xml.builders`: the
+//! builders of the XML query parser.
 
 pub mod boolean_query_builder;
 pub mod boosting_term_builder;
@@ -39,3 +40,20 @@ pub mod span_term_builder;
 pub mod term_query_builder;
 pub mod terms_query_builder;
 pub mod user_input_query_builder;
+
+use rucene::error::Result;
+
+/// The outcome of a try-with-resources body followed by the resource's
+/// `close()`: the body's failure wins and carries a close failure as
+/// suppressed; otherwise the close failure, if any, is the outcome.
+pub(crate) fn close_after<T>(result: Result<T>, closed: Result<()>) -> Result<T> {
+    match (result, closed) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(close_error)) => Err(close_error),
+        (Err(e), Ok(())) => Err(e),
+        (Err(mut e), Err(close_error)) => {
+            e.add_suppressed(close_error);
+            Err(e)
+        }
+    }
+}

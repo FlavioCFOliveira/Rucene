@@ -15,10 +15,68 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `NotWithin.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `NotWithin.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{require_non_null, IntervalFunction};
+
+/// An interval function equivalent to `Intervals.notWithin(IntervalsSource, int, IntervalsSource)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.NotWithin`; ported by rmp task #488.
-pub struct NotWithin;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.NotWithin`.
+#[derive(Debug)]
+pub struct NotWithin {
+    positions: i32,
+    minuend: Arc<dyn IntervalFunction>,
+    subtrahend: Arc<dyn IntervalFunction>,
+}
+
+impl NotWithin {
+    /// Equivalent to `new NotWithin(IntervalFunction minuend, int positions,
+    /// IntervalFunction subtrahend)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for a `None`
+    /// argument.
+    pub fn new(
+        minuend: Option<Arc<dyn IntervalFunction>>,
+        positions: i32,
+        subtrahend: Option<Arc<dyn IntervalFunction>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            positions,
+            minuend: require_non_null(minuend)?,
+            subtrahend: require_non_null(subtrahend)?,
+        })
+    }
+}
+
+impl IntervalFunction for NotWithin {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Ok(Intervals::not_within(
+            self.minuend.to_interval_source(field, analyzer)?,
+            self.positions,
+            self.subtrahend.to_interval_source(field, analyzer)?,
+        ))
+    }
+
+    fn to_java_string(&self) -> String {
+        format!(
+            "fn:notWithin({} {} {})",
+            self.minuend.to_java_string(),
+            self.positions,
+            self.subtrahend.to_java_string()
+        )
+    }
+}

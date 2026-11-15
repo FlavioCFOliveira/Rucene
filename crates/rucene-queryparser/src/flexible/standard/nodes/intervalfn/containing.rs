@@ -15,10 +15,62 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Containing.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `Containing.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{require_non_null, IntervalFunction};
+
+/// An interval function equivalent to `Intervals.containing(IntervalsSource, IntervalsSource)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Containing`; ported by rmp task #488.
-pub struct Containing;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Containing`.
+#[derive(Debug)]
+pub struct Containing {
+    big: Arc<dyn IntervalFunction>,
+    small: Arc<dyn IntervalFunction>,
+}
+
+impl Containing {
+    /// Equivalent to `new Containing(IntervalFunction big, IntervalFunction small)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for a `None`
+    /// argument.
+    pub fn new(
+        big: Option<Arc<dyn IntervalFunction>>,
+        small: Option<Arc<dyn IntervalFunction>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            big: require_non_null(big)?,
+            small: require_non_null(small)?,
+        })
+    }
+}
+
+impl IntervalFunction for Containing {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Intervals::containing(
+            self.big.to_interval_source(field, analyzer)?,
+            self.small.to_interval_source(field, analyzer)?,
+        )
+    }
+
+    fn to_java_string(&self) -> String {
+        format!(
+            "fn:containing({} {})",
+            self.big.to_java_string(),
+            self.small.to_java_string()
+        )
+    }
+}

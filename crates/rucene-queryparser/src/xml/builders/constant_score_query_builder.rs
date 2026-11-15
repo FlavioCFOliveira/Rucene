@@ -15,10 +15,48 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ConstantScoreQueryBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.xml.builders`.
+//! Port of `ConstantScoreQueryBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.xml.builders`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::boost_query::BoostQuery;
+use rucene::search::constant_score_query::ConstantScoreQuery;
+use rucene::search::query::Query;
+
+use crate::jdk::dom::Element;
+use crate::xml::dom_utils::DOMUtils;
+use crate::xml::query_builder::QueryBuilder;
+use crate::xml::query_builder_factory::QueryBuilderFactory;
+
+/// Builder for `ConstantScoreQuery`
 ///
-/// Skeleton of `org.apache.lucene.queryparser.xml.builders.ConstantScoreQueryBuilder`; ported by rmp task #493.
-pub struct ConstantScoreQueryBuilder;
+/// Equivalent to
+/// `org.apache.lucene.queryparser.xml.builders.ConstantScoreQueryBuilder`.
+#[derive(Debug)]
+pub struct ConstantScoreQueryBuilder {
+    query_factory: Arc<QueryBuilderFactory>,
+}
+
+impl ConstantScoreQueryBuilder {
+    /// Equivalent to `new ConstantScoreQueryBuilder(QueryBuilderFactory
+    /// queryFactory)`.
+    pub fn new(query_factory: Arc<QueryBuilderFactory>) -> Self {
+        Self { query_factory }
+    }
+}
+
+impl QueryBuilder for ConstantScoreQueryBuilder {
+    fn get_query(&self, e: &Element) -> Result<Arc<dyn Query>> {
+        let query_elem = DOMUtils::get_first_child_or_fail(e)?;
+        let mut q: Arc<dyn Query> = Arc::new(ConstantScoreQuery::new(
+            self.query_factory.get_query(&query_elem)?,
+        ));
+        let boost = DOMUtils::get_attribute_float(e, "boost", 1.0)?;
+        if boost != 1.0 {
+            q = Arc::new(BoostQuery::new(q, boost)?);
+        }
+        Ok(q)
+    }
+}

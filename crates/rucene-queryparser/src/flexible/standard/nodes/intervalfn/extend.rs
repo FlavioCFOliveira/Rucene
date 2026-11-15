@@ -15,10 +15,65 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Extend.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `Extend.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{require_non_null, IntervalFunction};
+
+/// An interval function equivalent to `Intervals.extend(IntervalsSource,
+/// int, int)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Extend`; ported by rmp task #488.
-pub struct Extend;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Extend`.
+#[derive(Debug)]
+pub struct Extend {
+    before: i32,
+    after: i32,
+    source: Arc<dyn IntervalFunction>,
+}
+
+impl Extend {
+    /// Equivalent to `new Extend(IntervalFunction source, int before, int
+    /// after)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for a `None`
+    /// source.
+    pub fn new(source: Option<Arc<dyn IntervalFunction>>, before: i32, after: i32) -> Result<Self> {
+        Ok(Self {
+            source: require_non_null(source)?,
+            before,
+            after,
+        })
+    }
+}
+
+impl IntervalFunction for Extend {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Ok(Intervals::extend(
+            self.source.to_interval_source(field, analyzer)?,
+            self.before,
+            self.after,
+        ))
+    }
+
+    fn to_java_string(&self) -> String {
+        format!(
+            "fn:extend({} {} {})",
+            self.source.to_java_string(),
+            self.before,
+            self.after
+        )
+    }
+}

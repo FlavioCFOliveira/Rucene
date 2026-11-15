@@ -15,17 +15,41 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `EscapeQuerySyntax.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.core.parser`.
+//! Port of `EscapeQuerySyntax.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.parser`.
 
-/// Java: `public interface`.
-///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.parser.EscapeQuerySyntax`; ported by rmp task #487.
-pub trait EscapeQuerySyntax {}
+use rucene::error::Result;
 
-/// Java: `public enum`.
+use crate::jdk::char_sequence::CharSequence;
+use crate::jdk::locale::Locale;
+
+/// A parser needs to implement [`EscapeQuerySyntax`] to allow the
+/// QueryNode to escape the queries, when the toQueryString method is called.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.parser.EscapeQuerySyntax.Type`; ported by rmp task #487.
+/// Equivalent to the interface
+/// `org.apache.lucene.queryparser.flexible.core.parser.EscapeQuerySyntax`.
+pub trait EscapeQuerySyntax: Send + Sync {
+    /// Equivalent to `escape(CharSequence text, Locale locale, Type type)`:
+    /// the escaped text (`None` for Java's `null`, which a `null` text
+    /// gives).
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the implementation.
+    fn escape(
+        &self,
+        text: Option<&CharSequence>,
+        locale: &Locale,
+        type_: Type,
+    ) -> Result<Option<CharSequence>>;
+}
+
+/// Type of escaping: String for escaping syntax, NORMAL for escaping
+/// reserved words (like AND) in terms
+///
+/// Equivalent to the enum
+/// `org.apache.lucene.queryparser.flexible.core.parser.EscapeQuerySyntax.Type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Type {
     /// Java constant `STRING`.
     String,

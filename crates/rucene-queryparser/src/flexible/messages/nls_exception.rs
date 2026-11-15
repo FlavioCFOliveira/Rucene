@@ -15,10 +15,26 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `NLSException.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.messages`.
+//! Port of `NLSException.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.messages`.
 
-/// Java: `public interface`.
+use std::sync::Arc;
+
+use super::message::Message;
+
+/// Interface that exceptions should implement to support lazy loading of
+/// messages.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.messages.NLSException`; ported by rmp task #486.
-pub trait NLSException {}
+/// For Native Language Support (NLS), system of software
+/// internationalization.
+///
+/// This Interface should be implemented by all exceptions that require
+/// translation.
+///
+/// Equivalent to the interface
+/// `org.apache.lucene.queryparser.flexible.messages.NLSException`.
+pub trait NLSException {
+    /// Equivalent to `getMessageObject()`: an instance of a class that
+    /// implements the Message interface; `None` for Java's `null`.
+    fn get_message_object(&self) -> Option<Arc<dyn Message>>;
+}

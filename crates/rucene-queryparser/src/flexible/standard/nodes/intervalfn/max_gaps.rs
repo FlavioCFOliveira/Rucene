@@ -15,10 +15,59 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `MaxGaps.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `MaxGaps.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{require_non_null, IntervalFunction};
+
+/// An interval function equivalent to `Intervals.maxgaps(int, IntervalsSource)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.MaxGaps`; ported by rmp task #488.
-pub struct MaxGaps;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.MaxGaps`.
+#[derive(Debug)]
+pub struct MaxGaps {
+    max_gaps: i32,
+    source: Arc<dyn IntervalFunction>,
+}
+
+impl MaxGaps {
+    /// Equivalent to `new MaxGaps(int maxGaps, IntervalFunction source)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for a `None`
+    /// source.
+    pub fn new(max_gaps: i32, source: Option<Arc<dyn IntervalFunction>>) -> Result<Self> {
+        Ok(Self {
+            max_gaps,
+            source: require_non_null(source)?,
+        })
+    }
+}
+
+impl IntervalFunction for MaxGaps {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Intervals::maxgaps(
+            self.max_gaps,
+            self.source.to_interval_source(field, analyzer)?,
+        )
+    }
+
+    fn to_java_string(&self) -> String {
+        format!(
+            "fn:maxgaps({} {})",
+            self.max_gaps,
+            self.source.to_java_string()
+        )
+    }
+}

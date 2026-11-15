@@ -15,10 +15,61 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `DisjunctionMaxQueryBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.xml.builders`.
+//! Port of `DisjunctionMaxQueryBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.xml.builders`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::boost_query::BoostQuery;
+use rucene::search::disjunction_max_query::DisjunctionMaxQuery;
+use rucene::search::query::Query;
+
+use crate::jdk::dom::Element;
+use crate::xml::dom_utils::DOMUtils;
+use crate::xml::query_builder::QueryBuilder;
+
+/// Builder for `DisjunctionMaxQuery`
 ///
-/// Skeleton of `org.apache.lucene.queryparser.xml.builders.DisjunctionMaxQueryBuilder`; ported by rmp task #493.
-pub struct DisjunctionMaxQueryBuilder;
+/// Equivalent to
+/// `org.apache.lucene.queryparser.xml.builders.DisjunctionMaxQueryBuilder`.
+pub struct DisjunctionMaxQueryBuilder {
+    factory: Arc<dyn QueryBuilder>,
+}
+
+impl std::fmt::Debug for DisjunctionMaxQueryBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DisjunctionMaxQueryBuilder")
+    }
+}
+
+impl DisjunctionMaxQueryBuilder {
+    /// Equivalent to `new DisjunctionMaxQueryBuilder(QueryBuilder factory)`.
+    pub fn new(factory: Arc<dyn QueryBuilder>) -> Self {
+        Self { factory }
+    }
+}
+
+impl QueryBuilder for DisjunctionMaxQueryBuilder {
+    /// Equivalent to `getQuery(Element e)`: a `DisjunctionMaxQuery` of every
+    /// child element, with the `tieBreaker` and `boost` attributes.
+    fn get_query(&self, e: &Element) -> Result<Arc<dyn Query>> {
+        let tie_breaker = DOMUtils::get_attribute_float(e, "tieBreaker", 0.0)?;
+        let mut disjuncts: Vec<Arc<dyn Query>> = Vec::new();
+        let nl = e.get_child_nodes();
+        let nl_len = nl.get_length();
+        for i in 0..nl_len {
+            if let Some(query_elem) = nl.item(i).and_then(|node| node.as_element()) {
+                // all elements are disjuncts.
+                let q = self.factory.get_query(&query_elem)?;
+                disjuncts.push(q);
+            }
+        }
+        let mut q: Arc<dyn Query> = Arc::new(DisjunctionMaxQuery::new(disjuncts, tie_breaker)?);
+        let boost = DOMUtils::get_attribute_float(e, "boost", 1.0)?;
+        if boost != 1.0 {
+            q = Arc::new(BoostQuery::new(q, boost)?);
+        }
+        Ok(q)
+    }
+}

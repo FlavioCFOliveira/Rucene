@@ -15,10 +15,155 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `WildcardQueryNode.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes`.
+//! Port of `WildcardQueryNode.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes`.
+use std::any::Any;
+use std::sync::{Arc, Weak};
 
-/// Java: `public class`.
+use rucene::error::Result;
+
+use crate::flexible::core::nodes::field_query_node::{FieldQueryNode, FIELD_QUERY_NODE_CLASS};
+use crate::flexible::core::nodes::fieldable_node::FieldableNode;
+use crate::flexible::core::nodes::query_node::{QueryNode, QueryNodeRef};
+use crate::flexible::core::nodes::query_node_impl::QueryNodeImpl;
+use crate::flexible::core::nodes::textable_query_node::TextableQueryNode;
+use crate::flexible::core::parser::escape_query_syntax::EscapeQuerySyntax;
+use crate::jdk::char_sequence::{value_of, CharSequence};
+use crate::jdk::class::JavaClass;
+
+/// `org.apache.lucene.queryparser.flexible.standard.nodes.WildcardQueryNode`.
+pub static WILDCARD_QUERY_NODE_CLASS: JavaClass = JavaClass::class(
+    "org.apache.lucene.queryparser.flexible.standard.nodes.WildcardQueryNode",
+    Some(&FIELD_QUERY_NODE_CLASS),
+    &[],
+);
+
+/// A [`WildcardQueryNode`] represents wildcard query This does not apply to
+/// phrases. Examples: a*b*c Fl?w? m?ke*g
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.WildcardQueryNode`; ported by rmp task #488.
-pub struct WildcardQueryNode;
+/// Equivalent to
+/// `org.apache.lucene.queryparser.flexible.standard.nodes.WildcardQueryNode`,
+/// which extends `FieldQueryNode` (embedded).
+///
+/// **Divergence.** As in [`FieldQueryNode`], a `null` text in
+/// `toQueryString` is rendered `null`.
+#[derive(Debug)]
+pub struct WildcardQueryNode {
+    base: FieldQueryNode,
+}
+
+impl WildcardQueryNode {
+    pub(crate) fn fields(
+        base: QueryNodeImpl,
+        field: Option<CharSequence>,
+        text: Option<CharSequence>,
+        begin: i32,
+        end: i32,
+    ) -> Self {
+        Self {
+            base: FieldQueryNode::fields(base, field, text, begin, end),
+        }
+    }
+
+    pub(crate) fn init(&self) {
+        self.base.init();
+    }
+
+    pub(crate) fn cloned(&self, base: QueryNodeImpl) -> Self {
+        Self {
+            base: self.base.cloned(base),
+        }
+    }
+
+    pub(crate) fn field_query_node(&self) -> &FieldQueryNode {
+        &self.base
+    }
+
+    /// `toQueryString` of `WildcardQueryNode`: the text, not escaped.
+    pub(crate) fn wildcard_to_query_string(&self) -> CharSequence {
+        let field = self.base.get_field();
+        let text = value_of(self.base.get_text().as_ref());
+        if self.base.query_node_impl().is_default_field(field.as_ref()) {
+            CharSequence::from(text)
+        } else {
+            CharSequence::from(format!("{}:{text}", value_of(field.as_ref())))
+        }
+    }
+
+    /// Equivalent to `new WildcardQueryNode(CharSequence field, CharSequence
+    /// text, int begin, int end)`.
+    ///
+    /// * `field` - field name
+    /// * `text` - value that contains one or more wild card characters (? or
+    ///   *)
+    /// * `begin` - position in the query string
+    /// * `end` - position in the query string
+    pub fn new(
+        field: Option<CharSequence>,
+        text: Option<CharSequence>,
+        begin: i32,
+        end: i32,
+    ) -> Arc<Self> {
+        let node = Arc::new_cyclic(|this: &Weak<Self>| {
+            Self::fields(QueryNodeImpl::new(this.clone()), field, text, begin, end)
+        });
+        node.init();
+        node
+    }
+
+    /// Equivalent to `new WildcardQueryNode(FieldQueryNode fqn)`: the field,
+    /// text, begin and end of `fqn`.
+    pub fn from_field_query_node(fqn: &FieldQueryNode) -> Arc<Self> {
+        Self::new(
+            fqn.get_field(),
+            fqn.get_text(),
+            fqn.get_begin(),
+            fqn.get_end(),
+        )
+    }
+}
+
+impl QueryNode for WildcardQueryNode {
+    fn query_node_impl(&self) -> &QueryNodeImpl {
+        self.base.query_node_impl()
+    }
+
+    fn java_class(&self) -> &'static JavaClass {
+        &WILDCARD_QUERY_NODE_CLASS
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn to_query_string(&self, _escaper: &dyn EscapeQuerySyntax) -> Result<CharSequence> {
+        Ok(self.wildcard_to_query_string())
+    }
+
+    fn to_java_string(&self) -> Result<String> {
+        Ok(format!(
+            "<wildcard field='{}' term='{}'/>",
+            value_of(self.base.get_field().as_ref()),
+            value_of(self.base.get_text().as_ref())
+        ))
+    }
+
+    fn clone_tree(&self) -> Result<QueryNodeRef> {
+        let clauses = self.query_node_impl().clone_children()?;
+        Ok(Arc::new_cyclic(|this: &Weak<Self>| {
+            self.cloned(self.query_node_impl().cloned_state(this.clone(), clauses))
+        }))
+    }
+
+    fn as_fieldable_node(&self) -> Option<&dyn FieldableNode> {
+        Some(&self.base)
+    }
+
+    fn as_textable_query_node(&self) -> Option<&dyn TextableQueryNode> {
+        Some(&self.base)
+    }
+
+    fn as_field_query_node(&self) -> Option<&FieldQueryNode> {
+        Some(&self.base)
+    }
+}

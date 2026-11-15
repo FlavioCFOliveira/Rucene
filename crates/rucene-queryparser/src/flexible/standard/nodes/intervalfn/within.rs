@@ -15,10 +15,68 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Within.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `Within.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{require_non_null, IntervalFunction};
+
+/// An interval function equivalent to `Intervals.within(IntervalsSource, int, IntervalsSource)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Within`; ported by rmp task #488.
-pub struct Within;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Within`.
+#[derive(Debug)]
+pub struct Within {
+    positions: i32,
+    source: Arc<dyn IntervalFunction>,
+    reference: Arc<dyn IntervalFunction>,
+}
+
+impl Within {
+    /// Equivalent to `new Within(IntervalFunction source, int positions,
+    /// IntervalFunction reference)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for a `None`
+    /// argument.
+    pub fn new(
+        source: Option<Arc<dyn IntervalFunction>>,
+        positions: i32,
+        reference: Option<Arc<dyn IntervalFunction>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            positions,
+            source: require_non_null(source)?,
+            reference: require_non_null(reference)?,
+        })
+    }
+}
+
+impl IntervalFunction for Within {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Intervals::within(
+            self.source.to_interval_source(field, analyzer)?,
+            self.positions,
+            self.reference.to_interval_source(field, analyzer)?,
+        )
+    }
+
+    fn to_java_string(&self) -> String {
+        format!(
+            "fn:within({} {} {})",
+            self.source.to_java_string(),
+            self.positions,
+            self.reference.to_java_string()
+        )
+    }
+}

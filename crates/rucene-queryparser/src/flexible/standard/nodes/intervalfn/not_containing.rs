@@ -15,10 +15,62 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `NotContaining.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `NotContaining.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{require_non_null, IntervalFunction};
+
+/// An interval function equivalent to `Intervals.notContaining(IntervalsSource, IntervalsSource)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.NotContaining`; ported by rmp task #488.
-pub struct NotContaining;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.NotContaining`.
+#[derive(Debug)]
+pub struct NotContaining {
+    minuend: Arc<dyn IntervalFunction>,
+    subtrahend: Arc<dyn IntervalFunction>,
+}
+
+impl NotContaining {
+    /// Equivalent to `new NotContaining(IntervalFunction minuend, IntervalFunction subtrahend)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for a `None`
+    /// argument.
+    pub fn new(
+        minuend: Option<Arc<dyn IntervalFunction>>,
+        subtrahend: Option<Arc<dyn IntervalFunction>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            minuend: require_non_null(minuend)?,
+            subtrahend: require_non_null(subtrahend)?,
+        })
+    }
+}
+
+impl IntervalFunction for NotContaining {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Intervals::not_containing(
+            self.minuend.to_interval_source(field, analyzer)?,
+            self.subtrahend.to_interval_source(field, analyzer)?,
+        )
+    }
+
+    fn to_java_string(&self) -> String {
+        format!(
+            "fn:notContaining({} {})",
+            self.minuend.to_java_string(),
+            self.subtrahend.to_java_string()
+        )
+    }
+}

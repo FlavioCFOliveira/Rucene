@@ -20,3 +20,7 @@ rucene-sandbox = { path = "../rucene-sandbox" }
 # (`src/jdk/format_data.bin`, zlib), the backend and features the core crate
 # and `rucene-analysis-common` already build: no new crate in the graph.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+# The XML parser under the JAXP DOM emulation of `src/jdk/dom.rs` (MIT),
+# at the version `rucene-analysis-common` already builds (approved on rmp
+# task #461; decided for the XML query parser on task #493).
+quick-xml = "0.42.0"

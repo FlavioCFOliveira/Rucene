@@ -15,10 +15,64 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `AtLeast.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `AtLeast.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{join, require_non_null, sources_of, IntervalFunction};
+
+/// An interval function equivalent to `Intervals.atLeast(int,
+/// IntervalsSource...)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.AtLeast`; ported by rmp task #488.
-pub struct AtLeast;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.AtLeast`.
+#[derive(Debug)]
+pub struct AtLeast {
+    min_should_match: i32,
+    sources: Vec<Arc<dyn IntervalFunction>>,
+}
+
+impl AtLeast {
+    /// Equivalent to `new AtLeast(int minShouldMatch, List<IntervalFunction>
+    /// sources)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for `None`
+    /// sources.
+    pub fn new(
+        min_should_match: i32,
+        sources: Option<Vec<Arc<dyn IntervalFunction>>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            min_should_match,
+            sources: require_non_null(sources)?,
+        })
+    }
+}
+
+impl IntervalFunction for AtLeast {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Ok(Intervals::at_least(
+            self.min_should_match,
+            sources_of(&self.sources, field, analyzer)?,
+        ))
+    }
+
+    fn to_java_string(&self) -> String {
+        format!(
+            "fn:atLeast({} {})",
+            self.min_should_match,
+            join(&self.sources)
+        )
+    }
+}

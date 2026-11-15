@@ -15,10 +15,82 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SynonymQueryNode.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes`.
+//! Port of `SynonymQueryNode.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes`.
+use std::any::Any;
+use std::sync::{Arc, Weak};
 
-/// Java: `public class`.
+use rucene::error::Result;
+
+use crate::flexible::core::nodes::boolean_query_node::{
+    BooleanQueryNode, BOOLEAN_QUERY_NODE_CLASS,
+};
+use crate::flexible::core::nodes::query_node::{QueryNode, QueryNodeRef};
+use crate::flexible::core::nodes::query_node_impl::QueryNodeImpl;
+use crate::flexible::core::parser::escape_query_syntax::EscapeQuerySyntax;
+use crate::jdk::char_sequence::CharSequence;
+use crate::jdk::class::JavaClass;
+
+/// `org.apache.lucene.queryparser.flexible.standard.nodes.SynonymQueryNode`.
+pub static SYNONYM_QUERY_NODE_CLASS: JavaClass = JavaClass::class(
+    "org.apache.lucene.queryparser.flexible.standard.nodes.SynonymQueryNode",
+    Some(&BOOLEAN_QUERY_NODE_CLASS),
+    &[],
+);
+
+/// QueryNode for clauses that are synonym of each other.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.SynonymQueryNode`; ported by rmp task #488.
-pub struct SynonymQueryNode;
+/// Equivalent to
+/// `org.apache.lucene.queryparser.flexible.standard.nodes.SynonymQueryNode`,
+/// which extends `BooleanQueryNode` (embedded).
+#[derive(Debug)]
+pub struct SynonymQueryNode {
+    base: BooleanQueryNode,
+}
+
+impl SynonymQueryNode {
+    /// Equivalent to `new SynonymQueryNode(List<QueryNode> clauses)`.
+    ///
+    /// # Errors
+    ///
+    /// `NullPointerException` for `None` clauses.
+    pub fn new(clauses: Option<Vec<QueryNodeRef>>) -> Result<Arc<Self>> {
+        let node = Arc::new_cyclic(|this: &Weak<Self>| Self {
+            base: BooleanQueryNode::fields(QueryNodeImpl::new(this.clone())),
+        });
+        node.base.init(clauses)?;
+        Ok(node)
+    }
+}
+
+impl QueryNode for SynonymQueryNode {
+    fn query_node_impl(&self) -> &QueryNodeImpl {
+        self.base.query_node_impl()
+    }
+
+    fn java_class(&self) -> &'static JavaClass {
+        &SYNONYM_QUERY_NODE_CLASS
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn to_java_string(&self) -> Result<String> {
+        self.base.to_java_string_with("default")
+    }
+
+    fn to_query_string(
+        &self,
+        escape_syntax_parser: &dyn EscapeQuerySyntax,
+    ) -> Result<CharSequence> {
+        self.base.to_query_string_with(escape_syntax_parser, " ")
+    }
+
+    fn clone_tree(&self) -> Result<QueryNodeRef> {
+        let clauses = self.query_node_impl().clone_children()?;
+        Ok(Arc::new_cyclic(|this: &Weak<Self>| Self {
+            base: self.base.cloned(this.clone(), clauses),
+        }))
+    }
+}

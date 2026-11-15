@@ -15,10 +15,74 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `MatchAllDocsQueryNode.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.core.nodes`.
+//! Port of `MatchAllDocsQueryNode.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.nodes`.
 
-/// Java: `public class`.
+use std::any::Any;
+use std::sync::{Arc, Weak};
+
+use rucene::error::Result;
+
+use super::query_node::{QueryNode, QueryNodeRef};
+use super::query_node_impl::{QueryNodeImpl, QUERY_NODE_IMPL_CLASS};
+use crate::flexible::core::parser::escape_query_syntax::EscapeQuerySyntax;
+use crate::jdk::char_sequence::CharSequence;
+use crate::jdk::class::JavaClass;
+
+/// `org.apache.lucene.queryparser.flexible.core.nodes.MatchAllDocsQueryNode`.
+pub static MATCH_ALL_DOCS_QUERY_NODE_CLASS: JavaClass = JavaClass::class(
+    "org.apache.lucene.queryparser.flexible.core.nodes.MatchAllDocsQueryNode",
+    Some(&QUERY_NODE_IMPL_CLASS),
+    &[],
+);
+
+/// A [`MatchAllDocsQueryNode`] indicates that a query node tree or subtree
+/// will match all documents if executed in the index.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.nodes.MatchAllDocsQueryNode`; ported by rmp task #487.
-pub struct MatchAllDocsQueryNode;
+/// Equivalent to
+/// `org.apache.lucene.queryparser.flexible.core.nodes.MatchAllDocsQueryNode`.
+#[derive(Debug)]
+pub struct MatchAllDocsQueryNode {
+    base: QueryNodeImpl,
+}
+
+impl MatchAllDocsQueryNode {
+    /// Equivalent to `new MatchAllDocsQueryNode()`.
+    pub fn new() -> Arc<Self> {
+        Arc::new_cyclic(|this: &Weak<Self>| Self {
+            base: QueryNodeImpl::new(this.clone()),
+        })
+    }
+}
+
+impl QueryNode for MatchAllDocsQueryNode {
+    fn query_node_impl(&self) -> &QueryNodeImpl {
+        &self.base
+    }
+
+    fn java_class(&self) -> &'static JavaClass {
+        &MATCH_ALL_DOCS_QUERY_NODE_CLASS
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn to_java_string(&self) -> Result<String> {
+        Ok("<matchAllDocs field='*' term='*'/>".to_string())
+    }
+
+    fn to_query_string(
+        &self,
+        _escape_syntax_parser: &dyn EscapeQuerySyntax,
+    ) -> Result<CharSequence> {
+        Ok(CharSequence::from("*:*"))
+    }
+
+    fn clone_tree(&self) -> Result<QueryNodeRef> {
+        let clauses = self.base.clone_children()?;
+        Ok(Arc::new_cyclic(|this: &Weak<Self>| Self {
+            base: self.base.cloned_state(this.clone(), clauses),
+        }))
+    }
+}

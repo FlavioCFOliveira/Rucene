@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.xml`.
+//! Port of the Java package `org.apache.lucene.queryparser.xml`: the XML query
+//! parser, which builds Lucene queries from XML documents.
 
 pub mod builders;
 pub mod core_parser;

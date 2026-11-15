@@ -15,10 +15,33 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `QueryBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.core.builders`.
+//! Port of `QueryBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.builders`.
 
-/// Java: `public interface`.
+use rucene::error::Result;
+
+use super::query_tree_builder::QueryTreeBuilder;
+use crate::flexible::core::nodes::query_node::{JavaObjectRef, QueryNodeRef};
+
+/// This interface is used by implementors classes that builds some kind of
+/// object from a query tree.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.builders.QueryBuilder`; ported by rmp task #487.
-pub trait QueryBuilder {}
+/// Equivalent to the interface
+/// `org.apache.lucene.queryparser.flexible.core.builders.QueryBuilder`.
+pub trait QueryBuilder: Send + Sync {
+    /// Builds some kind of object from a query tree.
+    ///
+    /// Equivalent to `build(QueryNode queryNode)`: the object built (`None`
+    /// for Java's `null`).
+    ///
+    /// # Errors
+    ///
+    /// A `QueryNodeException` if something wrong happens.
+    fn build(&self, query_node: &QueryNodeRef) -> Result<Option<JavaObjectRef>>;
+
+    /// The builder as a `QueryTreeBuilder` (`instanceof QueryTreeBuilder`):
+    /// a `QueryTreeBuilder` or a subclass of it.
+    fn as_query_tree_builder(&self) -> Option<&QueryTreeBuilder> {
+        None
+    }
+}

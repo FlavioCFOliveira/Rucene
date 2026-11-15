@@ -1175,6 +1175,62 @@ impl DecimalFormat {
         self.rounding_mode
     }
 
+    /// `equals(Object)` against another `DecimalFormat`: `NumberFormat.
+    /// equals` (the bounded digit counts, grouping and integer-only
+    /// parsing), then the affix patterns, the multiplier, the grouping size,
+    /// the decimal separator display, the exponential notation, the
+    /// unbounded digit counts, the rounding mode, the symbols and strict
+    /// parsing, as JDK 25's `DecimalFormat.equals` compares them (the affix
+    /// patterns are never `null` here, and `parseBigDecimal` is always
+    /// `false`).
+    ///
+    /// **Divergence.** The emulated [`DecimalFormatSymbols`] hold no
+    /// currency and no locale, which JDK 25's `DecimalFormatSymbols.equals`
+    /// also compares: two formats whose symbols differ only in those are
+    /// equal here.
+    pub fn java_equals(&self, other: &DecimalFormat) -> bool {
+        if std::ptr::eq(self, other) {
+            return true;
+        }
+        self.super_maximum_integer_digits == other.super_maximum_integer_digits
+            && self.super_minimum_integer_digits == other.super_minimum_integer_digits
+            && self.super_maximum_fraction_digits == other.super_maximum_fraction_digits
+            && self.super_minimum_fraction_digits == other.super_minimum_fraction_digits
+            && self.grouping_used == other.grouping_used
+            && self.parse_integer_only == other.parse_integer_only
+            && self.pos_prefix_pattern == other.pos_prefix_pattern
+            && self.pos_suffix_pattern == other.pos_suffix_pattern
+            && self.neg_prefix_pattern == other.neg_prefix_pattern
+            && self.neg_suffix_pattern == other.neg_suffix_pattern
+            && self.multiplier == other.multiplier
+            && self.grouping_size == other.grouping_size
+            && self.decimal_separator_always_shown == other.decimal_separator_always_shown
+            && self.use_exponential_notation == other.use_exponential_notation
+            && (!self.use_exponential_notation
+                || self.min_exponent_digits == other.min_exponent_digits)
+            && self.maximum_integer_digits == other.maximum_integer_digits
+            && self.minimum_integer_digits == other.minimum_integer_digits
+            && self.maximum_fraction_digits == other.maximum_fraction_digits
+            && self.minimum_fraction_digits == other.minimum_fraction_digits
+            && self.rounding_mode == other.rounding_mode
+            && self.symbols == other.symbols
+            && self.parse_strict == other.parse_strict
+    }
+
+    /// `hashCode()`: `super.hashCode() * 37 + positivePrefix.hashCode()`,
+    /// where `NumberFormat.hashCode()` is `maximumIntegerDigits * 37 +
+    /// maxFractionDigits` over the serialization field `maxFractionDigits`,
+    /// which keeps its initial value 3 in a format that was not deserialized.
+    pub fn java_hash_code(&self) -> i32 {
+        let super_hash = self
+            .super_maximum_integer_digits
+            .wrapping_mul(37)
+            .wrapping_add(3);
+        super_hash
+            .wrapping_mul(37)
+            .wrapping_add(super::string::hash_code(&self.positive_prefix))
+    }
+
     /// `getDecimalFormatSymbols()`.
     pub fn get_decimal_format_symbols(&self) -> &DecimalFormatSymbols {
         &self.symbols

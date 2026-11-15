@@ -15,10 +15,50 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Or.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `Or.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{join, require_non_null, sources_of, IntervalFunction};
+
+/// An interval function equivalent to `Intervals.or(IntervalsSource...)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Or`; ported by rmp task #488.
-pub struct Or;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Or`.
+#[derive(Debug)]
+pub struct Or {
+    sources: Vec<Arc<dyn IntervalFunction>>,
+}
+
+impl Or {
+    /// Equivalent to `new Or(List<IntervalFunction> sources)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for `None`
+    /// sources.
+    pub fn new(sources: Option<Vec<Arc<dyn IntervalFunction>>>) -> Result<Self> {
+        Ok(Self {
+            sources: require_non_null(sources)?,
+        })
+    }
+}
+
+impl IntervalFunction for Or {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Intervals::or(sources_of(&self.sources, field, analyzer)?)
+    }
+
+    fn to_java_string(&self) -> String {
+        format!("fn:or({})", join(&self.sources))
+    }
+}

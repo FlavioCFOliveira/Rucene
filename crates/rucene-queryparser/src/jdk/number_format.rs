@@ -27,6 +27,7 @@
 
 use rucene::error::Result;
 
+use super::class::JavaClass;
 use super::decimal_format::{DecimalFormat, DecimalFormatSymbols};
 use super::format::{parse_exception, FieldPosition, JavaNumber, ParsePosition};
 use super::locale::Locale;
@@ -34,6 +35,20 @@ use super::locale_data::data;
 
 /// `java.text.NumberFormat`: formats and parses `java.lang.Number`s.
 pub trait NumberFormat: std::fmt::Debug + Send + Sync {
+    /// `getClass()`: the class of the format.
+    fn java_class(&self) -> &'static JavaClass;
+
+    /// `equals(Object)`: `NumberFormat.equals` (the same class and the same
+    /// digit counts, grouping and integer-only parsing) and what the class
+    /// adds.
+    fn java_equals(&self, other: &dyn NumberFormat) -> bool;
+
+    /// `hashCode()`.
+    fn java_hash_code(&self) -> i32;
+
+    /// The format, for the class checks of `equals`.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// `format(Object number, StringBuffer toAppendTo, FieldPosition pos)`,
     /// appending UTF-16 units.
     ///
@@ -88,6 +103,25 @@ pub trait NumberFormat: std::fmt::Debug + Send + Sync {
 }
 
 impl NumberFormat for DecimalFormat {
+    fn java_class(&self) -> &'static JavaClass {
+        &super::class::DECIMAL_FORMAT
+    }
+
+    fn java_equals(&self, other: &dyn NumberFormat) -> bool {
+        match other.as_any().downcast_ref::<DecimalFormat>() {
+            Some(other) => DecimalFormat::java_equals(self, other),
+            None => false,
+        }
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        DecimalFormat::java_hash_code(self)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn format_to(
         &self,
         number: JavaNumber,

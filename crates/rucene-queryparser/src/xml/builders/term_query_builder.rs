@@ -15,10 +15,46 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `TermQueryBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.xml.builders`.
+//! Port of `TermQueryBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.xml.builders`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::index::Term;
+use rucene::search::boost_query::BoostQuery;
+use rucene::search::query::Query;
+use rucene::search::term_query::TermQuery;
+
+use crate::jdk::dom::Element;
+use crate::xml::dom_utils::DOMUtils;
+use crate::xml::query_builder::QueryBuilder;
+
+/// Builder for `TermQuery`
 ///
-/// Skeleton of `org.apache.lucene.queryparser.xml.builders.TermQueryBuilder`; ported by rmp task #493.
+/// Equivalent to `org.apache.lucene.queryparser.xml.builders.TermQueryBuilder`.
+#[derive(Debug, Default)]
 pub struct TermQueryBuilder;
+
+impl TermQueryBuilder {
+    /// Equivalent to `new TermQueryBuilder()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl QueryBuilder for TermQueryBuilder {
+    /// Equivalent to `getQuery(Element e)`: a `TermQuery` of the `fieldName`
+    /// attribute (inherited) and the element's text, boosted by the `boost`
+    /// attribute when it is not 1.
+    fn get_query(&self, e: &Element) -> Result<Arc<dyn Query>> {
+        let field = DOMUtils::get_attribute_with_inheritance_or_fail(e, "fieldName")?;
+        let value = DOMUtils::get_non_blank_text_or_fail(e)?;
+        let mut tq: Arc<dyn Query> = Arc::new(TermQuery::new(Term::from_text(field, &value)));
+        let boost = DOMUtils::get_attribute_float(e, "boost", 1.0)?;
+        if boost != 1.0 {
+            tq = Arc::new(BoostQuery::new(tq, boost)?);
+        }
+        Ok(tq)
+    }
+}

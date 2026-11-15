@@ -15,10 +15,48 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SpanBuilderBase.java`, of the Java
-//! package `org.apache.lucene.queryparser.xml.builders`.
+//! Port of `SpanBuilderBase.java`, of the Java package
+//! `org.apache.lucene.queryparser.xml.builders`.
 
-/// Java: `public abstract class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::boost_query::BoostQuery;
+use rucene::search::query::Query;
+
+use super::span_query_builder::SpanQueryBuilder;
+use crate::jdk::dom::Element;
+use crate::xml::dom_utils::DOMUtils;
+
+/// Base class for building [`SpanQuery`](rucene_queries::spans::span_query::SpanQuery)s
 ///
-/// Skeleton of `org.apache.lucene.queryparser.xml.builders.SpanBuilderBase`; ported by rmp task #493.
-pub struct SpanBuilderBase;
+/// Equivalent to the abstract class
+/// `org.apache.lucene.queryparser.xml.builders.SpanBuilderBase`: its one
+/// member, `getQuery`, is [`get_query`](Self::get_query), which the span
+/// builders' `QueryBuilder` implementations call.
+#[derive(Debug)]
+pub struct SpanBuilderBase {
+    _no_instances: (),
+}
+
+impl SpanBuilderBase {
+    /// Equivalent to `getQuery(Element e)`: the span query of the builder,
+    /// boosted by the `boost` attribute when it is not 1.
+    ///
+    /// # Errors
+    ///
+    /// The `NumberFormatException` of the boost, and what the builder
+    /// throws.
+    pub fn get_query(
+        this: &(impl SpanQueryBuilder + ?Sized),
+        e: &Element,
+    ) -> Result<Arc<dyn Query>> {
+        let boost = DOMUtils::get_attribute_float(e, "boost", 1.0)?;
+        let q = this.get_span_query(e)?;
+        let q: Arc<dyn Query> = q;
+        if boost == 1.0 {
+            return Ok(q);
+        }
+        Ok(Arc::new(BoostQuery::new(q, boost)?))
+    }
+}

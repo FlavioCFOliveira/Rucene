@@ -15,10 +15,62 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `NonOverlapping.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `NonOverlapping.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{require_non_null, IntervalFunction};
+
+/// An interval function equivalent to `Intervals.nonOverlapping(IntervalsSource, IntervalsSource)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.NonOverlapping`; ported by rmp task #488.
-pub struct NonOverlapping;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.NonOverlapping`.
+#[derive(Debug)]
+pub struct NonOverlapping {
+    minuend: Arc<dyn IntervalFunction>,
+    subtrahend: Arc<dyn IntervalFunction>,
+}
+
+impl NonOverlapping {
+    /// Equivalent to `new NonOverlapping(IntervalFunction minuend, IntervalFunction subtrahend)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for a `None`
+    /// argument.
+    pub fn new(
+        minuend: Option<Arc<dyn IntervalFunction>>,
+        subtrahend: Option<Arc<dyn IntervalFunction>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            minuend: require_non_null(minuend)?,
+            subtrahend: require_non_null(subtrahend)?,
+        })
+    }
+}
+
+impl IntervalFunction for NonOverlapping {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Ok(Intervals::non_overlapping(
+            self.minuend.to_interval_source(field, analyzer)?,
+            self.subtrahend.to_interval_source(field, analyzer)?,
+        ))
+    }
+
+    fn to_java_string(&self) -> String {
+        format!(
+            "fn:nonOverlapping({} {})",
+            self.minuend.to_java_string(),
+            self.subtrahend.to_java_string()
+        )
+    }
+}

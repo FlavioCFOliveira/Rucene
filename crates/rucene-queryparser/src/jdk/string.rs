@@ -639,3 +639,42 @@ fn is_surrogate(unit: u16) -> bool {
 pub fn to_lower_case_str(s: &str, locale: &Locale) -> String {
     to_rust_string(&to_lower_case(&units(s), locale))
 }
+
+/// `String.equalsIgnoreCase(String)`: the same length, and each pair of
+/// units equal, or equal through `Character.toUpperCase`, or through
+/// `Character.toLowerCase` of those (BMP units, as the queryparser's
+/// keywords are).
+pub fn equals_ignore_case(a: &str, b: &str) -> bool {
+    use super::character::{to_lower_case_unit, to_upper_case_unit};
+    let a: Vec<u16> = a.encode_utf16().collect();
+    let b: Vec<u16> = b.encode_utf16().collect();
+    a.len() == b.len()
+        && a.iter().zip(&b).all(|(&c1, &c2)| {
+            if c1 == c2 {
+                return true;
+            }
+            let u1 = to_upper_case_unit(c1);
+            let u2 = to_upper_case_unit(c2);
+            u1 == u2 || to_lower_case_unit(u1) == to_lower_case_unit(u2)
+        })
+}
+
+/// `String.split(String regex)` for a regex that is one literal character
+/// (`String.split`'s fast path): the pieces between the occurrences, with
+/// the trailing empty pieces removed; the whole string when it holds none.
+pub fn split_char(s: &str, ch: char) -> Vec<String> {
+    if !s.contains(ch) {
+        return vec![s.to_string()];
+    }
+    let mut pieces: Vec<String> = s.split(ch).map(str::to_string).collect();
+    while pieces.last().is_some_and(String::is_empty) {
+        pieces.pop();
+    }
+    pieces
+}
+
+/// `String.trim()` of a Rust string: without the leading and trailing
+/// characters up to U+0020.
+pub fn trim_str(s: &str) -> &str {
+    s.trim_matches(|c: char| c <= '\u{20}')
+}

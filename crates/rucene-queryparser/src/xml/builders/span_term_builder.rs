@@ -15,10 +15,61 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SpanTermBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.xml.builders`.
+//! Port of `SpanTermBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.xml.builders`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::index::Term;
+use rucene::search::query::Query;
+use rucene_queries::spans::span_query::SpanQuery;
+use rucene_queries::spans::span_term_query::SpanTermQuery;
+
+use super::span_builder_base::SpanBuilderBase;
+use super::span_query_builder::SpanQueryBuilder;
+use crate::jdk::dom::Element;
+use crate::xml::dom_utils::DOMUtils;
+use crate::xml::query_builder::QueryBuilder;
+
+/// Builder for `SpanTermQuery`
 ///
-/// Skeleton of `org.apache.lucene.queryparser.xml.builders.SpanTermBuilder`; ported by rmp task #493.
-pub struct SpanTermBuilder;
+/// Equivalent to `org.apache.lucene.queryparser.xml.builders.SpanTermBuilder`, which extends `SpanBuilderBase`.
+pub struct SpanTermBuilder {}
+
+impl std::fmt::Debug for SpanTermBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SpanTermBuilder")
+    }
+}
+
+impl Default for SpanTermBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SpanTermBuilder {
+    /// Equivalent to `new SpanTermBuilder()`.
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl QueryBuilder for SpanTermBuilder {
+    fn get_query(&self, e: &Element) -> Result<Arc<dyn Query>> {
+        SpanBuilderBase::get_query(self, e)
+    }
+}
+
+impl SpanQueryBuilder for SpanTermBuilder {
+    /// Equivalent to `getSpanQuery(Element e)`: a `SpanTermQuery` of the
+    /// `fieldName` attribute (inherited) and the element's text.
+    fn get_span_query(&self, e: &Element) -> Result<Arc<dyn SpanQuery>> {
+        let field_name = DOMUtils::get_attribute_with_inheritance_or_fail(e, "fieldName")?;
+        let value = DOMUtils::get_non_blank_text_or_fail(e)?;
+        Ok(Arc::new(SpanTermQuery::new(Term::from_text(
+            field_name, &value,
+        ))))
+    }
+}

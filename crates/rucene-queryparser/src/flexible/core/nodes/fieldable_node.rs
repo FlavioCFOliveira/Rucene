@@ -15,10 +15,46 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FieldableNode.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.core.nodes`.
+//! Port of `FieldableNode.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.nodes`.
 
-/// Java: `public interface`.
+use crate::jdk::char_sequence::CharSequence;
+use crate::jdk::class::JavaClass;
+
+/// `org.apache.lucene.queryparser.flexible.core.nodes.FieldableNode`.
+pub static FIELDABLE_NODE_CLASS: JavaClass = JavaClass::interface(
+    "org.apache.lucene.queryparser.flexible.core.nodes.FieldableNode",
+    &[&super::query_node::QUERY_NODE_CLASS],
+);
+
+/// A query node implements [`FieldableNode`] interface to indicate that its
+/// children and itself are associated to a specific field.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.nodes.FieldableNode`; ported by rmp task #487.
-pub trait FieldableNode {}
+/// If it has any children which also implements this interface, it must
+/// ensure the children are associated to the same field.
+///
+/// Equivalent to the interface
+/// `org.apache.lucene.queryparser.flexible.core.nodes.FieldableNode`. It
+/// extends `QueryNode`: a node gives it through
+/// [`QueryNode::as_fieldable_node`](super::query_node::QueryNode::as_fieldable_node),
+/// and the `QueryNode` methods are called on the node itself.
+pub trait FieldableNode: Send + Sync {
+    /// Returns the field associated to the node and every node under it.
+    ///
+    /// Equivalent to `getField()`; `None` for Java's `null`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the class's implementation (a missing
+    /// child).
+    fn get_field(&self) -> rucene::error::Result<Option<CharSequence>>;
+
+    /// Associates the node to a field.
+    ///
+    /// Equivalent to `setField(CharSequence fieldName)`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the class's implementation.
+    fn set_field(&self, field_name: Option<CharSequence>) -> rucene::error::Result<()>;
+}

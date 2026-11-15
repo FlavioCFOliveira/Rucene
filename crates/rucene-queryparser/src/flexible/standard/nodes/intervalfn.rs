@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of the Java package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`:
+//! the interval functions of the standard flexible query parser.
 
 pub mod after;
 pub mod analyzed_text;

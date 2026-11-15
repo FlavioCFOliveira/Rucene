@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.flexible.core.messages`.
+//! Port of the Java package `org.apache.lucene.queryparser.flexible.core.messages`:
+//! the message bundle of the flexible query parser.
 
 pub mod query_parser_messages;

@@ -15,10 +15,48 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Message.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.messages`.
+//! Port of `Message.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.messages`.
 
-/// Java: `public interface`.
+use std::fmt;
+
+use rucene::error::Result;
+
+use crate::jdk::locale::Locale;
+use crate::jdk::object::JavaObject;
+
+/// Message Interface for a lazy loading. For Native Language Support (NLS),
+/// system of software internationalization.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.messages.Message`; ported by rmp task #486.
-pub trait Message {}
+/// Equivalent to the interface
+/// `org.apache.lucene.queryparser.flexible.messages.Message`; Java's
+/// `toString()`, which every object has, is
+/// [`to_java_string`](Message::to_java_string).
+pub trait Message: fmt::Debug + Send + Sync {
+    /// Equivalent to `getKey()`; `None` for Java's `null`.
+    fn get_key(&self) -> Option<&str>;
+
+    /// Equivalent to `getArguments()`; `None` for Java's `null` array.
+    fn get_arguments(&self) -> Option<&[JavaObject]>;
+
+    /// Equivalent to `getLocalizedMessage()`.
+    ///
+    /// # Errors
+    ///
+    /// The exceptions of the message lookup.
+    fn get_localized_message(&self) -> Result<String>;
+
+    /// Equivalent to `getLocalizedMessage(Locale locale)`.
+    ///
+    /// # Errors
+    ///
+    /// The exceptions of the message lookup.
+    fn get_localized_message_with_locale(&self, locale: &Locale) -> Result<String>;
+
+    /// Equivalent to `toString()`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the class's `toString()`.
+    fn to_java_string(&self) -> Result<String>;
+}

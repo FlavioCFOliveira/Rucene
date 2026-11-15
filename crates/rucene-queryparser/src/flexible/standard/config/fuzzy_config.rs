@@ -15,10 +15,58 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FuzzyConfig.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.config`.
+//! Port of `FuzzyConfig.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.config`.
 
-/// Java: `public class`.
+use rucene::search::fuzzy_query::{DEFAULT_MAX_EDITS, DEFAULT_PREFIX_LENGTH};
+
+use crate::flexible::core::nodes::query_node_impl::Mutable;
+
+/// Configuration parameters for `FuzzyQuery`s
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.config.FuzzyConfig`; ported by rmp task #488.
-pub struct FuzzyConfig;
+/// Equivalent to
+/// `org.apache.lucene.queryparser.flexible.standard.config.FuzzyConfig`. It
+/// is configured by reference (`StandardQueryParser.setFuzzyMinSim` changes
+/// the object the configuration holds), so its setters take `&self`.
+#[derive(Debug)]
+pub struct FuzzyConfig {
+    prefix_length: Mutable<i32>,
+    min_similarity: Mutable<f32>,
+}
+
+impl Default for FuzzyConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FuzzyConfig {
+    /// Equivalent to `new FuzzyConfig()`: `FuzzyQuery.defaultPrefixLength`
+    /// and `FuzzyQuery.defaultMaxEdits`.
+    pub fn new() -> Self {
+        Self {
+            prefix_length: Mutable::new(DEFAULT_PREFIX_LENGTH),
+            min_similarity: Mutable::new(DEFAULT_MAX_EDITS as f32),
+        }
+    }
+
+    /// Equivalent to `getPrefixLength()`.
+    pub fn get_prefix_length(&self) -> i32 {
+        self.prefix_length.get()
+    }
+
+    /// Equivalent to `setPrefixLength(int prefixLength)`.
+    pub fn set_prefix_length(&self, prefix_length: i32) {
+        self.prefix_length.set(prefix_length);
+    }
+
+    /// Equivalent to `getMinSimilarity()`.
+    pub fn get_min_similarity(&self) -> f32 {
+        self.min_similarity.get()
+    }
+
+    /// Equivalent to `setMinSimilarity(float minSimilarity)`.
+    pub fn set_min_similarity(&self, min_similarity: f32) {
+        self.min_similarity.set(min_similarity);
+    }
+}

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.flexible.core.parser`.
+//! Port of the Java package `org.apache.lucene.queryparser.flexible.core.parser`.
 
 pub mod escape_query_syntax;
 pub mod syntax_parser;

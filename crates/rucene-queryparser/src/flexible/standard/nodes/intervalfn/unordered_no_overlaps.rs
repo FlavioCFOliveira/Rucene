@@ -15,10 +15,62 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `UnorderedNoOverlaps.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `UnorderedNoOverlaps.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{require_non_null, IntervalFunction};
+
+/// An interval function equivalent to `Intervals.unorderedNoOverlaps(IntervalsSource, IntervalsSource)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.UnorderedNoOverlaps`; ported by rmp task #488.
-pub struct UnorderedNoOverlaps;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.UnorderedNoOverlaps`.
+#[derive(Debug)]
+pub struct UnorderedNoOverlaps {
+    a: Arc<dyn IntervalFunction>,
+    b: Arc<dyn IntervalFunction>,
+}
+
+impl UnorderedNoOverlaps {
+    /// Equivalent to `new UnorderedNoOverlaps(IntervalFunction a, IntervalFunction b)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for a `None`
+    /// argument.
+    pub fn new(
+        a: Option<Arc<dyn IntervalFunction>>,
+        b: Option<Arc<dyn IntervalFunction>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            a: require_non_null(a)?,
+            b: require_non_null(b)?,
+        })
+    }
+}
+
+impl IntervalFunction for UnorderedNoOverlaps {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Intervals::unordered_no_overlaps(
+            self.a.to_interval_source(field, analyzer)?,
+            self.b.to_interval_source(field, analyzer)?,
+        )
+    }
+
+    fn to_java_string(&self) -> String {
+        format!(
+            "fn:unorderedNoOverlaps({} {})",
+            self.a.to_java_string(),
+            self.b.to_java_string()
+        )
+    }
+}

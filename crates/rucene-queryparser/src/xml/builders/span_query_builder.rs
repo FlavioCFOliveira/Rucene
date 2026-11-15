@@ -15,10 +15,28 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SpanQueryBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.xml.builders`.
+//! Port of `SpanQueryBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.xml.builders`.
 
-/// Java: `public interface`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene_queries::spans::span_query::SpanQuery;
+
+use crate::jdk::dom::Element;
+use crate::xml::query_builder::QueryBuilder;
+
+/// Interface for retrieving a [`SpanQuery`].
 ///
-/// Skeleton of `org.apache.lucene.queryparser.xml.builders.SpanQueryBuilder`; ported by rmp task #493.
-pub trait SpanQueryBuilder {}
+/// Equivalent to the interface
+/// `org.apache.lucene.queryparser.xml.builders.SpanQueryBuilder`, which
+/// extends `QueryBuilder`.
+pub trait SpanQueryBuilder: QueryBuilder {
+    /// Equivalent to `getSpanQuery(Element e)`.
+    ///
+    /// # Errors
+    ///
+    /// A `ParserException`, and the unchecked exceptions of building the
+    /// query.
+    fn get_span_query(&self, e: &Element) -> Result<Arc<dyn SpanQuery>>;
+}

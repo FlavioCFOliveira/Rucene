@@ -15,10 +15,35 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `MatchAllDocsQueryBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.xml.builders`.
+//! Port of `MatchAllDocsQueryBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.xml.builders`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::match_all_docs_query::MatchAllDocsQuery;
+use rucene::search::query::Query;
+
+use crate::jdk::dom::Element;
+use crate::xml::query_builder::QueryBuilder;
+
+/// Builder for `MatchAllDocsQuery`
 ///
-/// Skeleton of `org.apache.lucene.queryparser.xml.builders.MatchAllDocsQueryBuilder`; ported by rmp task #493.
+/// Equivalent to
+/// `org.apache.lucene.queryparser.xml.builders.MatchAllDocsQueryBuilder`.
+#[derive(Debug, Default)]
 pub struct MatchAllDocsQueryBuilder;
+
+impl MatchAllDocsQueryBuilder {
+    /// Equivalent to `new MatchAllDocsQueryBuilder()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl QueryBuilder for MatchAllDocsQueryBuilder {
+    /// Equivalent to `getQuery(Element e)`: `MatchAllDocsQuery.INSTANCE`.
+    fn get_query(&self, _e: &Element) -> Result<Arc<dyn Query>> {
+        Ok(Arc::new(MatchAllDocsQuery::instance()))
+    }
+}

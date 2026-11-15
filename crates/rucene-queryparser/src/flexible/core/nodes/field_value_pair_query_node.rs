@@ -15,10 +15,25 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FieldValuePairQueryNode.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.core.nodes`.
+//! Port of `FieldValuePairQueryNode.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.nodes`.
 
-/// Java: `public interface`.
+use super::fieldable_node::FieldableNode;
+use super::value_query_node::ValueQueryNode;
+use crate::jdk::class::JavaClass;
+
+/// `org.apache.lucene.queryparser.flexible.core.nodes.FieldValuePairQueryNode`.
+pub static FIELD_VALUE_PAIR_QUERY_NODE_CLASS: JavaClass = JavaClass::interface(
+    "org.apache.lucene.queryparser.flexible.core.nodes.FieldValuePairQueryNode",
+    &[
+        &super::fieldable_node::FIELDABLE_NODE_CLASS,
+        &super::value_query_node::VALUE_QUERY_NODE_CLASS,
+    ],
+);
+
+/// This interface should be implemented by query nodes that hold a field and
+/// an arbitrary value.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.nodes.FieldValuePairQueryNode`; ported by rmp task #487.
-pub trait FieldValuePairQueryNode {}
+/// Equivalent to the interface
+/// `org.apache.lucene.queryparser.flexible.core.nodes.FieldValuePairQueryNode<T>`.
+pub trait FieldValuePairQueryNode<T>: FieldableNode + ValueQueryNode<T> {}

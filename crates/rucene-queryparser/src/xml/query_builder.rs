@@ -15,10 +15,27 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `QueryBuilder.java`, of the Java
-//! package `org.apache.lucene.queryparser.xml`.
+//! Port of `QueryBuilder.java`, of the Java package
+//! `org.apache.lucene.queryparser.xml`.
 
-/// Java: `public interface`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::query::Query;
+
+use crate::jdk::dom::Element;
+
+/// Implemented by objects that produce Lucene Query objects from XML
+/// streams. Implementations are expected to be thread-safe so that they can
+/// be used to simultaneously parse multiple XML documents.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.xml.QueryBuilder`; ported by rmp task #493.
-pub trait QueryBuilder {}
+/// Equivalent to the interface `org.apache.lucene.queryparser.xml.QueryBuilder`.
+pub trait QueryBuilder: Send + Sync {
+    /// Equivalent to `getQuery(Element e)`.
+    ///
+    /// # Errors
+    ///
+    /// A `ParserException`, and the unchecked exceptions of building the
+    /// query.
+    fn get_query(&self, e: &Element) -> Result<Arc<dyn Query>>;
+}

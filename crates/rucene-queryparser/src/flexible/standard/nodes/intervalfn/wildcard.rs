@@ -15,10 +15,61 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Wildcard.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `Wildcard.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene::util::BytesRef;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::IntervalFunction;
+
+/// Node that represents `Intervals.wildcard(BytesRef)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Wildcard`; ported by rmp task #488.
-pub struct Wildcard;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Wildcard`.
+#[derive(Debug)]
+pub struct Wildcard {
+    wildcard: String,
+    max_expansions: i32,
+}
+
+impl Wildcard {
+    /// Equivalent to `new Wildcard(String wildcard, int maxExpansions)`.
+    pub fn new(wildcard: impl Into<String>, max_expansions: i32) -> Self {
+        Self {
+            wildcard: wildcard.into(),
+            max_expansions,
+        }
+    }
+}
+
+impl IntervalFunction for Wildcard {
+    fn to_interval_source(
+        &self,
+        _field: &str,
+        _analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        let wildcard = BytesRef::from_char_sequence(&self.wildcard);
+        if self.max_expansions == 0 {
+            Intervals::wildcard(&wildcard)
+        } else {
+            Intervals::wildcard_with_max_expansions(&wildcard, self.max_expansions)
+        }
+    }
+
+    fn to_java_string(&self) -> String {
+        format!(
+            "fn:wildcard({}{})",
+            self.wildcard,
+            if self.max_expansions == 0 {
+                String::new()
+            } else {
+                format!(" maxExpansions:{}", self.max_expansions)
+            }
+        )
+    }
+}

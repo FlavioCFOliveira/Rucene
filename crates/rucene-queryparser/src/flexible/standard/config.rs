@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.flexible.standard.config`.
+//! Port of the Java package `org.apache.lucene.queryparser.flexible.standard.config`:
+//! the configuration of the standard flexible query parser.
 
 pub mod field_boost_map_fc_listener;
 pub mod field_date_resolution_fc_listener;

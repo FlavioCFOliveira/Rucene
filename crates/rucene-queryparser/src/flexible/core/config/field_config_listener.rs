@@ -15,10 +15,26 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FieldConfigListener.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.core.config`.
+//! Port of `FieldConfigListener.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.config`.
 
-/// Java: `public interface`.
+use rucene::error::Result;
+
+use super::field_config::FieldConfig;
+
+/// This interface should be implemented by classes that wants to listen for
+/// field configuration requests. The implementation receives a
+/// [`FieldConfig`] object and may add/change its configuration.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.config.FieldConfigListener`; ported by rmp task #487.
-pub trait FieldConfigListener {}
+/// Equivalent to the interface
+/// `org.apache.lucene.queryparser.flexible.core.config.FieldConfigListener`.
+pub trait FieldConfigListener: Send + Sync {
+    /// This method is called every time a field configuration is requested.
+    ///
+    /// Equivalent to `buildFieldConfig(FieldConfig fieldConfig)`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the implementation.
+    fn build_field_config(&self, field_config: &FieldConfig) -> Result<()>;
+}

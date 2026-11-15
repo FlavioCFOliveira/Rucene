@@ -15,10 +15,74 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `QueryBuilderFactory.java`, of the Java
-//! package `org.apache.lucene.queryparser.xml`.
+//! Port of `QueryBuilderFactory.java`, of the Java package
+//! `org.apache.lucene.queryparser.xml`.
 
-/// Java: `public class`.
+use std::collections::HashMap;
+use std::sync::{Arc, PoisonError, RwLock};
+
+use rucene::error::Result;
+use rucene::search::query::Query;
+
+use super::parser_exception::ParserException;
+use super::query_builder::QueryBuilder;
+use crate::jdk::dom::Element;
+
+/// Factory for [`QueryBuilder`]
 ///
-/// Skeleton of `org.apache.lucene.queryparser.xml.QueryBuilderFactory`; ported by rmp task #493.
-pub struct QueryBuilderFactory;
+/// Equivalent to `org.apache.lucene.queryparser.xml.QueryBuilderFactory`.
+/// It is shared as an [`Arc`]: the builders that delegate to it hold it,
+/// and see the builders added to it afterwards.
+#[derive(Default)]
+pub struct QueryBuilderFactory {
+    /// The package-private `builders`.
+    pub(crate) builders: RwLock<HashMap<String, Arc<dyn QueryBuilder>>>,
+}
+
+impl std::fmt::Debug for QueryBuilderFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("QueryBuilderFactory")
+    }
+}
+
+impl QueryBuilderFactory {
+    /// Equivalent to `new QueryBuilderFactory()`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Equivalent to `addBuilder(String nodeName, QueryBuilder builder)`.
+    pub fn add_builder(&self, node_name: &str, builder: Arc<dyn QueryBuilder>) {
+        self.builders
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(node_name.to_string(), builder);
+    }
+
+    /// Equivalent to `getQueryBuilder(String nodeName)`.
+    pub fn get_query_builder(&self, node_name: &str) -> Option<Arc<dyn QueryBuilder>> {
+        self.builders
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(node_name)
+            .cloned()
+    }
+}
+
+impl QueryBuilder for QueryBuilderFactory {
+    /// Equivalent to `getQuery(Element n)`: the builder registered for the
+    /// element's name builds the query.
+    ///
+    /// # Errors
+    ///
+    /// `ParserException("No QueryObjectBuilder defined for node " + name)`
+    /// without one, and what the builder throws.
+    fn get_query(&self, n: &Element) -> Result<Arc<dyn Query>> {
+        let name = n.get_node_name();
+        let builder = self.get_query_builder(&name).ok_or_else(|| {
+            ParserException::with_message(format!("No QueryObjectBuilder defined for node {name}"))
+                .error()
+        })?;
+        builder.get_query(n)
+    }
+}

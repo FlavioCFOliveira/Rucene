@@ -15,10 +15,54 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Ordered.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `Ordered.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{join, require_non_null, sources_of, IntervalFunction};
+
+/// An interval function equivalent to `Intervals.ordered(IntervalsSource...)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Ordered`; ported by rmp task #488.
-pub struct Ordered;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Ordered`.
+#[derive(Debug)]
+pub struct Ordered {
+    sources: Vec<Arc<dyn IntervalFunction>>,
+}
+
+impl Ordered {
+    /// Equivalent to `new Ordered(List<IntervalFunction> sources)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for `None`
+    /// sources.
+    pub fn new(sources: Option<Vec<Arc<dyn IntervalFunction>>>) -> Result<Self> {
+        Ok(Self {
+            sources: require_non_null(sources)?,
+        })
+    }
+}
+
+impl IntervalFunction for Ordered {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Ok(Intervals::ordered(sources_of(
+            &self.sources,
+            field,
+            analyzer,
+        )?))
+    }
+
+    fn to_java_string(&self) -> String {
+        format!("fn:ordered({})", join(&self.sources))
+    }
+}

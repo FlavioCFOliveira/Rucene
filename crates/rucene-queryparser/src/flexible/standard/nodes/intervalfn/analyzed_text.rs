@@ -15,10 +15,68 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `AnalyzedText.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `AnalyzedText.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::{LuceneError, Result};
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::IntervalFunction;
+
+/// Node that represents `Intervals.analyzedText(String, Analyzer, String,
+/// int, boolean)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.AnalyzedText`; ported by rmp task #488.
-pub struct AnalyzedText;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.AnalyzedText`.
+#[derive(Debug)]
+pub struct AnalyzedText {
+    term: String,
+}
+
+impl AnalyzedText {
+    /// Equivalent to `new AnalyzedText(String term)`.
+    pub fn new(term: impl Into<String>) -> Self {
+        Self { term: term.into() }
+    }
+
+    /// Equivalent to the package-private static `requiresQuotes(String
+    /// term)`: whether the term holds a character of the class `[\\s]`
+    /// (`Pattern.compile("[\\s]").matcher(term).find()`), a space, tab, line
+    /// feed, line tabulation, form feed or carriage return.
+    pub(crate) fn requires_quotes(term: &str) -> bool {
+        term.chars()
+            .any(|c| matches!(c, ' ' | '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r'))
+    }
+}
+
+impl IntervalFunction for AnalyzedText {
+    /// Equivalent to `toIntervalSource(String field, Analyzer analyzer)`:
+    /// `Intervals.analyzedText(term, analyzer, field, 0, true)`, its
+    /// `IOException` rethrown as a `RuntimeException`.
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        let gaps = 0;
+        let ordered = true;
+        Intervals::analyzed_text(&self.term, analyzer, field, gaps, ordered).map_err(|e| {
+            if e.is_io_exception() {
+                LuceneError::runtime_exception(e)
+            } else {
+                e
+            }
+        })
+    }
+
+    fn to_java_string(&self) -> String {
+        if Self::requires_quotes(&self.term) {
+            format!("\"{}\"", self.term)
+        } else {
+            self.term.clone()
+        }
+    }
+}

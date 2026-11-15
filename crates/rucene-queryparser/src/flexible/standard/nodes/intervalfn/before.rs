@@ -15,10 +15,62 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Before.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `Before.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{require_non_null, IntervalFunction};
+
+/// A function that takes two interval function arguments and returns the source intervals that come before the reference intervals.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Before`; ported by rmp task #488.
-pub struct Before;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Before`.
+#[derive(Debug)]
+pub struct Before {
+    source: Arc<dyn IntervalFunction>,
+    reference: Arc<dyn IntervalFunction>,
+}
+
+impl Before {
+    /// Equivalent to `new Before(IntervalFunction source, IntervalFunction reference)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for a `None`
+    /// argument.
+    pub fn new(
+        source: Option<Arc<dyn IntervalFunction>>,
+        reference: Option<Arc<dyn IntervalFunction>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            source: require_non_null(source)?,
+            reference: require_non_null(reference)?,
+        })
+    }
+}
+
+impl IntervalFunction for Before {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Intervals::before(
+            self.source.to_interval_source(field, analyzer)?,
+            self.reference.to_interval_source(field, analyzer)?,
+        )
+    }
+
+    fn to_java_string(&self) -> String {
+        format!(
+            "fn:before({} {})",
+            self.source.to_java_string(),
+            self.reference.to_java_string()
+        )
+    }
+}

@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.queryparser.flexible.standard.nodes`.
+//! Port of the Java package `org.apache.lucene.queryparser.flexible.standard.nodes`:
+//! the query nodes of the standard flexible query parser.
 
 pub mod abstract_range_query_node;
 pub mod boolean_modifier_node;

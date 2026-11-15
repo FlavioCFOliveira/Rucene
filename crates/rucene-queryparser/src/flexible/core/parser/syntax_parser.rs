@@ -15,10 +15,25 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SyntaxParser.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.core.parser`.
+//! Port of `SyntaxParser.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.parser`.
 
-/// Java: `public interface`.
+use rucene::error::Result;
+
+use crate::flexible::core::nodes::query_node::QueryNodeRef;
+use crate::jdk::char_sequence::CharSequence;
+
+/// A parser needs to implement [`SyntaxParser`] interface
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.parser.SyntaxParser`; ported by rmp task #487.
-pub trait SyntaxParser {}
+/// Equivalent to the interface
+/// `org.apache.lucene.queryparser.flexible.core.parser.SyntaxParser`.
+pub trait SyntaxParser: Send + Sync {
+    /// Equivalent to `parse(CharSequence query, CharSequence field)`: the
+    /// query node tree of `query`, `field` being the default field (`None`
+    /// for Java's `null`).
+    ///
+    /// # Errors
+    ///
+    /// A `QueryNodeParseException`.
+    fn parse(&self, query: &CharSequence, field: Option<&CharSequence>) -> Result<QueryNodeRef>;
+}

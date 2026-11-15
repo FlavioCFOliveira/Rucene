@@ -15,10 +15,115 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `AndQueryNode.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.core.nodes`.
+//! Port of `AndQueryNode.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.nodes`.
 
-/// Java: `public class`.
+use std::any::Any;
+use std::sync::{Arc, Weak};
+
+use rucene::error::{LuceneError, Result};
+
+use super::boolean_query_node::{BooleanQueryNode, BOOLEAN_QUERY_NODE_CLASS};
+use super::query_node::{QueryNode, QueryNodeRef};
+use super::query_node_impl::QueryNodeImpl;
+use crate::flexible::core::parser::escape_query_syntax::EscapeQuerySyntax;
+use crate::jdk::char_sequence::CharSequence;
+use crate::jdk::class::JavaClass;
+
+/// `org.apache.lucene.queryparser.flexible.core.nodes.AndQueryNode`.
+pub static AND_QUERY_NODE_CLASS: JavaClass = JavaClass::class(
+    "org.apache.lucene.queryparser.flexible.core.nodes.AndQueryNode",
+    Some(&BOOLEAN_QUERY_NODE_CLASS),
+    &[],
+);
+
+/// A [`AndQueryNode`] represents an AND boolean operation performed on a
+/// list of nodes.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.nodes.AndQueryNode`; ported by rmp task #487.
-pub struct AndQueryNode;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.core.nodes.AndQueryNode`,
+/// which extends `BooleanQueryNode` (embedded).
+#[derive(Debug)]
+pub struct AndQueryNode {
+    base: BooleanQueryNode,
+}
+
+impl AndQueryNode {
+    pub(crate) fn fields(base: QueryNodeImpl) -> Self {
+        Self {
+            base: BooleanQueryNode::fields(base),
+        }
+    }
+
+    /// The body of `AndQueryNode(List<QueryNode> clauses)`.
+    pub(crate) fn init(&self, clauses: Option<Vec<QueryNodeRef>>) -> Result<()> {
+        let empty = clauses.as_ref().is_none_or(Vec::is_empty);
+        self.base.init(clauses)?;
+        if empty {
+            return Err(LuceneError::illegal_argument(
+                "AND query must have at least one clause",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Equivalent to `new AndQueryNode(List<QueryNode> clauses)`.
+    ///
+    /// # Errors
+    ///
+    /// `NullPointerException` for `None` clauses, and
+    /// `IllegalArgumentException("AND query must have at least one clause")`
+    /// for none.
+    pub fn new(clauses: Option<Vec<QueryNodeRef>>) -> Result<Arc<Self>> {
+        let node =
+            Arc::new_cyclic(|this: &Weak<Self>| Self::fields(QueryNodeImpl::new(this.clone())));
+        node.init(clauses)?;
+        Ok(node)
+    }
+
+    pub(crate) fn cloned(
+        &self,
+        this: Weak<dyn QueryNode>,
+        clauses: Option<Vec<QueryNodeRef>>,
+    ) -> Self {
+        Self {
+            base: self.base.cloned(this, clauses),
+        }
+    }
+
+    pub(crate) fn boolean(&self) -> &BooleanQueryNode {
+        &self.base
+    }
+}
+
+impl QueryNode for AndQueryNode {
+    fn query_node_impl(&self) -> &QueryNodeImpl {
+        self.base.query_node_impl()
+    }
+
+    fn java_class(&self) -> &'static JavaClass {
+        &AND_QUERY_NODE_CLASS
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn to_java_string(&self) -> Result<String> {
+        self.base.to_java_string_with("and")
+    }
+
+    fn to_query_string(
+        &self,
+        escape_syntax_parser: &dyn EscapeQuerySyntax,
+    ) -> Result<CharSequence> {
+        self.base
+            .to_query_string_with(escape_syntax_parser, " AND ")
+    }
+
+    fn clone_tree(&self) -> Result<QueryNodeRef> {
+        let clauses = self.query_node_impl().clone_children()?;
+        Ok(Arc::new_cyclic(|this: &Weak<Self>| {
+            self.cloned(this.clone(), clauses)
+        }))
+    }
+}

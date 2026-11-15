@@ -15,10 +15,88 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `MessageImpl.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.messages`.
+//! Port of `MessageImpl.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.messages`.
 
-/// Java: `public class`.
+use rucene::error::{LuceneError, Result};
+
+use super::message::Message;
+use super::nls::NLS;
+use crate::jdk::locale::Locale;
+use crate::jdk::object::JavaObject;
+
+/// Default implementation of Message interface. For Native Language Support
+/// (NLS), system of software internationalization.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.messages.MessageImpl`; ported by rmp task #486.
-pub struct MessageImpl;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.messages.MessageImpl`.
+#[derive(Debug, Clone)]
+pub struct MessageImpl {
+    key: Option<String>,
+    arguments: Option<Vec<JavaObject>>,
+}
+
+impl MessageImpl {
+    /// Equivalent to `new MessageImpl(String key)`: no arguments (an empty
+    /// array).
+    pub fn new(key: impl Into<Option<String>>) -> Self {
+        Self {
+            key: key.into(),
+            arguments: Some(Vec::new()),
+        }
+    }
+
+    /// Equivalent to `new MessageImpl(String key, Object... args)`; `None`
+    /// is a `null` array.
+    pub fn with_args(
+        key: impl Into<Option<String>>,
+        args: impl Into<Option<Vec<JavaObject>>>,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            arguments: args.into(),
+        }
+    }
+}
+
+impl Message for MessageImpl {
+    fn get_key(&self) -> Option<&str> {
+        self.key.as_deref()
+    }
+
+    fn get_arguments(&self) -> Option<&[JavaObject]> {
+        self.arguments.as_deref()
+    }
+
+    fn get_localized_message(&self) -> Result<String> {
+        self.get_localized_message_with_locale(&Locale::get_default())
+    }
+
+    fn get_localized_message_with_locale(&self, locale: &Locale) -> Result<String> {
+        NLS::get_localized_message_with_locale_and_args(
+            self.get_key(),
+            locale,
+            self.get_arguments(),
+        )
+    }
+
+    /// `toString()`: the key, then the arguments, the first after a space
+    /// and the others after `", "`, each as `String.valueOf` renders it.
+    ///
+    /// # Errors
+    ///
+    /// `NullPointerException` for a `null` key (`new StringBuilder(null)`).
+    fn to_java_string(&self) -> Result<String> {
+        let args = self.get_arguments();
+        let mut sb = self
+            .get_key()
+            .ok_or_else(LuceneError::null_pointer)?
+            .to_string();
+        if let Some(args) = args {
+            for (i, arg) in args.iter().enumerate() {
+                sb.push_str(if i == 0 { " " } else { ", " });
+                sb.push_str(&arg.to_java_string());
+            }
+        }
+        Ok(sb)
+    }
+}

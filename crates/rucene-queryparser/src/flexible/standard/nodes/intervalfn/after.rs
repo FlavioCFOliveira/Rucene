@@ -15,10 +15,62 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `After.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `After.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{require_non_null, IntervalFunction};
+
+/// A function that takes two interval function arguments and returns the source intervals that come after the reference intervals.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.After`; ported by rmp task #488.
-pub struct After;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.After`.
+#[derive(Debug)]
+pub struct After {
+    source: Arc<dyn IntervalFunction>,
+    reference: Arc<dyn IntervalFunction>,
+}
+
+impl After {
+    /// Equivalent to `new After(IntervalFunction source, IntervalFunction reference)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for a `None`
+    /// argument.
+    pub fn new(
+        source: Option<Arc<dyn IntervalFunction>>,
+        reference: Option<Arc<dyn IntervalFunction>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            source: require_non_null(source)?,
+            reference: require_non_null(reference)?,
+        })
+    }
+}
+
+impl IntervalFunction for After {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Intervals::after(
+            self.source.to_interval_source(field, analyzer)?,
+            self.reference.to_interval_source(field, analyzer)?,
+        )
+    }
+
+    fn to_java_string(&self) -> String {
+        format!(
+            "fn:after({} {})",
+            self.source.to_java_string(),
+            self.reference.to_java_string()
+        )
+    }
+}

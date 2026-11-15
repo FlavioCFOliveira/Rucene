@@ -15,10 +15,76 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FuzzyTerm.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+//! Port of `FuzzyTerm.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene::search::fuzzy_query::{
+    DEFAULT_MAX_EDITS, DEFAULT_PREFIX_LENGTH, DEFAULT_TRANSPOSITIONS,
+};
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::analyzed_text::AnalyzedText;
+use super::interval_function::IntervalFunction;
+
+/// An interval function equivalent to `Intervals.fuzzyTerm(String, int)`.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.FuzzyTerm`; ported by rmp task #488.
-pub struct FuzzyTerm;
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.FuzzyTerm`.
+#[derive(Debug)]
+pub struct FuzzyTerm {
+    term: String,
+    max_edits: i32,
+    max_expansions: i32,
+}
+
+impl FuzzyTerm {
+    /// Equivalent to `new FuzzyTerm(String term, Integer maxEdits, Integer
+    /// maxExpansions)`: `None` gives `FuzzyQuery.defaultMaxEdits` and
+    /// `Intervals.DEFAULT_MAX_EXPANSIONS`.
+    pub fn new(
+        term: impl Into<String>,
+        max_edits: Option<i32>,
+        max_expansions: Option<i32>,
+    ) -> Self {
+        Self {
+            term: term.into(),
+            max_edits: max_edits.unwrap_or(DEFAULT_MAX_EDITS),
+            max_expansions: max_expansions.unwrap_or(Intervals::DEFAULT_MAX_EXPANSIONS),
+        }
+    }
+}
+
+impl IntervalFunction for FuzzyTerm {
+    fn to_interval_source(
+        &self,
+        _field: &str,
+        _analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Intervals::fuzzy_term_with(
+            &self.term,
+            self.max_edits,
+            DEFAULT_PREFIX_LENGTH,
+            DEFAULT_TRANSPOSITIONS,
+            self.max_expansions,
+        )
+    }
+
+    /// Equivalent to `toString()`: `String.format(Locale.ROOT,
+    /// "fn:fuzzyTerm(%s %d%s)", ...)`, the maximum expansions right after
+    /// the maximum edits.
+    fn to_java_string(&self) -> String {
+        let term = if AnalyzedText::requires_quotes(&self.term) {
+            format!("\"{}\"", self.term)
+        } else {
+            self.term.clone()
+        };
+        format!(
+            "fn:fuzzyTerm({term} {}{})",
+            self.max_edits, self.max_expansions
+        )
+    }
+}

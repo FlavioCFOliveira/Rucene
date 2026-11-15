@@ -15,10 +15,48 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `RangeQueryNode.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.core.nodes`.
+//! Port of `RangeQueryNode.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.nodes`.
 
-/// Java: `public interface`.
+use rucene::error::Result;
+
+use super::fieldable_node::FieldableNode;
+use super::query_node::QueryNodeRef;
+use crate::jdk::class::JavaClass;
+
+/// `org.apache.lucene.queryparser.flexible.core.nodes.RangeQueryNode`.
+pub static RANGE_QUERY_NODE_CLASS: JavaClass = JavaClass::interface(
+    "org.apache.lucene.queryparser.flexible.core.nodes.RangeQueryNode",
+    &[&super::fieldable_node::FIELDABLE_NODE_CLASS],
+);
+
+/// This interface should be implemented by a [`QueryNode`](super::query_node::QueryNode)
+/// that represents some kind of range query.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.nodes.RangeQueryNode`; ported by rmp task #487.
-pub trait RangeQueryNode {}
+/// Equivalent to the interface
+/// `org.apache.lucene.queryparser.flexible.core.nodes.RangeQueryNode<T
+/// extends FieldValuePairQueryNode<?>>`; the bounds are node references (the
+/// type parameter is erased, as it is at run time in Java), and a node gives
+/// the interface through
+/// [`QueryNode::as_range_query_node`](super::query_node::QueryNode::as_range_query_node).
+pub trait RangeQueryNode: FieldableNode {
+    /// Equivalent to `getLowerBound()`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the class's implementation.
+    fn get_lower_bound(&self) -> Result<QueryNodeRef>;
+
+    /// Equivalent to `getUpperBound()`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the class's implementation.
+    fn get_upper_bound(&self) -> Result<QueryNodeRef>;
+
+    /// Equivalent to `isLowerInclusive()`.
+    fn is_lower_inclusive(&self) -> bool;
+
+    /// Equivalent to `isUpperInclusive()`.
+    fn is_upper_inclusive(&self) -> bool;
+}

@@ -15,10 +15,29 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ValueQueryNode.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.core.nodes`.
+//! Port of `ValueQueryNode.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.nodes`.
 
-/// Java: `public interface`.
+use crate::jdk::class::JavaClass;
+
+/// `org.apache.lucene.queryparser.flexible.core.nodes.ValueQueryNode`.
+pub static VALUE_QUERY_NODE_CLASS: JavaClass = JavaClass::interface(
+    "org.apache.lucene.queryparser.flexible.core.nodes.ValueQueryNode",
+    &[&super::query_node::QUERY_NODE_CLASS],
+);
+
+/// This interface should be implemented by [`QueryNode`](super::query_node::QueryNode)
+/// that holds an arbitrary value.
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.nodes.ValueQueryNode`; ported by rmp task #487.
-pub trait ValueQueryNode {}
+/// Equivalent to the interface
+/// `org.apache.lucene.queryparser.flexible.core.nodes.ValueQueryNode<T>`;
+/// `T` is the value as the port holds it (an [`Option`] for a nullable
+/// reference). It extends `QueryNode`, whose methods are called on the node
+/// itself.
+pub trait ValueQueryNode<T>: Send + Sync {
+    /// Equivalent to `setValue(T value)`.
+    fn set_value(&self, value: T);
+
+    /// Equivalent to `getValue()`.
+    fn get_value(&self) -> T;
+}

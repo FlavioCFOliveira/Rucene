@@ -15,10 +15,24 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `StringUtils.java`, of the Java
-//! package `org.apache.lucene.queryparser.flexible.core.util`.
+//! Port of `StringUtils.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.util`.
 
-/// Java: `public final class`.
+use crate::jdk::char_sequence::CharSequence;
+
+/// String manipulation routines
 ///
-/// Skeleton of `org.apache.lucene.queryparser.flexible.core.util.StringUtils`; ported by rmp task #487.
-pub struct StringUtils;
+/// Equivalent to the final class
+/// `org.apache.lucene.queryparser.flexible.core.util.StringUtils`.
+#[derive(Debug)]
+pub struct StringUtils {
+    _no_instances: (),
+}
+
+impl StringUtils {
+    /// Equivalent to `StringUtils.toString(Object obj)`: `obj.toString()`,
+    /// or `null` for `null`.
+    pub fn to_string(obj: Option<&CharSequence>) -> Option<String> {
+        obj.map(CharSequence::to_string)
+    }
+}
