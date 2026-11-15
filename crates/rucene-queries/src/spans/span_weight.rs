@@ -618,8 +618,8 @@ impl MatchesIterator for SpanMatchesIterator {
         })))
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
-        Arc::clone(&self.query)
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
+        Some(Arc::clone(&self.query))
     }
 }
 
@@ -658,7 +658,9 @@ impl MatchesIterator for SpanSubMatchesIterator {
         Ok(None)
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
-        Arc::new(TermQuery::new(term_at(&self.terms, self.upto).term.clone()))
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
+        Some(Arc::new(TermQuery::new(
+            term_at(&self.terms, self.upto).term.clone(),
+        )))
     }
 }

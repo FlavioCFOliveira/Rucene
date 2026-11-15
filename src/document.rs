@@ -6598,7 +6598,7 @@ impl IndexableField for DoubleField {
 // DateTools
 // -----------------------------------------------------------------------------
 
-use chrono::{Datelike, TimeZone, Timelike};
+use chrono::TimeZone;
 
 /// Date conversion utilities matching Lucene's `DateTools`.
 ///
@@ -6652,55 +6652,69 @@ impl DateTools {
     /// Equivalent to `DateTools.round(Date, Resolution)`:
     /// `new Date(round(date.getTime(), resolution))`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java's `GregorianCalendar` takes any
-    /// `long` millisecond; the calendar arithmetic here is `chrono`'s, whose
-    /// range ends at year ±262,143, and a timestamp past it panics.
+    /// **Divergence from Lucene 10.5.0.** Java's `Date` holds any `long`
+    /// millisecond; [`Date`] is `chrono`'s, whose range ends at year
+    /// ±262,143, so a rounded instant past it panics. The arithmetic itself
+    /// ([`round`](Self::round)) has no such bound.
     pub fn round_date(date: Date, resolution: Resolution) -> Date {
         let millis = Self::round(date.timestamp_millis(), resolution);
         Date::from_timestamp_millis(millis).expect("a rounded date stays in range")
     }
 
     /// Rounds a timestamp to the given resolution in GMT.
+    ///
+    /// Equivalent to `DateTools.round(long, Resolution)` (`DateTools.java:139-166`):
+    /// the thread-local `Calendar.getInstance(GMT, Locale.ROOT)`, a
+    /// `java.util.GregorianCalendar` (Julian calendar before
+    /// 1582-10-15, Gregorian from then on), is set to `time`, the fields finer
+    /// than `resolution` are set to their first value (month 0, day 1, hour,
+    /// minute, second and millisecond 0, by the deliberate switch
+    /// fall-through), and the instant is recomputed from the fields
+    /// (the private `GregorianFields`).
     pub fn round(time: i64, resolution: Resolution) -> i64 {
-        let dt = chrono::Utc
-            .timestamp_millis_opt(time)
-            .single()
-            .expect("valid timestamp");
-        let rounded = match resolution {
-            Resolution::YEAR => dt
-                .with_month(1)
-                .and_then(|d| d.with_day(1))
-                .and_then(|d| d.with_hour(0))
-                .and_then(|d| d.with_minute(0))
-                .and_then(|d| d.with_second(0))
-                .and_then(|d| d.with_nanosecond(0))
-                .unwrap(),
-            Resolution::MONTH => dt
-                .with_day(1)
-                .and_then(|d| d.with_hour(0))
-                .and_then(|d| d.with_minute(0))
-                .and_then(|d| d.with_second(0))
-                .and_then(|d| d.with_nanosecond(0))
-                .unwrap(),
-            Resolution::DAY => dt
-                .with_hour(0)
-                .and_then(|d| d.with_minute(0))
-                .and_then(|d| d.with_second(0))
-                .and_then(|d| d.with_nanosecond(0))
-                .unwrap(),
-            Resolution::HOUR => dt
-                .with_minute(0)
-                .and_then(|d| d.with_second(0))
-                .and_then(|d| d.with_nanosecond(0))
-                .unwrap(),
-            Resolution::MINUTE => dt
-                .with_second(0)
-                .and_then(|d| d.with_nanosecond(0))
-                .unwrap(),
-            Resolution::SECOND => dt.with_nanosecond(0).unwrap(),
-            Resolution::MILLISECOND => dt,
-        };
-        rounded.timestamp_millis()
+        let mut cal = GregorianFields::from_millis(time);
+        // NOTE: switch statement fall-through is deliberate
+        match resolution {
+            Resolution::MILLISECOND => {
+                // don't cut off anything: no field is set, so
+                // `getTimeInMillis()` returns the time as it was set.
+                return time;
+            }
+            Resolution::YEAR => {
+                cal.month = 0;
+                cal.day_of_month = 1;
+                cal.hour_of_day = 0;
+                cal.minute = 0;
+                cal.second = 0;
+                cal.millisecond = 0;
+            }
+            Resolution::MONTH => {
+                cal.day_of_month = 1;
+                cal.hour_of_day = 0;
+                cal.minute = 0;
+                cal.second = 0;
+                cal.millisecond = 0;
+            }
+            Resolution::DAY => {
+                cal.hour_of_day = 0;
+                cal.minute = 0;
+                cal.second = 0;
+                cal.millisecond = 0;
+            }
+            Resolution::HOUR => {
+                cal.minute = 0;
+                cal.second = 0;
+                cal.millisecond = 0;
+            }
+            Resolution::MINUTE => {
+                cal.second = 0;
+                cal.millisecond = 0;
+            }
+            Resolution::SECOND => {
+                cal.millisecond = 0;
+            }
+        }
+        cal.to_millis()
     }
 
     /// Converts a date to a string suitable for indexing.
@@ -6717,6 +6731,11 @@ impl DateTools {
     ///
     /// Equivalent to `DateTools.stringToDate(String)`.
     ///
+    /// **Divergence from Lucene 10.5.0.** As in
+    /// [`round_date`](Self::round_date), [`Date`] ends at year ±262,143: a
+    /// string whose instant lies past it gives the `ParseException` of an
+    /// invalid string, where Java returns the `Date`.
+    ///
     /// # Errors
     ///
     /// Java's `java.text.ParseException` (`DateTools.java:115-123`) when the
@@ -6730,18 +6749,45 @@ impl DateTools {
     }
 
     /// Converts a timestamp to a GMT string with the given resolution.
+    ///
+    /// Equivalent to `DateTools.timeToString(long, Resolution)`
+    /// (`DateTools.java:88-91`): the rounded instant formatted by the
+    /// `SimpleDateFormat` of the resolution, `"yyyyMMddHHmmssSSS"` cut to its
+    /// `formatLen`, in GMT on the hybrid Julian/Gregorian calendar. `yyyy` is
+    /// the year of the era — positive for a year before the common era, which
+    /// the pattern does not mark — zero-padded to four digits and never
+    /// truncated (`SimpleDateFormat.subFormat`, `PATTERN_YEAR`), so a year
+    /// past 9999 gives a longer string; the other fields are zero-padded to
+    /// their letter count.
     pub fn time_to_string(time: i64, resolution: Resolution) -> String {
-        let rounded = Self::round(time, resolution);
-        let dt = chrono::Utc
-            .timestamp_millis_opt(rounded)
-            .single()
-            .expect("valid timestamp");
-        let full = format!(
-            "{}{:03}",
-            dt.format("%Y%m%d%H%M%S"),
-            dt.timestamp_subsec_millis()
-        );
-        full[..resolution.format_len()].to_string()
+        let cal = GregorianFields::from_millis(Self::round(time, resolution));
+        let year_of_era = if cal.year <= 0 {
+            1 - cal.year
+        } else {
+            cal.year
+        };
+        let mut out = format!("{year_of_era:04}");
+        let fields = [
+            (i64::from(cal.month) + 1, 2),
+            (i64::from(cal.day_of_month), 2),
+            (i64::from(cal.hour_of_day), 2),
+            (i64::from(cal.minute), 2),
+            (i64::from(cal.second), 2),
+            (i64::from(cal.millisecond), 3),
+        ];
+        let count = match resolution {
+            Resolution::YEAR => 0,
+            Resolution::MONTH => 1,
+            Resolution::DAY => 2,
+            Resolution::HOUR => 3,
+            Resolution::MINUTE => 4,
+            Resolution::SECOND => 5,
+            Resolution::MILLISECOND => 6,
+        };
+        for &(value, width) in fields.iter().take(count) {
+            out.push_str(&format!("{value:0width$}"));
+        }
+        out
     }
 
     /// Converts a GMT date string back to a timestamp.
@@ -6751,12 +6797,12 @@ impl DateTools {
     /// `formatLen` is the string's length — `"yyyyMMddHHmmssSSS"` cut to that
     /// length (`DateTools.java:194-200`). The formats are lenient (Java's
     /// default), so the fields a pattern omits take their first value
-    /// (January, day one, midnight) and a field past its range rolls into the
-    /// next one. Any failure — a length no resolution has, a non-digit — is
+    /// (January, day one, midnight), a field past its range rolls into the
+    /// next one, and the year is read as a year of the common era (year 0 is
+    /// 1 BCE). The calendar is `java.util.GregorianCalendar`'s hybrid one
+    /// (the private `GregorianFields::to_millis`). Any failure — a length no resolution
+    /// has, a non-digit — is
     /// `ParseException("Input is not a valid date string: " + dateString)`.
-    /// As in [`time_to_string`](Self::time_to_string), the calendar is the
-    /// proleptic Gregorian one; Java's `GregorianCalendar` counts dates before
-    /// 1582-10-15 in the Julian calendar.
     ///
     /// # Errors
     ///
@@ -6778,7 +6824,7 @@ impl DateTools {
             return Err(invalid());
         }
         // year, month, day, hour, minute, second, millisecond, with the
-        // defaults of an unset field.
+        // defaults of a cleared calendar's unset fields.
         let mut fields = [0i64, 1, 1, 0, 0, 0, 0];
         let mut pos = 0;
         for (i, width) in WIDTHS.iter().take(field_count).enumerate() {
@@ -6788,11 +6834,17 @@ impl DateTools {
             pos += width;
         }
         let [year, month, day, hour, minute, second, millis] = fields;
-        // Lenient month roll-over, then days counted from the first of it.
-        let year = year + (month - 1).div_euclid(12);
-        let month = (month - 1).rem_euclid(12) + 1;
-        let days = days_from_civil(year, month, 1) + (day - 1);
-        Ok(days * 86_400_000 + hour * 3_600_000 + minute * 60_000 + second * 1_000 + millis)
+        // At most four digits per field: every value fits an `int`.
+        Ok(GregorianFields {
+            year,
+            month: (month - 1) as i32,
+            day_of_month: day as i32,
+            hour_of_day: hour as i32,
+            minute: minute as i32,
+            second: second as i32,
+            millisecond: millis as i32,
+        }
+        .to_millis())
     }
 }
 
@@ -6806,16 +6858,191 @@ fn invalid_date_string(date_string: &str) -> LuceneError {
     })
 }
 
-/// Days from 1970-01-01 to the proleptic Gregorian date `year-month-day`
-/// (Howard Hinnant's `days_from_civil`), for [`DateTools::string_to_time`].
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+/// Milliseconds per day, `GregorianCalendar.ONE_DAY`.
+const ONE_DAY: i64 = 86_400_000;
+
+/// The fixed date (days since January 1, 1 of the proleptic Gregorian
+/// calendar, which is day 1) of 1970-01-01, `GregorianCalendar.EPOCH_OFFSET`.
+const EPOCH_OFFSET: i64 = 719_163;
+
+/// The fixed date of the default Gregorian cutover, 1582-10-15 (Gregorian):
+/// `GregorianCalendar.gregorianCutoverDate` for
+/// `DEFAULT_GREGORIAN_CUTOVER = -12219292800000L`.
+const GREGORIAN_CUTOVER_DATE: i64 = 577_736;
+
+/// The (Gregorian and Julian) year of the default cutover,
+/// `gregorianCutoverYear` and `gregorianCutoverYearJulian`.
+const GREGORIAN_CUTOVER_YEAR: i64 = 1582;
+
+/// The fixed date of January 1, 1 of the Julian calendar,
+/// `sun.util.calendar.JulianCalendar.JULIAN_EPOCH`.
+const JULIAN_EPOCH: i64 = -1;
+
+/// The calendar fields `DateTools` reads and writes, in GMT, on the calendar
+/// of `java.util.GregorianCalendar` with its default cutover: the Julian
+/// calendar before 1582-10-15 (Gregorian), the Gregorian one from then on.
+///
+/// `year` is the extended year (`1 - YEAR` for an `ERA` of `BC`, so year 0 is
+/// 1 BCE); `month` is 0-based, as `Calendar.MONTH`. The arithmetic is that of
+/// `GregorianCalendar.computeFields`/`computeTime` and of the JDK's
+/// `sun.util.calendar.Gregorian` and `JulianCalendar` (fixed dates as in
+/// Reingold and Dershowitz, *Calendrical Calculations*), read as
+/// specification.
+#[derive(Debug, Clone, Copy)]
+struct GregorianFields {
+    year: i64,
+    month: i32,
+    day_of_month: i32,
+    hour_of_day: i32,
+    minute: i32,
+    second: i32,
+    millisecond: i32,
+}
+
+impl GregorianFields {
+    /// The fields of the instant `millis`: `setTimeInMillis` followed by
+    /// `computeFields`, which reads a fixed date on or after the cutover as
+    /// Gregorian and one before it as Julian.
+    fn from_millis(millis: i64) -> Self {
+        let fixed_date = millis.div_euclid(ONE_DAY) + EPOCH_OFFSET;
+        let time_of_day = millis.rem_euclid(ONE_DAY);
+        let (year, month, day) = if fixed_date >= GREGORIAN_CUTOVER_DATE {
+            gregorian_from_fixed(fixed_date)
+        } else {
+            julian_from_fixed(fixed_date)
+        };
+        let millisecond = time_of_day % 1000;
+        let seconds = time_of_day / 1000;
+        Self {
+            year,
+            month: (month - 1) as i32,
+            day_of_month: day as i32,
+            hour_of_day: (seconds / 3600) as i32,
+            minute: (seconds / 60 % 60) as i32,
+            second: (seconds % 60) as i32,
+            millisecond: millisecond as i32,
+        }
+    }
+
+    /// The instant of the (lenient) fields: `GregorianCalendar.computeTime`
+    /// with the `MONTH`/`DAY_OF_MONTH` and `HOUR_OF_DAY` field combinations.
+    ///
+    /// The time of day may overflow into days. A year before the cutover year
+    /// is always Julian; from the cutover year on, the Gregorian fixed date
+    /// is taken when it is on or after the cutover, the Julian one otherwise
+    /// (including the "missing" days 1582-10-05..14, which lenient Java maps
+    /// through the Julian calendar). The arithmetic wraps on `long`
+    /// overflow, as Java's.
+    fn to_millis(self) -> i64 {
+        let mut time_of_day = i64::from(self.hour_of_day);
+        time_of_day = time_of_day * 60 + i64::from(self.minute);
+        time_of_day = time_of_day * 60 + i64::from(self.second);
+        time_of_day = time_of_day * 1000 + i64::from(self.millisecond);
+        let extra_days = time_of_day.div_euclid(ONE_DAY);
+        let time_of_day = time_of_day.rem_euclid(ONE_DAY);
+
+        let julian = || extra_days + self.fixed_date(julian_fixed);
+        let fixed_date = if self.year < GREGORIAN_CUTOVER_YEAR {
+            julian()
+        } else {
+            let gregorian = extra_days + self.fixed_date(gregorian_fixed);
+            if gregorian >= GREGORIAN_CUTOVER_DATE {
+                gregorian
+            } else {
+                julian()
+            }
+        };
+        (fixed_date - EPOCH_OFFSET)
+            .wrapping_mul(ONE_DAY)
+            .wrapping_add(time_of_day)
+    }
+
+    /// `GregorianCalendar.getFixedDate(cal, year, fieldMask)` for the
+    /// `MONTH` + `DAY_OF_MONTH` combination: the month normalized into the
+    /// year, the first of that month, plus the day offset.
+    fn fixed_date(&self, calendar: fn(i64, i64, i64) -> i64) -> i64 {
+        let month = i64::from(self.month);
+        let year = self.year + month.div_euclid(12);
+        let month = month.rem_euclid(12);
+        calendar(year, month + 1, 1) + i64::from(self.day_of_month) - 1
+    }
+}
+
+/// Whether the extended year is a Gregorian leap year.
+fn is_gregorian_leap_year(year: i64) -> bool {
+    year.rem_euclid(4) == 0 && (year.rem_euclid(100) != 0 || year.rem_euclid(400) == 0)
+}
+
+/// Whether the extended year is a Julian leap year,
+/// `CalendarUtils.isJulianLeapYear`.
+fn is_julian_leap_year(year: i64) -> bool {
+    year.rem_euclid(4) == 0
+}
+
+/// The fixed date of the Gregorian date `year-month-day` (1-based month),
+/// `sun.util.calendar.Gregorian.getFixedDate`.
+fn gregorian_fixed(year: i64, month: i64, day: i64) -> i64 {
+    let prior_years = year - 1;
+    let mut days = 365 * prior_years + prior_years.div_euclid(4) - prior_years.div_euclid(100)
+        + prior_years.div_euclid(400)
+        + (367 * month - 362).div_euclid(12)
+        + day;
+    if month > 2 {
+        days -= if is_gregorian_leap_year(year) { 1 } else { 2 };
+    }
+    days
+}
+
+/// The fixed date of the Julian date `year-month-day` (extended year, 1-based
+/// month), `JulianCalendar.getFixedDate`.
+fn julian_fixed(year: i64, month: i64, day: i64) -> i64 {
+    let prior_years = year - 1;
+    let mut days = JULIAN_EPOCH - 1
+        + 365 * prior_years
+        + prior_years.div_euclid(4)
+        + (367 * month - 362).div_euclid(12)
+        + day;
+    if month > 2 {
+        days -= if is_julian_leap_year(year) { 1 } else { 2 };
+    }
+    days
+}
+
+/// The Gregorian date of a fixed date, as (extended year, 1-based month,
+/// day), `Gregorian.getCalendarDateFromFixedDate`.
+fn gregorian_from_fixed(fixed_date: i64) -> (i64, i64, i64) {
+    let d0 = fixed_date - 1;
+    let n400 = d0.div_euclid(146_097);
+    let d1 = d0.rem_euclid(146_097);
+    let n100 = d1 / 36_524;
+    let d2 = d1 % 36_524;
+    let n4 = d2 / 1_461;
+    let d3 = d2 % 1_461;
+    let n1 = d3 / 365;
+    let mut year = 400 * n400 + 100 * n100 + 4 * n4 + n1;
+    if !(n100 == 4 || n1 == 4) {
+        year += 1;
+    }
+    let mut prior_days = fixed_date - gregorian_fixed(year, 1, 1);
+    if fixed_date >= gregorian_fixed(year, 3, 1) {
+        prior_days += if is_gregorian_leap_year(year) { 1 } else { 2 };
+    }
+    let month = (12 * prior_days + 373).div_euclid(367);
+    let day = fixed_date - gregorian_fixed(year, month, 1) + 1;
+    (year, month, day)
+}
+
+/// The Julian date of a fixed date, as (extended year, 1-based month, day),
+/// `JulianCalendar.getCalendarDateFromFixedDate`.
+fn julian_from_fixed(fixed_date: i64) -> (i64, i64, i64) {
+    let year = (4 * (fixed_date - JULIAN_EPOCH) + 1464).div_euclid(1461);
+    let mut prior_days = fixed_date - julian_fixed(year, 1, 1);
+    if fixed_date >= julian_fixed(year, 3, 1) {
+        prior_days += if is_julian_leap_year(year) { 1 } else { 2 };
+    }
+    let month = (12 * prior_days + 373).div_euclid(367);
+    let day = fixed_date - julian_fixed(year, month, 1) + 1;
+    (year, month, day)
 }
 
 // ---------------------------------------------------------------------------

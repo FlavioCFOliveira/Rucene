@@ -25,7 +25,7 @@ use rucene::index::Term;
 use rucene::search::fuzzy_query::FuzzyQuery;
 use rucene::search::Query;
 
-use super::standard_query_builder::{cast, multi_term_field, StandardQueryBuilder};
+use super::standard_query_builder::{cast, StandardQueryBuilder};
 use crate::flexible::core::nodes::fuzzy_query_node::{FuzzyQueryNode, FUZZY_QUERY_NODE_CLASS};
 use crate::flexible::core::nodes::query_node::{QueryNode, QueryNodeRef};
 
@@ -55,10 +55,10 @@ impl StandardQueryBuilder for FuzzyQueryNodeBuilder {
         // `text.codePointCount(0, text.length())`
         let num_edits =
             FuzzyQuery::float_to_edits(fuzzy_node.get_similarity(), text.chars().count() as i32);
-        // `new Term(field, text)`, then the `MultiTermQuery` constructor's
-        // check of `term.field()`.
-        let field = multi_term_field(field_node.get_field_as_string())?;
-        let term = Term::from_text(field, &text);
+        // `new Term(field, text)`; the `FuzzyQuery` constructor rejects a
+        // `null` field (`MultiTermQuery`'s check of `term.field()`).
+        let term =
+            Term::from_text_nullable_field(field_node.get_field_as_string().as_deref(), &text);
         Ok(Some(Arc::new(FuzzyQuery::with_prefix_length(
             term,
             num_edits,

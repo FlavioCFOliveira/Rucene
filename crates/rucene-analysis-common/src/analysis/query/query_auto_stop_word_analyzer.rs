@@ -103,19 +103,12 @@ pub struct QueryAutoStopWordAnalyzer {
 }
 
 /// `FieldInfos.getIndexedFields(indexReader)`, in the iteration order of
-/// the `HashSet` Java returns.
-///
-/// **Divergence from Lucene 10.5.0.** `rucene`'s `getIndexedFields` returns
-/// a Rust set; its fields are put into a [`JavaHashSet`] in that set's
-/// order. Java's set adds them leaf by leaf, so two fields whose hashes
-/// share a bucket may iterate in the other order; the only effect is the
-/// order in which the constructor reads them.
+/// the `java.util.HashSet` it returns, which the core reproduces.
 fn indexed_fields(index_reader: &Arc<dyn IndexReader>) -> Result<Vec<String>> {
-    let mut fields = JavaHashSet::new();
-    for field in FieldInfos::get_indexed_fields(Arc::clone(index_reader))? {
-        fields.insert(field);
-    }
-    Ok(fields.iter().cloned().collect())
+    Ok(FieldInfos::get_indexed_fields(Arc::clone(index_reader))?
+        .iter()
+        .cloned()
+        .collect())
 }
 
 impl QueryAutoStopWordAnalyzer {

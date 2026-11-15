@@ -280,7 +280,7 @@ impl MatchesIterator for PhraseMatchesIterator {
         Ok(None)
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
-        Arc::clone(&self.query)
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
+        Some(Arc::clone(&self.query))
     }
 }

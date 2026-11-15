@@ -3595,6 +3595,15 @@ fn java_copied_string_set_to_string(set: &HashSet<String>) -> String {
     format!("[{}]", ordered.join(", "))
 }
 
+/// `new HashSet<>(set)`: a copy of `set` filled in its iteration order.
+fn java_hash_set_copy(
+    set: rucene::util::java_collections::JavaHashSet,
+) -> rucene::util::java_collections::JavaHashSet {
+    rucene::util::java_collections::JavaHashSet::from_collection(
+        set.iter().cloned().collect::<Vec<String>>(),
+    )
+}
+
 /// JUnit's `assertEquals(message, Object, Object)` for two `HashSet<String>`
 /// that `assertTermsEquals`, `assertNormsEquals` and `assertDocValuesEquals`
 /// compare.
@@ -4506,15 +4515,17 @@ impl LuceneTestCase {
         deep: bool,
     ) {
         use rucene::index::multi_fields::MultiTerms;
-        let left_fields = io(rucene::index::FieldInfos::get_indexed_fields(Arc::clone(
-            left_reader,
+        // `new HashSet<>(FieldInfos.getIndexedFields(reader))`: the copy is
+        // filled in the source set's iteration order.
+        let left_fields = java_hash_set_copy(io(rucene::index::FieldInfos::get_indexed_fields(
+            Arc::clone(left_reader),
         )));
-        let right_fields = io(rucene::index::FieldInfos::get_indexed_fields(Arc::clone(
-            right_reader,
+        let right_fields = java_hash_set_copy(io(rucene::index::FieldInfos::get_indexed_fields(
+            Arc::clone(right_reader),
         )));
-        assert_string_sets_equal(info, &left_fields, &right_fields);
+        assert_string_sets_equal(info, &left_fields.to_std(), &right_fields.to_std());
 
-        for field in Self::java_copied_set_order(&left_fields) {
+        for field in left_fields.iter().cloned().collect::<Vec<String>>() {
             Self::assert_terms_equals_terms(
                 info,
                 left_reader,
@@ -4523,17 +4534,6 @@ impl LuceneTestCase {
                 deep,
             );
         }
-    }
-
-    /// The iteration order of `new HashSet<>(fields)`.
-    fn java_copied_set_order(set: &HashSet<String>) -> Vec<String> {
-        let mut names: Vec<&String> = set.iter().collect();
-        names.sort();
-        let entries = names
-            .into_iter()
-            .map(|n| (randomizedtesting::jdk::lang::string_hash_code(n), n.clone()))
-            .collect();
-        java_hash_order(entries, java_copy_table_length(set.len()))
     }
 
     /// `assertTermsEquals(info, leftReader, leftTerms, rightTerms, deep)`:
@@ -5068,15 +5068,17 @@ impl LuceneTestCase {
         right_reader: &Arc<dyn IndexReader>,
     ) {
         use rucene::index::multi_doc_values::MultiDocValues;
-        let left_fields = io(rucene::index::FieldInfos::get_indexed_fields(Arc::clone(
-            left_reader,
+        // `new HashSet<>(FieldInfos.getIndexedFields(reader))`: the copy is
+        // filled in the source set's iteration order.
+        let left_fields = java_hash_set_copy(io(rucene::index::FieldInfos::get_indexed_fields(
+            Arc::clone(left_reader),
         )));
-        let right_fields = io(rucene::index::FieldInfos::get_indexed_fields(Arc::clone(
-            right_reader,
+        let right_fields = java_hash_set_copy(io(rucene::index::FieldInfos::get_indexed_fields(
+            Arc::clone(right_reader),
         )));
-        assert_string_sets_equal(info, &left_fields, &right_fields);
+        assert_string_sets_equal(info, &left_fields.to_std(), &right_fields.to_std());
 
-        for field in Self::java_copied_set_order(&left_fields) {
+        for field in left_fields.iter().cloned().collect::<Vec<String>>() {
             let left_norms = io(MultiDocValues::get_norm_values(left_reader, &field));
             let right_norms = io(MultiDocValues::get_norm_values(right_reader, &field));
             match (left_norms, right_norms) {

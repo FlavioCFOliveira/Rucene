@@ -305,7 +305,9 @@ impl<T> TaskGroup<T> {
     ///
     /// Equivalent to `TaskExecutor.Task.run()`, whose
     /// `startedOrCancelled.compareAndSet(false, true)` guard is the transition
-    /// out of [`Slot::Pending`] here.
+    /// out of [`Slot::Pending`] here, then `FutureTask.run()`: the outcome of
+    /// the callable, a returned failure or a caught panic alike, settles the
+    /// slot, and a failure cancels the siblings (`Task.setException`).
     fn run(&self, id: usize) {
         let callable = {
             let mut slot = self.lock_slot(id);
@@ -322,7 +324,16 @@ impl<T> TaskGroup<T> {
             return;
         };
 
-        let outcome = callable();
+        // `FutureTask.run()` catches every `Throwable` of the callable and
+        // records it with `setException`; a panic is this crate's carrier of
+        // an unchecked Java exception or error, so it is caught and recorded
+        // as the failure `panic_to_error` maps it to. Left uncaught, it would
+        // unwind out of this thread with the slot still `Running`, and
+        // `await_settled` would wait for it forever.
+        let outcome = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(callable)) {
+            Ok(outcome) => outcome,
+            Err(payload) => Err(crate::util::concurrent::panic_to_error(payload.as_ref())),
+        };
         let failed = outcome.is_err();
         *self.lock_slot(id) = Slot::Done(outcome);
         self.settle_one();

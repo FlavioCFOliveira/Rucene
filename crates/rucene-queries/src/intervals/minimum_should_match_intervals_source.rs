@@ -437,9 +437,7 @@ impl IntervalIterator for MinimumShouldMatchIntervalIterator {
 ///
 /// Equivalent to the package-private static class
 /// `org.apache.lucene.queries.intervals.MinimumShouldMatchIntervalsSource.MinimumMatchesIterator`.
-///
-/// **Divergence.** Java's `getQuery()` returns `null`; the core
-/// [`MatchesIterator::get_query`] returns a query, so it panics instead.
+/// Its `getQuery()` returns `null`, [`MatchesIterator::get_query`] `None`.
 pub(crate) struct MinimumMatchesIterator {
     cached: bool,
     iterator: MinimumShouldMatchIntervalIterator,
@@ -524,8 +522,9 @@ impl MatchesIterator for MinimumMatchesIterator {
         MatchesUtils::disjunction(mis)
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
-        panic!("MinimumMatchesIterator.getQuery() returns null in Java, which the core MatchesIterator contract cannot")
+    /// `getQuery()` returns `null` (`MinimumShouldMatchIntervalsSource.java:406-408`).
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
+        None
     }
 }
 

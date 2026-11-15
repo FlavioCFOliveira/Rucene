@@ -96,7 +96,7 @@ impl MatchesIterator for NoOffsetsMatchesIterator {
         self.delegate.get_sub_matches()
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
         self.delegate.get_query()
     }
 }

@@ -95,9 +95,11 @@ pub fn throwable_to_string(error: &LuceneError) -> String {
 /// ([`JavaThrowable::get_message`]) and keeps the text, so a later change of
 /// the default locale is not reflected (the messages of
 /// `QueryParserMessages` exist in one locale only, so none of them changes);
-/// a failing lookup, which Java throws from `getMessage()`, gives no message.
-/// The `Display` of the [`LuceneError`] is `Throwable.toString()`'s default
-/// form; the class's own `toString()` is [`to_java_string`](Self::to_java_string).
+/// a failing lookup, which Java throws from `getMessage()`, gives no message,
+/// and from `toString()`, gives `Throwable.toString()`'s default form. The
+/// `Display` of the [`LuceneError`] is the class's own `toString()`
+/// ([`to_java_string`](Self::to_java_string), through the core hook
+/// [`JavaThrowable::to_java_string`]), as for its subclasses.
 #[derive(Debug, Clone)]
 pub struct QueryNodeException {
     class: &'static str,
@@ -253,6 +255,12 @@ impl JavaThrowable for QueryNodeException {
 
     fn get_cause(&self) -> Option<&Arc<LuceneError>> {
         self.cause.as_ref()
+    }
+
+    /// `toString()`, overridden (`QueryNodeException.java:76-79`); see
+    /// [`QueryNodeException::to_java_string`].
+    fn to_java_string(&self) -> Option<String> {
+        QueryNodeException::to_java_string(self).ok()
     }
 
     fn as_any(&self) -> &dyn Any {

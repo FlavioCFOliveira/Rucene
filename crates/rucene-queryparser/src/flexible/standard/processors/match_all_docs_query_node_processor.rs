@@ -50,9 +50,20 @@ impl QueryNodeProcessorImplOps for MatchAllDocsQueryNodeProcessor {
 
     fn post_process_node(&self, node: QueryNodeRef) -> Result<QueryNodeRef> {
         if let Some(fqn) = node.as_field_query_node() {
-            let field = fqn.get_field().ok_or_else(LuceneError::null_pointer)?;
+            // `fqn.getField().toString()` and `fqn.getText().toString()`
+            // dereference a `null` field or text with JDK 25's helpful
+            // `NullPointerException` message.
+            let field = fqn.get_field().ok_or_else(|| {
+                LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"java.lang.CharSequence.toString()\" because the return value of \"org.apache.lucene.queryparser.flexible.core.nodes.FieldQueryNode.getField()\" is null",
+                )
+            })?;
             if field.to_string() == "*" {
-                let text = fqn.get_text().ok_or_else(LuceneError::null_pointer)?;
+                let text = fqn.get_text().ok_or_else(|| {
+                    LuceneError::null_pointer_with_message(
+                        "Cannot invoke \"java.lang.CharSequence.toString()\" because the return value of \"org.apache.lucene.queryparser.flexible.core.nodes.FieldQueryNode.getText()\" is null",
+                    )
+                })?;
                 if text.to_string() == "*" {
                     let match_all: QueryNodeRef = MatchAllDocsQueryNode::new();
                     return Ok(match_all);

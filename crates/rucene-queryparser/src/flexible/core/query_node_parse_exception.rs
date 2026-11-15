@@ -214,6 +214,11 @@ impl JavaThrowable for QueryNodeParseException {
         self.base.get_cause()
     }
 
+    /// The inherited `QueryNodeException.toString()`.
+    fn to_java_string(&self) -> Option<String> {
+        JavaThrowable::to_java_string(&self.base)
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

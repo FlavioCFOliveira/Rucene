@@ -117,8 +117,8 @@ impl MatchesIterator for ConjunctionMatchesIterator {
         MatchesUtils::disjunction(sub_matches)
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
-        panic!("java.lang.UnsupportedOperationException: ConjunctionMatchesIterator.getQuery()")
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
+        panic!("java.lang.UnsupportedOperationException")
     }
 }
 
@@ -183,7 +183,7 @@ impl MatchesIterator for SingletonMatchesIterator {
         self.in_.get_sub_matches()
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
         self.in_.get_query()
     }
 }

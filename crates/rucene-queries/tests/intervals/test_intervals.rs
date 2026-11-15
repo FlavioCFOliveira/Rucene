@@ -63,6 +63,13 @@ use crate::intervals::support::{
 use crate::queries_support::core_support::{class, random, unchecked};
 use crate::queries_support::search_support::{assert_query_equals, static_hook};
 
+/// The query of a `MatchesIterator.getQuery()` that the Java test compares
+/// with `assertEquals(expected, mi.getQuery())`: a `null` (`None`) query
+/// fails the comparison, as JUnit's `assertEquals` does.
+fn non_null(query: Option<Arc<dyn Query>>) -> Arc<dyn Query> {
+    query.unwrap_or_else(|| Assert::fail("expected a query but was:<null>"))
+}
+
 //   0         1         2         3         4         5         6         7         8         9
 //
 // 012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789
@@ -577,11 +584,11 @@ fn test_term_query_intervals() -> Result<()> {
     let mut mi = get_matches(&source, 2, "field1")?;
     assert_match(mi_of(&mut mi), 1, 1, 6, 14)?;
     let porridge = tq("field1", "porridge");
-    assert_query_equals(&porridge, &*mi_of(&mut mi).get_query());
+    assert_query_equals(&porridge, &*non_null(mi_of(&mut mi).get_query()));
     assert_match(mi_of(&mut mi), 4, 4, 27, 35)?;
-    assert_query_equals(&porridge, &*mi_of(&mut mi).get_query());
+    assert_query_equals(&porridge, &*non_null(mi_of(&mut mi).get_query()));
     assert_match(mi_of(&mut mi), 7, 7, 47, 55)?;
-    assert_query_equals(&porridge, &*mi_of(&mut mi).get_query());
+    assert_query_equals(&porridge, &*non_null(mi_of(&mut mi).get_query()));
     Assert::assert_false(mi_of(&mut mi).next()?);
     Assert::assert_equals(1, source.min_extent());
     check_visits(&source, 1, &["porridge"]);
@@ -658,16 +665,16 @@ fn test_phrase_intervals() -> Result<()> {
     assert_match(mi_of(&mut mi), 3, 4, 20, 34)?;
     let mut sub = sub_of(mi_of(&mut mi))?;
     assert_match(&mut *sub, 3, 3, 20, 25)?;
-    assert_query_equals(&tq("field1", "pease"), &*sub.get_query());
+    assert_query_equals(&tq("field1", "pease"), &*non_null(sub.get_query()));
     assert_match(&mut *sub, 4, 4, 26, 34)?;
-    assert_query_equals(&tq("field1", "porridge"), &*sub.get_query());
+    assert_query_equals(&tq("field1", "porridge"), &*non_null(sub.get_query()));
     Assert::assert_false(sub.next()?);
     assert_match(mi_of(&mut mi), 6, 7, 41, 55)?;
     let mut sub = sub_of(mi_of(&mut mi))?;
     Assert::assert_true(sub.next()?);
-    assert_query_equals(&tq("field1", "pease"), &*sub.get_query());
+    assert_query_equals(&tq("field1", "pease"), &*non_null(sub.get_query()));
     Assert::assert_true(sub.next()?);
-    assert_query_equals(&tq("field1", "porridge"), &*sub.get_query());
+    assert_query_equals(&tq("field1", "porridge"), &*non_null(sub.get_query()));
     Assert::assert_false(sub.next()?);
     Assert::assert_equals(2, source.min_extent());
     check_visits(&source, 3, &["pease", "porridge"]);
@@ -783,10 +790,13 @@ fn test_interval_disjunction() -> Result<()> {
     assert_null_iterator(None, &get_matches(&source, 0, "field1")?);
     let mut mi = get_matches(&source, 3, "field1")?;
     assert_match(mi_of(&mut mi), 3, 3, 15, 18)?;
-    assert_query_equals(&tq("field1", "hot"), &*mi_of(&mut mi).get_query());
+    assert_query_equals(&tq("field1", "hot"), &*non_null(mi_of(&mut mi).get_query()));
     assert_null_iterator(None, &mi_of(&mut mi).get_sub_matches()?);
     assert_match(mi_of(&mut mi), 7, 7, 31, 36)?;
-    assert_query_equals(&tq("field1", "pease"), &*mi_of(&mut mi).get_query());
+    assert_query_equals(
+        &tq("field1", "pease"),
+        &*non_null(mi_of(&mut mi).get_query()),
+    );
     assert_null_iterator(None, &mi_of(&mut mi).get_sub_matches()?);
     Assert::assert_false(mi_of(&mut mi).next()?);
     Assert::assert_equals(1, source.min_extent());
@@ -899,13 +909,13 @@ fn test_nesting2() -> Result<()> {
     assert_match(mi_of(&mut it), 6, 21, 41, 118)?;
     let mut sub = sub_of(mi_of(&mut it))?;
     assert_match(&mut *sub, 6, 6, 41, 46)?;
-    assert_query_equals(&tq("field1", "pease"), &*sub.get_query());
+    assert_query_equals(&tq("field1", "pease"), &*non_null(sub.get_query()));
     assert_match(&mut *sub, 19, 19, 106, 110)?;
-    assert_query_equals(&tq("field1", "like"), &*sub.get_query());
+    assert_query_equals(&tq("field1", "like"), &*non_null(sub.get_query()));
     assert_match(&mut *sub, 20, 20, 111, 113)?;
-    assert_query_equals(&tq("field1", "it"), &*sub.get_query());
+    assert_query_equals(&tq("field1", "it"), &*non_null(sub.get_query()));
     assert_match(&mut *sub, 21, 21, 114, 118)?;
-    assert_query_equals(&tq("field1", "cold"), &*sub.get_query());
+    assert_query_equals(&tq("field1", "cold"), &*non_null(sub.get_query()));
     Assert::assert_false(sub.next()?);
     Assert::assert_false(mi_of(&mut it).next()?);
     Assert::assert_equals(4, source.min_extent());

@@ -116,6 +116,12 @@ impl FuzzyQuery {
         transpositions: bool,
         rewrite_method: Arc<dyn RewriteMethod>,
     ) -> Result<Self> {
+        // `super(term.field(), rewriteMethod)` comes first: `MultiTermQuery`
+        // rejects a `null` field (`MultiTermQuery.java:284`).
+        let field = term
+            .field_opt()
+            .ok_or_else(|| LuceneError::null_pointer_with_message("field must not be null"))?
+            .to_string();
         if !(0..=MAXIMUM_SUPPORTED_DISTANCE).contains(&max_edits) {
             return Err(LuceneError::illegal_argument(format!(
                 "maxEdits must be between 0 and {MAXIMUM_SUPPORTED_DISTANCE}"
@@ -132,7 +138,7 @@ impl FuzzyQuery {
             ));
         }
         Ok(Self {
-            field: term.field().to_string(),
+            field,
             rewrite_method,
             max_edits,
             max_expansions,

@@ -48,9 +48,8 @@ pub struct SrndTruncQuery {
 impl SrndTruncQuery {
     /// Equivalent to `new SrndTruncQuery(String)`: not quoted.
     ///
-    /// Java builds the automaton from `new Term(null, truncated)`;
-    /// `WildcardQuery.toAutomaton` reads only the term's text, so the field
-    /// of the term here, which cannot be `null`, is empty.
+    /// Java builds the automaton from `new Term(null, truncated)`
+    /// (`SrndTruncQuery.java`), a term of a `null` field.
     ///
     /// # Errors
     ///
@@ -58,7 +57,7 @@ impl SrndTruncQuery {
     pub fn new(truncated: &str) -> Result<Self> {
         let compiled = CompiledAutomaton::new(
             WildcardQuery::to_automaton(
-                &Term::new("", BytesRef::from_char_sequence(truncated)),
+                &Term::with_nullable_field(None, BytesRef::from_char_sequence(truncated)),
                 DEFAULT_DETERMINIZE_WORK_LIMIT,
             )?,
             false,

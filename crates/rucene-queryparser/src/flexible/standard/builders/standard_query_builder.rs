@@ -159,32 +159,29 @@ pub fn rewrite_method_of(node: &dyn QueryNode) -> Result<Arc<dyn RewriteMethod>>
 
 /// `new Term(field, text)` of a field and a text that may be `null`.
 ///
-/// **Divergence.** Java's `Term` accepts a `null` field; the core `Term`
-/// requires one, so a `null` field throws the `NullPointerException` here.
-/// A node has a `null` field only when the configured `MULTI_FIELDS` is
-/// empty.
+/// The field is `null` when the node has none (the configured `MULTI_FIELDS`
+/// is empty), and the term keeps it, as Java's `Term` does
+/// ([`Term::with_nullable_field`]).
 ///
 /// # Errors
 ///
-/// The `NullPointerException` of a `null` text (`new BytesRef(null)`) or
-/// field.
+/// The `NullPointerException` of a `null` text (`new BytesRef(null)`).
 pub fn new_term(field: Option<String>, text: Option<String>) -> Result<Term> {
     let text = text.ok_or_else(LuceneError::null_pointer)?;
-    let field = field.ok_or_else(LuceneError::null_pointer)?;
-    Ok(Term::from_text(field, &text))
+    Ok(Term::from_text_nullable_field(field.as_deref(), &text))
 }
 
-/// The term of a multi-term query, `new Term(field, text)`, and the
-/// `MultiTermQuery` constructor's check of its field.
+/// The term of a multi-term query, `new Term(field, text)`, whose field may
+/// be `null`: the core multi-term query constructor rejects it afterwards
+/// with `NullPointerException("field must not be null")`, in Java's order
+/// (after building the automaton, for a wildcard or a regexp).
 ///
 /// # Errors
 ///
-/// The `NullPointerException` of a `null` text (`new BytesRef(null)`), then
-/// `NullPointerException("field must not be null")` of a `null` field.
+/// The `NullPointerException` of a `null` text (`new BytesRef(null)`).
 pub fn multi_term_term(field: Option<String>, text: Option<String>) -> Result<Term> {
     let text = text.ok_or_else(LuceneError::null_pointer)?;
-    let field = multi_term_field(field)?;
-    Ok(Term::from_text(field, &text))
+    Ok(Term::from_text_nullable_field(field.as_deref(), &text))
 }
 
 /// The field of a multi-term query: `MultiTermQuery`'s

@@ -64,7 +64,8 @@
 //!
 //! **Parser parity** ([`ParseOracle`]): each query string, evaluated with
 //! `$input` bound to it, gives the same `toString()` (and `toString(field)`)
-//! and class tree, or the same exception class and message.
+//! and class tree, or the same exception class and message (of the parse, or
+//! of each of those three stages).
 //!
 //! [`compare`] reports the first differing line with its record, both lines
 //! and the line before; [`corpus`] holds the seeded generators.
@@ -549,10 +550,11 @@ impl Registry {
     /// `StandardAnalyzer`.
     pub fn core() -> Registry {
         let mut r = Registry::empty();
+        // `new Term(String fld, String text)`: the field may be `null`.
         r.new_fn("org.apache.lucene.index.Term", 2, |a| {
             Ok(Value::object(
                 "org.apache.lucene.index.Term",
-                Term::new(a[0].as_str(), BytesRef::from_char_sequence(a[1].as_str())),
+                Term::from_text_nullable_field(a[0].as_opt_str(), a[1].as_str()),
             ))
         });
         r.new_fn("org.apache.lucene.util.BytesRef", 1, |a| {
@@ -1876,12 +1878,23 @@ impl ParseOracle {
                         }
                     };
                     if result.is::<Arc<dyn Query>>() {
+                        // Each stage may throw (`QueryOracle.parseRecord`):
+                        // its exception is recorded and the next stage runs.
                         let q = result.as_query();
-                        line(&mut out, &["tostring", &escape(&query_to_string(&*q))]);
-                        if let Some(f) = field {
-                            line(&mut out, &["tostringf", &escape(&q.to_query_string(f))]);
+                        match stage(|| Ok(query_to_string(&*q))) {
+                            Ok(s) => line(&mut out, &["tostring", &escape(&s)]),
+                            Err(t) => error_line(&mut out, Some("tostring"), &t),
                         }
-                        line(&mut out, &["classtree", &escape(&class_tree(&*q))]);
+                        if let Some(f) = field {
+                            match stage(|| Ok(q.to_query_string(f))) {
+                                Ok(s) => line(&mut out, &["tostringf", &escape(&s)]),
+                                Err(t) => error_line(&mut out, Some("tostringf"), &t),
+                            }
+                        }
+                        match stage(|| Ok(class_tree(&*q))) {
+                            Ok(s) => line(&mut out, &["classtree", &escape(&s)]),
+                            Err(t) => error_line(&mut out, Some("classtree"), &t),
+                        }
                     } else {
                         let s = self
                             .registry

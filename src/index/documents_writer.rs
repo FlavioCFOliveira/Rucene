@@ -962,10 +962,10 @@ impl FrozenBufferedUpdates {
         // updates.deleteTerms.forEachOrdered((term, doc) -> builder.add(term));`
         // (`FrozenBufferedUpdates.java:87-89`).
         let mut ordered = updates.delete_terms();
+        // `forEachOrdered` sorts the fields with `Map.Entry.comparingByKey()`,
+        // `String.compareTo`: UTF-16 code units (`BufferedUpdates.java:257-260`).
         ordered.sort_by(|left, right| {
-            left.term
-                .field()
-                .cmp(right.term.field())
+            crate::util::compare_utf16(left.term.field(), right.term.field())
                 .then_with(|| left.term.bytes().cmp(right.term.bytes()))
         });
         let mut builder = crate::index::PrefixCodedTermsBuilder::new();

@@ -73,7 +73,7 @@ impl MatchesIterator for BoxedIntervalMatchesIterator {
         self.0.get_sub_matches()
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
         self.0.get_query()
     }
 }
@@ -142,7 +142,7 @@ impl MatchesIterator for SharedIntervalMatchesIterator {
         self.0.borrow().get_sub_matches()
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
         self.0.borrow().get_query()
     }
 }

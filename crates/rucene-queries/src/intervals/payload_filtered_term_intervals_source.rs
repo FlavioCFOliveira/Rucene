@@ -282,8 +282,8 @@ impl MatchesIterator for PayloadFilteredMatchesIterator {
         Ok(None)
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
-        panic!("java.lang.UnsupportedOperationException: PayloadFilteredTermIntervalsSource matches getQuery()")
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
+        panic!("java.lang.UnsupportedOperationException")
     }
 }
 

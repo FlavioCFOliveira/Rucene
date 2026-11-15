@@ -136,12 +136,9 @@ impl MatchesIterator for OneTimeMatchesIterator {
         Ok(None)
     }
 
-    /// Java returns `null`, which its caller dereferences into a
-    /// `NullPointerException`; the infallible core signature throws that
-    /// exception here (the class of divergence the intervals package
-    /// declares for `getQuery`).
-    fn get_query(&self) -> Arc<dyn Query> {
-        randomizedtesting::jdk::exception::throw_without_message("java.lang.NullPointerException")
+    /// `getQuery()` returns `null` (`OneTimeIntervalSource.java:154-156`).
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
+        None
     }
 }
 

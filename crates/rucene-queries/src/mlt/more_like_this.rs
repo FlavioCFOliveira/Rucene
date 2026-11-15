@@ -24,7 +24,7 @@ use std::sync::Arc;
 use rucene::analysis::tokenattributes::{CharTermAttribute, TermFrequencyAttribute};
 use rucene::analysis::{Analyzer, CharReader, StringCharReader};
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
-use rucene::index::{IndexOptions, IndexReader, Term, Terms};
+use rucene::index::{FieldInfos, IndexReader, Term, Terms};
 use rucene::search::boolean_clause::Occur;
 use rucene::search::boolean_query::Builder as BooleanQueryBuilder;
 use rucene::search::boost_query::BoostQuery;
@@ -32,7 +32,7 @@ use rucene::search::query::Query;
 use rucene::search::similarities::tfidf_similarity::{ClassicSimilarity, TFIDFSimilarity};
 use rucene::search::term_query::TermQuery;
 use rucene::util::extra::{PriorityQueue, PriorityQueueComparator};
-use rucene::util::java_collections::{JavaHashMap, JavaHashSet};
+use rucene::util::java_collections::JavaHashMap;
 use rucene::util::refs::CharsRefBuilder;
 
 /// Generates "more like this" similarity queries.
@@ -408,24 +408,14 @@ impl MoreLikeThis {
         self.max_num_tokens_parsed = i;
     }
 
-    /// `FieldInfos.getIndexedFields(ir).toArray(String[]::new)`.
-    ///
-    /// Java's `getIndexedFields` collects the leaves' indexed field names with
-    /// `Collectors.toSet()`, a `java.util.HashSet`, whose iteration order is
-    /// the order of the field names here. The core's
-    /// [`FieldInfos::get_indexed_fields`](rucene::index::FieldInfos::get_indexed_fields)
-    /// answers a Rust `HashSet`, so the same stream is collected into a
-    /// [`JavaHashSet`] instead.
+    /// `FieldInfos.getIndexedFields(ir).toArray(String[]::new)`
+    /// (`MoreLikeThis.java:557-558, 571-572`): the names in the iteration
+    /// order of the `java.util.HashSet` the core returns.
     fn indexed_fields(&self) -> Result<Vec<String>> {
-        let mut fields = JavaHashSet::new();
-        for ctx in Arc::clone(&self.ir).leaves()? {
-            for fi in ctx.leaf_reader().get_field_infos().iter() {
-                if fi.get_index_options() != IndexOptions::NONE {
-                    fields.insert(fi.name.clone());
-                }
-            }
-        }
-        Ok(fields.iter().cloned().collect())
+        Ok(FieldInfos::get_indexed_fields(Arc::clone(&self.ir))?
+            .iter()
+            .cloned()
+            .collect())
     }
 
     /// Returns a query that will return docs like the passed lucene document

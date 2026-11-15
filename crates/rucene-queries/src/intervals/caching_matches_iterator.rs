@@ -59,17 +59,17 @@ impl CachedMatches {
             })
     }
 
-    /// `matchingQueries[index]`, which must be a query.
-    fn query(&self, index: i64) -> Arc<dyn Query> {
+    /// `matchingQueries[index]`, `None` for a `null` entry.
+    ///
+    /// # Panics
+    ///
+    /// Java's `ArrayIndexOutOfBoundsException` for an index outside the array.
+    fn query(&self, index: i64) -> Option<Arc<dyn Query>> {
         let query = usize::try_from(index)
             .ok()
             .and_then(|i| self.matching_queries.get(i).cloned());
         match query {
-            Some(Some(query)) => query,
-            Some(None) => panic!(
-                "CachingMatchesIterator: the cached query at {index} is null, which Java returns as \
-                 is and the core MatchesIterator::get_query contract cannot"
-            ),
+            Some(query) => query,
             None => panic!(
                 "java.lang.ArrayIndexOutOfBoundsException: Index {index} out of bounds for length {}",
                 self.matching_queries.len()
@@ -125,11 +125,9 @@ impl CachedMatches {
 /// `org.apache.lucene.queries.intervals.CachingMatchesIterator`, a
 /// `FilterMatchesIterator` over an [`IntervalMatchesIterator`].
 ///
-/// **Divergence.** Java's [`get_query`](MatchesIterator::get_query) answers
-/// `matchingQueries[0]`, which can be `null` (an empty cache, or a sub-match
-/// whose `getQuery()` returned `null`). The core
-/// [`MatchesIterator::get_query`] returns a query, so a `null` entry panics
-/// where Java would hand `null` to its caller.
+/// Its [`get_query`](MatchesIterator::get_query) answers `matchingQueries[0]`,
+/// which can be `null` (`None`): an empty cache, or a sub-match whose
+/// `getQuery()` returned `null` (`CachingMatchesIterator.java:126-128`).
 pub(crate) struct CachingMatchesIterator {
     /// The `in` field.
     in_: Box<dyn IntervalMatchesIterator>,
@@ -168,7 +166,7 @@ impl CachingMatchesIterator {
                 cache.pos_and_offsets[1] = self.in_.end_position();
                 cache.pos_and_offsets[2] = self.in_.start_offset()?;
                 cache.pos_and_offsets[3] = self.in_.end_offset()?;
-                cache.matching_queries[0] = Some(self.in_.get_query());
+                cache.matching_queries[0] = self.in_.get_query();
             }
             Some(mut mi) => {
                 while mi.next()? {
@@ -181,7 +179,7 @@ impl CachingMatchesIterator {
                     let count = cache.count as usize;
                     let query = mi.get_query();
                     match cache.matching_queries.get_mut(count) {
-                        Some(slot) => *slot = Some(query),
+                        Some(slot) => *slot = query,
                         None => {
                             return Err(LuceneError::unchecked(
                                 "java.lang.ArrayIndexOutOfBoundsException",
@@ -233,7 +231,7 @@ impl MatchesIterator for CachingMatchesIterator {
         })))
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
         self.cache.borrow().query(0)
     }
 }
@@ -296,7 +294,7 @@ impl MatchesIterator for CachedSubMatches {
         Ok(None)
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
         self.cache.borrow().query(i64::from(self.upto))
     }
 }

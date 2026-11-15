@@ -111,8 +111,8 @@ import org.apache.lucene.util.automaton.ByteRunAutomaton;
  * {@code explain <doc>} and one {@code expl <depth> <match> <value> <description>} per node; a
  * failure prints {@code error <stage> <class> <message>} and ends the record. Per {@code parse}:
  * {@code parse <id>}, then {@code tostring} (and {@code tostringf} with the field), {@code
- * classtree}, or {@code value <class> <string>} for a result that is no query, or {@code error
- * <class> <message>}. Per {@code spans}: {@code spans <id>}, {@code tostring}, {@code rewritten},
+ * classtree} (each, when it throws, {@code error <stage> <class> <message>}), or {@code value
+ * <class> <string>} for a result that is no query, or {@code error <class> <message>}. Per {@code spans}: {@code spans <id>}, {@code tostring}, {@code rewritten},
  * then per leaf {@code leaf <ord> null} when {@code getSpans} returns {@code null}, else {@code leaf
  * <ord> <docBase>} followed, for every document the spans iterate, by {@code sdoc <doc>} and, per
  * span, {@code span <start> <end> <width>} and one {@code coll <term> <position> <payload hex or
@@ -959,11 +959,26 @@ public final class QueryOracle {
       return;
     }
     if (result instanceof Query q) {
-      line("tostring", escape(q.toString()));
-      if (field != null) {
-        line("tostringf", escape(q.toString(field)));
+      // Each stage may throw (a term of a null field makes TermQuery.toString
+      // throw a NullPointerException): its exception is recorded and the next
+      // stage runs.
+      try {
+        line("tostring", escape(q.toString()));
+      } catch (Throwable t) {
+        error("tostring", t);
       }
-      line("classtree", escape(classTree(q)));
+      if (field != null) {
+        try {
+          line("tostringf", escape(q.toString(field)));
+        } catch (Throwable t) {
+          error("tostringf", t);
+        }
+      }
+      try {
+        line("classtree", escape(classTree(q)));
+      } catch (Throwable t) {
+        error("classtree", t);
+      }
     } else {
       line(
           "value",

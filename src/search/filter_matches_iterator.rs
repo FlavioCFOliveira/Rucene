@@ -63,7 +63,7 @@ impl MatchesIterator for FilterMatchesIterator {
         self.inner.get_sub_matches()
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
         self.inner.get_query()
     }
 }

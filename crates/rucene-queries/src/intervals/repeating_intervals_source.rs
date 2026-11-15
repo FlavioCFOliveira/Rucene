@@ -377,8 +377,8 @@ impl MatchesIterator for DuplicateMatchesIterator {
         MatchesUtils::disjunction(sub_matches)
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
-        panic!("java.lang.UnsupportedOperationException: DuplicateMatchesIterator.getQuery()")
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
+        panic!("java.lang.UnsupportedOperationException")
     }
 }
 

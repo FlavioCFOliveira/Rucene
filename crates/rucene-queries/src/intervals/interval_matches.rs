@@ -121,7 +121,7 @@ impl MatchesIterator for AsMatches {
         self.source.get_sub_matches()
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
         self.source.get_query()
     }
 }

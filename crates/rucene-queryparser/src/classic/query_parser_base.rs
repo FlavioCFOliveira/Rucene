@@ -24,13 +24,19 @@
 //! Each overridable body is also a free function of this module, the target
 //! of a subclass's `super.method(...)` call.
 //!
-//! **Divergence.** A Java `String field` may be `null`; here it is an
-//! `Option<&str>`. Lucene builds a `Term` with a `null` field when a plain
-//! `QueryParser` has no default field; the core [`Term`] holds a field name,
-//! so where Lucene would build such a term or query this port raises the
-//! `NullPointerException` the JVM raises when the `null` field is later
-//! dereferenced. `MultiFieldQueryParser`, which passes `null` on purpose,
-//! handles it before any term is built, as in Lucene.
+//! A Java `String field` that may be `null` is an `Option<&str>`. A plain
+//! `QueryParser` without a default field builds terms of a `null` field as
+//! Lucene does ([`Term::with_nullable_field`]), which the multi-term query
+//! constructors reject with `MultiTermQuery`'s
+//! `NullPointerException("field must not be null")`.
+//!
+//! **Divergence.** Java's `Analyzer.normalize` and `Analyzer.tokenStream`
+//! (through `QueryBuilder.createFieldQuery`) accept a `null` field; the core
+//! [`Analyzer`] and `QueryBuilder` take a field name, so where Lucene hands
+//! the analyzer a `null` field (`QueryParserBase.java` `normalize` and
+//! `newFieldQuery`) this port raises a `NullPointerException` instead.
+//! `MultiFieldQueryParser`, which passes `null` on purpose, handles it before
+//! the analyzer is reached, as in Lucene.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -1045,7 +1051,11 @@ pub fn new_prefix_query<P: QueryParserBaseOps + ?Sized>(
     prefix: Term,
 ) -> Result<Arc<dyn Query>> {
     // `new PrefixQuery(prefix, multiTermRewriteMethod)`: the automaton of a
-    // prefix cannot fail, then `MultiTermQuery` rejects a `null` method.
+    // prefix cannot fail, then `MultiTermQuery` rejects a `null` field, then
+    // a `null` method.
+    if prefix.field_opt().is_none() {
+        return Err(null_field());
+    }
     let method = rewrite_method(this.query_parser_base())?;
     Ok(Arc::new(PrefixQuery::with_rewrite_method(prefix, method)?))
 }
@@ -1069,6 +1079,9 @@ pub fn new_regexp_query<P: QueryParserBaseOps + ?Sized>(
         let automaton = RegExp::with_match_flags(&regexp.text(), RegExp::ALL, 0)?
             .to_automaton_with(None, Some(&DefaultProvider))?;
         Operations::determinize(&automaton, base.determinize_work_limit)?;
+        if regexp.field_opt().is_none() {
+            return Err(null_field());
+        }
         return Err(null_rewrite_method());
     };
     Ok(Arc::new(RegexpQuery::with_everything(
@@ -1129,7 +1142,7 @@ pub fn new_range_query<P: QueryParserBaseOps + ?Sized>(
     };
     // `new TermRangeQuery(field, start, end, ..., multiTermRewriteMethod)`:
     // `MultiTermQuery` checks the field, then the method.
-    let field = crate::javacc::nn_str(field)?;
+    let field = field.ok_or_else(null_field)?;
     let method = rewrite_method(this.query_parser_base())?;
     Ok(Arc::new(TermRangeQuery::with_rewrite_method(
         field,
@@ -1139,6 +1152,13 @@ pub fn new_range_query<P: QueryParserBaseOps + ?Sized>(
         end_inclusive,
         method,
     )?))
+}
+
+/// The `NullPointerException` of `MultiTermQuery`'s
+/// `Objects.requireNonNull(field, "field must not be null")`
+/// (`MultiTermQuery.java:284`).
+fn null_field() -> LuceneError {
+    LuceneError::null_pointer_with_message("field must not be null")
 }
 
 /// The `NullPointerException` of `MultiTermQuery`'s
@@ -1184,6 +1204,9 @@ pub fn new_wildcard_query<P: QueryParserBaseOps + ?Sized>(
         // argument of the `AutomatonQuery` constructor, before
         // `MultiTermQuery` rejects the `null` method: its errors come first.
         WildcardQuery::to_automaton(&t, base.determinize_work_limit)?;
+        if t.field_opt().is_none() {
+            return Err(null_field());
+        }
         return Err(null_rewrite_method());
     };
     Ok(Arc::new(WildcardQuery::with_rewrite_method(
@@ -1236,8 +1259,10 @@ pub fn get_wildcard_query<P: QueryParserBaseOps + ?Sized>(
         .error());
     }
 
-    let t = Term::new(
-        crate::javacc::nn_str(field)?,
+    // `new Term(field, analyzeWildcard(field, termStr))`: the field may be
+    // `null` (a parser without a default field).
+    let t = Term::with_nullable_field(
+        field.map(str::to_string),
         analyze_wildcard(this, field, term_str)?,
     );
     this.new_wildcard_query(t).map(Some)
@@ -1310,7 +1335,7 @@ pub fn get_regexp_query<P: QueryParserBaseOps + ?Sized>(
     // with custom attribute factories for the binary term impl, and may not
     // work with some analyzers
     let term = normalize(this, field, term_str)?;
-    let t = Term::new(crate::javacc::nn_str(field)?, term);
+    let t = Term::with_nullable_field(field.map(str::to_string), term);
     this.new_regexp_query(t).map(Some)
 }
 
@@ -1332,7 +1357,7 @@ pub fn get_prefix_query<P: QueryParserBaseOps + ?Sized>(
         .error());
     }
     let term = normalize(this, field, term_str)?;
-    let t = Term::new(crate::javacc::nn_str(field)?, term);
+    let t = Term::with_nullable_field(field.map(str::to_string), term);
     this.new_prefix_query(t).map(Some)
 }
 
@@ -1349,7 +1374,7 @@ pub fn get_fuzzy_query<P: QueryParserBaseOps + ?Sized>(
     min_similarity: f32,
 ) -> Result<Option<Arc<dyn Query>>> {
     let term = normalize(this, field, term_str)?;
-    let t = Term::new(crate::javacc::nn_str(field)?, term);
+    let t = Term::with_nullable_field(field.map(str::to_string), term);
     let prefix_length = this.query_parser_base().fuzzy_prefix_length;
     this.new_fuzzy_query(t, min_similarity, prefix_length)
         .map(Some)

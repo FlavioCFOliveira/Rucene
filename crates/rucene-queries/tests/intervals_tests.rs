@@ -79,3 +79,54 @@ fn test_payload_filtered_interval() {
 fn test_simplifications() {
     run(intervals::test_simplifications::class_def);
 }
+
+/// Regression test of rmp #497: Java's `MinimumMatchesIterator.getQuery()`
+/// returns `null` (`MinimumShouldMatchIntervalsSource.java:406-408`), and the
+/// core `MatchesIterator::get_query` answers `None` for it. Before the fix the
+/// port panicked there, because the core trait returned a query.
+#[test]
+fn minimum_should_match_matches_iterator_has_no_query() {
+    use std::sync::Arc;
+
+    use rucene::codecs::{register_codec, Lucene104Codec};
+    use rucene::document::{Document, Store, TextField};
+    use rucene::index::directory_reader;
+    use rucene::index::index_writer::IndexWriter;
+    use rucene::index::index_writer_config::IndexWriterConfig;
+    use rucene::store::{ByteBuffersDirectory, Directory};
+    use rucene::util::BytesRef;
+    use rucene_queries::intervals::intervals::Intervals;
+
+    let _ = register_codec("Lucene104", Lucene104Codec::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+    let mut doc = Document::new();
+    doc.add(Box::new(
+        TextField::new("field1", "pease porridge hot".to_string(), Store::NO).unwrap(),
+    ));
+    writer.add_document(&doc).unwrap();
+    writer.commit().unwrap();
+    writer.close().unwrap();
+
+    let reader = directory_reader::open(dir).unwrap();
+    let leaves = reader.leaves().unwrap();
+    // `Intervals.atLeast(2, term("pease"), term("porridge"), term("hot"))`: a
+    // `MinimumShouldMatchIntervalsSource`, whose matches are a
+    // `MinimumMatchesIterator`.
+    let source = Intervals::at_least(
+        2,
+        ["pease", "porridge", "hot"]
+            .iter()
+            .map(|t| Intervals::term(BytesRef::new(t.as_bytes().to_vec())))
+            .collect(),
+    );
+    let mut mi = source
+        .matches("field1", &leaves[0], 0)
+        .unwrap()
+        .expect("the document matches");
+    assert!(mi.next().unwrap(), "a first match");
+    assert!(
+        mi.get_query().is_none(),
+        "MinimumMatchesIterator.getQuery() is null in Java"
+    );
+}

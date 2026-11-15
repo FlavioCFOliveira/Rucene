@@ -3565,10 +3565,10 @@ fn apply_deletes_to(
     // field so that one terms enum can be reused; the resulting deletions are
     // the same in any order.
     let mut ordered: Vec<&TermDelete> = delete_terms.iter().collect();
+    // `BufferedUpdates.DeletedTerms.forEachOrdered` sorts the fields with
+    // `Map.Entry.comparingByKey()`, `String.compareTo`: UTF-16 code units.
     ordered.sort_by(|left, right| {
-        left.term
-            .field()
-            .cmp(right.term.field())
+        crate::util::compare_utf16(left.term.field(), right.term.field())
             .then_with(|| left.term.bytes().slice().cmp(right.term.bytes().slice()))
     });
 

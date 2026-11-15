@@ -381,7 +381,12 @@ impl MatchesState {
             let mut it = it.unwrap_or_else(|| Assert::fail_without_message());
             let mut labels: HashSet<usize> = HashSet::new();
             while it.next()? {
-                labels.insert(Arc::as_ptr(&it.get_query()) as *const () as usize);
+                // `IdentityHashMap.put(it.getQuery(), 1)`: a `null` query is a
+                // key of its own (`IdentityHashMap.NULL_KEY`), here address 0.
+                labels.insert(
+                    it.get_query()
+                        .map_or(0, |q| Arc::as_ptr(&q) as *const () as usize),
+                );
             }
             Assert::assert_equals(e as usize, labels.len());
         }

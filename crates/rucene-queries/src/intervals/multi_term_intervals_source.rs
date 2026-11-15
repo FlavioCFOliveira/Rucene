@@ -107,7 +107,7 @@ impl MatchesIterator for MultiTermMatchesIterator {
         self.mi.get_sub_matches()
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
         self.mi.get_query()
     }
 }

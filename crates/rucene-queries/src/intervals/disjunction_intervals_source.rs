@@ -472,7 +472,7 @@ impl MatchesIterator for DisjunctionMatchesIterator {
 
     /// **Divergence.** `currentOrd()` throws `IllegalStateException` for an
     /// unpositioned disjunction; the infallible signature panics.
-    fn get_query(&self) -> Arc<dyn Query> {
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
         match self.it.current_ord() {
             Ok(ord) => self.subs[ord].get_query(),
             Err(e) => panic!("{e}"),

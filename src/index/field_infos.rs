@@ -1262,17 +1262,24 @@ impl FieldInfos {
         Ok(the_field)
     }
 
-    /// Returns the names of the fields that have a terms index, in no
-    /// particular order.
+    /// Returns the names of the fields that have a terms index.
     ///
-    /// Equivalent to `FieldInfos.getIndexedFields(IndexReader)`.
+    /// Equivalent to `FieldInfos.getIndexedFields(IndexReader)`
+    /// (`FieldInfos.java:241-249`), which streams the leaves' field infos and
+    /// collects the indexed names with `Collectors.toSet()`: a
+    /// `java.util.HashSet` filled by `add` in stream order, iterated in its
+    /// `String.hashCode` bucket order, which [`JavaHashSet`] reproduces.
+    ///
+    /// [`JavaHashSet`]: crate::util::java_collections::JavaHashSet
     ///
     /// # Errors
     ///
     /// [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) when `reader` is closed, as Java's
     /// `reader.leaves()` fails.
-    pub fn get_indexed_fields(reader: Arc<dyn IndexReader>) -> Result<HashSet<String>> {
-        let mut fields = HashSet::new();
+    pub fn get_indexed_fields(
+        reader: Arc<dyn IndexReader>,
+    ) -> Result<crate::util::java_collections::JavaHashSet> {
+        let mut fields = crate::util::java_collections::JavaHashSet::new();
         for ctx in reader.leaves()? {
             for fi in ctx.leaf_reader().get_field_infos().iter() {
                 if fi.get_index_options() != IndexOptions::NONE {
