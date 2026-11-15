@@ -28,22 +28,66 @@ use crate::util::{BytesRef, IOBooleanSupplier, RamUsageEstimator};
 
 /// A search unit: a field name paired with term bytes.
 ///
-/// Equivalent to `org.apache.lucene.index.Term`.
+/// Equivalent to `org.apache.lucene.index.Term`. As in Java, the field may
+/// be `null` (`new Term(null, text)`, which the query parsers build when no
+/// default field is configured): [`field_opt`](Self::field_opt) is Java's
+/// `field()`, and `toString`, `equals`, `hashCode`, `compareTo` and
+/// `ramBytesUsed` treat a `null` field as Java's do.
 #[derive(Debug, Clone)]
 pub struct Term {
-    /// Field this term belongs to.
-    field: String,
+    /// Field this term belongs to; `None` for Java's `null`.
+    field: Option<String>,
     /// Term bytes (should not be modified in place).
     bytes: BytesRef,
+}
+
+/// The helpful message of the `NullPointerException` the JVM throws at
+/// `term.field().equals(...)` when the term's field is `null`, the
+/// dereference `TermQuery.toString(String)` and `PhraseQuery` make.
+pub const TERM_FIELD_EQUALS_NPE: &str = "Cannot invoke \"String.equals(Object)\" because the return value of \"org.apache.lucene.index.Term.field()\" is null";
+
+/// The `NullPointerException` a dereference of a `null` term field throws.
+///
+/// Java's helpful message names the dereferencing call, which differs per
+/// call site; [`Term::field`] carries no message, and the sites whose
+/// message a test pins pass their own to [`Term::field_or_npe`].
+#[cold]
+fn null_field_dereference(message: Option<&str>) -> ! {
+    match message {
+        Some(message) => {
+            std::panic::panic_any(format!("java.lang.NullPointerException: {message}"))
+        }
+        None => std::panic::panic_any("java.lang.NullPointerException".to_string()),
+    }
 }
 
 impl Term {
     /// Creates a term from a field and a byte sequence.
     pub fn new(field: impl Into<String>, bytes: BytesRef) -> Self {
         Self {
-            field: field.into(),
+            field: Some(field.into()),
             bytes,
         }
+    }
+
+    /// Creates a term from a field that may be `null` and a byte sequence.
+    ///
+    /// Equivalent to `new Term(String fld, BytesRef bytes)` with a `fld` that
+    /// may be `null` (`Term.java:52-55`), which the constructor accepts and
+    /// documents as undefined behaviour for most Lucene APIs.
+    pub fn with_nullable_field(field: Option<String>, bytes: BytesRef) -> Self {
+        Self { field, bytes }
+    }
+
+    /// Creates a term from a field that may be `null` and text.
+    ///
+    /// Equivalent to `new Term(String fld, String text)` with a `fld` that may
+    /// be `null` (`Term.java:74-76`); see [`from_text`](Self::from_text).
+    pub fn from_text_nullable_field(field: Option<&str>, text: &str) -> Self {
+        Self::with_nullable_field(
+            field.map(str::to_string),
+            BytesRef::deep_copy_of(&BytesRef::from_char_sequence(text)),
+        )
     }
 
     /// Creates a term from a field and text.
@@ -65,9 +109,43 @@ impl Term {
         Self::new(field, BytesRef::new(Vec::new()))
     }
 
-    /// Returns the field name.
+    /// Returns the field name, `None` for Java's `null`.
+    ///
+    /// Equivalent to `Term.field()` (`Term.java:88-90`).
+    pub fn field_opt(&self) -> Option<&str> {
+        self.field.as_deref()
+    }
+
+    /// Returns the field name, dereferenced.
+    ///
+    /// Equivalent to `Term.field()` followed by a dereference of the returned
+    /// `String` (`field().equals(...)`, `field().length()`, a map lookup that
+    /// rejects `null`), which is what nearly every caller does; a caller that
+    /// passes the field on without dereferencing it uses
+    /// [`field_opt`](Self::field_opt).
+    ///
+    /// # Panics
+    ///
+    /// `java.lang.NullPointerException` when the field is `null`, as the JVM
+    /// throws at the dereference.
     pub fn field(&self) -> &str {
-        &self.field
+        match self.field.as_deref() {
+            Some(field) => field,
+            None => null_field_dereference(None),
+        }
+    }
+
+    /// Returns the field name, dereferenced at a site whose Java
+    /// `NullPointerException` carries the helpful message `message`.
+    ///
+    /// # Panics
+    ///
+    /// `java.lang.NullPointerException: <message>` when the field is `null`.
+    pub fn field_or_npe(&self, message: &str) -> &str {
+        match self.field.as_deref() {
+            Some(field) => field,
+            None => null_field_dereference(Some(message)),
+        }
     }
 
     /// Returns the term bytes.
@@ -103,7 +181,7 @@ impl Term {
     ///
     /// Equivalent to the Java `Term.set`.
     pub fn set(&mut self, field: impl Into<String>, bytes: BytesRef) {
-        self.field = field.into();
+        self.field = Some(field.into());
         self.bytes = bytes;
     }
 }
@@ -112,15 +190,18 @@ impl Term {
     /// Java's `hashCode()`, reproduced exactly.
     ///
     /// Equivalent to `Term.hashCode()` (`Term.java:160-166`):
-    /// `31 * (31 * 1 + field.hashCode()) + bytes.hashCode()`. `BytesRef.hashCode`
-    /// mixes in `StringHelper.GOOD_FAST_HASH_SEED`, so the value is only
-    /// reproducible across runs under a fixed `tests.seed`, exactly as in Java.
+    /// `31 * (31 * 1 + (field == null ? 0 : field.hashCode())) + bytes.hashCode()`.
+    /// `BytesRef.hashCode` mixes in `StringHelper.GOOD_FAST_HASH_SEED`, so the
+    /// value is only reproducible across runs under a fixed `tests.seed`,
+    /// exactly as in Java.
     pub fn hash_code(&self) -> i32 {
         const PRIME: i32 = 31;
         let mut result: i32 = 1;
-        result = PRIME.wrapping_mul(result).wrapping_add(
-            crate::util::java_collections::java_string_hash_code(&self.field),
-        );
+        let field_hash = self
+            .field
+            .as_deref()
+            .map_or(0, crate::util::java_collections::java_string_hash_code);
+        result = PRIME.wrapping_mul(result).wrapping_add(field_hash);
         PRIME
             .wrapping_mul(result)
             .wrapping_add(self.bytes.hash_code())
@@ -135,6 +216,8 @@ impl crate::util::java_collections::JavaHashCode for Term {
 }
 
 impl PartialEq for Term {
+    /// Equivalent to `Term.equals(Object)` (`Term.java:141-157`): two `null`
+    /// fields are equal, a `null` field differs from any other.
     fn eq(&self, other: &Self) -> bool {
         self.field == other.field && self.bytes == other.bytes
     }
@@ -179,17 +262,20 @@ impl crate::util::Accountable for Term {
     /// Returns the heap this term holds: its own shallow size, the field name
     /// and the term's byte array.
     ///
-    /// Equivalent to `org.apache.lucene.index.Term#ramBytesUsed`. Java guards
-    /// both `field` and `bytes` against `null`, which its constructor allows
-    /// and documents as undefined behaviour for most APIs; neither can be
-    /// absent here, so the two guards have no counterpart and the two sizes are
-    /// always added.
+    /// Equivalent to `org.apache.lucene.index.Term#ramBytesUsed`
+    /// (`Term.java:188-196`): `RamUsageEstimator.sizeOfObject(field)` is `0`
+    /// for a `null` field. Java also guards `bytes` against `null`; the port's
+    /// bytes are never absent, so that guard has no counterpart.
     fn ram_bytes_used(&self) -> i64 {
+        let field_size = match self.field.as_deref() {
+            Some(field) => {
+                RamUsageEstimator::size_of_object(Some(crate::util::SizedObject::String(field)))
+            }
+            None => RamUsageEstimator::size_of_object(None),
+        };
         term_base_ram_bytes()
             // `RamUsageEstimator.sizeOfObject(field)` (`Term.java:191`).
-            + RamUsageEstimator::size_of_object(Some(crate::util::SizedObject::String(
-                &self.field,
-            )))
+            + field_size
             + RamUsageEstimator::align_object_size(
                 // `bytes.bytes.length` in Java: the whole backing array, not
                 // just the active slice.
@@ -205,20 +291,40 @@ impl PartialOrd for Term {
 }
 
 impl Ord for Term {
+    /// Equivalent to `Term.compareTo(Term)` (`Term.java:176-182`): the fields
+    /// by `String.compareTo`, which compares UTF-16 code units
+    /// ([`compare_utf16`](crate::util::compare_utf16): a supplementary
+    /// character sorts before U+E000..U+FFFF, unlike UTF-8 order), then the
+    /// bytes in unsigned-byte order (`BytesRef.compareTo`).
+    ///
+    /// # Panics
+    ///
+    /// `java.lang.NullPointerException` when either field is `null`: Java's
+    /// `field.equals(other.field)` dereferences this field, and for a
+    /// non-`null` one that differs, `field.compareTo(other.field)` dereferences
+    /// the other.
     fn cmp(&self, other: &Self) -> Ordering {
-        match self.field.cmp(&other.field) {
-            Ordering::Equal => self.bytes.cmp(&other.bytes),
-            ord => ord,
+        let field = self.field();
+        if Some(field) == other.field.as_deref() {
+            self.bytes.cmp(&other.bytes)
+        } else {
+            crate::util::compare_utf16(field, other.field())
         }
     }
 }
 
 impl fmt::Display for Term {
-    /// Equivalent to `Term.toString()`, `field + ":" + text()`, where `text()`
-    /// is `Term.toString(BytesRef)`: the strictly decoded UTF-8 text, or the
-    /// raw bytes when they are not valid UTF-8 (`Term.java:108-124`).
+    /// Equivalent to `Term.toString()`, `field + ":" + text()`, where a `null`
+    /// field concatenates as `"null"` and `text()` is `Term.toString(BytesRef)`:
+    /// the strictly decoded UTF-8 text, or the raw bytes when they are not
+    /// valid UTF-8 (`Term.java:108-124`).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.field, self.text())
+        write!(
+            f,
+            "{}:{}",
+            self.field.as_deref().unwrap_or("null"),
+            self.text()
+        )
     }
 }
 
@@ -792,7 +898,7 @@ pub trait Terms: Send + Sync {
     /// starting after `start_term`.
     ///
     /// Equivalent to the default `Terms.intersect(CompiledAutomaton, BytesRef)`
-    /// (`Terms.java:64-96`); see [`default_intersect`].
+    /// (`Terms.java:64-96`); see `default_intersect`.
     ///
     /// # Errors
     ///
@@ -996,7 +1102,7 @@ impl<T: Fields + ?Sized> Fields for &T {
 /// blocktree [`Stats`](crate::codecs::lucene103::blocktree::Stats) for a
 /// `FieldReader` — as Java's caller casts the `Object`.
 pub trait StatsObject: std::fmt::Display + Send + Sync + 'static {
-    /// This object as [`Any`](std::any::Any), for downcasting.
+    /// This object as [`Any`], for downcasting.
     fn as_any(&self) -> &dyn std::any::Any;
 }
 

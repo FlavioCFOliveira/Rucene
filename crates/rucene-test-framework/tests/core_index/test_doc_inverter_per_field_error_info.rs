@@ -95,9 +95,9 @@ impl Analyzer for ThrowingAnalyzer {
         "org.apache.lucene.index.TestDocInverterPerFieldErrorInfo$ThrowingAnalyzer"
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::whitespace_lower_case()?));
-        if field_name == "distinctiveFieldName" {
+        if field_name == Some("distinctiveFieldName") {
             let tosser = TokenFilter::new(shared(&tokenizer), Tosser);
             Ok(components(tokenizer, sink(tosser)))
         } else {

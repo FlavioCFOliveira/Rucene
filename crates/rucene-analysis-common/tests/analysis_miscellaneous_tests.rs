@@ -2421,7 +2421,7 @@ impl ReuseStrategy for SharedStrategy {
     fn get_reusable_components(
         &self,
         state: &AnalyzerState,
-        field_name: &str,
+        field_name: Option<&str>,
     ) -> Option<Arc<AtomicRefCell<TokenStreamComponents>>> {
         self.0
             .analyzer_state()
@@ -2432,7 +2432,7 @@ impl ReuseStrategy for SharedStrategy {
     fn set_reusable_components(
         &self,
         state: &AnalyzerState,
-        field_name: &str,
+        field_name: Option<&str>,
         components: Arc<AtomicRefCell<TokenStreamComponents>>,
     ) {
         self.0
@@ -2452,13 +2452,13 @@ struct Wrapper2Logic {
 }
 
 impl AnalyzerWrapperLogic for Wrapper2Logic {
-    fn get_wrapped_analyzer(&self, _field_name: &str) -> &dyn Analyzer {
+    fn get_wrapped_analyzer(&self, _field_name: Option<&str>) -> &dyn Analyzer {
         &*self.wrapper1
     }
 
     fn wrap_components(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         components: TokenStreamComponents,
     ) -> TokenStreamComponents {
         let special = self

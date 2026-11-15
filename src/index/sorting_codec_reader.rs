@@ -51,7 +51,7 @@ use crate::util::{BitSet, BitSetIterator, Bits, BytesRef, FixedBitSet, InfoStrea
 /// (`SortingFloatVectorValues`/`SortingByteVectorValues`, `:312-384`,
 /// `:562-606`), the norms and the doc values (`:608-719`). The last
 /// materialised doc-values or norms view is cached exactly as Java caches it —
-/// see [`SortingCodecReaderState::get_or_create`].
+/// see `SortingCodecReaderState::get_or_create`.
 ///
 /// Java's `SortingCodecReader` extends `FilterCodecReader`, so its leaf view —
 /// `terms`, the doc-values and norms getters, `getPointValues`, the vector

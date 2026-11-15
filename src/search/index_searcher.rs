@@ -751,15 +751,15 @@ impl Clone for IndexSearcher {
     /// holds a reference to the `IndexSearcher` that created it —
     /// `AbstractMultiTermQueryConstantScoreWrapper.RewritingWeight` does, so
     /// that it can rewrite a sub-query per leaf. This port's
-    /// [`Weight`](crate::search::Weight) trait objects are `'static` and
-    /// [`Query::create_weight`](crate::search::Query::create_weight) only
+    /// [`Weight`] trait objects are `'static` and
+    /// [`Query::create_weight`] only
     /// receives a borrow, so such a weight keeps a clone instead.
     ///
     /// Every field is either an [`Arc`] or a vector of them, so the clone is
     /// cheap and shares all mutable state — the timeout, the partial-result
     /// flag and the query cache included. Nothing observes the identity of an
     /// `IndexSearcher`: the reader context, whose identity
-    /// [`TermStates`](crate::search::TermStates) compares, is shared.
+    /// [`TermStates`](crate::index::terms::TermStates) compares, is shared.
     fn clone(&self) -> Self {
         Self {
             overrides: self.overrides.clone(),

@@ -6,7 +6,7 @@
 use std::any::Any;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::error::Result;
+use crate::error::{LuceneError, Result};
 use crate::index::{Term, Terms, TermsEnum};
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::multi_term_query::{
@@ -106,6 +106,13 @@ impl AutomatonQuery {
         is_binary: bool,
         rewrite_method: Arc<dyn RewriteMethod>,
     ) -> Result<Self> {
+        // `super(term.field(), rewriteMethod)`: `MultiTermQuery` rejects a
+        // `null` field before the automaton is compiled
+        // (`MultiTermQuery.java:284`).
+        let field = term
+            .field_opt()
+            .ok_or_else(|| LuceneError::null_pointer_with_message("field must not be null"))?
+            .to_string();
         let compiled = Arc::new(Mutex::new(CompiledAutomaton::new(
             automaton.clone(),
             false,
@@ -122,11 +129,11 @@ impl AutomatonQuery {
             + 4 * i64::from(automaton.get_num_states())
             + 12 * i64::from(automaton.get_num_transitions_total());
         let term_bytes = RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
-            + term.field().len() as i64
+            + field.len() as i64
             + term.bytes().length as i64;
         let ram_bytes_used = BASE_RAM_BYTES + term_bytes + 2 * automaton_bytes;
         Ok(Self {
-            field: term.field().to_string(),
+            field,
             rewrite_method,
             automaton,
             compiled,

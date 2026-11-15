@@ -367,8 +367,9 @@ impl fmt::Display for dyn PostingsFormat + '_ {
 /// A registry mapping postings-format short names to [`PostingsFormat`]
 /// implementations.
 ///
-/// Rust has no run-time service discovery, so formats
-/// are registered explicitly with [`PostingsFormatRegistry::register`] and
+/// Formats are discovered by a
+/// [`NamedSPILoader`], as Java's service
+/// loader discovers them, extended with [`reload_postings_formats`], and
 /// looked up by name with [`PostingsFormatRegistry::for_name`].
 #[derive(Debug, Clone)]
 pub struct PostingsFormatRegistry {

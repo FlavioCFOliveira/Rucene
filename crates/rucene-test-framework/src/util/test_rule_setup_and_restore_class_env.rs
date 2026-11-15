@@ -22,7 +22,7 @@
 //! **Divergences.**
 //! * `Locale.setDefault` and `TimeZone.setDefault` set the port's default
 //!   slots ([`crate::jdk::locale::set_default`],
-//!   [`LuceneTestCase::set_default_time_zone`]); a Rust process has no JVM
+//!   `LuceneTestCase::set_default_time_zone`); a Rust process has no JVM
 //!   default to save, so the saved value of a slot never set is "unset", and
 //!   `after()` restores that.
 //! * `TimeZone.getTimeZone(tests.timezone)` resolves the IDs of

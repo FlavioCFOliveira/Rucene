@@ -84,13 +84,13 @@ impl IndriQuery {
     /// compares the clause lists, and therefore to
     /// `IndriQuery.equals(Object)` (`IndriQuery.java:67-69`) minus the
     /// `sameClassAs` check, which the concrete Indri queries perform
-    /// themselves by downcasting in [`Query::query_eq`](crate::search::Query::query_eq)
+    /// themselves by downcasting in [`Query::query_eq`]
     /// before they call this.
     ///
     /// `IndriQuery` also redeclares `createWeight` as abstract, which adds
     /// nothing to the `Query.createWeight` it already inherits; the concrete
     /// Indri queries implement
-    /// [`Query::create_weight`](crate::search::Query::create_weight) directly.
+    /// [`Query::create_weight`] directly.
     pub fn base_eq(&self, other: &IndriQuery) -> bool {
         self.clauses.len() == other.clauses.len()
             && self

@@ -541,7 +541,7 @@ impl Drop for PointReaderResource<'_> {
 pub trait PointWriter {
     /// Returns this writer as `&mut dyn Any`.
     ///
-    /// [`BKDRadixSelector`](crate::util::bkd::BKDRadixSelector) branches on whether
+    /// [`BKDRadixSelector`] branches on whether
     /// the writer is a [`HeapPointWriter`], which Java expresses as
     /// `points.writer instanceof HeapPointWriter`.
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
@@ -2720,7 +2720,7 @@ impl BKDTreeNode {
 /// Explicit-stack cursor over a [`BKDReader`] BKD tree.
 ///
 /// Equivalent to `BKDReader.BKDPointTree`. Navigation is not recursive: a
-/// stack of [`BKDTreeNode`] entries holds the per-level state (node id, cell
+/// stack of `BKDTreeNode` entries holds the per-level state (node id, cell
 /// bounds, split value, negative-delta flags, child positions). Each entry
 /// carries its own `min_packed`/`max_packed`, so push/pop is just adding or
 /// removing a stack frame — no in-place mutation or save/restore is needed,

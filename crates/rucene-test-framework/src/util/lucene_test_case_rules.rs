@@ -246,7 +246,8 @@ impl LuceneTestCase {
             .clone()
     }
 
-    /// `super.setUp()`: `parentChainCallRule.setupCalled = true`.
+    /// `super.setUp()` (`LuceneTestCase#setUp`):
+    /// `parentChainCallRule.setupCalled = true`.
     pub fn super_set_up() {
         if let Some(rules) = Self::current_test_rules() {
             rules
@@ -256,7 +257,8 @@ impl LuceneTestCase {
         }
     }
 
-    /// `super.tearDown()`: `parentChainCallRule.teardownCalled = true`,
+    /// `super.tearDown()` (`LuceneTestCase#tearDown`):
+    /// `parentChainCallRule.teardownCalled = true`,
     /// `fieldToType.clear()` and `restoreIndexWriterMaxDocs()` ("test is
     /// supposed to call this itself, but we do this defensively in case it
     /// forgot").

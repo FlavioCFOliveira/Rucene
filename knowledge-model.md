@@ -8,7 +8,9 @@ The knowledge graph of the **Rucene** project (roadmap `rucene`, reached through
 2. the reference **Apache Lucene Core 10.5.0**: the 35 modules of the distribution,
    and the **port modules** in depth — `lucene/core`, the modules sprint 9 adds,
    `lucene/codecs`, `lucene/test-framework` and **randomizedtesting 2.8.1**
-   (`randomized-runner`), and the module sprint 12 adds, `lucene/analysis/common`:
+   (`randomized-runner`), the module sprint 12 adds, `lucene/analysis/common`, and
+   the modules sprint 13 adds, `lucene/queries`, `lucene/queryparser` and
+   `lucene/sandbox` (only its listed source files, `Module.scopeFiles`):
    packages, files, types, members, dependencies; for `lucene/core` also bytecode
    calls and its test surface;
 3. **the port between them**: which Lucene type each Rust item ports and on what
@@ -84,14 +86,15 @@ member crate the survey no longer has is pruned).
 
 | Property | Purpose |
 |---|---|
-| `name` | `"rucene"`, `"rucene-codecs"`, `"lucene/core"`, `"lucene/analysis/common"`, `"randomizedtesting/randomized-runner"`, … |
+| `name` | `"rucene"`, `"rucene-codecs"`, `"lucene/core"`, `"lucene/analysis/common"`, `"lucene/queryparser"`, `"randomizedtesting/randomized-runner"`, … |
 | `shortName` | The path under `lucene/` (`"core"`), or under the randomizedtesting repository (`"randomized-runner"`). |
 | `kind` | `"crate"`, `"maven-module"`. |
 | `path` | Root path in the source tree. |
 | `project` | The owning `Project.name`. |
-| `javaFiles` | Java source files the module declares at the surveyed tag (its first source tree). |
-| `inScope` | `true` for a module the port covers. |
-| `scopeRule` | The rule that set `inScope`: `"lucene-core-is-the-port-target"`, `"sprint-9-ports-the-module"`, `"sprint-12-ports-the-module"`, `"outside-the-port-modules"`. |
+| `javaFiles` | Java source files the module declares at the surveyed tag (its first source tree), whether or not all are in scope. |
+| `inScope` | `true` for a module the port covers, whole or in part (`scopeFiles`). |
+| `scopeRule` | The rule that set `inScope`: `"lucene-core-is-the-port-target"`, `"sprint-9-ports-the-module"`, `"sprint-12-ports-the-module"`, `"sprint-13-ports-the-module"`, `"sprint-13-ports-listed-files"`, `"outside-the-port-modules"`. |
+| `scopeFiles` | On a port module scoped to listed source files (`scopeRule` `"sprint-13-ports-listed-files"`): those files' paths, relative to the repository root, `", "`-separated. Only they (and the module's JPMS descriptor) are surveyed, scoped and censused; no other type of the module is a `Class`. Absent on a module ported whole. |
 | `role` | What the module is, in one line. |
 | `crate` / `cratePath` | On a port module: the Cargo package that ports it and its directory (`"."` for `rucene`). |
 | `jpmsName` | On a port module: its JPMS module name (randomizedtesting's is the automatic name of its jar, `randomizedtesting.runner`). |
@@ -108,7 +111,8 @@ A Java package. Identity: `name` (string).
 
 ### `Class`
 A Java type of a port module (`lucene/core`, `lucene/codecs`, `lucene/test-framework`,
-`randomizedtesting/randomized-runner`, `lucene/analysis/common`) — class, interface, enum, record, exception or
+`randomizedtesting/randomized-runner`, `lucene/analysis/common`, `lucene/queries`,
+`lucene/queryparser`, and of `lucene/sandbox` the types its `scopeFiles` declare) — class, interface, enum, record, exception or
 annotation; `kind` tells them apart. (`Interface`, `Enum`, `Exception` and `Annotation`
 are reserved labels that no loader writes.) Identity: `qualifiedName` (string); a nested
 type is keyed `pkg.Outer$Inner`. Written by the Lucene survey (`extract_lucene_kg.py`,
@@ -120,15 +124,16 @@ port loaders named below.
 |---|---|
 | `name` | Simple type name. |
 | `qualifiedName` | Fully qualified name (identity). |
-| `kind` | `"class"`, `"interface"`, `"enum"`, `"record"`, `"exception"`, `"annotation"`. |
+| `kind` | `"class"`, `"interface"`, `"enum"`, `"record"`, `"exception"`, `"annotation"`. Nested types also carry `"exception"`. A nested class counts as an exception by the top-level rule (`extract_lucene_kg.is_exception_decl`): its name ends in `Exception`/`Error`, or its superclass names `Throwable`, `Exception` or `Error`. |
 | `package` | Enclosing Java package. |
 | `file` | Source file, relative to the root of its repository (Lucene's, or randomizedtesting's). |
 | `module` | The port module whose source tree declares it (`port_coverage_kg.py --phase scope`). |
 | `extendsExternal` / `implementsExternal` | External (`java.*`, `javax.*`) super-types not modelled as nodes. |
 | `portScope` | `"in"`, `"nested"`, `"out"` — see below. |
 | `portScopeRule` | The mechanical rule that assigned `portScope`. |
-| `portState` | Top-level: `"ported"`, `"skeleton"`, `"candidate"`, `"unported"`. Nested: `"ported"`, `"skeleton"`, `"absorbed"`, `"unported"`. See below. |
-| `portStateEvidence` | On a nested type, the basis of its `portState`: `"doc-comment"`, `"skeleton-doc-comment"`, `"curated"`, `"not-nameable"`, `"verified-absorption"`, `"verified-absent"`, `"no-port-claim"`. |
+| `portState` | Top-level: `"ported"`, `"skeleton"`, `"candidate"`, `"notApplicable"`, `"unported"`. Nested: `"ported"`, `"skeleton"`, `"absorbed"`, `"unported"`. See below. |
+| `portStateEvidence` | On a nested type, the basis of its `portState`: `"doc-comment"`, `"skeleton-doc-comment"`, `"curated"`, `"not-nameable"`, `"verified-absorption"`, `"verified-absent"`, `"no-port-claim"`. On a top-level type, `"curated-not-applicable"`, together with `portState` `"notApplicable"`. |
+| `portStateSources` | On a `notApplicable` type: every citation in its verdict (Lucene 10.5.0, JDK 25, Rucene precedent), joined with ` \| `. |
 | `portStateNote` | Why a hand verification overrode the mechanical `portState`. A type carrying it is skipped by the mechanical pass, so the verification survives the next sync. |
 | `javaVisibility` | Top-level: `"public"` or `"package"`, from the class file's `ACC_PUBLIC` flag (`lucene_calls_kg.py`). Nested: the effective visibility. |
 | `javaPublished` / `javaUsedAcrossFiles` | On a nested type: whether it and every enclosing type are `public`/`protected`; whether another `lucene/core` file names it as `Outer.Inner`. |
@@ -146,6 +151,8 @@ port loaders named below.
 | `in` | `lucene-core-top-level` | A top-level type declared by a file of `lucene/core` (`src/java`, `src/java21`). The port target. |
 | `in` | `sprint-9-module-top-level` | A top-level type declared by a file of `lucene/codecs`, `lucene/test-framework` or randomizedtesting's `randomized-runner` (`src/main/java`). |
 | `in` | `sprint-12-module-top-level` | A top-level type declared by a file of `lucene/analysis/common` (`src/java`). |
+| `in` | `sprint-13-module-top-level` | A top-level type declared by a file of `lucene/queries` or `lucene/queryparser` (`src/java`). |
+| `in` | `sprint-13-listed-file-top-level` | A top-level type declared by a file a port module lists in `scopeFiles` (`lucene/sandbox`). |
 | `nested` | `nested-in-enclosing-type` | An inner type; not an independent port unit. Each carries its own measured `portState`. |
 | `out` | `not-a-lucene-core-type` | Anything else carrying the label, such as Rucene's own Java test fixtures. |
 
@@ -162,7 +169,8 @@ The rule keys on the **declaring file**, not on the package name.
 | `skeleton` | No type-level `PORTS`, but a `SKELETON_OF` edge: a Rust item declares itself the skeleton of this type. The item exists; the port is not done. Only a `PORTS` edge moves it to `ported`. |
 | `candidate` | No assertion, but exactly one Rucene type carries the same simple name, recorded as `PORTS_CANDIDATE`. Probable, unverified. |
 | `absorbed` | (nested only) No independent Rust item, and none is owed, on the evidence `portStateEvidence` names. |
-| `unported` | Neither. Real work; a nested one carries `portDestination`. |
+| `notApplicable` | An in-scope type that has no faithful Rust form and owes no port, on a curated verdict in `tools/kg/not_applicable_verdicts.json` (reason, Lucene sources, JDK sources). `port_coverage_kg.py --phase scope` writes it, with the reason in `portStateNote`, so the mechanical pass keeps it. `audit_kg.py` fails on such a type when its verdict is incomplete, when it is out of scope, or when it has a `PORTS` edge. |
+| `unported` | None of the above, and no not-applicable verdict. Real work; a nested one carries `portDestination`. |
 
 A nested type's `portStateEvidence`: `doc-comment` (the crate's own claim);
 `curated` (a hand-verified edge in `tools/kg/nested_port_verdicts.json`, with file and
@@ -376,7 +384,7 @@ A top-level type of a Lucene 10.5.0 test tree — `lucene/test-framework/src/jav
 | `testKind` | `"framework"` or `"unit-test"`. |
 | `role` | From name and path only: `unit-test`, `framework-util`, `base-test-case`, `mock`, `asserting`, `mock-filesystem`, `test-codec`, `test-case-base`, `test-helper`, `fault-injection`, `annotation`. |
 | `isAbstract` | Whether the declaration is `abstract`. |
-| `testMethodCount` | Test methods the file declares. |
+| `testMethodCount` | Test methods of the file's top-level type that the runner runs: methods that are `public`, not `static`, take no parameters and have a name starting with `test` (`LuceneJUnit3MethodProvider.java:39-42`), plus methods annotated `@Test`. Counted after one left-to-right lexical pass (`javatext.strip_java`). |
 | `ruceneCoverage` | `"covered"` (the subject is ported and its Rust file declares a `#[test]`), `"uncovered"` (ported, no test there), `"subject-unported"`, `"no-subject-resolved"` (the name follows no test-naming convention). A file-level correspondence: it never means the Lucene test's cases were ported. |
 
 A `lucene/test-framework` `TestClass` is also a `Class` of that port module: its port
@@ -462,11 +470,11 @@ RETURN labels(t)[0] AS label, t.name, t.file, e.evidence, e.declaredAt, e.note
 ### What of each port module is ported, and what is missing
 
 In-scope classes per module and status (`ask.py coverage`; `--module M --list` lists
-the classes; `skeleton` is a Rust skeleton with no port, `unported` every other
-`portState` but `ported`):
+the classes; `skeleton` is a Rust skeleton with no port, `notApplicable` a curated verdict that
+no port is owed, and `unported` every other `portState` but `ported`):
 
 ```cypher
-MATCH (c:Class) WHERE c.portScope = 'in' RETURN c.module AS module, CASE WHEN c.portState = 'ported' THEN 'ported' WHEN c.portState = 'skeleton' THEN 'skeleton' ELSE 'unported' END AS status, count(c) AS classes ORDER BY module, status
+MATCH (c:Class) WHERE c.portScope = 'in' RETURN c.module AS module, CASE WHEN c.portState = 'ported' THEN 'ported' WHEN c.portState = 'skeleton' THEN 'skeleton' WHEN c.portState = 'notApplicable' THEN 'notApplicable' ELSE 'unported' END AS status, count(c) AS classes ORDER BY module, status
 ```
 
 Members ported early under the cycle rule (`ask.py early`):
@@ -929,8 +937,9 @@ above; `tools/kg/README.md` gives the arguments.
 `tools/kg/audit_kg.py`, after every sync; `problems: 0` is the pass condition. Each
 check compares the graph with a source it re-derives independently:
 
-* **Lucene and randomizedtesting:** per port module, Java files and top-level types;
-  over all of them, top-level and nested types (a brace-depth scanner written
+* **Lucene and randomizedtesting:** per port module, Java files and top-level types
+  (a module scoped to listed files is censused over those alone, and has no `Class`
+  declared by another of its files); over all of them, top-level and nested types (a brace-depth scanner written
   independently of the extractor); registered modules; the in-scope modules equal
   `PORT_MODULES`; every in-scope or nested `Class` has a `module`; every
   `PORTS_EARLY` member belongs to a type of a module beyond `lucene/core`.

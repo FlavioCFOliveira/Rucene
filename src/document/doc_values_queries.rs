@@ -87,7 +87,7 @@ impl DocValuesLongHashSet {
     /// more bit, so the table lands on the next power of two **strictly above**
     /// it. Lucene asserts `tableSize >= values.length * 3 / 2` and relies on the
     /// strictness: it is what guarantees the table always keeps a free slot, and
-    /// so what makes the linear probe in [`add`](Self::add) terminate. Rounding
+    /// so what makes the linear probe in `add` terminate. Rounding
     /// with `next_power_of_two` instead would size a one-element set at a
     /// single slot, filling the table completely and leaving `add` unable to
     /// finish — besides reporting a different `ram_bytes_used` than Java for

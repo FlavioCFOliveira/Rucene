@@ -13,8 +13,8 @@
 //! Java discovers implementations with `java.util.ServiceLoader`, which reads
 //! the `META-INF/services/<service>` files a class loader and its parents
 //! expose. The port models that loader hierarchy explicitly
-//! ([`ClassLoader`](crate::util::resource_loader::ClassLoader), whose
-//! [`ServiceProvider`](crate::util::resource_loader::ServiceProvider)s are the
+//! ([`ClassLoader`], whose
+//! [`ServiceProvider`]s are the
 //! lines of those files), so the SPI loaders reload from a class loader and
 //! check `ClassLoaderUtils.isParentClassLoader` exactly as Lucene's do.
 //!

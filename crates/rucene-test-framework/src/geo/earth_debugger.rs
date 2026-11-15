@@ -16,7 +16,7 @@
  */
 
 //! Port of `org.apache.lucene.tests.geo.EarthDebugger`: draws shapes on the
-//! earth surface and renders using the very cool http://www.webglearth.org.
+//! earth surface and renders using the very cool <http://www.webglearth.org>.
 //!
 //! Just instantiate this class, add the things you want plotted, and call
 //! [`EarthDebugger::finish`] to get the resulting HTML that you should save

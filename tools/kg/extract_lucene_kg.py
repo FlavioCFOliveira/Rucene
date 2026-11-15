@@ -29,7 +29,32 @@ ROOT = Path('/tmp/lucene1050/lucene/core/src/java/org/apache/lucene')
 LUCENE_ROOT = Path('/tmp/lucene1050')
 CORE_PREFIX = 'org.apache.lucene'
 
+# The head of a type declaration: annotations and modifiers in any order
+# (JLS 8.1.1, 8.1.1.1). JavaCC writes `@SuppressWarnings({"unused","null"})
+# public class QueryParser` on one line (lucene/queryparser's three generated
+# parsers), and a modifiers-only head missed those types and, with no enclosing
+# type on the stack, their nested types and members. An annotation is spelled as
+# `enrich_lucene_kg.ANNOTATION`. Shared by `discover`, the nested-type and member
+# extractors of `enrich_lucene_kg.py` and `port_coverage_kg.scan_lucene`.
+ANNOTATION = r'@[A-Za-z_$][A-Za-z0-9_$.]*(?:\s*\([^()]*\))?'
+DECL_HEAD = (r'(?:' + ANNOTATION + r'\s*'
+             r'|(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*')
+
 args = None
+
+
+def is_exception_decl(name, extends_clause):
+    """Whether a class declaration is an exception: by the name convention
+    (`...Exception`, `...Error`) or by a superclass naming `Throwable`,
+    `Exception` or `Error` -- the rule `discover` applies to a top-level type,
+    shared with the nested-type extractor of `enrich_lucene_kg.py`."""
+    if name.endswith('Exception') or name.endswith('Error'):
+        return True
+    if not extends_clause:
+        return False
+    ext = extends_clause.strip().split()[0].split('<')[0].strip()
+    return 'Throwable' in ext or 'Exception' in ext or 'Error' in ext
+
 
 def clean_for_brace_count(text):
     """Return a copy of text with strings and comments replaced by spaces,
@@ -179,7 +204,7 @@ def discover():
             # regex: optional modifiers, then (class|interface|enum|record|@interface), name,
             # optional generics, extends, implements, permits
             decl_re = re.compile(
-                r'^\s*(?P<mods>(?:public\s+|protected\s+|private\s+|abstract\s+|final\s+|static\s+|strictfp\s+|sealed\s+|non-sealed\s+)*)'
+                r'^\s*(?P<mods>' + DECL_HEAD + r')'
                 r'(?P<kind>class|interface|enum|record|@interface)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)'
                 r'(?P<params>\([^)]*\))?\s*'
                 r'(?P<generics>[<][^;{}]*[>])?\s*'

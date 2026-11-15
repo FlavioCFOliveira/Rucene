@@ -2129,7 +2129,7 @@ impl Analyzer for MockTokenizerAnalyzer {
         "org.apache.lucene.index.TestIndexSorting$1"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = MockTokenizer::whitespace_lower_case()?;
         Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
             tokenizer,

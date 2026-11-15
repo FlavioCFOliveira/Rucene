@@ -72,7 +72,7 @@ pub trait KnnFieldVectorsWriter<T>: Send + Sync {
 /// Per-field writer returned by [`KnnVectorsWriter::add_field`].
 ///
 /// Concrete writers return the variant matching the field's
-/// [`VectorEncoding`](crate::index::VectorEncoding).
+/// [`VectorEncoding`].
 pub enum FieldVectorWriter {
     /// Float-vector field writer.
     Float(Box<dyn KnnFieldVectorsWriter<Vec<f32>>>),
@@ -1998,7 +1998,7 @@ pub trait KnnVectorsFormat: Send + Sync + fmt::Debug {
     /// # The state is owned, not borrowed
     ///
     /// Every other format factory in this crate takes a borrowed
-    /// [`SegmentWriteState`] because its writer is created inside the flush
+    /// [`SegmentWriteState`](crate::codecs::SegmentWriteState) because its writer is created inside the flush
     /// call and dies there. This one is different: `VectorValuesConsumer`
     /// creates its writer on the first vector field of the first document and
     /// keeps it until the segment flushes, and

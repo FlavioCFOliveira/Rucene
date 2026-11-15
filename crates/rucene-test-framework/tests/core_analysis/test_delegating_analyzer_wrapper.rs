@@ -26,7 +26,7 @@ struct Delegating<A: Analyzer + Send + Sync> {
 }
 
 impl<A: Analyzer + Send + Sync + std::fmt::Debug> DelegatingAnalyzerWrapperLogic for Delegating<A> {
-    fn get_wrapped_analyzer(&self, _field_name: &str) -> &dyn Analyzer {
+    fn get_wrapped_analyzer(&self, _field_name: Option<&str>) -> &dyn Analyzer {
         &self.analyzer
     }
 }
@@ -90,13 +90,13 @@ impl Analyzer for CharFilteringAnalyzer {
 
     fn init_reader_for_normalization(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         reader: Box<dyn CharReader>,
     ) -> Box<dyn CharReader> {
         Box::new(DummyCharFilter::new(reader, 'b', 'z'))
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = MockTokenizer::with_factory_only(self.attribute_factory(field_name))?;
         Ok(tokenizer_components(std::sync::Arc::new(
             rucene::util::atomic_ref_cell::AtomicRefCell::new(tokenizer),

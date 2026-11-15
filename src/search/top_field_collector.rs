@@ -73,7 +73,7 @@ fn can_early_terminate_on_prefix(search_sort: &Sort, index_sort: Option<&Sort>) 
 /// subclasses. See
 /// [`TopFieldCollectorManager`](crate::search::TopFieldCollectorManager) for
 /// how to instantiate one with support for concurrency in
-/// [`IndexSearcher`](crate::search::IndexSearcher).
+/// [`IndexSearcher`].
 ///
 /// **Divergence from Lucene 10.5.0.** Java splits the collector into
 /// `SimpleFieldCollector` and `PagingFieldCollector`, which differ only in

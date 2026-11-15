@@ -8,7 +8,7 @@
 //! consumer writes them, in arrival order, through a temporary format with no
 //! compression (`TempStoredFields`, `TempTermVectors`), into temporary files of
 //! the segment's directory created through a
-//! [`TrackingTmpOutputDirectoryWrapper`]. At flush, the temporary files are
+//! `TrackingTmpOutputDirectoryWrapper`. At flush, the temporary files are
 //! read back document by document in the sorted order —
 //! `sortMap.newToOld(docID)` — and copied into the segment's real writer; then
 //! they are deleted, as they are on abort.
@@ -242,7 +242,7 @@ fn temp_term_vectors_format() -> Result<Lucene90CompressingTermVectorsFormat> {
 /// `IndexingChain` picks over `StoredFieldsConsumer` when the segment has an
 /// index sort (`IndexingChain.java:136-156`). Java's subclass overrides
 /// `initStoredFieldsWriter` to write through the temporary format into a
-/// [`TrackingTmpOutputDirectoryWrapper`] over the segment's directory
+/// `TrackingTmpOutputDirectoryWrapper` over the segment's directory
 /// (`SortingStoredFieldsConsumer.java:95-100`); this port gives the wrapped
 /// [`StoredFieldsConsumer`] that format and that directory, and every
 /// per-document call goes to it unchanged.
@@ -430,7 +430,7 @@ impl SortingStoredFieldsConsumer {
 /// (`SortingTermVectorsConsumer.java:37-207`), which `IndexingChain` picks over
 /// `TermVectorsConsumer` when the segment has an index sort. Java's subclass
 /// overrides `initTermVectorsWriter` to write through the temporary format
-/// into a [`TrackingTmpOutputDirectoryWrapper`] over the segment's directory
+/// into a `TrackingTmpOutputDirectoryWrapper` over the segment's directory
 /// (`SortingTermVectorsConsumer.java:87-94`); this port gives the wrapped
 /// [`TermVectorsConsumer`] that format and that directory, and every
 /// per-document call goes to it unchanged.

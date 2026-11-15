@@ -5,7 +5,7 @@
 //!
 //! This format stores an approximate nearest-neighbor graph for each vector
 //! field in a `.vex` file and per-field metadata in a `.vem` file. The actual
-//! vector values are delegated to a [`Lucene99FlatVectorsWriter`] / reader.
+//! vector values are delegated to a [`Lucene99FlatVectorsWriter`](crate::codecs::lucene99::Lucene99FlatVectorsWriter) / reader.
 
 #![deny(unsafe_code)]
 
@@ -1761,7 +1761,7 @@ impl KnnVectorsWriter for Lucene99HnswVectorsWriter {
     ///
     /// Equivalent to `Lucene99HnswVectorsWriter.mergeOneField(FieldInfo, MergeState)`
     /// (`Lucene99HnswVectorsWriter.java:422-461`), which always returns the
-    /// deferred `IORunnable`; [`HnswDeferredMerge`] is that runnable.
+    /// deferred `IORunnable`; `HnswDeferredMerge` is that runnable.
     fn merge_one_field<'m>(
         &mut self,
         field_info: &FieldInfo,
@@ -2512,7 +2512,7 @@ impl HnswGraphProvider for Lucene99HnswVectorsReader {
 /// `SHALLOW_SIZE` is `shallowSizeOfInstance(Lucene99HnswVectorsFormat.class)`
 /// — the format's class, not the reader's (`Lucene99HnswVectorsReader.java:76-77`),
 /// an oddity of the original kept as the contract; see
-/// [`HNSW_VECTORS_READER_SHALLOW_SIZE`]. `fields.ramBytesUsed()` is the
+/// `HNSW_VECTORS_READER_SHALLOW_SIZE`. `fields.ramBytesUsed()` is the
 /// `IntObjectHashMap`'s own estimate.
 impl crate::util::Accountable for Lucene99HnswVectorsReader {
     fn ram_bytes_used(&self) -> i64 {

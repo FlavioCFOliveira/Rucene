@@ -13,14 +13,14 @@ use crate::util::NumericUtils;
 
 /// Sorts by a field that indexes several numeric values per document, reducing
 /// each document's values to one with a
-/// [`SortedNumericSelectorType`](crate::search::SortedNumericSelectorType).
+/// [`SortedNumericSelectorType`].
 ///
 /// Equivalent to `org.apache.lucene.search.SortedNumericSortField`, a subclass
 /// of `SortField` that declares
-/// [`SortFieldType::Custom`](crate::search::SortFieldType::Custom) and
+/// [`SortFieldType::Custom`] and
 /// overrides the comparator it builds. Rust has no implementation inheritance,
 /// so this type builds and reads back a [`SortField`] whose
-/// [`SortFieldKind`](crate::search::SortFieldKind) carries the subclass
+/// [`SortFieldKind`] carries the subclass
 /// identity, and keeps the accessors and the serialization the Java subclass
 /// declares.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

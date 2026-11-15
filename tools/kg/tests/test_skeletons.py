@@ -56,9 +56,10 @@ def test_analysis_common_is_a_port_module_with_its_crate_and_rules():
     assert (m["scopeRule"], m["classRule"]) == (
         "sprint-12-ports-the-module", "sprint-12-module-top-level")
     assert AC in pm.ADDED_MODULES and "lucene/core" not in pm.ADDED_MODULES
-    assert pm.SKELETON_MODULES == (AC,)
+    assert pm.SKELETON_MODULES == (AC, "lucene/queries", "lucene/queryparser", "lucene/sandbox")
+    assert m["skeletons"] == "enforce"
     assert "org.tartarus.snowball" in pm.JAVA_PREFIXES
-    assert [d["name"] for d in pm.DECISIONS][-1] == "Sprint 12 ports lucene/analysis/common"
+    assert [d["name"] for d in pm.DECISIONS][1] == "Sprint 12 ports lucene/analysis/common"
     assert pm.module_of_file(
         "lucene/analysis/common/src/java/org/tartarus/snowball/Among.java") == AC
 
@@ -288,6 +289,7 @@ def test_a_skeleton_type_is_never_a_candidate(monkeypatch, tmp_path):
 def test_coverage_reports_ported_skeleton_and_unported():
     for q in (pm.COVERAGE_QUERY, ask.q_coverage_list(AC)):
         assert "THEN 'ported' WHEN c.portState = 'skeleton' THEN 'skeleton' " \
+               "WHEN c.portState = 'notApplicable' THEN 'notApplicable' " \
                "ELSE 'unported' END AS status" in q
     assert "c.module = 'lucene/analysis/common'" in ask.q_coverage_list(AC)
 

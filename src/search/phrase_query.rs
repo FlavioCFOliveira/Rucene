@@ -72,7 +72,7 @@ pub fn term_positions_cost(terms_enum: &mut dyn TermsEnum) -> Result<f32> {
 /// wrapping it otherwise. Rust cannot alias one object through two fields, so
 /// this type keeps a single [`SharedPostings`] that answers both roles: the
 /// non-`TOP_SCORES` case wraps the postings in a
-/// [`SlowImpactsEnum`](crate::index::SlowImpactsEnum) first, which delegates
+/// [`SlowImpactsEnum`] first, which delegates
 /// every postings method to it, so the enum the matcher reads positions from is
 /// the one Java reads them from.
 #[derive(Debug)]
@@ -286,11 +286,16 @@ impl Builder {
             }
         }
         if let Some(first) = self.terms.first() {
-            if term.field() != first.field() {
+            // `term.field().equals(terms.get(0).field())`: a `null` field of
+            // the added term throws, a `null` first field only differs.
+            let field = term.field_opt().ok_or_else(|| {
+                LuceneError::null_pointer_with_message(crate::index::terms::TERM_FIELD_EQUALS_NPE)
+            })?;
+            if Some(field) != first.field_opt() {
                 return Err(LuceneError::illegal_argument(format!(
                     "All terms must be on the same field, got {} and {}",
-                    term.field(),
-                    first.field()
+                    field,
+                    first.field_opt().unwrap_or("null")
                 )));
             }
         }
@@ -366,7 +371,11 @@ impl PhraseQuery {
             )));
         }
         for i in 1..terms.len() {
-            if terms[i - 1].field() != terms[i].field() {
+            // `terms[i - 1].field().equals(terms[i].field())`
+            let field = terms[i - 1].field_opt().ok_or_else(|| {
+                LuceneError::null_pointer_with_message(crate::index::terms::TERM_FIELD_EQUALS_NPE)
+            })?;
+            if Some(field) != terms[i].field_opt() {
                 return Err(LuceneError::illegal_argument(
                     "All terms should have the same field".to_string(),
                 ));
@@ -388,7 +397,10 @@ impl PhraseQuery {
                 )));
             }
         }
-        let field = terms.first().map(|t| t.field().to_string());
+        // `terms.length == 0 ? null : terms[0].field()`
+        let field = terms
+            .first()
+            .and_then(|t| t.field_opt().map(str::to_string));
         Ok(Self {
             slop,
             field,
@@ -619,11 +631,16 @@ impl Query for PhraseQuery {
         buffer
     }
 
+    /// Equivalent to `PhraseQuery.visit(QueryVisitor)` (`PhraseQuery.java:321-327`):
+    /// `visitor.acceptField(field)`, with the `null` field of a query without
+    /// terms asked through [`QueryVisitor::accept_null_field`], then the terms
+    /// on a `MUST` sub-visitor.
     fn visit(&self, visitor: &mut dyn QueryVisitor) {
-        let Some(field) = self.field.as_deref() else {
-            return;
+        let accepted = match self.field.as_deref() {
+            Some(field) => visitor.accept_field(field),
+            None => visitor.accept_null_field(),
         };
-        if !visitor.accept_field(field) {
+        if !accepted {
             return;
         }
         let mut v = visitor.get_sub_visitor(Occur::MUST, self);

@@ -59,23 +59,21 @@ pub struct TermAndBoost {
 /// Equivalent to `SynonymQuery.Builder`.
 #[derive(Debug, Clone)]
 pub struct Builder {
-    field: String,
+    /// The target field, `None` for Java's `null`.
+    field: Option<String>,
     terms: Vec<TermAndBoost>,
 }
 
 impl Builder {
     /// Creates a builder for the given target field.
     ///
-    /// Equivalent to the sole `Builder(String)` constructor.
-    ///
-    /// # Panics
-    ///
-    /// As Java's `Objects.requireNonNull(field)` (`SynonymQuery.java`), with
-    /// `java.lang.NullPointerException` when `field` is `None`.
+    /// Equivalent to the sole `Builder(String)` constructor, which keeps the
+    /// field as given, `null` included (`SynonymQuery.java:67-69`): a `null`
+    /// field fails later, in [`add_term_with_boost`](Self::add_term_with_boost)
+    /// and [`build`](Self::build).
     pub fn new(field: Option<&str>) -> Self {
-        let field = field.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         Self {
-            field: field.to_string(),
+            field: field.map(str::to_string),
             terms: Vec::new(),
         }
     }
@@ -93,14 +91,21 @@ impl Builder {
 
     /// Adds the provided term as a synonym, boosting its document frequencies.
     ///
-    /// Equivalent to `Builder.addTerm(Term, float)`.
+    /// Equivalent to `Builder.addTerm(Term, float)`: `field.equals(term.field())`.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the term is on another
-    /// field, and the errors of [`add_bytes`](Self::add_bytes).
+    /// The `NullPointerException` of a `null` builder field, then
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
+    /// when the term is on another field, and the errors of
+    /// [`add_bytes`](Self::add_bytes).
     pub fn add_term_with_boost(&mut self, term: &Term, boost: f32) -> Result<&mut Self> {
-        if self.field != term.field() {
+        let field = self.field.as_deref().ok_or_else(|| {
+            LuceneError::null_pointer_with_message(
+                "Cannot invoke \"String.equals(Object)\" because \"this.field\" is null",
+            )
+        })?;
+        if Some(field) != term.field_opt() {
             return Err(LuceneError::illegal_argument(
                 "Synonyms must be across the same field".to_string(),
             ));
@@ -134,11 +139,21 @@ impl Builder {
 
     /// Builds the [`SynonymQuery`].
     ///
-    /// Equivalent to `Builder.build()`, which sorts the terms by their bytes.
+    /// Equivalent to `Builder.build()`, which sorts the terms by their bytes,
+    /// then the private constructor's `Objects.requireNonNull(field)`
+    /// (`SynonymQuery.java:104-118`).
+    ///
+    /// # Panics
+    ///
+    /// `java.lang.NullPointerException` (no message) for a `null` field.
     pub fn build(&self) -> SynonymQuery {
         let mut terms = self.terms.clone();
         terms.sort_by(|a, b| a.term.cmp(&b.term));
-        SynonymQuery::new(terms, self.field.clone())
+        let field = self
+            .field
+            .clone()
+            .unwrap_or_else(|| std::panic::panic_any("java.lang.NullPointerException".to_string()));
+        SynonymQuery::new(terms, field)
     }
 }
 

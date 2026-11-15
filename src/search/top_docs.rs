@@ -13,7 +13,7 @@
 //! Java overloads `merge` on whether a `Sort` is supplied. Rust has no
 //! overloading, so the score-based forms keep the `merge*` names and the
 //! sort-based ones — which return a
-//! [`TopFieldDocs`](crate::search::TopFieldDocs) — are
+//! [`TopFieldDocs`] — are
 //! [`merge_sorted`](TopDocs::merge_sorted),
 //! [`merge_sorted_from`](TopDocs::merge_sorted_from) and
 //! [`merge_sorted_with_tie_breaker`](TopDocs::merge_sorted_with_tie_breaker).

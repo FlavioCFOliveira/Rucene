@@ -187,11 +187,13 @@ def cmd_tasks(_a):
 
 def q_coverage_list(module):
     """Each in-scope class of `module` and its status (`ported`, `skeleton`,
-    `unported`), by status."""
+    `notApplicable` -- a curated verdict that the class owes no port, see
+    `port_coverage_kg.NA_VERDICTS` -- or `unported`), by status."""
     return ("MATCH (c:Class) WHERE c.portScope = 'in' AND c.module = " + esc(module) + " "
             "RETURN c.qualifiedName AS class, "
             "CASE WHEN c.portState = 'ported' THEN 'ported' "
-            "WHEN c.portState = 'skeleton' THEN 'skeleton' ELSE 'unported' END AS status, "
+            "WHEN c.portState = 'skeleton' THEN 'skeleton' "
+            "WHEN c.portState = 'notApplicable' THEN 'notApplicable' ELSE 'unported' END AS status, "
             "c.portState AS portState ORDER BY status, class")
 
 

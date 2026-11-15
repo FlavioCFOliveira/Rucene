@@ -291,11 +291,27 @@ def scan_file(root: Path, rel: str):
     #
     # A paragraph that asserts a port names every Lucene type that file ports,
     # so each name in it becomes a claim about the file.
-    para, para_line = [], None
+    #
+    # The module doc is the file's leading run of `//!` lines, which may follow
+    # a licence header: the workspace crates open every file with the ASF
+    # `/* ... */` block, and stopping at its first line hid every module claim
+    # of 7 `lucene/codecs` and 93 `lucene/test-framework` classes (rmp #505).
+    # A plain comment (`/* ... */` or `//` that is not `///`/`//!`) is therefore
+    # a paragraph separator, like a blank line, never the end of the module doc.
+    para, para_line, in_block = [], None, False
     for i, line in enumerate(lines + [""]):
-        m = RE_DOC_INNER.match(line)
-        if m:
-            text = m.group(1).strip()
+        stripped = line.strip()
+        plain_comment = in_block
+        if in_block:
+            in_block = "*/" not in stripped
+        elif (stripped.startswith("/*") and not stripped.startswith("/*!")
+              and not stripped.startswith("/**")):
+            plain_comment, in_block = True, "*/" not in stripped[2:]
+        elif stripped.startswith("//") and not stripped.startswith(("///", "//!")):
+            plain_comment = True
+        doc = None if plain_comment else RE_DOC_INNER.match(line)
+        if doc:
+            text = doc.group(1).strip()
             if text:
                 para.append(text)
                 if para_line is None:
@@ -324,7 +340,7 @@ def scan_file(root: Path, rel: str):
                             "lucene": m.group(1), "scope": "module",
                             "note": note})
         para, para_line = [], None
-        if not m and line.strip() and not RE_ATTR.match(line):
+        if not doc and not plain_comment and stripped and not RE_ATTR.match(line):
             break
 
     # Item-level `///` claims describe the declaration that follows the block.
@@ -644,7 +660,12 @@ def load(roadmap, claims, commit, date):
     by hand -- every one whose module doc states the claim at all -- and finds
     exactly the two that were missing, `CollectionUtil` and `HashContainers`. An
     existing `Component` for the file is reused whatever it is named, so the rule
-    cannot mint a second node for a module that already has one.
+    cannot mint a second node for a module that already has one. The same holds
+    for a file whose declared items make **no claim of their own**: its types
+    are the module's helpers (`SvgObject` in `geo_test_util.rs`, the argument
+    enum of `GeoTestUtil.toSVG(Object...)`), so the claim still names the file.
+    A file where some item carries its own claim keeps the conservative rule
+    and the module claim is dropped, since it may be about that item.
 
     The Rust end is matched on `(name, file)` -- the identity the model gives a
     Rust type and a `Component` alike -- for every kind of claim, which is also
@@ -702,6 +723,17 @@ def load(roadmap, claims, commit, date):
     # module-as-`Component` rule turns on the absence of a *type*, not of a
     # function: a module of free functions is exactly the case it serves.
     files_with_types = {f for _n, f in types}
+    # The files where some declared item carries its own claim (an item doc or
+    # a table row). In such a file a module claim may be about one of those
+    # items under another name -- or already lands through one -- so it is not
+    # attributed to the file. A file whose items claim nothing --
+    # `geo_test_util.rs`, whose only type is the Rust-only argument enum
+    # `SvgObject` of `GeoTestUtil.toSVG(Object...)` -- is a module of free
+    # functions with helpers, and its claim lands on the file's `Component`
+    # like that of a file with no type at all (rmp #505).
+    files_with_claimed_items = {
+        c["file"] for c in claims
+        if c["scope"] in ("item", "table") and c.get("target")}
     component_of_file = {r[1]: r[0] for r in q(
         roadmap, "MATCH (co:Component) RETURN co.name, co.file") if r[1]}
     # A free function can be the port of a Lucene class in its own right --
@@ -722,7 +754,8 @@ def load(roadmap, claims, commit, date):
             if (simple, c["file"]) in types:
                 target = simple
                 module_resolved += 1
-            elif c["file"] in files_with_types and c["file"] not in component_of_file:
+            elif (c["file"] in files_with_claimed_items
+                  and c["file"] not in component_of_file):
                 # A file that already has a `Component` keeps it when it later
                 # gains a type of its own: sprint 9 added the trait
                 # `HashContainerOverrides` to `hash_containers.rs`, which made

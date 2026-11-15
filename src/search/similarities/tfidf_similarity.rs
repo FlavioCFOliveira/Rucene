@@ -255,6 +255,11 @@ impl Similarity for ClassicSimilarity {
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.search.similarities.ClassicSimilarity"
     }
+
+    /// `ClassicSimilarity extends TFIDFSimilarity`.
+    fn as_tfidf_similarity(&self) -> Option<&dyn TFIDFSimilarity> {
+        Some(self)
+    }
     fn discount_overlaps(&self) -> bool {
         self.discount_overlaps
     }

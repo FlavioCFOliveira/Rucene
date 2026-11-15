@@ -3581,7 +3581,7 @@ impl SoftDeletesSubReaderWrapper {
     /// # Errors
     ///
     /// Propagates whatever computing the live-docs bits, or
-    /// [`assert_doc_counts`], raises.
+    /// `assert_doc_counts`, raises.
     pub fn wrap_leaf_reader(
         reader: Arc<dyn LeafReader>,
         field: &str,

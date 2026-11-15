@@ -12,6 +12,7 @@ It is a scanner, not a compiler. Brace depth over masked text is enough to say
 which `impl` or `trait` block a `fn` sits in, which is the only structural fact
 the triage rules need.
 """
+import os
 import re
 import sys
 from pathlib import Path
@@ -203,11 +204,28 @@ def parse(rel, text):
             "free": free, "types": types, "consts": consts}
 
 
+def source_roots(root):
+    """The library sources the port spans: the root crate's `src/` and each
+    workspace member's `crates/<dir>/src/` (every `crates/*/Cargo.toml`, as
+    `extract_rucene_kg.load_workspace` reads them).
+
+    Reading `src/` alone left every type a workspace crate ports with no Rust
+    surface at all, so the triage reported each of its unmatched members
+    `absent` by `no-rule` -- `QueryParserBase#getDefaultOperator`, whose port
+    is `QueryParserBaseOps::get_default_operator` in the porting file, among
+    them (rmp #505).
+    """
+    roots = [Path(root, "src")]
+    roots += [toml.parent / "src" for toml in sorted(Path(root).glob("crates/*/Cargo.toml"))]
+    return [r for r in roots if r.is_dir()]
+
+
 def parse_tree(root):
     out = {}
-    for p in sorted(Path(root, "src").rglob("*.rs")):
-        rel = str(p.relative_to(root))
-        out[rel] = parse(rel, p.read_text(encoding="utf-8", errors="replace"))
+    for base in source_roots(root):
+        for p in sorted(base.rglob("*.rs")):
+            rel = str(p.relative_to(root)).replace(os.sep, "/")
+            out[rel] = parse(rel, p.read_text(encoding="utf-8", errors="replace"))
     return out
 
 

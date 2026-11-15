@@ -1870,17 +1870,17 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
     /// Copies every document's stored fields from the segments being merged,
     /// picking for each source segment the cheapest route that is safe for it.
     ///
-    /// [`get_merge_strategy`](Self::get_merge_strategy) makes that choice once
+    /// `get_merge_strategy` makes that choice once
     /// per segment:
     ///
-    /// * [`MergeStrategy::Bulk`] copies whole compressed chunks byte for byte
-    ///   through [`copy_chunks`](Self::copy_chunks), so the documents are never
+    /// * `MergeStrategy::Bulk` copies whole compressed chunks byte for byte
+    ///   through `copy_chunks`, so the documents are never
     ///   decompressed. A run of consecutive documents from the same segment is
     ///   gathered first, because a chunk can only be copied as a whole.
-    /// * [`MergeStrategy::Doc`] copies one document at a time in its serialized
-    ///   form through [`copy_one_doc`](Self::copy_one_doc), decompressing but
+    /// * `MergeStrategy::Doc` copies one document at a time in its serialized
+    ///   form through `copy_one_doc`, decompressing but
     ///   not re-encoding it.
-    /// * [`MergeStrategy::Visitor`] decodes every field and writes it again,
+    /// * `MergeStrategy::Visitor` decodes every field and writes it again,
     ///   which is what the trait's own [`StoredFieldsWriter::merge`] does for
     ///   every segment.
     ///

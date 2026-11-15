@@ -258,6 +258,11 @@ impl Similarity for RandomSimilarity {
         "org.apache.lucene.tests.search.similarities.RandomSimilarity"
     }
 
+    /// `RandomSimilarity extends PerFieldSimilarityWrapper`.
+    fn as_per_field_similarity_wrapper(&self) -> Option<&dyn PerFieldSimilarityWrapper> {
+        Some(self)
+    }
+
     fn compute_norm(&self, state: &FieldInvertState) -> Result<i64> {
         per_field_compute_norm(self, state)
     }

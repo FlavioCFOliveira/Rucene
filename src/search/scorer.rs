@@ -43,7 +43,7 @@ pub trait Scorer: Scorable {
         None
     }
 
-    /// Returns this scorer viewed as an [`IndriScorer`], or `None` when it is
+    /// Returns this scorer viewed as an [`IndriScorer`](crate::search::IndriScorer), or `None` when it is
     /// not one.
     ///
     /// **Divergence from Lucene 10.5.0.** Java writes

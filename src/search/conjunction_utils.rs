@@ -118,7 +118,7 @@ impl ConjunctionUtils {
     /// List<DocIdSetIterator>, List<TwoPhaseIterator>)`. Java additionally
     /// flattens nested conjunctions and unwraps two-phase iterators hidden
     /// behind an erased iterator; see the
-    /// [`conjunction_disi`](crate::search::conjunction_disi) module for why
+    /// [`conjunction_disi`] module for why
     /// this port cannot.
     pub fn add_iterator(iterator: Box<dyn DocIdSetIterator>, members: &mut Vec<ConjunctionMember>) {
         conjunction_disi::add_iterator(iterator, members);

@@ -232,7 +232,7 @@ impl MatchesIterator for TermsEnumDisjunctionMatchesIterator {
         self.it().get_sub_matches()
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
         self.it().get_query()
     }
 }
@@ -347,7 +347,7 @@ impl MatchesIterator for DisjunctionMatchesIterator {
         self.top().get_sub_matches()
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
         self.top().get_query()
     }
 }
@@ -533,8 +533,8 @@ mod census_gap_tests {
         fn get_sub_matches(&self) -> Result<Option<Box<dyn MatchesIterator>>> {
             Ok(None)
         }
-        fn get_query(&self) -> Arc<dyn Query> {
-            Arc::new(crate::search::MatchAllDocsQuery)
+        fn get_query(&self) -> Option<Arc<dyn Query>> {
+            Some(Arc::new(crate::search::MatchAllDocsQuery))
         }
     }
 

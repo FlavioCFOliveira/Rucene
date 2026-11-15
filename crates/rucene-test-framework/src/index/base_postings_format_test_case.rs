@@ -18,7 +18,7 @@
 //! Port of `org.apache.lucene.tests.index.BasePostingsFormatTestCase`:
 //! abstract class to do basic tests for a postings format. NOTE: this test
 //! focuses on the postings (docs/freqs/positions/payloads/offsets) impl, not
-//! the terms dict. The [stretch] goal is for this test to be so thorough in
+//! the terms dict. The \[stretch\] goal is for this test to be so thorough in
 //! testing a new PostingsFormat that if this test passes, then all Lucene
 //! tests should also pass. Ie, if there is some bug in a given PostingsFormat
 //! that this test fails to catch then this test needs to be improved!
@@ -406,7 +406,7 @@ impl Analyzer for MockTokenizerAnalyzer {
         "org.apache.lucene.tests.index.BasePostingsFormatTestCase$2"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = MockTokenizer::whitespace_lower_case()?;
         Ok(tokenizer_components(std::sync::Arc::new(
             rucene::util::atomic_ref_cell::AtomicRefCell::new(tokenizer),

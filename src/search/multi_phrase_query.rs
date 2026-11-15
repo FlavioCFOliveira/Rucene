@@ -128,11 +128,16 @@ impl Builder {
                     "Index 0 out of bounds for length 0",
                 )
             })?;
-            self.field = Some(first.field().to_string());
+            // `field = terms[0].field()`, which may be `null`.
+            self.field = first.field_opt().map(str::to_string);
         }
 
         for term in &terms {
-            if Some(term.field()) != self.field.as_deref() {
+            // `!term.field().equals(field)`: a `null` term field throws.
+            let term_field = term.field_opt().ok_or_else(|| {
+                LuceneError::null_pointer_with_message(crate::index::terms::TERM_FIELD_EQUALS_NPE)
+            })?;
+            if Some(term_field) != self.field.as_deref() {
                 return Err(LuceneError::illegal_argument(format!(
                     "All phrase terms must be in the same field ({}): {term}",
                     self.field.as_deref().unwrap_or("null")

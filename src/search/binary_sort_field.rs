@@ -52,7 +52,7 @@ impl fmt::Debug for SortKeySource {
 ///
 /// Equivalent to `org.apache.lucene.search.BinarySortField`, a subclass of
 /// `SortField` that declares
-/// [`SortFieldType::Custom`](crate::search::SortFieldType::Custom) and builds a
+/// [`SortFieldType::Custom`] and builds a
 /// [`TermValComparator`](crate::search::TermValComparator) over the field's
 /// binary doc values; see
 /// [`SortedNumericSortField`](crate::search::SortedNumericSortField) for how

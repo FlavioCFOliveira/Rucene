@@ -30,15 +30,15 @@ use crate::internal::tests_hooks::{
 ///   on the getters and setters makes `std::panic::Location::caller()` inside
 ///   the two checks resolve to the call site of the getter or setter, which is
 ///   the very frame Java's `skip(2).limit(1)` selects. The comparison is then
-///   made against a *source file* rather than a class name — [`TEST_FRAMEWORK_DIRS`]
-///   for the getters, [`Owner::file`] for the setters. The *set-once* half of
+///   made against a *source file* rather than a class name — `TEST_FRAMEWORK_DIRS`
+///   for the getters, `Owner::file` for the setters. The *set-once* half of
 ///   `ensureCallerForSetter` is reproduced exactly.
 /// * **Registration is run on first use, not by the class loader.** Java calls
 ///   `MethodHandles.Lookup.ensureInitialized(Class)` so that the owning class's
 ///   static initializer runs and registers its accessor on first use. Rust has
 ///   no per-type static initializer, so each owner exposes the body of its
 ///   `static {}` block as a function guarded by a [`std::sync::Once`], and
-///   [`TestSecrets::ensure_initialized`] runs it: the accessors are registered
+///   `TestSecrets::ensure_initialized` runs it: the accessors are registered
 ///   lazily, by their owners, exactly once — the same moment and the same
 ///   registrar as Java's.
 /// * **`Result` instead of exceptions.** A missing accessor is

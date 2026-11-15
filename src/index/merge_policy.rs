@@ -1318,7 +1318,7 @@ impl MergeSpecification {
     /// and returns `true` unless the future fails — which it never does,
     /// because each `mergeCompleted` is completed normally, with the merge's
     /// success flag. The name differs from Java's because Rust has no
-    /// overloading and [`r#await`](Self::r#await) is the timed variant.
+    /// overloading and `r#await` is the timed variant.
     pub fn await_completion(&self) -> bool {
         self.get_merge_completed_futures().join();
         true
@@ -1391,7 +1391,7 @@ impl MergeCompletedFuture {
 /// Equivalent to `org.apache.lucene.index.MergePolicy.MergeObserver`
 /// (`MergePolicy.java:944-1032`), which `IndexWriter.forceMergeDeletes(boolean)`
 /// returns. When no merges were needed it holds no specification:
-/// [`num_merges`](Self::num_merges) is `0` and [`r#await`](Self::r#await)
+/// [`num_merges`](Self::num_merges) is `0` and `r#await`
 /// returns `true` at once.
 ///
 /// It holds the merges the policy chose, sharing their completion, abort and
@@ -2684,7 +2684,7 @@ impl TieredMergePolicy {
     ///
     /// Equivalent to `TieredMergePolicy.setMaxMergeAtOnce(int)`. It takes
     /// `&self` because Java changes the live policy an `IndexWriterConfig`
-    /// holds (see [`LiveI32`]).
+    /// holds (see `LiveI32`).
     ///
     /// # Errors
     ///
@@ -2744,7 +2744,7 @@ impl TieredMergePolicy {
     ///
     /// Equivalent to `TieredMergePolicy.setSegmentsPerTier(double)`. It takes
     /// `&self` because Java changes the live policy an `IndexWriterConfig`
-    /// holds (see [`LiveI32`]).
+    /// holds (see `LiveI32`).
     ///
     /// # Errors
     ///
@@ -3840,7 +3840,7 @@ impl LogMergePolicy {
     ///
     /// Equivalent to `LogMergePolicy.setMergeFactor(int)`. It takes `&self`
     /// because Java changes the live policy an `IndexWriterConfig` holds (see
-    /// [`LiveI32`]).
+    /// `LiveI32`).
     ///
     /// # Errors
     ///
@@ -4931,7 +4931,7 @@ impl TemporalMergePolicy {
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when the name is blank — empty or made only of the characters Java's
-    /// `String.isBlank()` treats as white space ([`is_java_whitespace`]).
+    /// `String.isBlank()` treats as white space (`is_java_whitespace`).
     pub fn set_temporal_field(&mut self, field: impl Into<String>) -> Result<&mut Self> {
         let field = field.into();
         if field.chars().all(is_java_whitespace) {
@@ -5450,7 +5450,7 @@ impl TemporalMergePolicy {
     /// Equivalent to `TemporalMergePolicy.findMergeCandidates(Map, Map)`
     /// (`TemporalMergePolicy.java:819-855`): every window with at least
     /// `min_threshold` segments contributes the merges
-    /// [`plan_window_merges`](Self::plan_window_merges) finds for it, the `-1`
+    /// `plan_window_merges` finds for it, the `-1`
     /// sentinel bucket — data older than `max_age_seconds` — is skipped, and a
     /// run that plans nothing returns `None` rather than an empty
     /// specification.

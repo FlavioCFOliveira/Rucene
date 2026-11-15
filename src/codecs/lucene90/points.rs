@@ -10,11 +10,11 @@
 //! * `.kdd` – leaf nodes with the actual point data.
 //!
 //! The writer encodes every field as a block KD-tree through
-//! [`BKDWriter`](crate::util::bkd::BKDWriter) — straight from the indexing
+//! [`BKDWriter`] — straight from the indexing
 //! buffer's mutable tree at flush, through `BKDWriter.merge` for a
 //! one-dimensional merge, and through `add`/`finish` otherwise, spilling to the
 //! segment's directory past its heap budget — and the reader serves each field
-//! through a [`BKDReader`](crate::util::bkd::BKDReader).
+//! through a [`BKDReader`].
 //!
 //! Lucene Core equivalents:
 //! * `org.apache.lucene.codecs.lucene90.Lucene90PointsFormat`
@@ -867,7 +867,7 @@ impl PointsReader for Lucene90PointsReader {
     /// `Lucene90PointsReader` does not override `getMergeInstance()`, so Java
     /// inherits `PointsReader.getMergeInstance()`, which returns `this`
     /// (`PointsReader.java:56-58`). Rust hands out an owned box, so this shares the
-    /// per-field trees — each [`BkdPointValues`] clone reads the same bytes —
+    /// per-field trees — each `BkdPointValues` clone reads the same bytes —
     /// and the two inputs, which is the closest owned equivalent of returning
     /// the reader itself.
     fn get_merge_instance(&self) -> Result<Box<dyn PointsReader>> {

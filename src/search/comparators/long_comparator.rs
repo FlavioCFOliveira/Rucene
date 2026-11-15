@@ -19,7 +19,7 @@ use crate::util::NumericUtils;
 /// Equivalent to `org.apache.lucene.search.comparators.LongComparator`. It provides a
 /// skipping functionality — an iterator that can skip over non-competitive
 /// documents — inherited from
-/// [`NumericComparator`](crate::search::comparators::NumericComparator), which
+/// [`NumericComparator`], which
 /// this type embeds; see that type for the shape of the port.
 #[derive(Debug)]
 pub struct LongComparator {

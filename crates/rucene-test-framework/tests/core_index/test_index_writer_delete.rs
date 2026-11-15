@@ -1362,7 +1362,7 @@ impl Analyzer for NoPayloadsAnalyzer {
         "org.apache.lucene.index.TestIndexWriterDelete$4"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = MockTokenizer::new(Arc::clone(&WHITESPACE), true)?;
         Ok(tokenizer_components(std::sync::Arc::new(
             rucene::util::atomic_ref_cell::AtomicRefCell::new(tokenizer),

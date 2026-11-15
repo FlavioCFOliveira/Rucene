@@ -126,13 +126,13 @@ impl Analyzer for GapAnalyzer {
         "org.apache.lucene.search.TestPhraseQuery$1"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
             MockTokenizer::new(Arc::clone(&WHITESPACE), false)?,
         ))))
     }
 
-    fn get_position_increment_gap(&self, _field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, _field_name: Option<&str>) -> i32 {
         100
     }
 }

@@ -327,8 +327,8 @@ struct SnapshotState {
 /// and this policy publishing the new one, and would then pin — and report as
 /// snapshotted — a commit that is already gone.
 ///
-/// A second, shorter-lived mutex protects the mutable [`SnapshotState`], which
-/// is shared with the [`SnapshotCommitPoint`]s handed to the wrapped policy.
+/// A second, shorter-lived mutex protects the mutable `SnapshotState`, which
+/// is shared with the `SnapshotCommitPoint`s handed to the wrapped policy.
 /// The lock order is always *operation → state*, never the reverse:
 /// [`SnapshotCommitPoint::delete`](IndexCommit::delete) — the only entry point
 /// reached from inside the critical section, because the wrapped policy calls

@@ -524,7 +524,7 @@ impl OptimizedScalarQuantizer {
         }
     }
 
-    /// Reverses [`pack_as_binary`].
+    /// Reverses [`pack_as_binary`](Self::pack_as_binary).
     ///
     /// Equivalent to `OptimizedScalarQuantizer.unpackBinary`.
     pub fn unpack_binary(packed: &[u8], vector: &mut [u8]) {

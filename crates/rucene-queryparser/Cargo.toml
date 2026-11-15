@@ -1,0 +1,33 @@
+[package]
+name = "rucene-queryparser"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/queryparser (classic, flexible, simple, surround, complex-phrase, extendable and XML query parsers)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_queryparser"
+
+[dependencies]
+rucene = { path = "../.." }
+rucene-queries = { path = "../rucene-queries" }
+rucene-sandbox = { path = "../rucene-sandbox" }
+# Inflates the JDK 25 locale data of the `jdk` emulations
+# (`src/jdk/format_data.bin`, zlib), the backend and features the core crate
+# and `rucene-analysis-common` already build: no new crate in the graph.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+# The XML parser under the JAXP DOM emulation of `src/jdk/dom.rs` (MIT),
+# at the version `rucene-analysis-common` already builds (approved on rmp
+# task #461; decided for the XML query parser on task #493).
+quick-xml = "0.42.0"
+
+[dev-dependencies]
+# The tests port Lucene's queryparser tests onto lucene/test-framework (and
+# its randomized-testing base); the Java-oracle harness they share with
+# `rucene-queries` (rmp #475) draws on both.
+rucene-test-framework = { path = "../rucene-test-framework" }
+randomizedtesting = { path = "../randomizedtesting" }

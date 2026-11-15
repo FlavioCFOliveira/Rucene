@@ -408,7 +408,7 @@ impl<R: SkipDataReader> MultiLevelSkipListReader<R> {
         )
     }
 
-    /// Returns the document id of the last skip entry read by [`skip_to`].
+    /// Returns the document id of the last skip entry read by [`skip_to`](Self::skip_to).
     pub fn doc(&self) -> i32 {
         self.last_doc
     }

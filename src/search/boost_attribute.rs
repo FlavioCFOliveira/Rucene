@@ -19,10 +19,10 @@ pub const DEFAULT_BOOST: f32 = 1.0;
 ///
 /// Equivalent to `org.apache.lucene.search.BoostAttribute`. Add it to a
 /// [`TermsEnum`](crate::index::TermsEnum) returned by
-/// [`MultiTermQuery::get_terms_enum`](crate::search::MultiTermQuery::get_terms_enum)
+/// [`MultiTermQuery::get_terms_enum`](crate::search::multi_term_query::get_terms_enum)
 /// and update the boost on each returned term. This makes it possible to
 /// control the boost factor of every matching term under
-/// [`MultiTermQuery::scoring_boolean_rewrite`](crate::search::MultiTermQuery::scoring_boolean_rewrite)
+/// [`MultiTermQuery::scoring_boolean_rewrite`](crate::search::multi_term_query::scoring_boolean_rewrite)
 /// or [`TopTermsRewrite`](crate::search::TopTermsRewrite);
 /// [`FuzzyQuery`](crate::search::FuzzyQuery) uses it to take the edit distance
 /// into account.
@@ -130,7 +130,7 @@ impl AttributeImpl for BoostAttributeImpl {
 /// **Divergence from Lucene 10.5.0.** Java's `DefaultAttributeFactory` resolves
 /// the `*Impl` class reflectively from the interface name; this port's factory
 /// is an explicit registry, and an
-/// [`AttributeSource`](crate::util::attribute::AttributeSource) built with
+/// [`AttributeSource`] built with
 /// [`AttributeSource::new`](crate::util::attribute::AttributeSource::new) has
 /// an empty one. The implementation is therefore installed directly, which is
 /// what the reflective lookup would have produced.

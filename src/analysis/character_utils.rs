@@ -15,7 +15,7 @@
 use crate::analysis::CharReader;
 use crate::error::{LuceneError, Result};
 
-/// A reusable character buffer used with [`fill`](crate::analysis::character_utils::fill).
+/// A reusable character buffer used with [`fill`].
 ///
 /// Equivalent to `CharacterUtils.CharacterBuffer` in Lucene: the buffer holds
 /// UTF-16 code units, as Java's `char[]` does.

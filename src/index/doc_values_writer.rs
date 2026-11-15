@@ -1137,7 +1137,7 @@ impl BinaryDocValuesWriter {
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `doc_id` repeats or goes
-    /// backwards, or when `value` is longer than [`BINARY_MAX_LENGTH`], and
+    /// backwards, or when `value` is longer than `BINARY_MAX_LENGTH`, and
     /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been built or
     /// flushed.
     pub fn add_value(&mut self, doc_id: i32, value: &[u8]) -> Result<()> {
@@ -1767,7 +1767,7 @@ impl SortedDocValuesWriter {
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `doc_id` is not strictly
     /// greater than the last document added, or when `value` is longer than
-    /// [`SORTED_MAX_LENGTH`], and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field
+    /// `SORTED_MAX_LENGTH`, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field
     /// has already been built or flushed.
     pub fn add_value(
         &mut self,

@@ -42,10 +42,11 @@ JAVA_DECL = re.compile(
 
 
 def java_census(lucene_root: Path, sources=("lucene/core/src/java",
-                                             "lucene/core/src/java21")):
+                                             "lucene/core/src/java21"), keep=None):
     """Files, top-level types and nested types of the source trees `sources`
     (relative to `lucene_root`, the root of the clone that holds them);
-    `lucene/core` by default."""
+    `lucene/core` by default. `keep`, when given, admits a file by its path
+    relative to `lucene_root` (a module scoped to listed files)."""
     files, top, nested = [], [], []
     for base in sources:
         d = lucene_root / base
@@ -57,6 +58,8 @@ def java_census(lucene_root: Path, sources=("lucene/core/src/java",
                     continue
                 path = Path(dirpath, name)
                 rel = str(path.relative_to(lucene_root))
+                if keep is not None and not keep(rel):
+                    continue
                 src = strip_java(path.read_text(encoding="utf-8", errors="replace"))
                 m = re.search(r"^\s*package\s+([\w.]+)\s*;", src, re.M)
                 pkg = m.group(1) if m else None
@@ -87,6 +90,41 @@ def nested_ported_without_ports(q, ported_ids):
     return sorted(qn for cid, qn in q(
         "MATCH (c:Class) WHERE c.portScope='nested' AND c.portState='ported' "
         "RETURN id(c), c.qualifiedName") if cid not in ported_ids)
+
+
+def not_applicable_audit(q, check, verdicts):
+    """The `notApplicable` state (rmp #508), both ways.
+
+    `portState = 'notApplicable'` asserts that an in-scope class has no faithful
+    Rust form and owes no port. Only a curated verdict
+    (`port_coverage_kg.NA_VERDICTS`) asserts it, so every such class must carry
+    its justification -- the reason in `portStateNote`, `portStateEvidence`
+    `curated-not-applicable`, and a verdict in the file with its reason, Lucene
+    sources and JDK sources -- be in scope, and have no `PORTS` edge; and every
+    verdict must have produced the state.
+    """
+    import port_coverage_kg as pc
+    na = {r[0]: (r[1], r[2], r[3]) for r in q(
+        f"MATCH (c:Class) WHERE c.portState = '{pc.NA_STATE}' "
+        "RETURN c.qualifiedName, c.portScope, c.portStateNote, c.portStateEvidence")}
+    print(f"   notApplicable classes: {len(na)}; verdicts: {len(verdicts)}")
+    incomplete = {qn for qn, _f in pc.verdict_problems(verdicts)}
+    unjustified = sorted(
+        qn for qn, (_scope, note, evidence) in na.items()
+        if not note or evidence != pc.NA_EVIDENCE or qn not in verdicts or qn in incomplete)
+    check("notApplicable classes without a justification", len(unjustified), 0,
+          f"{unjustified[:3]}" if unjustified else "")
+    out_of_scope = sorted(qn for qn, (scope, _n, _e) in na.items() if scope != "in")
+    check("notApplicable classes not in scope", len(out_of_scope), 0,
+          f"{out_of_scope[:3]}" if out_of_scope else "")
+    ported = {r[0] for r in q(
+        f"MATCH ()-[:PORTS]->(c:Class) WHERE c.portState = '{pc.NA_STATE}' "
+        "RETURN DISTINCT c.qualifiedName")}
+    check("notApplicable classes with a PORTS edge", len(ported), 0,
+          f"{sorted(ported)[:3]}" if ported else "")
+    missing = sorted(set(verdicts) - set(na))
+    check("not-applicable verdicts without the state", len(missing), 0,
+          f"{missing[:3]}" if missing else "")
 
 
 def skeleton_audit(q, check, source_root: Path):
@@ -164,7 +202,7 @@ def skeleton_audit(q, check, source_root: Path):
         check(f"{module} classes with more than one skeleton", len(multi), 0,
               f"{multi[:3]}" if multi else "")
         gap = sorted(c for c, (_sc, st) in mod.items()
-                     if per_class.get(c, 0) == 0 and st != "ported")
+                     if per_class.get(c, 0) == 0 and st not in ("ported", "notApplicable"))
         gap_in = sum(1 for c in gap if mod[c][0] == "in")
         line = (f"   {module}: classes {len(mod)} (top-level "
                 f"{sum(1 for v in mod.values() if v[0] == 'in')}, nested "
@@ -215,15 +253,27 @@ def main():
     top, nested = [], []
     for m in pm.PORT_MODULES:
         base = roots[m["repo"]]
-        mfiles, mtop, mnested = java_census(base, m["sources"])
+        name = m["name"]
+        # A module scoped to listed files is censused over those alone, while
+        # the graph side below reads every File under its trees: a file the
+        # loaders let in beyond the list reads as GRAPH-ONLY.
+        keep = (lambda rel, n=name: pm.file_in_scope(n, rel)) if m.get("files") else None
+        mfiles, mtop, mnested = java_census(base, m["sources"], keep)
         top += mtop
         nested += mnested
-        name = m["name"]
         cond = " OR ".join(f"f.path STARTS WITH '{s}/'" for s in m["sources"])
         gf = {r[0] for r in q(f"MATCH (f:File) WHERE {cond} RETURN f.path")}
         check(f"{name} java files", len(gf), len(mfiles))
         for p in sorted(set(mfiles) - gf)[:5]:
             print("   MISSING:", p)
+        for p in sorted(gf - set(mfiles))[:5]:
+            print("   GRAPH-ONLY:", p)
+        if m.get("files"):
+            outside = [r[0] for r in q(
+                f"MATCH (c:Class) WHERE ({cond.replace('f.path', 'c.file')}) "
+                f"AND NOT c.file IN {list(m['files'])} RETURN c.qualifiedName")]
+            check(f"{name} types outside its listed files", len(outside), 0,
+                  f"{outside[:3]}" if outside else "")
         gmt = {r[0] for r in q("MATCH (c:Class) WHERE c.portScope='in' "
                                f"AND c.module = '{name}' RETURN c.qualifiedName")}
         cmt = {q_ for q_, _ in mtop}
@@ -325,6 +375,8 @@ def main():
     orphan = q("MATCH (c:Class) WHERE c.portScope='nested' AND c.portState='unported' "
                "AND c.portDestination IS NULL RETURN count(c)")[0][0]
     check("unported nested types without a destination", orphan, 0)
+    import port_coverage_kg as pc
+    not_applicable_audit(q, check, pc.load_not_applicable())
     for r in q("MATCH ()-[e:PORTS]->(:Class) RETURN coalesce(e.evidence,'UNSTATED') AS ev, "
                "count(*) AS n ORDER BY n DESC"):
         print(f"   PORTS evidence {str(r[0]):<12} {r[1]}")

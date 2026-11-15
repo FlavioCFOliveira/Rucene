@@ -1512,7 +1512,7 @@ impl InetAddressRange {
     ///
     /// # Errors
     ///
-    /// Propagates whatever [`encode`](Self::encode) raises.
+    /// Propagates whatever `encode` raises.
     pub fn set_range_values(&self, min: &[u8], max: &[u8]) -> Result<()> {
         *self.fields_data.borrow_mut() = FieldData::Bytes(BytesRef::new(Self::encode(min, max)?));
         Ok(())
@@ -1643,7 +1643,7 @@ impl InetAddressRange {
     ///
     /// # Errors
     ///
-    /// Propagates whatever [`encode`](Self::encode) and
+    /// Propagates whatever `encode` and
     /// [`RangeFieldQuery::new`] raise.
     pub fn new_relation_query(
         field: &str,

@@ -699,7 +699,10 @@ fn misuse(c: &str, reader: &Arc<dyn IndexReader>) {
         Ok(mi.next()?.to_string())
     });
     rec(c, "matches", "query_exhausted", || {
-        Ok(mi.get_query().to_query_string(""))
+        // `mi.getQuery().toString("")`: a `null` query would throw.
+        mi.get_query()
+            .map(|q| q.to_query_string(""))
+            .ok_or_else(rucene::error::LuceneError::null_pointer)
     });
     rec(c, "matches", "other_field", || {
         Ok(match matches.get_matches("id")? {

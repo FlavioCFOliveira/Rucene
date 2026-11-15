@@ -84,16 +84,27 @@ impl TermQuery {
 impl Query for TermQuery {
     fn to_query_string(&self, field: &str) -> String {
         let mut buffer = String::new();
-        if self.term.field() != field {
-            buffer.push_str(self.term.field());
+        // `if (!term.field().equals(field))`: a `null` term field throws.
+        let term_field = self
+            .term
+            .field_or_npe(crate::index::terms::TERM_FIELD_EQUALS_NPE);
+        if term_field != field {
+            buffer.push_str(term_field);
             buffer.push(':');
         }
         buffer.push_str(&self.term.text());
         buffer
     }
 
+    /// Equivalent to `TermQuery.visit(QueryVisitor)` (`TermQuery.java:313-317`):
+    /// `visitor.acceptField(term.field())`, a `null` field asked through
+    /// [`QueryVisitor::accept_null_field`].
     fn visit(&self, visitor: &mut dyn QueryVisitor) {
-        if visitor.accept_field(self.term.field()) {
+        let accepted = match self.term.field_opt() {
+            Some(field) => visitor.accept_field(field),
+            None => visitor.accept_null_field(),
+        };
+        if accepted {
             visitor.consume_terms(self, std::slice::from_ref(&self.term));
         }
     }

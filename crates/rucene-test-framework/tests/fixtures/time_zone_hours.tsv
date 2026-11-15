@@ -18,14 +18,14 @@ Africa/Blantyre	88	311e9f19bab91f47
 Africa/Brazzaville	97	367156dfdb9da968
 Africa/Bujumbura	88	c99621e2f0dd1822
 Africa/Cairo	999	68fe0ff7ff9ef05c
-Africa/Casablanca	673	334ae4cafd18faec
+Africa/Casablanca	298	90d5dda5f23c6d62
 Africa/Ceuta	906	51a78b085d296789
 Africa/Conakry	88	6b781c6ca56e7a40
 Africa/Dakar	88	ecf23d2a4a60776c
 Africa/Dar_es_Salaam	100	d33d5468d53723ca
 Africa/Djibouti	100	49ff73d7b07065f5
 Africa/Douala	97	dbaf1e05366abc9d
-Africa/El_Aaiun	640	ab5d2db03af1e8ac
+Africa/El_Aaiun	265	51032fe3857be14e
 Africa/Freetown	88	2e7157cb088a4306
 Africa/Gaborone	88	143509dc11b045aa
 Africa/Harare	88	eebb5bf13c58674a
@@ -87,7 +87,7 @@ America/Belem	172	f246e4e99861e1f6
 America/Belize	376	59a381eda437e732
 America/Blanc-Sablon	91	5a34e5a1dfb30d69
 America/Boa_Vista	184	991d02b9071990bf
-America/Bogota	94	cb2e9645a203148b
+America/Bogota	94	2c5169abd122e4fe
 America/Boise	975	654646eb929760d8
 America/Buenos_Aires	265	48ab0681cc8bf868
 America/Cambridge_Bay	936	fb467962f365d750
@@ -113,7 +113,7 @@ America/Dawson_Creek	253	4953ceb626bb6fe1
 America/Denver	996	8573133aaf36445e
 America/Detroit	948	a174e4a29098f4bd
 America/Dominica	91	2d97e1cbe64ec379
-America/Edmonton	975	8fbbb66b89984982
+America/Edmonton	466	90ffc13d8325a100
 America/Eirunepe	184	f0bac7254781c6af
 America/El_Salvador	100	ed71a49c149fe072
 America/Ensenada	1086	d94eee4aed7937da
@@ -141,7 +141,7 @@ America/Indiana/Vevay	765	7b97a0a670238af4
 America/Indiana/Vincennes	825	8ce45526e4330d0e
 America/Indiana/Winamac	843	87b5b55da72b9942
 America/Indianapolis	819	550f256a38615546
-America/Inuvik	927	899dd3c750068de0
+America/Inuvik	418	bcbba6ac568f7bc1
 America/Iqaluit	930	c19ce3df068592f7
 America/Jamaica	148	9a9a83ca0ad73c56
 America/Jujuy	259	ba9b36d727e58823
@@ -193,7 +193,7 @@ America/Porto_Acre	178	458b1d8cfd5e7f4d
 America/Porto_Velho	172	d85f027719376abb
 America/Puerto_Rico	91	ec28704f3ba55128
 America/Punta_Arenas	433	8baff13f05c48c4b
-America/Rainy_River	1080	376570e6da52f6cc
+America/Rainy_River	571	fd43474a37472e64
 America/Rankin_Inlet	927	776ad85b850c49f7
 America/Recife	202	d45c395b9ce30abb
 America/Regina	241	981ec4b7541de362
@@ -224,9 +224,9 @@ America/Tortola	91	a2b93a7d8674c178
 America/Vancouver	583	698d27518e571734
 America/Virgin	91	acb27944dc121ca0
 America/Whitehorse	361	dd45830c80b67d4b
-America/Winnipeg	1080	3717f8e10e9f1072
+America/Winnipeg	571	84a5cde013e85375
 America/Yakutat	951	d42b8b887724ce89
-America/Yellowknife	975	76a7c683c8d918ba
+America/Yellowknife	466	4b736f2cdc89f049
 Antarctica/Casey	136	dfaae2ee1862a36f
 Antarctica/Davis	106	5256f84a532918f6
 Antarctica/DumontDUrville	79	70bea9d49141e57d
@@ -322,7 +322,7 @@ Asia/Srednekolymsk	280	2d6140d28d1ed17b
 Asia/Taipei	205	d04c286da31d14ce
 Asia/Tashkent	157	14a7430c2a9599f2
 Asia/Tbilisi	235	b7a0710b9f719e9b
-Asia/Tehran	295	fed32b36958cc022
+Asia/Tehran	295	acb85c977fa11889
 Asia/Tel_Aviv	972	36bbbc4b5872900b
 Asia/Thimbu	91	c2c6ec06c16a8892
 Asia/Thimphu	91	6ef5faae2309acc6
@@ -384,12 +384,12 @@ CAT	88	75bd3080219207a0
 CET	1077	8bea362435f62b0c
 CNT	1239	5203993258335562
 CST	1230	67d38749179488e4
-CST6CDT	1230	aa59fbb5366d3615
+CST6CDT	972	63d02f1864342f01
 CTT	172	ddbc641d10cd87b3
 Canada/Atlantic	1209	2866a707cbdb0d11
-Canada/Central	1080	90cb2c8770954a1d
+Canada/Central	571	addb30cbc51f5c53
 Canada/Eastern	1218	33029da2a5b30085
-Canada/Mountain	975	98d8f7d39b28cf63
+Canada/Mountain	466	7c00ea8aa400d79a
 Canada/Newfoundland	1239	72be32e5e7982ab7
 Canada/Pacific	583	9c0d1bd07907fea4
 Canada/Saskatchewan	241	90f7fd70463ac904
@@ -401,9 +401,9 @@ EAT	100	351c02c9d9a0cd3b
 ECT	1077	b08f12da0d7b837d
 EET	939	57a5c0a5681e87bd
 EST	88	f718f629c8886ce6
-EST5EDT	1230	c17496d75143f952
+EST5EDT	972	88c62cc6e6184d5c
 Egypt	999	a2d372a44a51833e
-Eire	1206	601fb48411705c5e
+Eire	1206	6b682f9aed1a64e1
 Etc/GMT	79	0cda0637d2470109
 Etc/GMT+0	79	a0d3bd963c616af8
 Etc/GMT+1	79	c7732ba5ba6bfab1
@@ -453,7 +453,7 @@ Europe/Budapest	978	22fbcf5dc2c62d5a
 Europe/Busingen	882	c6861c70b5e2bccc
 Europe/Chisinau	948	c85afdf26d02ee5f
 Europe/Copenhagen	954	eb3684cbb7658f3c
-Europe/Dublin	1206	c30a154de2dbc9b0
+Europe/Dublin	1206	8919cc805e78279f
 Europe/Gibraltar	1119	514dc2a26b2bf0bc
 Europe/Guernsey	1251	6e8ff7cca81424aa
 Europe/Helsinki	879	f74e75981c420985
@@ -524,7 +524,7 @@ Indian/Maldives	88	9be12b211452e8f7
 Indian/Mauritius	100	135f122e91b2db25
 Indian/Mayotte	100	365b44c4f92d31d5
 Indian/Reunion	88	c4f1b5852b2334fa
-Iran	295	bb3175c32ad7dc0f
+Iran	295	c10d4928edb44e98
 Israel	972	4b4aaf7d089be6f7
 JST	109	1bef8787fb38034a
 Jamaica	148	91c4327ca5e821bf
@@ -534,7 +534,7 @@ Libya	181	ebf49761e301bdce
 MET	1077	c1e813c34ade0f3f
 MIT	160	295791a7f5e74a77
 MST	115	0e236555f81313ed
-MST7MDT	996	3ea1018034567c66
+MST7MDT	972	d36d2dc984a20974
 Mexico/BajaNorte	1086	d5e0dbb07367d96f
 Mexico/BajaSur	268	f8f3732996df4cf7
 Mexico/General	289	f3ead61531c5cd43
@@ -548,7 +548,7 @@ PNT	115	cfdc652ce7b8ed82
 PRC	172	af296a0189e459fc
 PRT	91	794afb17368d5894
 PST	1080	560ab01e3d562ad7
-PST8PDT	1080	48ac6233a6d74d17
+PST8PDT	972	dfa9fb64b269d5a5
 Pacific/Apia	160	1a6533b85dde0583
 Pacific/Auckland	995	9392a757b697cf8c
 Pacific/Bougainville	94	e87892ae769a0c5f

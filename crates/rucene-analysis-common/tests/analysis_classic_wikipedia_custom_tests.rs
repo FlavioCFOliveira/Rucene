@@ -1297,8 +1297,8 @@ fn assert_whitespace_folding_lowercase(a: &CustomAnalyzer) {
         "org.apache.lucene.analysis.core.LowerCaseFilterFactory",
         token_filters[1],
     );
-    Assert::assert_equals(0, a.get_position_increment_gap("dummy"));
-    Assert::assert_equals(1, a.get_offset_gap("dummy"));
+    Assert::assert_equals(0, a.get_position_increment_gap(Some("dummy")));
+    Assert::assert_equals(1, a.get_offset_gap(Some("dummy")));
 }
 
 fn cu_test_whitespace_factory_with_folding() -> Result<()> {
@@ -1404,8 +1404,8 @@ fn assert_html_strip_classic_folding(a: &CustomAnalyzer) {
         "org.apache.lucene.analysis.core.LowerCaseFilterFactory",
         token_filters[1],
     );
-    Assert::assert_equals(100, a.get_position_increment_gap("dummy"));
-    Assert::assert_equals(1000, a.get_offset_gap("dummy"));
+    Assert::assert_equals(100, a.get_position_increment_gap(Some("dummy")));
+    Assert::assert_equals(1000, a.get_offset_gap(Some("dummy")));
 }
 
 fn assert_html_strip_classic_folding_analysis(a: &CustomAnalyzer) -> Result<()> {
@@ -1491,8 +1491,8 @@ fn cu_test_stop_words_from_classpath() -> Result<()> {
         "org.apache.lucene.analysis.core.StopFilterFactory",
         token_filters[0],
     );
-    Assert::assert_equals(0, a.get_position_increment_gap("dummy"));
-    Assert::assert_equals(1, a.get_offset_gap("dummy"));
+    Assert::assert_equals(0, a.get_position_increment_gap(Some("dummy")));
+    Assert::assert_equals(1, a.get_offset_gap(Some("dummy")));
     B::assert_analyzes_to(&a, "foo Foo Bar", &[])?;
     a.close();
     Ok(())

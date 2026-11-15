@@ -74,7 +74,7 @@ pub const DEFAULT_MAX_TOKEN_LENGTH: usize = 255;
 /// `Tokenizer`.
 ///
 /// Equivalent to the members of `org.apache.lucene.analysis.standard.StandardTokenizer`;
-/// the `Tokenizer` half is [`Tokenizer`](crate::analysis::Tokenizer).
+/// the `Tokenizer` half is [`Tokenizer`].
 #[derive(Debug)]
 pub struct StandardTokenizerLogic {
     /// A private instance of the JFlex-constructed scanner.
@@ -337,9 +337,9 @@ impl StopwordAnalyzerBase {
     /// Divergence: Java streams the file through
     /// `Files.newBufferedReader(path, StandardCharsets.UTF_8)`
     /// (`StopwordAnalyzerBase.java` lines 70-74). This crate's
-    /// [`CharReader`](crate::analysis::CharReader) has no file-backed
+    /// [`CharReader`] has no file-backed
     /// implementation, so the port decodes the file into memory and reads it
-    /// through a [`StringCharReader`](crate::analysis::StringCharReader). The
+    /// through a [`StringCharReader`]. The
     /// resulting set is the same; only the peak memory differs.
     ///
     /// # Errors
@@ -447,7 +447,7 @@ impl Analyzer for StandardAnalyzer {
     /// length again before every reader, as Java's
     /// `src.setMaxTokenLength(StandardAnalyzer.this.maxTokenLength)` lambda
     /// does.
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = Arc::new(AtomicRefCell::new(new_standard_tokenizer()));
         let max_token_length = Arc::clone(&self.max_token_length);
         tokenizer
@@ -471,7 +471,7 @@ impl Analyzer for StandardAnalyzer {
 
     fn normalize_token_stream(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
         // `Analyzer.normalize` hands this a `StringTokenStream`, which holds
@@ -881,7 +881,7 @@ mod tests {
         let state = analyzer.analyzer_state();
         assert!(state
             .reuse_strategy()
-            .get_reusable_components(state, "f")
+            .get_reusable_components(state, Some("f"))
             .is_none());
         analyzer.set_max_token_length(2);
         assert_eq!(
@@ -891,7 +891,7 @@ mod tests {
         let state = analyzer.analyzer_state();
         assert!(state
             .reuse_strategy()
-            .get_reusable_components(state, "f")
+            .get_reusable_components(state, Some("f"))
             .is_some());
     }
 

@@ -1,7 +1,7 @@
 # tools/translate
 
 Mechanical translators and JDK-data generators for the port of
-`lucene/analysis/common` (Lucene 10.5.0). Each is deterministic; its output is
+`lucene/analysis/common` and `lucene/queryparser` (Lucene 10.5.0). Each is deterministic; its output is
 the committed file, and rerunning it must leave that file unchanged.
 
 * `ascii_folding_filter.py` — translates the `switch` of
@@ -128,3 +128,52 @@ the committed file, and rerunning it must leave that file unchanged.
   `java.text.Collator` emulation: the root rules, the decompositions and combining classes, and
   the locale tailorings of `Collator.getInstance(Locale)`, with a check of the locale resolution
   on every available locale; see its header for the command.
+* `javacc_java_to_rust.py` — translates the JavaCC 7 output Lucene commits for the classic,
+  surround and flexible standard query parsers
+  (`lucene/queryparser/src/java/org/apache/lucene/queryparser/{classic,surround/parser,flexible/standard/parser}`):
+  `<Parser>Constants.java` and `<Parser>TokenManager.java` into the wholly generated
+  `crates/rucene-queryparser/src/<parser>/<parser>_{constants,token_manager}.rs` (`query_parser_*`
+  for classic and surround, `standard_syntax_parser_*` for the flexible parser), the `Token`,
+  `TokenMgrError` and `ParseException` templates into `token.rs`, `token_mgr_error.rs` and
+  `parse_exception.rs` (each Java file must equal the JavaCC 7 template token for token, pinned
+  by SHA-256; the flexible parser's `ParseException.java`, which Lucene edits into a
+  `QueryNodeParseException` reporting an NLS message, has its own template and pin), and the
+  generated members of `<Parser>.java` into the `// @generated begin/end` regions (`state`,
+  `productions`, `private`) of the hand-written `<parser>.rs`. The grammar's user code is
+  translated by hand and pinned by the SHA-256 of its Java tokens. The members, constructors,
+  casts and fields the grammar actions use are described per profile. The translator accepts
+  only the Java those files use and fails, naming the file and line, on any other construct;
+  the output is formatted by `rustfmt`. Rerun:
+  `python3 tools/translate/javacc_java_to_rust.py [/tmp/lucene1050]` (`--check` compares instead
+  of writing, `--only classic|surround|standard` limits the run to one parser, `--hashes` prints
+  the pins).
+* `JdkFormatData.java` — writes `crates/rucene-queryparser/src/jdk/format_data.bin` (zlib), the
+  JDK 25 locale data the queryparser's `java.text` emulation reads (`DateFormat.getDateInstance`,
+  `NumberFormat`, `Calendar`): the CLDR resolution metadata, the display names and
+  `DateFormatSymbols` arrays per calendar type, the date patterns of the four styles, the
+  number records (symbols and patterns, currency excluded), the week data per region and the
+  time-zone rows. It validates the data against the JDK's own formats and fails on a
+  difference; it runs for about thirteen minutes. Rerun with JDK 25:
+
+  ```sh
+  java -Xmx6g \
+    --add-exports java.base/sun.util.locale.provider=ALL-UNNAMED \
+    --add-exports java.base/sun.util.resources=ALL-UNNAMED \
+    --add-opens java.base/sun.util.cldr=ALL-UNNAMED \
+    --add-opens java.base/sun.util.locale.provider=ALL-UNNAMED \
+    --add-opens java.base/sun.util.calendar=ALL-UNNAMED \
+    --add-opens java.base/java.text=ALL-UNNAMED \
+    tools/translate/JdkFormatData.java crates/rucene-queryparser/src/jdk/format_data.bin
+  ```
+* `JdkCombiningClassData.java` — writes `crates/rucene-queryparser/src/jdk/combining_class_data.rs`
+  (the canonical combining class runs `String.toLowerCase(Locale)` reads for the Lithuanian
+  special casing) from the running JDK. Rerun with JDK 25:
+  `java --add-exports java.base/sun.text=ALL-UNNAMED tools/translate/JdkCombiningClassData.java crates/rucene-queryparser/src/jdk/combining_class_data.rs`.
+* `JdkFormatOracle.java` — the JDK 25 oracle of that emulation, run by
+  `crates/rucene-queryparser/tests/jdk_format_oracle.rs` (rmp #476) as a single source file on
+  the public API only: `java JdkFormatOracle.java <seed> <shard> <shards>` prints, for each
+  locale of `Locale.getAvailableLocales()` in the shard, the `DateFormat.getDateInstance(SHORT,
+  l)` pattern, `format` and lenient/strict `parse` results, the `getNumberInstance` /
+  `getIntegerInstance` `format` and `parse` results, and `toLowerCase(l)` of seeded inputs. The
+  queryparser's `src/jdk/time_zone_data.rs` must be regenerated (`tools/gen/TimeZoneRules.java
+  crates/rucene-queryparser/src/jdk/time_zone_data.rs`) whenever the JDK's tzdata changes.

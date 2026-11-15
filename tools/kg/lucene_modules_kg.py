@@ -12,9 +12,13 @@ This tool registers all of them. The modules in scope are the ones
 *Core* as the reference and 16.1 names `lucene/core` as the canonical source
 tree --, since the user's decision of 2026-11-03 for sprint 9, `codecs` and
 `test-framework` (with randomizedtesting 2.8.1, which `port_modules_kg.py`
-registers), and, since the user's decision of 2026-11-13 for sprint 12,
-`analysis/common`. Every other module is recorded with `inScope: false` and the
-reason, so the exclusion is auditable instead of silent.
+registers), since the user's decision of 2026-11-13 for sprint 12,
+`analysis/common`, and, since the user's decision of 2026-11-14 for sprint 13,
+`queries`, `queryparser` and `sandbox` (of which only `FuzzyLikeThisQuery.java`
+is ported; the narrowing is `port_modules_kg.py`'s `files`, recorded on the
+`Module` as `scopeFiles`, while `javaFiles` here stays the whole module's
+count). Every other module is recorded with `inScope: false` and the reason, so
+the exclusion is auditable instead of silent.
 
 History: until 2026-11-03 `test-framework` was recorded out of scope for the
 *code* port ("modelled as TestClass, not ported as code"). That decision is

@@ -96,7 +96,7 @@ impl Analyzer for SimpleLowerCaseAnalyzer {
         "org.apache.lucene.search.TestFuzzyTermOnShortTerms$1"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = MockTokenizer::new(Arc::clone(&SIMPLE), true)?;
         Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
             tokenizer,

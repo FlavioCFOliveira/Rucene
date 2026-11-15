@@ -193,7 +193,7 @@ impl FSTReader for NullFSTReader {
 pub struct CompilerArc<T> {
     /// The arc label; really an unsigned byte for `BYTE1` inputs.
     pub label: i32,
-    /// Address of the compiled target node, or [`NOT_COMPILED`] until
+    /// Address of the compiled target node, or `NOT_COMPILED` until
     /// [`UnCompiledNode::replace_last`] fills it in.
     pub target: i64,
     /// Whether the arc accepts the input read so far.

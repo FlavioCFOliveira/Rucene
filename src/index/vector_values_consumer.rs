@@ -56,7 +56,7 @@
 //!
 //! Because the writer outlives the call that made it, the state it is built
 //! from must be owned rather than borrowed; see
-//! [`OwnedSegmentWriteState`](crate::codecs::state::OwnedSegmentWriteState) for
+//! [`OwnedSegmentWriteState`] for
 //! the one divergence this requires.
 
 #![deny(unsafe_code)]
@@ -167,7 +167,7 @@ impl VectorValuesConsumer {
     /// # Errors
     ///
     /// Propagates the writer-creation failure of
-    /// [`VectorValuesConsumer::init_knn_vectors_writer`] and whatever the codec
+    /// `VectorValuesConsumer::init_knn_vectors_writer` and whatever the codec
     /// writer raises for the field itself.
     pub fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
         self.init_knn_vectors_writer()?;
@@ -244,7 +244,7 @@ impl VectorValuesConsumer {
     /// Equivalent to `org.apache.lucene.index.VectorValuesConsumer#getAccountable`
     /// (`VectorValuesConsumer.java:87-89`), which returns the `accountable`
     /// field — `Accountable.NULL_ACCOUNTABLE` until
-    /// [`init_knn_vectors_writer`](Self::init_knn_vectors_writer) sets it to the
+    /// `init_knn_vectors_writer` sets it to the
     /// writer.
     ///
     /// **Divergence from Lucene 10.5.0.** Java's `KnnVectorsWriter` implements
@@ -252,7 +252,7 @@ impl VectorValuesConsumer {
     /// [`KnnVectorsWriter`] declares `ram_bytes_used` itself rather than
     /// inheriting it, and Rust cannot view a `dyn KnnVectorsWriter` as a
     /// `dyn Accountable`, so the writer is handed back through the thin
-    /// [`WriterAccountable`] adapter. The number reported is the writer's own.
+    /// `WriterAccountable` adapter. The number reported is the writer's own.
     pub fn get_accountable(&self) -> Box<dyn Accountable + '_> {
         match self.writer.as_deref() {
             Some(writer) => Box::new(WriterAccountable(writer)),

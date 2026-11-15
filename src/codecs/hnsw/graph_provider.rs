@@ -439,7 +439,7 @@ impl FlatVectorsScorer for PrefetchableFlatVectorScorer {
     /// `LegacyQuantizedByteVectorValues`
     /// (`PrefetchableFlatVectorScorer.java:53-59`): the delegate's supplier is
     /// wrapped in a [`PrefetchableRandomVectorScorerSupplier`] that prefetches
-    /// through the values. See [`SharedVectorValues::from_legacy`] for the
+    /// through the values. See `SharedVectorValues::from_legacy` for the
     /// handle the wrapper keeps.
     fn get_random_vector_scorer_supplier_legacy_quantized(
         &self,

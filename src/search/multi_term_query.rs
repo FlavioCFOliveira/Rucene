@@ -273,6 +273,19 @@ pub trait RewriteMethod: Send + Sync + Debug {
     /// override `hashCode()` (`TopTermsRewrite`, `DocValuesRewriteMethod`)
     /// answer Java's value.
     fn method_hash(&self) -> i32;
+
+    /// Returns this method viewed as a [`TopTermsRewrite`], or `None` when it
+    /// is not one.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java writes
+    /// `method instanceof TopTermsRewrite` and casts to read `getSize()`
+    /// (`SpanMultiTermQueryWrapper.java:71-72`). Rust cannot test a
+    /// `dyn RewriteMethod` for a trait, so the test is declared as a method
+    /// whose default answers `None` — Java's `false` branch — and every
+    /// implementation of [`TopTermsRewrite`] overrides it to return `self`.
+    fn as_top_terms_rewrite(&self) -> Option<&dyn TopTermsRewrite> {
+        None
+    }
 }
 
 /// A rewrite method where documents are assigned a constant score equal to the
@@ -465,13 +478,17 @@ impl RewriteMethod for TopTermsScoringBooleanQueryRewrite {
     fn method_hash(&self) -> i32 {
         top_terms_rewrite_hash(self)
     }
+
+    fn as_top_terms_rewrite(&self) -> Option<&dyn TopTermsRewrite> {
+        Some(self)
+    }
 }
 
 /// The top-level builder of [`TopTermsBoostOnlyBooleanQueryRewrite`].
 ///
 /// Equivalent to that class's `getTopLevelBuilder`, `addClause` and `build`
 /// overrides taken together; see
-/// [`TopLevelBuilder`](crate::search::TopLevelBuilder) for why they live on the
+/// [`TopLevelBuilder`] for why they live on the
 /// builder here.
 #[derive(Debug, Default)]
 pub struct BoostOnlyBooleanQueryBuilder {
@@ -573,6 +590,10 @@ impl RewriteMethod for TopTermsBoostOnlyBooleanQueryRewrite {
     fn method_hash(&self) -> i32 {
         top_terms_rewrite_hash(self)
     }
+
+    fn as_top_terms_rewrite(&self) -> Option<&dyn TopTermsRewrite> {
+        Some(self)
+    }
 }
 
 /// The top-level builder of [`TopTermsBlendedFreqScoringRewrite`].
@@ -592,7 +613,7 @@ impl Default for BlendedFreqScoringBuilder {
 
 impl BlendedFreqScoringBuilder {
     /// Creates a builder whose blended query uses
-    /// [`boolean_rewrite`](crate::search::boolean_rewrite).
+    /// [`boolean_rewrite`].
     pub fn new() -> Self {
         let mut builder = BlendedTermQueryBuilder::new();
         builder.set_rewrite_method(boolean_rewrite());
@@ -684,5 +705,9 @@ impl RewriteMethod for TopTermsBlendedFreqScoringRewrite {
 
     fn method_hash(&self) -> i32 {
         top_terms_rewrite_hash(self)
+    }
+
+    fn as_top_terms_rewrite(&self) -> Option<&dyn TopTermsRewrite> {
+        Some(self)
     }
 }

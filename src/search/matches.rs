@@ -130,10 +130,16 @@ pub trait MatchesIterator {
     /// Propagates any I/O error raised while building the iterator.
     fn get_sub_matches(&self) -> Result<Option<Box<dyn MatchesIterator>>>;
 
-    /// Returns the query causing the current match.
+    /// Returns the query causing the current match, `None` for Java's
+    /// `null`.
     ///
-    /// Equivalent to `MatchesIterator.getQuery()`.
-    fn get_query(&self) -> Arc<dyn Query>;
+    /// Equivalent to `MatchesIterator.getQuery()`. The contract does not rule
+    /// out `null`, and some implementations return it: the
+    /// minimum-should-match intervals iterator before its first match
+    /// (`MinimumShouldMatchIntervalsSource.java:406-408`) and the caching
+    /// intervals iterator over an empty cache
+    /// (`CachingMatchesIterator.java:126-128`).
+    fn get_query(&self) -> Option<Arc<dyn Query>>;
 }
 
 /// Indicates a match with no term positions — for example on a point or

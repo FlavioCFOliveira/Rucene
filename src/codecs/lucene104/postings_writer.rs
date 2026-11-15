@@ -137,7 +137,7 @@ pub fn write_impacts(impacts: &[Impact], out: &mut dyn DataOutput) -> Result<()>
 
 /// Low-level postings writer for the Lucene 10.4 format.
 ///
-/// Implements [`PushPostingsWriterBase`] and therefore [`PostingsWriterBase`]
+/// Implements [`PushPostingsWriterBase`] and therefore [`PostingsWriterBase`](crate::codecs::PostingsWriterBase)
 /// via the blanket implementation in [`crate::codecs::postings`].
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene104.Lucene104PostingsWriter`.

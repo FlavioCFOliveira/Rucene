@@ -1,10 +1,4 @@
 //! String and byte-reference helpers ported from `org.apache.lucene.util.StringHelper`.
-//!
-//! This module also provides standalone [`write_string`] and [`read_string`] helpers
-//! that produce/consume the same byte serialization used by Lucene's
-//! `DataOutput.writeString` / `DataInput.readString`: a VInt length followed by
-//! UTF-8 bytes. These functions are kept inside `util` so they do not introduce a
-//! dependency from `util` on the `store` module.
 
 #![deny(unsafe_code)]
 

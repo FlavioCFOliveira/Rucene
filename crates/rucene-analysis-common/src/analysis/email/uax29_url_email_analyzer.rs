@@ -144,7 +144,7 @@ impl Analyzer for UAX29URLEmailAnalyzer {
     /// the analyzer's current length again before every reader, as Java's
     /// `src.setMaxTokenLength(UAX29URLEmailAnalyzer.this.maxTokenLength)`
     /// lambda does.
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let src = Arc::new(AtomicRefCell::new(new_uax29_url_email_tokenizer()));
         let max_token_length = Arc::clone(&self.max_token_length);
         src.borrow_mut()
@@ -170,7 +170,7 @@ impl Analyzer for UAX29URLEmailAnalyzer {
     /// `new LowerCaseFilter(in)`.
     fn normalize_token_stream(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
         // `Analyzer.normalize` hands this a `StringTokenStream`, which holds

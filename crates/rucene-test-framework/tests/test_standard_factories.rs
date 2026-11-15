@@ -227,7 +227,7 @@ impl Analyzer for BinaryKeyAnalyzer {
         "org.apache.lucene.collation.TestCollationBinding$BinaryKeyAnalyzer"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let mut tokenizer = Tokenizer::new(KeywordLogic {
             copies: self.copies,
             emitted: 0,

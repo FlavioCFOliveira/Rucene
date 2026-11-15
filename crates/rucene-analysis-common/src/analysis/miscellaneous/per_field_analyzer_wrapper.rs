@@ -35,9 +35,12 @@ struct PerFieldAnalyzerWrapperLogic {
 }
 
 impl DelegatingAnalyzerWrapperLogic for PerFieldAnalyzerWrapperLogic {
-    /// Equivalent to `PerFieldAnalyzerWrapper.getWrappedAnalyzer(String)`.
-    fn get_wrapped_analyzer(&self, field_name: &str) -> &dyn Analyzer {
-        match self.field_analyzers.get(field_name) {
+    /// Equivalent to `PerFieldAnalyzerWrapper.getWrappedAnalyzer(String)`:
+    /// `fieldAnalyzers.get(fieldName)`, the default analyzer when there is no
+    /// entry. A `null` field name finds no entry: the map's keys are
+    /// `String`s.
+    fn get_wrapped_analyzer(&self, field_name: Option<&str>) -> &dyn Analyzer {
+        match field_name.and_then(|f| self.field_analyzers.get(f)) {
             Some(analyzer) => analyzer.as_ref(),
             None => self.default_analyzer.as_ref(),
         }
@@ -123,39 +126,43 @@ impl Analyzer for PerFieldAnalyzerWrapper {
         )
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         self.inner.create_components(field_name)
     }
 
     fn normalize_token_stream(
         &self,
-        field_name: &str,
+        field_name: Option<&str>,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
         self.inner.normalize_token_stream(field_name, input)
     }
 
-    fn init_reader(&self, field_name: &str, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
+    fn init_reader(
+        &self,
+        field_name: Option<&str>,
+        reader: Box<dyn CharReader>,
+    ) -> Box<dyn CharReader> {
         self.inner.init_reader(field_name, reader)
     }
 
     fn init_reader_for_normalization(
         &self,
-        field_name: &str,
+        field_name: Option<&str>,
         reader: Box<dyn CharReader>,
     ) -> Box<dyn CharReader> {
         self.inner.init_reader_for_normalization(field_name, reader)
     }
 
-    fn attribute_factory(&self, field_name: &str) -> Arc<dyn AttributeFactory> {
+    fn attribute_factory(&self, field_name: Option<&str>) -> Arc<dyn AttributeFactory> {
         self.inner.attribute_factory(field_name)
     }
 
-    fn get_position_increment_gap(&self, field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, field_name: Option<&str>) -> i32 {
         self.inner.get_position_increment_gap(field_name)
     }
 
-    fn get_offset_gap(&self, field_name: &str) -> i32 {
+    fn get_offset_gap(&self, field_name: Option<&str>) -> i32 {
         self.inner.get_offset_gap(field_name)
     }
 }

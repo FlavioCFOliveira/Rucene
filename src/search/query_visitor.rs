@@ -48,6 +48,18 @@ pub trait QueryVisitor {
         true
     }
 
+    /// Whether a query whose field is `null` is of interest to the visitor.
+    ///
+    /// Equivalent to `QueryVisitor.acceptField(String)` called with `null`,
+    /// which the span queries without clauses do (`SpanOrQuery.java:86`,
+    /// `SpanNearQuery.java:279`); like Java's default, it returns `true`.
+    /// [`accept_field`](Self::accept_field) takes a `&str`, so the `null`
+    /// argument is this method: a visitor that overrides `acceptField`
+    /// overrides it too, with the answer its `acceptField(null)` gives.
+    fn accept_null_field(&self) -> bool {
+        true
+    }
+
     /// Pulls a visitor instance for visiting the child clauses of a query.
     ///
     /// Equivalent to `QueryVisitor.getSubVisitor(BooleanClause.Occur, Query)`,
@@ -96,6 +108,10 @@ impl<T: QueryVisitor + ?Sized> QueryVisitor for &mut T {
         (**self).accept_field(field)
     }
 
+    fn accept_null_field(&self) -> bool {
+        (**self).accept_null_field()
+    }
+
     /// Delegates to the wrapped visitor.
     ///
     /// This override is load-bearing, not a convenience: the default body boxes
@@ -125,6 +141,10 @@ pub struct EmptyQueryVisitor;
 
 impl QueryVisitor for EmptyQueryVisitor {
     fn accept_field(&self, _field: &str) -> bool {
+        false
+    }
+
+    fn accept_null_field(&self) -> bool {
         false
     }
 }

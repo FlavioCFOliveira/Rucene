@@ -985,7 +985,7 @@ enum PrepareSeek {
 /// over the `.tim` file and its frames read through a back-reference to it. This
 /// port holds that input in the cursor and passes it to each frame, which is
 /// the same single reader with the ownership made explicit. As in Java, the
-/// input is cloned lazily, by [`init_index_input`](Self::init_index_input), the
+/// input is cloned lazily, by `init_index_input`, the
 /// first time a block is loaded or prefetched. `seek_ord` is unsupported here
 /// as it is in Java, and `intersect` lives in its own cursor.
 pub struct SegmentTermsEnum {

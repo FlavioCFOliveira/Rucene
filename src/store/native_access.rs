@@ -85,7 +85,7 @@ pub fn get_implementation() -> Option<&'static dyn NativeAccess> {
 /// * `getpagesize` has no safe wrapper. On Linux the true page size is read
 ///   from the kernel-supplied auxiliary vector in `/proc/self/auxv`
 ///   (`AT_PAGESZ`), which is plain file I/O; on other platforms
-///   [`FALLBACK_PAGE_SIZE`] is assumed. The value is only used to align the
+///   `FALLBACK_PAGE_SIZE` is assumed. The value is only used to align the
 ///   range handed to `madvise`, and `memmap2` re-aligns it against the real
 ///   page size regardless, so an inaccurate fallback cannot turn a working
 ///   advice call into a failing one.

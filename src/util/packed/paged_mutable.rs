@@ -353,7 +353,7 @@ pub trait AbstractPagedMutableOps: Sized {
 /// A paged packed array whose pages all use the same number of bits per value.
 ///
 /// Equivalent to `org.apache.lucene.util.packed.PagedMutable`. It is a useful
-/// replacement for a single [`PackedIntsMutable`](super::PackedIntsMutable)
+/// replacement for a single [`PackedIntsMutable`]
 /// when more than two billion values must be stored.
 pub struct PagedMutable {
     base: AbstractPagedMutable,

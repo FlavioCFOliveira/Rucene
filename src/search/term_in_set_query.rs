@@ -52,7 +52,7 @@ const BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
 ///
 /// A custom [`RewriteMethod`] may define a different execution behaviour, such
 /// as relying on doc values
-/// ([`doc_values_rewrite`](crate::search::doc_values_rewrite)) or computing
+/// ([`doc_values_rewrite`]) or computing
 /// scores ([`scoring_boolean_rewrite`](crate::search::scoring_boolean_rewrite));
 /// see [`MultiTermQuery`] for the other options.
 ///
@@ -130,7 +130,7 @@ impl TermInSetQuery {
     /// Equivalent to the static
     /// `TermInSetQuery.newIndexOrDocValuesQuery(RewriteMethod, String, Collection<BytesRef>)`.
     /// The doc-values query always uses
-    /// [`doc_values_rewrite`](crate::search::doc_values_rewrite).
+    /// [`doc_values_rewrite`].
     ///
     /// * `index_rewrite_method` — the rewrite method the indexed query uses;
     /// * `field` — the field name of both the indexed and the doc-values query;

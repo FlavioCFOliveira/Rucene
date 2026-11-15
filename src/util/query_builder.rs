@@ -5,10 +5,13 @@
 //!
 //! ```ignore
 //! let builder = QueryBuilder::new(analyzer);
-//! let a = builder.create_boolean_query("body", "just a test")?;
-//! let b = builder.create_phrase_query("body", "another test")?;
-//! let c = builder.create_min_should_match_query("body", "another test", 0.5)?;
+//! let a = builder.create_boolean_query(Some("body"), "just a test")?;
+//! let b = builder.create_phrase_query(Some("body"), "another test")?;
+//! let c = builder.create_min_should_match_query(Some("body"), "another test", 0.5)?;
 //! ```
+//!
+//! A Java `String field` that may be `null` is an `Option<&str>`: the analyzer
+//! receives it as is, and the terms built carry it ([`Term::with_nullable_field`]).
 //!
 //! # Divergences from Lucene 10.5.0
 //!
@@ -232,7 +235,7 @@ pub trait QueryBuilderOps {
     /// Propagates any error from the analysis chain.
     fn create_boolean_query(
         &self,
-        field: &str,
+        field: Option<&str>,
         query_text: &str,
     ) -> Result<Option<Arc<dyn Query>>> {
         self.create_boolean_query_with_operator(field, query_text, Occur::SHOULD)
@@ -250,7 +253,7 @@ pub trait QueryBuilderOps {
     /// analysis chain.
     fn create_boolean_query_with_operator(
         &self,
-        field: &str,
+        field: Option<&str>,
         query_text: &str,
         operator: Occur,
     ) -> Result<Option<Arc<dyn Query>>> {
@@ -270,7 +273,11 @@ pub trait QueryBuilderOps {
     /// # Errors
     ///
     /// Propagates any error from the analysis chain.
-    fn create_phrase_query(&self, field: &str, query_text: &str) -> Result<Option<Arc<dyn Query>>> {
+    fn create_phrase_query(
+        &self,
+        field: Option<&str>,
+        query_text: &str,
+    ) -> Result<Option<Arc<dyn Query>>> {
         self.create_phrase_query_with_slop(field, query_text, 0)
     }
 
@@ -284,7 +291,7 @@ pub trait QueryBuilderOps {
     /// Propagates any error from the analysis chain.
     fn create_phrase_query_with_slop(
         &self,
-        field: &str,
+        field: Option<&str>,
         query_text: &str,
         phrase_slop: i32,
     ) -> Result<Option<Arc<dyn Query>>> {
@@ -302,7 +309,7 @@ pub trait QueryBuilderOps {
     /// `[0, 1]`, and propagates any error from the analysis chain.
     fn create_min_should_match_query(
         &self,
-        field: &str,
+        field: Option<&str>,
         query_text: &str,
         fraction: f32,
     ) -> Result<Option<Arc<dyn Query>>> {
@@ -353,7 +360,39 @@ pub trait QueryBuilderOps {
     fn create_field_query_from_text(
         &self,
         operator: Occur,
-        field: &str,
+        field: Option<&str>,
+        query_text: &str,
+        quoted: bool,
+        phrase_slop: i32,
+    ) -> Result<Option<Arc<dyn Query>>> {
+        let analyzer = self.query_builder().get_analyzer().cloned();
+        self.create_field_query_with_analyzer(
+            analyzer.as_ref(),
+            operator,
+            field,
+            query_text,
+            quoted,
+            phrase_slop,
+        )
+    }
+
+    /// Creates a query from the analysis chain of `analyzer`, which need not
+    /// be this builder's own.
+    ///
+    /// Equivalent to the protected
+    /// `createFieldQuery(Analyzer, Occur, String, String, boolean, int)`,
+    /// which `QueryParserBase.newFieldQuery` calls with the analyzer it is
+    /// given; `None` is Java's `null`, on which `tokenStream` raises
+    /// `NullPointerException`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from the analysis chain.
+    fn create_field_query_with_analyzer(
+        &self,
+        analyzer: Option<&Arc<dyn Analyzer>>,
+        operator: Occur,
+        field: Option<&str>,
         query_text: &str,
         quoted: bool,
         phrase_slop: i32,
@@ -362,12 +401,10 @@ pub trait QueryBuilderOps {
 
         // Use the analyzer to get all the tokens, and then build an appropriate
         // query based on the analysis chain.
-        let source = self
-            .query_builder()
-            .get_analyzer()
+        let source = analyzer
             // `analyzer.tokenStream(field, queryText)` on a `null` analyzer.
             .ok_or_else(crate::error::LuceneError::null_pointer)?
-            .token_stream_from_str(field, query_text)
+            .token_stream_from_str_nullable_field(field, query_text)
             // `catch (IOException e) { throw new RuntimeException("Error
             // analyzing query text", e); }` (`QueryBuilder.java:255-259`).
             .map_err(wrap_analysis_io_exception)?;
@@ -392,7 +429,7 @@ pub trait QueryBuilderOps {
         &self,
         source: Box<dyn TokenStream>,
         operator: Occur,
-        field: &str,
+        field: Option<&str>,
         quoted: bool,
         phrase_slop: i32,
     ) -> Result<Option<Arc<dyn Query>>> {
@@ -490,7 +527,7 @@ pub trait QueryBuilderOps {
     /// Propagates any error from the analysis chain.
     fn analyze_term(
         &self,
-        field: &str,
+        field: Option<&str>,
         stream: &mut dyn TokenStream,
     ) -> Result<Option<Arc<dyn Query>>> {
         stream.reset()?;
@@ -502,7 +539,10 @@ pub trait QueryBuilderOps {
         }
 
         let atts = stream.attribute_source();
-        let term = Term::new(field, term_bytes_of(atts).unwrap_or_default());
+        let term = Term::with_nullable_field(
+            field.map(str::to_string),
+            term_bytes_of(atts).unwrap_or_default(),
+        );
         let boost = boost_of(atts);
         self.new_term_query(&term, boost).map(Some)
     }
@@ -516,7 +556,7 @@ pub trait QueryBuilderOps {
     /// Propagates any error from the analysis chain.
     fn analyze_boolean(
         &self,
-        field: &str,
+        field: Option<&str>,
         stream: &mut dyn TokenStream,
     ) -> Result<Option<Arc<dyn Query>>> {
         stream.reset()?;
@@ -545,7 +585,7 @@ pub trait QueryBuilderOps {
     /// [`BooleanQuery`]'s clause limit.
     fn add(
         &self,
-        field: &str,
+        field: Option<&str>,
         q: &mut boolean_query::Builder,
         current: &[TermAndBoost],
         operator: Occur,
@@ -554,7 +594,8 @@ pub trait QueryBuilderOps {
             return Ok(());
         }
         if current.len() == 1 {
-            let term = Term::new(field, current[0].term().clone());
+            let term =
+                Term::with_nullable_field(field.map(str::to_string), current[0].term().clone());
             let query = self.new_term_query(&term, current[0].boost())?;
             q.add(query, operator)?;
         } else {
@@ -573,7 +614,7 @@ pub trait QueryBuilderOps {
     /// Propagates any error from the analysis chain and the query factories.
     fn analyze_multi_boolean(
         &self,
-        field: &str,
+        field: Option<&str>,
         stream: &mut dyn TokenStream,
         operator: Occur,
     ) -> Result<Option<Arc<dyn Query>>> {
@@ -608,7 +649,7 @@ pub trait QueryBuilderOps {
     /// [`phrase_query::Builder`].
     fn analyze_phrase(
         &self,
-        field: &str,
+        field: Option<&str>,
         stream: &mut dyn TokenStream,
         slop: i32,
     ) -> Result<Option<Arc<dyn Query>>> {
@@ -626,7 +667,10 @@ pub trait QueryBuilderOps {
             } else {
                 position += 1;
             }
-            let term = Term::new(field, term_bytes_of(atts).unwrap_or_default());
+            let term = Term::with_nullable_field(
+                field.map(str::to_string),
+                term_bytes_of(atts).unwrap_or_default(),
+            );
             builder.add_at(term, position)?;
             phrase_boost *= boost_of(atts);
         }
@@ -650,7 +694,7 @@ pub trait QueryBuilderOps {
     /// [`multi_phrase_query::Builder`].
     fn analyze_multi_phrase(
         &self,
-        field: &str,
+        field: Option<&str>,
         stream: &mut dyn TokenStream,
         slop: i32,
     ) -> Result<Option<Arc<dyn Query>>> {
@@ -675,7 +719,10 @@ pub trait QueryBuilderOps {
             }
             position += position_increment;
             let atts = stream.attribute_source();
-            multi_terms.push(Term::new(field, term_bytes_of(atts).unwrap_or_default()));
+            multi_terms.push(Term::with_nullable_field(
+                field.map(str::to_string),
+                term_bytes_of(atts).unwrap_or_default(),
+            ));
         }
 
         if enable_position_increments {
@@ -698,7 +745,7 @@ pub trait QueryBuilderOps {
     /// Propagates any error from the analysis chain and the query factories.
     fn analyze_graph_boolean(
         &self,
-        field: &str,
+        field: Option<&str>,
         source: &mut dyn TokenStream,
         operator: Occur,
     ) -> Result<Option<Arc<dyn Query>>> {
@@ -737,7 +784,10 @@ pub trait QueryBuilderOps {
                     .collect();
                 debug_assert!(!terms.is_empty());
                 if terms.len() == 1 {
-                    let term = Term::new(field, terms[0].term().clone());
+                    let term = Term::with_nullable_field(
+                        field.map(str::to_string),
+                        terms[0].term().clone(),
+                    );
                     positional_query = Some(self.new_term_query(&term, terms[0].boost())?);
                 } else {
                     positional_query = Some(self.new_synonym_query(field, &terms)?);
@@ -760,7 +810,7 @@ pub trait QueryBuilderOps {
     fn analyze_graph_phrase(
         &self,
         source: &mut dyn TokenStream,
-        field: &str,
+        field: Option<&str>,
         phrase_slop: i32,
     ) -> Result<Option<Arc<dyn Query>>> {
         source.reset()?;
@@ -806,8 +856,12 @@ pub trait QueryBuilderOps {
     ///
     /// Propagates the errors of `SynonymQuery`'s builder, which rejects a boost
     /// outside `(0, 1]`.
-    fn new_synonym_query(&self, field: &str, terms: &[TermAndBoost]) -> Result<Arc<dyn Query>> {
-        let mut builder = synonym_query::Builder::new(Some(field));
+    fn new_synonym_query(
+        &self,
+        field: Option<&str>,
+        terms: &[TermAndBoost],
+    ) -> Result<Arc<dyn Query>> {
+        let mut builder = synonym_query::Builder::new(field);
         for t in terms {
             builder.add_bytes(t.term().clone(), t.boost())?;
         }

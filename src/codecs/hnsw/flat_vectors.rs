@@ -350,8 +350,8 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
     /// Returns a [`KnnVectorValues`] view over the vectors to be written.
     ///
     /// Wraps [`vectors`](Self::vectors) through
-    /// [`from_floats`](crate::index::vector_values::from_floats) /
-    /// [`from_bytes`](crate::index::vector_values::from_bytes), the way Java
+    /// [`from_floats`] /
+    /// [`from_bytes`], the way Java
     /// wraps `getVectors()` through `FloatVectorValues.fromFloats` /
     /// `ByteVectorValues.fromBytes`. An implementation backed by other storage
     /// may override it to return a richer view.
@@ -1233,7 +1233,7 @@ pub trait FlatVectorsFormat: KnnVectorsFormat {
     /// [`KnnVectorsFormat::fields_writer`] does: Java's writers keep the
     /// `SegmentWriteState` they receive, its `infoStream` included
     /// (`Lucene104ScalarQuantizedVectorsWriter.java:99, 150-153`), which a
-    /// borrowed [`SegmentWriteState`] cannot outlive.
+    /// borrowed [`SegmentWriteState`](crate::codecs::SegmentWriteState) cannot outlive.
     ///
     /// Equivalent to `FlatVectorsFormat.fieldsWriter(SegmentWriteState)`.
     fn fields_writer_flat(

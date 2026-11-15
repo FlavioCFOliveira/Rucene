@@ -28,7 +28,7 @@ use crate::store::IndexInput;
 ///   second reference to an input the caller also keeps (the postings
 ///   reader's `docIn`, `posIn`, `payIn`). Rust cannot hold two mutable
 ///   references to one input, so the decoder owns it and the caller reaches
-///   `docIn` as `docInUtil.in` ([`r#in`](Self::r#in)), the same object Java's
+///   `docIn` as `docInUtil.in` (`r#in`), the same object Java's
 ///   two references denote. Java's `final` (the field is never reassigned)
 ///   cannot be stated on a public Rust field; nothing in the crate assigns it.
 pub struct PostingDecodingUtil {

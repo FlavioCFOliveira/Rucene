@@ -253,7 +253,7 @@ impl Analyzer for DiskUsageAnalyzer {
         }
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::whitespace_lower_case()?));
         match self.payload_length {
             None => Ok(tokenizer_components(tokenizer)),

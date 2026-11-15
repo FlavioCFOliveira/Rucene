@@ -209,7 +209,7 @@ pub trait MergeScheduler: Send + Sync + fmt::Display {
         }
     }
 
-    /// This scheduler as [`Any`](std::any::Any), for the `instanceof` tests
+    /// This scheduler as [`Any`], for the `instanceof` tests
     /// Java code makes on a `MergeScheduler` (`TestUtil.syncConcurrentMerges`
     /// and `TestUtil.reduceOpenFiles` narrow to `ConcurrentMergeScheduler`,
     /// `TestUtil.java:309-311`, `:1467-1470`).
@@ -2218,8 +2218,8 @@ impl MergeScheduler for ConcurrentMergeScheduler {
 
     /// Equivalent to `ConcurrentMergeScheduler.getIntraMergeExecutor(OneMerge)`
     /// (`ConcurrentMergeScheduler.java:276-284`): a merge estimated below
-    /// [`MIN_BIG_MERGE_MB`] gets the base same-thread executor, a bigger one
-    /// the scheduler's [`CachedExecutor`].
+    /// `MIN_BIG_MERGE_MB` gets the base same-thread executor, a bigger one
+    /// the scheduler's `CachedExecutor`.
     ///
     /// Java asserts `intraMergeExecutor != null` (`scaledExecutor is not
     /// initialized`); the assertion is a `debug_assert!`, the port's form of a

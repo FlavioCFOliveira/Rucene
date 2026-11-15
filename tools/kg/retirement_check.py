@@ -35,7 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import load_rucene_kg as lo
 import port_evidence_kg as pe
-from kgio import kg_target
+from kgio import ITEM_PATTERN, kg_target, route_items
 
 FAILURES = []
 
@@ -124,9 +124,37 @@ def fake_read_dicts(_roadmap, query):
     raise AssertionError(f"unexpected read: {query}")
 
 
+def fake_item_labels(_roadmap, labels=None):
+    """`kgio.item_labels`: the label routing table, built from the fixture.
+
+    Without it `load` would read the routing table from the live graph, where
+    none of these items exist, and every `unwind_items` row would be dropped.
+    """
+    out = {}
+    for items, label in ((RUST_TYPES, "RustStruct"), (RUST_FNS, "RustFn")):
+        for name, file in items:
+            out.setdefault((name, file), set()).add(label)
+    return out
+
+
+def fake_unwind_items(_roadmap, mode, rows, body, label, index, batch=None):
+    """`kgio.unwind_items`: route as the real one does, then record, not write.
+
+    The real one writes through `kgio.unwind`, not `pe.unwind`, so it is
+    replaced whole; the routing itself (`kgio.route_items`) is pure and kept.
+    """
+    if ITEM_PATTERN not in body:
+        raise ValueError(f"unwind_items: body does not bind {ITEM_PATTERN}")
+    for _lab, sel in sorted(route_items(rows, index).items()):
+        writes.append((mode, label, [dict(x) for x in sel]))
+    return {}
+
+
 pe.kg_read = fake_read_rows
 pe.unwind = lambda _r, mode, rows, body, label, batch=200: writes.append(
     (mode, label, [dict(x) for x in rows]))
+pe.item_labels = fake_item_labels
+pe.unwind_items = fake_unwind_items
 lo.read = fake_read_dicts
 lo.run_unwind = lambda mode, _r, rows, body, batch, label: writes.append(
     (mode, label, [dict(x) for x in rows]))

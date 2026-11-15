@@ -58,7 +58,7 @@ impl Analyzer for MockSynonymAnalyzer {
         "org.apache.lucene.tests.analysis.MockSynonymAnalyzer"
     }
 
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::whitespace_lower_case()?));
         let filter = MockSynonymFilter::new(shared(&tokenizer))?;
         Ok(components(tokenizer, sink(filter)))

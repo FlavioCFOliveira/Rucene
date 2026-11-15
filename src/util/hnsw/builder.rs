@@ -165,12 +165,12 @@ pub(crate) fn check_params(m: i32, beam_width: i32) -> Result<()> {
 }
 
 impl HnswGraphBuilder {
-    /// Reads `HnswGraphBuilder.randSeed`; see [`RAND_SEED`].
+    /// Reads `HnswGraphBuilder.randSeed`; see `RAND_SEED`.
     pub fn rand_seed() -> u64 {
         RAND_SEED.load(Ordering::Relaxed)
     }
 
-    /// Assigns `HnswGraphBuilder.randSeed = seed`; see [`RAND_SEED`].
+    /// Assigns `HnswGraphBuilder.randSeed = seed`; see `RAND_SEED`.
     pub fn set_rand_seed(seed: u64) {
         RAND_SEED.store(seed, Ordering::Relaxed);
     }

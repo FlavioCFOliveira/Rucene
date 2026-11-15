@@ -31,7 +31,7 @@ use crate::search::sort::SortField;
 /// Equivalent to the abstract class
 /// `org.apache.lucene.search.LongValuesSource`, which implements
 /// [`SegmentCacheable`]. See
-/// [`DoubleValuesSource`](crate::search::DoubleValuesSource) for why
+/// [`DoubleValuesSource`] for why
 /// `get_values` and `rewrite` take an `Arc<Self>` receiver.
 pub trait LongValuesSource: SegmentCacheable + Debug + Send + Sync {
     /// Returns the values for the given leaf.

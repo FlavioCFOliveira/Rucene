@@ -524,17 +524,20 @@ impl Analyzer for PayloadAnalyzer {
         "org.apache.lucene.index.TestPayloads$PayloadAnalyzer"
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let has_payload = self
             .field_to_data
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .contains_key(field_name);
+            // `fieldToData.containsKey(fieldName)`: a `null` key is absent.
+            .contains_key(field_name.unwrap_or_default())
+            && field_name.is_some();
         let ts = Arc::new(AtomicRefCell::new(MockTokenizer::new(
             Arc::clone(&WHITESPACE),
             false,
         )?));
         if has_payload {
+            let field_name = field_name.unwrap_or_default();
             let filter = payload_filter(shared(&ts), field_name, Arc::clone(&self.field_to_data))?;
             Ok(components(ts, sink(filter)))
         } else {

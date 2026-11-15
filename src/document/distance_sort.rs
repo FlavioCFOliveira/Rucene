@@ -10,20 +10,20 @@
 //!
 //! Java's comparators extend `FieldComparator<Double>` and implement
 //! `LeafFieldComparator`, returning `this` from `getLeafComparator`; here each
-//! is a [`SlotComparator`](crate::search::SlotComparator) whose leaf holds the
+//! is a [`SlotComparator`] whose leaf holds the
 //! `currentDocs` field, wrapped in a
 //! [`SharedFieldComparator`](crate::search::SharedFieldComparator) for the
 //! collector. Each also keeps the inherent, Java-named methods it has always
 //! had — `compare`, `set_bottom`, `sort_key` and the rest — which take the
 //! natural Rust types (`usize` slots, `f64` values) and the segment's doc
 //! values; the trait impls are thin adaptations of those to the trait's `i32`
-//! slots and [`SortValue`](crate::search::field_comparator::SortValue).
+//! slots and [`SortValue`].
 //!
 //! What still diverges is the sort fields: Java's `LatLonPointSortField` and
 //! `XYPointSortField` extend `SortField` and override
 //! `getComparator(int, Pruning)`, whereas this crate has no `SortField`
 //! subclassing, so [`LatLonPointSortField`] and [`XYPointSortField`] *hold* a
-//! [`SortField`](crate::search::SortField) and hand out their comparator
+//! [`SortField`] and hand out their comparator
 //! through their own [`LatLonPointSortField::get_comparator`] and
 //! [`XYPointSortField::get_comparator`].
 

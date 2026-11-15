@@ -450,7 +450,7 @@ impl Analyzer for GraphAnalyzer {
 
     /// The tokenizer's fields add the term, position increment, position
     /// length and offset attributes, in that order.
-    fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let mut source = AttributeSource::new_with_factory(default_token_attribute_factory());
         source.add_attribute_interface::<dyn CharTermAttribute>()?;
         source.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
@@ -510,11 +510,11 @@ fn builder(analyzer: &Arc<dyn Analyzer>, setting: &str) -> QueryBuilder {
 /// `AnalysisTokensFixture.create`.
 fn create(b: &QueryBuilder, method: &str, text: &str) -> Result<Option<Arc<dyn Query>>> {
     match method {
-        "bool-should" => b.create_boolean_query("body", text),
-        "bool-must" => b.create_boolean_query_with_operator("body", text, Occur::MUST),
-        "phrase-0" => b.create_phrase_query("body", text),
-        "phrase-2" => b.create_phrase_query_with_slop("body", text, 2),
-        "msm-0.5" => b.create_min_should_match_query("body", text, 0.5),
+        "bool-should" => b.create_boolean_query(Some("body"), text),
+        "bool-must" => b.create_boolean_query_with_operator(Some("body"), text, Occur::MUST),
+        "phrase-0" => b.create_phrase_query(Some("body"), text),
+        "phrase-2" => b.create_phrase_query_with_slop(Some("body"), text, 2),
+        "msm-0.5" => b.create_min_should_match_query(Some("body"), text, 0.5),
         _ => unreachable!("{method}"),
     }
 }

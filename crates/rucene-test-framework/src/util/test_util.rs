@@ -762,7 +762,7 @@ impl TestUtil {
     /// 3 splits the pair (an empty one inserts `_` between the surrogates,
     /// another replaces the low one alone), so the replacement is invalid
     /// exactly when the `find` sequence yields a match starting at 3. The port
-    /// replays that sequence ([`java_find_splits_pair`]); a Rust string cannot
+    /// replays that sequence (`java_find_splits_pair`); a Rust string cannot
     /// hold the lone `\uDC00` an attempt at index 3 sees, so that attempt runs
     /// on `"\u{E000}C"`: of the constructs `randomRegexpishString` writes
     /// (letters, `.`, `?`, `{m,n}`, groups, `|`, and classes of ASCII

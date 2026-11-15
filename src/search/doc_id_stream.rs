@@ -43,7 +43,7 @@ where
 /// **Divergence from Lucene 10.5.0.** Java overloads `forEach`, `count` and
 /// `intoArray` on arity, one overload taking an exclusive `upTo` bound and the
 /// other defaulting it to
-/// [`NO_MORE_DOCS`](crate::search::doc_id_set_iterator::NO_MORE_DOCS). Rust has
+/// [`NO_MORE_DOCS`]. Rust has
 /// no overloading, so the bounded forms carry an `_up_to` suffix. The bodies
 /// and the contracts are unchanged.
 pub trait DocIdStream {

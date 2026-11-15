@@ -2,11 +2,11 @@
 //! `org.apache.lucene.document`.
 //!
 //! [`LatLonPointQuery`] and [`XYPointInGeometryQuery`] read the BKD tree a
-//! [`LatLonPoint`](crate::document::LatLonPoint) or an
-//! [`XYPointField`](crate::document::XYPointField) writes; the three
+//! [`LatLonPoint`] or an
+//! [`XYPointField`] writes; the three
 //! doc-values queries scan the packed longs a
-//! [`LatLonDocValuesField`](crate::document::LatLonDocValuesField) or an
-//! [`XYDocValuesField`](crate::document::XYDocValuesField) writes instead.
+//! [`LatLonDocValuesField`](crate::document::geo_fields::LatLonDocValuesField) or an
+//! [`XYDocValuesField`](crate::document::geo_fields::XYDocValuesField) writes instead.
 //!
 //! # Divergence from Lucene 10.5.0: the query hierarchy
 //!
@@ -160,7 +160,7 @@ impl SpatialVisitor for LatLonPointSpatialVisitor {
 ///
 /// Equivalent to `org.apache.lucene.document.LatLonPointQuery`. The field must
 /// be indexed with one or more
-/// [`LatLonPoint`](crate::document::LatLonPoint) per document.
+/// [`LatLonPoint`] per document.
 #[derive(Clone, Debug)]
 pub struct LatLonPointQuery {
     query: SpatialQuery,
@@ -446,7 +446,7 @@ impl SortedNumericMatcher for LatLonDocValuesMatcher {
 ///
 /// Equivalent to `org.apache.lucene.document.LatLonDocValuesQuery`. The field
 /// must be indexed with a
-/// [`LatLonDocValuesField`](crate::document::LatLonDocValuesField) per
+/// [`LatLonDocValuesField`](crate::document::geo_fields::LatLonDocValuesField) per
 /// document.
 #[derive(Clone, Debug)]
 pub struct LatLonDocValuesQuery {
@@ -763,7 +763,7 @@ impl SortedNumericMatcher for XYDocValuesMatcher {
 ///
 /// Equivalent to `org.apache.lucene.document.XYDocValuesPointInGeometryQuery`.
 /// The field must be indexed with an
-/// [`XYDocValuesField`](crate::document::XYDocValuesField) per document.
+/// [`XYDocValuesField`](crate::document::geo_fields::XYDocValuesField) per document.
 #[derive(Clone, Debug)]
 pub struct XYDocValuesPointInGeometryQuery {
     field: String,
@@ -950,7 +950,7 @@ impl IntersectVisitor for XYPointIntersectVisitor<'_> {
 /// cartesian geometries.
 ///
 /// Equivalent to `org.apache.lucene.document.XYPointInGeometryQuery`. The field
-/// must be indexed with an [`XYPointField`](crate::document::XYPointField) per
+/// must be indexed with an [`XYPointField`] per
 /// document.
 #[derive(Clone, Debug)]
 pub struct XYPointInGeometryQuery {
@@ -1447,7 +1447,7 @@ impl IntersectVisitor for InverseDistanceIntersectVisitor<'_> {
 /// origin.
 ///
 /// Equivalent to `org.apache.lucene.document.LatLonPointDistanceQuery`, which
-/// [`LatLonPoint::new_distance_query`](crate::document::LatLonPoint) builds.
+/// [`LatLonPoint::new_distance_query`](crate::document::geo_fields::LatLonPoint) builds.
 #[derive(Clone, Debug)]
 pub struct LatLonPointDistanceQuery {
     field: String,

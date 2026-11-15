@@ -25,7 +25,7 @@
 //! [`Scorer::iterator`] and [`Scorer::two_phase_iterator`] return borrows, so
 //! the views are nested fields: [`AssertingScorer`] is its own iterator view,
 //! it owns the two-phase view, which owns the approximation view, which owns
-//! the shared state ([`Core`]). Each view reaches the state through the fields
+//! the shared state (`Core`). Each view reaches the state through the fields
 //! it owns, which is the same state Java's inner classes reach through
 //! `AssertingScorer.this`.
 //!

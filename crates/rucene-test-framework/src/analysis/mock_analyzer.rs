@@ -61,7 +61,7 @@ pub struct MockAnalyzer {
     position_increment_gap: AtomicI32,
     offset_gap: Mutex<Option<i32>>,
     random: Arc<dyn Random>,
-    previous_mappings: Mutex<HashMap<String, i32>>,
+    previous_mappings: Mutex<HashMap<Option<String>, i32>>,
     enable_checks: AtomicBool,
     max_token_length: AtomicI32,
 }
@@ -159,14 +159,17 @@ impl MockAnalyzer {
     fn maybe_payload(
         &self,
         stream: Box<dyn TokenStream>,
-        field_name: &str,
+        field_name: Option<&str>,
     ) -> Result<Box<dyn TokenStream>> {
+        // `previousMappings` is a `HashMap`: a `null` field is a key of its own.
+        let key = field_name.map(str::to_string);
+        let shown = field_name.unwrap_or("null");
         let val = {
             let mut previous_mappings = self
                 .previous_mappings
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            match previous_mappings.get(field_name) {
+            match previous_mappings.get(&key) {
                 Some(val) => *val,
                 None => {
                     let mut val = -1; // no payloads
@@ -182,16 +185,16 @@ impl MockAnalyzer {
                         if val == i32::MAX {
                             println!(
                                 "MockAnalyzer: field={} gets variable length payloads",
-                                field_name
+                                shown
                             );
                         } else if val != -1 {
                             println!(
                                 "MockAnalyzer: field={} gets fixed length={} payloads",
-                                field_name, val
+                                shown, val
                             );
                         }
                     }
-                    previous_mappings.insert(field_name.to_string(), val); // save it so we are consistent for this field
+                    previous_mappings.insert(key, val); // save it so we are consistent for this field
                     val
                 }
             }
@@ -245,7 +248,7 @@ impl Analyzer for MockAnalyzer {
         "org.apache.lucene.tests.analysis.MockAnalyzer"
     }
 
-    fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
+    fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let mut tokenizer = MockTokenizer::with_max_token_length(
             Arc::clone(&self.run_automaton),
             self.lower_case,
@@ -266,7 +269,7 @@ impl Analyzer for MockAnalyzer {
 
     fn normalize_token_stream(
         &self,
-        _field_name: &str,
+        _field_name: Option<&str>,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
         if self.lower_case {
@@ -279,13 +282,13 @@ impl Analyzer for MockAnalyzer {
         }
     }
 
-    fn get_position_increment_gap(&self, _field_name: &str) -> i32 {
+    fn get_position_increment_gap(&self, _field_name: Option<&str>) -> i32 {
         self.position_increment_gap.load(Ordering::Relaxed)
     }
 
     /// Get the offset gap between tokens in fields if several fields with the
     /// same name were added.
-    fn get_offset_gap(&self, _field_name: &str) -> i32 {
+    fn get_offset_gap(&self, _field_name: Option<&str>) -> i32 {
         self.offset_gap
             .lock()
             .unwrap_or_else(|e| e.into_inner())

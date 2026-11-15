@@ -4878,7 +4878,7 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
     /// Equivalent to `Lucene90DocValuesProducer.getSkipper(FieldInfo)`
     /// (`Lucene90DocValuesProducer.java:2368-2470`): a cursor over the field's
     /// slice of the skip-index file (or of the data file, for a segment written
-    /// before [`VERSION_SKIPPER_SEPARATE_FILE`]).
+    /// before `VERSION_SKIPPER_SEPARATE_FILE`).
     ///
     /// # Errors
     ///

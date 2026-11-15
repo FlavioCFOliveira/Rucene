@@ -364,9 +364,10 @@ pub enum LuceneErrorKind {
     /// `java.text.ParseException` with its `errorOffset`
     /// ([`ParseException`](crate::util::extra::ParseException)) or
     /// `org.apache.lucene.analysis.hunspell.SuggestionTimeoutException` with
-    /// its partial result. It displays as Java's `Throwable.toString()`, the
-    /// class then `": " + getMessage()`.
-    #[error("{}", unchecked_to_string(.0.java_class(), &.0.get_message().map(str::to_string)))]
+    /// its partial result. It displays as the class's `toString()`: its own
+    /// override ([`JavaThrowable::to_java_string`]) or Java's
+    /// `Throwable.toString()`, the class then `": " + getMessage()`.
+    #[error("{}", throwable_to_string(.0.as_ref()))]
     Throwable(Arc<dyn JavaThrowable>),
 }
 
@@ -394,8 +395,31 @@ pub trait JavaThrowable: std::fmt::Debug + Send + Sync + 'static {
         false
     }
 
+    /// The class's own `toString()`, `None` when it inherits
+    /// `Throwable.toString()` (the class, then `": " + getLocalizedMessage()`
+    /// when there is a message).
+    ///
+    /// Equivalent to a Java exception class that overrides `toString()`, for
+    /// example `QueryNodeException.toString()` (`QueryNodeException.java:76-79`).
+    /// The error's `Display`, which stands for `toString()`, renders this
+    /// text when it is `Some`.
+    fn to_java_string(&self) -> Option<String> {
+        None
+    }
+
     /// The value itself, for the defining module to downcast to its class.
     fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// `toString()` of a [`JavaThrowable`]: its own override
+/// ([`JavaThrowable::to_java_string`]), or `Throwable.toString()`.
+fn throwable_to_string(throwable: &dyn JavaThrowable) -> String {
+    throwable.to_java_string().unwrap_or_else(|| {
+        unchecked_to_string(
+            throwable.java_class(),
+            &throwable.get_message().map(str::to_string),
+        )
+    })
 }
 
 /// The binary name of `java.lang.NumberFormatException`, a subclass of

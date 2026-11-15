@@ -814,7 +814,7 @@ impl MatchesIterator for CountIterator {
         Throwable::new("java.lang.AssertionError", "").throw()
     }
 
-    fn get_query(&self) -> Arc<dyn Query> {
+    fn get_query(&self) -> Option<Arc<dyn Query>> {
         Throwable::new("java.lang.AssertionError", "").throw()
     }
 }

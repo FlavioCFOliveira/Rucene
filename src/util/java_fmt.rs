@@ -39,7 +39,7 @@
 /// equally close, the one with the even significand; it switches to
 /// "computerized scientific notation" when the magnitude leaves
 /// `[10^-3, 10^7)`. Rust's shortest form breaks the tie upwards and has no
-/// two-digit minimum, so [`giulietti_decimal`] corrects it: `Double.MIN_VALUE`
+/// two-digit minimum, so `giulietti_decimal` corrects it: `Double.MIN_VALUE`
 /// renders `4.9E-324` (Rust's shortest form is `5e-324`) and
 /// `9.4832877835713125E12`, a halfway value, `9.483287783571312E12`.
 ///

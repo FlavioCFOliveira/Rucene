@@ -34,7 +34,7 @@
 //! One Lucene behaviour is reproduced deliberately even though it looks like a
 //! defect: a `\uXXXX` escape appends the *decimal digits of the code point*
 //! rather than the character it denotes, because Java's
-//! `StringBuilder.append(int)` appends the number. See [`ParserState::parse_string`].
+//! `StringBuilder.append(int)` appends the number. See `ParserState::parse_string`.
 
 use std::fmt;
 

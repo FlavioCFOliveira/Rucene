@@ -346,7 +346,10 @@ def resolve_external_type(simple_name, imports, pkg):
 def scan_external_supertypes():
     """Scan all Java files and return external extends/implements targets per type."""
     decl_re = re.compile(
-        r'^\s*(?:(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*'
+        # `e.DECL_HEAD`: annotations as well as modifiers, so a declaration
+        # whose annotation shares its line is seen; the modifiers-only head
+        # survived here after the other extractors dropped it (rmp #505).
+        r'^\s*' + e.DECL_HEAD +
         r'(class|interface|enum|record|@interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
         r'(?:\s*<[^;{}]*>)?'
         # A record carries a component list between its name and its body, and a
@@ -427,7 +430,9 @@ def extract_inner_classes():
     parentQualifiedName.
     """
     decl_re = re.compile(
-        r'^\s*(?:(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*'
+        # `e.DECL_HEAD`: annotations as well as modifiers, so a declaration
+        # whose annotation shares its line (JavaCC's parsers) is seen.
+        r'^\s*' + e.DECL_HEAD +
         r'(class|interface|enum|record|@interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
         r'(?:\s*<[^;{}]*>)?'
         # A record carries a component list between its name and its body, and a
@@ -435,7 +440,7 @@ def extract_inner_classes():
         # Lucene 10.5.0's 54 nested records and `DocIdSetBuilder.BulkAdder`
         # were invisible to this extractor.
         r'(?:\s*\([^;{}]*\))?'
-        r'(?:\s+extends\s+[^{<]+)?'
+        r'(?:\s+extends\s+([^{<]+))?'
         r'(?:\s+implements\s+[^{<]+)?'
         r'(?:\s+permits\s+[^{]+)?'
         r'\s*[{<]',
@@ -468,6 +473,12 @@ def extract_inner_classes():
                     kind_raw = m.group(1)
                     kind = {'class': 'class', 'interface': 'interface', 'enum': 'enum',
                             'record': 'record', '@interface': 'annotation'}[kind_raw]
+                    # A nested exception is an `exception`, as a top-level one is
+                    # (`e.is_exception_decl`); reading every nested class as
+                    # `class` mislabelled `DocTermsIndexException` and the
+                    # JavaCC parsers' `LookaheadSuccess` (rmp #505).
+                    if kind == 'class' and e.is_exception_decl(name, m.group(3)):
+                        kind = 'exception'
 
                     # Pop stack to the current depth. Depth 0 = file scope.
                     while stack and len(stack) > max(depth, 0):
@@ -573,7 +584,9 @@ def extract_members():
     `member_extraction_check.py` now fixes each in a test.
     """
     decl_re = re.compile(
-        r'^\s*(?:(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*'
+        # `e.DECL_HEAD`: annotations as well as modifiers, so a declaration
+        # whose annotation shares its line (JavaCC's parsers) is seen.
+        r'^\s*' + e.DECL_HEAD +
         r'(class|interface|enum|record|@interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
         r'(?:\s*<[^;{}]*>)?'
         # A record carries a component list between its name and its body, and a
