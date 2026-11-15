@@ -238,7 +238,8 @@ COVERAGE_QUERY = (
     "MATCH (c:Class) WHERE c.portScope = 'in' "
     "RETURN c.module AS module, "
     "CASE WHEN c.portState = 'ported' THEN 'ported' "
-    "WHEN c.portState = 'skeleton' THEN 'skeleton' ELSE 'unported' END AS status, "
+    "WHEN c.portState = 'skeleton' THEN 'skeleton' "
+    "WHEN c.portState = 'notApplicable' THEN 'notApplicable' ELSE 'unported' END AS status, "
     "count(c) AS classes ORDER BY module, status"
 )
 # The members ported early under the cycle rule, by module.

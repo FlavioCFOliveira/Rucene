@@ -188,3 +188,62 @@ def test_crate_destination_snake_cases_package_segments():
     assert pm.crate_destination(
         "lucene/queryparser", "org.apache.lucene.queryparser.flexible.standard.nodes") \
         == "crates/rucene-queryparser/src/flexible/standard/nodes/"
+
+
+# --- port_evidence_kg.load: a module claim in a file whose items claim nothing
+
+class _LoadGraph:
+    """The reads `port_evidence_kg.load` makes, answered from fixed sets."""
+
+    def __init__(self, classes, types, fns):
+        self.classes, self.types, self.fns = classes, types, fns
+
+    def read(self, _roadmap, cypher):
+        if "RETURN c.qualifiedName" in cypher and "DECLARES" not in cypher \
+                and "PORTS" not in cypher:
+            return [[c] for c in self.classes]
+        if "DECLARES" in cypher:
+            return []
+        if "t:RustStruct OR" in cypher:
+            return [list(t) for t in self.types]
+        if "Component" in cypher:
+            return []
+        if "MATCH (f:RustFn)" in cypher:
+            return [list(f) for f in self.fns]
+        if "PORTS" in cypher:
+            return []
+        raise AssertionError(cypher)
+
+
+def _load(monkeypatch, claims, types, fns=()):
+    graph = _LoadGraph(["org.apache.lucene.tests.geo.GeoTestUtil",
+                        "org.apache.lucene.tests.search.BaseExplanationTestCase"],
+                       types, fns)
+    monkeypatch.setattr(pe, "q", graph.read)
+    monkeypatch.setattr(pe, "run_unwind", lambda *a, **k: None)
+    monkeypatch.setattr(pe, "item_labels", lambda _r: {})
+    monkeypatch.setattr(pe, "unwind_items", lambda *a, **k: {})
+    return pe.load("test", claims, "c0ffee", "2026-11-15")
+
+
+def test_a_module_claim_lands_on_the_component_when_the_files_types_claim_nothing(
+        monkeypatch):
+    geo = "crates/x/src/geo/geo_test_util.rs"
+    rows = _load(monkeypatch,
+                 [{"file": geo, "line": 18, "target": None, "scope": "module",
+                   "lucene": "org.apache.lucene.tests.geo.GeoTestUtil", "note": None}],
+                 types=[("SvgObject", geo)], fns=[("next_latitude", geo)])
+    assert [(r["name"], r["file"], r["lucene"]) for r in rows] == [
+        ("GeoTestUtil", geo, "org.apache.lucene.tests.geo.GeoTestUtil")]
+
+
+def test_a_module_claim_is_still_dropped_when_an_item_of_the_file_claims(monkeypatch):
+    f = "crates/x/src/search/base_explanation_test_case.rs"
+    fqn = "org.apache.lucene.tests.search.BaseExplanationTestCase"
+    rows = _load(monkeypatch,
+                 [{"file": f, "line": 18, "target": None, "scope": "module",
+                   "lucene": fqn, "note": None},
+                  {"file": f, "line": 99, "target": "class", "targetKind": "fn",
+                   "scope": "item", "lucene": fqn, "note": None}],
+                 types=[("ExplanationState", f)], fns=[("class", f)])
+    assert [(r["name"], r["file"]) for r in rows] == [("class", f)]

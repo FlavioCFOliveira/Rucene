@@ -92,6 +92,41 @@ def nested_ported_without_ports(q, ported_ids):
         "RETURN id(c), c.qualifiedName") if cid not in ported_ids)
 
 
+def not_applicable_audit(q, check, verdicts):
+    """The `notApplicable` state (rmp #508), both ways.
+
+    `portState = 'notApplicable'` asserts that an in-scope class has no faithful
+    Rust form and owes no port. Only a curated verdict
+    (`port_coverage_kg.NA_VERDICTS`) asserts it, so every such class must carry
+    its justification -- the reason in `portStateNote`, `portStateEvidence`
+    `curated-not-applicable`, and a verdict in the file with its reason, Lucene
+    sources and JDK sources -- be in scope, and have no `PORTS` edge; and every
+    verdict must have produced the state.
+    """
+    import port_coverage_kg as pc
+    na = {r[0]: (r[1], r[2], r[3]) for r in q(
+        f"MATCH (c:Class) WHERE c.portState = '{pc.NA_STATE}' "
+        "RETURN c.qualifiedName, c.portScope, c.portStateNote, c.portStateEvidence")}
+    print(f"   notApplicable classes: {len(na)}; verdicts: {len(verdicts)}")
+    incomplete = {qn for qn, _f in pc.verdict_problems(verdicts)}
+    unjustified = sorted(
+        qn for qn, (_scope, note, evidence) in na.items()
+        if not note or evidence != pc.NA_EVIDENCE or qn not in verdicts or qn in incomplete)
+    check("notApplicable classes without a justification", len(unjustified), 0,
+          f"{unjustified[:3]}" if unjustified else "")
+    out_of_scope = sorted(qn for qn, (scope, _n, _e) in na.items() if scope != "in")
+    check("notApplicable classes not in scope", len(out_of_scope), 0,
+          f"{out_of_scope[:3]}" if out_of_scope else "")
+    ported = {r[0] for r in q(
+        f"MATCH ()-[:PORTS]->(c:Class) WHERE c.portState = '{pc.NA_STATE}' "
+        "RETURN DISTINCT c.qualifiedName")}
+    check("notApplicable classes with a PORTS edge", len(ported), 0,
+          f"{sorted(ported)[:3]}" if ported else "")
+    missing = sorted(set(verdicts) - set(na))
+    check("not-applicable verdicts without the state", len(missing), 0,
+          f"{missing[:3]}" if missing else "")
+
+
 def skeleton_audit(q, check, source_root: Path):
     """The skeleton relation, both ways: the crate's declarations against the
     graph's `SKELETON_OF` / `PLANS_PORT`, and each skeleton-tracked module's
@@ -167,7 +202,7 @@ def skeleton_audit(q, check, source_root: Path):
         check(f"{module} classes with more than one skeleton", len(multi), 0,
               f"{multi[:3]}" if multi else "")
         gap = sorted(c for c, (_sc, st) in mod.items()
-                     if per_class.get(c, 0) == 0 and st != "ported")
+                     if per_class.get(c, 0) == 0 and st not in ("ported", "notApplicable"))
         gap_in = sum(1 for c in gap if mod[c][0] == "in")
         line = (f"   {module}: classes {len(mod)} (top-level "
                 f"{sum(1 for v in mod.values() if v[0] == 'in')}, nested "
@@ -340,6 +375,8 @@ def main():
     orphan = q("MATCH (c:Class) WHERE c.portScope='nested' AND c.portState='unported' "
                "AND c.portDestination IS NULL RETURN count(c)")[0][0]
     check("unported nested types without a destination", orphan, 0)
+    import port_coverage_kg as pc
+    not_applicable_audit(q, check, pc.load_not_applicable())
     for r in q("MATCH ()-[e:PORTS]->(:Class) RETURN coalesce(e.evidence,'UNSTATED') AS ev, "
                "count(*) AS n ORDER BY n DESC"):
         print(f"   PORTS evidence {str(r[0]):<12} {r[1]}")

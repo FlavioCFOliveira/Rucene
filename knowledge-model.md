@@ -124,15 +124,16 @@ port loaders named below.
 |---|---|
 | `name` | Simple type name. |
 | `qualifiedName` | Fully qualified name (identity). |
-| `kind` | `"class"`, `"interface"`, `"enum"`, `"record"`, `"exception"`, `"annotation"`. |
+| `kind` | `"class"`, `"interface"`, `"enum"`, `"record"`, `"exception"`, `"annotation"`. Nested types also carry `"exception"`. A nested class counts as an exception by the top-level rule (`extract_lucene_kg.is_exception_decl`): its name ends in `Exception`/`Error`, or its superclass names `Throwable`, `Exception` or `Error`. |
 | `package` | Enclosing Java package. |
 | `file` | Source file, relative to the root of its repository (Lucene's, or randomizedtesting's). |
 | `module` | The port module whose source tree declares it (`port_coverage_kg.py --phase scope`). |
 | `extendsExternal` / `implementsExternal` | External (`java.*`, `javax.*`) super-types not modelled as nodes. |
 | `portScope` | `"in"`, `"nested"`, `"out"` — see below. |
 | `portScopeRule` | The mechanical rule that assigned `portScope`. |
-| `portState` | Top-level: `"ported"`, `"skeleton"`, `"candidate"`, `"unported"`. Nested: `"ported"`, `"skeleton"`, `"absorbed"`, `"unported"`. See below. |
-| `portStateEvidence` | On a nested type, the basis of its `portState`: `"doc-comment"`, `"skeleton-doc-comment"`, `"curated"`, `"not-nameable"`, `"verified-absorption"`, `"verified-absent"`, `"no-port-claim"`. |
+| `portState` | Top-level: `"ported"`, `"skeleton"`, `"candidate"`, `"notApplicable"`, `"unported"`. Nested: `"ported"`, `"skeleton"`, `"absorbed"`, `"unported"`. See below. |
+| `portStateEvidence` | On a nested type, the basis of its `portState`: `"doc-comment"`, `"skeleton-doc-comment"`, `"curated"`, `"not-nameable"`, `"verified-absorption"`, `"verified-absent"`, `"no-port-claim"`. On a top-level type, `"curated-not-applicable"`, together with `portState` `"notApplicable"`. |
+| `portStateSources` | On a `notApplicable` type: every citation in its verdict (Lucene 10.5.0, JDK 25, Rucene precedent), joined with ` \| `. |
 | `portStateNote` | Why a hand verification overrode the mechanical `portState`. A type carrying it is skipped by the mechanical pass, so the verification survives the next sync. |
 | `javaVisibility` | Top-level: `"public"` or `"package"`, from the class file's `ACC_PUBLIC` flag (`lucene_calls_kg.py`). Nested: the effective visibility. |
 | `javaPublished` / `javaUsedAcrossFiles` | On a nested type: whether it and every enclosing type are `public`/`protected`; whether another `lucene/core` file names it as `Outer.Inner`. |
@@ -168,7 +169,8 @@ The rule keys on the **declaring file**, not on the package name.
 | `skeleton` | No type-level `PORTS`, but a `SKELETON_OF` edge: a Rust item declares itself the skeleton of this type. The item exists; the port is not done. Only a `PORTS` edge moves it to `ported`. |
 | `candidate` | No assertion, but exactly one Rucene type carries the same simple name, recorded as `PORTS_CANDIDATE`. Probable, unverified. |
 | `absorbed` | (nested only) No independent Rust item, and none is owed, on the evidence `portStateEvidence` names. |
-| `unported` | Neither. Real work; a nested one carries `portDestination`. |
+| `notApplicable` | An in-scope type that has no faithful Rust form and owes no port, on a curated verdict in `tools/kg/not_applicable_verdicts.json` (reason, Lucene sources, JDK sources). `port_coverage_kg.py --phase scope` writes it, with the reason in `portStateNote`, so the mechanical pass keeps it. `audit_kg.py` fails on such a type when its verdict is incomplete, when it is out of scope, or when it has a `PORTS` edge. |
+| `unported` | None of the above, and no not-applicable verdict. Real work; a nested one carries `portDestination`. |
 
 A nested type's `portStateEvidence`: `doc-comment` (the crate's own claim);
 `curated` (a hand-verified edge in `tools/kg/nested_port_verdicts.json`, with file and
@@ -382,7 +384,7 @@ A top-level type of a Lucene 10.5.0 test tree — `lucene/test-framework/src/jav
 | `testKind` | `"framework"` or `"unit-test"`. |
 | `role` | From name and path only: `unit-test`, `framework-util`, `base-test-case`, `mock`, `asserting`, `mock-filesystem`, `test-codec`, `test-case-base`, `test-helper`, `fault-injection`, `annotation`. |
 | `isAbstract` | Whether the declaration is `abstract`. |
-| `testMethodCount` | Test methods the file declares. |
+| `testMethodCount` | Test methods of the file's top-level type that the runner runs: methods that are `public`, not `static`, take no parameters and have a name starting with `test` (`LuceneJUnit3MethodProvider.java:39-42`), plus methods annotated `@Test`. Counted after one left-to-right lexical pass (`javatext.strip_java`). |
 | `ruceneCoverage` | `"covered"` (the subject is ported and its Rust file declares a `#[test]`), `"uncovered"` (ported, no test there), `"subject-unported"`, `"no-subject-resolved"` (the name follows no test-naming convention). A file-level correspondence: it never means the Lucene test's cases were ported. |
 
 A `lucene/test-framework` `TestClass` is also a `Class` of that port module: its port
@@ -468,11 +470,11 @@ RETURN labels(t)[0] AS label, t.name, t.file, e.evidence, e.declaredAt, e.note
 ### What of each port module is ported, and what is missing
 
 In-scope classes per module and status (`ask.py coverage`; `--module M --list` lists
-the classes; `skeleton` is a Rust skeleton with no port, `unported` every other
-`portState` but `ported`):
+the classes; `skeleton` is a Rust skeleton with no port, `notApplicable` a curated verdict that
+no port is owed, and `unported` every other `portState` but `ported`):
 
 ```cypher
-MATCH (c:Class) WHERE c.portScope = 'in' RETURN c.module AS module, CASE WHEN c.portState = 'ported' THEN 'ported' WHEN c.portState = 'skeleton' THEN 'skeleton' ELSE 'unported' END AS status, count(c) AS classes ORDER BY module, status
+MATCH (c:Class) WHERE c.portScope = 'in' RETURN c.module AS module, CASE WHEN c.portState = 'ported' THEN 'ported' WHEN c.portState = 'skeleton' THEN 'skeleton' WHEN c.portState = 'notApplicable' THEN 'notApplicable' ELSE 'unported' END AS status, count(c) AS classes ORDER BY module, status
 ```
 
 Members ported early under the cycle rule (`ask.py early`):

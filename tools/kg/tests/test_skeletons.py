@@ -289,6 +289,7 @@ def test_a_skeleton_type_is_never_a_candidate(monkeypatch, tmp_path):
 def test_coverage_reports_ported_skeleton_and_unported():
     for q in (pm.COVERAGE_QUERY, ask.q_coverage_list(AC)):
         assert "THEN 'ported' WHEN c.portState = 'skeleton' THEN 'skeleton' " \
+               "WHEN c.portState = 'notApplicable' THEN 'notApplicable' " \
                "ELSE 'unported' END AS status" in q
     assert "c.module = 'lucene/analysis/common'" in ask.q_coverage_list(AC)
 

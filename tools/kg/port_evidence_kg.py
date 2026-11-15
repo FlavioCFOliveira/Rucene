@@ -660,7 +660,12 @@ def load(roadmap, claims, commit, date):
     by hand -- every one whose module doc states the claim at all -- and finds
     exactly the two that were missing, `CollectionUtil` and `HashContainers`. An
     existing `Component` for the file is reused whatever it is named, so the rule
-    cannot mint a second node for a module that already has one.
+    cannot mint a second node for a module that already has one. The same holds
+    for a file whose declared items make **no claim of their own**: its types
+    are the module's helpers (`SvgObject` in `geo_test_util.rs`, the argument
+    enum of `GeoTestUtil.toSVG(Object...)`), so the claim still names the file.
+    A file where some item carries its own claim keeps the conservative rule
+    and the module claim is dropped, since it may be about that item.
 
     The Rust end is matched on `(name, file)` -- the identity the model gives a
     Rust type and a `Component` alike -- for every kind of claim, which is also
@@ -718,6 +723,17 @@ def load(roadmap, claims, commit, date):
     # module-as-`Component` rule turns on the absence of a *type*, not of a
     # function: a module of free functions is exactly the case it serves.
     files_with_types = {f for _n, f in types}
+    # The files where some declared item carries its own claim (an item doc or
+    # a table row). In such a file a module claim may be about one of those
+    # items under another name -- or already lands through one -- so it is not
+    # attributed to the file. A file whose items claim nothing --
+    # `geo_test_util.rs`, whose only type is the Rust-only argument enum
+    # `SvgObject` of `GeoTestUtil.toSVG(Object...)` -- is a module of free
+    # functions with helpers, and its claim lands on the file's `Component`
+    # like that of a file with no type at all (rmp #505).
+    files_with_claimed_items = {
+        c["file"] for c in claims
+        if c["scope"] in ("item", "table") and c.get("target")}
     component_of_file = {r[1]: r[0] for r in q(
         roadmap, "MATCH (co:Component) RETURN co.name, co.file") if r[1]}
     # A free function can be the port of a Lucene class in its own right --
@@ -738,7 +754,8 @@ def load(roadmap, claims, commit, date):
             if (simple, c["file"]) in types:
                 target = simple
                 module_resolved += 1
-            elif c["file"] in files_with_types and c["file"] not in component_of_file:
+            elif (c["file"] in files_with_claimed_items
+                  and c["file"] not in component_of_file):
                 # A file that already has a `Component` keeps it when it later
                 # gains a type of its own: sprint 9 added the trait
                 # `HashContainerOverrides` to `hash_containers.rs`, which made

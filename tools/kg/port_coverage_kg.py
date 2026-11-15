@@ -63,6 +63,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from extract_lucene_kg import DECL_HEAD, clean_for_brace_count  # noqa: E402
@@ -165,6 +166,83 @@ def scan_lucene(lucene_root: str, rt_root=None):
 # ---------------------------------------------------------------------------
 
 
+# Classes in scope that have no faithful Rust form and owe no port: the
+# version-controlled hand verdicts, each with its Lucene 10.5.0 and JDK 25
+# sources (rmp #508). `phase_scope` writes them as `portState =
+# 'notApplicable'` with the reason in `portStateNote`, so the mechanical pass
+# that follows keeps them (`overridden_set`).
+NA_VERDICTS = Path(__file__).resolve().parent / "not_applicable_verdicts.json"
+NA_STATE = "notApplicable"
+NA_EVIDENCE = "curated-not-applicable"
+NA_REQUIRED = ("reason", "lucene", "jdk")
+
+
+def load_not_applicable(path=NA_VERDICTS):
+    """`{qualified name: verdict}` of the not-applicable verdict file."""
+    return json.loads(Path(path).read_text(encoding="utf-8")).get("notApplicable", {})
+
+
+def verdict_problems(verdicts):
+    """`[(class, field)]` for every verdict missing a required justification:
+    its reason, its Lucene sources or its JDK sources."""
+    return [(qn, field) for qn, v in sorted(verdicts.items())
+            for field in NA_REQUIRED if not v.get(field)]
+
+
+def verdict_sources(v):
+    """Every citation of a verdict, as the one string `portStateSources` holds."""
+    return " | ".join([*v.get("lucene", ()), *v.get("jdk", ()), *v.get("rucene", ())])
+
+
+def not_applicable_rows(verdicts, in_scope):
+    """`(rows, unknown)`: the update rows for the verdicts naming an in-scope
+    class, and the verdicts naming none."""
+    rows, unknown = [], []
+    for qn, v in sorted(verdicts.items()):
+        if qn not in in_scope:
+            unknown.append(qn)
+            continue
+        rows.append({"qn": qn, "note": v["reason"], "sources": verdict_sources(v)})
+    return rows, unknown
+
+
+def apply_not_applicable(roadmap, in_scope, stamp, batch_size, path=NA_VERDICTS):
+    """Write the not-applicable verdicts, and return their classes.
+
+    A class that was `notApplicable` and is no longer listed loses the state
+    and its note, so the mechanical pass after this decides it again: a
+    verdict cannot outlive its file entry. A verdict without its justification
+    stops the sync; one naming no in-scope class is reported (and failed by the
+    audit).
+    """
+    verdicts = load_not_applicable(path)
+    bad = verdict_problems(verdicts)
+    if bad:
+        raise SystemExit(f"not-applicable verdicts without a justification: {bad}")
+    rows, unknown = not_applicable_rows(verdicts, in_scope)
+    for qn in unknown:
+        print(f"  NOT-APPLICABLE VERDICT NAMES NO IN-SCOPE CLASS: {qn}", file=sys.stderr)
+    listed = {r["qn"] for r in rows}
+    stale = [{"qn": r["qn"]} for r in read(
+        roadmap,
+        f"MATCH (c:Class) WHERE c.portState = '{NA_STATE}' RETURN c.qualifiedName AS qn")
+        if r["qn"] not in listed]
+    run_unwind(
+        "update", roadmap, stale,
+        "MATCH (c:Class {qualifiedName:row.qn}) "
+        "REMOVE c.portStateNote, c.portStateEvidence, c.portStateSources "
+        f"SET c.portState = 'unported', {stamp}",
+        batch_size, "notApplicable retired")
+    run_unwind(
+        "update", roadmap, rows,
+        "MATCH (c:Class {qualifiedName:row.qn}) "
+        f"SET c.portState = '{NA_STATE}', c.portStateNote = row.note, "
+        f"c.portStateEvidence = '{NA_EVIDENCE}', c.portStateSources = row.sources, "
+        f"{stamp}",
+        batch_size, "portState = notApplicable")
+    return listed
+
+
 def overridden_set(roadmap):
     """Os tipos cujo `portState` foi corrigido a mao, identificados por
     `portStateNote`.
@@ -259,6 +337,7 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
     # evidencia mais forte do que a regra mecanica, por isso a passagem
     # automatica nao lhe toca -- sem isto, cada sincronizacao apagava-a e o
     # grafo voltava a mentir sobre o que esta portado.
+    apply_not_applicable(roadmap, {r["qn"] for r in rows_in}, stamp, batch_size)
     overridden = overridden_set(roadmap)
 
     # The sprint's cycle rule ports a member before the type that holds it, so
