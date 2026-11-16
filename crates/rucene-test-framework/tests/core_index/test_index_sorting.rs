@@ -484,9 +484,9 @@ fn assert_needs_index_sort_merge(
     let with_values = random().next_boolean();
     for i in 100..200 {
         let mut doc = Document::new();
-        doc.add(string_field("id", &i.to_string(), Store::YES)?);
-        doc.add(ndv("id", i));
-        doc.add(Box::new(IntPoint::new("point", &[random().next_int()])?));
+        doc.add(*string_field("id", &i.to_string(), Store::YES)?);
+        doc.add(*ndv("id", i));
+        doc.add(IntPoint::new("point", &[random().next_int()])?);
         if with_values {
             default_value_consumer(&mut doc);
         }
@@ -513,9 +513,9 @@ fn assert_needs_index_sort_merge(
     codec_state.needs_index_sort.store(true, Ordering::SeqCst);
     for i in (0..=10).rev() {
         let mut doc = Document::new();
-        doc.add(string_field("id", &i.to_string(), Store::YES)?);
-        doc.add(ndv("id", i));
-        doc.add(Box::new(IntPoint::new("point", &[random().next_int()])?));
+        doc.add(*string_field("id", &i.to_string(), Store::YES)?);
+        doc.add(*ndv("id", i));
+        doc.add(IntPoint::new("point", &[random().next_int()])?);
         if with_values {
             default_value_consumer(&mut doc);
         }
@@ -532,9 +532,9 @@ fn assert_needs_index_sort_merge(
     codec_state.num_calls.store(0, Ordering::SeqCst);
     for i in 201..300 {
         let mut doc = Document::new();
-        doc.add(string_field("id", &i.to_string(), Store::YES)?);
-        doc.add(ndv("id", i));
-        doc.add(Box::new(IntPoint::new("point", &[random().next_int()])?));
+        doc.add(*string_field("id", &i.to_string(), Store::YES)?);
+        doc.add(*ndv("id", i));
+        doc.add(IntPoint::new("point", &[random().next_int()])?);
         random_value_consumer(&mut doc);
         w.add_document(&doc)?;
         if i % 10 == 0 {
@@ -555,8 +555,8 @@ fn assert_needs_index_sort_merge(
 fn test_numeric_already_sorted() -> Result<()> {
     assert_needs_index_sort_merge(
         sort_field("foo", SortFieldType::Int)?,
-        &|doc| doc.add(ndv("foo", 0)),
-        &|doc| doc.add(ndv("foo", random().next_int() as i64)),
+        &|doc| doc.add(*ndv("foo", 0)),
+        &|doc| doc.add(*ndv("foo", random().next_int() as i64)),
     )
 }
 
@@ -564,12 +564,12 @@ fn test_numeric_already_sorted() -> Result<()> {
 fn test_string_already_sorted() -> Result<()> {
     assert_needs_index_sort_merge(
         sort_field("foo", SortFieldType::String)?,
-        &|doc| doc.add(sdv("foo", "default")),
+        &|doc| doc.add(*sdv("foo", "default")),
         &|doc| {
-            doc.add(Box::new(SortedDocValuesField::new(
+            doc.add(SortedDocValuesField::new(
                 "foo",
                 TestUtil::random_binary_term(&*random()),
-            )))
+            ))
         },
     )
 }
@@ -579,16 +579,16 @@ fn test_multi_valued_numeric_already_sorted() -> Result<()> {
     assert_needs_index_sort_merge(
         SortedNumericSortField::new("foo", SortFieldType::Int)?.into_sort_field(),
         &|doc| {
-            doc.add(sndv("foo", i32::MIN as i64));
+            doc.add(*sndv("foo", i32::MIN as i64));
             let num = random().next_int_bound(5);
             for _ in 0..num {
-                doc.add(sndv("foo", random().next_int() as i64));
+                doc.add(*sndv("foo", random().next_int() as i64));
             }
         },
         &|doc| {
             let num = random().next_int_bound(5);
             for _ in 0..num {
-                doc.add(sndv("foo", random().next_int() as i64));
+                doc.add(*sndv("foo", random().next_int() as i64));
             }
         },
     )
@@ -599,22 +599,22 @@ fn test_multi_valued_string_already_sorted() -> Result<()> {
     assert_needs_index_sort_merge(
         SortedSetSortField::new("foo", false)?.into_sort_field(),
         &|doc| {
-            doc.add(ssdv("foo", ""));
+            doc.add(*ssdv("foo", ""));
             let num = random().next_int_bound(5);
             for _ in 0..num {
-                doc.add(Box::new(SortedSetDocValuesField::new(
+                doc.add(SortedSetDocValuesField::new(
                     "foo",
                     TestUtil::random_binary_term(&*random()),
-                )));
+                ));
             }
         },
         &|doc| {
             let num = random().next_int_bound(5);
             for _ in 0..num {
-                doc.add(Box::new(SortedSetDocValuesField::new(
+                doc.add(SortedSetDocValuesField::new(
                     "foo",
                     TestUtil::random_binary_term(&*random()),
-                )));
+                ));
             }
         },
     )
@@ -671,7 +671,7 @@ fn index_three_docs(
 fn doc_with(fields: Vec<Box<dyn rucene::index::IndexableField>>) -> Document {
     let mut doc = Document::new();
     for field in fields {
-        doc.add(field);
+        doc.add_shared(std::sync::Arc::from(field));
     }
     doc
 }
@@ -1501,8 +1501,8 @@ fn random1_index(
     for i in 0..num_docs {
         let mut doc = Document::new();
         values(&mut doc);
-        doc.add(string_field("id", &i.to_string(), Store::YES)?);
-        doc.add(ndv("id", i as i64));
+        doc.add(*string_field("id", &i.to_string(), Store::YES)?);
+        doc.add(*ndv("id", i as i64));
         w.add_document(&doc)?;
         if random().next_int_bound(5) == 0 {
             directory_reader::open_with_writer(w)?.close()?;
@@ -1527,7 +1527,7 @@ fn test_random1() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(200);
     let mut deleted = FixedBitSet::new(num_docs as usize);
     random1_index(&w, num_docs, &mut deleted, &|doc| {
-        doc.add(ndv("foo", random().next_int_bound(20) as i64))
+        doc.add(*ndv("foo", random().next_int_bound(20) as i64))
     })?;
 
     // Check that segments are sorted
@@ -1584,7 +1584,7 @@ fn test_multi_valued_random1() -> Result<()> {
     random1_index(&w, num_docs, &mut deleted, &|doc| {
         let num = random().next_int_bound(10);
         for _ in 0..num {
-            doc.add(sndv("foo", random().next_int_bound(2000) as i64));
+            doc.add(*sndv("foo", random().next_int_bound(2000) as i64));
         }
     })?;
 
@@ -1648,8 +1648,8 @@ impl UpdateRunnable {
                     values.insert(id, value);
                 } else {
                     let mut doc = Document::new();
-                    doc.add(string_field("id", &id.to_string(), Store::NO)?);
-                    doc.add(ndv("foo", value));
+                    doc.add(*string_field("id", &id.to_string(), Store::NO)?);
+                    doc.add(*ndv("foo", value));
 
                     let mut values = self.values.lock().unwrap_or_else(|e| e.into_inner());
                     self.w.update_document(term("id", &id.to_string()), &doc)?;
@@ -1749,12 +1749,12 @@ fn test_bad_dv_update() -> Result<()> {
     iwc.set_index_sort(sort_of(vec![sort_field("foo", SortFieldType::Long)?])?)?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new_with_bytes(
+    doc.add(StringField::new_with_bytes(
         "id",
         bytes_ref("0"),
         Store::NO,
-    )?));
-    doc.add(ndv("foo", random().next_int() as i64));
+    )?);
+    doc.add(*ndv("foo", random().next_int() as i64));
     w.add_document(&doc)?;
     w.commit()?;
     let message =
@@ -1792,9 +1792,9 @@ fn test_concurrent_dv_updates() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(100);
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(string_field("id", &i.to_string(), Store::NO)?);
-        doc.add(ndv("foo", random().next_int() as i64));
-        doc.add(ndv("bar", -1));
+        doc.add(*string_field("id", &i.to_string(), Store::NO)?);
+        doc.add(*ndv("foo", random().next_int() as i64));
+        doc.add(*ndv("bar", -1));
         w.add_document(&doc)?;
         values
             .lock()
@@ -1892,9 +1892,9 @@ fn do_test_add_indexes(with_deletes: bool, use_readers: bool) -> Result<()> {
     let num_docs = LuceneTestCase::at_least(100);
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(string_field("id", &i.to_string(), Store::NO)?);
-        doc.add(ndv("foo", random().next_int_bound(20) as i64));
-        doc.add(ndv("bar", random().next_int_bound(20) as i64));
+        doc.add(*string_field("id", &i.to_string(), Store::NO)?);
+        doc.add(*ndv("foo", random().next_int_bound(20) as i64));
+        doc.add(*ndv("bar", random().next_int_bound(20) as i64));
         w.add_document(&doc)?;
     }
     if with_deletes {
@@ -2168,42 +2168,42 @@ fn test_random2() -> Result<()> {
     for i in 0..num_docs {
         let id = i * 10;
         let mut doc = Document::new();
-        doc.add(string_field("id", &id.to_string(), Store::YES)?);
-        doc.add(string_field("docs", "#all#", Store::NO)?);
+        doc.add(*string_field("id", &id.to_string(), Store::YES)?);
+        doc.add(*string_field("docs", "#all#", Store::NO)?);
         let positions = Arc::new(AtomicRefCell::new(PositionsTokenStream::new()?));
         positions.borrow_mut().set_id(id);
-        doc.add(Box::new(Field::new_with_token_stream(
+        doc.add(Field::new_with_token_stream(
             "positions",
             Arc::clone(&positions) as Arc<AtomicRefCell<dyn TokenStream>>,
             positions_type.clone(),
-        )?));
-        doc.add(ndv("numeric", id as i64));
+        )?);
+        doc.add(*ndv("numeric", id as i64));
         let value = (0..id)
             .map(|_| id.to_string())
             .collect::<Vec<_>>()
             .join(" ");
         let norms = TextField::new("norms", value, Store::NO)?;
-        doc.add(Box::new(norms));
-        doc.add(Box::new(BinaryDocValuesField::new(
+        doc.add(norms);
+        doc.add(BinaryDocValuesField::new(
             "binary",
             bytes_ref(&id.to_string()),
-        )));
-        doc.add(sdv("sorted", &id.to_string()));
-        doc.add(ssdv("multi_valued_string", &id.to_string()));
-        doc.add(ssdv("multi_valued_string", &(id + 1).to_string()));
-        doc.add(sndv("multi_valued_numeric", id as i64));
-        doc.add(sndv("multi_valued_numeric", id as i64 + 1));
-        doc.add(Box::new(Field::new(
+        ));
+        doc.add(*sdv("sorted", &id.to_string()));
+        doc.add(*ssdv("multi_valued_string", &id.to_string()));
+        doc.add(*ssdv("multi_valued_string", &(id + 1).to_string()));
+        doc.add(*sndv("multi_valued_numeric", id as i64));
+        doc.add(*sndv("multi_valued_numeric", id as i64 + 1));
+        doc.add(Field::new(
             "term_vectors",
             id.to_string(),
             term_vectors_type.clone(),
-        )?));
+        )?);
         let mut bytes = [0u8; 4];
         NumericUtils::int_to_sortable_bytes(id, &mut bytes, 0);
-        doc.add(Box::new(BinaryPoint::new(
+        doc.add(BinaryPoint::new(
             "points",
             &[BytesRef::new(bytes.to_vec())],
-        )?));
+        )?);
         docs.push((doc, positions));
     }
 
@@ -2505,44 +2505,38 @@ fn test_random3() -> Result<()> {
         }
 
         let mut doc = Document::new();
-        doc.add(string_field("id", &id.to_string(), Store::YES)?);
-        doc.add(ndv("id", id as i64));
-        doc.add(ndv("int", doc_values.int_value as i64));
-        doc.add(ndv("long", doc_values.long_value));
-        doc.add(Box::new(DoubleDocValuesField::new(
-            "double",
-            doc_values.double_value,
-        )));
-        doc.add(Box::new(FloatDocValuesField::new(
-            "float",
-            doc_values.float_value,
-        )));
-        doc.add(Box::new(SortedDocValuesField::new(
+        doc.add(*string_field("id", &id.to_string(), Store::YES)?);
+        doc.add(*ndv("id", id as i64));
+        doc.add(*ndv("int", doc_values.int_value as i64));
+        doc.add(*ndv("long", doc_values.long_value));
+        doc.add(DoubleDocValuesField::new("double", doc_values.double_value));
+        doc.add(FloatDocValuesField::new("float", doc_values.float_value));
+        doc.add(SortedDocValuesField::new(
             "bytes",
             LuceneTestCase::new_bytes_ref_bytes(&doc_values.bytes_value),
-        )));
+        ));
 
         for &value in &doc_values.int_values {
-            doc.add(sndv("multi_valued_int", value as i64));
+            doc.add(*sndv("multi_valued_int", value as i64));
         }
 
         for &value in &doc_values.long_values {
-            doc.add(sndv("multi_valued_long", value));
+            doc.add(*sndv("multi_valued_long", value));
         }
 
         for &value in &doc_values.float_values {
-            doc.add(sndv("multi_valued_float", f2i(value)));
+            doc.add(*sndv("multi_valued_float", f2i(value)));
         }
 
         for &value in &doc_values.double_values {
-            doc.add(sndv("multi_valued_double", d2l(value)));
+            doc.add(*sndv("multi_valued_double", d2l(value)));
         }
 
         for value in &doc_values.bytes_values {
-            doc.add(Box::new(SortedSetDocValuesField::new(
+            doc.add(SortedSetDocValuesField::new(
                 "multi_valued_bytes",
                 LuceneTestCase::new_bytes_ref_bytes(value),
-            )));
+            ));
         }
 
         w1.add_document(&doc)?;
@@ -2638,12 +2632,9 @@ fn test_tie_break() -> Result<()> {
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     for id in 0..1000 {
         let mut doc = Document::new();
-        doc.add(Box::new(StoredField::new_number(
-            "id",
-            NumericValue::Int(id),
-        )?));
+        doc.add(StoredField::new_number("id", NumericValue::Int(id))?);
         let value = if id < 500 { "bar2" } else { "bar1" };
-        doc.add(sdv("foo", value));
+        doc.add(*sdv("foo", value));
         w.add_document(&doc)?;
         if id == 500 {
             w.commit()?;
@@ -2691,13 +2682,13 @@ fn test_index_sort_with_sparse_field() -> Result<()> {
     let text_field = Arc::new(LuceneTestCase::new_text_field("sparse_text", "", Store::NO));
     for i in 0..128 {
         let mut doc = Document::new();
-        doc.add(ndv("dense_int", i));
+        doc.add(*ndv("dense_int", i));
         if i < 64 {
-            doc.add(ndv("sparse_int", i));
-            doc.add(Box::new(BinaryDocValuesField::new(
+            doc.add(*ndv("sparse_int", i));
+            doc.add(BinaryDocValuesField::new(
                 "sparse_binary",
                 bytes_ref(&i.to_string()),
-            )));
+            ));
             text_field.set_string_value("foo".to_string())?;
             doc.add_shared(Arc::clone(&text_field) as Arc<dyn rucene::index::IndexableField>);
         }
@@ -2761,7 +2752,7 @@ fn test_index_sort_on_sparse_field() -> Result<()> {
     for i in 0..128 {
         let mut doc = Document::new();
         if i < 64 {
-            doc.add(ndv("sparse", i));
+            doc.add(*ndv("sparse", i));
         }
         w.add_document(&doc)?;
     }
@@ -2852,8 +2843,8 @@ fn test_delete_by_term_or_query() -> Result<()> {
     for i in 0..num_docs as usize {
         expected_values[i] = random().next_int_bound(i32::MAX) as i64;
         doc.clear();
-        doc.add(string_field("id", &i.to_string(), Store::YES)?);
-        doc.add(ndv("numeric", expected_values[i]));
+        doc.add(*string_field("id", &i.to_string(), Store::YES)?);
+        doc.add(*ndv("numeric", expected_values[i]));
         w.add_document(&doc)?;
     }
     let num_deleted = random().next_int_bound(num_docs) + 1;
@@ -2870,8 +2861,8 @@ fn test_delete_by_term_or_query() -> Result<()> {
 
         expected_values[id_to_delete as usize] = -(random().next_int_bound(i32::MAX) as i64); // force a reordering
         doc.clear();
-        doc.add(string_field("id", &id_to_delete.to_string(), Store::YES)?);
-        doc.add(ndv("numeric", expected_values[id_to_delete as usize]));
+        doc.add(*string_field("id", &id_to_delete.to_string(), Store::YES)?);
+        doc.add(*ndv("numeric", expected_values[id_to_delete as usize]));
         w.add_document(&doc)?;
     }
 
@@ -2930,9 +2921,9 @@ fn test_sort_docs() -> Result<()> {
     let w = IndexWriter::new(dir.as_directory(), config)?;
     let mut doc = Document::new();
     let sort = ndv("sort", 0);
-    doc.add(sort);
+    doc.add(*sort);
     let field = string_field("field", "a", Store::NO)?;
-    doc.add(field);
+    doc.add(*field);
     w.add_document(&doc)?;
     for (sort, field) in [(1, "b"), (-1, "a"), (2, "a"), (3, "b")] {
         doc.get_field_mut_as::<NumericDocValuesField>("sort")
@@ -2977,13 +2968,9 @@ fn test_sort_docs() -> Result<()> {
 fn add_sort_docs(w: &IndexWriter, ft: &FieldType, docs: &[(i64, &[&str])]) -> Result<()> {
     for &(sort, values) in docs {
         let mut doc = Document::new();
-        doc.add(ndv("sort", sort));
+        doc.add(*ndv("sort", sort));
         for value in values {
-            doc.add(Box::new(Field::new(
-                "field",
-                value.to_string(),
-                ft.clone(),
-            )?));
+            doc.add(Field::new("field", value.to_string(), ft.clone())?);
         }
         w.add_document(&doc)?;
     }
@@ -3174,7 +3161,7 @@ fn test_block_contains_parent_field() -> Result<()> {
         let first: Box<dyn Fn()> = Box::new(|| {
             let message = iae_message_of(|| {
                 let mut doc = Document::new();
-                doc.add(ndv("parent", 0));
+                doc.add(*ndv("parent", 0));
                 writer.add_documents(&[doc, Document::new()])
             });
             assert_equals(&reserved.to_string(), &message);
@@ -3182,7 +3169,7 @@ fn test_block_contains_parent_field() -> Result<()> {
         let second: Box<dyn Fn()> = Box::new(|| {
             let message = iae_message_of(|| {
                 let mut doc = Document::new();
-                doc.add(ndv("parent", 0));
+                doc.add(*ndv("parent", 0));
                 writer.add_documents(&[Document::new(), doc])
             });
             assert_equals(&reserved.to_string(), &message);
@@ -3228,19 +3215,19 @@ fn test_index_sort_with_blocks() -> Result<()> {
         let num_docs = random().next_int_range(50, 100);
         for i in 0..num_docs {
             let mut child1 = Document::new();
-            child1.add(string_field("id", &i.to_string(), Store::YES)?);
-            child1.add(ndv("id", i as i64));
-            child1.add(ndv("child", 1));
-            child1.add(ndv("foo", random().next_int() as i64));
+            child1.add(*string_field("id", &i.to_string(), Store::YES)?);
+            child1.add(*ndv("id", i as i64));
+            child1.add(*ndv("child", 1));
+            child1.add(*ndv("foo", random().next_int() as i64));
             let mut child2 = Document::new();
-            child2.add(string_field("id", &i.to_string(), Store::YES)?);
-            child2.add(ndv("id", i as i64));
-            child2.add(ndv("child", 2));
-            child2.add(ndv("foo", random().next_int() as i64));
+            child2.add(*string_field("id", &i.to_string(), Store::YES)?);
+            child2.add(*ndv("id", i as i64));
+            child2.add(*ndv("child", 2));
+            child2.add(*ndv("foo", random().next_int() as i64));
             let mut parent = Document::new();
-            parent.add(string_field("id", &i.to_string(), Store::YES)?);
-            parent.add(ndv("id", i as i64));
-            parent.add(ndv("foo", random().next_int() as i64));
+            parent.add(*string_field("id", &i.to_string(), Store::YES)?);
+            parent.add(*ndv("id", i as i64));
+            parent.add(*ndv("foo", random().next_int() as i64));
             w.add_documents(&[child1, child2, parent])?;
             if LuceneTestCase::rarely() {
                 w.commit()?;
@@ -3298,12 +3285,12 @@ fn test_index_sort_with_blocks() -> Result<()> {
 /// optional `child_ord` or `num_children`, and a random `foo`.
 fn block_doc(i: i32, doc_type: i64, extra: Option<(&str, i64)>) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(string_field("id", &i.to_string(), Store::YES)?);
-    doc.add(ndv("type", doc_type));
+    doc.add(*string_field("id", &i.to_string(), Store::YES)?);
+    doc.add(*ndv("type", doc_type));
     if let Some((name, value)) = extra {
-        doc.add(ndv(name, value));
+        doc.add(*ndv(name, value));
     }
-    doc.add(ndv("foo", random().next_int() as i64));
+    doc.add(*ndv("foo", random().next_int() as i64));
     Ok(doc)
 }
 

@@ -64,18 +64,16 @@ fn body_type() -> FieldType {
 /// `Utf16OffsetsFixture.doc(int)`.
 fn doc(i: usize) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", i.to_string(), Store::YES).unwrap(),
-    ));
+    d.add(StringField::new("id", i.to_string(), Store::YES).unwrap());
     let body = |text: &str| Box::new(Field::new("body", text.to_string(), body_type()).unwrap());
     if i < TEXTS.len() {
-        d.add(body(TEXTS[i]));
+        d.add(*body(TEXTS[i]));
     } else if i == TEXTS.len() {
-        d.add(body(TEXTS[0]));
-        d.add(body(TEXTS[3]));
+        d.add(*body(TEXTS[0]));
+        d.add(*body(TEXTS[3]));
     } else {
         for text in TEXTS {
-            d.add(body(text));
+            d.add(*body(text));
         }
     }
     d

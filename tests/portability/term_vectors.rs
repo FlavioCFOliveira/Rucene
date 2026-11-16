@@ -792,14 +792,14 @@ fn write_with_rucene(
             let stream: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(
                 ScriptedTokenStream::new(value.tokens.clone()),
             ));
-            document.add(Box::new(
+            document.add(
                 Field::new_with_token_stream(
                     specs[value.spec].name,
                     stream,
                     field_types[value.spec].clone(),
                 )
                 .expect("token stream field"),
-            ));
+            );
         }
         // A document-level failure drops the document and indexing continues,
         // exactly as `IndexWriter.addDocument` does when it catches an
@@ -1217,13 +1217,11 @@ fn vector_doc(id: &str, body: &str) -> Document {
     field_type.freeze();
 
     let mut document = Document::new();
-    document.add(Box::new(
+    document.add(
         rucene::document::StringField::new("id", id.to_string(), rucene::document::Store::YES)
             .expect("id field"),
-    ));
-    document.add(Box::new(
-        Field::new("body", body.to_string(), field_type).expect("body field"),
-    ));
+    );
+    document.add(Field::new("body", body.to_string(), field_type).expect("body field"));
     document
 }
 

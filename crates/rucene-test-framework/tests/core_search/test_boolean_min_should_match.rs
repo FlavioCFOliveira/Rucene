@@ -109,22 +109,14 @@ fn before_class() -> Result<()> {
 
     for (i, d) in data.iter().enumerate() {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::YES,
-        ))); // Field.Keyword("id",String.valueOf(i)));
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "all",
-            "all",
-            Store::YES,
-        ))); // Field.Keyword("all","all"));
+        )); // Field.Keyword("id",String.valueOf(i)));
+        doc.add(LuceneTestCase::new_string_field("all", "all", Store::YES)); // Field.Keyword("all","all"));
         if let Some(d) = d {
-            doc.add(Box::new(LuceneTestCase::new_text_field(
-                "data",
-                d,
-                Store::YES,
-            )));
+            doc.add(LuceneTestCase::new_text_field("data", d, Store::YES));
             // Field.Text("data",data[i]));
         }
         w.add_document(&doc)?;

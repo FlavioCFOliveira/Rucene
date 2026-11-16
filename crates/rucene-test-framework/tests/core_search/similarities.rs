@@ -252,12 +252,12 @@ fn test_term_score_is_equal_to_boost() -> Result<()> {
         LuceneTestCase::new_index_writer_config(),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("foo", "bar".into(), Store::NO)?));
-    doc.add(Box::new(StringField::new("foo", "baz".into(), Store::NO)?));
+    doc.add(StringField::new("foo", "bar".into(), Store::NO)?);
+    doc.add(StringField::new("foo", "baz".into(), Store::NO)?);
     w.add_document(&doc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("foo", "bar".into(), Store::NO)?));
-    doc.add(Box::new(StringField::new("foo", "bar".into(), Store::NO)?));
+    doc.add(StringField::new("foo", "bar".into(), Store::NO)?);
+    doc.add(StringField::new("foo", "bar".into(), Store::NO)?);
     w.add_document(&doc)?;
 
     let reader = w.get_reader()?;
@@ -289,11 +289,7 @@ fn test_phrase_score_is_equal_to_boost() -> Result<()> {
     config.set_similarity(Some(Arc::new(BooleanSimilarity::new())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(
-        "foo",
-        "bar baz quux".into(),
-        Store::NO,
-    )?));
+    doc.add(TextField::new("foo", "bar baz quux".into(), Store::NO)?);
     w.add_document(&doc)?;
 
     let reader = w.get_reader()?;
@@ -392,7 +388,7 @@ fn classic_set_up() -> Result<()> {
         )?;
         let result = (|| -> Result<()> {
             let mut document = Document::new();
-            document.add(Box::new(StringField::new("test", "hit".into(), Store::NO)?));
+            document.add(StringField::new("test", "hit".into(), Store::NO)?);
             index_writer.add_document(&document)?;
             index_writer.commit()?;
             Ok(())
@@ -573,21 +569,17 @@ fn raw_tf_set_up() -> Result<()> {
             let mut document1 = Document::new();
             let mut document2 = Document::new();
             let mut document3 = Document::new();
-            document1.add(Box::new(LuceneTestCase::new_text_field(
-                "test",
-                "one",
-                Store::YES,
-            )));
-            document2.add(Box::new(LuceneTestCase::new_text_field(
+            document1.add(LuceneTestCase::new_text_field("test", "one", Store::YES));
+            document2.add(LuceneTestCase::new_text_field(
                 "test",
                 "two two",
                 Store::YES,
-            )));
-            document3.add(Box::new(LuceneTestCase::new_text_field(
+            ));
+            document3.add(LuceneTestCase::new_text_field(
                 "test",
                 "three three three",
                 Store::YES,
-            )));
+            ));
             index_writer.add_document(&document1)?;
             index_writer.add_document(&document2)?;
             index_writer.add_document(&document3)?;
@@ -847,7 +839,7 @@ fn one_doc_one_hit(
     let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(field));
+    doc.add(field);
     iw.add_document(&doc)?;
     let ir = iw.get_reader()?;
     iw.close()?;
@@ -902,11 +894,11 @@ fn test_no_field_skew(f: &mut Similarity2) -> Result<()> {
     iw_config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_config)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "foo",
         "bar baz somethingelse",
         Store::NO,
-    )));
+    ));
     iw.add_document(&doc)?;
     let ir = iw.get_reader()?;
     let mut is = LuceneTestCase::new_searcher(Arc::clone(&ir));
@@ -1133,16 +1125,8 @@ fn similarity_base_set_up(f: &mut SimilarityBaseTest) -> Result<()> {
         let mut d = Document::new();
         let ft = FieldType::new_from(TextField::type_stored());
         ft.set_index_options(IndexOptions::NONE)?;
-        d.add(Box::new(LuceneTestCase::new_field(
-            FIELD_ID,
-            &i.to_string(),
-            &ft,
-        )));
-        d.add(Box::new(LuceneTestCase::new_text_field(
-            FIELD_BODY,
-            text,
-            Store::YES,
-        )));
+        d.add(LuceneTestCase::new_field(FIELD_ID, &i.to_string(), &ft));
+        d.add(LuceneTestCase::new_text_field(FIELD_BODY, text, Store::YES));
         writer.add_document(&d)?;
     }
     let reader = writer.get_reader()?;

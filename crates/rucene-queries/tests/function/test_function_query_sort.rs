@@ -111,11 +111,8 @@ fn test_search_after_when_sorting_by_function_values() -> Result<()> {
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StoredField::new_number(
-        "value",
-        NumericValue::Int(0),
-    )?));
-    doc.add(Box::new(NumericDocValuesField::new("value", 0)));
+    doc.add(StoredField::new_number("value", NumericValue::Int(0))?);
+    doc.add(NumericDocValuesField::new("value", 0));
 
     // Save docs unsorted (decreasing value n, n-1, ...)
     const NUM_VALS: i32 = 5;

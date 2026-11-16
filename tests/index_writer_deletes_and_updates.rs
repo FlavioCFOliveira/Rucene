@@ -46,10 +46,8 @@ fn id(value: &str) -> Term {
 
 fn doc(value: &str, price: i64) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", value.to_string(), Store::NO).unwrap(),
-    ));
-    d.add(Box::new(NumericDocValuesField::new("price", price)));
+    d.add(StringField::new("id", value.to_string(), Store::NO).unwrap());
+    d.add(NumericDocValuesField::new("price", price));
     d
 }
 

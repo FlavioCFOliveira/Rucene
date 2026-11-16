@@ -28,11 +28,7 @@ fn test_not() -> Result<()> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), store.as_directory())?;
 
     let mut d1 = Document::new();
-    d1.add(Box::new(LuceneTestCase::new_text_field(
-        "field",
-        "a b",
-        Store::YES,
-    )));
+    d1.add(LuceneTestCase::new_text_field("field", "a b", Store::YES));
 
     writer.add_document(&d1)?;
     let reader = writer.get_reader()?;

@@ -611,11 +611,7 @@ fn test_relation_vs_top_docs_count(_f: &mut TopDocsCollectorTest) -> Result<()> 
         let w = no_merge_writer(&dir)?;
         let result = (|| -> Result<()> {
             let mut doc = Document::new();
-            doc.add(Box::new(TextField::new(
-                "f",
-                "foo bar".to_string(),
-                Store::NO,
-            )?));
+            doc.add(TextField::new("f", "foo bar".to_string(), Store::NO)?);
             w.add_documents(&[&doc, &doc, &doc, &doc, &doc])?;
             w.flush()?;
             w.add_documents(&[&doc, &doc, &doc, &doc, &doc])?;
@@ -822,13 +818,13 @@ fn test_random_min_competitive_score(_f: &mut TopDocsCollectorTest) -> Result<()
         };
         let mut doc = Document::new();
         for _j in 0..num_as {
-            doc.add(Box::new(StringField::new("f", "A".to_string(), Store::NO)?));
+            doc.add(StringField::new("f", "A".to_string(), Store::NO)?);
         }
         for _j in 0..num_bs {
-            doc.add(Box::new(StringField::new("f", "B".to_string(), Store::NO)?));
+            doc.add(StringField::new("f", "B".to_string(), Store::NO)?);
         }
         for _j in 0..num_cs {
-            doc.add(Box::new(StringField::new("f", "C".to_string(), Store::NO)?));
+            doc.add(StringField::new("f", "C".to_string(), Store::NO)?);
         }
         w.add_document(&doc)?;
     }

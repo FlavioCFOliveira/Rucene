@@ -162,12 +162,8 @@ fn watchdog<T: Send + 'static>(seconds: u64, body: impl FnOnce() -> T + Send + '
 /// `WriterTragedyFixture.idDoc(int)`.
 fn id_doc(id: i32) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StringField::new("id", id.to_string(), Store::YES).unwrap(),
-    ));
-    doc.add(Box::new(
-        TextField::new("content", "a b c".to_string(), Store::NO).unwrap(),
-    ));
+    doc.add(StringField::new("id", id.to_string(), Store::YES).unwrap());
+    doc.add(TextField::new("content", "a b c".to_string(), Store::NO).unwrap());
     doc
 }
 
@@ -764,12 +760,8 @@ fn tv_type() -> FieldType {
 /// `WriterTragedyFixture.tvDoc(int)`.
 fn tv_doc(id: i32) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StringField::new("id", id.to_string(), Store::YES).unwrap(),
-    ));
-    doc.add(Box::new(
-        Field::new("tv", "a b c".to_string(), tv_type()).unwrap(),
-    ));
+    doc.add(StringField::new("id", id.to_string(), Store::YES).unwrap());
+    doc.add(Field::new("tv", "a b c".to_string(), tv_type()).unwrap());
     doc
 }
 
@@ -2680,9 +2672,7 @@ fn a_point_in_time_merge_calls_the_on_merge_complete_of_the_merge_it_wraps() {
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for id in 0..2 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", id.to_string(), Store::YES).unwrap(),
-            ));
+            doc.add(StringField::new("id", id.to_string(), Store::YES).unwrap());
             writer.add_document(&doc).unwrap();
             writer.commit().unwrap();
         }
@@ -2789,9 +2779,7 @@ fn freq_tokens_doc(freq: i32, terms: &[&'static str], field_type: FieldType) -> 
         FreqTokens::new(freq, terms),
     ));
     let mut doc = Document::new();
-    doc.add(Box::new(
-        Field::new_with_token_stream("body", stream, field_type).unwrap(),
-    ));
+    doc.add(Field::new_with_token_stream("body", stream, field_type).unwrap());
     doc
 }
 
@@ -2828,9 +2816,7 @@ fn chain_catch_case(bad: &Document) -> (String, String, bool, String, String) {
     )
     .unwrap();
     let mut ok = Document::new();
-    ok.add(Box::new(
-        StringField::new("id", "1".to_string(), Store::NO).unwrap(),
-    ));
+    ok.add(StringField::new("id", "1".to_string(), Store::NO).unwrap());
     writer.add_document(&ok).unwrap();
     let (thrown, cause) = match writer.add_document(bad) {
         Ok(_) => ("no exception".to_string(), "null".to_string()),
@@ -3020,14 +3006,14 @@ fn a_duplicate_term_doc_term_of_a_binary_field_leaves_unwrapped_as_in_lucene() {
     let field_type = chain_field_type(IndexOptions::DOCS_AND_CUSTOM_FREQS, false, false);
     let mut doc = Document::new();
     for _ in 0..2 {
-        doc.add(Box::new(BinaryInvertedField(
+        doc.add(BinaryInvertedField(
             Field::new_with_bytes(
                 "body",
                 rucene::util::BytesRef::new(b"foo".to_vec()),
                 field_type.clone(),
             )
             .unwrap(),
-        )));
+        ));
     }
     assert_eq!(
         chain_catch_case(&doc),
@@ -3114,9 +3100,7 @@ fn a_stored_fields_failure_is_the_tragedy_itself_as_in_lucene() {
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     armed.store(true, Ordering::SeqCst);
     let mut doc = Document::new();
-    doc.add(Box::new(
-        rucene::document::StoredField::new_string("f", "v".to_string()).unwrap(),
-    ));
+    doc.add(rucene::document::StoredField::new_string("f", "v".to_string()).unwrap());
     let thrown = writer.add_document(&doc);
     assert_eq!(exception(&thrown), "IOException: disk full creating _0.fdm");
     assert!(!writer.is_open());

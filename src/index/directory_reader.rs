@@ -2161,9 +2161,7 @@ mod tests {
         let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
         for text in ["a b c", "a a", "b"] {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                TextField::new("body", text.to_string(), Store::NO).unwrap(),
-            ));
+            doc.add(TextField::new("body", text.to_string(), Store::NO).unwrap());
             writer.add_document(&doc).unwrap();
             writer.commit().unwrap();
         }
@@ -2201,9 +2199,7 @@ mod tests {
 
         let _ = register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let mut doc = Document::new();
-        doc.add(Box::new(
-            TextField::new("body", "a".to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(TextField::new("body", "a".to_string(), Store::NO).unwrap());
         let other: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let other_writer =
             RealIndexWriter::new(Arc::clone(&other), IndexWriterConfig::new()).unwrap();
@@ -2249,9 +2245,7 @@ mod tests {
         let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
         for text in ["a b c", "a a"] {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                TextField::new("body", text.to_string(), Store::NO).unwrap(),
-            ));
+            doc.add(TextField::new("body", text.to_string(), Store::NO).unwrap());
             writer.add_document(&doc).unwrap();
             writer.commit().unwrap();
         }
@@ -2735,9 +2729,7 @@ mod tests {
         let add = |count: i32| {
             for i in 0..count {
                 let mut doc = Document::new();
-                doc.add(Box::new(
-                    StringField::new("id", format!("{count}-{i}"), Store::NO).unwrap(),
-                ));
+                doc.add(StringField::new("id", format!("{count}-{i}"), Store::NO).unwrap());
                 writer.add_document(&doc).unwrap();
             }
             writer.commit().unwrap();
@@ -2791,9 +2783,7 @@ mod tests {
         let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
         let add = |id: &str| {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", id.to_string(), Store::NO).unwrap(),
-            ));
+            doc.add(StringField::new("id", id.to_string(), Store::NO).unwrap());
             writer.add_document(&doc).unwrap();
             writer.commit().unwrap();
         };

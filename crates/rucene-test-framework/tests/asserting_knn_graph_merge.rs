@@ -385,7 +385,7 @@ fn rucene(case: &str) -> Merged {
     for size in SEGMENT_SIZES {
         for _ in 0..size {
             let mut d = Document::new();
-            d.add(Box::new(
+            d.add(
                 KnnFloatVectorField::with_euclidean(
                     "f",
                     &[
@@ -394,7 +394,7 @@ fn rucene(case: &str) -> Merged {
                     ],
                 )
                 .unwrap(),
-            ));
+            );
             writer.add_document(&d).unwrap();
             doc += 1;
         }

@@ -64,36 +64,21 @@ fn test_empty_competitive_iterator_optimization() -> Result<()> {
                 let mut doc = Document::new();
                 let l = i64::from(i);
 
-                doc.add(Box::new(NumericDocValuesField::indexed_field(
-                    "long_field_1",
-                    l,
-                )));
-                doc.add(Box::new(LongPoint::new("long_field_2", &[l])?));
-                doc.add(Box::new(NumericDocValuesField::new("long_field_2", l)));
+                doc.add(NumericDocValuesField::indexed_field("long_field_1", l));
+                doc.add(LongPoint::new("long_field_2", &[l])?);
+                doc.add(NumericDocValuesField::new("long_field_2", l));
 
-                doc.add(Box::new(NumericDocValuesField::indexed_field(
-                    "int_field_1",
-                    l,
-                )));
-                doc.add(Box::new(IntPoint::new("int_field_2", &[i])?));
-                doc.add(Box::new(NumericDocValuesField::new("int_field_2", l)));
+                doc.add(NumericDocValuesField::indexed_field("int_field_1", l));
+                doc.add(IntPoint::new("int_field_2", &[i])?);
+                doc.add(NumericDocValuesField::new("int_field_2", l));
 
-                doc.add(Box::new(NumericDocValuesField::indexed_field(
-                    "float_field_1",
-                    l,
-                )));
-                doc.add(Box::new(FloatPoint::new("float_field_2", &[i as f32])?));
-                doc.add(Box::new(NumericDocValuesField::new("float_field_2", l)));
+                doc.add(NumericDocValuesField::indexed_field("float_field_1", l));
+                doc.add(FloatPoint::new("float_field_2", &[i as f32])?);
+                doc.add(NumericDocValuesField::new("float_field_2", l));
 
-                doc.add(Box::new(NumericDocValuesField::indexed_field(
-                    "double_field_1",
-                    l,
-                )));
-                doc.add(Box::new(DoublePoint::new(
-                    "double_field_2",
-                    &[f64::from(i)],
-                )?));
-                doc.add(Box::new(NumericDocValuesField::new("double_field_2", l)));
+                doc.add(NumericDocValuesField::indexed_field("double_field_1", l));
+                doc.add(DoublePoint::new("double_field_2", &[f64::from(i)])?);
+                doc.add(NumericDocValuesField::new("double_field_2", l));
 
                 writer.add_document(&doc)?;
             }
@@ -151,12 +136,9 @@ fn test_empty_competitive_iterator_optimization_with_missing_value() -> Result<(
                 let mut doc = Document::new();
                 let l = i64::from(i);
 
-                doc.add(Box::new(NumericDocValuesField::indexed_field(
-                    "long_field_1",
-                    l,
-                )));
-                doc.add(Box::new(LongPoint::new("long_field_2", &[l])?));
-                doc.add(Box::new(NumericDocValuesField::new("long_field_2", l)));
+                doc.add(NumericDocValuesField::indexed_field("long_field_1", l));
+                doc.add(LongPoint::new("long_field_2", &[l])?);
+                doc.add(NumericDocValuesField::new("long_field_2", l));
 
                 writer.add_document(&doc)?;
                 if i % 100 == 0 {
@@ -165,10 +147,10 @@ fn test_empty_competitive_iterator_optimization_with_missing_value() -> Result<(
             }
 
             let mut doc = Document::new();
-            doc.add(Box::new(NumericDocValuesField::new(
+            doc.add(NumericDocValuesField::new(
                 "another_field",
                 i64::from(num_docs),
-            )));
+            ));
             writer.add_document(&doc)?;
             writer.flush()?;
 
@@ -214,9 +196,9 @@ fn test_empty_competitive_iterator_optimization_and_hits_threshold_reached() -> 
                 let mut doc = Document::new();
                 let l = i64::from(i);
 
-                doc.add(Box::new(NumericDocValuesField::indexed_field("field_1", l)));
-                doc.add(Box::new(LongPoint::new("field_2", &[l])?));
-                doc.add(Box::new(NumericDocValuesField::new("field_2", l)));
+                doc.add(NumericDocValuesField::indexed_field("field_1", l));
+                doc.add(LongPoint::new("field_2", &[l])?);
+                doc.add(NumericDocValuesField::new("field_2", l));
 
                 writer.add_document(&doc)?;
                 if i % 100 == 0 {

@@ -29,9 +29,7 @@ fn index(docs: &[Vec<(&str, String)>]) -> (Arc<dyn Directory>, Arc<dyn Directory
     for fields in docs {
         let mut doc = Document::new();
         for (name, value) in fields {
-            doc.add(Box::new(
-                StringField::new(name, value.clone(), Store::NO).unwrap(),
-            ));
+            doc.add(StringField::new(name, value.clone(), Store::NO).unwrap());
         }
         writer.add_document(&doc).unwrap();
     }

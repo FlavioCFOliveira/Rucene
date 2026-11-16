@@ -92,11 +92,7 @@ fn term_scorer_set_up(f: &mut TermScorerTest) -> Result<()> {
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;
     for value in &f.values {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            FIELD,
-            value,
-            Store::YES,
-        )));
+        doc.add(LuceneTestCase::new_text_field(FIELD, value, Store::YES));
         writer.add_document(&doc)?;
     }
     writer.force_merge(1)?;
@@ -311,11 +307,7 @@ fn test_random_top_docs(_f: &mut TermScorerTest) -> Result<()> {
         for j in 0..num_values {
             let freq = TestUtil::next_int(&*random(), 1, 1 << random().next_int_bound(3));
             for _k in 0..freq {
-                doc.add(Box::new(TextField::new(
-                    "foo",
-                    (start + j).to_string(),
-                    Store::NO,
-                )?));
+                doc.add(TextField::new("foo", (start + j).to_string(), Store::NO)?);
             }
         }
         w.add_document(&doc)?;

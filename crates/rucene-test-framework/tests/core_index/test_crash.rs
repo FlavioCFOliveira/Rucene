@@ -83,16 +83,8 @@ fn init_index(
     }
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "content",
-        "aaa",
-        Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "id",
-        "0",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("content", "aaa", Store::NO));
+    doc.add(LuceneTestCase::new_text_field("id", "0", Store::NO));
     for _ in 0..157 {
         writer.add_document(&doc)?;
     }

@@ -728,7 +728,7 @@ fn write_with_rucene(
         for point in points {
             match point {
                 Pt::Ints(name, values) => {
-                    document.add(Box::new(IntPoint::new(name, values).expect("int point")))
+                    document.add(IntPoint::new(name, values).expect("int point"))
                 }
                 Pt::Selective(name, values, index_dims) => {
                     // Lucene has no ready-made point class for selective
@@ -744,17 +744,17 @@ fn write_with_rucene(
                     for (dim, value) in values.iter().enumerate() {
                         IntPoint::encode_dimension(*value, &mut packed, dim * 4);
                     }
-                    document.add(Box::new(
+                    document.add(
                         Field::new_with_bytes(name, BytesRef::new(packed), field_type)
                             .expect("selective point field"),
-                    ))
+                    )
                 }
                 Pt::Longs(name, values) => {
-                    document.add(Box::new(LongPoint::new(name, values).expect("long point")))
+                    document.add(LongPoint::new(name, values).expect("long point"))
                 }
-                Pt::Binary(name, value) => document.add(Box::new(
+                Pt::Binary(name, value) => document.add(
                     BinaryPoint::new(name, &[BytesRef::new(value.clone())]).expect("binary point"),
-                )),
+                ),
             }
         }
         chain

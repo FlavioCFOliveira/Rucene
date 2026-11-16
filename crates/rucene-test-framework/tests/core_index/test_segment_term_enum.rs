@@ -220,11 +220,7 @@ fn verify_doc_freq(inst: &TestSegmentTermEnumInstance) -> Result<()> {
 /// `private void addDoc(IndexWriter writer, String value)`.
 fn add_doc(writer: &IndexWriter, value: &str) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "content",
-        value,
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("content", value, Store::NO));
     writer.add_document(&doc)?;
     Ok(())
 }

@@ -5088,7 +5088,7 @@ mod tests {
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..1200 {
             let mut doc = Document::new();
-            doc.add(Box::new(NumericDocValuesField::indexed_field("f", i)));
+            doc.add(NumericDocValuesField::indexed_field("f", i));
             writer.add_document(&doc).unwrap();
         }
         writer.force_merge(1).unwrap();
@@ -5128,10 +5128,10 @@ mod tests {
         let docs = (0..3000)
             .map(|i| {
                 let mut doc = Document::new();
-                doc.add(Box::new(SortedDocValuesField::new(
+                doc.add(SortedDocValuesField::new(
                     "s",
                     BytesRef::new(format!("t{i:04}").into_bytes()),
-                )));
+                ));
                 doc
             })
             .collect();
@@ -5215,10 +5215,10 @@ mod tests {
             .map(|i| {
                 let mut doc = Document::new();
                 for k in [2 * i, 2 * i + 1] {
-                    doc.add(Box::new(SortedSetDocValuesField::new(
+                    doc.add(SortedSetDocValuesField::new(
                         "s",
                         BytesRef::new(format!("t{k:04}").into_bytes()),
-                    )));
+                    ));
                 }
                 doc
             })
@@ -5267,10 +5267,10 @@ mod tests {
         let docs = (0..3000)
             .map(|i| {
                 let mut doc = Document::new();
-                doc.add(Box::new(SortedDocValuesField::new(
+                doc.add(SortedDocValuesField::new(
                     "s",
                     BytesRef::new(format!("t{i:04}").into_bytes()),
-                )));
+                ));
                 doc
             })
             .collect();
@@ -5313,7 +5313,7 @@ mod tests {
         let docs = (0..1000i64)
             .map(|i| {
                 let mut doc = Document::new();
-                doc.add(Box::new(NumericDocValuesField::new("n", i % 16)));
+                doc.add(NumericDocValuesField::new("n", i % 16));
                 doc
             })
             .collect();
@@ -5404,7 +5404,7 @@ mod tests {
                     1_000_000_000_000 + (i % 1000)
                 };
                 let mut doc = Document::new();
-                doc.add(Box::new(NumericDocValuesField::new("n", value)));
+                doc.add(NumericDocValuesField::new("n", value));
                 doc
             })
             .collect();

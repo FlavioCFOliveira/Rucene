@@ -1145,8 +1145,8 @@ impl ReindexingHooks for BasicReindexer {
             let old_doc = stored_fields.document(i)?;
             let mut new_doc = Document::new();
             let value = number_of(&old_doc);
-            new_doc.add(Box::new(NumericDocValuesField::new("number", value)));
-            new_doc.add(Box::new(LongPoint::new("number", &[value])?));
+            new_doc.add(NumericDocValuesField::new("number", value));
+            new_doc.add(LongPoint::new("number", &[value])?);
             w.add_document(&new_doc)?;
         }
 
@@ -1199,11 +1199,11 @@ impl ReindexingHooks for NewDvFieldsReindexer {
                 let old_doc = stored_fields.document(i)?;
                 let mut new_doc = Document::new();
                 let value = number_of(&old_doc);
-                new_doc.add(Box::new(NumericDocValuesField::new(
+                new_doc.add(NumericDocValuesField::new(
                     &format!("number_{new_schema_gen}"),
                     value,
-                )));
-                new_doc.add(Box::new(LongPoint::new("number", &[value])?));
+                ));
+                new_doc.add(LongPoint::new("number", &[value])?);
                 w.add_document(&new_doc)?;
             }
         } else {
@@ -1219,10 +1219,10 @@ impl ReindexingHooks for NewDvFieldsReindexer {
                 assert_equals(&i, &old_values.next_doc()?);
                 stored_fields.document(i)?;
                 let mut new_doc = Document::new();
-                new_doc.add(Box::new(NumericDocValuesField::new(
+                new_doc.add(NumericDocValuesField::new(
                     &format!("number_{new_schema_gen}"),
                     old_values.long_value()?,
-                )));
+                ));
                 w.add_document(&new_doc)?;
             }
         }
@@ -1331,11 +1331,11 @@ impl ReindexingHooks for SameDvFieldReindexer {
                 let old_doc = stored_fields.document(i)?;
                 let mut new_doc = Document::new();
                 let value = number_of(&old_doc);
-                new_doc.add(Box::new(NumericDocValuesField::new(
+                new_doc.add(NumericDocValuesField::new(
                     "number",
                     new_schema_gen.wrapping_mul(value),
-                )));
-                new_doc.add(Box::new(LongPoint::new("number", &[value])?));
+                ));
+                new_doc.add(LongPoint::new("number", &[value])?);
                 w.add_document(&new_doc)?;
             }
         } else {
@@ -1351,8 +1351,8 @@ impl ReindexingHooks for SameDvFieldReindexer {
                 let mut new_doc = Document::new();
                 assert_equals(&i, &old_values.next_doc()?);
                 let value = new_schema_gen.wrapping_mul(old_values.long_value()? / old_schema_gen);
-                new_doc.add(Box::new(NumericDocValuesField::new("number", value)));
-                new_doc.add(Box::new(LongPoint::new("number", &[value])?));
+                new_doc.add(NumericDocValuesField::new("number", value));
+                new_doc.add(LongPoint::new("number", &[value])?);
                 w.add_document(&new_doc)?;
             }
         }
@@ -1446,11 +1446,11 @@ fn with_acquired(
 /// `doc.add(newTextField("text", "number " + value, Field.Store.YES))`.
 fn text_doc(value: impl std::fmt::Display) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "text",
         &format!("number {value}"),
         Store::YES,
-    )));
+    ));
     doc
 }
 
@@ -1564,16 +1564,12 @@ fn add_or_update(w: &IndexWriter, doc: &Document, update_id: Option<String>) -> 
 /// "number " + value, YES))`.
 fn id_text_doc(id: &str, value: impl std::fmt::Display) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        id,
-        Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_string_field("id", id, Store::NO));
+    doc.add(LuceneTestCase::new_text_field(
         "text",
         &format!("number {value}"),
         Store::YES,
-    )));
+    ));
     doc
 }
 

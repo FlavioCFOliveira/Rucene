@@ -437,37 +437,31 @@ impl IndexerThread {
 
         let mut doc = Document::new();
         for field in [content1, content6, content2, content3, content4, content5] {
-            doc.add(Box::new(field));
+            doc.add(field);
         }
         {
-            doc.add(Box::new(NumericDocValuesField::new("numericdv", 5)));
-            doc.add(Box::new(BinaryDocValuesField::new(
+            doc.add(NumericDocValuesField::new("numericdv", 5));
+            doc.add(BinaryDocValuesField::new(
                 "binarydv",
                 BytesRef::from_char_sequence("hello"),
-            )));
-            doc.add(Box::new(SortedDocValuesField::new(
+            ));
+            doc.add(SortedDocValuesField::new(
                 "sorteddv",
                 BytesRef::from_char_sequence("world"),
-            )));
-            doc.add(Box::new(SortedSetDocValuesField::new(
+            ));
+            doc.add(SortedSetDocValuesField::new(
                 "sortedsetdv",
                 BytesRef::from_char_sequence("hellllo"),
-            )));
-            doc.add(Box::new(SortedSetDocValuesField::new(
+            ));
+            doc.add(SortedSetDocValuesField::new(
                 "sortedsetdv",
                 BytesRef::from_char_sequence("again"),
-            )));
-            doc.add(Box::new(SortedNumericDocValuesField::new(
-                "sortednumericdv",
-                10,
-            )));
-            doc.add(Box::new(SortedNumericDocValuesField::new(
-                "sortednumericdv",
-                5,
-            )));
-            doc.add(Box::new(content7));
+            ));
+            doc.add(SortedNumericDocValuesField::new("sortednumericdv", 10));
+            doc.add(SortedNumericDocValuesField::new("sortednumericdv", 5));
+            doc.add(content7);
             // `final Field idField = ...; doc.add(idField);`
-            doc.add(Box::new(id_field));
+            doc.add(id_field);
         }
 
         let max_iterations = 250;
@@ -803,11 +797,11 @@ fn test_exception_documents_writer_init() -> Result<()> {
         Arc::clone(&test_point) as Arc<dyn TestPoint>,
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "a field",
         Store::YES,
-    )));
+    ));
     w.add_document(&doc)?;
 
     test_point.do_fail.store(true, Ordering::SeqCst);
@@ -839,19 +833,19 @@ fn test_exception_just_before_flush() -> Result<()> {
         Arc::new(TestPoint1::new()),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "a field",
         Store::YES,
-    )));
+    ));
     w.add_document(&doc)?;
 
     let mut crash_doc = Document::new();
-    crash_doc.add(Box::new(LuceneTestCase::new_text_field(
+    crash_doc.add(LuceneTestCase::new_text_field(
         "crash",
         "do it on token 4",
         Store::YES,
-    )));
+    ));
     do_crash.store(true, Ordering::SeqCst);
     expect_throws(IOE, || w.add_document(&crash_doc));
 
@@ -900,11 +894,11 @@ fn test_exception_on_merge_init() -> Result<()> {
     )?;
     test_point.do_fail.store(true, Ordering::SeqCst);
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "a field",
         Store::YES,
-    )));
+    ));
     for _ in 0..10 {
         match catching(|| w.add_document(&doc)) {
             Ok(_) => {}
@@ -988,29 +982,29 @@ fn test_exception_from_token_stream() -> Result<()> {
 
     let mut broken_doc = Document::new();
     let contents = "aa bb cc dd ee ff gg hh ii jj kk";
-    broken_doc.add(Box::new(LuceneTestCase::new_text_field(
+    broken_doc.add(LuceneTestCase::new_text_field(
         "content",
         contents,
         Store::NO,
-    )));
+    ));
     expect_throws("java.lang.Exception", || writer.add_document(&broken_doc));
 
     // Make sure we can add another normal document
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "content",
         "aa bb cc dd",
         Store::NO,
-    )));
+    ));
     writer.add_document(&doc)?;
 
     // Make sure we can add another normal document
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "content",
         "aa bb cc dd",
         Store::NO,
-    )));
+    ));
     writer.add_document(&doc)?;
 
     writer.close()?;
@@ -1089,11 +1083,11 @@ fn test_documents_writer_abort() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     let mut doc = Document::new();
     let contents = "aa bb cc dd ee ff gg hh ii jj kk";
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "content",
         contents,
         Store::NO,
-    )));
+    ));
     let mut hit_error = false;
     writer.add_document(&doc)?;
 
@@ -1162,23 +1156,23 @@ fn test_documents_writer_exceptions() -> Result<()> {
         lmp.set_merge_factor(lmp.get_merge_factor().max(5))?;
 
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             "contents",
             "here are some contents",
             &CUSTOM5,
-        )));
+        ));
         writer.add_document(&doc)?;
         writer.add_document(&doc)?;
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             "crash",
             "this should crash after 4 terms",
             &CUSTOM5,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_field(
+        ));
+        doc.add(LuceneTestCase::new_field(
             "other",
             "this will not get indexed",
             &CUSTOM5,
-        )));
+        ));
         let final_doc = &doc;
         let ioe = expect_throws(IOE, || writer.add_document(final_doc));
         if verbose() {
@@ -1188,11 +1182,11 @@ fn test_documents_writer_exceptions() -> Result<()> {
 
         if 0 == i {
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_field(
+            doc.add(LuceneTestCase::new_field(
                 "contents",
                 "here are some contents",
                 &CUSTOM5,
-            )));
+            ));
             writer.add_document(&doc)?;
             writer.add_document(&doc)?;
         }
@@ -1218,11 +1212,11 @@ fn test_documents_writer_exceptions() -> Result<()> {
         conf.set_max_buffered_docs(10)?;
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             "contents",
             "here are some contents",
             &CUSTOM5,
-        )));
+        ));
         for _ in 0..17 {
             writer.add_document(&doc)?;
         }
@@ -1267,22 +1261,22 @@ fn test_documents_writer_exception_fail_one_doc() -> Result<()> {
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
         let body = (|| -> Result<()> {
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_field(
+            doc.add(LuceneTestCase::new_field(
                 "contents",
                 "here are some contents",
                 &CUSTOM5,
-            )));
+            ));
             writer.add_document(&doc)?;
-            doc.add(Box::new(LuceneTestCase::new_field(
+            doc.add(LuceneTestCase::new_field(
                 "crash",
                 "this should crash after 4 terms",
                 &CUSTOM5,
-            )));
-            doc.add(Box::new(LuceneTestCase::new_field(
+            ));
+            doc.add(LuceneTestCase::new_field(
                 "other",
                 "this will not get indexed",
                 &CUSTOM5,
-            )));
+            ));
             expect_throws(IOE, || writer.add_document(&doc));
             writer.commit()?;
             let reader = directory_reader::open(dir.as_directory())?;
@@ -1338,32 +1332,32 @@ fn test_documents_writer_exception_threads() -> Result<()> {
                     let outcome = catching(|| {
                         for _ in 0..num_iter {
                             let mut doc = Document::new();
-                            doc.add(Box::new(LuceneTestCase::new_field(
+                            doc.add(LuceneTestCase::new_field(
                                 "contents",
                                 "here are some contents",
                                 &CUSTOM5,
-                            )));
+                            ));
                             writer.add_document(&doc)?;
                             writer.add_document(&doc)?;
-                            doc.add(Box::new(LuceneTestCase::new_field(
+                            doc.add(LuceneTestCase::new_field(
                                 "crash",
                                 "this should crash after 4 terms",
                                 &CUSTOM5,
-                            )));
-                            doc.add(Box::new(LuceneTestCase::new_field(
+                            ));
+                            doc.add(LuceneTestCase::new_field(
                                 "other",
                                 "this will not get indexed",
                                 &CUSTOM5,
-                            )));
+                            ));
                             expect_throws(IOE, || writer.add_document(&doc));
 
                             if 0 == final_i {
                                 let mut extra_doc = Document::new();
-                                extra_doc.add(Box::new(LuceneTestCase::new_field(
+                                extra_doc.add(LuceneTestCase::new_field(
                                     "contents",
                                     "here are some contents",
                                     &CUSTOM5,
-                                )));
+                                ));
                                 writer.add_document(&extra_doc)?;
                                 writer.add_document(&extra_doc)?;
                             }
@@ -1404,11 +1398,11 @@ fn test_documents_writer_exception_threads() -> Result<()> {
         conf.set_max_buffered_docs(10)?;
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             "contents",
             "here are some contents",
             &CUSTOM5,
-        )));
+        ));
         for _ in 0..17 {
             writer.add_document(&doc)?;
         }
@@ -1582,11 +1576,11 @@ fn test_exceptions_during_commit() -> Result<()> {
         let file_count = dir.as_directory().list_all()?.len();
         let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             "field",
             "a field",
             Store::YES,
-        )));
+        ));
         w.add_document(&doc)?;
         dir.as_mock()
             .expect("newMockDirectory")
@@ -1993,7 +1987,7 @@ fn test_term_vector_exceptions() -> Result<()> {
                 let field =
                     LuceneTestCase::new_text_field_with(&*random(), "field", "a field", Store::YES);
                 let store_term_vectors = field.field_type().store_term_vectors();
-                doc.add(Box::new(field));
+                doc.add(field);
                 match catching(|| w.add_document(&doc)) {
                     Ok(_) => Assert::assert_false(store_term_vectors),
                     Err(e) if e.is_instance(RUNTIME_EXCEPTION) => {
@@ -2016,11 +2010,7 @@ fn test_term_vector_exceptions() -> Result<()> {
                 }
             }
             let mut document = Document::new();
-            document.add(Box::new(TextField::new(
-                "field",
-                "a field".to_string(),
-                Store::YES,
-            )?));
+            document.add(TextField::new("field", "a field".to_string(), Store::YES)?);
             w.add_document(&document)?;
 
             for _ in 0..num_docs {
@@ -2028,7 +2018,7 @@ fn test_term_vector_exceptions() -> Result<()> {
                 let field =
                     LuceneTestCase::new_text_field_with(&*random(), "field", "a field", Store::YES);
                 let store_term_vectors = field.field_type().store_term_vectors();
-                doc.add(Box::new(field));
+                doc.add(field);
                 // random TV
                 match catching(|| w.add_document(&doc)) {
                     Ok(_) => Assert::assert_false(store_term_vectors),
@@ -2047,11 +2037,7 @@ fn test_term_vector_exceptions() -> Result<()> {
                 }
             }
             let mut document = Document::new();
-            document.add(Box::new(TextField::new(
-                "field",
-                "a field".to_string(),
-                Store::YES,
-            )?));
+            document.add(TextField::new("field", "a field".to_string(), Store::YES)?);
             w.add_document(&document)?;
             w.close()?;
             let reader: Arc<dyn IndexReader> = directory_reader::open(dir.as_directory())?;
@@ -2088,11 +2074,11 @@ fn crash_field() -> Result<Field> {
 /// w.addDocument(doc);`
 fn add_good_doc(w: &RandomIndexWriter) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "content",
         "good content",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     Ok(())
 }
@@ -2109,18 +2095,18 @@ fn test_add_docs_non_aborting_exception() -> Result<()> {
     let mut docs = Vec::new();
     for doc_count in 0..7 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &format!("{doc_count}"),
             Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        doc.add(LuceneTestCase::new_text_field(
             "content",
             &format!("silly content {doc_count}"),
             Store::NO,
-        )));
+        ));
         if doc_count == 4 {
-            doc.add(Box::new(crash_field()?));
+            doc.add(crash_field()?);
         }
         docs.push(doc);
     }
@@ -2163,21 +2149,17 @@ fn test_update_docs_non_aborting_exception() -> Result<()> {
     let num_docs2 = random().next_int_bound(25);
     for doc_count in 0..num_docs2 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "subid",
-            "subs",
-            Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field("subid", "subs", Store::NO));
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &format!("{doc_count}"),
             Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        doc.add(LuceneTestCase::new_text_field(
             "content",
             &format!("silly content {doc_count}"),
             Store::NO,
-        )));
+        ));
         docs.push(doc);
     }
     w.add_documents(&docs)?;
@@ -2192,18 +2174,18 @@ fn test_update_docs_non_aborting_exception() -> Result<()> {
     let crash_at = random().next_int_bound(limit);
     for doc_count in 0..limit {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &format!("{doc_count}"),
             Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        doc.add(LuceneTestCase::new_text_field(
             "content",
             &format!("silly content {doc_count}"),
             Store::NO,
-        )));
+        ));
         if doc_count == crash_at {
-            doc.add(Box::new(crash_field()?));
+            doc.add(crash_field()?);
         }
         docs.push(doc);
     }
@@ -2270,7 +2252,7 @@ fn test_null_stored_field() -> Result<()> {
     expect_throws(IAE, || {
         // set to null value
         let value: Option<String> = None;
-        doc.add(Box::new(StoredField::new_string("foo", value)?));
+        doc.add(StoredField::new_string("foo", value)?);
         iw.add_document(&doc)
     });
 
@@ -2285,7 +2267,7 @@ fn test_null_stored_field_reuse() -> Result<()> {
     // add good document
     let mut doc = Document::new();
     let the_field = Field::new("foo", "hello".to_string(), StoredField::type_().clone())?;
-    doc.add(Box::new(the_field));
+    doc.add(the_field);
     iw.add_document(&doc)?;
     expect_throws(IAE, || {
         // set to null value
@@ -2309,7 +2291,7 @@ fn test_null_stored_bytes_field() -> Result<()> {
         // set to null value
         let v: Option<&[u8]> = None;
         let the_field = StoredField::new_byte_array("foo", v)?;
-        doc.add(Box::new(the_field));
+        doc.add(the_field);
         iw.add_document(&doc)
     });
 
@@ -2339,14 +2321,14 @@ fn test_null_stored_bytes_field_reuse() -> Result<()> {
     // add good document
     let the_field = stored_bytes_field("foo", BytesRef::from_char_sequence("hello"))?;
     let mut doc = Document::new();
-    doc.add(Box::new(copy_bytes_field(&the_field)?));
+    doc.add(copy_bytes_field(&the_field)?);
     iw.add_document(&doc)?;
     expect_throws("java.lang.NullPointerException", || {
         // set to null value
         let v: Option<&[u8]> = None;
         the_field.set_bytes_value_array(v)?;
         let mut doc = Document::new();
-        doc.add(Box::new(copy_bytes_field(&the_field)?));
+        doc.add(copy_bytes_field(&the_field)?);
         iw.add_document(&doc)
     });
 
@@ -2366,7 +2348,7 @@ fn test_null_stored_bytes_ref_field() -> Result<()> {
         // set to null value
         let v: Option<BytesRef> = None;
         let the_field = StoredField::new_bytes("foo", v)?;
-        doc.add(Box::new(the_field));
+        doc.add(the_field);
         iw.add_document(&doc)
     });
 
@@ -2381,14 +2363,14 @@ fn test_null_stored_bytes_ref_field_reuse() -> Result<()> {
     // add good document
     let the_field = stored_bytes_field("foo", BytesRef::from_char_sequence("hello"))?;
     let mut doc = Document::new();
-    doc.add(Box::new(copy_bytes_field(&the_field)?));
+    doc.add(copy_bytes_field(&the_field)?);
     iw.add_document(&doc)?;
     expect_throws(IAE, || {
         // set to null value
         let v: Option<BytesRef> = None;
         the_field.set_bytes_value(v)?;
         let mut doc = Document::new();
-        doc.add(Box::new(copy_bytes_field(&the_field)?));
+        doc.add(copy_bytes_field(&the_field)?);
         iw.add_document(&doc)
     });
 
@@ -2408,7 +2390,7 @@ fn test_null_stored_data_input_field() -> Result<()> {
         // set to null value
         let v: Option<Box<dyn rucene::store::DataInput + Send + Sync>> = None;
         let the_field = StoredField::new_stored_input("foo", v, 0)?;
-        doc.add(Box::new(the_field));
+        doc.add(the_field);
         iw.add_document(&doc)
     });
 
@@ -2457,16 +2439,8 @@ fn test_crazy_position_increment_gap() -> Result<()> {
     let mut doc = Document::new();
     iw.add_document(&doc)?;
     expect_throws(IAE, || {
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "foo",
-            "bar",
-            Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "foo",
-            "bar",
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_text_field("foo", "bar", Store::NO));
+        doc.add(LuceneTestCase::new_text_field("foo", "bar", Store::NO));
         iw.add_document(&doc)
     });
 
@@ -2628,11 +2602,7 @@ fn test_too_many_file_exception() -> Result<()> {
     let iwc = IndexWriterConfig::with_analyzer(Some(mock_analyzer()));
     let mut iw = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "foo",
-        "bar".to_string(),
-        Store::NO,
-    )?));
+    doc.add(StringField::new("foo", "bar".to_string(), Store::NO)?);
     iw.add_document(&doc)?; // add a document
     iw.commit()?;
     let ir = directory_reader::open(dir.as_directory())?;
@@ -2755,7 +2725,7 @@ fn test_too_many_tokens() -> Result<()> {
             pos_inc_att,
             num: 0,
         }));
-    doc.add(Box::new(Field::new_with_token_stream("foo", stream, ft)?));
+    doc.add(Field::new_with_token_stream("foo", stream, ft)?);
 
     let expected = expect_throws(IAE, || iw.add_document(&doc));
     Assert::assert_true(
@@ -2995,11 +2965,11 @@ fn test_merge_exception_is_tragic() -> Result<()> {
     loop {
         let attempt = (|| -> Result<()> {
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_string_field(
+            doc.add(LuceneTestCase::new_string_field(
                 "field",
                 "string",
                 Store::NO,
-            )));
+            ));
             w.add_document(&doc)?;
             if random().next_int_bound(10) == 7 {
                 // Flush new segment:
@@ -3160,65 +3130,56 @@ fn test_exception_on_sync_metadata() -> Result<()> {
             }));
         for i in 0..5 {
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_string_field(
+            doc.add(LuceneTestCase::new_string_field(
                 "id",
                 &i.to_string(),
                 Store::NO,
-            )));
-            doc.add(Box::new(NumericDocValuesField::new("dv", i as i64)));
-            doc.add(Box::new(BinaryDocValuesField::new(
+            ));
+            doc.add(NumericDocValuesField::new("dv", i as i64));
+            doc.add(BinaryDocValuesField::new(
                 "dv2",
                 BytesRef::from_char_sequence(&i.to_string()),
-            )));
-            doc.add(Box::new(SortedDocValuesField::new(
+            ));
+            doc.add(SortedDocValuesField::new(
                 "dv3",
                 BytesRef::from_char_sequence(&i.to_string()),
-            )));
-            doc.add(Box::new(SortedSetDocValuesField::new(
+            ));
+            doc.add(SortedSetDocValuesField::new(
                 "dv4",
                 BytesRef::from_char_sequence(&i.to_string()),
-            )));
-            doc.add(Box::new(SortedSetDocValuesField::new(
+            ));
+            doc.add(SortedSetDocValuesField::new(
                 "dv4",
                 BytesRef::from_char_sequence(&(i - 1).to_string()),
-            )));
-            doc.add(Box::new(SortedNumericDocValuesField::new("dv5", i as i64)));
-            doc.add(Box::new(SortedNumericDocValuesField::new(
-                "dv5",
-                (i - 1) as i64,
-            )));
-            doc.add(Box::new(LuceneTestCase::new_text_field(
+            ));
+            doc.add(SortedNumericDocValuesField::new("dv5", i as i64));
+            doc.add(SortedNumericDocValuesField::new("dv5", (i - 1) as i64));
+            doc.add(LuceneTestCase::new_text_field(
                 "text1",
                 &TestUtil::random_analysis_string(&*random(), 20, true),
                 Store::NO,
-            )));
+            ));
             // ensure we store something
-            doc.add(Box::new(StoredField::new_string(
-                "stored1",
-                "foo".to_string(),
-            )?));
-            doc.add(Box::new(StoredField::new_string(
-                "stored1",
-                "bar".to_string(),
-            )?));
+            doc.add(StoredField::new_string("stored1", "foo".to_string())?);
+            doc.add(StoredField::new_string("stored1", "bar".to_string())?);
             // ensure we get some payloads
-            doc.add(Box::new(LuceneTestCase::new_text_field(
+            doc.add(LuceneTestCase::new_text_field(
                 "text_payloads",
                 &TestUtil::random_analysis_string(&*random(), 6, true),
                 Store::NO,
-            )));
+            ));
             // ensure we get some vectors
             let ft = FieldType::new_from(TextField::type_not_stored());
             ft.set_store_term_vectors(true)?;
-            doc.add(Box::new(LuceneTestCase::new_field(
+            doc.add(LuceneTestCase::new_field(
                 "text_vectors",
                 &TestUtil::random_analysis_string(&*random(), 6, true),
                 &ft,
-            )));
-            doc.add(Box::new(IntPoint::new("point", &[random().next_int()])?));
+            ));
+            doc.add(IntPoint::new("point", &[random().next_int()])?);
             let x = random().next_int();
             let y = random().next_int();
-            doc.add(Box::new(IntPoint::new("point2d", &[x, y])?));
+            doc.add(IntPoint::new("point2d", &[x, y])?);
             let _ = doc;
             writer.add_document(&Document::new())?;
         }
@@ -3265,12 +3226,12 @@ fn test_exception_just_before_flush_with_point_values() -> Result<()> {
     )))?;
     let w = RandomIndexWriter::mock_index_writer(dir.as_directory(), iwc, &*random())?;
     let mut newdoc = Document::new();
-    newdoc.add(Box::new(LuceneTestCase::new_text_field(
+    newdoc.add(LuceneTestCase::new_text_field(
         "crash",
         "do it on token 4",
         Store::NO,
-    )));
-    newdoc.add(Box::new(IntPoint::new("int", &[42])?));
+    ));
+    newdoc.add(IntPoint::new("int", &[42])?);
     expect_throws(IOE, || w.add_document(&newdoc));
     let r = directory_reader::open_with_writer_flags(&*w, false, false)?;
     let only_reader = LuceneTestCase::get_only_leaf_reader(r as Arc<dyn IndexReader>)?;

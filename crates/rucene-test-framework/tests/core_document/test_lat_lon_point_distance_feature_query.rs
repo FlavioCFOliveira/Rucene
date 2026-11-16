@@ -73,9 +73,9 @@ fn writer(dir: &TestDirectory) -> Result<RandomIndexWriter> {
 fn point_doc() -> Result<Document> {
     let mut doc = Document::new();
     let point = LatLonPoint::new("foo", 0.0, 0.0)?;
-    doc.add(Box::new(point));
+    doc.add(point);
     let doc_value = LatLonDocValuesField::new("foo", 0.0, 0.0)?;
-    doc.add(Box::new(doc_value));
+    doc.add(doc_value);
     Ok(doc)
 }
 
@@ -273,10 +273,8 @@ fn test_missing_value() -> Result<()> {
 fn multi_doc(points: &[[f64; 2]]) -> Result<Document> {
     let mut doc = Document::new();
     for point in points {
-        doc.add(Box::new(LatLonPoint::new("foo", point[0], point[1])?));
-        doc.add(Box::new(LatLonDocValuesField::new(
-            "foo", point[0], point[1],
-        )?));
+        doc.add(LatLonPoint::new("foo", point[0], point[1])?);
+        doc.add(LatLonDocValuesField::new("foo", point[0], point[1])?);
     }
     Ok(doc)
 }

@@ -577,11 +577,11 @@ fn test_score_cosine<C: KnnVectorCase>() -> Result<()> {
     with_plain_writer(&d, |w| {
         for j in 1..=5 {
             let mut doc = Document::new();
-            doc.add(C::get_knn_vector_field_with(
+            doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field_with(
                 "field",
                 &[j as f32, (j * j) as f32],
                 VectorSimilarityFunction::COSINE,
-            )?);
+            )?));
             w.add_document(&doc)?;
         }
         Ok(())
@@ -680,7 +680,10 @@ fn explain_body<C: KnnVectorCase>(commit_each: bool, nomatch_doc: i32) -> Result
     with_plain_writer(&d, |w| {
         for j in 0..5 {
             let mut doc = Document::new();
-            doc.add(C::get_knn_vector_field("field", &[j as f32, j as f32])?);
+            doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
+                "field",
+                &[j as f32, j as f32],
+            )?));
             w.add_document(&doc)?;
             if commit_each {
                 w.commit()?;
@@ -730,12 +733,11 @@ fn test_skewed_index<C: KnnVectorCase>() -> Result<()> {
         for _i in 0..5 {
             for _j in 0..5 {
                 let mut doc = Document::new();
-                doc.add(C::get_knn_vector_field("field", &[r as f32, r as f32])?);
-                doc.add(Box::new(StringField::new(
-                    "id",
-                    format!("id{r}"),
-                    Store::YES,
+                doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
+                    "field",
+                    &[r as f32, r as f32],
                 )?));
+                doc.add(StringField::new("id", format!("id{r}"), Store::YES)?);
                 w.add_document(&doc)?;
                 r += 1;
             }
@@ -797,10 +799,10 @@ fn assert_random_consistency<C: KnnVectorCase>(multi_threaded: bool) -> Result<(
         for i in 0..num_docs {
             let mut doc = Document::new();
             if every_doc_has_a_vector || random().next_int_bound(10) != 2 {
-                doc.add(C::get_knn_vector_field(
+                doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
                     "field",
                     &C::random_vector(dimension),
-                )?);
+                )?));
             }
             w.add_document(&doc)?;
             if r.next_boolean() && i % 50 == 0 {
@@ -865,10 +867,10 @@ fn test_random<C: KnnVectorCase>() -> Result<()> {
     for _i in 0..num_docs {
         let mut doc = Document::new();
         if every_doc_has_a_vector || random().next_int_bound(10) != 2 {
-            doc.add(C::get_knn_vector_field(
+            doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
                 "field",
                 &C::random_vector(dimension),
-            )?);
+            )?));
         }
         w.add_document(&doc)?;
     }
@@ -926,12 +928,12 @@ fn test_random_with_filter<C: KnnVectorCase>() -> Result<()> {
     let w = RandomIndexWriter::new_with_config(&*random(), d.as_directory(), iwc)?;
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(C::get_knn_vector_field(
+        doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
             "field",
             &C::random_vector(dimension),
-        )?);
-        doc.add(Box::new(NumericDocValuesField::new("tag", i64::from(i))));
-        doc.add(Box::new(IntPoint::new("tag", &[i])?));
+        )?));
+        doc.add(NumericDocValuesField::new("tag", i64::from(i)));
+        doc.add(IntPoint::new("tag", &[i])?);
         w.add_document(&doc)?;
     }
     w.force_merge(1)?;
@@ -1075,8 +1077,10 @@ fn test_filter_with_same_score<C: KnnVectorCase>() -> Result<()> {
     let vector = C::random_vector(dimension);
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(C::get_knn_vector_field("field", &vector)?);
-        doc.add(Box::new(IntPoint::new("tag", &[i])?));
+        doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
+            "field", &vector,
+        )?));
+        doc.add(IntPoint::new("tag", &[i])?);
         w.add_document(&doc)?;
     }
     w.force_merge(1)?;
@@ -1139,13 +1143,12 @@ fn test_deletes<C: KnnVectorCase>() -> Result<()> {
         let dim = 30;
         for i in 0..num_docs {
             let mut d = Document::new();
-            d.add(Box::new(StringField::new(
-                "index",
-                i.to_string(),
-                Store::YES,
-            )?));
+            d.add(StringField::new("index", i.to_string(), Store::YES)?);
             if RandomizedTest::frequently() {
-                d.add(C::get_knn_vector_field("vector", &C::random_vector(dim))?);
+                d.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
+                    "vector",
+                    &C::random_vector(dim),
+                )?));
             }
             w.add_document(&d)?;
         }
@@ -1203,7 +1206,10 @@ fn test_all_deletes<C: KnnVectorCase>() -> Result<()> {
         let dim = 30;
         for _i in 0..num_docs {
             let mut d = Document::new();
-            d.add(C::get_knn_vector_field("vector", &C::random_vector(dim))?);
+            d.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
+                "vector",
+                &C::random_vector(dim),
+            )?));
             w.add_document(&d)?;
         }
         w.commit()?;
@@ -1233,11 +1239,14 @@ fn test_merge_away_all_values<C: KnnVectorCase>() -> Result<()> {
     let dim = 30;
     with_dir_and_writer::<C>(LuceneTestCase::new_index_writer_config(), |_dir, w| {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new("id", "0".into(), Store::NO)?));
+        doc.add(StringField::new("id", "0".into(), Store::NO)?);
         w.add_document(&doc)?;
         doc = Document::new();
-        doc.add(Box::new(StringField::new("id", "1".into(), Store::NO)?));
-        doc.add(C::get_knn_vector_field("field", &C::random_vector(dim))?);
+        doc.add(StringField::new("id", "1".into(), Store::NO)?);
+        doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
+            "field",
+            &C::random_vector(dim),
+        )?));
         w.add_document(&doc)?;
         w.commit()?;
         w.delete_documents_by_terms(vec![term("id", "1")])?;
@@ -1279,12 +1288,11 @@ fn test_no_live_docs_reader<C: KnnVectorCase>() -> Result<()> {
         let dim = 30;
         for i in 0..num_docs {
             let mut d = Document::new();
-            d.add(Box::new(StringField::new(
-                "index",
-                i.to_string(),
-                Store::NO,
+            d.add(StringField::new("index", i.to_string(), Store::NO)?);
+            d.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
+                "vector",
+                &C::random_vector(dim),
             )?));
-            d.add(C::get_knn_vector_field("vector", &C::random_vector(dim))?);
             w.add_document(&d)?;
         }
         w.commit()?;
@@ -1316,7 +1324,10 @@ fn test_bit_set_query<C: KnnVectorCase>() -> Result<()> {
         let dim = 30;
         for _i in 0..num_docs {
             let mut d = Document::new();
-            d.add(C::get_knn_vector_field("vector", &C::random_vector(dim))?);
+            d.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
+                "vector",
+                &C::random_vector(dim),
+            )?));
             w.add_document(&d)?;
         }
         w.commit()?;
@@ -1483,33 +1494,21 @@ pub fn get_index_store_with<C: KnnVectorCase>(
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), index_store.as_directory())?;
     for (i, content) in contents.iter().enumerate() {
         let mut doc = Document::new();
-        doc.add(C::get_knn_vector_field_with(
+        doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field_with(
             field,
             content,
             vector_similarity_function,
-        )?);
-        doc.add(Box::new(StringField::new(
-            "id",
-            format!("id{i}"),
-            Store::YES,
         )?));
+        doc.add(StringField::new("id", format!("id{i}"), Store::YES)?);
         writer.add_document(&doc)?;
         if RandomizedTest::random_boolean() {
             // Add some documents without a vector
             let mut j = 0;
             while j < RandomizedTest::random_int_between(1, 5) {
                 doc = Document::new();
-                doc.add(Box::new(StringField::new(
-                    "other",
-                    "value".into(),
-                    Store::NO,
-                )?));
+                doc.add(StringField::new("other", "value".into(), Store::NO)?);
                 // Add fields that will be matched by our test filters but won't have vectors
-                doc.add(Box::new(StringField::new(
-                    "id",
-                    format!("id{j}"),
-                    Store::YES,
-                )?));
+                doc.add(StringField::new("id", format!("id{j}"), Store::YES)?);
                 writer.add_document(&doc)?;
                 j += 1;
             }
@@ -1518,11 +1517,7 @@ pub fn get_index_store_with<C: KnnVectorCase>(
     // Add some documents without a vector
     for _i in 0..5 {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "other",
-            "value".into(),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("other", "value".into(), Store::NO)?);
         writer.add_document(&doc)?;
     }
     writer.close()?;
@@ -1539,22 +1534,16 @@ fn get_stable_index_store<C: KnnVectorCase>(
     with_plain_writer(&index_store, |writer| {
         for (i, content) in contents.iter().enumerate() {
             let mut doc = Document::new();
-            doc.add(C::get_knn_vector_field(field, content)?);
-            doc.add(Box::new(StringField::new(
-                "id",
-                format!("id{i}"),
-                Store::YES,
+            doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
+                field, content,
             )?));
+            doc.add(StringField::new("id", format!("id{i}"), Store::YES)?);
             writer.add_document(&doc)?;
         }
         // Add some documents without a vector
         for _i in 0..5 {
             let mut doc = Document::new();
-            doc.add(Box::new(StringField::new(
-                "other",
-                "value".into(),
-                Store::NO,
-            )?));
+            doc.add(StringField::new("other", "value".into(), Store::NO)?);
             writer.add_document(&doc)?;
         }
         Ok(())
@@ -1967,11 +1956,17 @@ fn test_same_field_different_formats<C: KnnVectorCase>() -> Result<()> {
             let iwriter = IndexWriter::new(directory.as_directory(), iwc)?;
             let r = (|| -> Result<()> {
                 let mut doc = Document::new();
-                doc.add(C::get_knn_vector_field("field1", &[1.0, 1.0, 1.0])?);
+                doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
+                    "field1",
+                    &[1.0, 1.0, 1.0],
+                )?));
                 iwriter.add_document(&doc)?;
 
                 doc.clear();
-                doc.add(C::get_knn_vector_field("field1", &[1.0, 2.0, 3.0])?);
+                doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
+                    "field1",
+                    &[1.0, 2.0, 3.0],
+                )?));
                 iwriter.add_document(&doc)?;
                 iwriter.commit()?;
                 Ok(())
@@ -1990,11 +1985,17 @@ fn test_same_field_different_formats<C: KnnVectorCase>() -> Result<()> {
             let r = (|| -> Result<()> {
                 let mut doc = Document::new();
                 doc.clear();
-                doc.add(C::get_knn_vector_field("field1", &[1.0, 1.0, 2.0])?);
+                doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
+                    "field1",
+                    &[1.0, 1.0, 2.0],
+                )?));
                 iwriter.add_document(&doc)?;
 
                 doc.clear();
-                doc.add(C::get_knn_vector_field("field1", &[4.0, 5.0, 6.0])?);
+                doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
+                    "field1",
+                    &[4.0, 5.0, 6.0],
+                )?));
                 iwriter.add_document(&doc)?;
                 iwriter.commit()?;
                 Ok(())

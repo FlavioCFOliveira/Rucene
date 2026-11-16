@@ -55,7 +55,7 @@ fn test_float_norms() -> Result<()> {
             .join(" ");
         let f = TextField::new(FLOAT_TEST_FIELD, value, Store::YES)?;
 
-        doc.add(Box::new(f));
+        doc.add(f);
         writer.add_document(&*doc)?;
         doc.remove_field(FLOAT_TEST_FIELD);
         if LuceneTestCase::rarely() {

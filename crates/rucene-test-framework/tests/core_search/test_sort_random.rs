@@ -83,7 +83,7 @@ fn random_string_sort(t: SortFieldType) -> Result<()> {
             }
 
             let br = BytesRef::from_char_sequence(&s);
-            doc.add(Box::new(SortedDocValuesField::new("stringdv", br.clone())));
+            doc.add(SortedDocValuesField::new("stringdv", br.clone()));
             doc_values.push(Some(br));
         } else {
             if verbose() {
@@ -92,14 +92,8 @@ fn random_string_sort(t: SortFieldType) -> Result<()> {
             doc_values.push(None);
         }
 
-        doc.add(Box::new(NumericDocValuesField::new(
-            "id",
-            i64::from(num_docs),
-        )));
-        doc.add(Box::new(StoredField::new_number(
-            "id",
-            NumericValue::Int(num_docs),
-        )?));
+        doc.add(NumericDocValuesField::new("id", i64::from(num_docs)));
+        doc.add(StoredField::new_number("id", NumericValue::Int(num_docs))?);
         writer.add_document(&doc)?;
         num_docs += 1;
 

@@ -42,11 +42,7 @@ fn test_() -> Result<()> {
         let thread = Thread::unnamed(move || {
             while count.fetch_add(1, Ordering::SeqCst) < num_docs {
                 let mut doc = Document::new();
-                doc.add(Box::new(LuceneTestCase::new_text_field(
-                    "field",
-                    "text",
-                    Store::NO,
-                )));
+                doc.add(LuceneTestCase::new_text_field("field", "text", Store::NO));
                 if let Err(ioe) = w.add_document(&doc) {
                     rethrow_java(LuceneError::runtime_exception(ioe));
                 }

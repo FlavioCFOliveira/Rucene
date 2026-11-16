@@ -295,20 +295,14 @@ fn build_index(dir: &TestDirectory, value_supplier: impl Fn(i32) -> BytesRef) ->
     let result = (|| -> Result<()> {
         for i in 0..NUM_DOCS {
             let mut doc = Document::new();
-            doc.add(Box::new(StringField::new(
+            doc.add(StringField::new(
                 QUERY_FIELD,
                 QUERY_VALUE.to_string(),
                 Store::NO,
-            )?));
+            )?);
             let value = value_supplier(i);
-            doc.add(Box::new(SortedDocValuesField::new(
-                SORT_FIELD_NO_SKIP,
-                value.clone(),
-            )));
-            doc.add(Box::new(SortedDocValuesField::indexed_field(
-                SORT_FIELD_SKIP,
-                value,
-            )));
+            doc.add(SortedDocValuesField::new(SORT_FIELD_NO_SKIP, value.clone()));
+            doc.add(SortedDocValuesField::indexed_field(SORT_FIELD_SKIP, value));
             writer.add_document(&doc)?;
         }
         writer.force_merge(1)

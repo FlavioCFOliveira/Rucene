@@ -3967,11 +3967,11 @@ mod core_close_order_tests {
         let dir: Arc<dyn Directory> = tracking;
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new())?;
         let mut doc = Document::new();
-        doc.add(Box::new(TextField::new(
+        doc.add(TextField::new(
             "body",
             "some words".to_string(),
             Store::YES,
-        )?));
+        )?);
         writer.add_document(&doc)?;
         writer.commit()?;
         writer.close()?;
@@ -4014,11 +4014,11 @@ mod core_close_order_tests {
         let dir: Arc<dyn Directory> = tracking;
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new())?;
         let mut doc = Document::new();
-        doc.add(Box::new(TextField::new(
+        doc.add(TextField::new(
             "body",
             "some words".to_string(),
             Store::YES,
-        )?));
+        )?);
         writer.add_document(&doc)?;
         writer.commit()?;
         writer.close()?;
@@ -4083,11 +4083,11 @@ mod core_close_order_tests {
         term_vectors.set_store_term_vectors(true)?;
         term_vectors.set_stored(true)?;
         term_vectors.freeze();
-        doc.add(Box::new(crate::document::Field::new(
+        doc.add(crate::document::Field::new(
             "body",
             "some words".to_string(),
             term_vectors,
-        )?));
+        )?);
         writer.add_document(&doc)?;
         writer.commit()?;
         writer.close()?;

@@ -52,30 +52,19 @@ fn segment() -> Arc<dyn CodecReader> {
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for (i, &l) in LS.iter().enumerate() {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StoredField::new_string("id", format!("d{i}")).unwrap(),
-        ));
-        doc.add(Box::new(NumericDocValuesField::new("l", l)));
-        doc.add(Box::new(SortedDocValuesField::new(
+        doc.add(StoredField::new_string("id", format!("d{i}")).unwrap());
+        doc.add(NumericDocValuesField::new("l", l));
+        doc.add(SortedDocValuesField::new(
             "s",
             bytes(&format!("s{}", 9 - l)),
-        )));
+        ));
         if i != 2 {
-            doc.add(Box::new(NumericDocValuesField::new(
-                "sparse",
-                10 - i as i64,
-            )));
+            doc.add(NumericDocValuesField::new("sparse", 10 - i as i64));
         }
-        doc.add(Box::new(SortedNumericDocValuesField::new("sn", l)));
-        doc.add(Box::new(SortedNumericDocValuesField::new("sn", -l)));
-        doc.add(Box::new(SortedSetDocValuesField::new(
-            "ss",
-            bytes(&format!("a{l}")),
-        )));
-        doc.add(Box::new(SortedSetDocValuesField::new(
-            "ss",
-            bytes(&format!("z{i}")),
-        )));
+        doc.add(SortedNumericDocValuesField::new("sn", l));
+        doc.add(SortedNumericDocValuesField::new("sn", -l));
+        doc.add(SortedSetDocValuesField::new("ss", bytes(&format!("a{l}"))));
+        doc.add(SortedSetDocValuesField::new("ss", bytes(&format!("z{i}"))));
         writer.add_document(&doc).unwrap();
     }
     writer.close().unwrap();
@@ -103,15 +92,11 @@ fn block_segment(with_parent: bool) -> Arc<dyn CodecReader> {
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for (b, parent_value) in [7i64, 2, 5].into_iter().enumerate() {
         let mut child = Document::new();
-        child.add(Box::new(
-            StoredField::new_string("id", format!("b{b}c")).unwrap(),
-        ));
-        child.add(Box::new(NumericDocValuesField::new("l", 100 - b as i64)));
+        child.add(StoredField::new_string("id", format!("b{b}c")).unwrap());
+        child.add(NumericDocValuesField::new("l", 100 - b as i64));
         let mut parent = Document::new();
-        parent.add(Box::new(
-            StoredField::new_string("id", format!("b{b}p")).unwrap(),
-        ));
-        parent.add(Box::new(NumericDocValuesField::new("l", parent_value)));
+        parent.add(StoredField::new_string("id", format!("b{b}p")).unwrap());
+        parent.add(NumericDocValuesField::new("l", parent_value));
         writer.add_documents(&[child, parent]).unwrap();
     }
     writer.close().unwrap();

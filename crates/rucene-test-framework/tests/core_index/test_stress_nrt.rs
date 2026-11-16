@@ -267,16 +267,12 @@ fn test_() -> Result<()> {
 /// A tombstone or a document: `id` and `val_l`.
 fn id_doc(id: &str, val: i64, stored_only_type: &FieldType) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        id,
-        Store::YES,
-    )));
-    d.add(Box::new(LuceneTestCase::new_field(
+    d.add(LuceneTestCase::new_string_field("id", id, Store::YES));
+    d.add(LuceneTestCase::new_field(
         FIELD,
         &val.to_string(),
         stored_only_type,
-    )));
+    ));
     d
 }
 

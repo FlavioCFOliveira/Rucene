@@ -1228,12 +1228,6 @@ impl Field {
     pub fn new(name: &str, value: String, field_type: impl Into<Arc<FieldType>>) -> Result<Self> {
         let field_type: Arc<FieldType> = field_type.into();
         Self::validate_name_and_type(name, &field_type)?;
-        if value.is_empty()
-            && !field_type.stored()
-            && field_type.index_options() == IndexOptions::NONE
-        {
-            // Lucene allows empty strings; keep the check minimal.
-        }
         if !field_type.stored() && field_type.index_options() == IndexOptions::NONE {
             return Err(LuceneError::illegal_argument(
                 "it doesn't make sense to have a field that is neither indexed nor stored"
@@ -1916,9 +1910,10 @@ impl Document {
     /// Adds a field to the document.
     ///
     /// Equivalent to `Document.add(IndexableField)` (`Document.java:61-63`)
-    /// for a field no one else holds.
-    pub fn add(&mut self, field: Box<dyn IndexableField>) {
-        self.fields.push(Arc::from(field));
+    /// for a field no one else holds: the document keeps the one reference
+    /// to it, allocated once.
+    pub fn add<F: IndexableField + 'static>(&mut self, field: F) {
+        self.fields.push(Arc::new(field));
     }
 
     /// Adds a field that the caller, or other entries, also hold.
@@ -2784,10 +2779,10 @@ impl DocumentStoredFieldVisitor {
 
 impl StoredFieldVisitor for DocumentStoredFieldVisitor {
     fn binary_field(&mut self, field_info: &FieldInfo, value: &[u8]) -> Result<()> {
-        self.doc.add(Box::new(StoredField::new_bytes(
+        self.doc.add(StoredField::new_bytes(
             &field_info.name,
             BytesRef::new(value.to_vec()),
-        )?));
+        )?);
         Ok(())
     }
 
@@ -2799,43 +2794,43 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
         field_type.set_store_term_vectors(field_info.has_term_vectors())?;
         field_type.set_omit_norms(field_info.omits_norms())?;
         field_type.set_index_options(field_info.index_options)?;
-        self.doc.add(Box::new(StoredField::new_with_field_type(
+        self.doc.add(StoredField::new_with_field_type(
             &field_info.name,
             value.to_string(),
             field_type,
-        )?));
+        )?);
         Ok(())
     }
 
     fn int_field(&mut self, field_info: &FieldInfo, value: i32) -> Result<()> {
-        self.doc.add(Box::new(StoredField::new_number(
+        self.doc.add(StoredField::new_number(
             &field_info.name,
             NumericValue::Int(value),
-        )?));
+        )?);
         Ok(())
     }
 
     fn long_field(&mut self, field_info: &FieldInfo, value: i64) -> Result<()> {
-        self.doc.add(Box::new(StoredField::new_number(
+        self.doc.add(StoredField::new_number(
             &field_info.name,
             NumericValue::Long(value),
-        )?));
+        )?);
         Ok(())
     }
 
     fn float_field(&mut self, field_info: &FieldInfo, value: f32) -> Result<()> {
-        self.doc.add(Box::new(StoredField::new_number(
+        self.doc.add(StoredField::new_number(
             &field_info.name,
             NumericValue::Float(value),
-        )?));
+        )?);
         Ok(())
     }
 
     fn double_field(&mut self, field_info: &FieldInfo, value: f64) -> Result<()> {
-        self.doc.add(Box::new(StoredField::new_number(
+        self.doc.add(StoredField::new_number(
             &field_info.name,
             NumericValue::Double(value),
-        )?));
+        )?);
         Ok(())
     }
 
@@ -8621,7 +8616,7 @@ mod tests {
         ft.set_index_options(IndexOptions::DOCS).unwrap();
 
         let field = Field::new("title", "Hello".to_string(), ft).unwrap();
-        doc.add(Box::new(field));
+        doc.add(field);
 
         assert_eq!(doc.get_values("title"), vec!["Hello".to_string()]);
         assert!(doc.get_field("title").is_some());
@@ -8634,12 +8629,8 @@ mod tests {
         let ft = FieldType::new();
         ft.set_stored(true).unwrap();
 
-        doc.add(Box::new(
-            Field::new("tag", "a".to_string(), ft.clone()).unwrap(),
-        ));
-        doc.add(Box::new(
-            Field::new("tag", "b".to_string(), ft.clone()).unwrap(),
-        ));
+        doc.add(Field::new("tag", "a".to_string(), ft.clone()).unwrap());
+        doc.add(Field::new("tag", "b".to_string(), ft.clone()).unwrap());
         doc.remove_field("tag");
 
         assert_eq!(doc.get_values("tag"), vec!["b".to_string()]);
@@ -8651,12 +8642,8 @@ mod tests {
         let ft = FieldType::new();
         ft.set_stored(true).unwrap();
 
-        doc.add(Box::new(
-            Field::new("tag", "a".to_string(), ft.clone()).unwrap(),
-        ));
-        doc.add(Box::new(
-            Field::new("tag", "b".to_string(), ft.clone()).unwrap(),
-        ));
+        doc.add(Field::new("tag", "a".to_string(), ft.clone()).unwrap());
+        doc.add(Field::new("tag", "b".to_string(), ft.clone()).unwrap());
         doc.remove_fields("tag");
 
         assert!(doc.get_values("tag").is_empty());
@@ -8668,9 +8655,7 @@ mod tests {
         let ft = FieldType::new();
         ft.set_stored(true).unwrap();
 
-        doc.add(Box::new(
-            Field::new_with_bytes("data", BytesRef::new(vec![1, 2, 3]), ft).unwrap(),
-        ));
+        doc.add(Field::new_with_bytes("data", BytesRef::new(vec![1, 2, 3]), ft).unwrap());
 
         let values = doc.get_binary_values("data");
         assert_eq!(values.len(), 1);
@@ -8748,7 +8733,7 @@ mod tests {
         let field = TextField::new("body", "hello world".to_string(), Store::YES).unwrap();
         assert!(field.field_type().stored());
         let mut doc = Document::new();
-        doc.add(Box::new(field));
+        doc.add(field);
         assert_eq!(doc.get_values("body"), vec!["hello world".to_string()]);
     }
 

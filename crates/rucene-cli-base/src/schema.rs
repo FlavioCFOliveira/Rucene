@@ -571,11 +571,7 @@ impl Record {
     /// Propagates any error a `rucene` field constructor raises.
     pub fn to_document(&self) -> Result<Document> {
         let mut document = Document::new();
-        document.add(Box::new(StringField::new(
-            KEY_FIELD,
-            self.key.clone(),
-            Store::NO,
-        )?));
+        document.add(StringField::new(KEY_FIELD, self.key.clone(), Store::NO)?);
         for (spec, values) in self.schema.fields.iter().zip(&self.values) {
             for value in values {
                 add_value(&mut document, spec, value)?;
@@ -592,7 +588,7 @@ impl Record {
                 }
                 for (field, codes) in levels.fields.iter().zip(per_level) {
                     for code in codes {
-                        document.add(Box::new(KeywordField::new(field, code, Store::NO)?));
+                        document.add(KeywordField::new(field, code, Store::NO)?);
                     }
                 }
             }
@@ -605,37 +601,34 @@ fn add_value(document: &mut Document, spec: &FieldSpec, value: &Value) -> Result
     let name = spec.name;
     match (spec.kind, value) {
         (FieldKind::Exact, Value::String(text)) => {
-            document.add(Box::new(StringField::new(name, text.clone(), Store::YES)?));
+            document.add(StringField::new(name, text.clone(), Store::YES)?);
         }
         (FieldKind::Keyword | FieldKind::Flag, Value::String(text)) => {
-            document.add(Box::new(KeywordField::new(name, text.clone(), Store::YES)?));
+            document.add(KeywordField::new(name, text.clone(), Store::YES)?);
         }
         (FieldKind::Text, Value::String(text)) => {
-            document.add(Box::new(TextField::new(name, text.clone(), Store::YES)?));
+            document.add(TextField::new(name, text.clone(), Store::YES)?);
         }
         (FieldKind::Name, Value::String(text)) => {
-            document.add(Box::new(TextField::new(name, text.clone(), Store::YES)?));
-            document.add(Box::new(KeywordField::new(
+            document.add(TextField::new(name, text.clone(), Store::YES)?);
+            document.add(KeywordField::new(
                 &spec.exact_field(),
                 text.clone(),
                 Store::NO,
-            )?));
+            )?);
         }
         (FieldKind::Stored, Value::String(text)) => {
-            document.add(Box::new(StoredField::new_string(name, text.clone())?));
+            document.add(StoredField::new_string(name, text.clone())?);
         }
         (FieldKind::Date, Value::Date(millis)) => {
-            document.add(Box::new(LongField::new(name, *millis, Store::NO)));
-            document.add(Box::new(StoredField::new_string(
-                name,
-                format_date(*millis),
-            )?));
+            document.add(LongField::new(name, *millis, Store::NO));
+            document.add(StoredField::new_string(name, format_date(*millis))?);
         }
         (FieldKind::Int, Value::Int(number)) => {
-            document.add(Box::new(IntField::new(name, *number, Store::YES)));
+            document.add(IntField::new(name, *number, Store::YES));
         }
         (FieldKind::Double, Value::Double(number)) => {
-            document.add(Box::new(DoubleField::new(name, *number, Store::YES)));
+            document.add(DoubleField::new(name, *number, Store::YES));
         }
         (kind, value) => unreachable!("Value::parse gave {value:?} for a {kind:?} field"),
     }

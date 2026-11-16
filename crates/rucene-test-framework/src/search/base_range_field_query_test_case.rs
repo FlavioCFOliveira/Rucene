@@ -414,8 +414,8 @@ pub trait BaseRangeFieldQueryTestCase: Send + Sync + 'static {
             let w = IndexWriter::new(dir.as_directory(), iwc)?;
             for (id, boxes) in ranges.iter().enumerate() {
                 let mut doc = Document::new();
-                doc.add(Box::new(StringField::new("id", id.to_string(), Store::NO)?));
-                doc.add(Box::new(NumericDocValuesField::new("id", id as i64)));
+                doc.add(StringField::new("id", id.to_string(), Store::NO)?);
+                doc.add(NumericDocValuesField::new("id", id as i64));
                 if !boxes[0].borrow().is_missing {
                     for b in boxes.iter() {
                         self.add_range(&mut doc, &*b.borrow().range)?;
@@ -552,7 +552,7 @@ pub trait BaseRangeFieldQueryTestCase: Send + Sync + 'static {
 
     /// `addRange(Document doc, Range box)` (`protected`).
     fn add_range(&self, doc: &mut Document, r#box: &dyn Range) -> Result<()> {
-        doc.add(self.new_range_field(r#box)?);
+        doc.add_shared(std::sync::Arc::from(self.new_range_field(r#box)?));
         Ok(())
     }
 

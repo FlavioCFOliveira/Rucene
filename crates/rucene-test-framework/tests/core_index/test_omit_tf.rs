@@ -137,11 +137,11 @@ fn test_mixed_ram() -> Result<()> {
 
     // this field will have Tf
     let f1 = LuceneTestCase::new_field("f1", "This field has term freqs", &NORMAL_TYPE);
-    d.add(Box::new(f1));
+    d.add(f1);
 
     // this field will NOT have Tf
     let f2 = LuceneTestCase::new_field("f2", "This field has NO Tf in all docs", &OMIT_TYPE);
-    d.add(Box::new(f2));
+    d.add(f2);
 
     for _ in 0..5 {
         writer.add_document(&d)?;
@@ -210,7 +210,7 @@ fn test_no_prx_file() -> Result<()> {
     let mut d = Document::new();
 
     let f1 = LuceneTestCase::new_field("f1", "This field has term freqs", &OMIT_TYPE);
-    d.add(Box::new(f1));
+    d.add(f1);
 
     for _ in 0..30 {
         writer.add_document(&d)?;
@@ -297,14 +297,14 @@ fn test_basic() -> Result<()> {
             &format!("{content}{}", if i % 2 == 0 { "" } else { " notf" }),
             &OMIT_TYPE,
         );
-        d.add(Box::new(no_tf));
+        d.add(no_tf);
 
         let tf = LuceneTestCase::new_field(
             "tf",
             &format!("{content}{}", if i % 2 == 0 { " tf" } else { "" }),
             &NORMAL_TYPE,
         );
-        d.add(Box::new(tf));
+        d.add(tf);
 
         writer.add_document(&d)?;
         // System.out.println(d);
@@ -418,7 +418,7 @@ fn test_stats() -> Result<()> {
     ft.set_index_options(IndexOptions::DOCS)?;
     ft.freeze();
     let f = LuceneTestCase::new_field("foo", "bar", &ft);
-    doc.add(Box::new(f));
+    doc.add(f);
     iw.add_document(&doc)?;
     let ir: Arc<dyn IndexReader> = iw.get_reader()?;
     iw.close()?;

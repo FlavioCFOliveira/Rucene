@@ -397,17 +397,9 @@ fn char_string(c: u32) -> String {
 fn one_field_doc(field: &str, term: &str, text: bool) -> Document {
     let mut doc = Document::new();
     if text {
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            field,
-            term,
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_text_field(field, term, Store::NO));
     } else {
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            field,
-            term,
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_string_field(field, term, Store::NO));
     }
     doc
 }
@@ -795,16 +787,8 @@ fn ords_test_seek_ceil_not_found() -> Result<()> {
         let mut doc = Document::new();
         let term = char_string(97 + i);
         let term2 = format!("a{}", char_string(97 + i));
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "field",
-            &term,
-            Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "field",
-            &term2,
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_string_field("field", &term, Store::NO));
+        doc.add(LuceneTestCase::new_string_field("field", &term2, Store::NO));
         w.add_document(&doc)?;
     }
 

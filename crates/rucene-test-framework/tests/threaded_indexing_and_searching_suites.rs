@@ -954,11 +954,7 @@ mod crt {
             None,
         )?);
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "test",
-            "test",
-            Store::YES,
-        )));
+        doc.add(LuceneTestCase::new_text_field("test", "test", Store::YES));
         writer.writer.add_document(&doc)?;
         manager.maybe_refresh()?;
         let t = {
@@ -1230,16 +1226,8 @@ mod crt {
                 commit_threads.push(commit_thread);
             }
             let mut d = Document::new();
-            d.add(Box::new(TextField::new(
-                "count",
-                format!("{i}"),
-                Store::NO,
-            )?));
-            d.add(Box::new(TextField::new(
-                "content",
-                content.clone(),
-                Store::YES,
-            )?));
+            d.add(TextField::new("count", format!("{i}"), Store::NO)?);
+            d.add(TextField::new("content", content.clone(), Store::YES)?);
             let start = std::time::Instant::now();
             let l = iw.add_document(&d)?;
             controlled_real_time_reopen_thread
@@ -2215,7 +2203,7 @@ mod sm {
                     for _i in 0..num_docs {
                         let w = Arc::clone(&*writer_ref.lock().unwrap_or_else(|p| p.into_inner()));
                         let mut doc = Document::new();
-                        doc.add(Box::new(LuceneTestCase::new_text_field(
+                        doc.add(LuceneTestCase::new_text_field(
                             "field",
                             &TestUtil::random_analysis_string(
                                 &*LuceneTestCase::random(),
@@ -2223,7 +2211,7 @@ mod sm {
                                 false,
                             ),
                             Store::YES,
-                        )));
+                        ));
                         w.add_document(&doc)?;
                         if LuceneTestCase::random().next_int_bound(1000) == 17 {
                             if LuceneTestCase::random().next_boolean() {
@@ -2418,11 +2406,11 @@ mod sm {
         let doc_id = AtomicI32::new(0);
         let next_doc = || {
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_string_field(
+            doc.add(LuceneTestCase::new_string_field(
                 "docId",
                 &format!("doc-{}", doc_id.fetch_add(1, Ordering::SeqCst)),
                 Store::YES,
-            )));
+            ));
             doc
         };
         // create initial commit

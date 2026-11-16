@@ -57,7 +57,7 @@ use crate::queries_support::{assert_not_same_int, leaf_spans, non_null_spans};
 fn doc(fields: Vec<Field>) -> Document {
     let mut doc = Document::new();
     for f in fields {
-        doc.add(Box::new(f));
+        doc.add(f);
     }
     doc
 }

@@ -50,12 +50,8 @@ pub fn class_def() -> Arc<Class> {
 
 fn point_doc(lat: f64, lon: f64, id: &str) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(LatLonPoint::new("point", lat, lon)?));
-    doc.add(Box::new(StringField::new(
-        "id",
-        id.to_string(),
-        Store::YES,
-    )?));
+    doc.add(LatLonPoint::new("point", lat, lon)?);
+    doc.add(StringField::new("id", id.to_string(), Store::YES)?);
     Ok(doc)
 }
 
@@ -216,14 +212,9 @@ fn test_nearest_neighbor_random() -> Result<()> {
         lats[id] = quantize_lat(geo_test_util::next_latitude())?;
         lons[id] = quantize_lon(geo_test_util::next_longitude())?;
         let mut doc = Document::new();
-        doc.add(Box::new(LatLonPoint::new("point", lats[id], lons[id])?));
-        doc.add(Box::new(LatLonDocValuesField::new(
-            "point", lats[id], lons[id],
-        )?));
-        doc.add(Box::new(StoredField::new_number(
-            "id",
-            NumericValue::Int(id as i32),
-        )?));
+        doc.add(LatLonPoint::new("point", lats[id], lons[id])?);
+        doc.add(LatLonDocValuesField::new("point", lats[id], lons[id])?);
+        doc.add(StoredField::new_number("id", NumericValue::Int(id as i32))?);
         w.add_document(&doc)?;
     }
 

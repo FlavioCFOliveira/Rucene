@@ -74,12 +74,8 @@ fn ndv_field(name: &str, value: i64) -> Result<Field> {
 /// A document with the stored string fields `id` and `version`.
 fn id_version_doc(id: &str, version: &str) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("id", id.into(), Store::YES)?));
-    doc.add(Box::new(StringField::new(
-        "version",
-        version.into(),
-        Store::YES,
-    )?));
+    doc.add(StringField::new("id", id.into(), Store::YES)?);
+    doc.add(StringField::new("version", version.into(), Store::YES)?);
     Ok(doc)
 }
 
@@ -276,11 +272,7 @@ fn test_mix_soft_and_hard_deletes() -> Result<()> {
         let doc_id = random().next_int_bound(5);
         unique_docs.add(doc_id);
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "id",
-            doc_id.to_string(),
-            Store::YES,
-        )?));
+        doc.add(StringField::new("id", doc_id.to_string(), Store::YES)?);
         if doc_id % 2 == 0 {
             writer.update_document(Term::from_text("id", &doc_id.to_string()), &doc)?;
         } else {
@@ -436,18 +428,14 @@ fn test_avoid_wrapping_readers_without_soft_deletes() -> Result<()> {
             for i in 0..num_docs {
                 let mut doc = Document::new();
                 let doc_id = i.to_string();
-                doc.add(Box::new(StringField::new("id", doc_id, Store::YES)?));
+                doc.add(StringField::new("id", doc_id, Store::YES)?);
                 writer.add_document(&doc)?;
             }
             let num_deletes = 1 + random().next_int_bound(5);
             for _i in 0..num_deletes {
                 let mut doc = Document::new();
                 let doc_id = random().next_int_bound(num_docs).to_string();
-                doc.add(Box::new(StringField::new(
-                    "id",
-                    doc_id.clone(),
-                    Store::YES,
-                )?));
+                doc.add(StringField::new("id", doc_id.clone(), Store::YES)?);
                 writer.soft_update_document(
                     Term::from_text("id", &doc_id),
                     &doc,

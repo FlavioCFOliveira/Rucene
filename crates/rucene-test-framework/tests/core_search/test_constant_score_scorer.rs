@@ -209,11 +209,7 @@ impl TestConstantScoreScorerIndex {
 
         for value in VALUES {
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_text_field(
-                FIELD,
-                value,
-                Store::YES,
-            )));
+            doc.add(LuceneTestCase::new_text_field(FIELD, value, Store::YES));
             writer.add_document(&doc)?;
         }
         writer.force_merge(1)?;
@@ -276,7 +272,7 @@ fn test_early_termination() -> Result<()> {
             if i % 2 == 0 { "foo bar" } else { "baz" },
             Store::YES,
         );
-        doc.add(Box::new(f));
+        doc.add(f);
         iw.add_document(&doc)?;
     }
     let ir = directory_reader::open_with_writer(&*iw)?;

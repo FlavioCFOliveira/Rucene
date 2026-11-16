@@ -275,7 +275,7 @@ fn make_document(doc_text: &str) -> Result<Document> {
     let mut doc = Document::new();
     let custom_type = omit_norms_type()?;
     let f = Field::new("f", doc_text.to_string(), custom_type)?;
-    doc.add(Box::new(f));
+    doc.add(f);
     Ok(doc)
 }
 
@@ -424,7 +424,7 @@ fn test_slop_with_holes() -> Result<()> {
     let custom_type = omit_norms_type()?;
     let mut doc = Document::new();
     let f = Field::new("lyrics", String::new(), custom_type)?;
-    doc.add(Box::new(f));
+    doc.add(f);
     field_mut(&mut doc, "lyrics").set_string_value("drug drug".to_string())?;
     iw.add_document(&doc)?;
     field_mut(&mut doc, "lyrics").set_string_value("drug druggy drug".to_string())?;
@@ -464,11 +464,11 @@ fn test_infinite_freq1() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_field(
+    doc.add(LuceneTestCase::new_field(
         "lyrics",
         document,
         &FieldType::new_from(TextField::type_not_stored()),
-    )));
+    ));
     iw.add_document(&doc)?;
     let ir = iw.get_reader()?;
     iw.close()?;
@@ -528,11 +528,11 @@ fn test_infinite_freq2() -> Result<()> {
 
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_field(
+    doc.add(LuceneTestCase::new_field(
         "lyrics",
         document,
         &FieldType::new_from(TextField::type_not_stored()),
-    )));
+    ));
     iw.add_document(&doc)?;
     let ir = iw.get_reader()?;
     iw.close()?;

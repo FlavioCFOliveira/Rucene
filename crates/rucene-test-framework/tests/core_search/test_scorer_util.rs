@@ -74,18 +74,10 @@ fn test_likely_fixed_bits() -> Result<()> {
     let w = IndexWriter::new(Arc::clone(&dir), iwc)?;
     let result = (|| -> Result<()> {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "id",
-            "1".to_string(),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("id", "1".to_string(), Store::NO)?);
         w.add_document(&doc)?;
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "id",
-            "2".to_string(),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("id", "2".to_string(), Store::NO)?);
         w.add_document(&doc)?;
         w.delete_documents_by_terms(vec![Term::from_text("id", "1")])?;
         let reader = directory_reader::open_with_writer(&*w)?;
@@ -125,7 +117,7 @@ fn test_likely_impacts_enum() -> Result<()> {
     let w = IndexWriter::new(Arc::clone(&dir), iwc)?;
     let result = (|| -> Result<()> {
         let mut doc = Document::new();
-        doc.add(Box::new(FeatureField::new("field", "value", 1.0)?));
+        doc.add(FeatureField::new("field", "value", 1.0)?);
         w.add_document(&doc)?;
         let reader = directory_reader::open_with_writer(&*w)?;
         let r = (|| -> Result<()> {

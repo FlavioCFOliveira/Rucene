@@ -25,9 +25,7 @@ fn a_term_of_the_empty_field_deletes_its_document_after_a_commit() {
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for value in ["a", "b"] {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("", value.to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(StringField::new("", value.to_string(), Store::NO).unwrap());
         writer.add_document(&doc).unwrap();
     }
     writer.commit().unwrap();

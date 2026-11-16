@@ -1934,11 +1934,11 @@ fn byte_buffers_test_build_index(case: &dyn BaseDirectoryTestCase) -> Result<()>
         let mut i = docs;
         while i > 0 {
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_string_field(
+            doc.add(LuceneTestCase::new_string_field(
                 "content",
                 English::int_to_english(i).trim(),
                 Store::YES,
-            )));
+            ));
             writer.add_document(&doc)?;
             i -= 1;
         }

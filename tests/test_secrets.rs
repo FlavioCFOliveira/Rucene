@@ -29,9 +29,7 @@ fn writer_with_one_segment() -> (Arc<dyn Directory>, Arc<IndexWriter>) {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StringField::new("id", "a".to_string(), Store::YES).unwrap(),
-    ));
+    doc.add(StringField::new("id", "a".to_string(), Store::YES).unwrap());
     writer.add_document(&doc).unwrap();
     writer.commit().unwrap();
     (dir, writer)

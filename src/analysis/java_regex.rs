@@ -35,7 +35,7 @@ pub use matcher::JavaMatcher;
 
 use std::collections::HashMap;
 use std::fmt::{self, Write as _};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 /// `Pattern.UNIX_LINES`, `(?d)`.
 pub const UNIX_LINES: u32 = 0x01;
@@ -130,8 +130,16 @@ impl PatternSyntaxError {
 pub struct JavaPattern {
     regex: String,
     flags: u32,
-    whole: fancy_regex::Regex,
+    /// The translation anchored at both ends, which only `matches()` runs:
+    /// built on its first use and shared by every clone (see
+    /// [`whole_regex`](Self::whole_regex)).
+    whole: Arc<OnceLock<fancy_regex::Regex>>,
     find: fancy_regex::Regex,
+    /// A pattern matching wherever `find` can match, which the plain
+    /// automaton runs (see [`may_match_from`](Self::may_match_from)); `None`
+    /// when the translation has no such pattern. Derived on the first search
+    /// and shared by every clone, so a pattern never searched costs nothing.
+    precheck: Arc<OnceLock<Option<fancy_regex::Regex>>>,
     /// The number of capturing groups, `Matcher.groupCount()`.
     group_count: usize,
     /// The named groups and their numbers, `Pattern.namedGroups()`.
@@ -151,17 +159,21 @@ impl JavaPattern {
     /// `PatternSyntaxException`, or where the pattern needs a construct the
     /// translation or the engine cannot reproduce.
     pub fn compile(regex: &str, flags: u32) -> Result<Self, PatternSyntaxError> {
-        let build = |pattern: &str| -> Result<(fancy_regex::Regex, fancy_regex::Regex), fancy_regex::Error> {
-            let whole = fancy_regex::RegexBuilder::new(&format!(r"\A(?:{pattern})\z"))
-                .backtrack_limit(usize::MAX)
-                .build()?;
+        // PERF: `Pattern.compile` builds one node tree for `find()` and
+        // `matches()`. The engine needs two programs, and the anchored one
+        // is built on the first `matches()` (most callers only `find()`).
+        // What is checked here instead is that it parses: the anchors add a
+        // group, so a translation nested to the engine's limit parses
+        // unanchored but not anchored, and `compile` refuses it as before.
+        let build = |pattern: &str| -> Result<fancy_regex::Regex, fancy_regex::Error> {
             let find = fancy_regex::RegexBuilder::new(pattern)
                 .backtrack_limit(usize::MAX)
                 .build()?;
-            Ok((whole, find))
+            fancy_regex::Expr::parse_tree(&whole_pattern(pattern))?;
+            Ok(find)
         };
         let translation = translate_for_engine_with_flags(regex, flags, false)?;
-        let (whole, find) = match build(&translation.pattern) {
+        let find = match build(&translation.pattern) {
             Ok(compiled) => compiled,
             Err(engine) => {
                 // A counted repetition the engine's automaton cannot hold is
@@ -176,8 +188,9 @@ impl JavaPattern {
         Ok(Self {
             regex: regex.to_string(),
             flags,
-            whole,
+            whole: Arc::new(OnceLock::new()),
             find,
+            precheck: Arc::new(OnceLock::new()),
             group_count: translation.group_count,
             named_groups: translation.named_groups,
         })
@@ -200,9 +213,53 @@ impl JavaPattern {
         &self.find
     }
 
-    /// The compiled pattern a [`JavaMatcher`] matches the whole input with.
+    /// The compiled pattern a [`JavaMatcher`] matches the whole input with,
+    /// built from the translation `find` runs on the first call.
+    ///
+    /// The anchored form adds only the two anchors to a translation the
+    /// engine already took and `compile` checked to parse, so the engine can
+    /// refuse it only for its automaton size limit (10 MiB), when the
+    /// unanchored automaton sits within a few states of that limit. That
+    /// build is retried without the size limit: `Pattern.compile` accepted
+    /// the pattern, so `matches()` must answer rather than fail.
     pub(crate) fn whole_regex(&self) -> &fancy_regex::Regex {
-        &self.whole
+        self.whole.get_or_init(|| {
+            let anchored = whole_pattern(self.find.as_str());
+            fancy_regex::RegexBuilder::new(&anchored)
+                .backtrack_limit(usize::MAX)
+                .build()
+                .or_else(|_| {
+                    fancy_regex::RegexBuilder::new(&anchored)
+                        .backtrack_limit(usize::MAX)
+                        .delegate_size_limit(usize::MAX)
+                        .build()
+                })
+                .expect("INVARIANT: the anchored translation parses (checked by `compile`)")
+        })
+    }
+
+    /// The pre-check pattern, derived on the first call (see
+    /// `superset_precheck`).
+    fn precheck(&self) -> Option<&fancy_regex::Regex> {
+        self.precheck
+            .get_or_init(|| superset_precheck(self.find.as_str()))
+            .as_ref()
+    }
+
+    /// Whether `find` can match in `haystack` at or after byte `pos`: false
+    /// only when it cannot.
+    ///
+    /// The answer comes from the pre-check pattern (see
+    /// `superset_precheck`), which matches wherever `find` matches, and which
+    /// the engine runs as a plain automaton, without the set-up of its
+    /// backtracking machine; a pattern with no pre-check may always match.
+    pub(crate) fn may_match_from(&self, haystack: &str, pos: usize) -> bool {
+        match self.precheck() {
+            Some(precheck) => precheck
+                .is_match_input(fancy_regex::RegexInput::new(haystack).from_pos(pos))
+                .expect("INVARIANT: the pre-check pattern runs no backtracking engine"),
+            None => true,
+        }
     }
 
     /// Creates a matcher that will match `input` against this pattern.
@@ -289,7 +346,7 @@ impl JavaPattern {
     /// When the engine fails at run time, which it cannot with no
     /// backtracking limit; Java's matcher would overflow its stack instead.
     pub fn matches(&self, input: &str) -> bool {
-        self.whole
+        self.whole_regex()
             .is_match(input)
             .expect("INVARIANT: the engine has no backtracking limit")
     }
@@ -314,6 +371,115 @@ impl JavaPattern {
                 .map(|i| captures.get(i).map(|m| m.as_str().to_string()))
                 .collect(),
         )
+    }
+}
+
+/// The translation `pattern` anchored at both ends of the input, the
+/// pattern `matches()` runs.
+fn whole_pattern(pattern: &str) -> String {
+    format!(r"\A(?:{pattern})\z")
+}
+
+/// The pre-check of the engine pattern `pattern`: a pattern with no
+/// look-around, assertion or atomic group, which therefore matches wherever
+/// `pattern` matches, or `None` when `pattern` holds a construct with no
+/// such counterpart.
+///
+/// **Soundness.** The pre-check is `pattern` with every assertion
+/// (`^`, `$`, `\A`, `\z`, `\b`, ...), every look-around, `\K` and `\G`
+/// replaced by the empty pattern, and every atomic group by a plain group.
+/// Each of those constructs only removes matches: a zero-width condition
+/// rejects positions, an atomic group forbids backtracking into it, `\K`
+/// and `\G` move or restrict a match's bounds. Every match of `pattern` that
+/// starts at or after a position is therefore a match of the pre-check from
+/// that position, and a pre-check with no match there proves `pattern` has
+/// none. Back references, conditionals, subroutine calls, backtracking
+/// verbs, absent operators, `.` and case-insensitive leaves (whose meaning
+/// is the backtracking engine's own) have no counterpart here, and give
+/// `None`; the translation spells classes out explicitly, so it writes
+/// neither `.` nor a case-insensitive leaf outside a back reference.
+/// The pre-check is written with `fancy-regex`'s own rendering of a plain
+/// pattern (`Expr::to_str`, which the engine uses to delegate such a
+/// pattern to its automaton), and is used only when reading it back gives
+/// the same plain pattern, so the engine runs exactly the tree derived here.
+fn superset_precheck(pattern: &str) -> Option<fancy_regex::Regex> {
+    let tree = fancy_regex::Expr::parse_tree(pattern).ok()?;
+    let superset = superset_expr(&tree.expr)?;
+    let mut rendered = String::new();
+    superset.to_str(&mut rendered, 0);
+    let reread = fancy_regex::Expr::parse_tree(&rendered).ok()?;
+    if !is_plain(&reread.expr) {
+        return None;
+    }
+    let mut rerendered = String::new();
+    reread.expr.to_str(&mut rerendered, 0);
+    if rerendered != rendered {
+        return None;
+    }
+    fancy_regex::RegexBuilder::new(&rendered).build().ok()
+}
+
+/// `expr` with its assertions, look-arounds, `\K` and `\G` replaced by the
+/// empty pattern and its atomic groups by plain ones; `None` when `expr`
+/// holds a construct with no plain counterpart. See `superset_precheck`.
+fn superset_expr(expr: &fancy_regex::Expr) -> Option<fancy_regex::Expr> {
+    use fancy_regex::Expr;
+    Some(match expr {
+        Expr::Empty => Expr::Empty,
+        Expr::Literal { casei: false, .. } | Expr::Delegate { casei: false, .. } => expr.clone(),
+        // An empty concatenation renders as `(?:)` under a quantifier, where
+        // `Expr::Empty` would render as nothing and bind the quantifier to
+        // the previous atom.
+        Expr::Assertion(_)
+        | Expr::LookAround(..)
+        | Expr::KeepOut
+        | Expr::ContinueFromPreviousMatchEnd => Expr::Concat(Vec::new()),
+        // The empty concatenations a removed node leaves are dropped from a
+        // concatenation, where they match the empty string at no cost, so
+        // the rendering reads back unchanged.
+        Expr::Concat(children) => {
+            let mut kept = Vec::with_capacity(children.len());
+            for child in children {
+                match superset_expr(child)? {
+                    Expr::Concat(empty) if empty.is_empty() => {}
+                    child => kept.push(child),
+                }
+            }
+            Expr::Concat(kept)
+        }
+        Expr::Alt(children) => {
+            Expr::Alt(children.iter().map(superset_expr).collect::<Option<_>>()?)
+        }
+        Expr::Group(child) => Expr::Group(Arc::new(superset_expr(child)?)),
+        // A one-element concatenation renders its child grouped wherever
+        // precedence needs it, as a non-capturing group.
+        Expr::AtomicGroup(child) => Expr::Concat(vec![superset_expr(child)?]),
+        Expr::Repeat {
+            child,
+            lo,
+            hi,
+            greedy,
+        } => Expr::Repeat {
+            child: Box::new(superset_expr(child)?),
+            lo: *lo,
+            hi: *hi,
+            greedy: *greedy,
+        },
+        _ => return None,
+    })
+}
+
+/// Whether `expr` is built only of the constructs a pre-check keeps.
+fn is_plain(expr: &fancy_regex::Expr) -> bool {
+    use fancy_regex::Expr;
+    match expr {
+        Expr::Empty | Expr::Literal { casei: false, .. } | Expr::Delegate { casei: false, .. } => {
+            true
+        }
+        Expr::Concat(children) | Expr::Alt(children) => children.iter().all(is_plain),
+        Expr::Group(child) => is_plain(child),
+        Expr::Repeat { child, .. } => is_plain(child),
+        _ => false,
     }
 }
 
@@ -4041,6 +4207,155 @@ mod tests {
             (error.description.as_str(), error.index),
             ("Unknown character name [NOPE]", 7)
         );
+    }
+
+    /// Every `find()` of a matcher, with each group's bounds, until it fails.
+    fn finds(pattern: &JavaPattern, input: &[u16]) -> Vec<Vec<i32>> {
+        let mut matcher = pattern.matcher(input);
+        let mut found = Vec::new();
+        while matcher.find() {
+            found.push(
+                (0..=matcher.group_count() as i32)
+                    .flat_map(|g| {
+                        [
+                            matcher.start_group(g).expect("a match"),
+                            matcher.end_group(g).expect("a match"),
+                        ]
+                    })
+                    .collect(),
+            );
+        }
+        found
+    }
+
+    /// The pre-check changes no `find()`: over anchors, boundaries,
+    /// look-arounds, atomic groups, possessive and counted repetitions, line
+    /// terminators, supplementary characters and unpaired surrogates, a
+    /// matcher with the pre-check finds exactly what the backtracking engine
+    /// alone finds. It is derived for the CLI's `oes$`-style patterns and
+    /// rejects inputs there (so the comparison is not vacuous), and is not
+    /// derived for a back reference.
+    #[test]
+    fn precheck_changes_no_find() {
+        let patterns = [
+            "oes$",
+            "aes$",
+            "ois$",
+            "^a",
+            "(?m)^a$",
+            "a$",
+            "\\bfoo\\b",
+            "\\Bo",
+            "(?<=a)b",
+            "a(?=b)",
+            "(?!a)b",
+            "(?<!x)y+",
+            "(?>a|ab)c",
+            "a*+b",
+            "a{2,3}?",
+            "\\Ga",
+            "\\R",
+            "x\\z",
+            "x\\Z",
+            "[a-c&&b]+",
+            "(?i)oes$",
+            "(?u)(?i)\u{e7}\u{f5}es$",
+            "\u{1F600}$",
+            "(a)|b",
+            "(?<n>o)(e)s$",
+            "(a)\\1",
+            "a.c",
+            "",
+            "x*",
+        ];
+        let samples: Vec<Vec<u16>> = [
+            "",
+            "a",
+            "b",
+            "ab",
+            "aab",
+            "abc",
+            "oes",
+            "contratacoes",
+            "OES",
+            "oesx",
+            "oes\n",
+            "oes\r\n",
+            "oes\r",
+            "oes\n\n",
+            "oes\u{85}",
+            "foo bar foo",
+            "xfoo",
+            "aaab",
+            "abab",
+            "aaaa",
+            "x\u{1F600}",
+            "\u{1F600}oes",
+            "\u{e7}\u{f5}es",
+            "y\r\ny",
+            "xy",
+            "xxy",
+            "a\nb\r\na",
+        ]
+        .iter()
+        .map(|s| s.encode_utf16().collect())
+        .chain([
+            vec![0xD800, 0x61],
+            vec![0x6F, 0x65, 0x73, 0xDC00],
+            vec![0xDBFF],
+        ])
+        .collect();
+        let mut rejected = 0;
+        let mut compiled = 0;
+        for regex in patterns {
+            // A construct the translation refuses is declared elsewhere.
+            let Ok(pattern) = JavaPattern::compile(regex, 0) else {
+                continue;
+            };
+            compiled += 1;
+            let mut engine_only = pattern.clone();
+            engine_only.precheck = Arc::new(OnceLock::from(None));
+            for sample in &samples {
+                assert_eq!(
+                    finds(&pattern, sample),
+                    finds(&engine_only, sample),
+                    "{regex:?} over {sample:?}"
+                );
+                let haystack = String::from_utf16_lossy(sample);
+                if !pattern.may_match_from(&haystack, 0) {
+                    rejected += 1;
+                }
+            }
+        }
+        for regex in ["oes$", "aes$", "ois$"] {
+            let pattern = JavaPattern::compile(regex, 0).expect("the pattern compiles");
+            assert!(pattern.precheck().is_some(), "{regex:?} has a pre-check");
+            assert!(!pattern.may_match_from("contratacao", 0));
+        }
+        for regex in ["(a)\\1", "(?i)(a)\\1"] {
+            let pattern = JavaPattern::compile(regex, 0).expect("the pattern compiles");
+            assert!(pattern.precheck().is_none(), "{regex:?} has no pre-check");
+        }
+        assert!(rejected > 0, "the pre-check rejected no input");
+        assert!(
+            compiled >= patterns.len() - 2,
+            "only {compiled} patterns compiled"
+        );
+    }
+
+    /// The anchored pattern is built on the first `matches()`, shared by the
+    /// pattern's clones, and answers as `Matcher.matches()`.
+    #[test]
+    fn anchored_pattern_is_built_on_first_matches() {
+        let pattern = JavaPattern::compile("a|ab", 0).expect("the pattern compiles");
+        assert!(pattern.whole.get().is_none());
+        let clone = pattern.clone();
+        assert!(pattern.matches("ab"));
+        assert!(!pattern.matches("abc"));
+        assert!(clone.whole.get().is_some(), "the clone shares the build");
+        let mut matcher = clone.matcher(&"ab".encode_utf16().collect::<Vec<_>>());
+        assert!(matcher.matches());
+        assert_eq!((matcher.start().unwrap(), matcher.end().unwrap()), (0, 2));
     }
 
     #[test]

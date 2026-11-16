@@ -79,8 +79,8 @@ fn test_binary_field_in_index() -> Result<()> {
     let string_fld_stored = Field::new("stringStored", BINARY_VAL_STORED.to_string(), ft)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(binary_fld_stored));
-    doc.add(Box::new(string_fld_stored));
+    doc.add(binary_fld_stored);
+    doc.add(string_fld_stored);
     index_and_check(doc)
 }
 
@@ -105,7 +105,7 @@ fn test_binary_field_from_data_input_in_index() -> Result<()> {
     let string_fld_stored = Field::new("stringStored", BINARY_VAL_STORED.to_string(), ft)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(binary_fld_stored));
-    doc.add(Box::new(string_fld_stored));
+    doc.add(binary_fld_stored);
+    doc.add(string_fld_stored);
     index_and_check(doc)
 }

@@ -146,42 +146,38 @@ fn before_class() -> Result<()> {
     iw_config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_config)?;
     let mut document = Document::new();
-    document.add(Box::new(StringField::new(
-        "id",
-        "1".to_string(),
-        Store::NO,
-    )?));
-    document.add(Box::new(SortedDocValuesField::new(
+    document.add(StringField::new("id", "1".to_string(), Store::NO)?);
+    document.add(SortedDocValuesField::new(
         "id",
         BytesRef::from_char_sequence("1"),
-    )));
-    document.add(Box::new(KnnFloatVectorField::with_euclidean(
+    ));
+    document.add(KnnFloatVectorField::with_euclidean(
         "knnFloatField1",
         &[1.0, 2.0, 3.0],
-    )?));
-    document.add(Box::new(KnnFloatVectorField::with_euclidean(
+    )?);
+    document.add(KnnFloatVectorField::with_euclidean(
         "knnFloatField2",
         &[5.2, 3.2, 3.1],
-    )?));
+    )?);
 
     // add only to the first document
-    document.add(Box::new(KnnFloatVectorField::with_euclidean(
+    document.add(KnnFloatVectorField::with_euclidean(
         "knnFloatField3",
         &[1.0, 1.0, 1.0],
-    )?));
-    document.add(Box::new(KnnByteVectorField::with_euclidean(
+    )?);
+    document.add(KnnByteVectorField::with_euclidean(
         "knnByteField3",
         &[1, 1, 1],
-    )?));
+    )?);
 
-    document.add(Box::new(KnnByteVectorField::with_euclidean(
+    document.add(KnnByteVectorField::with_euclidean(
         "knnByteField1",
         &[1, 2, 3],
-    )?));
-    document.add(Box::new(KnnByteVectorField::with_euclidean(
+    )?);
+    document.add(KnnByteVectorField::with_euclidean(
         "knnByteField2",
         &[4, 2, 3],
-    )?));
+    )?);
     iw.add_document(&document)?;
 
     if LuceneTestCase::usually_with(&*random()) {
@@ -189,32 +185,28 @@ fn before_class() -> Result<()> {
     }
 
     let mut document2 = Document::new();
-    document2.add(Box::new(StringField::new(
-        "id",
-        "2".to_string(),
-        Store::NO,
-    )?));
-    document2.add(Box::new(SortedDocValuesField::new(
+    document2.add(StringField::new("id", "2".to_string(), Store::NO)?);
+    document2.add(SortedDocValuesField::new(
         "id",
         BytesRef::from_char_sequence("2"),
-    )));
-    document2.add(Box::new(KnnFloatVectorField::with_euclidean(
+    ));
+    document2.add(KnnFloatVectorField::with_euclidean(
         "knnFloatField1",
         &[1.0, 2.0, 3.0],
-    )?));
-    document2.add(Box::new(KnnFloatVectorField::with_euclidean(
+    )?);
+    document2.add(KnnFloatVectorField::with_euclidean(
         "knnFloatField2",
         &[5.2, 3.2, 3.1],
-    )?));
+    )?);
 
-    document2.add(Box::new(KnnByteVectorField::with_euclidean(
+    document2.add(KnnByteVectorField::with_euclidean(
         "knnByteField1",
         &[1, 2, 3],
-    )?));
-    document2.add(Box::new(KnnByteVectorField::with_euclidean(
+    )?);
+    document2.add(KnnByteVectorField::with_euclidean(
         "knnByteField2",
         &[4, 2, 3],
-    )?));
+    )?);
     iw.add_document(&document2)?;
 
     let reader = iw.get_reader()?;

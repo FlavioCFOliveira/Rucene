@@ -50,14 +50,10 @@ const SOFT_DELETES_FIELD: &str = "__soft_deletes";
 
 fn doc(d: i32, soft_deleted: bool) -> Document {
     let mut document = Document::new();
-    document.add(Box::new(
-        StringField::new("id", format!("doc-{d}"), Store::YES).expect("id"),
-    ));
-    document.add(Box::new(
-        TextField::new("body", format!("thing number {d}"), Store::YES).expect("body"),
-    ));
+    document.add(StringField::new("id", format!("doc-{d}"), Store::YES).expect("id"));
+    document.add(TextField::new("body", format!("thing number {d}"), Store::YES).expect("body"));
     if soft_deleted {
-        document.add(Box::new(NumericDocValuesField::new(SOFT_DELETES_FIELD, 1)));
+        document.add(NumericDocValuesField::new(SOFT_DELETES_FIELD, 1));
     }
     document
 }

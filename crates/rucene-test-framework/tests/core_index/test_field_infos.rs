@@ -96,31 +96,19 @@ fn test_field_infos() -> Result<()> {
 
     let mut d1 = Document::new();
     for i in 0..15 {
-        d1.add(Box::new(StringField::new(
+        d1.add(StringField::new(
             &format!("f{i}"),
             format!("v{i}"),
             Store::YES,
-        )?));
+        )?);
     }
     writer.add_document(&d1)?;
     writer.commit()?;
 
     let mut d2 = Document::new();
-    d2.add(Box::new(StringField::new(
-        "f0",
-        "v0".to_string(),
-        Store::YES,
-    )?));
-    d2.add(Box::new(StringField::new(
-        "f15",
-        "v15".to_string(),
-        Store::YES,
-    )?));
-    d2.add(Box::new(StringField::new(
-        "f16",
-        "v16".to_string(),
-        Store::YES,
-    )?));
+    d2.add(StringField::new("f0", "v0".to_string(), Store::YES)?);
+    d2.add(StringField::new("f15", "v15".to_string(), Store::YES)?);
+    d2.add(StringField::new("f16", "v16".to_string(), Store::YES)?);
     writer.add_document(&d2)?;
     writer.commit()?;
 
@@ -185,7 +173,7 @@ fn test_field_attributes() -> Result<()> {
     type1.put_attribute("testKey1".to_string(), "testValue1".to_string())?;
 
     let mut d1 = Document::new();
-    d1.add(Box::new(Field::new("f1", "v1".to_string(), type1.clone())?));
+    d1.add(Field::new("f1", "v1".to_string(), type1.clone())?);
     let type2 = FieldType::new_from(&type1);
     // changing the value after copying shouldn't impact the original type1
     type2.put_attribute("testKey1".to_string(), "testValue2".to_string())?;
@@ -195,8 +183,8 @@ fn test_field_attributes() -> Result<()> {
     let mut d2 = Document::new();
     type1.put_attribute("testKey1".to_string(), "testValueX".to_string())?;
     type1.put_attribute("testKey2".to_string(), "testValue2".to_string())?;
-    d2.add(Box::new(Field::new("f1", "v2".to_string(), type1.clone())?));
-    d2.add(Box::new(Field::new("f2", "v2".to_string(), type2.clone())?));
+    d2.add(Field::new("f1", "v2".to_string(), type1.clone())?);
+    d2.add(Field::new("f2", "v2".to_string(), type2.clone())?);
     writer.add_document(&d2)?;
     writer.commit()?;
     writer.force_merge(1)?;
@@ -231,10 +219,10 @@ fn test_field_attributes_single_segment() -> Result<()> {
     let mut d1 = Document::new();
     let type1 = stored_type()?;
     type1.put_attribute("att1".to_string(), "attdoc1".to_string())?;
-    d1.add(Box::new(Field::new("f1", "v1".to_string(), type1.clone())?));
+    d1.add(Field::new("f1", "v1".to_string(), type1.clone())?);
     // add field with the same name and an extra attribute
     type1.put_attribute("att2".to_string(), "attdoc1".to_string())?;
-    d1.add(Box::new(Field::new("f1", "v1".to_string(), type1.clone())?));
+    d1.add(Field::new("f1", "v1".to_string(), type1.clone())?);
     writer.add_document(&d1)?;
 
     let mut d2 = Document::new();
@@ -243,8 +231,8 @@ fn test_field_attributes_single_segment() -> Result<()> {
     type1.put_attribute("att3".to_string(), "attdoc2".to_string())?;
     let type2 = stored_type()?;
     type2.put_attribute("att4".to_string(), "attdoc2".to_string())?;
-    d2.add(Box::new(Field::new("f1", "v2".to_string(), type1.clone())?));
-    d2.add(Box::new(Field::new("f2", "v2".to_string(), type2.clone())?));
+    d2.add(Field::new("f1", "v2".to_string(), type1.clone())?);
+    d2.add(Field::new("f2", "v2".to_string(), type2.clone())?);
     writer.add_document(&d2)?;
     writer.commit()?;
 
@@ -288,20 +276,12 @@ fn test_merged_field_infos_single_leaf() -> Result<()> {
     let writer = writer(&dir)?;
 
     let mut d1 = Document::new();
-    d1.add(Box::new(StringField::new(
-        "f1",
-        "v1".to_string(),
-        Store::YES,
-    )?));
+    d1.add(StringField::new("f1", "v1".to_string(), Store::YES)?);
     writer.add_document(&d1)?;
     writer.commit()?;
 
     let mut d2 = Document::new();
-    d2.add(Box::new(StringField::new(
-        "f2",
-        "v2".to_string(),
-        Store::YES,
-    )?));
+    d2.add(StringField::new("f2", "v2".to_string(), Store::YES)?);
     writer.add_document(&d2)?;
     writer.commit()?;
 

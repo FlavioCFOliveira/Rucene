@@ -107,12 +107,8 @@ impl Gate {
 
 fn id_doc(id: i32) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StringField::new("id", id.to_string(), Store::YES).unwrap(),
-    ));
-    doc.add(Box::new(
-        TextField::new("content", "a b c".to_string(), Store::NO).unwrap(),
-    ));
+    doc.add(StringField::new("id", id.to_string(), Store::YES).unwrap());
+    doc.add(TextField::new("content", "a b c".to_string(), Store::NO).unwrap());
     doc
 }
 
@@ -335,9 +331,7 @@ fn max_merge_count_stalls_the_producer() {
 
             let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
             let mut doc = Document::new();
-            doc.add(Box::new(
-                TextField::new("field", "field".to_string(), Store::NO).unwrap(),
-            ));
+            doc.add(TextField::new("field", "field".to_string(), Store::NO).unwrap());
             while enough_merges_waiting.load(Ordering::SeqCst) > 0 && !failed.load(Ordering::SeqCst)
             {
                 for _ in 0..10 {

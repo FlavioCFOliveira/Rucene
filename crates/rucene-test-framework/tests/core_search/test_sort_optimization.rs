@@ -212,7 +212,7 @@ fn sorted_indexed_field(field: &str, value: BytesRef) -> Result<Box<dyn Indexabl
 /// `fieldsBuilder.apply(field, value).forEach(doc::add)`.
 fn add_all(doc: &mut Document, fields: Vec<Box<dyn IndexableField>>) {
     for f in fields {
-        doc.add(f);
+        doc.add_shared(std::sync::Arc::from(f));
     }
 }
 
@@ -414,10 +414,7 @@ fn test_long_sort_optimization_on_field_not_indexed_with_points() -> Result<()> 
     // my_field is not indexed with points
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::new(
-            "my_field",
-            i64::from(i),
-        )));
+        doc.add(NumericDocValuesField::new("my_field", i64::from(i)));
         writer.add_document(&doc)?;
     }
     let reader = open_and_close(&writer)?;
@@ -677,10 +674,10 @@ fn sort_optimization_equal_values(fields_builder: FieldsBuilder) -> Result<()> {
     for i in 1..=num_docs {
         let mut doc = Document::new();
         add_all(&mut doc, fields_builder("my_field1", 100)?);
-        doc.add(Box::new(NumericDocValuesField::new(
+        doc.add(NumericDocValuesField::new(
             "my_field2",
             i64::from(num_docs - i),
-        ))); // diff values for the field my_field2
+        )); // diff values for the field my_field2
         writer.add_document(&doc)?;
         // if there is only one segment, we could test that totalHits must always equal (numHits + 1)
         if i == 7000 && random().next_boolean() {
@@ -819,10 +816,10 @@ fn test_doc_sort_optimization_multiple_indices() -> Result<()> {
             let body = (|| -> Result<()> {
                 for doc_id in 0..num_docs_in_index {
                     let mut doc = Document::new();
-                    doc.add(Box::new(NumericDocValuesField::new(
+                    doc.add(NumericDocValuesField::new(
                         "my_field",
                         i64::from(doc_id * num_indices as i32 + i as i32),
-                    )));
+                    ));
                     writer.add_document(&doc)?;
                 }
                 writer.flush()
@@ -1025,16 +1022,12 @@ fn test_doc_sort_optimization() -> Result<()> {
     let mut seg = 1;
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(LongPoint::new("lf", &[i64::from(i)])?));
-        doc.add(Box::new(StoredField::new_number(
+        doc.add(LongPoint::new("lf", &[i64::from(i)])?);
+        doc.add(StoredField::new_number(
             "slf",
             rucene::document::NumericValue::Int(i),
-        )?));
-        doc.add(Box::new(StringField::new(
-            "tf",
-            format!("seg{seg}"),
-            Store::YES,
-        )?));
+        )?);
+        doc.add(StringField::new("tf", format!("seg{seg}"), Store::YES)?);
         writer.add_document(&doc)?;
         if (i > 0) && (i % 50 == 0) {
             writer.flush()?;
@@ -1109,13 +1102,9 @@ fn test_doc_sort() -> Result<()> {
     let num_docs = 4;
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "id",
-            format!("id{i}"),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("id", format!("id{i}"), Store::NO)?);
         if i < 2 {
-            doc.add(Box::new(LongPoint::new("lf", &[1])?));
+            doc.add(LongPoint::new("lf", &[1])?);
         }
         writer.add_document(&doc)?;
     }
@@ -1154,14 +1143,14 @@ fn test_point_validation() -> Result<()> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
 
-    doc.add(Box::new(IntPoint::new("intField", &[4])?));
-    doc.add(Box::new(NumericDocValuesField::new("intField", 4)));
+    doc.add(IntPoint::new("intField", &[4])?);
+    doc.add(NumericDocValuesField::new("intField", 4));
 
-    doc.add(Box::new(LongPoint::new("longField", &[42])?));
-    doc.add(Box::new(NumericDocValuesField::new("longField", 42)));
+    doc.add(LongPoint::new("longField", &[42])?);
+    doc.add(NumericDocValuesField::new("longField", 42));
 
-    doc.add(Box::new(IntRange::new("intRange", &[1], &[10])?));
-    doc.add(Box::new(NumericDocValuesField::new("intRange", 4)));
+    doc.add(IntRange::new("intRange", &[1], &[10])?);
+    doc.add(NumericDocValuesField::new("intRange", 4));
 
     writer.add_document(&doc)?;
     let reader = writer.get_reader()?;
@@ -1224,25 +1213,19 @@ fn test_max_doc_visited() -> Result<()> {
     let mut flushed = false;
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::new(
+        doc.add(NumericDocValuesField::new(
             "my_field",
             i64::from(i) + offset,
-        )));
-        doc.add(Box::new(LongPoint::new(
-            "my_field",
-            &[i64::from(i) + offset],
-        )?));
+        ));
+        doc.add(LongPoint::new("my_field", &[i64::from(i) + offset])?);
         writer.add_document(&doc)?;
         if i >= 5000 && !flushed {
             flushed = true;
             writer.flush()?;
             // Index the smallest value to the first slot of the second segment
             let mut doc = Document::new();
-            doc.add(Box::new(NumericDocValuesField::new(
-                "my_field",
-                smallest_value,
-            )));
-            doc.add(Box::new(LongPoint::new("my_field", &[smallest_value])?));
+            doc.add(NumericDocValuesField::new("my_field", smallest_value));
+            doc.add(LongPoint::new("my_field", &[smallest_value])?);
             writer.add_document(&doc)?;
         }
     }
@@ -1290,8 +1273,8 @@ fn test_random_long() -> Result<()> {
     let mut pending_docs = 0;
     for &seq_no in &seq_nos {
         let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::new("seq_no", seq_no)));
-        doc.add(Box::new(LongPoint::new("seq_no", &[seq_no])?));
+        doc.add(NumericDocValuesField::new("seq_no", seq_no));
+        doc.add(LongPoint::new("seq_no", &[seq_no])?);
         writer.add_document(&doc)?;
         pending_docs += 1;
         if pending_docs > 500 && random().next_int_bound(100) <= 5 {
@@ -1366,16 +1349,8 @@ fn test_sort_optimization_on_sorted_numeric_field() -> Result<()> {
         let value = random().next_int();
         let value2 = random().next_int();
         let mut doc = Document::new();
-        doc.add(Box::new(LongField::new(
-            "my_field",
-            i64::from(value),
-            Store::NO,
-        )));
-        doc.add(Box::new(LongField::new(
-            "my_field",
-            i64::from(value2),
-            Store::NO,
-        )));
+        doc.add(LongField::new("my_field", i64::from(value), Store::NO));
+        doc.add(LongField::new("my_field", i64::from(value2), Store::NO));
         writer.add_document(&doc)?;
     }
     let reader = open_and_close(&writer)?;
@@ -1541,7 +1516,7 @@ fn string_sort_optimization(fields_builder: StringFieldBuilder) -> Result<()> {
         // Random values that roughly correlate with index order, to make skipper implementation
         // useful
         let value = random_correlated_value(i);
-        doc.add(fields_builder("my_field", value)?);
+        doc.add_shared(std::sync::Arc::from(fields_builder("my_field", value)?));
         writer.add_document(&doc)?;
         if i == 7000 {
             writer.flush()?; // multiple segments
@@ -1583,7 +1558,7 @@ fn string_sort_optimization_with_missing_values(fields_builder: StringFieldBuild
             // Random values that roughly correlate with index order, to make skipper implementation
             // useful
             let value = random_correlated_value(i);
-            doc.add(fields_builder("my_field", value)?);
+            doc.add_shared(std::sync::Arc::from(fields_builder("my_field", value)?));
         }
         writer.add_document(&doc)?;
     }
@@ -1624,10 +1599,10 @@ fn string_sort_optimization_field_missing_in_segment(
     let docs_with_field = 20;
     for i in 0..docs_with_field {
         let mut doc = Document::new();
-        doc.add(fields_builder(
+        doc.add_shared(std::sync::Arc::from(fields_builder(
             "my_field",
             BytesRef::from_char_sequence(&i.to_string()),
-        )?);
+        )?));
         writer.add_document(&doc)?;
     }
     writer.flush()?;

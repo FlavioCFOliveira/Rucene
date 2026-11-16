@@ -129,29 +129,17 @@ fn before_class() -> Result<()> {
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_config)?;
     for doc in DOCUMENTS {
         let mut document = Document::new();
-        document.add(Box::new(StringField::new(
-            "id",
-            doc[0].to_string(),
-            Store::NO,
-        )?));
-        document.add(Box::new(SortedDocValuesField::new(
+        document.add(StringField::new("id", doc[0].to_string(), Store::NO)?);
+        document.add(SortedDocValuesField::new(
             "id",
             BytesRef::from_char_sequence(doc[0]),
-        )));
-        document.add(Box::new(StringField::new(
-            "string",
-            doc[5].to_string(),
-            Store::NO,
-        )?));
-        document.add(Box::new(SortedDocValuesField::new(
+        ));
+        document.add(StringField::new("string", doc[5].to_string(), Store::NO)?);
+        document.add(SortedDocValuesField::new(
             "string",
             BytesRef::from_char_sequence(doc[5]),
-        )));
-        document.add(Box::new(TextField::new(
-            "text",
-            doc[6].to_string(),
-            Store::NO,
-        )?));
+        ));
+        document.add(TextField::new("text", doc[6].to_string(), Store::NO)?);
         iw.add_document(&document)?;
     }
     let reader = iw.get_reader()?;

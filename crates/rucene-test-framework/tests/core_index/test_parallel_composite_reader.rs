@@ -362,7 +362,7 @@ fn test_incompatible_indexes1() -> Result<()> {
     let w2 = IndexWriter::new(dir2.as_directory(), new_iwc())?;
     let mut d3 = Document::new();
 
-    d3.add(text("f3", "v1"));
+    d3.add(*text("f3", "v1"));
     w2.add_document(&d3)?;
     w2.close()?;
 
@@ -550,10 +550,10 @@ fn single(composite_composite: bool) -> Result<(IndexSearcher, TestDirectory)> {
     let w = IndexWriter::new(dir.as_directory(), new_iwc())?;
     for v in ["v1", "v2", "v3", "v4"] {
         let mut d = Document::new();
-        d.add(text("f1", v));
-        d.add(text("f2", v));
-        d.add(text("f3", v));
-        d.add(text("f4", v));
+        d.add(*text("f1", v));
+        d.add(*text("f2", v));
+        d.add(*text("f3", v));
+        d.add(*text("f4", v));
         w.add_document(&d)?;
     }
     w.close()?;
@@ -614,8 +614,8 @@ fn structured_dir(fields: [&str; 2], commits_after: &[usize]) -> Result<TestDire
     let w = IndexWriter::new(dir.as_directory(), conf)?;
     for (i, v) in ["v1", "v2", "v3", "v4"].into_iter().enumerate() {
         let mut d = Document::new();
-        d.add(text(fields[0], v));
-        d.add(text(fields[1], v));
+        d.add(*text(fields[0], v));
+        d.add(*text(fields[1], v));
         w.add_document(&d)?;
         if commits_after.contains(&i) {
             w.commit()?;

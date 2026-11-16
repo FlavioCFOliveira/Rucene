@@ -52,11 +52,11 @@ pub fn class_def() -> Arc<Class> {
 macro_rules! dv_doc {
     ($field:ty, $min:expr, $max:expr) => {{
         let mut doc = Document::new();
-        doc.add(Box::new(
+        doc.add(
             <$field>::new("dv", $min, $max)?
                 .as_binary_range_doc_values_field()
                 .clone(),
-        ));
+        );
         doc
     }};
 }
@@ -298,11 +298,7 @@ fn test_no_data() -> Result<()> {
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "foo",
-        "abc".to_string(),
-        Store::NO,
-    )?));
+    doc.add(StringField::new("foo", "abc".to_string(), Store::NO)?);
     iw.add_document(&doc)?;
     let reader = iw.get_reader()?;
     let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));

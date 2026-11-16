@@ -97,20 +97,20 @@ fn index_searcher_set_up(f: &mut IndexSearcherTest) -> Result<()> {
     let random = random();
     for i in 0..100 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "field",
             &i.to_string(),
             Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        ));
+        doc.add(LuceneTestCase::new_string_field(
             "field2",
             &(i % 2 == 0).to_string(),
             Store::NO,
-        )));
-        doc.add(Box::new(SortedDocValuesField::new(
+        ));
+        doc.add(SortedDocValuesField::new(
             "field2",
             LuceneTestCase::new_bytes_ref_str(&(i % 2 == 0).to_string()),
-        )));
+        ));
         iw.add_document(&doc)?;
 
         if random.next_boolean() {
@@ -260,17 +260,13 @@ fn test_count(_f: &mut IndexSearcherTest) -> Result<()> {
     for _i in 0..num_docs {
         let mut doc = Document::new();
         if random().next_boolean() {
-            doc.add(Box::new(StringField::new("foo", "bar".into(), Store::NO)?));
+            doc.add(StringField::new("foo", "bar".into(), Store::NO)?);
         }
         if random().next_boolean() {
-            doc.add(Box::new(StringField::new("foo", "baz".into(), Store::NO)?));
+            doc.add(StringField::new("foo", "baz".into(), Store::NO)?);
         }
         if LuceneTestCase::rarely() {
-            doc.add(Box::new(StringField::new(
-                "delete",
-                "yes".into(),
-                Store::NO,
-            )?));
+            doc.add(StringField::new("delete", "yes".into(), Store::NO)?);
         }
         w.add_document(&doc)?;
     }

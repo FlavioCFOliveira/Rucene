@@ -192,11 +192,11 @@ fn set_up(inst: &mut TestTransactionRollbackInstance) -> Result<()> {
 
     for current_record_id in 1..=100 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             FIELD_RECORD_ID,
             &current_record_id.to_string(),
             Store::YES,
-        )));
+        ));
         w.add_document(&doc)?;
 
         if current_record_id % 10 == 0 {

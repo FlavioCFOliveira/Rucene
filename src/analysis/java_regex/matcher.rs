@@ -53,8 +53,12 @@ pub struct JavaMatcher {
     /// For each UTF-16 index of the input, and its length, the byte offset
     /// in `haystack` that starts it; the low half of a surrogate pair maps
     /// one byte into its character, so the offsets are strictly increasing
-    /// and a character boundary is never such a position.
+    /// and a character boundary is never such a position. Left empty when
+    /// the input is ASCII (`ascii`), where the offset is the index itself.
     byte_of_unit: Vec<usize>,
+    /// Whether every unit of the input is below U+0080, so that the
+    /// haystack's bytes are the input's units, one for one.
+    ascii: bool,
     /// The bounds of the groups of the last match, `-1` when unset, Java's
     /// `groups`.
     groups: Vec<i32>,
@@ -88,6 +92,7 @@ impl JavaMatcher {
             text: Vec::new(),
             haystack: String::new(),
             byte_of_unit: Vec::new(),
+            ascii: true,
             groups: vec![-1; (group_count + 1) * 2],
             first: -1,
             last: 0,
@@ -104,6 +109,15 @@ impl JavaMatcher {
         self.text.extend_from_slice(input);
         self.haystack.clear();
         self.byte_of_unit.clear();
+        // PERF: an ASCII input (every token after `ASCIIFoldingFilter`) is
+        // its own haystack, and its unit and byte offsets coincide, so no
+        // offset table is built.
+        self.ascii = input.iter().all(|&unit| unit < 0x80);
+        if self.ascii {
+            self.haystack
+                .extend(input.iter().map(|&unit| char::from(unit as u8)));
+            return;
+        }
         let mut i = 0;
         while i < input.len() {
             let unit = input[i];
@@ -133,9 +147,22 @@ impl JavaMatcher {
     /// The UTF-16 index whose character starts at byte `byte` of the
     /// haystack (a match bound is always one).
     fn unit_of_byte(&self, byte: usize) -> i32 {
+        if self.ascii {
+            return byte as i32;
+        }
         self.byte_of_unit
             .binary_search(&byte)
             .expect("INVARIANT: a match bound is a character boundary") as i32
+    }
+
+    /// The byte offset in the haystack that starts UTF-16 index `unit` (or
+    /// ends the input, for its length); see `byte_of_unit`.
+    fn byte_of_unit(&self, unit: usize) -> usize {
+        if self.ascii {
+            unit
+        } else {
+            self.byte_of_unit[unit]
+        }
     }
 
     /// The pattern this matcher interprets, `Matcher.pattern()`.
@@ -214,13 +241,11 @@ impl JavaMatcher {
             self.first = -1;
             return false;
         };
-        let bounds: Vec<Option<(usize, usize)>> = (0..=self.group_count())
-            .map(|group| captures.get(group).map(|m| (m.start(), m.end())))
-            .collect();
-        for (group, bound) in bounds.into_iter().enumerate() {
-            if let Some((start, end)) = bound {
-                self.groups[group * 2] = self.unit_of_byte(start);
-                self.groups[group * 2 + 1] = self.unit_of_byte(end);
+        for group in 0..=self.group_count() {
+            if let Some(m) = captures.get(group) {
+                let (start, end) = (self.unit_of_byte(m.start()), self.unit_of_byte(m.end()));
+                self.groups[group * 2] = start;
+                self.groups[group * 2 + 1] = end;
             }
         }
         self.first = self.groups[0];
@@ -234,27 +259,32 @@ impl JavaMatcher {
         let mut from = from.max(0) as usize;
         // See the type's documentation: a search does not start inside a
         // surrogate pair.
-        while from < self.text.len() && !self.haystack.is_char_boundary(self.byte_of_unit[from]) {
+        while from < self.text.len() && !self.haystack.is_char_boundary(self.byte_of_unit(from)) {
             from += 1;
         }
         self.first = from as i32;
         self.groups.fill(-1);
+        let pos = self.byte_of_unit(from);
+        // PERF: a necessary condition, checked by the plain automaton before
+        // the backtracking engine runs (see `JavaPattern::may_match_from`).
+        if !self.pattern.may_match_from(self.haystack.as_str(), pos) {
+            self.first = -1;
+            return false;
+        }
         let captures = self
             .pattern
             .find_regex()
-            .captures_from_pos(self.haystack.as_str(), self.byte_of_unit[from])
+            .captures_from_pos(self.haystack.as_str(), pos)
             .expect("INVARIANT: the engine has no backtracking limit");
         let Some(captures) = captures else {
             self.first = -1;
             return false;
         };
-        let bounds: Vec<Option<(usize, usize)>> = (0..=self.group_count())
-            .map(|group| captures.get(group).map(|m| (m.start(), m.end())))
-            .collect();
-        for (group, bound) in bounds.into_iter().enumerate() {
-            if let Some((start, end)) = bound {
-                self.groups[group * 2] = self.unit_of_byte(start);
-                self.groups[group * 2 + 1] = self.unit_of_byte(end);
+        for group in 0..=self.group_count() {
+            if let Some(m) = captures.get(group) {
+                let (start, end) = (self.unit_of_byte(m.start()), self.unit_of_byte(m.end()));
+                self.groups[group * 2] = start;
+                self.groups[group * 2 + 1] = end;
             }
         }
         self.first = self.groups[0];

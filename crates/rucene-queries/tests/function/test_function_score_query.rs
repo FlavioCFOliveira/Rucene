@@ -336,7 +336,7 @@ fn test_truncate_negative_scores() -> Result<()> {
         LuceneTestCase::new_index_writer_config(),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("foo", -2)));
+    doc.add(NumericDocValuesField::new("foo", -2));
     w.add_document(&doc)?;
     let reader = directory_reader::open_with_writer(&*w)?;
     w.close()?;
@@ -363,10 +363,7 @@ fn test_nan() -> Result<()> {
         LuceneTestCase::new_index_writer_config(),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new(
-        "foo",
-        f64::NAN.to_bits() as i64,
-    )));
+    doc.add(NumericDocValuesField::new("foo", f64::NAN.to_bits() as i64));
     w.add_document(&doc)?;
     let reader = directory_reader::open_with_writer(&*w)?;
     w.close()?;
@@ -532,16 +529,16 @@ fn test_score_called_twice() -> Result<()> {
         let conf = LuceneTestCase::new_index_writer_config();
         let index_writer = IndexWriter::new(dir.as_directory(), conf)?;
         let mut doc = Document::new();
-        doc.add(Box::new(TextField::new(
+        doc.add(TextField::new(
             "ExampleText",
             "periodic function".to_string(),
             Store::NO,
-        )?));
-        doc.add(Box::new(TextField::new(
+        )?);
+        doc.add(TextField::new(
             "ExampleText",
             "plot of the original function".to_string(),
             Store::NO,
-        )?));
+        )?);
         index_writer.add_document(&doc)?;
         index_writer.commit()?;
         index_writer.close()?;

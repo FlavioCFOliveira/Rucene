@@ -88,11 +88,7 @@ fn set_up(inst: &mut TestTermsEnum2Instance) -> Result<()> {
     iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 50, 1000))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "field",
-        "",
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_string_field("field", "", Store::YES));
     inst.terms = BTreeSet::new();
 
     let num = LuceneTestCase::at_least(200);

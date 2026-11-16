@@ -256,11 +256,11 @@ fn points_row(seed: i64) -> String {
             let mut d = Document::new();
             let a = values.next_int_bound(1000);
             let b = values.next_int();
-            d.add(Box::new(IntPoint::new("p2", &[a, b]).unwrap()));
+            d.add(IntPoint::new("p2", &[a, b]).unwrap());
             let a = values.next_int_bound(50);
             let b = values.next_int_bound(100000);
             let c = values.next_int();
-            d.add(Box::new(IntPoint::new("p3", &[a, b, c]).unwrap()));
+            d.add(IntPoint::new("p3", &[a, b, c]).unwrap());
             w.add_document(&d).unwrap();
         }
         w.commit().unwrap();
@@ -296,14 +296,10 @@ fn files_row(seed: i64) -> String {
     c.set_use_compound_file(false).unwrap();
     let w = IndexWriter::new(Arc::clone(&dir), c).unwrap();
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", "0".to_string(), Store::NO).unwrap(),
-    ));
+    d.add(StringField::new("id", "0".to_string(), Store::NO).unwrap());
     for i in 0..10 {
-        d.add(Box::new(
-            StringField::new(&format!("f{i}"), format!("v{i}"), Store::NO).unwrap(),
-        ));
-        d.add(Box::new(NumericDocValuesField::new(&format!("d{i}"), i)));
+        d.add(StringField::new(&format!("f{i}"), format!("v{i}"), Store::NO).unwrap());
+        d.add(NumericDocValuesField::new(&format!("d{i}"), i));
     }
     w.add_document(&d).unwrap();
     w.commit().unwrap();
@@ -345,10 +341,8 @@ fn random_codec_files_match_lucene() {
 /// `RandomIndexOracle.doc`.
 fn doc(i: i32) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", i.to_string(), Store::YES).unwrap(),
-    ));
-    d.add(Box::new(
+    d.add(StringField::new("id", i.to_string(), Store::YES).unwrap());
+    d.add(
         TextField::new(
             "body",
             format!(
@@ -360,13 +354,13 @@ fn doc(i: i32) -> Document {
             Store::NO,
         )
         .unwrap(),
-    ));
-    d.add(Box::new(NumericDocValuesField::new("num", i64::from(i))));
-    d.add(Box::new(SortedDocValuesField::new(
+    );
+    d.add(NumericDocValuesField::new("num", i64::from(i)));
+    d.add(SortedDocValuesField::new(
         "cat",
         BytesRef::from_char_sequence(&format!("c{}", i % 5)),
-    )));
-    d.add(Box::new(IntPoint::new("pt", &[i, (i * 7) % 13]).unwrap()));
+    ));
+    d.add(IntPoint::new("pt", &[i, (i * 7) % 13]).unwrap());
     d
 }
 

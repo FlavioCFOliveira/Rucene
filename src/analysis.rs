@@ -1095,7 +1095,39 @@ impl TokenStream for BinaryTokenStream {
 pub struct TokenStreamComponents {
     source: Box<dyn FnMut(Box<dyn CharReader>) -> Result<()> + Send + Sync>,
     sink: Arc<AtomicRefCell<dyn TokenStream>>,
-    reusable_string_reader: Option<ReusableStringReader>,
+    /// The reader `Analyzer.tokenStream(String, String)` last read a string
+    /// through, shared with the source as Java shares the object, so the
+    /// next call reuses it (`Analyzer.java:184-198`).
+    reusable_string_reader: Option<Arc<AtomicRefCell<ReusableStringReader>>>,
+}
+
+/// A [`CharReader`] handle to the [`ReusableStringReader`] of a
+/// [`TokenStreamComponents`]: the same reader, as Java passes the
+/// `ReusableStringReader` object itself to `initReader`
+/// (`Analyzer.java:189`).
+#[derive(Debug)]
+struct SharedStringReader(Arc<AtomicRefCell<ReusableStringReader>>);
+
+impl CharReader for SharedStringReader {
+    fn read(&mut self, buf: &mut [u16]) -> Result<usize> {
+        self.0.borrow_mut().read(buf)
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.0.borrow_mut().close()
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        self.0.borrow_mut().reset()
+    }
+
+    fn mark_supported(&self) -> bool {
+        self.0.borrow().mark_supported()
+    }
+
+    fn ready(&mut self) -> Result<bool> {
+        self.0.borrow_mut().ready()
+    }
 }
 
 impl TokenStreamComponents {
@@ -1491,9 +1523,17 @@ pub trait Analyzer: Debug + Send + Sync {
             .analyzer_state()
             .reuse_strategy()
             .get_reusable_components(self.analyzer_state(), field_name);
-        let mut reusable_reader = ReusableStringReader::new();
-        reusable_reader.set_value(text);
-        let reader = self.init_reader(field_name, Box::new(reusable_reader));
+        // PERF: the components' reader is reused, as Java reuses it
+        // (`Analyzer.java:184-188`), and its buffer with it.
+        let str_reader = components
+            .as_ref()
+            .and_then(|c| c.borrow().reusable_string_reader.clone())
+            .unwrap_or_else(|| Arc::new(AtomicRefCell::new(ReusableStringReader::new())));
+        str_reader.borrow_mut().set_value(text);
+        let reader = self.init_reader(
+            field_name,
+            Box::new(SharedStringReader(Arc::clone(&str_reader))),
+        );
         let components = match components {
             Some(c) => c,
             None => {
@@ -1507,6 +1547,7 @@ pub trait Analyzer: Debug + Send + Sync {
         {
             let mut components = components.borrow_mut();
             components.set_reader(reader)?;
+            components.reusable_string_reader = Some(str_reader);
         }
         let stream = components.borrow().token_stream();
         Ok(stream)
@@ -2801,6 +2842,31 @@ mod tests {
         assert_eq!(collect_terms(Arc::clone(&second))?, vec!["z"]);
         assert_eq!(wrapped.created.load(Ordering::SeqCst), 1);
         assert!(Arc::ptr_eq(&first, &second));
+        Ok(())
+    }
+
+    /// `tokenStream(String, String)` reuses the components' string reader,
+    /// as `Analyzer.java:184-198` does, and each call reads its own text.
+    #[test]
+    fn token_stream_from_str_reuses_the_string_reader() -> Result<()> {
+        let analyzer = WhitespaceAnalyzer::new();
+        let reader_of = |analyzer: &WhitespaceAnalyzer| {
+            analyzer
+                .analyzer_state()
+                .reuse_strategy()
+                .get_reusable_components(analyzer.analyzer_state(), Some("field"))
+                .expect("components are stored")
+                .borrow()
+                .reusable_string_reader
+                .clone()
+                .expect("the string reader is kept")
+        };
+        let stream = analyzer.token_stream_from_str("field", "hello big world")?;
+        assert_eq!(collect_terms(stream)?, vec!["hello", "big", "world"]);
+        let first = reader_of(&analyzer);
+        let stream = analyzer.token_stream_from_str("field", "x")?;
+        assert_eq!(collect_terms(stream)?, vec!["x"]);
+        assert!(Arc::ptr_eq(&first, &reader_of(&analyzer)));
         Ok(())
     }
 

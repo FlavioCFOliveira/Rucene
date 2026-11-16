@@ -109,7 +109,7 @@ fn test_() -> Result<()> {
     let token_stream = Arc::new(AtomicRefCell::new(MyTokenStream::new()?));
     let stream: Arc<AtomicRefCell<dyn TokenStream>> = token_stream.clone();
     let field = Field::new_with_token_stream("field", stream, ft)?;
-    doc.add(Box::new(field));
+    doc.add(field);
 
     let num_docs = 1000;
     for i in 0..num_docs {

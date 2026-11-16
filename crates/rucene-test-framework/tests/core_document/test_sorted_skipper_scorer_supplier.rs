@@ -70,9 +70,7 @@ fn build_index_and_get_costs(
             for (i, &size) in block_sizes.iter().enumerate() {
                 for _j in 0..size {
                     let mut doc = Document::new();
-                    doc.add(Box::new(NumericDocValuesField::indexed_field(
-                        "dv", i as i64,
-                    )));
+                    doc.add(NumericDocValuesField::indexed_field("dv", i as i64));
                     iw.add_document(&doc)?;
                 }
             }

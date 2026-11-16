@@ -30,14 +30,14 @@ fn test_() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(100);
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             "foo",
             "bar",
             TextField::type_not_stored(),
-        )));
-        doc.add(Box::new(IntPoint::new("doc", &[i])?));
-        doc.add(Box::new(IntPoint::new("doc2d", &[i, i])?));
-        doc.add(Box::new(NumericDocValuesField::new("dv", i as i64)));
+        ));
+        doc.add(IntPoint::new("doc", &[i])?);
+        doc.add(IntPoint::new("doc2d", &[i, i])?);
+        doc.add(NumericDocValuesField::new("dv", i as i64));
         w.add_document(&doc)?;
     }
 

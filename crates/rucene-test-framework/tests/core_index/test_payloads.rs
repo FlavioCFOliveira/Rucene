@@ -123,16 +123,19 @@ fn test_payload_field_bit() -> Result<()> {
     let writer = IndexWriter::new(ram.as_directory(), config(&analyzer))?;
     let mut d = Document::new();
     // this field won't have any payloads
-    d.add(text("f1", "This field has no payloads"));
+    d.add(*text("f1", "This field has no payloads"));
     // this field will have payloads in all docs, however not for all term positions,
     // so this field is used to check if the DocumentWriter correctly enables the payloads bit
     // even if only some term positions have payloads
-    d.add(text("f2", "This field has payloads in all docs"));
-    d.add(text("f2", "This field has payloads in all docs NO PAYLOAD"));
+    d.add(*text("f2", "This field has payloads in all docs"));
+    d.add(*text(
+        "f2",
+        "This field has payloads in all docs NO PAYLOAD",
+    ));
     // this field is used to verify if the SegmentMerger enables payloads for a field if it has
     // payloads
     // enabled in only some documents
-    d.add(text("f3", "This field has payloads in some docs"));
+    d.add(*text("f3", "This field has payloads in some docs"));
     // only add payload data for field f2
     analyzer.set_payload_data("f2", Arc::new(b"somedata".to_vec()), 0, 1);
     writer.add_document(&d)?;
@@ -161,10 +164,10 @@ fn test_payload_field_bit() -> Result<()> {
     conf.set_open_mode(OpenMode::CREATE)?;
     let writer = IndexWriter::new(ram.as_directory(), conf)?;
     let mut d = Document::new();
-    d.add(text("f1", "This field has no payloads"));
-    d.add(text("f2", "This field has payloads in all docs"));
-    d.add(text("f2", "This field has payloads in all docs"));
-    d.add(text("f3", "This field has payloads in some docs"));
+    d.add(*text("f1", "This field has no payloads"));
+    d.add(*text("f2", "This field has payloads in all docs"));
+    d.add(*text("f2", "This field has payloads in all docs"));
+    d.add(*text("f3", "This field has payloads in some docs"));
     // add payload data for field f2 and f3
     analyzer.set_payload_data("f2", Arc::new(b"somedata".to_vec()), 0, 1);
     analyzer.set_payload_data("f3", Arc::new(b"somedata".to_vec()), 0, 3);
@@ -251,7 +254,7 @@ fn perform_test(dir: &Arc<dyn Directory>) -> Result<()> {
     let payload_data = Arc::new(generate_random_data(payload_data_length));
 
     let mut d = Document::new();
-    d.add(text(field_name, &content));
+    d.add(*text(field_name, &content));
     // add the same document multiple times to have the same payload lengths for all
     // occurrences within two consecutive skip intervals
     let mut offset = 0;
@@ -362,7 +365,7 @@ fn perform_test(dir: &Arc<dyn Directory>) -> Result<()> {
     let single_term = "lucene";
 
     let mut d = Document::new();
-    d.add(text(field_name, single_term));
+    d.add(*text(field_name, single_term));
     // add a payload whose length is greater than the buffer size of BufferedIndexOutput
     let payload_data = Arc::new(generate_random_data(2000));
     analyzer.set_payload_data(field_name, Arc::clone(&payload_data), 100, 1500);
@@ -656,7 +659,7 @@ fn test_thread_safety() -> Result<()> {
                     let stream: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(
                         PoolingPayloadTokenStream::new(Arc::clone(&pool))?,
                     ));
-                    d.add(Box::new(TextField::new_with_token_stream(field, stream)?));
+                    d.add(TextField::new_with_token_stream(field, stream)?);
                     writer.add_document(&d)?;
                 }
                 Ok(())
@@ -830,11 +833,11 @@ fn test_across_fields() -> Result<()> {
         )),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(
+    doc.add(TextField::new(
         "hasMaybepayload",
         "here we go".to_string(),
         Store::YES,
-    )?));
+    )?);
     writer.add_document(&doc)?;
     writer.close()?;
 
@@ -848,11 +851,11 @@ fn test_across_fields() -> Result<()> {
         )),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(
+    doc.add(TextField::new(
         "hasMaybepayload2",
         "here we go".to_string(),
         Store::YES,
-    )?));
+    )?);
     writer.add_document(&doc)?;
     writer.add_document(&doc)?;
     writer.force_merge(1)?;
@@ -895,7 +898,7 @@ fn test_mixup_docs() -> Result<()> {
     let mut doc = Document::new();
     let ts = whitespace_stream("here we go")?;
     let field = Field::new_with_token_stream("field", ts, TextField::type_not_stored().clone())?;
-    doc.add(Box::new(field));
+    doc.add(field);
     writer.add_document(&doc)?;
     let ts = with_payload_stream();
     field_mut(&mut doc, "field").set_token_stream_value(ts)?;
@@ -936,13 +939,13 @@ fn test_mixup_multi_valued() -> Result<()> {
         TextField::type_not_stored().clone(),
     )?;
     field.set_token_stream_value(ts)?;
-    doc.add(Box::new(field));
+    doc.add(field);
     let ts = with_payload_stream();
     let field2 = Field::new_with_token_stream("field", ts, TextField::type_not_stored().clone())?;
-    doc.add(Box::new(field2));
+    doc.add(field2);
     let ts = whitespace_stream("nopayload")?;
     let field3 = Field::new_with_token_stream("field", ts, TextField::type_not_stored().clone())?;
-    doc.add(Box::new(field3));
+    doc.add(field3);
     writer.add_document(&doc)?;
     let reader = writer.get_reader()?;
     let sr = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as Arc<dyn IndexReader>)?;

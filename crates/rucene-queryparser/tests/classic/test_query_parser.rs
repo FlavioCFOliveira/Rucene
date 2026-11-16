@@ -1458,7 +1458,7 @@ fn is_a_hit(q: Arc<dyn Query>, content: &str, analyzer: &Arc<dyn Analyzer>) -> R
     field_type.set_tokenized(true)?;
     field_type.set_stored(true)?;
     let field = Field::new(FIELD, content.to_string(), field_type)?;
-    doc.add(Box::new(field));
+    doc.add(field);
     writer.add_document(&doc)?;
     writer.close()?;
     let ir = directory_reader::open(ram_dir.as_directory())?;

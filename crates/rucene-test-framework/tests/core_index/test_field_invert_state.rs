@@ -107,7 +107,7 @@ fn test_basic() -> Result<()> {
             Token::with_offsets("c", 4, 5),
         ],
     )?;
-    doc.add(Box::new(field));
+    doc.add(field);
     w.add_document(&doc)?;
     let fis = INSTANCE.last_state();
     assert_equals(&1, &fis.max_term_frequency());
@@ -155,7 +155,7 @@ fn test_random() -> Result<()> {
     }
 
     let field = canned_field("field", tokens)?;
-    doc.add(Box::new(field));
+    doc.add(field);
     w.add_document(&doc)?;
     let fis = INSTANCE.last_state();
     assert_equals(&max_term_freq, &fis.max_term_frequency());

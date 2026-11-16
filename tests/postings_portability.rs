@@ -391,15 +391,9 @@ fn two_reuse_segments() -> Arc<dyn DirectoryReader> {
     for _ in 0..2 {
         for _ in 0..3 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", "a".to_string(), Store::NO).unwrap(),
-            ));
-            doc.add(Box::new(
-                StringField::new("id", "b".to_string(), Store::NO).unwrap(),
-            ));
-            doc.add(Box::new(
-                TextField::new("body", "x y".to_string(), Store::NO).unwrap(),
-            ));
+            doc.add(StringField::new("id", "a".to_string(), Store::NO).unwrap());
+            doc.add(StringField::new("id", "b".to_string(), Store::NO).unwrap());
+            doc.add(TextField::new("body", "x y".to_string(), Store::NO).unwrap());
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();
@@ -501,9 +495,7 @@ fn a_reused_block_postings_enum_keeps_the_last_offsets_until_next_doc() {
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for text in ["aaa bbb", "bbb"] {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            Field::new("f", text.to_string(), field_type.clone()).unwrap(),
-        ));
+        doc.add(Field::new("f", text.to_string(), field_type.clone()).unwrap());
         writer.add_document(&doc).unwrap();
     }
     writer.close().unwrap();
@@ -630,9 +622,7 @@ fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
             PayloadTokens::new(tokens),
         ));
         let mut doc = Document::new();
-        doc.add(Box::new(
-            Field::new_with_token_stream("f", stream, field_type.clone()).unwrap(),
-        ));
+        doc.add(Field::new_with_token_stream("f", stream, field_type.clone()).unwrap());
         writer.add_document(&doc).unwrap();
     }
     writer.close().unwrap();
@@ -683,9 +673,7 @@ fn a_fresh_block_postings_enum_answers_offsets_of_zero_as_lucene_does() {
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for text in ["aaa bbb", "bbb"] {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            Field::new("f", text.to_string(), field_type.clone()).unwrap(),
-        ));
+        doc.add(Field::new("f", text.to_string(), field_type.clone()).unwrap());
         writer.add_document(&doc).unwrap();
     }
     writer.close().unwrap();
@@ -1026,18 +1014,16 @@ fn assert_each_term_reuses_the_previous_enum(
 fn reuse_doc(i: i32) -> Document {
     let mut doc = Document::new();
     let term = ["a", "b", "c"][(i % 3) as usize];
-    doc.add(Box::new(
-        StringField::new("id", term.to_string(), Store::NO).unwrap(),
-    ));
-    doc.add(Box::new(
+    doc.add(StringField::new("id", term.to_string(), Store::NO).unwrap());
+    doc.add(
         TextField::new(
             "body",
             ["x", "y", "z"][(i % 3) as usize].to_string(),
             Store::NO,
         )
         .unwrap(),
-    ));
-    doc.add(Box::new(NumericDocValuesField::new("rank", -i64::from(i))));
+    );
+    doc.add(NumericDocValuesField::new("rank", -i64::from(i)));
     doc
 }
 

@@ -90,11 +90,11 @@ fn build_index() -> Result<()> {
     let directory = LuceneTestCase::new_fs_directory(&path);
     let iwriter = RandomIndexWriter::new(&*random(), directory.as_directory(), analyzer.clone())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "fieldname",
         &text(),
         Store::YES,
-    )));
+    ));
     iwriter.add_document(&doc)?;
     iwriter.close()?;
     directory.close()?;

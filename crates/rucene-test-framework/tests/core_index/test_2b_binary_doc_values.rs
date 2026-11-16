@@ -62,7 +62,7 @@ fn test_fixed_binary() -> Result<()> {
     let mut doc = Document::new();
     let mut bytes = [0u8; 4];
     let dv_field = BinaryDocValuesField::new("dv", BytesRef::new(bytes.to_vec()));
-    doc.add(Box::new(dv_field));
+    doc.add(dv_field);
 
     for i in 0..MAX_DOCS {
         bytes[0] = (i >> 24) as u8;
@@ -122,7 +122,7 @@ fn test_variable_binary() -> Result<()> {
     let mut doc = Document::new();
     let mut bytes = [0u8; 4];
     let dv_field = BinaryDocValuesField::new("dv", BytesRef::new(bytes.to_vec()));
-    doc.add(Box::new(dv_field));
+    doc.add(dv_field);
 
     for i in 0..MAX_DOCS {
         let length = {

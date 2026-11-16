@@ -81,17 +81,10 @@ fn run_java(case: &str) -> String {
 /// `DeleteRamFixture.doc(int)`, field for field and in the same order.
 fn doc(id: i32) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", format!("d{id}"), Store::NO).unwrap(),
-    ));
-    d.add(Box::new(
-        StringField::new("grp", format!("g{}", id % 3), Store::NO).unwrap(),
-    ));
-    d.add(Box::new(NumericDocValuesField::new("num", i64::from(id))));
-    d.add(Box::new(BinaryDocValuesField::new(
-        "bin",
-        bytes(&format!("b{id}")),
-    )));
+    d.add(StringField::new("id", format!("d{id}"), Store::NO).unwrap());
+    d.add(StringField::new("grp", format!("g{}", id % 3), Store::NO).unwrap());
+    d.add(NumericDocValuesField::new("num", i64::from(id)));
+    d.add(BinaryDocValuesField::new("bin", bytes(&format!("b{id}"))));
     d
 }
 
@@ -100,7 +93,7 @@ fn doc(id: i32) -> Document {
 /// doc-values buffer and the buffered deletes alone.
 fn value_doc(id: i32) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(NumericDocValuesField::new("num", i64::from(id))));
+    d.add(NumericDocValuesField::new("num", i64::from(id)));
     d
 }
 

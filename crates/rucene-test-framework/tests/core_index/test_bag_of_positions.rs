@@ -137,7 +137,7 @@ fn test_() -> Result<()> {
                             text.push_str(&token);
                         }
                         let mut document = Document::new();
-                        document.add(Box::new(Field::new("field", text, field_type.clone())?));
+                        document.add(Field::new("field", text, field_type.clone())?);
                         iw.add_document(&document)?;
                     }
                     Ok(())

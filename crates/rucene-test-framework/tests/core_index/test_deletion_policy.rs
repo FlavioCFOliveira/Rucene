@@ -819,16 +819,12 @@ fn test_keep_last_n_deletion_policy() -> Result<()> {
 /// `private void addDocWithID(IndexWriter writer, int id)`.
 fn add_doc_with_id(writer: &IndexWriter, id: usize) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "content",
-        "aaa",
-        Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_text_field("content", "aaa", Store::NO));
+    doc.add(LuceneTestCase::new_string_field(
         "id",
         &id.to_string(),
         Store::NO,
-    )));
+    ));
     writer.add_document(&doc)?;
     Ok(())
 }
@@ -836,11 +832,7 @@ fn add_doc_with_id(writer: &IndexWriter, id: usize) -> Result<()> {
 /// `private void addDoc(IndexWriter writer)`.
 fn add_doc(writer: &IndexWriter) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "content",
-        "aaa",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("content", "aaa", Store::NO));
     writer.add_document(&doc)?;
     Ok(())
 }

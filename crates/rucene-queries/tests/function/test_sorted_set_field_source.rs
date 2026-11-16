@@ -52,30 +52,22 @@ fn test_simple() -> Result<()> {
     conf.set_merge_policy(Some(NoMergePolicy::instance()))?; // prevent merges for this test
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     let mut doc = Document::new();
-    doc.add(Box::new(SortedSetDocValuesField::new(
+    doc.add(SortedSetDocValuesField::new(
         "value",
         BytesRef::from_char_sequence("baz"),
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "2",
-        Store::YES,
-    )));
+    ));
+    doc.add(LuceneTestCase::new_string_field("id", "2", Store::YES));
     writer.add_document(&doc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(SortedSetDocValuesField::new(
+    doc.add(SortedSetDocValuesField::new(
         "value",
         BytesRef::from_char_sequence("foo"),
-    )));
-    doc.add(Box::new(SortedSetDocValuesField::new(
+    ));
+    doc.add(SortedSetDocValuesField::new(
         "value",
         BytesRef::from_char_sequence("bar"),
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "1",
-        Store::YES,
-    )));
+    ));
+    doc.add(LuceneTestCase::new_string_field("id", "1", Store::YES));
     writer.add_document(&doc)?;
     writer.close()?;
 

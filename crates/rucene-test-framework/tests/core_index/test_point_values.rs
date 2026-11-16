@@ -166,17 +166,13 @@ fn test_upgrade_field_to_points() -> Result<()> {
     let iwc = LuceneTestCase::new_index_writer_config();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "dim",
-        "foo",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("dim", "foo", Store::NO));
     w.add_document(&doc)?;
     w.close()?;
 
     let iwc = LuceneTestCase::new_index_writer_config();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
-    doc.add(Box::new(bp(&[4])?));
+    doc.add(bp(&[4])?);
     w.close()?;
     dir.close()
 }
@@ -189,8 +185,8 @@ fn test_illegal_dim_change_one_doc() -> Result<()> {
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4])?));
-    doc.add(Box::new(bp(&[4, 4])?));
+    doc.add(bp(&[4])?);
+    doc.add(bp(&[4, 4])?);
     let expected = expect_throws(IAE, || w.add_document(&doc));
     assert_message("Inconsistency of field data structures across documents for field [dim] of doc [0]. point dimension: expected '1', but it has '2'.", &expected);
     w.close()?;
@@ -203,11 +199,11 @@ fn test_illegal_dim_change_two_docs() -> Result<()> {
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4])?));
+    doc.add(bp(&[4])?);
     w.add_document(&doc)?;
 
     let mut doc2 = Document::new();
-    doc2.add(Box::new(bp(&[4, 4])?));
+    doc2.add(bp(&[4, 4])?);
     let expected = expect_throws(IAE, || w.add_document(&doc2));
     assert_message("Inconsistency of field data structures across documents for field [dim] of doc [1]. point dimension: expected '1', but it has '2'.", &expected);
     w.close()?;
@@ -220,12 +216,12 @@ fn test_illegal_dim_change_two_segments() -> Result<()> {
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4])?));
+    doc.add(bp(&[4])?);
     w.add_document(&doc)?;
     w.commit()?;
 
     let mut doc2 = Document::new();
-    doc2.add(Box::new(bp(&[4, 4])?));
+    doc2.add(bp(&[4, 4])?);
     let expected = expect_throws(IAE, || w.add_document(&doc2));
     assert_message("cannot change field \"dim\" from points dimensionCount=1, indexDimensionCount=1, numBytes=4 to inconsistent dimensionCount=2, indexDimensionCount=2, numBytes=4", &expected);
     w.close()?;
@@ -238,14 +234,14 @@ fn test_illegal_dim_change_two_writers() -> Result<()> {
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4])?));
+    doc.add(bp(&[4])?);
     w.add_document(&doc)?;
     w.close()?;
     let iwc = mock_iwc();
 
     let w2 = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc2 = Document::new();
-    doc2.add(Box::new(bp(&[4, 4])?));
+    doc2.add(bp(&[4, 4])?);
     let expected = expect_throws(IAE, || w2.add_document(&doc2));
     assert_message("cannot change field \"dim\" from points dimensionCount=1, indexDimensionCount=1, numBytes=4 to inconsistent dimensionCount=2, indexDimensionCount=2, numBytes=4", &expected);
     w2.close()?;
@@ -258,14 +254,14 @@ fn test_illegal_dim_change_via_add_indexes_directory() -> Result<()> {
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4])?));
+    doc.add(bp(&[4])?);
     w.add_document(&doc)?;
     w.close()?;
 
     let mut dir2 = LuceneTestCase::new_directory();
     let w2 = IndexWriter::new(dir2.as_directory(), mock_iwc())?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4, 4])?));
+    doc.add(bp(&[4, 4])?);
     w2.add_document(&doc)?;
     let expected = expect_throws(IAE, || w2.add_indexes_dirs(&[dir.as_directory()]));
 
@@ -284,14 +280,14 @@ fn test_illegal_dim_change_via_add_indexes_codec_reader() -> Result<()> {
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4])?));
+    doc.add(bp(&[4])?);
     w.add_document(&doc)?;
     w.close()?;
 
     let mut dir2 = LuceneTestCase::new_directory();
     let w2 = IndexWriter::new(dir2.as_directory(), mock_iwc())?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4, 4])?));
+    doc.add(bp(&[4, 4])?);
     w2.add_document(&doc)?;
     let r = directory_reader::open(dir.as_directory())?;
     let expected = expect_throws(IAE, || {
@@ -315,14 +311,14 @@ fn test_illegal_dim_change_via_add_indexes_slow_codec_reader() -> Result<()> {
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4])?));
+    doc.add(bp(&[4])?);
     w.add_document(&doc)?;
     w.close()?;
 
     let mut dir2 = LuceneTestCase::new_directory();
     let w2 = IndexWriter::new(dir2.as_directory(), mock_iwc())?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4, 4])?));
+    doc.add(bp(&[4, 4])?);
     w2.add_document(&doc)?;
     let r = directory_reader::open(dir.as_directory())?;
     let expected = expect_throws(IAE, || TestUtil::add_indexes_slowly(&w2, &[Arc::clone(&r)]));
@@ -342,8 +338,8 @@ fn test_illegal_num_bytes_change_one_doc() -> Result<()> {
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4])?));
-    doc.add(Box::new(bp(&[6])?));
+    doc.add(bp(&[4])?);
+    doc.add(bp(&[6])?);
     let expected = expect_throws(IAE, || w.add_document(&doc));
     assert_message("Inconsistency of field data structures across documents for field [dim] of doc [0]. point num bytes: expected '4', but it has '6'.", &expected);
     w.close()?;
@@ -356,11 +352,11 @@ fn test_illegal_num_bytes_change_two_docs() -> Result<()> {
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4])?));
+    doc.add(bp(&[4])?);
     w.add_document(&doc)?;
 
     let mut doc2 = Document::new();
-    doc2.add(Box::new(bp(&[6])?));
+    doc2.add(bp(&[6])?);
     let expected = expect_throws(IAE, || w.add_document(&doc2));
     assert_message("Inconsistency of field data structures across documents for field [dim] of doc [1]. point num bytes: expected '4', but it has '6'.", &expected);
     w.close()?;
@@ -373,12 +369,12 @@ fn test_illegal_num_bytes_change_two_segments() -> Result<()> {
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4])?));
+    doc.add(bp(&[4])?);
     w.add_document(&doc)?;
     w.commit()?;
 
     let mut doc2 = Document::new();
-    doc2.add(Box::new(bp(&[6])?));
+    doc2.add(bp(&[6])?);
     let expected = expect_throws(IAE, || w.add_document(&doc2));
     assert_message("cannot change field \"dim\" from points dimensionCount=1, indexDimensionCount=1, numBytes=4 to inconsistent dimensionCount=1, indexDimensionCount=1, numBytes=6", &expected);
     w.close()?;
@@ -391,14 +387,14 @@ fn test_illegal_num_bytes_change_two_writers() -> Result<()> {
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4])?));
+    doc.add(bp(&[4])?);
     w.add_document(&doc)?;
     w.close()?;
     let iwc = mock_iwc();
 
     let w2 = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc2 = Document::new();
-    doc2.add(Box::new(bp(&[6])?));
+    doc2.add(bp(&[6])?);
     let expected = expect_throws(IAE, || w2.add_document(&doc2));
     assert_message("cannot change field \"dim\" from points dimensionCount=1, indexDimensionCount=1, numBytes=4 to inconsistent dimensionCount=1, indexDimensionCount=1, numBytes=6", &expected);
     w2.close()?;
@@ -411,14 +407,14 @@ fn test_illegal_num_bytes_change_via_add_indexes_directory() -> Result<()> {
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4])?));
+    doc.add(bp(&[4])?);
     w.add_document(&doc)?;
     w.close()?;
 
     let mut dir2 = LuceneTestCase::new_directory();
     let w2 = IndexWriter::new(dir2.as_directory(), mock_iwc())?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[6])?));
+    doc.add(bp(&[6])?);
     w2.add_document(&doc)?;
     let expected = expect_throws(IAE, || w2.add_indexes_dirs(&[dir.as_directory()]));
 
@@ -437,14 +433,14 @@ fn test_illegal_num_bytes_change_via_add_indexes_codec_reader() -> Result<()> {
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4])?));
+    doc.add(bp(&[4])?);
     w.add_document(&doc)?;
     w.close()?;
 
     let mut dir2 = LuceneTestCase::new_directory();
     let w2 = IndexWriter::new(dir2.as_directory(), mock_iwc())?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[6])?));
+    doc.add(bp(&[6])?);
     w2.add_document(&doc)?;
     let r = directory_reader::open(dir.as_directory())?;
     let expected = expect_throws(IAE, || {
@@ -468,14 +464,14 @@ fn test_illegal_num_bytes_change_via_add_indexes_slow_codec_reader() -> Result<(
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[4])?));
+    doc.add(bp(&[4])?);
     w.add_document(&doc)?;
     w.close()?;
 
     let mut dir2 = LuceneTestCase::new_directory();
     let w2 = IndexWriter::new(dir2.as_directory(), mock_iwc())?;
     let mut doc = Document::new();
-    doc.add(Box::new(bp(&[6])?));
+    doc.add(bp(&[6])?);
     w2.add_document(&doc)?;
     let r = directory_reader::open(dir.as_directory())?;
     let expected = expect_throws(IAE, || TestUtil::add_indexes_slowly(&w2, &[Arc::clone(&r)]));
@@ -496,12 +492,12 @@ fn test_illegal_too_many_bytes() -> Result<()> {
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
     expect_throws(IAE, || -> Result<()> {
-        doc.add(Box::new(bp(&[MAX_NUM_BYTES as usize + 1])?));
+        doc.add(bp(&[MAX_NUM_BYTES as usize + 1])?);
         Ok(())
     });
 
     let mut doc2 = Document::new();
-    doc2.add(Box::new(IntPoint::new("dim", &[17])?));
+    doc2.add(IntPoint::new("dim", &[17])?);
     w.add_document(&doc2)?;
     w.close()?;
     dir.close()
@@ -515,12 +511,12 @@ fn test_illegal_too_many_dimensions() -> Result<()> {
     let mut doc = Document::new();
     let values = vec![4usize; MAX_INDEX_DIMENSIONS as usize + 1];
     expect_throws(IAE, || -> Result<()> {
-        doc.add(Box::new(bp(&values)?));
+        doc.add(bp(&values)?);
         Ok(())
     });
 
     let mut doc2 = Document::new();
-    doc2.add(Box::new(IntPoint::new("dim", &[17])?));
+    doc2.add(IntPoint::new("dim", &[17])?);
     w.add_document(&doc2)?;
     w.close()?;
     dir.close()
@@ -547,7 +543,7 @@ fn test_different_codecs1() -> Result<()> {
     iwc.set_codec(TestUtil::get_default_codec())?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("int", &[1])?));
+    doc.add(IntPoint::new("int", &[1])?);
     w.add_document(&doc)?;
     w.close()?;
 
@@ -555,7 +551,7 @@ fn test_different_codecs1() -> Result<()> {
     iwc.set_codec(codec_for_name("SimpleText"))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("int", &[1])?));
+    doc.add(IntPoint::new("int", &[1])?);
     w.add_document(&doc)?;
 
     w.force_merge(1)?;
@@ -573,7 +569,7 @@ fn test_different_codecs2() -> Result<()> {
     iwc.set_codec(codec_for_name("SimpleText"))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("int", &[1])?));
+    doc.add(IntPoint::new("int", &[1])?);
     w.add_document(&doc)?;
     w.close()?;
 
@@ -581,7 +577,7 @@ fn test_different_codecs2() -> Result<()> {
     iwc.set_codec(TestUtil::get_default_codec())?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("int", &[1])?));
+    doc.add(IntPoint::new("int", &[1])?);
     w.add_document(&doc)?;
 
     w.force_merge(1)?;
@@ -673,7 +669,7 @@ fn test_tie_break_by_doc_id() -> Result<()> {
     let iwc = LuceneTestCase::new_index_writer_config();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("int", &[17])?));
+    doc.add(IntPoint::new("int", &[17])?);
     let num_docs = if *TEST_NIGHTLY { 300000 } else { 3000 };
     for _i in 0..num_docs {
         w.add_document(&doc)?;
@@ -703,8 +699,8 @@ fn test_delete_all_point_docs() -> Result<()> {
     let iwc = LuceneTestCase::new_index_writer_config();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("id", "0".into(), Store::NO)?));
-    doc.add(Box::new(IntPoint::new("int", &[17])?));
+    doc.add(StringField::new("id", "0".into(), Store::NO)?);
+    doc.add(IntPoint::new("int", &[17])?);
     w.add_document(&doc)?;
     w.add_document(&Document::new())?;
     w.commit()?;
@@ -730,13 +726,13 @@ fn test_points_field_missing_from_one_segment() -> Result<()> {
     let iwc = IndexWriterConfig::with_analyzer(None);
     let w = IndexWriter::new(Arc::clone(&dir), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("id", "0".into(), Store::NO)?));
-    doc.add(Box::new(IntPoint::new("int0", &[0])?));
+    doc.add(StringField::new("id", "0".into(), Store::NO)?);
+    doc.add(IntPoint::new("int0", &[0])?);
     w.add_document(&doc)?;
     w.commit()?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("int1", &[17])?));
+    doc.add(IntPoint::new("int1", &[17])?);
     w.add_document(&doc)?;
     w.force_merge(1)?;
 
@@ -758,19 +754,13 @@ fn test_sparse_points() -> Result<()> {
         for field in 0..num_fields {
             let field_name = format!("int{field}");
             if random().next_int_bound(100) == 17 {
-                doc.add(Box::new(IntPoint::new(
-                    &field_name,
-                    &[random().next_int()],
-                )?));
+                doc.add(IntPoint::new(&field_name, &[random().next_int()])?);
                 field_doc_counts[field] += 1;
                 field_sizes[field] += 1;
 
                 if random().next_int_bound(10) == 5 {
                     // add same field again!
-                    doc.add(Box::new(IntPoint::new(
-                        &field_name,
-                        &[random().next_int()],
-                    )?));
+                    doc.add(IntPoint::new(&field_name, &[random().next_int()])?);
                     field_sizes[field] += 1;
                 }
             }
@@ -802,12 +792,12 @@ fn test_check_index_includes_points() -> Result<()> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let w = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::with_analyzer(None))?;
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("int1", &[17])?));
+    doc.add(IntPoint::new("int1", &[17])?);
     w.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("int1", &[44])?));
-    doc.add(Box::new(IntPoint::new("int2", &[-17])?));
+    doc.add(IntPoint::new("int1", &[44])?);
+    doc.add(IntPoint::new("int2", &[-17])?);
     w.add_document(&doc)?;
     w.close()?;
 
@@ -866,7 +856,7 @@ fn test_merged_stats_one_segment_without_points() -> Result<()> {
     w.add_document(&Document::new())?;
     directory_reader::open_with_writer(&*w)?.close()?;
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("field", &[i32::MIN])?));
+    doc.add(IntPoint::new("field", &[i32::MIN])?);
     w.add_document(&doc)?;
     let reader: Arc<dyn IndexReader> = directory_reader::open_with_writer(&*w)?;
 
@@ -902,12 +892,8 @@ fn test_merged_stats_all_points_deleted() -> Result<()> {
     let w = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::with_analyzer(None))?;
     w.add_document(&Document::new())?;
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("field", &[i32::MIN])?));
-    doc.add(Box::new(StringField::new(
-        "delete",
-        "yes".into(),
-        Store::NO,
-    )?));
+    doc.add(IntPoint::new("field", &[i32::MIN])?);
+    doc.add(StringField::new("delete", "yes".into(), Store::NO)?);
     w.add_document(&doc)?;
     w.force_merge(1)?;
     w.delete_documents_by_terms(vec![Term::from_text("delete", "yes")])?;
@@ -959,10 +945,10 @@ fn do_test_merged_stats() -> Result<()> {
         let mut doc = Document::new();
         let num_points = random().next_int_bound(3);
         for _j in 0..num_points {
-            doc.add(Box::new(BinaryPoint::new(
+            doc.add(BinaryPoint::new(
                 "field",
                 &random_binary_value(num_dims, num_bytes_per_dim),
-            )?));
+            )?);
         }
         w.add_document(&doc)?;
         if random().next_boolean() {

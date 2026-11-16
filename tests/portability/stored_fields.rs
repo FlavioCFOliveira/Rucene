@@ -676,53 +676,43 @@ fn build_document(script: &Doc) -> Document {
     let mut document = Document::new();
     for (name, value) in script {
         match value {
-            Value::Str(text) => document.add(Box::new(
-                StoredField::new_string(name, text.clone()).expect("stored string"),
-            )),
-            Value::Int(number) => document.add(Box::new(
+            Value::Str(text) => {
+                document.add(StoredField::new_string(name, text.clone()).expect("stored string"))
+            }
+            Value::Int(number) => document.add(
                 StoredField::new_number(name, NumericValue::Int(*number)).expect("stored int"),
-            )),
-            Value::Long(number) => document.add(Box::new(
+            ),
+            Value::Long(number) => document.add(
                 StoredField::new_number(name, NumericValue::Long(*number)).expect("stored long"),
-            )),
-            Value::Float(number) => document.add(Box::new(
+            ),
+            Value::Float(number) => document.add(
                 StoredField::new_number(name, NumericValue::Float(*number)).expect("stored float"),
-            )),
-            Value::Double(number) => document.add(Box::new(
+            ),
+            Value::Double(number) => document.add(
                 StoredField::new_number(name, NumericValue::Double(*number))
                     .expect("stored double"),
-            )),
-            Value::Bytes(bytes) => document.add(Box::new(
+            ),
+            Value::Bytes(bytes) => document.add(
                 StoredField::new_bytes(name, BytesRef::new(bytes.clone())).expect("stored bytes"),
-            )),
-            Value::IndexedText(text) => document.add(Box::new(
+            ),
+            Value::IndexedText(text) => document.add(
                 Field::new(name, text.clone(), indexed_and_stored_type()).expect("indexed field"),
-            )),
-            Value::StringKeyword(text) => document.add(Box::new(
-                StringField::new(name, text.clone(), Store::YES).expect("string field"),
-            )),
-            Value::AnalysedText(text) => document.add(Box::new(
-                TextField::new(name, text.clone(), Store::YES).expect("text field"),
-            )),
-            Value::KeywordString(text) => document.add(Box::new(
-                KeywordField::new(name, text.clone(), Store::YES).expect("keyword field"),
-            )),
-            Value::KeywordBytes(bytes) => document.add(Box::new(
+            ),
+            Value::StringKeyword(text) => document
+                .add(StringField::new(name, text.clone(), Store::YES).expect("string field")),
+            Value::AnalysedText(text) => {
+                document.add(TextField::new(name, text.clone(), Store::YES).expect("text field"))
+            }
+            Value::KeywordString(text) => document
+                .add(KeywordField::new(name, text.clone(), Store::YES).expect("keyword field")),
+            Value::KeywordBytes(bytes) => document.add(
                 KeywordField::new_with_bytes(name, BytesRef::new(bytes.clone()), Store::YES)
                     .expect("keyword field"),
-            )),
-            Value::IntField(value) => {
-                document.add(Box::new(IntField::new(name, *value, Store::YES)))
-            }
-            Value::LongField(value) => {
-                document.add(Box::new(LongField::new(name, *value, Store::YES)))
-            }
-            Value::FloatField(value) => {
-                document.add(Box::new(FloatField::new(name, *value, Store::YES)))
-            }
-            Value::DoubleField(value) => {
-                document.add(Box::new(DoubleField::new(name, *value, Store::YES)))
-            }
+            ),
+            Value::IntField(value) => document.add(IntField::new(name, *value, Store::YES)),
+            Value::LongField(value) => document.add(LongField::new(name, *value, Store::YES)),
+            Value::FloatField(value) => document.add(FloatField::new(name, *value, Store::YES)),
+            Value::DoubleField(value) => document.add(DoubleField::new(name, *value, Store::YES)),
         }
     }
     document

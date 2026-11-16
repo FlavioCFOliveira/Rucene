@@ -61,11 +61,7 @@ fn test_random() -> Result<()> {
         let num_values = random().next_int_bound(1 << random().next_int_bound(5));
         let start = random().next_int_bound(10);
         for j in 0..num_values {
-            doc.add(Box::new(StringField::new(
-                "foo",
-                (start + j).to_string(),
-                Store::NO,
-            )?));
+            doc.add(StringField::new("foo", (start + j).to_string(), Store::NO)?);
         }
         w.add_document(&doc)?;
     }

@@ -251,9 +251,7 @@ fn ords_index(dir: &TempDir, docs: &[Vec<String>]) -> Arc<dyn IndexReader> {
     for terms in docs {
         let mut d = Document::new();
         for t in terms {
-            d.add(Box::new(
-                StringField::new("field", t.clone(), Store::NO).unwrap(),
-            ));
+            d.add(StringField::new("field", t.clone(), Store::NO).unwrap());
         }
         w.add_document(&d).unwrap();
     }

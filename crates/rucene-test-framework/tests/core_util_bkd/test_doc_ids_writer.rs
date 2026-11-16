@@ -229,8 +229,8 @@ fn test_crash() -> Result<()> {
         )?;
         for _ in 0..20_000 {
             let mut doc = Document::new();
-            doc.add(Box::new(IntPoint::new("foo", &[0])?));
-            doc.add(Box::new(SortedNumericDocValuesField::new("bar", 0)));
+            doc.add(IntPoint::new("foo", &[0])?);
+            doc.add(SortedNumericDocValuesField::new("bar", 0));
             iw.add_document(&doc)?;
         }
         iw.close()?;

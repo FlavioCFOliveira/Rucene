@@ -97,16 +97,16 @@ fn publish_docs(
     )?;
     for i in 0..num_docs {
         let mut d = Document::new();
-        d.add(Box::new(LuceneTestCase::new_string_field(
+        d.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::YES,
-        )));
-        d.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        d.add(LuceneTestCase::new_text_field(
             field_name,
             &random_sentence(),
             Store::NO,
-        )));
+        ));
         w.add_document(&d)?;
     }
 
@@ -212,29 +212,21 @@ fn wizard_index(
     )?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "0",
-        Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_string_field("id", "0", Store::YES));
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "wizard the the the the the oz",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "1",
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_string_field("id", "1", Store::YES));
     // 1 extra token, but wizard and oz are close;
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "wizard oz the the the the the the",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     let r = w.get_reader()?;
     w.close()?;
@@ -527,26 +519,19 @@ fn test_random() -> Result<()> {
     let max_value = TestUtil::next_int(&*random(), 10, 1000000);
     for i in 0..num_docs as usize {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::YES,
-        )));
+        ));
         let num_tokens = TestUtil::next_int(&*random(), 1, 10);
         let mut b = String::new();
         for _ in 0..num_tokens {
             b.push_str("a ");
         }
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "field",
-            &b,
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_text_field("field", &b, Store::NO));
         id_to_num[i] = random().next_int_bound(max_value);
-        doc.add(Box::new(NumericDocValuesField::new(
-            "num",
-            id_to_num[i] as i64,
-        )));
+        doc.add(NumericDocValuesField::new("num", id_to_num[i] as i64));
         w.add_document(&doc)?;
     }
     let r = w.get_reader()?;

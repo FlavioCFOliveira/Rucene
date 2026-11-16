@@ -228,7 +228,7 @@ fn test_single_filter_clause() -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let f = LuceneTestCase::new_text_field("field", "a", Store::NO);
-    doc.add(Box::new(f));
+    doc.add(f);
     w.add_document(&doc)?;
     w.commit()?;
 
@@ -692,7 +692,7 @@ fn test_random() -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let f = TextField::new("body", "a b c".to_string(), Store::NO)?;
-    doc.add(Box::new(f));
+    doc.add(f);
     w.add_document(&doc)?;
     field_mut_as::<TextField>(&mut doc, "body").set_string_value(String::new())?;
     w.add_document(&doc)?;

@@ -76,19 +76,19 @@ fn before_class() -> Result<()> {
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_config)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(
+    doc.add(TextField::new(
         "text",
         "this is a test test test".to_string(),
         Store::NO,
-    )?));
+    )?);
     iw.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(
+    doc.add(TextField::new(
         "text",
         "second test".to_string(),
         Store::NO,
-    )?));
+    )?);
     iw.add_document(&doc)?;
 
     let reader = iw.get_reader()?;

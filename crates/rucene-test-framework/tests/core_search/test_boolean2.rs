@@ -140,7 +140,7 @@ fn before_class() -> Result<()> {
         writer.add_document(&doc)?;
     }
     for text in DOC_FIELDS {
-        doc.add(Box::new(Field::new(FIELD, text.to_string(), ft.clone())?));
+        doc.add(Field::new(FIELD, text.to_string(), ft.clone())?);
         writer.add_document(&doc)?;
 
         doc = Document::new();
@@ -216,20 +216,12 @@ fn before_class() -> Result<()> {
     let w = RandomIndexWriter::new_with_config(&*random(), dir2.as_directory(), iwc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(Field::new(
-        "field2",
-        "xxx".to_string(),
-        ft.clone(),
-    )?));
+    doc.add(Field::new("field2", "xxx".to_string(), ft.clone())?);
     for _ in 0..NUM_EXTRA_DOCS / 2 {
         w.add_document(&doc)?;
     }
     let mut doc = Document::new();
-    doc.add(Box::new(Field::new(
-        "field2",
-        "big bad bug".to_string(),
-        ft.clone(),
-    )?));
+    doc.add(Field::new("field2", "big bad bug".to_string(), ft.clone())?);
     for _ in 0..NUM_EXTRA_DOCS / 2 {
         w.add_document(&doc)?;
     }

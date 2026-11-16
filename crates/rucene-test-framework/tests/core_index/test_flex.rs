@@ -45,26 +45,18 @@ fn test_non_flex() -> Result<()> {
     for iter in 0..2 {
         if iter == 0 {
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_text_field(
+            doc.add(LuceneTestCase::new_text_field(
                 "field1",
                 "this is field1",
                 Store::NO,
-            )));
-            doc.add(Box::new(LuceneTestCase::new_text_field(
+            ));
+            doc.add(LuceneTestCase::new_text_field(
                 "field2",
                 "this is field2",
                 Store::NO,
-            )));
-            doc.add(Box::new(LuceneTestCase::new_text_field(
-                "field3",
-                "aaa",
-                Store::NO,
-            )));
-            doc.add(Box::new(LuceneTestCase::new_text_field(
-                "field4",
-                "bbb",
-                Store::NO,
-            )));
+            ));
+            doc.add(LuceneTestCase::new_text_field("field3", "aaa", Store::NO));
+            doc.add(LuceneTestCase::new_text_field("field4", "bbb", Store::NO));
             for _ in 0..DOC_COUNT {
                 w.add_document(&doc)?;
             }
@@ -99,11 +91,7 @@ fn test_term_ord() -> Result<()> {
     ))?;
     let w = IndexWriter::new(d.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "f",
-        "a b c",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("f", "a b c", Store::NO));
     w.add_document(&doc)?;
     w.force_merge(1)?;
     let r = directory_reader::open_with_writer(&*w)?;

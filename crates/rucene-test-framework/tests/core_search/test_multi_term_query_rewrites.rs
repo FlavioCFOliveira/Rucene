@@ -109,11 +109,11 @@ fn before_class() -> Result<()> {
     )?;
     for i in 0..10 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "data",
             &i.to_string(),
             Store::NO,
-        )));
+        ));
         writer.add_document(&doc)?;
         (if i % 2 == 0 { &swriter1 } else { &swriter2 }).add_document(&doc)?;
     }

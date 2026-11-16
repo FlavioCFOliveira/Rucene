@@ -76,13 +76,10 @@ impl QueryTimeout for AlwaysTimesOut {
 /// documents 0, 1, 2, … in that order.
 fn doc(d: i32) -> Document {
     let mut document = Document::new();
-    document.add(Box::new(
-        StringField::new("id", format!("doc-{d}"), Store::NO).expect("id"),
-    ));
-    document.add(Box::new(IntPoint::new("rank", &[d]).expect("rank")));
-    document.add(Box::new(
-        KnnFloatVectorField::with_euclidean(VECTOR_FIELD, &[d as f32, 0.0]).expect("vector"),
-    ));
+    document.add(StringField::new("id", format!("doc-{d}"), Store::NO).expect("id"));
+    document.add(IntPoint::new("rank", &[d]).expect("rank"));
+    document
+        .add(KnnFloatVectorField::with_euclidean(VECTOR_FIELD, &[d as f32, 0.0]).expect("vector"));
     document
 }
 
@@ -390,13 +387,10 @@ fn a_sparse_field_returns_the_lucene_documents_not_the_ordinals() {
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
     for i in 0..2700 {
         let mut document = Document::new();
-        document.add(Box::new(
-            StringField::new("id", i.to_string(), Store::YES).expect("id"),
-        ));
+        document.add(StringField::new("id", i.to_string(), Store::YES).expect("id"));
         if i % 3 == 1 {
-            document.add(Box::new(
-                KnnFloatVectorField::with_euclidean("v", &sparse_vector(i)).expect("vector"),
-            ));
+            document
+                .add(KnnFloatVectorField::with_euclidean("v", &sparse_vector(i)).expect("vector"));
         }
         writer.add_document(&document).expect("add document");
     }

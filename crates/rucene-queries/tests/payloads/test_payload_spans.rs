@@ -106,11 +106,11 @@ impl PayloadSpans {
         for i in 0..docs.len() {
             let mut doc = Document::new();
             let doc_text = docs[i];
-            doc.add(Box::new(LuceneTestCase::new_text_field(
+            doc.add(LuceneTestCase::new_text_field(
                 payload_helper::FIELD,
                 doc_text,
                 Store::YES,
-            )));
+            ));
             writer.add_document(&doc)?;
         }
 
@@ -243,11 +243,11 @@ fn test_span_not(f: &mut PayloadSpans) -> Result<()> {
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         payload_helper::FIELD,
         "one two three one four three",
         Store::YES,
-    )));
+    ));
     writer.add_document(&doc)?;
     let reader =
         LuceneTestCase::get_only_leaf_reader(writer.get_reader()? as Arc<dyn IndexReader>)?;
@@ -366,10 +366,10 @@ fn shrink_payloads(text: &str, slop: i32) -> Result<HashSet<String>> {
     )?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new_with_reader(
+    doc.add(TextField::new_with_reader(
         "content",
         Box::new(StringCharReader::new(text)),
-    )?));
+    )?);
     writer.add_document(&doc)?;
 
     let reader = writer.get_reader()?;

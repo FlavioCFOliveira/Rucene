@@ -115,16 +115,8 @@ fn do_tear_down(f: &mut FuzzyLikeThisTest) -> Result<()> {
 
 fn add_doc(writer: &RandomIndexWriter, name: &str, id: &str) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "name",
-        name,
-        Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "id",
-        id,
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_text_field("name", name, Store::YES));
+    doc.add(LuceneTestCase::new_text_field("id", id, Store::YES));
     writer.add_document(&doc)?;
     Ok(())
 }

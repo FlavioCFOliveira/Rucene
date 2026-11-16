@@ -246,11 +246,9 @@ fn scored_docs() -> Arc<dyn DirectoryReader> {
     let docs = (0..4)
         .map(|i| {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", format!("{i}"), Store::NO).unwrap(),
-            ));
-            doc.add(Box::new(IntPoint::new("rank", &[i]).unwrap()));
-            doc.add(Box::new(NumericDocValuesField::new("dv", i64::from(i))));
+            doc.add(StringField::new("id", format!("{i}"), Store::NO).unwrap());
+            doc.add(IntPoint::new("rank", &[i]).unwrap());
+            doc.add(NumericDocValuesField::new("dv", i64::from(i)));
             doc
         })
         .collect();
@@ -320,8 +318,8 @@ fn values_docs() -> Arc<dyn DirectoryReader> {
     for value in [Some(5i64), None, Some(1)] {
         let mut doc = Document::new();
         if let Some(value) = value {
-            doc.add(Box::new(DoubleDocValuesField::new("d", value as f64)));
-            doc.add(Box::new(NumericDocValuesField::new("l", value)));
+            doc.add(DoubleDocValuesField::new("d", value as f64));
+            doc.add(NumericDocValuesField::new("l", value));
         }
         docs.push(doc);
     }
@@ -463,9 +461,7 @@ fn a_fuzzy_query_matches_the_terms_near_its_term() {
         .iter()
         .map(|text| {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                TextField::new("f", text.to_string(), Store::NO).unwrap(),
-            ));
+            doc.add(TextField::new("f", text.to_string(), Store::NO).unwrap());
             doc
         })
         .collect();
@@ -617,9 +613,7 @@ impl TermsEnum for RecordingTermsEnum {
 #[test]
 fn a_fuzzy_terms_enum_prepares_seeks_on_the_enum_it_wraps() {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        TextField::new("f", "abcd abce wxyz".to_string(), Store::NO).unwrap(),
-    ));
+    doc.add(TextField::new("f", "abcd abce wxyz".to_string(), Store::NO).unwrap());
     let reader = index(vec![doc]);
     let leaves = Arc::clone(&reader).leaves().unwrap();
     let leaf: Arc<dyn LeafReader> = leaves[0].leaf_reader();
@@ -707,9 +701,7 @@ fn a_patience_query_stops_once_the_queue_saturates() {
     let docs = (0..2000u64)
         .map(|i| {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                KnnFloatVectorField::with_euclidean("v", &vector(i)).unwrap(),
-            ));
+            doc.add(KnnFloatVectorField::with_euclidean("v", &vector(i)).unwrap());
             doc
         })
         .collect();
@@ -766,9 +758,7 @@ fn a_phrase_from_term_bytes_keeps_the_terms_in_order() {
 #[test]
 fn a_phrase_with_a_term_the_segment_lacks_matches_nothing() {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        TextField::new("f", "a b".to_string(), Store::NO).unwrap(),
-    ));
+    doc.add(TextField::new("f", "a b".to_string(), Store::NO).unwrap());
     let reader = index(vec![doc]);
     let searcher = searcher(&reader);
     let present = PhraseQuery::from_strings("f", &["a", "b"]).unwrap();

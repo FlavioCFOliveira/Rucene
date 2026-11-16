@@ -1888,11 +1888,11 @@ fn test_position_increments<T: QueryParserTestBase>(t: &mut T) -> Result<()> {
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&a))),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "the wizard of ozzy",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     let r = directory_reader::open_with_writer(&*w)?;
     w.close()?;

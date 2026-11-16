@@ -685,84 +685,64 @@ pub fn function_index(seed: i64, num_docs: usize) -> OracleIndex {
 
 fn doc(random: &mut JdkRandom, i: usize) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StringField::new("id", format!("d{i}"), Store::YES).expect("id"),
-    ));
+    doc.add(StringField::new("id", format!("d{i}"), Store::YES).expect("id"));
     let body: Vec<&str> = (0..random.next_int_bound(20))
         .map(|_| {
             let r = random.next_double();
             VOCABULARY[(r * r * VOCABULARY.len() as f64) as usize]
         })
         .collect();
-    doc.add(Box::new(
-        TextField::new("body", body.join(" "), Store::NO).expect("body"),
-    ));
+    doc.add(TextField::new("body", body.join(" "), Store::NO).expect("body"));
     if random.next_int_bound(3) != 0 {
         let v = random.next_int_bound(200) - 50;
-        doc.add(Box::new(NumericDocValuesField::new("i", i64::from(v))));
-        doc.add(Box::new(NumericDocValuesField::new(
-            "l",
-            i64::from(v) * 1_000_003,
-        )));
+        doc.add(NumericDocValuesField::new("i", i64::from(v)));
+        doc.add(NumericDocValuesField::new("l", i64::from(v) * 1_000_003));
         let f = v as f32 / 7.0;
-        doc.add(Box::new(NumericDocValuesField::new(
+        doc.add(NumericDocValuesField::new(
             "f",
             i64::from(f.to_bits() as i32),
-        )));
+        ));
         let d = f64::from(v) / 3.0;
-        doc.add(Box::new(NumericDocValuesField::new(
-            "d",
-            d.to_bits() as i64,
-        )));
+        doc.add(NumericDocValuesField::new("d", d.to_bits() as i64));
     }
     for _ in 0..random.next_int_bound(4) {
         let v = random.next_int_bound(1000) - 300;
-        doc.add(Box::new(SortedNumericDocValuesField::new(
-            "imv",
-            i64::from(v),
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::new(
-            "lmv",
-            i64::from(v) << 20,
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::new(
+        doc.add(SortedNumericDocValuesField::new("imv", i64::from(v)));
+        doc.add(SortedNumericDocValuesField::new("lmv", i64::from(v) << 20));
+        doc.add(SortedNumericDocValuesField::new(
             "fmv",
             i64::from(NumericUtils::float_to_sortable_int(v as f32 / 9.0)),
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::new(
+        ));
+        doc.add(SortedNumericDocValuesField::new(
             "dmv",
             NumericUtils::double_to_sortable_long(f64::from(v) / 11.0),
-        )));
+        ));
     }
     if random.next_int_bound(4) != 0 {
         let c = COLORS[random.next_int_bound(COLORS.len() as i32) as usize];
-        doc.add(Box::new(SortedDocValuesField::new(
+        doc.add(SortedDocValuesField::new(
             "s",
             BytesRef::from_char_sequence(c),
-        )));
+        ));
     }
     for _ in 0..random.next_int_bound(3) {
         let c = COLORS[random.next_int_bound(COLORS.len() as i32) as usize];
-        doc.add(Box::new(SortedSetDocValuesField::new(
+        doc.add(SortedSetDocValuesField::new(
             "ss",
             BytesRef::from_char_sequence(c),
-        )));
+        ));
     }
-    doc.add(Box::new(NumericDocValuesField::new(
+    doc.add(NumericDocValuesField::new(
         "e",
         i64::from(random.next_int_bound(COLORS.len() as i32)),
-    )));
+    ));
     if random.next_int_bound(4) != 0 {
         let v: Vec<f32> = (0..3).map(|_| random.next_float() * 2.0 - 1.0).collect();
-        doc.add(Box::new(
-            KnnFloatVectorField::with_euclidean("fv", &v).expect("fv"),
-        ));
+        doc.add(KnnFloatVectorField::with_euclidean("fv", &v).expect("fv"));
         let b: Vec<u8> = (0..3)
             .map(|_| (random.next_int_bound(200) - 100) as i8 as u8)
             .collect();
-        doc.add(Box::new(
-            KnnByteVectorField::with_euclidean("bv", &b).expect("bv"),
-        ));
+        doc.add(KnnByteVectorField::with_euclidean("bv", &b).expect("bv"));
     }
     doc
 }

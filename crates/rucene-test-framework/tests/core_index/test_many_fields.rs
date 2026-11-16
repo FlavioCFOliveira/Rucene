@@ -59,12 +59,12 @@ fn test_many_fields() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     for j in 0..100 {
         let mut doc = Document::new();
-        doc.add(stored_text(&format!("a{j}"), &format!("aaa{j}")));
-        doc.add(stored_text(&format!("b{j}"), &format!("aaa{j}")));
-        doc.add(stored_text(&format!("c{j}"), &format!("aaa{j}")));
-        doc.add(stored_text(&format!("d{j}"), "aaa"));
-        doc.add(stored_text(&format!("e{j}"), "aaa"));
-        doc.add(stored_text(&format!("f{j}"), "aaa"));
+        doc.add(*stored_text(&format!("a{j}"), &format!("aaa{j}")));
+        doc.add(*stored_text(&format!("b{j}"), &format!("aaa{j}")));
+        doc.add(*stored_text(&format!("c{j}"), &format!("aaa{j}")));
+        doc.add(*stored_text(&format!("d{j}"), "aaa"));
+        doc.add(*stored_text(&format!("e{j}"), "aaa"));
+        doc.add(*stored_text(&format!("f{j}"), "aaa"));
         writer.add_document(&doc)?;
     }
     writer.close()?;
@@ -100,7 +100,7 @@ fn test_diverse_docs() -> Result<()> {
         for _ in 0..100 {
             let mut doc = Document::new();
             for _ in 0..100 {
-                doc.add(stored_text("field", &random().next_int().to_string()));
+                doc.add(*stored_text("field", &random().next_int().to_string()));
             }
             writer.add_document(&doc)?;
         }
@@ -109,7 +109,7 @@ fn test_diverse_docs() -> Result<()> {
         // occurs (heavy on byte blocks)
         for _ in 0..100 {
             let mut doc = Document::new();
-            doc.add(stored_text(
+            doc.add(*stored_text(
                 "field",
                 "aaa aaa aaa aaa aaa aaa aaa aaa aaa aaa",
             ));
@@ -128,7 +128,7 @@ fn test_diverse_docs() -> Result<()> {
             let long_term = b;
 
             let mut doc = Document::new();
-            doc.add(stored_text("field", &long_term));
+            doc.add(*stored_text("field", &long_term));
             writer.add_document(&doc)?;
         }
     }
@@ -167,11 +167,11 @@ fn test_rotating_field_names() -> Result<()> {
         while w.get_flush_count() == start_flush_count {
             let mut doc = Document::new();
             for _ in 0..10 {
-                doc.add(Box::new(Field::new(
+                doc.add(Field::new(
                     &format!("field{upto}"),
                     "content".to_string(),
                     ft.clone(),
-                )?));
+                )?);
                 upto += 1;
             }
             w.add_document(&doc)?;

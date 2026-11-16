@@ -243,14 +243,10 @@ fn new_writer(dir: &Arc<dyn Directory>, conf: IndexWriterConfig) -> Result<Arc<I
 fn add_docs(writer: &IndexWriter, num_docs: i32) -> Result<()> {
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "content",
-            "aaa",
-            Store::NO,
-        )));
-        doc.add(Box::new(IntPoint::new("doc", &[i])?));
-        doc.add(Box::new(IntPoint::new("doc2d", &[i, i])?));
-        doc.add(Box::new(NumericDocValuesField::new("dv", i as i64)));
+        doc.add(LuceneTestCase::new_text_field("content", "aaa", Store::NO));
+        doc.add(IntPoint::new("doc", &[i])?);
+        doc.add(IntPoint::new("doc2d", &[i, i])?);
+        doc.add(NumericDocValuesField::new("dv", i as i64));
         writer.add_document(&doc)?;
     }
     Ok(())
@@ -260,14 +256,10 @@ fn add_docs(writer: &IndexWriter, num_docs: i32) -> Result<()> {
 fn add_docs2(writer: &IndexWriter, num_docs: i32) -> Result<()> {
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "content",
-            "bbb",
-            Store::NO,
-        )));
-        doc.add(Box::new(IntPoint::new("doc", &[i])?));
-        doc.add(Box::new(IntPoint::new("doc2d", &[i, i])?));
-        doc.add(Box::new(NumericDocValuesField::new("dv", i as i64)));
+        doc.add(LuceneTestCase::new_text_field("content", "bbb", Store::NO));
+        doc.add(IntPoint::new("doc", &[i])?);
+        doc.add(IntPoint::new("doc2d", &[i, i])?);
+        doc.add(NumericDocValuesField::new("dv", i as i64));
         writer.add_document(&doc)?;
     }
     Ok(())
@@ -278,19 +270,15 @@ fn add_docs2(writer: &IndexWriter, num_docs: i32) -> Result<()> {
 fn add_docs_with_id(writer: &IndexWriter, num_docs: i32, doc_start: i32) -> Result<()> {
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "content",
-            "aaa",
-            Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field("content", "aaa", Store::NO));
+        doc.add(LuceneTestCase::new_text_field(
             "id",
             &(doc_start + i).to_string(),
             Store::YES,
-        )));
-        doc.add(Box::new(IntPoint::new("doc", &[i])?));
-        doc.add(Box::new(IntPoint::new("doc2d", &[i, i])?));
-        doc.add(Box::new(NumericDocValuesField::new("dv", i as i64)));
+        ));
+        doc.add(IntPoint::new("doc", &[i])?);
+        doc.add(IntPoint::new("doc2d", &[i, i])?);
+        doc.add(NumericDocValuesField::new("dv", i as i64));
         writer.add_document(&doc)?;
     }
     Ok(())
@@ -299,11 +287,7 @@ fn add_docs_with_id(writer: &IndexWriter, num_docs: i32, doc_start: i32) -> Resu
 /// `private void addDoc(IndexWriter writer)`.
 fn add_doc(writer: &IndexWriter) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "content",
-        "aaa",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("content", "aaa", Store::NO));
     writer.add_document(&doc)?;
     Ok(())
 }
@@ -1169,19 +1153,19 @@ fn test_simple_case() -> Result<()> {
 fn update_twenty_docs(writer: &IndexWriter) -> Result<()> {
     for i in 0..20 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &(i % 10).to_string(),
             Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        doc.add(LuceneTestCase::new_text_field(
             "content",
             &format!("bbb {i}"),
             Store::NO,
-        )));
-        doc.add(Box::new(IntPoint::new("doc", &[i])?));
-        doc.add(Box::new(IntPoint::new("doc2d", &[i, i])?));
-        doc.add(Box::new(NumericDocValuesField::new("dv", i as i64)));
+        ));
+        doc.add(IntPoint::new("doc", &[i])?);
+        doc.add(IntPoint::new("doc2d", &[i, i])?);
+        doc.add(NumericDocValuesField::new("dv", i as i64));
         writer.update_document(Term::from_text("id", &(i % 10).to_string()), &doc)?;
     }
     Ok(())
@@ -1510,11 +1494,11 @@ fn test_hang_on_close() -> Result<()> {
     custom_type.set_store_term_vectors(true)?;
     custom_type.set_store_term_vector_positions(true)?;
     custom_type.set_store_term_vector_offsets(true)?;
-    doc.add(Box::new(LuceneTestCase::new_field(
+    doc.add(LuceneTestCase::new_field(
         "content",
         "aaa bbb ccc ddd eee fff ggg hhh iii",
         &custom_type,
-    )));
+    ));
     for _ in 0..60 {
         writer.add_document(&doc)?;
     }
@@ -1523,11 +1507,11 @@ fn test_hang_on_close() -> Result<()> {
     let custom_type2 = FieldType::new();
     custom_type2.set_stored(true)?;
     for _ in 0..4 {
-        doc2.add(Box::new(LuceneTestCase::new_field(
+        doc2.add(LuceneTestCase::new_field(
             "content",
             "aaa bbb ccc ddd eee fff ggg hhh iii",
             &custom_type2,
-        )));
+        ));
     }
     for _ in 0..10 {
         writer.add_document(&doc2)?;
@@ -1900,7 +1884,7 @@ fn test_existing_deletes() -> Result<()> {
         let conf = new_iwc();
         let writer = IndexWriter::new(d(&dir), conf)?;
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new("id", "myid".into(), Store::NO)?));
+        doc.add(StringField::new("id", "myid".into(), Store::NO)?);
         writer.add_document(&doc)?;
         writer.close()?;
         dirs.push(dir);
@@ -1999,7 +1983,7 @@ fn test_non_cfs_leftovers() -> Result<()> {
         let mut doc = Document::new();
         let custom_type = FieldType::new_from(TextField::type_stored());
         custom_type.set_store_term_vectors(true)?;
-        doc.add(Box::new(Field::new("c", "v".into(), custom_type)?));
+        doc.add(Field::new("c", "v".into(), custom_type)?);
         w.add_document(&doc)?;
         w.close()?;
         dirs.push(dir);
@@ -2046,11 +2030,7 @@ fn test_add_index_missing_codec() -> Result<()> {
         let mut doc = Document::new();
         let custom_type = FieldType::new();
         custom_type.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)?;
-        doc.add(Box::new(LuceneTestCase::new_field(
-            "foo",
-            "bar",
-            &custom_type,
-        )));
+        doc.add(LuceneTestCase::new_field("foo", "bar", &custom_type));
         w.add_document(&doc)?;
         w.close()?;
     }
@@ -2079,16 +2059,12 @@ fn test_field_names_changed() -> Result<()> {
     let d1 = LuceneTestCase::new_directory();
     let mut w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d(&d1))?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         "f1",
         "doc1 field1",
         Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "1",
-        Store::YES,
-    )));
+    ));
+    doc.add(LuceneTestCase::new_string_field("id", "1", Store::YES));
     w.add_document(&doc)?;
     let r1 = w.get_reader()?;
     w.close()?;
@@ -2096,16 +2072,12 @@ fn test_field_names_changed() -> Result<()> {
     let d2 = LuceneTestCase::new_directory();
     w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d(&d2))?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         "f2",
         "doc2 field2",
         Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "2",
-        Store::YES,
-    )));
+    ));
+    doc.add(LuceneTestCase::new_string_field("id", "2", Store::YES));
     w.add_document(&doc)?;
     let r2 = w.get_reader()?;
     w.close()?;
@@ -2289,13 +2261,9 @@ fn dv_update_source(dir1: &TestDirectory) -> Result<()> {
     let iwc1 = new_iwc();
     let w1 = IndexWriter::new(d(dir1), iwc1)?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("id", "1".into(), Store::YES)?));
-    doc.add(Box::new(StringField::new(
-        "version",
-        "1".into(),
-        Store::YES,
-    )?));
-    doc.add(Box::new(NumericDocValuesField::new("soft_delete", 1)));
+    doc.add(StringField::new("id", "1".into(), Store::YES)?);
+    doc.add(StringField::new("version", "1".into(), Store::YES)?);
+    doc.add(NumericDocValuesField::new("soft_delete", 1));
     w1.add_document(&doc)?;
     w1.flush()?;
 
@@ -2367,11 +2335,7 @@ fn test_add_indices_with_soft_deletes() -> Result<()> {
     for _ in 0..30 {
         let mut doc = Document::new();
         let doc_id = random().next_int_bound(5);
-        doc.add(Box::new(StringField::new(
-            "id",
-            doc_id.to_string(),
-            Store::YES,
-        )?));
+        doc.add(StringField::new("id", doc_id.to_string(), Store::YES)?);
         writer.soft_update_document(
             Term::from_text("id", &doc_id.to_string()),
             &doc,
@@ -2446,11 +2410,7 @@ fn add_value_blocks(writer: &RandomIndexWriter, num_blocks: i32, has_blocks: boo
         for _ in 0..num_docs {
             let mut doc = Document::new();
             let value = random().next_int_bound(5);
-            doc.add(Box::new(StringField::new(
-                "value",
-                value.to_string(),
-                Store::YES,
-            )?));
+            doc.add(StringField::new("value", value.to_string(), Store::YES)?);
             docs.push(doc);
         }
         writer.add_documents(&docs)?;
@@ -2664,7 +2624,7 @@ fn test_illegal_non_parent_field() -> Result<()> {
     let iwc1 = new_iwc();
     let w1 = RandomIndexWriter::new_with_config(&*random(), d(&dir1), iwc1)?;
     let mut parent = Document::new();
-    parent.add(Box::new(StringField::new("foo", "XXX".into(), Store::NO)?));
+    parent.add(StringField::new("foo", "XXX".into(), Store::NO)?);
     w1.add_document(&parent)?;
     w1.close()?;
 

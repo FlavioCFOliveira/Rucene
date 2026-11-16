@@ -86,19 +86,19 @@ impl Instance {
     /// `private Document randomDocument()`.
     fn random_document(&self) -> Result<Document> {
         let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::new(
+        doc.add(NumericDocValuesField::new(
             "ndv1",
             i64::from(random().next_int_bound(10)),
-        )));
-        doc.add(Box::new(NumericDocValuesField::new(
+        ));
+        doc.add(NumericDocValuesField::new(
             "ndv2",
             i64::from(random().next_int_bound(10)),
-        )));
-        doc.add(Box::new(StringField::new(
+        ));
+        doc.add(StringField::new(
             "s",
             RandomPicks::random_from_list(&*random(), &self.terms).clone(),
             Store::YES,
-        )?));
+        )?);
         Ok(doc)
     }
 

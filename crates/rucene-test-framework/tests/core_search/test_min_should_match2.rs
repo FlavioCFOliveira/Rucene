@@ -145,15 +145,11 @@ fn add_some(doc: &mut Document, values: &[&str]) -> Result<()> {
     shuffle(&mut list, &*random());
     let how_many = TestUtil::next_int(&*random(), 1, list.len() as i32);
     for i in 0..how_many as usize {
-        doc.add(Box::new(StringField::new(
-            "field",
-            list[i].to_string(),
-            Store::NO,
-        )?));
-        doc.add(Box::new(SortedSetDocValuesField::new(
+        doc.add(StringField::new("field", list[i].to_string(), Store::NO)?);
+        doc.add(SortedSetDocValuesField::new(
             "dv",
             BytesRef::from_char_sequence(list[i]),
-        )));
+        ));
     }
     Ok(())
 }

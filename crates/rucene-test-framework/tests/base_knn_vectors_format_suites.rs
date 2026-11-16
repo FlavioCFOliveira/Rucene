@@ -859,11 +859,11 @@ fn simple_off_heap_size(vector: &[f32]) -> Result<Option<(HashMap<String, i64>, 
         LuceneTestCase::new_index_writer_config(),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(KnnFloatVectorField::new(
+    doc.add(KnnFloatVectorField::new(
         "f",
         vector,
         VectorSimilarityFunction::DOT_PRODUCT,
-    )?));
+    )?);
     w.add_document(&doc)?;
     w.commit()?;
     let mut result = None;
@@ -968,11 +968,11 @@ fn hnsw_sq_test_single_vector_case() -> Result<()> {
         } else {
             vector.clone()
         };
-        doc.add(Box::new(KnnFloatVectorField::new(
+        doc.add(KnnFloatVectorField::new(
             "f",
             &doc_vector,
             similarity_function,
-        )?));
+        )?);
         w.add_document(&doc)?;
         w.commit()?;
         {
@@ -1091,7 +1091,7 @@ fn sq_test_search(suite: &KnnSuite) -> Result<()> {
         for _ in 0..num_vectors {
             let mut doc = Document::new();
             knn_field.set_vector_value(&random_vector(dims))?;
-            doc.add(Box::new(knn_field.clone()));
+            doc.add(knn_field.clone());
             w.add_document(&doc)?;
         }
         w.commit()?;
@@ -1158,7 +1158,7 @@ fn sq_test_quantized_vectors_write_and_read(suite: &KnnSuite) -> Result<()> {
         for i in 0..num_vectors {
             let mut doc = Document::new();
             knn_field.set_vector_value(&random_vector(dims))?;
-            doc.add(Box::new(knn_field.clone()));
+            doc.add(knn_field.clone());
             w.add_document(&doc)?;
             if i % 101 == 0 {
                 w.commit()?;
@@ -1314,11 +1314,7 @@ fn test_missing_field_returns_no_results() -> Result<()> {
     {
         let iwriter = IndexWriter::new(directory.as_directory(), iwc)?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "id",
-            "1",
-            Store::YES,
-        )));
+        doc.add(LuceneTestCase::new_text_field("id", "1", Store::YES));
         iwriter.add_document(&doc)?;
         iwriter.close()?;
     }
@@ -1355,27 +1351,19 @@ fn test_two_fields_two_formats() -> Result<()> {
     {
         let iwriter = IndexWriter::new(directory.as_directory(), iwc)?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "id",
-            "1",
-            Store::YES,
-        )));
-        doc.add(Box::new(KnnFloatVectorField::with_euclidean(
+        doc.add(LuceneTestCase::new_text_field("id", "1", Store::YES));
+        doc.add(KnnFloatVectorField::with_euclidean(
             "field1",
             &[1.0, 2.0, 3.0],
-        )?));
+        )?);
         iwriter.add_document(&doc)?;
 
         doc.clear();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "id",
-            "2",
-            Store::YES,
-        )));
-        doc.add(Box::new(KnnFloatVectorField::with_euclidean(
+        doc.add(LuceneTestCase::new_text_field("id", "2", Store::YES));
+        doc.add(KnnFloatVectorField::with_euclidean(
             "field2",
             &[4.0, 5.0, 6.0],
-        )?));
+        )?);
         iwriter.add_document(&doc)?;
         iwriter.close()?;
     }
@@ -1408,19 +1396,15 @@ fn test_merge_uses_new_format() -> Result<()> {
         let iw = IndexWriter::new(directory.as_directory(), initial_config)?;
         for _ in 0..3 {
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_text_field(
-                "id",
-                "1",
-                Store::YES,
-            )));
-            doc.add(Box::new(KnnFloatVectorField::with_euclidean(
+            doc.add(LuceneTestCase::new_text_field("id", "1", Store::YES));
+            doc.add(KnnFloatVectorField::with_euclidean(
                 "field1",
                 &[1.0, 2.0, 3.0],
-            )?));
-            doc.add(Box::new(KnnFloatVectorField::with_euclidean(
+            )?);
+            doc.add(KnnFloatVectorField::with_euclidean(
                 "field2",
                 &[1.0, 2.0, 3.0],
-            )?));
+            )?);
             iw.add_document(&doc)?;
             iw.commit()?;
         }
@@ -1469,9 +1453,7 @@ fn test_max_dimensions_per_field_format() -> Result<()> {
     {
         let writer = IndexWriter::new(directory.as_directory(), iwc)?;
         let mut doc1 = Document::new();
-        doc1.add(Box::new(KnnFloatVectorField::with_euclidean(
-            "field1", &[0.0; 33],
-        )?));
+        doc1.add(KnnFloatVectorField::with_euclidean("field1", &[0.0; 33])?);
         let exc = expect_throws("java.lang.IllegalArgumentException", || {
             writer.add_document(&doc1)
         });
@@ -1484,12 +1466,8 @@ fn test_max_dimensions_per_field_format() -> Result<()> {
         );
 
         let mut doc2 = Document::new();
-        doc2.add(Box::new(KnnFloatVectorField::with_euclidean(
-            "field1", &[0.0; 32],
-        )?));
-        doc2.add(Box::new(KnnFloatVectorField::with_euclidean(
-            "field2", &[0.0; 33],
-        )?));
+        doc2.add(KnnFloatVectorField::with_euclidean("field1", &[0.0; 32])?);
+        doc2.add(KnnFloatVectorField::with_euclidean("field2", &[0.0; 33])?);
         writer.add_document(&doc2)?;
         writer.close()?;
     }

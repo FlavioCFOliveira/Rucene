@@ -2123,7 +2123,7 @@ impl BaseTokenStreamTestCase {
         let reader = field
             .reader_value()
             .expect("INVARIANT: a field built with a reader has a reader value");
-        doc.add(Box::new(field));
+        doc.add(field);
         Ok(reader)
     }
 

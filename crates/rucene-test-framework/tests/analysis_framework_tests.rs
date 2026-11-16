@@ -476,8 +476,8 @@ mod test_mock_analyzer {
         ft.set_store_term_vectors(true)?;
         ft.set_store_term_vector_positions(true)?;
         ft.set_store_term_vector_offsets(true)?;
-        doc.add(Box::new(DocField::new("f", "a".to_string(), ft.clone())?));
-        doc.add(Box::new(DocField::new("f", "a".to_string(), ft)?));
+        doc.add(DocField::new("f", "a".to_string(), ft.clone())?);
+        doc.add(DocField::new("f", "a".to_string(), ft)?);
         writer.add_document(&doc)?;
         let directory_reader = writer.get_reader()?;
         let reader = LuceneTestCase::get_only_leaf_reader(
@@ -1237,7 +1237,7 @@ fn index_and_read_vectors(
     )
     .unwrap();
     let mut doc = Document::new();
-    doc.add(Box::new(field));
+    doc.add(field);
     writer.add_document(&doc).unwrap();
     writer.commit().unwrap();
     writer.close().unwrap();
@@ -1361,9 +1361,7 @@ fn mock_index_writer_enables_test_points() {
     .unwrap();
     Assert::assert_true(writer.is_enable_test_points());
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StringField::new("id", "1".to_string(), Store::NO).unwrap(),
-    ));
+    doc.add(StringField::new("id", "1".to_string(), Store::NO).unwrap());
     writer.add_document(&doc).unwrap();
     writer.commit().unwrap();
     writer.close().unwrap();

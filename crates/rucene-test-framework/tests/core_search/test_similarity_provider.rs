@@ -54,9 +54,9 @@ fn provider_set_up(f: &mut SimilarityProvider) -> Result<()> {
     let iw = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
     let mut doc = Document::new();
     let field = LuceneTestCase::new_text_field("foo", "", Store::NO);
-    doc.add(Box::new(field));
+    doc.add(field);
     let field2 = LuceneTestCase::new_text_field("bar", "", Store::NO);
-    doc.add(Box::new(field2));
+    doc.add(field2);
 
     field_mut(&mut doc, "foo").set_string_value("quick brown fox".to_string())?;
     field_mut(&mut doc, "bar").set_string_value("quick brown fox".to_string())?;

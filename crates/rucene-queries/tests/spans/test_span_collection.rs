@@ -120,11 +120,7 @@ fn do_set_up(f: &mut SpanCollection) -> Result<()> {
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;
     for i in 0..f.doc_fields.len() {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_field(
-            FIELD,
-            f.doc_fields[i],
-            &OFFSETS,
-        )));
+        doc.add(LuceneTestCase::new_field(FIELD, f.doc_fields[i], &OFFSETS));
         writer.add_document(&doc)?;
     }
     writer.force_merge(1)?;

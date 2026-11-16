@@ -108,11 +108,11 @@ fn test_all_commits_remain() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     for i in 0..10 {
         let mut doc = rucene::document::Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             "c",
             &format!("a{i}"),
             Store::YES,
-        )));
+        ));
         writer.add_document(&doc)?;
         writer.commit()?;
         assert_equals_msg(

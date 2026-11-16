@@ -91,11 +91,11 @@ pub fn test_force_merge_deletes() -> Result<()> {
     let w = IndexWriter::new(dir.as_directory(), conf)?;
     for i in 0..80 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             "content",
             &format!("aaa {}", i % 4),
             Store::NO,
-        )));
+        ));
         w.add_document(&doc)?;
     }
     Assert::assert_equals(80, w.get_doc_stats()?.max_doc);
@@ -151,11 +151,11 @@ pub fn test_partial_merge() -> Result<()> {
         let num_docs = TestUtil::next_int(&*random(), 20, 100);
         for i in 0..num_docs {
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_text_field(
+            doc.add(LuceneTestCase::new_text_field(
                 "content",
                 &format!("aaa {}", i % 4),
                 Store::NO,
-            )));
+            ));
             w.add_document(&doc)?;
         }
 
@@ -220,16 +220,16 @@ pub fn test_force_merge_deletes_max_seg_size() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(200);
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        doc.add(LuceneTestCase::new_text_field(
             "content",
             &format!("aaa {i}"),
             Store::NO,
-        )));
+        ));
         w.add_document(&doc)?;
     }
 
@@ -288,16 +288,16 @@ pub fn test_forced_merges_respect_seg_size() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(2400);
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        doc.add(LuceneTestCase::new_text_field(
             "content",
             &format!("aaa {i}"),
             Store::NO,
-        )));
+        ));
         w.add_document(&doc)?;
     }
 
@@ -420,16 +420,16 @@ pub fn test_forced_merges_respect_seg_size() -> Result<()> {
 
     for i in 0..50 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &(i + num_docs).to_string(),
             Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        doc.add(LuceneTestCase::new_text_field(
             "content",
             &format!("aaa {i}"),
             Store::NO,
-        )));
+        ));
         w.add_document(&doc)?;
     }
 
@@ -944,10 +944,7 @@ pub fn test_unbalanced_merge_selection() -> Result<()> {
         // is about 10x
         let mut id_bytes = vec![0u8; 128];
         random().next_bytes(&mut id_bytes);
-        doc.add(Box::new(StoredField::new_bytes(
-            "id",
-            BytesRef::new(id_bytes),
-        )?));
+        doc.add(StoredField::new_bytes("id", BytesRef::new(id_bytes))?);
         w.add_document(&doc)?;
     }
     let r: Arc<dyn IndexReader> = directory_reader::open_with_writer(&*w)?;

@@ -98,10 +98,10 @@ fn test_caching() -> Result<()> {
     ))));
 
     let field_stream: Arc<AtomicRefCell<dyn TokenStream>> = stream.clone();
-    doc.add(Box::new(TextField::new_with_token_stream(
+    doc.add(TextField::new_with_token_stream(
         "preanalyzed",
         field_stream,
-    )?));
+    )?);
 
     // 1) we consume all tokens twice before we add the doc to the index
     Assert::assert_false(stream.borrow().is_cached());

@@ -158,11 +158,11 @@ fn do_set_up(f: &mut NearSpansOrdered) -> Result<()> {
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;
     for i in 0..f.doc_fields.len() {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             FIELD,
             f.doc_fields[i],
             Store::NO,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     writer.force_merge(1)?;

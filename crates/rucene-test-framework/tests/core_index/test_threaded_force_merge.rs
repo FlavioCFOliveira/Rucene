@@ -90,16 +90,16 @@ fn thread_body(
         writer_final.force_merge_with(1, false)?;
         for k in 0..17 * (1 + i_final) {
             let mut d = Document::new();
-            d.add(Box::new(LuceneTestCase::new_field(
+            d.add(LuceneTestCase::new_field(
                 "id",
                 &format!("{iter_final}_{i_final}_{j}_{k}"),
                 custom_type,
-            )));
-            d.add(Box::new(LuceneTestCase::new_field(
+            ));
+            d.add(LuceneTestCase::new_field(
                 "contents",
                 &English::int_to_english(i_final + k),
                 custom_type,
-            )));
+            ));
             writer_final.add_document(&d)?;
         }
         for k in 0..9 * (1 + i_final) {
@@ -133,16 +133,16 @@ fn run_test(_random: &dyn Random, directory: &Arc<dyn Directory>) -> Result<()> 
 
         for i in 0..200 {
             let mut d = Document::new();
-            d.add(Box::new(LuceneTestCase::new_field(
+            d.add(LuceneTestCase::new_field(
                 "id",
                 &i.to_string(),
                 &custom_type,
-            )));
-            d.add(Box::new(LuceneTestCase::new_field(
+            ));
+            d.add(LuceneTestCase::new_field(
                 "contents",
                 &English::int_to_english(i),
                 &custom_type,
-            )));
+            ));
             writer.add_document(&d)?;
         }
 

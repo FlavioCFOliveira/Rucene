@@ -250,39 +250,39 @@ pub fn create_random_index(numdocs: i32, writer: &RandomIndexWriter, seed: i64) 
         let split = split_whitespace(&title);
         document.remove_fields("sortedset");
         for trash in &split {
-            document.add(Box::new(SortedSetDocValuesField::new(
+            document.add(SortedSetDocValuesField::new(
                 "sortedset",
                 BytesRef::from_char_sequence(trash),
-            )));
+            ));
         }
         // add a sorted dv field sometimes
         document.remove_fields("sparseset");
         if random.next_boolean() {
-            document.add(Box::new(SortedDocValuesField::new(
+            document.add(SortedDocValuesField::new(
                 "sparseset",
                 BytesRef::from_char_sequence(&title),
-            )));
+            ));
         }
         // add a numeric dv field sometimes
         document.remove_fields("sparsenumeric");
         if random.next_int_bound(4) == 2 {
-            document.add(Box::new(NumericDocValuesField::new(
+            document.add(NumericDocValuesField::new(
                 "sparsenumeric",
                 random.next_int() as i64,
-            )));
+            ));
         }
         // add sortednumeric sometimes
         document.remove_fields("sparsesortednum");
         if random.next_int_bound(5) == 1 {
-            document.add(Box::new(SortedNumericDocValuesField::new(
+            document.add(SortedNumericDocValuesField::new(
                 "sparsesortednum",
                 random.next_long(),
-            )));
+            ));
             if random.next_boolean() {
-                document.add(Box::new(SortedNumericDocValuesField::new(
+                document.add(SortedNumericDocValuesField::new(
                     "sparsesortednum",
                     random.next_long(),
-                )));
+                ));
             }
         }
         writer.add_document(&*document)?;

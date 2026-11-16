@@ -131,11 +131,7 @@ fn after_class() -> Result<()> {
 /// `addDoc(RandomIndexWriter writer, String content)`.
 fn add_doc(writer: &RandomIndexWriter, content: &str) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "field",
-        content,
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_text_field("field", content, Store::YES));
     writer.add_document(&doc)?;
     Ok(())
 }

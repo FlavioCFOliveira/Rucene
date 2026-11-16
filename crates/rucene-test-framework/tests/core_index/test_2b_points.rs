@@ -79,7 +79,7 @@ fn test_1d() -> Result<()> {
         let mut doc = Document::new();
         for _ in 0..26 {
             let x = ((random().next_int() as i64) << 32) | counter as i64;
-            doc.add(Box::new(LongPoint::new("long", &[x])?));
+            doc.add(LongPoint::new("long", &[x])?);
             counter += 1;
         }
         w.add_document(&doc)?;
@@ -129,7 +129,7 @@ fn test_2d() -> Result<()> {
         for _ in 0..26 {
             let x = ((random().next_int() as i64) << 32) | counter as i64;
             let y = ((random().next_int() as i64) << 32) | random().next_int() as i64;
-            doc.add(Box::new(LongPoint::new("long", &[x, y])?));
+            doc.add(LongPoint::new("long", &[x, y])?);
             counter += 1;
         }
         w.add_document(&doc)?;

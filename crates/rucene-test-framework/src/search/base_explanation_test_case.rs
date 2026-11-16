@@ -198,22 +198,22 @@ pub fn before_class_test_explanations() -> Result<()> {
 /// `createDoc(int index)`.
 pub fn create_doc(index: usize) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         KEY,
         &index.to_string(),
         Store::NO,
-    )));
-    doc.add(Box::new(SortedDocValuesField::new(
+    ));
+    doc.add(SortedDocValuesField::new(
         KEY,
         BytesRef::from_char_sequence(&index.to_string()),
-    )));
+    ));
     let f = LuceneTestCase::new_text_field(FIELD, DOC_FIELDS[index], Store::NO);
-    doc.add(Box::new(f));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(f);
+    doc.add(LuceneTestCase::new_text_field(
         ALTFIELD,
         DOC_FIELDS[index],
         Store::NO,
-    )));
+    ));
     doc
 }
 

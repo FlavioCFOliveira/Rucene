@@ -106,17 +106,17 @@ fn create_document(text: &str, time: i64) -> Result<Document> {
 
     // Add the text field.
     let text_field = LuceneTestCase::new_text_field(TEXT_FIELD, text, Store::YES);
-    document.add(Box::new(text_field));
+    document.add(text_field);
 
     // Add the date/time field.
     let date_time_string = DateTools::time_to_string(time, Resolution::SECOND);
     let date_time_field =
         LuceneTestCase::new_string_field(DATE_TIME_FIELD, &date_time_string, Store::YES);
-    document.add(Box::new(date_time_field));
-    document.add(Box::new(SortedDocValuesField::new(
+    document.add(date_time_field);
+    document.add(SortedDocValuesField::new(
         DATE_TIME_FIELD,
         LuceneTestCase::new_bytes_ref_bytes(date_time_string.as_bytes()),
-    )));
+    ));
 
     Ok(document)
 }

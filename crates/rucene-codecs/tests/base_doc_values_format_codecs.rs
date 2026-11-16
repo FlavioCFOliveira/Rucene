@@ -81,26 +81,26 @@ fn test_file_is_utf8() -> Result<()> {
                 for _ in 0..100 {
                     // `List.of(...)`: the four fields in Java's order.
                     let mut doc = Document::new();
-                    doc.add(Box::new(SortedDocValuesField::new(
+                    doc.add(SortedDocValuesField::new(
                         "sortedVal",
                         LuceneTestCase::new_bytes_ref_str(&TestUtil::random_simple_string(
                             &*LuceneTestCase::random(),
                         )),
-                    )));
-                    doc.add(Box::new(SortedSetDocValuesField::new(
+                    ));
+                    doc.add(SortedSetDocValuesField::new(
                         "sortedSetVal",
                         LuceneTestCase::new_bytes_ref_str(&TestUtil::random_simple_string(
                             &*LuceneTestCase::random(),
                         )),
-                    )));
-                    doc.add(Box::new(NumericDocValuesField::new(
+                    ));
+                    doc.add(NumericDocValuesField::new(
                         "numberVal",
                         LuceneTestCase::random().next_long(),
-                    )));
-                    doc.add(Box::new(BinaryDocValuesField::new(
+                    ));
+                    doc.add(BinaryDocValuesField::new(
                         "binaryVal",
                         TestUtil::random_binary_term(&*LuceneTestCase::random()),
-                    )));
+                    ));
                     writer.add_document(&doc)?;
                 }
                 Ok(())

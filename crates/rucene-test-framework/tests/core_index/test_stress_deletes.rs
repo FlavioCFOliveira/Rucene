@@ -50,11 +50,11 @@ fn thread_iteration(
             .copied();
         if v.is_none() || !v.expect("checked") {
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_string_field(
+            doc.add(LuceneTestCase::new_string_field(
                 "id",
                 &id.to_string(),
                 Store::NO,
-            )));
+            ));
             w.add_document(&doc)?;
             exists
                 .lock()

@@ -35,9 +35,7 @@ fn ensure_codec() {
 
 fn add_doc(writer: &IndexWriter, id: &str) {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StringField::new("id", id.to_string(), Store::YES).unwrap(),
-    ));
+    doc.add(StringField::new("id", id.to_string(), Store::YES).unwrap());
     writer.add_document(&doc).unwrap();
 }
 
@@ -295,9 +293,7 @@ fn live_max_buffered_docs_applies_to_open_writer() {
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     let add = |i: i32| {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", i.to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(StringField::new("id", i.to_string(), Store::NO).unwrap());
         writer.add_document(&doc).unwrap();
     };
     for i in 0..3 {

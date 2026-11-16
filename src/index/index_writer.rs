@@ -11296,12 +11296,10 @@ mod tests {
 
     fn id_body_doc(id: &str) -> Document {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", id.to_string(), Store::NO).unwrap(),
-        ));
-        doc.add(Box::new(
+        doc.add(StringField::new("id", id.to_string(), Store::NO).unwrap());
+        doc.add(
             crate::document::TextField::new("body", "some words".to_string(), Store::NO).unwrap(),
-        ));
+        );
         doc
     }
 
@@ -11549,9 +11547,7 @@ mod tests {
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let id_doc = |id: i32| {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", format!("d{id}"), Store::NO).unwrap(),
-            ));
+            doc.add(StringField::new("id", format!("d{id}"), Store::NO).unwrap());
             doc
         };
         // Eight single-document commits; the ninth commit's full flush makes
@@ -11610,10 +11606,8 @@ mod tests {
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for i in 0..10 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("group", format!("g{}", i % 2), Store::NO).unwrap(),
-            ));
-            doc.add(Box::new(NumericDocValuesField::new("price", i64::from(i))));
+            doc.add(StringField::new("group", format!("g{}", i % 2), Store::NO).unwrap());
+            doc.add(NumericDocValuesField::new("price", i64::from(i)));
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();
@@ -11728,12 +11722,8 @@ mod tests {
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..10 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", format!("d{i}"), Store::NO).unwrap(),
-            ));
-            doc.add(Box::new(
-                StringField::new("group", format!("g{}", i % 2), Store::NO).unwrap(),
-            ));
+            doc.add(StringField::new("id", format!("d{i}"), Store::NO).unwrap());
+            doc.add(StringField::new("group", format!("g{}", i % 2), Store::NO).unwrap());
             writer.add_document(&doc).unwrap();
         }
         let query: Arc<dyn crate::search::Query> =
@@ -11809,20 +11799,18 @@ mod tests {
         for segment in 0..2 {
             for k in 0..20 {
                 let mut doc = Document::new();
-                doc.add(Box::new(
-                    StringField::new("id", format!("s{segment}d{k}"), Store::NO).unwrap(),
-                ));
+                doc.add(StringField::new("id", format!("s{segment}d{k}"), Store::NO).unwrap());
                 // 15% deletions in the first segment, 10% in the second: only
                 // the first is above `forceMergeDeletesPctAllowed`.
                 let deleted = k < 3 - segment;
-                doc.add(Box::new(
+                doc.add(
                     StringField::new(
                         "del",
                         if deleted { "yes" } else { "no" }.to_string(),
                         Store::NO,
                     )
                     .unwrap(),
-                ));
+                );
                 writer.add_document(&doc).unwrap();
             }
             writer.commit().unwrap();
@@ -11856,9 +11844,7 @@ mod tests {
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", "d0".to_string(), Store::YES).unwrap(),
-        ));
+        doc.add(StringField::new("id", "d0".to_string(), Store::YES).unwrap());
         writer.add_document(&doc).unwrap();
         writer.commit().unwrap();
         (dir, writer, doc)
@@ -13007,9 +12993,7 @@ mod tests {
         let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
         for id in 0..3 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", id.to_string(), Store::YES).unwrap(),
-            ));
+            doc.add(StringField::new("id", id.to_string(), Store::YES).unwrap());
             writer.add_document(&doc).unwrap();
             writer.commit().unwrap();
         }
@@ -13057,9 +13041,7 @@ mod tests {
         let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
         for id in 0..2 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", id.to_string(), Store::YES).unwrap(),
-            ));
+            doc.add(StringField::new("id", id.to_string(), Store::YES).unwrap());
             writer.add_document(&doc).unwrap();
             writer.commit().unwrap();
         }
@@ -13505,12 +13487,8 @@ mod tests {
     /// A document with a stored `id` and a stored string field.
     fn stored_doc(id: &str, field: &str, value: &str) -> Document {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new(field, value.to_string(), Store::YES).unwrap(),
-        ));
-        doc.add(Box::new(
-            StringField::new("id", id.to_string(), Store::YES).unwrap(),
-        ));
+        doc.add(StringField::new(field, value.to_string(), Store::YES).unwrap());
+        doc.add(StringField::new("id", id.to_string(), Store::YES).unwrap());
         doc
     }
 
@@ -13606,9 +13584,7 @@ mod tests {
         register_default_codec();
         let my_id = || {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", "myid".to_string(), Store::NO).unwrap(),
-            ));
+            doc.add(StringField::new("id", "myid".to_string(), Store::NO).unwrap());
             doc
         };
         let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
@@ -13686,17 +13662,13 @@ mod tests {
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&target), config).unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("f", "z".to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(StringField::new("f", "z".to_string(), Store::NO).unwrap());
         writer.add_document(&doc).unwrap();
         writer.commit().unwrap();
         let files_before = target.list_all().unwrap();
 
         let mut doc = Document::new();
-        doc.add(Box::new(
-            crate::document::TextField::new("f", "x y".to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(crate::document::TextField::new("f", "x y".to_string(), Store::NO).unwrap());
         let source = reader_over(&[doc]);
         let error = writer
             .add_indexes_codec_readers(&codec_leaves(&source))
@@ -13721,9 +13693,7 @@ mod tests {
 
         // `testIllegalNonParentField`.
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("foo", "XXX".to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(StringField::new("foo", "XXX".to_string(), Store::NO).unwrap());
         let source = reader_over(&[doc]);
         let config = IndexWriterConfig::new();
         config.set_parent_field(Some("foo".to_string()));
@@ -14534,9 +14504,7 @@ mod tests {
     fn add_indexes_of_a_reader_without_live_documents_registers_no_field() {
         register_default_codec();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("f", "x".to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(StringField::new("f", "x".to_string(), Store::NO).unwrap());
         let source = reader_over(&[doc]);
         let leaf = codec_leaves(&source).remove(0);
         let max_doc = leaf.max_doc();
@@ -14558,15 +14526,11 @@ mod tests {
                 .unwrap();
             if add_stored_f {
                 let mut stored = Document::new();
-                stored.add(Box::new(
-                    crate::document::StoredField::new_string("f", "y".to_string()).unwrap(),
-                ));
+                stored.add(crate::document::StoredField::new_string("f", "y".to_string()).unwrap());
                 writer.add_document(&stored).unwrap();
             }
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("g", "z".to_string(), Store::NO).unwrap(),
-            ));
+            doc.add(StringField::new("g", "z".to_string(), Store::NO).unwrap());
             writer.add_document(&doc).unwrap();
             let reader = IndexWriterTrait::get_reader(writer.as_ref(), true, false).unwrap();
             let fields: Vec<(String, i32)> = Arc::clone(&reader)
@@ -14776,9 +14740,7 @@ mod tests {
         let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
         for id in 0..2 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", id.to_string(), Store::YES).unwrap(),
-            ));
+            doc.add(StringField::new("id", id.to_string(), Store::YES).unwrap());
             writer.add_document(&doc).unwrap();
             writer.commit().unwrap();
         }
@@ -15307,9 +15269,7 @@ mod tests {
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", "a".to_string(), Store::YES).unwrap(),
-        ));
+        doc.add(StringField::new("id", "a".to_string(), Store::YES).unwrap());
         writer.add_document(&doc).unwrap();
         log.assertion_close("_0.fdt");
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer.rollback()));
@@ -15362,9 +15322,7 @@ mod tests {
         let dir: Arc<dyn Directory> = tracking;
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", "a".to_string(), Store::YES).unwrap(),
-        ));
+        doc.add(StringField::new("id", "a".to_string(), Store::YES).unwrap());
         // `TextField.TYPE_NOT_STORED` with term vectors.
         let term_vectors = crate::document::FieldType::new();
         term_vectors.set_tokenized(true).unwrap();
@@ -15373,12 +15331,10 @@ mod tests {
             .unwrap();
         term_vectors.set_store_term_vectors(true).unwrap();
         term_vectors.freeze();
-        doc.add(Box::new(
+        doc.add(
             crate::document::Field::new("body", "some words".to_string(), term_vectors).unwrap(),
-        ));
-        doc.add(Box::new(
-            crate::document::KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0]).unwrap(),
-        ));
+        );
+        doc.add(crate::document::KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0]).unwrap());
         writer.add_document(&doc).unwrap();
         log.assertion_close("_0.fdt");
         assert!(writer.rollback().is_err());

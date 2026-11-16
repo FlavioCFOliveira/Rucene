@@ -783,7 +783,7 @@ fn test_primary_keys() -> Result<()> {
         let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
         let mut doc = Document::new();
         let id_field = LuceneTestCase::new_string_field("id", "", Store::NO);
-        doc.add(Box::new(id_field));
+        doc.add(id_field);
         let num_ids = LuceneTestCase::at_least(200);
         // final int NUM_IDS = (int) (377 * (1.0+random.nextDouble()));
         if verbose() {
@@ -944,7 +944,7 @@ fn test_random_term_lookup() -> Result<()> {
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     let mut doc = Document::new();
     let f = LuceneTestCase::new_string_field("field", "", Store::NO);
-    doc.add(Box::new(f));
+    doc.add(f);
 
     let num_terms = (1000.0 * *RANDOM_MULTIPLIER as f64 * (1.0 + random().next_double())) as i32;
     if verbose() {

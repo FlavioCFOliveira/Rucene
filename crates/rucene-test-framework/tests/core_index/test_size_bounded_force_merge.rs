@@ -52,7 +52,7 @@ fn add_docs_with_id(writer: &IndexWriter, num_docs: i32, with_id: bool) -> Resul
     for i in 0..num_docs {
         let mut doc = Document::new();
         if with_id {
-            doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+            doc.add(StringField::new("id", i.to_string(), Store::NO)?);
         }
         writer.add_document(&doc)?;
     }

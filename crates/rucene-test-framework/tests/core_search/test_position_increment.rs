@@ -132,11 +132,7 @@ fn test_set_position() -> Result<()> {
     let store = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new(&*random(), store.as_directory(), analyzer)?;
     let mut d = Document::new();
-    d.add(Box::new(LuceneTestCase::new_text_field(
-        "field",
-        "bogus",
-        Store::YES,
-    )));
+    d.add(LuceneTestCase::new_text_field("field", "bogus", Store::YES));
     writer.add_document(&d)?;
     let reader = writer.get_reader()?;
     writer.close()?;

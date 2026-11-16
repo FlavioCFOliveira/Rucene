@@ -55,11 +55,7 @@ impl SingleFieldTestDb {
             )?;
             for doc in &docs {
                 let mut d = Document::new();
-                d.add(Box::new(TextField::new(
-                    &field_name,
-                    doc.clone(),
-                    Store::NO,
-                )?));
+                d.add(TextField::new(&field_name, doc.clone(), Store::NO)?);
                 writer.add_document(&d)?;
             }
             writer.close()?;

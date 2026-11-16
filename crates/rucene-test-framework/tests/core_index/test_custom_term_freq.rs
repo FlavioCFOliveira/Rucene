@@ -142,7 +142,7 @@ fn canned_field(
 /// A document holding `field`.
 fn doc_with(field: Field) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(field));
+    doc.add(field);
     doc
 }
 

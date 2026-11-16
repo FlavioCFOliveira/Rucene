@@ -769,13 +769,9 @@ mod sorted_flush_close_tests {
         vectors.freeze();
         for i in 0..3i64 {
             let mut doc = Document::new();
-            doc.add(Box::new(NumericDocValuesField::new("sort", 3 - i)));
-            doc.add(Box::new(
-                StoredField::new_string("stored", format!("value {i}")).unwrap(),
-            ));
-            doc.add(Box::new(
-                Field::new("body", format!("words {i}"), vectors.clone()).unwrap(),
-            ));
+            doc.add(NumericDocValuesField::new("sort", 3 - i));
+            doc.add(StoredField::new_string("stored", format!("value {i}")).unwrap());
+            doc.add(Field::new("body", format!("words {i}"), vectors.clone()).unwrap());
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();

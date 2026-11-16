@@ -74,7 +74,7 @@ struct TestLatLonPointQueries;
 
 impl BaseGeoPointTestCase for TestLatLonPointQueries {
     fn add_point_to_doc(&self, field: &str, doc: &mut Document, lat: f64, lon: f64) -> Result<()> {
-        doc.add(Box::new(LatLonPoint::new(field, lat, lon)?));
+        doc.add(LatLonPoint::new(field, lat, lon)?);
         Ok(())
     }
 
@@ -139,7 +139,7 @@ struct TestLatLonDocValuesQueries;
 
 impl BaseGeoPointTestCase for TestLatLonDocValuesQueries {
     fn add_point_to_doc(&self, field: &str, doc: &mut Document, lat: f64, lon: f64) -> Result<()> {
-        doc.add(Box::new(LatLonDocValuesField::new(field, lat, lon)?));
+        doc.add(LatLonDocValuesField::new(field, lat, lon)?);
         Ok(())
     }
 
@@ -202,7 +202,7 @@ struct TestXYPointQueries;
 
 impl BaseXYPointTestCase for TestXYPointQueries {
     fn add_point_to_doc(&self, field: &str, doc: &mut Document, x: f32, y: f32) -> Result<()> {
-        doc.add(Box::new(XYPointField::new(field, x, y)?));
+        doc.add(XYPointField::new(field, x, y)?);
         Ok(())
     }
 
@@ -253,7 +253,7 @@ struct TestXYDocValuesQueries;
 
 impl BaseXYPointTestCase for TestXYDocValuesQueries {
     fn add_point_to_doc(&self, field: &str, doc: &mut Document, x: f32, y: f32) -> Result<()> {
-        doc.add(Box::new(XYDocValuesField::new(field, x, y)?));
+        doc.add(XYDocValuesField::new(field, x, y)?);
         Ok(())
     }
 

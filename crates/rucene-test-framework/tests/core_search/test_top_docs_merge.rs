@@ -238,21 +238,18 @@ fn sort_test(use_from: bool) -> Result<()> {
 
         for _doc_idx in 0..num_docs {
             let mut doc = Document::new();
-            doc.add(Box::new(SortedDocValuesField::new(
+            doc.add(SortedDocValuesField::new(
                 "string",
                 BytesRef::from_char_sequence(
                     &TestUtil::random_realistic_unicode_string(&*random()),
                 ),
-            )));
-            doc.add(Box::new(LuceneTestCase::new_text_field(
+            ));
+            doc.add(LuceneTestCase::new_text_field(
                 "text",
                 &content[random().next_int_bound(content.len() as i32) as usize],
                 Store::NO,
-            )));
-            doc.add(Box::new(FloatDocValuesField::new(
-                "float",
-                random().next_float(),
-            )));
+            ));
+            doc.add(FloatDocValuesField::new("float", random().next_float()));
             let int_value = if random().next_int_bound(100) == 17 {
                 i32::MIN
             } else if random().next_int_bound(100) == 17 {
@@ -260,10 +257,7 @@ fn sort_test(use_from: bool) -> Result<()> {
             } else {
                 random().next_int()
             };
-            doc.add(Box::new(NumericDocValuesField::new(
-                "int",
-                i64::from(int_value),
-            )));
+            doc.add(NumericDocValuesField::new("int", i64::from(int_value)));
             if verbose() {
                 println!("  doc={doc:?}");
             }

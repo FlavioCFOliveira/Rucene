@@ -146,7 +146,7 @@ fn with_reader(
 
 fn doc_with(field: impl rucene::index::IndexableField + 'static) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(field));
+    doc.add(field);
     doc
 }
 
@@ -346,12 +346,8 @@ fn test_get_stats_with_extreme_int_values() -> Result<()> {
 fn test_get_stats_multi_valued_field() -> Result<()> {
     with_writer(default_config, |w| {
         let mut doc1 = Document::new();
-        doc1.add(Box::new(SortedNumericDocValuesField::indexed_field(
-            "field", 5,
-        )));
-        doc1.add(Box::new(SortedNumericDocValuesField::indexed_field(
-            "field", 50,
-        )));
+        doc1.add(SortedNumericDocValuesField::indexed_field("field", 5));
+        doc1.add(SortedNumericDocValuesField::indexed_field("field", 50));
         w.add_document(&doc1)?;
         w.add_document(&doc_with(SortedNumericDocValuesField::indexed_field(
             "field", 25,

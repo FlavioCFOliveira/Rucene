@@ -47,7 +47,7 @@ fn test_closing_nrt_reader_does_not_corrupt_your_index() -> Result<()> {
     iwc.set_merge_policy(Some(Arc::new(lmp)))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new("a", "foo".into(), Store::NO)?));
+    doc.add(TextField::new("a", "foo".into(), Store::NO)?);
     w.add_document(&doc)?;
     w.commit()?;
     w.add_document(&doc)?;

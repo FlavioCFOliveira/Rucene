@@ -42,14 +42,14 @@ impl BaseIndexFileFormatTestCase for TestHnswBitVectorsFormat {
     }
 
     fn add_random_fields(&self, doc: &mut Document) {
-        doc.add(Box::new(
+        doc.add(
             KnnByteVectorField::new(
                 "v2",
                 &random_vector8(30),
                 VectorSimilarityFunction::DOT_PRODUCT,
             )
             .unwrap_or_else(|e| rethrow(e)),
-        ));
+        );
     }
 }
 
@@ -62,11 +62,11 @@ fn test_float_vector_fails() -> Result<()> {
             LuceneTestCase::new_index_writer_config(),
         )?;
         let mut doc = Document::new();
-        doc.add(Box::new(KnnFloatVectorField::new(
+        doc.add(KnnFloatVectorField::new(
             "f",
             &[0f32; 4],
             VectorSimilarityFunction::DOT_PRODUCT,
-        )?));
+        )?);
         let e = expect_throws("java.lang.IllegalArgumentException", || {
             w.add_document(&doc)
         });
@@ -98,16 +98,12 @@ fn test_index_and_search_bit_vectors() -> Result<()> {
         let searched = (|| -> Result<()> {
             for (id, vector) in vectors.iter().enumerate() {
                 let mut doc = Document::new();
-                doc.add(Box::new(KnnByteVectorField::new(
+                doc.add(KnnByteVectorField::new(
                     "v1",
                     vector,
                     VectorSimilarityFunction::DOT_PRODUCT,
-                )?));
-                doc.add(Box::new(StringField::new(
-                    "id",
-                    id.to_string(),
-                    Store::YES,
-                )?));
+                )?);
+                doc.add(StringField::new("id", id.to_string(), Store::YES)?);
                 w.add_document(&doc)?;
             }
             w.commit()?;

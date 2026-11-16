@@ -218,13 +218,13 @@ fn before_class() -> Result<()> {
             Store::YES,
         );
         // noPayloadField.setBoost(0);
-        doc.add(Box::new(no_payload_field));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(no_payload_field);
+        doc.add(LuceneTestCase::new_text_field(
             "field",
             &English::int_to_english(i),
             Store::YES,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        doc.add(LuceneTestCase::new_text_field(
             "multiField",
             &format!(
                 "{}  {}",
@@ -232,7 +232,7 @@ fn before_class() -> Result<()> {
                 English::int_to_english(i)
             ),
             Store::YES,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     writer.force_merge(1)?;

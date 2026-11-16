@@ -100,11 +100,7 @@ fn soft_writer(dir: &Arc<dyn Directory>, max_buffered_docs: i32) -> Result<Arc<I
 fn soft_update_three(writer: &IndexWriter) -> Result<()> {
     for id in ["1", "2", "2"] {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "id",
-            id.to_string(),
-            Store::YES,
-        )?));
+        doc.add(StringField::new("id", id.to_string(), Store::YES)?);
         writer.soft_update_document(
             Term::from_text("id", id),
             &doc,

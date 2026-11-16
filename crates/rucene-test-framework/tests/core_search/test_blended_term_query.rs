@@ -108,11 +108,11 @@ fn test_blended_scores() -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("f", "a".into(), Store::NO)?));
+    doc.add(StringField::new("f", "a".into(), Store::NO)?);
     w.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("f", "b".into(), Store::NO)?));
+    doc.add(StringField::new("f", "b".into(), Store::NO)?);
     for _ in 0..10 {
         w.add_document(&doc)?;
     }

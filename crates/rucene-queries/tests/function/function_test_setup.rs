@@ -261,11 +261,11 @@ fn add_doc(iw: &RandomIndexWriter, i: i32) -> Result<()> {
     custom_type.set_omit_norms(true)?;
 
     let f = LuceneTestCase::new_field(ID_FIELD, &id2_string(score_and_id), &custom_type); // for debug purposes
-    d.add(Box::new(f));
-    d.add(Box::new(SortedDocValuesField::new(
+    d.add(f);
+    d.add(SortedDocValuesField::new(
         ID_FIELD,
         BytesRef::from_char_sequence(&id2_string(score_and_id)),
-    )));
+    ));
 
     let custom_type2 = FieldType::new_from(TextField::type_not_stored());
     custom_type2.set_omit_norms(true)?;
@@ -274,67 +274,67 @@ fn add_doc(iw: &RandomIndexWriter, i: i32) -> Result<()> {
         &format!("text of doc{score_and_id}{}", text_line(i)),
         &custom_type2,
     ); // for regular search
-    d.add(Box::new(f));
+    d.add(f);
 
-    d.add(Box::new(stored_int(INT_FIELD, score_and_id)?)); // for function scoring
-    d.add(Box::new(NumericDocValuesField::new(
+    d.add(stored_int(INT_FIELD, score_and_id)?); // for function scoring
+    d.add(NumericDocValuesField::new(
         INT_FIELD,
         i64::from(score_and_id),
-    )));
+    ));
 
-    d.add(Box::new(stored_int(FLOAT_FIELD, score_and_id)?)); // for function scoring
-    d.add(Box::new(NumericDocValuesField::new(
+    d.add(stored_int(FLOAT_FIELD, score_and_id)?); // for function scoring
+    d.add(NumericDocValuesField::new(
         FLOAT_FIELD,
         i64::from((score_and_id as f32).to_bits() as i32),
-    )));
+    ));
 
-    d.add(Box::new(stored_int(INT_FIELD_MV_MIN, score_and_id)?));
-    d.add(Box::new(stored_int(INT_FIELD_MV_MIN, score_and_id + 1)?));
-    d.add(Box::new(SortedNumericDocValuesField::new(
+    d.add(stored_int(INT_FIELD_MV_MIN, score_and_id)?);
+    d.add(stored_int(INT_FIELD_MV_MIN, score_and_id + 1)?);
+    d.add(SortedNumericDocValuesField::new(
         INT_FIELD_MV_MIN,
         i64::from(score_and_id),
-    )));
-    d.add(Box::new(SortedNumericDocValuesField::new(
+    ));
+    d.add(SortedNumericDocValuesField::new(
         INT_FIELD_MV_MIN,
         i64::from(score_and_id + 1),
-    )));
+    ));
 
-    d.add(Box::new(stored_int(INT_FIELD_MV_MAX, score_and_id)?));
-    d.add(Box::new(stored_int(INT_FIELD_MV_MAX, score_and_id - 1)?));
-    d.add(Box::new(SortedNumericDocValuesField::new(
+    d.add(stored_int(INT_FIELD_MV_MAX, score_and_id)?);
+    d.add(stored_int(INT_FIELD_MV_MAX, score_and_id - 1)?);
+    d.add(SortedNumericDocValuesField::new(
         INT_FIELD_MV_MAX,
         i64::from(score_and_id),
-    )));
-    d.add(Box::new(SortedNumericDocValuesField::new(
+    ));
+    d.add(SortedNumericDocValuesField::new(
         INT_FIELD_MV_MAX,
         i64::from(score_and_id - 1),
-    )));
+    ));
 
-    d.add(Box::new(stored_int(FLOAT_FIELD_MV_MIN, score_and_id)?));
-    d.add(Box::new(stored_int(FLOAT_FIELD_MV_MIN, score_and_id + 1)?));
-    d.add(Box::new(SortedNumericDocValuesField::new(
+    d.add(stored_int(FLOAT_FIELD_MV_MIN, score_and_id)?);
+    d.add(stored_int(FLOAT_FIELD_MV_MIN, score_and_id + 1)?);
+    d.add(SortedNumericDocValuesField::new(
         FLOAT_FIELD_MV_MIN,
         i64::from(NumericUtils::float_to_sortable_int(score_and_id as f32)),
-    )));
-    d.add(Box::new(SortedNumericDocValuesField::new(
+    ));
+    d.add(SortedNumericDocValuesField::new(
         FLOAT_FIELD_MV_MIN,
         i64::from(NumericUtils::float_to_sortable_int(
             (score_and_id + 1) as f32,
         )),
-    )));
+    ));
 
-    d.add(Box::new(stored_int(FLOAT_FIELD_MV_MAX, score_and_id)?));
-    d.add(Box::new(stored_int(FLOAT_FIELD_MV_MAX, score_and_id - 1)?));
-    d.add(Box::new(SortedNumericDocValuesField::new(
+    d.add(stored_int(FLOAT_FIELD_MV_MAX, score_and_id)?);
+    d.add(stored_int(FLOAT_FIELD_MV_MAX, score_and_id - 1)?);
+    d.add(SortedNumericDocValuesField::new(
         FLOAT_FIELD_MV_MAX,
         i64::from(NumericUtils::float_to_sortable_int(score_and_id as f32)),
-    )));
-    d.add(Box::new(SortedNumericDocValuesField::new(
+    ));
+    d.add(SortedNumericDocValuesField::new(
         FLOAT_FIELD_MV_MAX,
         i64::from(NumericUtils::float_to_sortable_int(
             (score_and_id - 1) as f32,
         )),
-    )));
+    ));
 
     iw.add_document(&d)?;
     log(|| format!("added: {d:?}"));

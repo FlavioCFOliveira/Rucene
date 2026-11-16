@@ -42,9 +42,7 @@ fn lucene_jar() -> PathBuf {
 /// `CreateOverFixture.doc(int)`.
 fn doc(i: i32) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", format!("doc{i}"), Store::YES).unwrap(),
-    ));
+    d.add(StringField::new("id", format!("doc{i}"), Store::YES).unwrap());
     d
 }
 

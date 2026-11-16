@@ -1217,12 +1217,12 @@ pub fn get_index_store<C: VectorSimilarityCase>(
     let result = (|| -> Result<()> {
         for i in 0..vectors.len() {
             let mut doc = Document::new();
-            doc.add(C::get_vector_field(
+            doc.add_shared(std::sync::Arc::from(C::get_vector_field(
                 f.vector_field(),
                 &vectors[i],
                 f.function(),
-            )?);
-            doc.add(Box::new(IntField::new(f.id_field(), i as i32, Store::YES)));
+            )?));
+            doc.add(IntField::new(f.id_field(), i as i32, Store::YES));
             writer.add_document(&doc)?;
         }
         Ok(())

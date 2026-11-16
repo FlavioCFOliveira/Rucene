@@ -388,16 +388,16 @@ fn test_random_read_write_and_merge<C: HnswCase>(this: &mut Fixture<C>) -> Resul
                         }
                     }
                     let mut doc = Document::new();
-                    doc.add(C::knn_vector_field(
+                    doc.add_shared(std::sync::Arc::from(C::knn_vector_field(
                         "field",
                         &C::value_of(&vectors, ord)?,
                         this.sim(),
-                    )?);
-                    doc.add(Box::new(StringField::new(
+                    )?));
+                    doc.add(StringField::new(
                         "id",
                         C::as_knn(&vectors).ord_to_doc(ord).to_string(),
                         Store::NO,
-                    )?));
+                    )?);
                     iw.add_document(&doc)?;
                 }
                 iw.commit()?;
@@ -466,12 +466,12 @@ fn test_graph_merge_with_deletes<C: HnswCase>(this: &mut Fixture<C>) -> Result<(
         let written = (|| -> Result<()> {
             for i in 0..num_vectors {
                 let mut doc = Document::new();
-                doc.add(C::knn_vector_field(
+                doc.add_shared(std::sync::Arc::from(C::knn_vector_field(
                     vector_field_name,
                     &C::value_of(&vectors, i)?,
                     this.sim(),
-                )?);
-                doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+                )?));
+                doc.add(StringField::new("id", i.to_string(), Store::NO)?);
                 w.add_document(&doc)?;
             }
             w.commit()?;
@@ -555,15 +555,15 @@ fn test_read_write<C: HnswCase>(this: &mut Fixture<C>) -> Result<()> {
                     indexed_doc += 1;
                 }
                 let mut doc = Document::new();
-                doc.add(C::knn_vector_field(
+                doc.add_shared(std::sync::Arc::from(C::knn_vector_field(
                     "field",
                     &vector_value::<C>(&v2, it2.index())?,
                     this.sim(),
-                )?);
-                doc.add(Box::new(StoredField::new_number(
+                )?));
+                doc.add(StoredField::new_number(
                     "id",
                     NumericValue::Int(it2.doc_id()),
-                )?));
+                )?);
                 iw.add_document(&doc)?;
                 n_vec += 1;
                 indexed_doc += 1;
@@ -663,19 +663,16 @@ fn test_sorted_and_unsorted_indices_return_same_results<C: HnswCase>(
                     indexed_doc += 1;
                 }
                 let mut doc = Document::new();
-                doc.add(C::knn_vector_field(
+                doc.add_shared(std::sync::Arc::from(C::knn_vector_field(
                     "vector",
                     &vector_value::<C>(&vectors, ord)?,
                     similarity_function,
-                )?);
-                doc.add(Box::new(StoredField::new_number(
+                )?));
+                doc.add(StoredField::new_number(
                     "id",
                     NumericValue::Int(C::as_knn(&vectors).ord_to_doc(ord)),
-                )?));
-                doc.add(Box::new(NumericDocValuesField::new(
-                    "sortkey",
-                    random().next_long(),
-                )));
+                )?);
+                doc.add(NumericDocValuesField::new("sortkey", random().next_long()));
                 iw.add_document(&doc)?;
                 iw2.add_document(&doc)?;
                 indexed_doc += 1;

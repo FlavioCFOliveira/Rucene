@@ -120,11 +120,7 @@ fn test_exactly_at_true_limit() -> Result<()> {
     let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("2BDocs3"));
     let iw = IndexWriter::new(dir.as_directory(), iwc_null())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "field",
-        "text",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("field", "text", Store::NO));
     for _ in 0..MAX_DOCS {
         iw.add_document(&doc)?;
         /*
@@ -241,11 +237,11 @@ fn test_update_documents() -> Result<()> {
 /// `doc.add(newStringField("id", "" + i, Field.Store.NO))` on a new document.
 fn id_doc(i: i32) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         "id",
         &i.to_string(),
         Store::NO,
-    )));
+    ));
     doc
 }
 

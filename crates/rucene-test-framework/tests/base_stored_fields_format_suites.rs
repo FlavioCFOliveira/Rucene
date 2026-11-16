@@ -144,10 +144,10 @@ fn test_skip_redundant_prefetches() -> Result<()> {
         let w = IndexWriter::new(Arc::clone(&dir), iwc)?;
         for _ in 0..100 {
             let mut doc = Document::new();
-            doc.add(Box::new(StoredField::new_string(
+            doc.add(StoredField::new_string(
                 "content",
                 TestUtil::random_simple_string(&*LuceneTestCase::random()),
-            )?));
+            )?);
             w.add_document(&doc)?;
         }
         w.force_merge(1)?;
@@ -232,14 +232,8 @@ fn test_mixed_compressions() -> Result<()> {
             LuceneTestCase::new_index_writer_config(),
         )?;
         let mut doc = Document::new();
-        doc.add(Box::new(StoredField::new_string(
-            "field1",
-            "value1".to_string(),
-        )?));
-        doc.add(Box::new(StoredField::new_string(
-            "field2",
-            "value2".to_string(),
-        )?));
+        doc.add(StoredField::new_string("field1", "value1".to_string())?);
+        doc.add(StoredField::new_string("field2", "value2".to_string())?);
         iw.add_document(&doc)?;
         if LuceneTestCase::random().next_int_bound(4) == 0 {
             iw.force_merge(1)?;
@@ -584,10 +578,10 @@ fn test_chunk_cleanup() -> Result<()> {
     let mut ir = directory_reader::open_with_writer(&*iw)?;
     for _ in 0..5 {
         let mut doc = Document::new();
-        doc.add(Box::new(StoredField::new_string(
+        doc.add(StoredField::new_string(
             "text",
             "not very long at all".to_string(),
-        )?));
+        )?);
         iw.add_document(&doc)?;
         // force flush
         let ir2 = directory_reader::open_if_changed(Arc::clone(&ir))?;
@@ -609,10 +603,10 @@ fn test_chunk_cleanup() -> Result<()> {
     iw.force_merge(1)?;
     // add a single doc and merge again
     let mut doc = Document::new();
-    doc.add(Box::new(StoredField::new_string(
+    doc.add(StoredField::new_string(
         "text",
         "not very long at all".to_string(),
-    )?));
+    )?);
     iw.add_document(&doc)?;
     iw.force_merge(1)?;
     let ir2 = directory_reader::open_if_changed(Arc::clone(&ir))?;

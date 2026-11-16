@@ -57,11 +57,7 @@ fn test_no_positions() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "foo",
-        "bar".to_string(),
-        Store::NO,
-    )?));
+    doc.add(StringField::new("foo", "bar".to_string(), Store::NO)?);
     iw.add_document(&doc)?;
 
     let ir = iw.get_reader()?;

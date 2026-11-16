@@ -53,13 +53,9 @@ fn writer(dir: &TestDirectory) -> Result<RandomIndexWriter> {
 fn doc(feature: Option<(&str, f32, Option<&str>)>) -> Result<Document> {
     let mut doc = Document::new();
     if let Some((name, value, text)) = feature {
-        doc.add(Box::new(FeatureField::new("field", name, value)?));
+        doc.add(FeatureField::new("field", name, value)?);
         if let Some(text) = text {
-            doc.add(Box::new(LuceneTestCase::new_string_field(
-                "value",
-                text,
-                Store::YES,
-            )));
+            doc.add(LuceneTestCase::new_string_field("value", text, Store::YES));
         }
     }
     Ok(doc)
@@ -209,11 +205,11 @@ fn test_duel_float() -> Result<()> {
                     break;
                 }
             }
-            doc.add(Box::new(NumericDocValuesField::new(
+            doc.add(NumericDocValuesField::new(
                 "float",
                 f.to_bits() as i32 as i64,
-            )));
-            doc.add(Box::new(FeatureField::new("feature", "foo", f)?));
+            ));
+            doc.add(FeatureField::new("feature", "foo", f)?);
         }
         w.add_document(&doc)?;
     }

@@ -39,9 +39,7 @@ fn leaf_with_one_deletion() -> (Arc<dyn IndexReader>, Arc<dyn LeafReader>) {
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for i in 0..4 {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", format!("id-{i}"), Store::YES).unwrap(),
-        ));
+        doc.add(StringField::new("id", format!("id-{i}"), Store::YES).unwrap());
         writer.add_document(&doc).unwrap();
     }
     writer.commit().unwrap();

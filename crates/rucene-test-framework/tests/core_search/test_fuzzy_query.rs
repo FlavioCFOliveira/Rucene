@@ -636,11 +636,7 @@ fn test_random() -> Result<()> {
     let w = riw(&dir)?;
     for term in terms.iter() {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "field",
-            term.clone(),
-            Store::YES,
-        )?));
+        doc.add(StringField::new("field", term.clone(), Store::YES)?);
         w.add_document(&doc)?;
     }
     let r = w.get_reader()?;
@@ -773,11 +769,7 @@ impl QueryVisitor for MatchingVisitor {
 
 fn add_doc(text: &str, writer: &RandomIndexWriter) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "field",
-        text,
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_text_field("field", text, Store::YES));
     writer.add_document(&doc)?;
     Ok(())
 }

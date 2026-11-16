@@ -1566,40 +1566,20 @@ fn write_ram_only(path: &Path, codec: Arc<dyn Codec>, freqs: bool, merge: bool) 
         for batch in 0..2 {
             for i in batch * 60..batch * 60 + 60 {
                 let mut d = Document::new();
-                d.add(Box::new(StringField::new(
-                    "e_id",
-                    format!("{i:04}"),
-                    Store::NO,
-                )?));
+                d.add(StringField::new("e_id", format!("{i:04}"), Store::NO)?);
                 if freqs {
-                    d.add(Box::new(Field::new(
+                    d.add(Field::new(
                         "rf",
                         words[i % 6].to_string(),
                         freqs_type.clone(),
-                    )?));
+                    )?);
                 }
                 let rq = |w: &str| format!("{w}{}", i % 13);
                 let rp = |w: &str| format!("{w}{}", i % 17);
-                d.add(Box::new(Field::new(
-                    "rq",
-                    rq(words[i % 6]),
-                    positions.clone(),
-                )?));
-                d.add(Box::new(Field::new(
-                    "rq",
-                    rq(words[(i / 2) % 6]),
-                    positions.clone(),
-                )?));
-                d.add(Box::new(Field::new(
-                    "rp",
-                    rp(words[i % 5]),
-                    positions.clone(),
-                )?));
-                d.add(Box::new(Field::new(
-                    "rp",
-                    rp(words[i % 3]),
-                    positions.clone(),
-                )?));
+                d.add(Field::new("rq", rq(words[i % 6]), positions.clone())?);
+                d.add(Field::new("rq", rq(words[(i / 2) % 6]), positions.clone())?);
+                d.add(Field::new("rp", rp(words[i % 5]), positions.clone())?);
+                d.add(Field::new("rp", rp(words[i % 3]), positions.clone())?);
                 w.add_document(&d)?;
             }
             w.commit()?;

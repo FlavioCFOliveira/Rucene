@@ -1130,38 +1130,28 @@ fn word(random: &mut JdkRandom) -> &'static str {
 
 fn standard_doc(random: &mut JdkRandom, i: usize) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StringField::new("id", format!("d{i}"), Store::YES).expect("id"),
-    ));
+    doc.add(StringField::new("id", format!("d{i}"), Store::YES).expect("id"));
     let body: Vec<&str> = (0..random.next_int_bound(40))
         .map(|_| word(random))
         .collect();
-    doc.add(Box::new(
-        TextField::new("body", body.join(" "), Store::NO).expect("body"),
-    ));
+    doc.add(TextField::new("body", body.join(" "), Store::NO).expect("body"));
     let title: Vec<&str> = (0..1 + random.next_int_bound(5))
         .map(|_| word(random))
         .collect();
-    doc.add(Box::new(
-        TextField::new("title", title.join(" "), Store::YES).expect("title"),
-    ));
+    doc.add(TextField::new("title", title.join(" "), Store::YES).expect("title"));
     for _ in 0..random.next_int_bound(4) {
         let tag = TAGS[random.next_int_bound(TAGS.len() as i32) as usize];
-        doc.add(Box::new(
-            StringField::new("tag", tag.to_string(), Store::NO).expect("tag"),
-        ));
+        doc.add(StringField::new("tag", tag.to_string(), Store::NO).expect("tag"));
     }
     let num = random.next_int_bound(100);
-    doc.add(Box::new(IntPoint::new("num", &[num]).expect("num")));
-    doc.add(Box::new(NumericDocValuesField::new("num", i64::from(num))));
+    doc.add(IntPoint::new("num", &[num]).expect("num"));
+    doc.add(NumericDocValuesField::new("num", i64::from(num)));
     let cat = format!("c{}", random.next_int_bound(5));
-    doc.add(Box::new(
-        StringField::new("cat", cat.clone(), Store::NO).expect("cat"),
-    ));
-    doc.add(Box::new(SortedDocValuesField::new(
+    doc.add(StringField::new("cat", cat.clone(), Store::NO).expect("cat"));
+    doc.add(SortedDocValuesField::new(
         "cat",
         BytesRef::from_char_sequence(&cat),
-    )));
+    ));
     doc
 }
 

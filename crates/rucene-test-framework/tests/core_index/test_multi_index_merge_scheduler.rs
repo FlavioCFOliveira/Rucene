@@ -112,7 +112,7 @@ fn test_close_single() -> Result<()> {
     for _ in 0..5 {
         let mut doc = Document::new();
         let id_field = LuceneTestCase::new_string_field("id", "", Store::YES);
-        doc.add(Box::new(id_field));
+        doc.add(id_field);
         writer.add_document(&doc)?;
     }
     writer.commit()?;
@@ -228,7 +228,7 @@ fn test_close_multiple() -> Result<()> {
                         .unwrap_or_else(|| crate::support::npe("writer"));
                     let mut doc = Document::new();
                     let id_field = LuceneTestCase::new_string_field("id", "", Store::NO);
-                    doc.add(Box::new(id_field));
+                    doc.add(id_field);
                     writer.add_document(&doc)?;
                     shared.document_counts[thread_id as usize] -= 1;
                     if shared.document_counts[thread_id as usize] == 0 {

@@ -255,16 +255,12 @@ fn copy_file(dir: &dyn Directory, src: &str, dest: &str) -> Result<()> {
 /// `addDoc(writer, id)`.
 fn add_doc(writer: &IndexWriter, id: i32) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "content",
-        "aaa",
-        Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_text_field("content", "aaa", Store::NO));
+    doc.add(LuceneTestCase::new_string_field(
         "id",
         &id.to_string(),
         Store::NO,
-    )));
+    ));
     writer.add_document(&doc)?;
     Ok(())
 }
@@ -597,11 +593,11 @@ fn test_exc_in_dec_ref() -> Result<()> {
                 w.get_reader()?.close()?;
             } else {
                 let mut doc = Document::new();
-                doc.add(Box::new(LuceneTestCase::new_text_field(
+                doc.add(LuceneTestCase::new_text_field(
                     "field",
                     "some text",
                     Store::NO,
-                )));
+                ));
                 w.add_document(&doc)?;
             }
             Ok(())

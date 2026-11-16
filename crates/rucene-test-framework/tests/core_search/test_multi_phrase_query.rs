@@ -276,11 +276,7 @@ fn test_multi_exact_with_repeats() -> Result<()> {
 
 fn add(s: &str, writer: &RandomIndexWriter) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "body",
-        s,
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_text_field("body", s, Store::YES));
     writer.add_document(&doc)?;
     Ok(())
 }
@@ -431,16 +427,8 @@ fn test_hash_code_and_equals() -> Result<()> {
 
 fn add_typed(s: &str, r#type: &str, writer: &RandomIndexWriter) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "body",
-        s,
-        Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "type",
-        r#type,
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("body", s, Store::YES));
+    doc.add(LuceneTestCase::new_string_field("type", r#type, Store::NO));
     writer.add_document(&doc)?;
     Ok(())
 }
@@ -471,10 +459,10 @@ fn test_zero_pos_incr() -> Result<()> {
 
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), Arc::clone(&dir))?;
     let mut doc = Document::new();
-    doc.add(canned_text_field(tokens.clone())?);
+    doc.add(*canned_text_field(tokens.clone())?);
     writer.add_document(&doc)?;
     let mut doc = Document::new();
-    doc.add(canned_text_field(tokens)?);
+    doc.add(*canned_text_field(tokens)?);
     writer.add_document(&doc)?;
     let r = writer.get_reader()?;
     writer.close()?;
@@ -586,7 +574,7 @@ fn do_test_zero_pos_incr_sloppy(q: Arc<dyn Query>, n_expected: i64) -> Result<()
     let cfg = LuceneTestCase::new_index_writer_config_analyzer(None);
     let writer = IndexWriter::new(dir.as_directory(), cfg)?;
     let mut doc = Document::new();
-    doc.add(canned_text_field(incr_0_doc_tokens())?);
+    doc.add(*canned_text_field(incr_0_doc_tokens())?);
     writer.add_document(&doc)?;
     let r: Arc<dyn DirectoryReader> = directory_reader::open_with_writer(&*writer)?;
     writer.close()?;

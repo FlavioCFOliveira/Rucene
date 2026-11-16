@@ -139,8 +139,8 @@ fn test_same_hits_as_point_range_query() -> Result<()> {
             let num_values = TestUtil::next_int(&*random(), 0, 1);
             for _j in 0..num_values {
                 let value = TestUtil::next_long(&*random(), -100, 10000);
-                doc.add(Box::new(SortedNumericDocValuesField::new("dv", value)));
-                doc.add(Box::new(LongPoint::new("idx", &[value])?));
+                doc.add(SortedNumericDocValuesField::new("dv", value));
+                doc.add(LongPoint::new("idx", &[value])?);
             }
             iw.add_document(&doc)?;
         }
@@ -209,11 +209,8 @@ fn test_same_hits_as_point_range_query_int_sort() -> Result<()> {
             let num_values = TestUtil::next_int(&*random(), 0, 1);
             for _j in 0..num_values {
                 let value = TestUtil::next_int(&*random(), -100, 10000);
-                doc.add(Box::new(SortedNumericDocValuesField::new(
-                    "dv",
-                    i64::from(value),
-                )));
-                doc.add(Box::new(IntPoint::new("idx", &[value])?));
+                doc.add(SortedNumericDocValuesField::new("dv", i64::from(value)));
+                doc.add(IntPoint::new("idx", &[value])?);
             }
             iw.add_document(&doc)?;
         }
@@ -648,8 +645,8 @@ fn test_multi_doc_values() -> Result<()> {
     let writer = sorted_writer(&dir, index_sort)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(SortedNumericDocValuesField::new("field", 0)));
-    doc.add(Box::new(SortedNumericDocValuesField::new("field", 10)));
+    doc.add(SortedNumericDocValuesField::new("field", 0));
+    doc.add(SortedNumericDocValuesField::new("field", 10));
     writer.add_document(&doc)?;
 
     index_sort_optimization_deactivated(&writer)?;
@@ -684,7 +681,7 @@ fn test_fallback_count() -> Result<()> {
     let index_sort = sort_of(SortedNumericSortField::new("field", SortFieldType::Long)?)?;
     let writer = sorted_writer(&dir, index_sort)?;
     let mut doc = Document::new();
-    doc.add(Box::new(SortedNumericDocValuesField::new("field", 10)));
+    doc.add(SortedNumericDocValuesField::new("field", 10));
     writer.add_document(&doc)?;
     let reader = writer.get_reader()?;
     let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
@@ -847,20 +844,20 @@ fn test_count_boundary() -> Result<()> {
 
 fn create_missing_value_document() -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("foo", "fox".into(), Store::YES)?));
+    doc.add(StringField::new("foo", "fox".into(), Store::YES)?);
     Ok(doc)
 }
 
 fn create_sndv_and_point_document(field: &str, value: i64) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(SortedNumericDocValuesField::new(field, value)));
-    doc.add(Box::new(LongPoint::new(field, &[value])?));
+    doc.add(SortedNumericDocValuesField::new(field, value));
+    doc.add(LongPoint::new(field, &[value])?);
     Ok(doc)
 }
 
 fn create_document(field: &str, value: i64) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(SortedNumericDocValuesField::new(field, value)));
+    doc.add(SortedNumericDocValuesField::new(field, value));
     doc
 }
 
@@ -1030,8 +1027,8 @@ fn add_doc_with_bkd(
 ) -> Result<()> {
     for _i in 0..repeat {
         let mut doc = Document::new();
-        doc.add(Box::new(SortedNumericDocValuesField::new(field, value)));
-        doc.add(Box::new(LongPoint::new(field, &[value])?));
+        doc.add(SortedNumericDocValuesField::new(field, value));
+        doc.add(LongPoint::new(field, &[value])?);
         index_writer.add_document(&doc)?;
     }
     Ok(())

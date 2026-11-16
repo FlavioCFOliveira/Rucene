@@ -151,17 +151,17 @@ fn keyword(field: &str, value: String) -> Box<StringField> {
 /// keyword `aaaa`.
 fn doc(i: i32, perturbed: bool) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(StringField::new("id", id(i), Store::YES).unwrap()));
-    d.add(keyword("kw", kw_a(i)));
-    d.add(keyword("kw", kw_b(i)));
+    d.add(StringField::new("id", id(i), Store::YES).unwrap());
+    d.add(*keyword("kw", kw_a(i)));
+    d.add(*keyword("kw", kw_b(i)));
     if i % 50 == 0 {
-        d.add(keyword("kw", kw_c(i)));
+        d.add(*keyword("kw", kw_c(i)));
     }
     if perturbed && i == 0 {
-        d.add(keyword("kw", "aaaa".to_string()));
+        d.add(*keyword("kw", "aaaa".to_string()));
     }
-    d.add(Box::new(Field::new("body", body(i), text_type()).unwrap()));
-    d.add(keyword("tag", format!("g{}", i % 13)));
+    d.add(Field::new("body", body(i), text_type()).unwrap());
+    d.add(*keyword("tag", format!("g{}", i % 13)));
     d
 }
 

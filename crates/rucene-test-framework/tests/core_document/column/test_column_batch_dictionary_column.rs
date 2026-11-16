@@ -397,7 +397,7 @@ fn test_mixed_with_plain_document() -> Result<()> {
     ))?;
     // Plain document adds "green" for doc 2
     let mut doc = Document::new();
-    doc.add(Box::new(SortedDocValuesField::new("color", br("green"))));
+    doc.add(SortedDocValuesField::new("color", br("green")));
     c.w.add_document(&doc)?;
     c.w.force_merge(1)?;
     let r = c.reader()?;
@@ -788,8 +788,8 @@ fn test_random_sorted_cross_check() -> Result<()> {
                     let term = dict[ord as usize].clone();
                     expected.push(Some(term.clone()));
                     let mut plain_doc = Document::new();
-                    plain_doc.add(Box::new(SortedDocValuesField::new("f", term)));
-                    plain_doc.add(Box::new(NumericDocValuesField::new("id", next_id)));
+                    plain_doc.add(SortedDocValuesField::new("f", term));
+                    plain_doc.add(NumericDocValuesField::new("id", next_id));
                     cc.plain_w.add_document(&plain_doc)?;
                     next_id += 1;
                 }
@@ -808,15 +808,12 @@ fn test_random_sorted_cross_check() -> Result<()> {
                 for i in 0..batch_docs as usize {
                     ids[i] = next_id;
                     let mut plain_doc = Document::new();
-                    plain_doc.add(Box::new(NumericDocValuesField::new("id", next_id)));
+                    plain_doc.add(NumericDocValuesField::new("id", next_id));
                     if random().next_int_bound(10) < 7 {
                         let ord = random().next_int_bound(dict_size);
                         ds.push(i as i32);
                         os.push(ord);
-                        plain_doc.add(Box::new(SortedDocValuesField::new(
-                            "f",
-                            dict[ord as usize].clone(),
-                        )));
+                        plain_doc.add(SortedDocValuesField::new("f", dict[ord as usize].clone()));
                         expected.push(Some(dict[ord as usize].clone()));
                     } else {
                         expected.push(None);
@@ -865,7 +862,7 @@ fn test_random_sorted_set_cross_check() -> Result<()> {
                 let num_values = random().next_int_bound(5); // 0..4 values per doc
                 let mut doc_terms = JavaHashSet::new();
                 let mut plain_doc = Document::new();
-                plain_doc.add(Box::new(NumericDocValuesField::new("id", next_id)));
+                plain_doc.add(NumericDocValuesField::new("id", next_id));
                 ids[i] = next_id;
                 for _v in 0..num_values {
                     let ord = random().next_int_bound(dict_size);
@@ -873,10 +870,10 @@ fn test_random_sorted_set_cross_check() -> Result<()> {
                     os.push(ord);
                     let term = dict[ord as usize].clone();
                     if doc_terms.add(term.clone()) {
-                        plain_doc.add(Box::new(SortedSetDocValuesField::new(
+                        plain_doc.add(SortedSetDocValuesField::new(
                             "f",
                             BytesRef::deep_copy_of(&term),
-                        )));
+                        ));
                     }
                 }
                 cc.plain_w.add_document(&plain_doc)?;

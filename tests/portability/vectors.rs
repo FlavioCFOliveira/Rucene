@@ -554,12 +554,12 @@ fn write_with_rucene(
         let mut document = Document::new();
         for vector in vectors {
             match vector {
-                Vec3::Floats(name, similarity, value) => document.add(Box::new(
+                Vec3::Floats(name, similarity, value) => document.add(
                     KnnFloatVectorField::new(name, value, *similarity).expect("float vector field"),
-                )),
-                Vec3::Bytes(name, similarity, value) => document.add(Box::new(
+                ),
+                Vec3::Bytes(name, similarity, value) => document.add(
                     KnnByteVectorField::new(name, value, *similarity).expect("byte vector field"),
-                )),
+                ),
             }
         }
         chain

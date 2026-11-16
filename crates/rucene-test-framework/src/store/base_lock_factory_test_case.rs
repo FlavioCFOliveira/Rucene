@@ -295,11 +295,7 @@ pub trait BaseLockFactoryTestCase: Send + Sync + 'static {
 /// `addDoc(IndexWriter writer)` (`private`).
 fn add_doc(writer: &IndexWriter) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "content",
-        "aaa",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("content", "aaa", Store::NO));
     writer.add_document(&doc)?;
     Ok(())
 }

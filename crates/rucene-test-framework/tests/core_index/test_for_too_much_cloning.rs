@@ -62,7 +62,7 @@ fn test_() -> Result<()> {
             sb.push(' ');
         }
         let mut doc = Document::new();
-        doc.add(Box::new(TextField::new("field", sb, Store::NO)?));
+        doc.add(TextField::new("field", sb, Store::NO)?);
         w.add_document(&doc)?;
     }
     let dr = w.get_reader()?;

@@ -292,7 +292,7 @@ fn test_single_document() -> Result<()> {
         let iwc = index_sorted_iwc(sort_of(vec![bsf("dv", random().next_boolean())?])?)?;
         with_writer(dir, iwc, |w| {
             let mut doc = Document::new();
-            doc.add(binary_dv("dv", br("only")));
+            doc.add(*binary_dv("dv", br("only")));
             w.add_document(&doc)?;
             w.force_merge(1)
         })?;
@@ -324,7 +324,7 @@ fn test_all_missing() -> Result<()> {
         with_writer(dir, iwc, |w| {
             for i in 0..num_docs {
                 let mut doc = Document::new();
-                doc.add(stored_int("ord", i)?);
+                doc.add(*stored_int("ord", i)?);
                 w.add_document(&doc)?;
             }
             if random().next_boolean() {
@@ -345,7 +345,7 @@ fn test_index_sort_only_on_new_index() -> Result<()> {
     with_dir(|dir| {
         with_writer(dir, LuceneTestCase::new_index_writer_config(), |w| {
             let mut doc = Document::new();
-            doc.add(binary_dv("dv", br("a")));
+            doc.add(*binary_dv("dv", br("a")));
             w.add_document(&doc)?;
             w.commit()?;
             Ok(())
@@ -361,7 +361,7 @@ fn test_index_sort_only_on_new_index() -> Result<()> {
             index_sorted_iwc(sort_of(vec![bsf("dv", false)?])?)?,
             |w| {
                 let mut doc = Document::new();
-                doc.add(binary_dv("dv", br("a")));
+                doc.add(*binary_dv("dv", br("a")));
                 w.add_document(&doc)?;
                 w.commit()?;
                 Ok(())
@@ -423,9 +423,9 @@ fn test_empty_byte_values() -> Result<()> {
                 let r = random().next_int_bound(3);
                 if r == 0 {
                 } else if r == 1 {
-                    doc.add(binary_dv("dv", BytesRef::new(Vec::new())));
+                    doc.add(*binary_dv("dv", BytesRef::new(Vec::new())));
                 } else {
-                    doc.add(binary_dv("dv", BytesRef::new(random_bytes(1, 5))));
+                    doc.add(*binary_dv("dv", BytesRef::new(random_bytes(1, 5))));
                 }
                 w.add_document(&doc)?;
             }
@@ -453,21 +453,15 @@ fn test_nested_blocks() -> Result<()> {
                 let num_children = random().next_int_bound(3);
                 for _c in 0..num_children {
                     let mut child = Document::new();
-                    child.add(stored_int("block", b)?);
-                    child.add(Box::new(StoredField::new_string(
-                        "role",
-                        "child".to_string(),
-                    )?));
+                    child.add(*stored_int("block", b)?);
+                    child.add(StoredField::new_string("role", "child".to_string())?);
                     block.push(child);
                 }
                 let mut parent = Document::new();
                 let val = random_bytes(1, 10);
-                parent.add(binary_dv("sort", BytesRef::new(val)));
-                parent.add(stored_int("block", b)?);
-                parent.add(Box::new(StoredField::new_string(
-                    "role",
-                    "parent".to_string(),
-                )?));
+                parent.add(*binary_dv("sort", BytesRef::new(val)));
+                parent.add(*stored_int("block", b)?);
+                parent.add(StoredField::new_string("role", "parent".to_string())?);
                 block.push(parent);
                 w.add_documents(&block)?;
                 if LuceneTestCase::rarely() {
@@ -548,8 +542,8 @@ fn test_deletes() -> Result<()> {
         with_writer(dir, iwc, |w| {
             for i in 0..num_docs {
                 let mut doc = Document::new();
-                doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
-                doc.add(binary_dv("dv", BytesRef::new(random_bytes(1, 8))));
+                doc.add(StringField::new("id", i.to_string(), Store::NO)?);
+                doc.add(*binary_dv("dv", BytesRef::new(random_bytes(1, 8))));
                 w.add_document(&doc)?;
             }
             for i in 0..num_docs {
@@ -581,11 +575,11 @@ fn test_multiple_sort_fields() -> Result<()> {
                 for _ in 0..num_docs {
                     let mut doc = Document::new();
                     let b = vec![random().next_int_bound(4) as u8];
-                    doc.add(binary_dv("bin", BytesRef::new(b)));
-                    doc.add(Box::new(NumericDocValuesField::new(
+                    doc.add(*binary_dv("bin", BytesRef::new(b)));
+                    doc.add(NumericDocValuesField::new(
                         "num",
                         i64::from(random().next_int_bound(4)),
-                    )));
+                    ));
                     w.add_document(&doc)?;
                 }
                 w.force_merge(1)
@@ -641,8 +635,8 @@ fn test_multiple_binary_fields() -> Result<()> {
                 let mut doc = Document::new();
                 let a = vec![random().next_int_bound(3) as u8]; // low cardinality so ties on 'a' exercise 'b'
                 let b = random_bytes(1, 6);
-                doc.add(binary_dv("a", BytesRef::new(a)));
-                doc.add(binary_dv("b", BytesRef::new(b)));
+                doc.add(*binary_dv("a", BytesRef::new(a)));
+                doc.add(*binary_dv("b", BytesRef::new(b)));
                 w.add_document(&doc)?;
             }
             Ok(())
@@ -705,15 +699,15 @@ fn test_mix_custom_and_default_sort_fields() -> Result<()> {
                 if random().next_boolean() {
                     a_values.push(random_bytes(1, 4));
                 }
-                doc.add(binary_dv("a", encode_values(&a_values)?));
-                doc.add(binary_dv(
+                doc.add(*binary_dv("a", encode_values(&a_values)?));
+                doc.add(*binary_dv(
                     "b",
                     BytesRef::new(vec![random().next_int_bound(3) as u8]),
                 ));
-                doc.add(Box::new(NumericDocValuesField::new(
+                doc.add(NumericDocValuesField::new(
                     "n",
                     i64::from(random().next_int_bound(5)),
-                )));
+                ));
                 w.add_document(&doc)?;
             }
             if random().next_boolean() {
@@ -835,7 +829,7 @@ fn test_search_sort() -> Result<()> {
             for _ in 0..num_docs {
                 let mut doc = Document::new();
                 if random().next_int_bound(5) != 0 {
-                    doc.add(binary_dv("dv", BytesRef::new(random_bytes(0, 8))));
+                    doc.add(*binary_dv("dv", BytesRef::new(random_bytes(0, 8))));
                 }
                 w.add_document(&doc)?;
             }
@@ -897,7 +891,7 @@ fn test_first_value_sort_key_index_sort() -> Result<()> {
         with_writer(dir, iwc, |w| {
             for _ in 0..num_docs {
                 let mut doc = Document::new();
-                doc.add(binary_dv("dv", encode_values(&random_values())?));
+                doc.add(*binary_dv("dv", encode_values(&random_values())?));
                 w.add_document(&doc)?;
                 if random().next_int_bound(30) == 0 {
                     w.commit()?;
@@ -979,7 +973,7 @@ fn test_min_value_sort_key() -> Result<()> {
                 for _v in 0..count {
                     values.push(random_bytes(1, 6));
                 }
-                doc.add(binary_dv("dv", encode_values(&values)?));
+                doc.add(*binary_dv("dv", encode_values(&values)?));
                 w.add_document(&doc)?;
             }
             if merge && random().next_boolean() {
@@ -1058,7 +1052,7 @@ fn test_custom_comparator() -> Result<()> {
         with_writer(dir, iwc, |w| {
             for i in 0..num_docs {
                 let mut doc = Document::new();
-                doc.add(binary_dv("dv", BytesRef::new(random_bytes(1, 8))));
+                doc.add(*binary_dv("dv", BytesRef::new(random_bytes(1, 8))));
                 w.add_document(&doc)?;
                 if i == num_docs / 2 {
                     w.commit()?;
@@ -1144,9 +1138,9 @@ fn test_random() -> Result<()> {
         with_writer(dir, iwc, |w| {
             for i in 0..num_docs {
                 let mut doc = Document::new();
-                doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+                doc.add(StringField::new("id", i.to_string(), Store::NO)?);
                 if random().next_int_bound(8) != 0 {
-                    doc.add(binary_dv(
+                    doc.add(*binary_dv(
                         "dv",
                         BytesRef::new(pool[random().next_int_bound(cardinality) as usize].clone()),
                     ));
@@ -1179,7 +1173,7 @@ fn index_random(dir: &TestDirectory, sort: Sort, num_docs: i32) -> Result<()> {
     with_writer(dir, iwc, |w| {
         for _ in 0..num_docs {
             let mut doc = Document::new();
-            doc.add(binary_dv("dv", BytesRef::new(random_bytes(1, 8))));
+            doc.add(*binary_dv("dv", BytesRef::new(random_bytes(1, 8))));
             w.add_document(&doc)?;
         }
         Ok(())
@@ -1290,9 +1284,9 @@ fn assert_index_sorted(multi_segment: bool, reverse: bool, missing: bool) -> Res
             for i in 0..num_docs {
                 let mut doc = Document::new();
                 if !missing || random().next_int_bound(5) != 0 {
-                    doc.add(binary_dv("dv", BytesRef::new(random_bytes(0, 12))));
+                    doc.add(*binary_dv("dv", BytesRef::new(random_bytes(0, 12))));
                 }
-                doc.add(stored_int("ord", i)?);
+                doc.add(*stored_int("ord", i)?);
                 w.add_document(&doc)?;
                 if multi_segment && random().next_int_bound(50) == 0 {
                     w.commit()?;
@@ -1351,11 +1345,11 @@ fn index_and_read_stored_order(
                 let mut doc = Document::new();
                 let v = BytesRef::new(value.clone());
                 if binary {
-                    doc.add(binary_dv("dv", v));
+                    doc.add(*binary_dv("dv", v));
                 } else {
-                    doc.add(Box::new(SortedDocValuesField::new("dv", v)));
+                    doc.add(SortedDocValuesField::new("dv", v));
                 }
-                doc.add(stored_int("ord", i as i32)?);
+                doc.add(*stored_int("ord", i as i32)?);
                 w.add_document(&doc)?;
             }
             w.force_merge(1)

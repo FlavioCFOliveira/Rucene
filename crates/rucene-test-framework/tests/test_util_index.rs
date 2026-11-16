@@ -401,40 +401,30 @@ fn get_formats_are_lucenes() {
 #[test]
 fn clone_document_is_lucenes() {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        KeywordField::new("kw", "v1".into(), Store::YES).unwrap(),
-    ));
-    doc.add(Box::new(
-        KeywordField::new("kw2", "v2".into(), Store::NO).unwrap(),
-    ));
-    doc.add(Box::new(IntField::new("int", 7, Store::YES)));
-    doc.add(Box::new(IntField::new("int2", -3, Store::NO)));
-    doc.add(Box::new(NumericDocValuesField::new("ndv", 42)));
-    doc.add(Box::new(BinaryDocValuesField::new(
+    doc.add(KeywordField::new("kw", "v1".into(), Store::YES).unwrap());
+    doc.add(KeywordField::new("kw2", "v2".into(), Store::NO).unwrap());
+    doc.add(IntField::new("int", 7, Store::YES));
+    doc.add(IntField::new("int2", -3, Store::NO));
+    doc.add(NumericDocValuesField::new("ndv", 42));
+    doc.add(BinaryDocValuesField::new(
         "bdv",
         BytesRef::from_char_sequence("bin"),
-    )));
-    doc.add(Box::new(SortedDocValuesField::new(
+    ));
+    doc.add(SortedDocValuesField::new(
         "sdv",
         BytesRef::from_char_sequence("sorted"),
-    )));
-    doc.add(Box::new(
+    ));
+    doc.add(
         BinaryPoint::new(
             "bp",
             &[BytesRef::new(vec![1, 2]), BytesRef::new(vec![3, 4])],
         )
         .unwrap(),
-    ));
-    doc.add(Box::new(IntPoint::new("ip", &[5, 6]).unwrap()));
-    doc.add(Box::new(
-        StringField::new("s", "str".into(), Store::YES).unwrap(),
-    ));
-    doc.add(Box::new(
-        TextField::new("t", "some text".into(), Store::NO).unwrap(),
-    ));
-    doc.add(Box::new(
-        StoredField::new_string("st", "stored".to_string()).unwrap(),
-    ));
+    );
+    doc.add(IntPoint::new("ip", &[5, 6]).unwrap());
+    doc.add(StringField::new("s", "str".into(), Store::YES).unwrap());
+    doc.add(TextField::new("t", "some text".into(), Store::NO).unwrap());
+    doc.add(StoredField::new_string("st", "stored".to_string()).unwrap());
     let clone = TestUtil::clone_document(&doc).unwrap();
     let rows = member_rows("cloneDocument");
     assert_eq!(rows.len(), 15);
@@ -456,7 +446,7 @@ fn clone_document_is_lucenes() {
     for (field, (name, expected)) in bad.into_iter().zip(&rows[12..]) {
         assert_eq!(field.name(), name);
         let mut one = Document::new();
-        one.add(field);
+        one.add_shared(std::sync::Arc::from(field));
         let actual = match TestUtil::clone_document(&one) {
             Ok(d) => d.get_fields()[0].to_string(),
             // The port's `IllegalStateException`.
@@ -482,9 +472,7 @@ fn add_indexes_slowly_is_lucenes() {
             let w = IndexWriter::new(Arc::clone(&dir), Iwc::new()).unwrap();
             for i in 0..(if s == 0 { 3 } else { 2 }) {
                 let mut d = Document::new();
-                d.add(Box::new(
-                    StringField::new("id", i.to_string(), Store::YES).unwrap(),
-                ));
+                d.add(StringField::new("id", i.to_string(), Store::YES).unwrap());
                 w.add_document(&d).unwrap();
             }
             if s == 1 {
@@ -753,17 +741,13 @@ fn small_leaf() -> Arc<dyn LeafReader> {
     let w = IndexWriter::new(Arc::clone(&dir), Iwc::new()).unwrap();
     for i in 0..4i64 {
         let mut d = Document::new();
-        d.add(Box::new(
-            StringField::new("id", i.to_string(), Store::YES).unwrap(),
-        ));
-        d.add(Box::new(
-            TextField::new("body", format!("text number {i}"), Store::NO).unwrap(),
-        ));
-        d.add(Box::new(NumericDocValuesField::new("n", i)));
-        d.add(Box::new(SortedDocValuesField::new(
+        d.add(StringField::new("id", i.to_string(), Store::YES).unwrap());
+        d.add(TextField::new("body", format!("text number {i}"), Store::NO).unwrap());
+        d.add(NumericDocValuesField::new("n", i));
+        d.add(SortedDocValuesField::new(
             "s",
             BytesRef::from_char_sequence(&i.to_string()),
-        )));
+        ));
         w.add_document(&d).unwrap();
     }
     w.close().unwrap();

@@ -3455,9 +3455,7 @@ mod tests {
         config.set_use_compound_file(false).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StoredField::new_string("f", "x".repeat(200_000)).unwrap(),
-        ));
+        doc.add(StoredField::new_string("f", "x".repeat(200_000)).unwrap());
         writer.add_document(&doc).unwrap();
         writer.close().unwrap();
 

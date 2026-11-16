@@ -584,8 +584,8 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         custom_type.set_store_term_vectors(true)?;
         let custom_field = Field::new("field", "contents".to_string(), custom_type)?;
         let stored_value = custom_field.stored_value()?;
-        one_doc.add(Box::new(custom_field));
-        one_doc.add(Box::new(NumericDocValuesField::new("field", 5)));
+        one_doc.add(custom_field);
+        one_doc.add(NumericDocValuesField::new("field", 5));
         iw.add_document(&one_doc)?;
         let one_doc_dir_reader = directory_reader::open_with_writer(&*iw)?;
         let one_doc_reader =
@@ -884,11 +884,11 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
                     dir.set_random_io_exception_rate_on_open(0.02); // turn on exceptions for openInput/createOutput
 
                     let mut doc = Document::new();
-                    doc.add(Box::new(LuceneTestCase::new_string_field(
+                    doc.add(LuceneTestCase::new_string_field(
                         "id",
                         &i.to_string(),
                         rucene::document::Store::NO,
-                    )));
+                    ));
                     self.add_random_fields(&mut doc);
 
                     // single doc

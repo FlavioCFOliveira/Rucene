@@ -376,11 +376,11 @@ fn test_explain_without_scoring(_c: &dyn SpanExplanationsCase) -> Result<()> {
             LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer)),
         )?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             FIELD_CONTENT,
             "dolor lorem ipsum",
             Store::YES,
-        )));
+        ));
         writer.add_document(&doc)?;
         writer.close()?;
     }

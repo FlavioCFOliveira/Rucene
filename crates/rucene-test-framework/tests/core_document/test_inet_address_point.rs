@@ -71,7 +71,7 @@ fn index_one(
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     // add a doc with an address
     let mut document = Document::new();
-    document.add(Box::new(InetAddressPoint::new("field", address)));
+    document.add(InetAddressPoint::new("field", address));
     writer.add_document(&document)?;
     // search and verify we found our doc
     let reader = writer.get_reader()?;

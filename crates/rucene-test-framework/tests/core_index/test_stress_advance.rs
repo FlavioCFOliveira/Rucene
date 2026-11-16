@@ -38,16 +38,8 @@ fn test_stress_advance() -> Result<()> {
         let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         let mut a_docs: HashSet<i32> = HashSet::new();
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "field",
-            "",
-            Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "id",
-            "",
-            Store::YES,
-        )));
+        doc.add(LuceneTestCase::new_string_field("field", "", Store::NO));
+        doc.add(LuceneTestCase::new_string_field("id", "", Store::YES));
         let num = LuceneTestCase::at_least(4097);
         if verbose() {
             println!("\nTEST: numDocs={num}");

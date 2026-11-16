@@ -31,16 +31,8 @@ fn test_basics() -> Result<()> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), index_store.as_directory())?;
     for i in 0..5 {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "string",
-            format!("a{i}"),
-            Store::NO,
-        )?));
-        doc.add(Box::new(StringField::new(
-            "string",
-            format!("b{i}"),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("string", format!("a{i}"), Store::NO)?);
+        doc.add(StringField::new("string", format!("b{i}"), Store::NO)?);
         writer.add_document(&doc)?;
     }
     let reader = writer.get_reader()?;

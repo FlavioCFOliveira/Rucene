@@ -149,22 +149,18 @@ fn term(field: &str, text: &str) -> Term {
 /// The document `addDoc` and `updateDoc` index.
 fn id_value_doc(id: i32, value: i32) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "content",
-        "aaa",
-        Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_text_field("content", "aaa", Store::NO));
+    doc.add(LuceneTestCase::new_string_field(
         "id",
         &id.to_string(),
         Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    ));
+    doc.add(LuceneTestCase::new_string_field(
         "value",
         &value.to_string(),
         Store::NO,
-    )));
-    doc.add(Box::new(NumericDocValuesField::new("dv", value as i64)));
+    ));
+    doc.add(NumericDocValuesField::new("dv", value as i64));
     doc
 }
 
@@ -202,26 +198,18 @@ fn city_doc(custom1: &FieldType, i: usize) -> Document {
     let unstored = ["Amsterdam has lots of bridges", "Venice has lots of canals"];
     let text = ["Amsterdam", "Venice"];
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         "id",
         keywords[i],
         Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_field(
-        "country",
-        unindexed[i],
-        custom1,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    ));
+    doc.add(LuceneTestCase::new_field("country", unindexed[i], custom1));
+    doc.add(LuceneTestCase::new_text_field(
         "contents",
         unstored[i],
         Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "city",
-        text[i],
-        Store::YES,
-    )));
+    ));
+    doc.add(LuceneTestCase::new_text_field("city", text[i], Store::YES));
     doc
 }
 
@@ -527,23 +515,19 @@ fn test_delete_all_no_dead_lock() -> Result<()> {
                 latch.await_();
                 for _ in 0..1000 {
                     let mut doc = Document::new();
-                    doc.add(Box::new(LuceneTestCase::new_text_field(
-                        "content",
-                        "aaa",
-                        Store::NO,
-                    )));
-                    doc.add(Box::new(LuceneTestCase::new_string_field(
+                    doc.add(LuceneTestCase::new_text_field("content", "aaa", Store::NO));
+                    doc.add(LuceneTestCase::new_string_field(
                         "id",
                         &id.to_string(),
                         Store::YES,
-                    )));
+                    ));
                     id += 1;
-                    doc.add(Box::new(LuceneTestCase::new_string_field(
+                    doc.add(LuceneTestCase::new_string_field(
                         "value",
                         &value.to_string(),
                         Store::NO,
-                    )));
-                    doc.add(Box::new(NumericDocValuesField::new("dv", value as i64)));
+                    ));
+                    doc.add(NumericDocValuesField::new("dv", value as i64));
                     modifier.add_document(&doc)?;
                     if verbose() {
                         println!("\tThread[{offset}]: add doc: {id}");
@@ -706,10 +690,10 @@ fn test_delete_all_repeated() -> Result<()> {
     let mut document = Document::new();
     let fields_per_doc: i64 = 1_000;
     for i in 0..fields_per_doc {
-        document.add(Box::new(StoredField::new_string(
+        document.add(StoredField::new_string(
             &format!("field{i}"),
             String::new(),
-        )?));
+        )?);
     }
     let document = Arc::new(document);
     let num_fields = Arc::new(AtomicI64::new(0));
@@ -802,17 +786,17 @@ fn do_test_operations_on_disk_full(updates: bool) -> Result<()> {
     let writer = IndexWriter::new(start_dir.as_directory(), whitespace_iwc())?;
     for i in 0..157 {
         let mut d = Document::new();
-        d.add(Box::new(LuceneTestCase::new_string_field(
+        d.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::YES,
-        )));
-        d.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        d.add(LuceneTestCase::new_text_field(
             "content",
             &format!("aaa {i}"),
             Store::NO,
-        )));
-        d.add(Box::new(NumericDocValuesField::new("dv", i as i64)));
+        ));
+        d.add(NumericDocValuesField::new("dv", i as i64));
         writer.add_document(&d)?;
     }
     writer.close()?;
@@ -896,17 +880,17 @@ fn do_test_operations_on_disk_full(updates: bool) -> Result<()> {
                     for i in 0..13 {
                         if updates {
                             let mut d = Document::new();
-                            d.add(Box::new(LuceneTestCase::new_string_field(
+                            d.add(LuceneTestCase::new_string_field(
                                 "id",
                                 &i.to_string(),
                                 Store::YES,
-                            )));
-                            d.add(Box::new(LuceneTestCase::new_text_field(
+                            ));
+                            d.add(LuceneTestCase::new_text_field(
                                 "content",
                                 &format!("bbb {i}"),
                                 Store::NO,
-                            )));
-                            d.add(Box::new(NumericDocValuesField::new("dv", i as i64)));
+                            ));
+                            d.add(NumericDocValuesField::new("dv", i as i64));
                             modifier.update_document(term("id", &doc_id.to_string()), &d)?;
                         } else {
                             // deletes
@@ -1313,11 +1297,11 @@ fn test_delete_all_slowly() -> Result<()> {
     shuffle(&mut ids, &*random());
     for id in &ids {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &id.to_string(),
             Store::NO,
-        )));
+        ));
         w.add_document(&doc)?;
     }
     shuffle(&mut ids, &*random());
@@ -1396,11 +1380,11 @@ fn test_indexing_then_deleting() -> Result<()> {
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "go 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20",
         Store::NO,
-    )));
+    ));
     let num = LuceneTestCase::at_least(1);
     for _ in 0..num {
         let mut count = 0;
@@ -1458,11 +1442,7 @@ fn test_flush_pushed_deletes_by_ram() -> Result<()> {
     let mut count = 0;
     loop {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "id",
-            count.to_string(),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("id", count.to_string(), Store::NO)?);
         let del_term = if count == 1010 {
             // This is the only delete that applies
             term("id", "0")
@@ -1556,16 +1536,12 @@ fn test_apply_deletes_on_flush() -> Result<()> {
             w.delete_documents_by_terms(vec![term("id", "0")])?;
         }
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &id.to_string(),
             Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "body",
-            &sb,
-            Store::NO,
-        )));
+        ));
+        doc.add(LuceneTestCase::new_text_field("body", &sb, Store::NO));
         w.update_document(term("id", &id.to_string()), &doc)?;
         docs_in_segment.fetch_add(1, Ordering::SeqCst);
         // TODO: fix this test
@@ -1609,19 +1585,19 @@ fn test_deletes_check_index_output() -> Result<()> {
     iwc.set_max_buffered_docs(2)?;
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_field(
+    doc.add(LuceneTestCase::new_field(
         "field",
         "0",
         StringField::type_not_stored(),
-    )));
+    ));
     w.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_field(
+    doc.add(LuceneTestCase::new_field(
         "field",
         "1",
         StringField::type_not_stored(),
-    )));
+    ));
     w.add_document(&doc)?;
     w.commit()?;
     assert_equals(&1, &w.get_segment_count()?);
@@ -1696,11 +1672,7 @@ fn test_nrt_is_current_after_delete() -> Result<()> {
     w.add_document(&doc)?;
     w.add_document(&doc)?;
     w.add_document(&doc)?;
-    doc.add(Box::new(StringField::new(
-        "id",
-        "1".to_string(),
-        Store::YES,
-    )?));
+    doc.add(StringField::new("id", "1".to_string(), Store::YES)?);
     w.add_document(&doc)?;
     w.close()?;
     let iwc = plain_iwc();
@@ -1736,11 +1708,11 @@ fn log_doc_iwc() -> Result<IndexWriterConfig> {
 /// `doc.add(newStringField("id", "" + i, Field.Store.NO)); w.addDocument(doc)`.
 fn add_id_doc(w: &IndexWriter, i: i32) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         "id",
         &i.to_string(),
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     Ok(())
 }

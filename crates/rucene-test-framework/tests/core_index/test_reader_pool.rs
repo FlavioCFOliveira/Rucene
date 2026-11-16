@@ -591,8 +591,8 @@ fn build_index(directory: &Arc<dyn Directory>) -> Result<Arc<FieldNumbers>> {
     )?;
     for i in 0..10 {
         let mut document = Document::new();
-        document.add(Box::new(StringField::new("id", i.to_string(), Store::YES)?));
-        document.add(Box::new(NumericDocValuesField::new("number", i)));
+        document.add(StringField::new("id", i.to_string(), Store::YES)?);
+        document.add(NumericDocValuesField::new("number", i));
         writer.add_document(&document)?;
         if random().next_boolean() {
             writer.flush()?;

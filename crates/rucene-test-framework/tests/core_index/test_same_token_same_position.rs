@@ -37,7 +37,7 @@ fn test_() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let riw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(eng_field()?));
+    doc.add(eng_field()?);
     riw.add_document(&doc)?;
     riw.close()?;
     dir.close()
@@ -51,7 +51,7 @@ fn test_more_docs() -> Result<()> {
     let riw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for _i in 0..100 {
         let mut doc = Document::new();
-        doc.add(Box::new(eng_field()?));
+        doc.add(eng_field()?);
         riw.add_document(&doc)?;
     }
     riw.close()?;

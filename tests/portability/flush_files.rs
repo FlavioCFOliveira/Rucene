@@ -72,12 +72,10 @@ use rucene::util::BytesRef;
 /// spaces, so Lucene's `StandardAnalyzer` and Rucene's produce the same tokens.
 fn doc(d: usize) -> Document {
     let mut document = Document::new();
-    document.add(Box::new(
-        StringField::new("id", format!("doc-{d}"), Store::YES).expect("id field"),
-    ));
-    document.add(Box::new(
+    document.add(StringField::new("id", format!("doc-{d}"), Store::YES).expect("id field"));
+    document.add(
         TextField::new("body", format!("hello world number {d}"), Store::YES).expect("body field"),
-    ));
+    );
     document
 }
 

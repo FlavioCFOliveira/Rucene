@@ -163,11 +163,7 @@ fn test_random_automaton_query() -> Result<()> {
         let text = per_doc_vocab
             .iter()
             .fold(String::new(), |s1, s2| format!("{s1} {s2}"));
-        document.add(Box::new(LuceneTestCase::new_text_field(
-            FIELD,
-            &text,
-            Store::NO,
-        )));
+        document.add(LuceneTestCase::new_text_field(FIELD, &text, Store::NO));
         writer.add_document(&document)?;
     }
     writer.commit()?;

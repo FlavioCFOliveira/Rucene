@@ -2364,11 +2364,11 @@ fn sgf_test_flattened_graph() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new(&*random(), dir.as_directory(), Arc::clone(&a))?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "wtf happened",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     let r = w.get_reader()?;
     w.close()?;

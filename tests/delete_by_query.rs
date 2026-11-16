@@ -51,13 +51,11 @@ use rucene::store::{Directory, FSDirectory};
 /// point range query selects any contiguous run of the corpus.
 fn doc(d: i32) -> Document {
     let mut document = Document::new();
-    document.add(Box::new(
-        StringField::new("id", format!("doc-{d}"), Store::YES).expect("id field"),
-    ));
-    document.add(Box::new(
+    document.add(StringField::new("id", format!("doc-{d}"), Store::YES).expect("id field"));
+    document.add(
         TextField::new("body", format!("hello world number {d}"), Store::YES).expect("body field"),
-    ));
-    document.add(Box::new(IntPoint::new("rank", &[d]).expect("rank field")));
+    );
+    document.add(IntPoint::new("rank", &[d]).expect("rank field"));
     document
 }
 

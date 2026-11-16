@@ -108,7 +108,7 @@ fn index_one(field: KeywordField, check_stored: impl FnOnce(&Document)) -> Resul
     )?;
     // w.addDocument(Collections.singleton(field))
     let mut doc = Document::new();
-    doc.add(Box::new(field));
+    doc.add(field);
     w.add_document(&doc)?;
     let reader: Arc<dyn IndexReader> = directory_reader::open_with_writer(&*w)?;
     w.close()?;

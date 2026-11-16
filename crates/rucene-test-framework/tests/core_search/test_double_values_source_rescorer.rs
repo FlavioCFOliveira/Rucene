@@ -104,27 +104,24 @@ fn publish_docs(
     )?;
     for i in 0..num_docs {
         let mut d = Document::new();
-        d.add(Box::new(LuceneTestCase::new_string_field(
+        d.add(LuceneTestCase::new_string_field(
             ID_FIELD,
             &i.to_string(),
             Store::YES,
-        )));
-        d.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        d.add(LuceneTestCase::new_text_field(
             field_name,
             &random_sentence(),
             Store::NO,
-        )));
+        ));
         if index_doc_values {
             let val = i + 100;
-            d.add(Box::new(NumericDocValuesField::new(
-                DOC_VAL_FIELD,
-                i64::from(val),
-            )));
-            d.add(Box::new(LuceneTestCase::new_string_field(
+            d.add(NumericDocValuesField::new(DOC_VAL_FIELD, i64::from(val)));
+            d.add(LuceneTestCase::new_string_field(
                 DOC_VAL_STORED_FIELD,
                 &val.to_string(),
                 Store::YES,
-            )));
+            ));
         }
         w.add_document(&d)?;
     }

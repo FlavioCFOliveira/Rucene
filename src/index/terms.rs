@@ -2543,9 +2543,7 @@ mod census_gap_get_terms_tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", "a".to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(StringField::new("id", "a".to_string(), Store::NO).unwrap());
         writer.add_document(&doc).unwrap();
         let reader = crate::index::directory_reader::open_with_writer(&*writer).unwrap();
         let leaves = Arc::clone(&reader).leaves().unwrap();

@@ -206,11 +206,7 @@ fn index_docs(dir: &TestDirectory, docs: &[&[&str]]) -> Result<()> {
         for values in docs {
             let mut doc = Document::new();
             for value in *values {
-                doc.add(Box::new(StringField::new(
-                    "foo",
-                    value.to_string(),
-                    Store::NO,
-                )?));
+                doc.add(StringField::new("foo", value.to_string(), Store::NO)?);
             }
             w.add_document(&doc)?;
         }
@@ -572,11 +568,7 @@ fn random_index(body: impl FnOnce(&IndexSearcher, i32) -> Result<()>) -> Result<
         let num_values = random().next_int_bound(1 << random().next_int_bound(5));
         let start = random().next_int_bound(10);
         for j in 0..num_values {
-            doc.add(Box::new(StringField::new(
-                "foo",
-                (start + j).to_string(),
-                Store::NO,
-            )?));
+            doc.add(StringField::new("foo", (start + j).to_string(), Store::NO)?);
         }
         w.add_document(&doc)?;
     }

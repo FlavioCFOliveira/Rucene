@@ -160,17 +160,17 @@ pub fn add_mutated_docs(riw: &rucene_test_framework::index::RandomIndexWriter) -
         String::new(),
         Arc::clone(&text_with_term_vectors_type),
     )?;
-    doc.add(Box::new(text));
+    doc.add(text);
     let term_string = StringField::new("string", String::new(), Store::YES)?;
-    doc.add(Box::new(term_string));
+    doc.add(term_string);
     let dv_string = SortedDocValuesField::new("string", BytesRef::new(Vec::new()));
-    doc.add(Box::new(dv_string));
+    doc.add(dv_string);
     let point_number = LongPoint::new("long", &[0])?;
-    doc.add(Box::new(point_number));
+    doc.add(point_number);
     let dv_number = NumericDocValuesField::new("long", 0);
-    doc.add(Box::new(dv_number));
+    doc.add(dv_number);
     let vector = KnnFloatVectorField::with_euclidean("vector", &[0f32; 16])?;
-    doc.add(Box::new(vector));
+    doc.add(vector);
 
     for i in 0..100 {
         field_mut(&mut doc, "text").set_string_value(TestUtil::random_analysis_string(
@@ -531,11 +531,11 @@ macro_rules! forward_leaf_reader {
 /// other index tests call.
 pub fn add_doc(writer: &rucene::index::index_writer::IndexWriter) -> Result<()> {
     let mut doc = rucene::document::Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "content",
         "aaa",
         rucene::document::Store::NO,
-    )));
+    ));
     writer.add_document(&doc)?;
     Ok(())
 }
@@ -550,16 +550,16 @@ pub fn add_doc_with_index(
     let stored_text_type =
         rucene::document::FieldType::new_from(rucene::document::TextField::type_not_stored());
     let mut doc = rucene::document::Document::new();
-    doc.add(Box::new(LuceneTestCase::new_field(
+    doc.add(LuceneTestCase::new_field(
         "content",
         &format!("aaa {index}"),
         &stored_text_type,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_field(
+    ));
+    doc.add(LuceneTestCase::new_field(
         "id",
         &index.to_string(),
         &stored_text_type,
-    )));
+    ));
     writer.add_document(&doc)?;
     Ok(())
 }

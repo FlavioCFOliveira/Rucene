@@ -93,8 +93,8 @@ fn conjunctions_set_up(f: &mut Conjunctions) -> Result<()> {
 
 fn doc(v1: &str, v2: &str) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(F1, v1.to_string(), Store::YES)?));
-    doc.add(Box::new(TextField::new(F2, v2.to_string(), Store::YES)?));
+    doc.add(StringField::new(F1, v1.to_string(), Store::YES)?);
+    doc.add(TextField::new(F2, v2.to_string(), Store::YES)?);
     Ok(doc)
 }
 
@@ -197,11 +197,7 @@ fn test_scorer_get_children(_f: &mut Conjunctions) -> Result<()> {
         LuceneTestCase::new_index_writer_config(),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "field",
-        "a b",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("field", "a b", Store::NO));
     w.add_document(&doc)?;
     let r = directory_reader::open_with_writer(&*w)?;
     let mut b = BooleanQueryBuilder::new();

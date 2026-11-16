@@ -596,31 +596,27 @@ impl DocHelper {
         let mut sb = String::new();
 
         let mut doc = Document::new();
-        doc.add(Box::new(new_field(
+        doc.add(new_field(
             "id",
             &n.to_string(),
             &STRING_TYPE_STORED_WITH_TVS,
-        )));
-        doc.add(Box::new(new_field(
+        ));
+        doc.add(new_field(
             "indexname",
             index_name,
             &STRING_TYPE_STORED_WITH_TVS,
-        )));
+        ));
         sb.push('a');
         sb.push_str(&n.to_string());
-        doc.add(Box::new(new_field(
-            "field1",
-            &sb,
-            &TEXT_TYPE_STORED_WITH_TVS,
-        )));
+        doc.add(new_field("field1", &sb, &TEXT_TYPE_STORED_WITH_TVS));
         sb.push_str(" b");
         sb.push_str(&n.to_string());
         for i in 1..num_fields {
-            doc.add(Box::new(new_field(
+            doc.add(new_field(
                 &format!("field{}", i + 1),
                 &sb,
                 &TEXT_TYPE_STORED_WITH_TVS,
-            )));
+            ));
         }
         doc
     }

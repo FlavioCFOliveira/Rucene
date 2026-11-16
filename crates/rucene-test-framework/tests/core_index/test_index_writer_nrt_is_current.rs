@@ -148,7 +148,7 @@ fn writer_thread(
         let random = LuceneTestCase::random();
         catch_throwable(&thread_failed, || {
             let mut doc = Document::new();
-            doc.add(Box::new(TextField::new("id", "1".to_string(), Store::NO)?));
+            doc.add(TextField::new("id", "1".to_string(), Store::NO)?);
             writer.add_document(&doc)?;
             let first = directory_reader::open_with_writer(&*writer)?;
             *current_reader.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&first));

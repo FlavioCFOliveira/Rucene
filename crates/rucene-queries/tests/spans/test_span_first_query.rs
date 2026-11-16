@@ -58,18 +58,18 @@ fn test_start_positions() -> Result<()> {
 
     let writer = RandomIndexWriter::new(&*random(), dir.as_directory(), analyzer)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "the quick brown fox",
         Store::NO,
-    )));
+    ));
     writer.add_document(&doc)?;
     let mut doc2 = Document::new();
-    doc2.add(Box::new(LuceneTestCase::new_text_field(
+    doc2.add(LuceneTestCase::new_text_field(
         "field",
         "quick brown fox",
         Store::NO,
-    )));
+    ));
     writer.add_document(&doc2)?;
 
     let reader = writer.get_reader()?;

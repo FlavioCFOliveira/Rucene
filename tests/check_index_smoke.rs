@@ -33,12 +33,8 @@ fn build(dir: Arc<dyn Directory>, segments: usize) {
     for s in 0..segments {
         for d in 0..5 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", format!("{s}-{d}"), Store::YES).unwrap(),
-            ));
-            doc.add(Box::new(
-                TextField::new("body", format!("hello world {s} {d}"), Store::YES).unwrap(),
-            ));
+            doc.add(StringField::new("id", format!("{s}-{d}"), Store::YES).unwrap());
+            doc.add(TextField::new("body", format!("hello world {s} {d}"), Store::YES).unwrap());
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();
@@ -137,12 +133,8 @@ fn a_segment_whose_fields_have_a_single_term_can_be_read_back() {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StringField::new("id", "only".to_string(), Store::YES).unwrap(),
-    ));
-    doc.add(Box::new(
-        TextField::new("body", "solo".to_string(), Store::YES).unwrap(),
-    ));
+    doc.add(StringField::new("id", "only".to_string(), Store::YES).unwrap());
+    doc.add(TextField::new("body", "solo".to_string(), Store::YES).unwrap());
     writer.add_document(&doc).unwrap();
     writer.commit().unwrap();
     writer.close().unwrap();
@@ -217,9 +209,7 @@ fn the_upgrader_rewrites_the_writers_live_commit_data() {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StringField::new("id", "a".to_string(), Store::YES).unwrap(),
-    ));
+    doc.add(StringField::new("id", "a".to_string(), Store::YES).unwrap());
     writer.add_document(&doc).unwrap();
     writer
         .set_live_commit_data([("origin".to_string(), "test".to_string())])

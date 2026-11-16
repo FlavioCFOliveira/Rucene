@@ -69,16 +69,8 @@ fn test_random() -> Result<()> {
 
         let num_docs = TestUtil::next_int(&*random(), 1, 100 * *RANDOM_MULTIPLIER);
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "field",
-            "",
-            Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "id",
-            "",
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_string_field("field", "", Store::NO));
+        doc.add(LuceneTestCase::new_string_field("id", "", Store::NO));
 
         let only_unique_terms = random().next_boolean();
         if verbose() {
@@ -183,11 +175,7 @@ fn two_segment_index() -> Result<(
     let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     let mut d = Document::new();
-    d.add(Box::new(LuceneTestCase::new_string_field(
-        "f",
-        "j",
-        Store::NO,
-    )));
+    d.add(LuceneTestCase::new_string_field("f", "j", Store::NO));
     w.add_document(&d)?;
     w.commit()?;
     w.add_document(&d)?;

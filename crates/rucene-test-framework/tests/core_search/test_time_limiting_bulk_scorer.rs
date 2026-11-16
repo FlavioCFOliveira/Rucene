@@ -46,11 +46,11 @@ fn test_time_limiting_bulk_scorer() -> Result<()> {
     let n = 10000;
     for _i in 0..n {
         let mut d = Document::new();
-        d.add(Box::new(LuceneTestCase::new_text_field(
+        d.add(LuceneTestCase::new_text_field(
             "default",
             "ones ",
             Store::YES,
-        )));
+        ));
         writer.add_document(&d)?;
     }
     writer.force_merge(1)?;

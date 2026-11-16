@@ -46,7 +46,7 @@ fn test_search_with_threads() -> Result<()> {
 
     let mut doc = Document::new();
     let body = LuceneTestCase::new_text_field("body", "", Store::NO);
-    doc.add(Box::new(body));
+    doc.add(body);
     let mut sb = String::new();
     for _doc_count in 0..num_docs {
         let num_terms = random().next_int_bound(10);

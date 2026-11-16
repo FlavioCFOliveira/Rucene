@@ -5441,10 +5441,10 @@ mod tests {
             let mut chain = DefaultIndexingChain::new(config());
             let mut field_infos = builder();
             let mut document = Document::new();
-            document.add(Box::new(SortedDocValuesField::new(
+            document.add(SortedDocValuesField::new(
                 "tag",
                 crate::util::BytesRef::new(b"a".to_vec()),
-            )));
+            ));
             chain
                 .process_document(0, Some(&document), true, &mut field_infos)
                 .expect("process document");
@@ -5473,11 +5473,11 @@ mod tests {
         let mut field_infos = builder();
         for (doc_id, (n, tag)) in [(3i64, "b"), (1, "a")].into_iter().enumerate() {
             let mut document = Document::new();
-            document.add(Box::new(NumericDocValuesField::new("n", n)));
-            document.add(Box::new(SortedDocValuesField::new(
+            document.add(NumericDocValuesField::new("n", n));
+            document.add(SortedDocValuesField::new(
                 "tag",
                 crate::util::BytesRef::new(tag.as_bytes().to_vec()),
-            )));
+            ));
             chain
                 .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
                 .expect("process document");
@@ -5534,7 +5534,7 @@ mod tests {
         let mut chain = DefaultIndexingChain::new(config());
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(scripted_field(
+        document.add_shared(std::sync::Arc::from(scripted_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS,
             vec![
@@ -5545,7 +5545,7 @@ mod tests {
                 Tok::new("the", 1, 10, 13),
                 Tok::new("fox", 1, 14, 17),
             ],
-        ));
+        )));
         chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
@@ -5578,11 +5578,11 @@ mod tests {
         let mut field_infos = builder();
         let mut document = Document::new();
         for _ in 0..2 {
-            document.add(scripted_field(
+            document.add_shared(std::sync::Arc::from(scripted_field(
                 "body",
                 IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS,
                 vec![Tok::new("alpha", 1, 0, 5), Tok::new("beta", 1, 6, 10)],
-            ));
+            )));
         }
         chain
             .process_document(0, Some(&document), true, &mut field_infos)
@@ -5603,9 +5603,7 @@ mod tests {
         let mut chain = DefaultIndexingChain::new(config());
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(Box::new(
-            StringField::new("id", "abc".to_string(), Store::NO).expect("string field"),
-        ));
+        document.add(StringField::new("id", "abc".to_string(), Store::NO).expect("string field"));
         chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
@@ -5628,11 +5626,11 @@ mod tests {
         let mut chain = DefaultIndexingChain::new(config());
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(scripted_field(
+        document.add_shared(std::sync::Arc::from(scripted_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             vec![Tok::new("alpha", 0, 0, 5)],
-        ));
+        )));
         let error = chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
@@ -5651,11 +5649,11 @@ mod tests {
         let mut chain = DefaultIndexingChain::new(config());
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(scripted_field(
+        document.add_shared(std::sync::Arc::from(scripted_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS,
             vec![Tok::new("alpha", 1, 10, 15), Tok::new("beta", 1, 4, 9)],
-        ));
+        )));
         let error = chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
@@ -5675,14 +5673,14 @@ mod tests {
         let mut chain = DefaultIndexingChain::new(config());
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(scripted_field(
+        document.add_shared(std::sync::Arc::from(scripted_field(
             "body",
             IndexOptions::DOCS_AND_FREQS,
             vec![
                 Tok::new("alpha", 1, 0, 5).with_term_freq(i32::MAX),
                 Tok::new("beta", 1, 6, 10).with_term_freq(i32::MAX),
             ],
-        ));
+        )));
         let error = chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
@@ -5719,11 +5717,11 @@ mod tests {
         let mut field_infos = builder();
         let mut document = Document::new();
         let immense = "x".repeat(40_000);
-        document.add(scripted_field(
+        document.add_shared(std::sync::Arc::from(scripted_field(
             "body",
             IndexOptions::DOCS,
             vec![Tok::new(&immense, 1, 0, 40_000)],
-        ));
+        )));
         let error = chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
@@ -5765,11 +5763,11 @@ mod tests {
         let mut chain = DefaultIndexingChain::new(config());
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(scripted_field(
+        document.add_shared(std::sync::Arc::from(scripted_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             vec![Tok::new("alpha", 1, 0, 5).with_payload(&[7, 7])],
-        ));
+        )));
         chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
@@ -5787,11 +5785,11 @@ mod tests {
         let mut chain = DefaultIndexingChain::new(config());
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(scripted_field(
+        document.add_shared(std::sync::Arc::from(scripted_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             vec![Tok::new("alpha", 1, 0, 5)],
-        ));
+        )));
         chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
@@ -5806,26 +5804,26 @@ mod tests {
         let mut chain = DefaultIndexingChain::new(config());
         let mut field_infos = builder();
         let mut first = Document::new();
-        first.add(scripted_field(
+        first.add_shared(std::sync::Arc::from(scripted_field(
             "alpha",
             IndexOptions::DOCS,
             vec![Tok::new("a", 1, 0, 1)],
-        ));
-        first.add(scripted_field(
+        )));
+        first.add_shared(std::sync::Arc::from(scripted_field(
             "beta",
             IndexOptions::DOCS,
             vec![Tok::new("b", 1, 0, 1)],
-        ));
+        )));
         chain
             .process_document(0, Some(&first), true, &mut field_infos)
             .expect("doc 0");
 
         let mut second = Document::new();
-        second.add(scripted_field(
+        second.add_shared(std::sync::Arc::from(scripted_field(
             "beta",
             IndexOptions::DOCS,
             vec![Tok::new("c", 1, 0, 1)],
-        ));
+        )));
         chain
             .process_document(1, Some(&second), true, &mut field_infos)
             .expect("doc 1");
@@ -5868,17 +5866,15 @@ mod tests {
         let (mut chain, _tracking, _info) = bound_chain(1);
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(Box::new(
-            TextField::new("body", "ignored".to_string(), Store::YES).expect("text field"),
-        ));
+        document
+            .add(TextField::new("body", "ignored".to_string(), Store::YES).expect("text field"));
         // A stored-only field: index options NONE.
         let stored_type = FieldType::new();
         stored_type.set_stored(true).expect("stored");
         stored_type.freeze();
         let mut only_stored = Document::new();
-        only_stored.add(Box::new(
-            Field::new("meta", "value".to_string(), stored_type).expect("stored field"),
-        ));
+        only_stored
+            .add(Field::new("meta", "value".to_string(), stored_type).expect("stored field"));
         chain
             .process_document(0, Some(&only_stored), true, &mut field_infos)
             .expect("process document");
@@ -5977,10 +5973,10 @@ mod tests {
         let mut field_infos = builder();
         for doc in 0..2 {
             let mut document = Document::new();
-            document.add(Box::new(
+            document.add(
                 KnnFloatVectorField::with_euclidean("v", &[doc as f32 + 1.0, 2.0, 3.0])
                     .expect("float vector field"),
-            ));
+            );
             chain
                 .process_document(doc, Some(&document), true, &mut field_infos)
                 .expect("process document");
@@ -6007,11 +6003,11 @@ mod tests {
         let (mut chain, tracking, _info) = bound_chain(1);
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(scripted_field(
+        document.add_shared(std::sync::Arc::from(scripted_field(
             "body",
             IndexOptions::DOCS,
             vec![Tok::new("a", 1, 0, 1)],
-        ));
+        )));
         chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
@@ -6033,12 +6029,8 @@ mod tests {
         let (mut chain, _tracking, _info) = bound_chain(1);
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(Box::new(
-            KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0]).expect("first"),
-        ));
-        document.add(Box::new(
-            KnnFloatVectorField::with_euclidean("v", &[3.0, 4.0]).expect("second"),
-        ));
+        document.add(KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0]).expect("first"));
+        document.add(KnnFloatVectorField::with_euclidean("v", &[3.0, 4.0]).expect("second"));
         let error = chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a repeated vector field must be rejected");
@@ -6062,9 +6054,9 @@ mod tests {
         let mut field_infos = builder();
         let mut document = Document::new();
         // 1025 is one past `Lucene99HnswVectorsFormat.getMaxDimensions`.
-        document.add(Box::new(
+        document.add(
             KnnFloatVectorField::with_euclidean("v", &vec![1.0f32; 1025]).expect("wide vector"),
-        ));
+        );
         let error = chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("an over-wide vector field must be rejected");
@@ -6087,9 +6079,9 @@ mod tests {
         let (mut chain, _tracking, _info) = bound_chain(1);
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(Box::new(
+        document.add(
             KnnFloatVectorField::with_euclidean("v", &vec![1.0f32; 1024]).expect("wide vector"),
-        ));
+        );
         chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect("1024 dimensions must be accepted");
@@ -6108,7 +6100,7 @@ mod tests {
             let (mut chain, _tracking, _info) = bound_chain(1);
             let mut field_infos = builder();
             let mut document = Document::new();
-            document.add(Box::new(VectorlessVectorField::new("v", encoding)));
+            document.add(VectorlessVectorField::new("v", encoding));
             let error = chain
                 .process_document(0, Some(&document), true, &mut field_infos)
                 .expect_err("a vector field with no value must be rejected");
@@ -6133,9 +6125,7 @@ mod tests {
         ))));
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(Box::new(
-            KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0]).expect("vector field"),
-        ));
+        document.add(KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0]).expect("vector field"));
         let error = chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("an unbound chain must refuse a vector field");
@@ -6155,9 +6145,8 @@ mod tests {
         let (mut chain, _tracking, _info) = bound_chain(1);
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(Box::new(
-            KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0, 3.0]).expect("vector field"),
-        ));
+        document
+            .add(KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0, 3.0]).expect("vector field"));
         chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect("index the vector");
@@ -6397,7 +6386,7 @@ mod tests {
                 .expect("bind segment");
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(Box::new(NumericDocValuesField::new("dv", 7)));
+        document.add(NumericDocValuesField::new("dv", 7));
         chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
@@ -6521,15 +6510,13 @@ mod tests {
         stored_type.freeze();
 
         let mut first = Document::new();
-        first.add(Box::new(
-            Field::new("body", "value".to_string(), stored_type).expect("stored field"),
-        ));
+        first.add(Field::new("body", "value".to_string(), stored_type).expect("stored field"));
         let mut second = Document::new();
-        second.add(scripted_norm_field(
+        second.add_shared(std::sync::Arc::from(scripted_norm_field(
             "body",
             IndexOptions::DOCS_AND_FREQS,
             words(2),
-        ));
+        )));
 
         let (mut chain, tracking, segment_info) = bound_chain(2);
         let mut field_infos = builder();
@@ -6565,11 +6552,11 @@ mod tests {
     #[test]
     fn a_field_with_norms_writes_the_two_norms_files() {
         let mut document = Document::new();
-        document.add(scripted_norm_field(
+        document.add_shared(std::sync::Arc::from(scripted_norm_field(
             "body",
             IndexOptions::DOCS_AND_FREQS,
             words(3),
-        ));
+        )));
         let (files, norms) = flush_and_read_norms(config(), vec![document]);
         for extension in ["nvd", "nvm"] {
             assert!(
@@ -6587,11 +6574,11 @@ mod tests {
         // `IndexingChain.writeNorms` is guarded by `fieldInfos.hasNorms()`, so a
         // segment where every field omits them writes neither file.
         let mut document = Document::new();
-        document.add(scripted_field(
+        document.add_shared(std::sync::Arc::from(scripted_field(
             "body",
             IndexOptions::DOCS_AND_FREQS,
             words(3),
-        ));
+        )));
         let (files, norms) = flush_and_read_norms(config(), vec![document]);
         for extension in ["nvd", "nvm"] {
             assert!(
@@ -6609,11 +6596,11 @@ mod tests {
         let mut documents = Vec::new();
         for doc in 0..6 {
             let mut document = Document::new();
-            document.add(scripted_norm_field(
+            document.add_shared(std::sync::Arc::from(scripted_norm_field(
                 "body",
                 IndexOptions::DOCS_AND_FREQS,
                 words(1 + doc * 5),
-            ));
+            )));
             documents.push(document);
         }
         let (_, norms) = flush_and_read_norms(config(), documents);
@@ -6640,19 +6627,19 @@ mod tests {
         for doc in 0..6 {
             let mut document = Document::new();
             if doc % 2 == 0 {
-                document.add(scripted_norm_field(
+                document.add_shared(std::sync::Arc::from(scripted_norm_field(
                     "body",
                     IndexOptions::DOCS_AND_FREQS,
                     words(1 + doc),
-                ));
+                )));
             }
             // Something must be indexed in every document so the segment keeps
             // its doc ids.
-            document.add(scripted_norm_field(
+            document.add_shared(std::sync::Arc::from(scripted_norm_field(
                 "title",
                 IndexOptions::DOCS_AND_FREQS,
                 words(2),
-            ));
+            )));
             documents.push(document);
         }
         let (_, norms) = flush_and_read_norms(config(), documents);
@@ -6678,11 +6665,11 @@ mod tests {
         let mut documents = Vec::new();
         for doc in 0..3 {
             let mut document = Document::new();
-            document.add(scripted_norm_field(
+            document.add_shared(std::sync::Arc::from(scripted_norm_field(
                 "body",
                 IndexOptions::DOCS_AND_FREQS,
                 if doc == 1 { Vec::new() } else { words(4) },
-            ));
+            )));
             documents.push(document);
         }
         let (_, norms) = flush_and_read_norms(config(), documents);
@@ -6776,11 +6763,11 @@ mod tests {
         let mut chain = DefaultIndexingChain::new_for_segment(config, Arc::clone(&tracking), &info)
             .expect("bind segment");
         let mut document = Document::new();
-        document.add(scripted_norm_field(
+        document.add_shared(std::sync::Arc::from(scripted_norm_field(
             "body",
             IndexOptions::DOCS_AND_FREQS,
             words(3),
-        ));
+        )));
         let mut field_infos = builder();
         chain
             .process_document(0, Some(&document), true, &mut field_infos)
@@ -6851,11 +6838,11 @@ mod tests {
         };
 
         let mut document = Document::new();
-        document.add(scripted_norm_field(
+        document.add_shared(std::sync::Arc::from(scripted_norm_field(
             "body",
             IndexOptions::DOCS_AND_FREQS,
             words(3),
-        ));
+        )));
         let mut field_infos = builder();
         let error = chain
             .process_document(0, Some(&document), true, &mut field_infos)
@@ -6874,7 +6861,7 @@ mod tests {
         // Two tokens per position: the default `discountOverlaps` subtracts the
         // ones whose position increment is zero.
         let mut document = Document::new();
-        document.add(scripted_norm_field(
+        document.add_shared(std::sync::Arc::from(scripted_norm_field(
             "body",
             IndexOptions::DOCS_AND_FREQS,
             vec![
@@ -6883,7 +6870,7 @@ mod tests {
                 Tok::new("b", 1, 2, 3),
                 Tok::new("syn2", 0, 2, 3),
             ],
-        ));
+        )));
         let (_, norms) = flush_and_read_norms(config(), vec![document]);
         assert_eq!(norms, vec![("body".to_string(), 0, 2)]);
 
@@ -6892,7 +6879,7 @@ mod tests {
             crate::search::BM25Similarity::with_discount_overlaps(false),
         ));
         let mut document = Document::new();
-        document.add(scripted_norm_field(
+        document.add_shared(std::sync::Arc::from(scripted_norm_field(
             "body",
             IndexOptions::DOCS_AND_FREQS,
             vec![
@@ -6901,7 +6888,7 @@ mod tests {
                 Tok::new("b", 1, 2, 3),
                 Tok::new("syn2", 0, 2, 3),
             ],
-        ));
+        )));
         let (_, norms) = flush_and_read_norms(Arc::new(live), vec![document]);
         assert_eq!(norms, vec![("body".to_string(), 0, 4)]);
     }
@@ -6909,16 +6896,16 @@ mod tests {
     #[test]
     fn a_multi_valued_field_norms_the_sum_of_its_values() {
         let mut document = Document::new();
-        document.add(scripted_norm_field(
+        document.add_shared(std::sync::Arc::from(scripted_norm_field(
             "body",
             IndexOptions::DOCS_AND_FREQS,
             words(3),
-        ));
-        document.add(scripted_norm_field(
+        )));
+        document.add_shared(std::sync::Arc::from(scripted_norm_field(
             "body",
             IndexOptions::DOCS_AND_FREQS,
             words(4),
-        ));
+        )));
         let (_, norms) = flush_and_read_norms(config(), vec![document]);
         // One norm for the document, not one per value, and it counts every
         // token of both values.
@@ -6928,7 +6915,7 @@ mod tests {
     #[test]
     fn a_docs_only_field_norms_its_unique_term_count() {
         let mut document = Document::new();
-        document.add(scripted_norm_field(
+        document.add_shared(std::sync::Arc::from(scripted_norm_field(
             "body",
             IndexOptions::DOCS,
             vec![
@@ -6937,7 +6924,7 @@ mod tests {
                 Tok::new("b", 1, 4, 5),
                 Tok::new("a", 1, 6, 7),
             ],
-        ));
+        )));
         let (_, norms) = flush_and_read_norms(config(), vec![document]);
         // Four tokens, two distinct terms.
         assert_eq!(norms, vec![("body".to_string(), 0, 2)]);
@@ -6951,11 +6938,11 @@ mod tests {
         // a writer or reader that sorted by name instead would disagree.
         let mut document = Document::new();
         for name in ["zeta", "alpha", "mu"] {
-            document.add(scripted_norm_field(
+            document.add_shared(std::sync::Arc::from(scripted_norm_field(
                 name,
                 IndexOptions::DOCS_AND_FREQS,
                 words(2),
-            ));
+            )));
         }
         let (_, norms) = flush_and_read_norms(config(), vec![document]);
         let names: Vec<&str> = norms.iter().map(|(name, _, _)| name.as_str()).collect();
@@ -6971,11 +6958,11 @@ mod tests {
         let mut field_infos = builder();
         for doc in 0..200 {
             let mut document = Document::new();
-            document.add(scripted_norm_field(
+            document.add_shared(std::sync::Arc::from(scripted_norm_field(
                 "body",
                 IndexOptions::DOCS_AND_FREQS,
                 words(2),
-            ));
+            )));
             chain
                 .process_document(doc, Some(&document), true, &mut field_infos)
                 .expect("process document");
@@ -6989,11 +6976,11 @@ mod tests {
     #[test]
     fn flushing_writes_the_postings_files_of_the_segment() {
         let mut document = Document::new();
-        document.add(scripted_field(
+        document.add_shared(std::sync::Arc::from(scripted_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             vec![Tok::new("alpha", 1, 0, 5), Tok::new("beta", 1, 6, 10)],
-        ));
+        )));
         let (files, _) = flush_documents(vec![document], &[]);
         for extension in ["doc", "pos", "tim", "tip", "tmd"] {
             assert!(
@@ -7011,9 +6998,7 @@ mod tests {
         stored_type.set_stored(true).expect("stored");
         stored_type.freeze();
         let mut document = Document::new();
-        document.add(Box::new(
-            Field::new("meta", "value".to_string(), stored_type).expect("stored field"),
-        ));
+        document.add(Field::new("meta", "value".to_string(), stored_type).expect("stored field"));
         let (files, result) = flush_documents(vec![document], &[]);
         let mut extensions: Vec<String> = files
             .iter()
@@ -7043,16 +7028,16 @@ mod tests {
         let mut documents = Vec::new();
         for index in 0..4 {
             let mut document = Document::new();
-            document.add(scripted_field(
+            document.add_shared(std::sync::Arc::from(scripted_field(
                 "body",
                 IndexOptions::DOCS,
                 vec![Tok::new("alpha", 1, 0, 5)],
-            ));
-            document.add(scripted_field(
+            )));
+            document.add_shared(std::sync::Arc::from(scripted_field(
                 "id",
                 IndexOptions::DOCS,
                 vec![Tok::new(&format!("id{index}"), 1, 0, 3)],
-            ));
+            )));
             documents.push(document);
         }
         let deletes = vec![TermDelete {
@@ -7120,12 +7105,15 @@ mod tests {
         let mut documents = Vec::new();
         for index in 0..3 {
             let mut document = Document::new();
-            document.add(stored_text_field("title", &format!("title {index}")));
-            document.add(Box::new(IntField::new("num", index, Store::YES)));
-            document.add(Box::new(
+            document.add_shared(std::sync::Arc::from(stored_text_field(
+                "title",
+                &format!("title {index}"),
+            )));
+            document.add(IntField::new("num", index, Store::YES));
+            document.add(
                 StoredField::new_bytes("blob", BytesRef::new(vec![index as u8, 0xFF]))
                     .expect("stored bytes"),
-            ));
+            );
             documents.push(document);
         }
 
@@ -7190,14 +7178,17 @@ mod tests {
         for index in 0..4 {
             let mut document = Document::new();
             if index % 2 == 0 {
-                document.add(stored_text_field("title", &format!("doc {index}")));
+                document.add_shared(std::sync::Arc::from(stored_text_field(
+                    "title",
+                    &format!("doc {index}"),
+                )));
             } else {
                 // Indexed but not stored: the frame must still be written.
-                document.add(scripted_field(
+                document.add_shared(std::sync::Arc::from(scripted_field(
                     "body",
                     IndexOptions::DOCS,
                     vec![Tok::new("alpha", 1, 0, 5)],
-                ));
+                )));
             }
             documents.push(document);
         }
@@ -7237,11 +7228,11 @@ mod tests {
     #[test]
     fn a_flush_writes_the_stored_field_files_even_when_nothing_was_stored() {
         let mut document = Document::new();
-        document.add(scripted_field(
+        document.add_shared(std::sync::Arc::from(scripted_field(
             "body",
             IndexOptions::DOCS,
             vec![Tok::new("alpha", 1, 0, 5)],
-        ));
+        )));
         let (files, _) = flush_documents(vec![document], &[]);
         for extension in ["fdt", "fdx", "fdm"] {
             assert!(
@@ -7258,7 +7249,7 @@ mod tests {
         let (mut chain, _tracking, _info) = bound_chain(1);
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(stored_text_field("title", "doomed"));
+        document.add_shared(std::sync::Arc::from(stored_text_field("title", "doomed")));
         chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
@@ -7295,7 +7286,7 @@ mod tests {
         let mut chain = DefaultIndexingChain::new(config());
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(stored_text_field("title", "value"));
+        document.add_shared(std::sync::Arc::from(stored_text_field("title", "value")));
         let error = chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("silently dropping stored data would corrupt the segment");
@@ -7317,11 +7308,11 @@ mod tests {
         let mut field_infos = builder();
         for doc_id in 0..20 {
             let mut document = Document::new();
-            document.add(scripted_field(
+            document.add_shared(std::sync::Arc::from(scripted_field(
                 "body",
                 IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
                 vec![Tok::new(&format!("term{doc_id}"), 1, 0, 5)],
-            ));
+            )));
             chain
                 .process_document(doc_id, Some(&document), true, &mut field_infos)
                 .expect("process document");
@@ -7521,10 +7512,10 @@ mod tests {
                     Tok::new("b", 1, 2, 3),
                 ])));
             let mut document = Document::new();
-            document.add(Box::new(
+            document.add(
                 Field::new_with_token_stream("f", stream, field_type.clone())
                     .expect("token stream field"),
-            ));
+            );
             chain
                 .process_document(doc_id, Some(&document), true, &mut field_infos)
                 .expect("process document");
@@ -7610,11 +7601,11 @@ mod tests {
     #[test]
     fn a_segment_without_vector_fields_writes_no_term_vector_file() {
         let mut document = Document::new();
-        document.add(scripted_field(
+        document.add_shared(std::sync::Arc::from(scripted_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             vec![Tok::new("alpha", 1, 0, 5)],
-        ));
+        )));
         let (files, vectors) = flush_and_read_vectors(vec![document]);
         for extension in ["tvd", "tvx", "tvm"] {
             assert!(
@@ -7628,7 +7619,7 @@ mod tests {
     #[test]
     fn only_the_fields_that_asked_for_vectors_are_written() {
         let mut document = Document::new();
-        document.add(tv_field(
+        document.add_shared(std::sync::Arc::from(tv_field(
             "with",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             true,
@@ -7636,12 +7627,12 @@ mod tests {
             false,
             false,
             vec![Tok::new("alpha", 1, 0, 5)],
-        ));
-        document.add(scripted_field(
+        )));
+        document.add_shared(std::sync::Arc::from(scripted_field(
             "without",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             vec![Tok::new("beta", 1, 0, 4)],
-        ));
+        )));
         let (files, vectors) = flush_and_read_vectors(vec![document]);
         for extension in ["tvd", "tvx", "tvm"] {
             assert!(
@@ -7671,7 +7662,7 @@ mod tests {
     #[test]
     fn terms_come_back_sorted_with_their_frequency() {
         let mut document = Document::new();
-        document.add(tv_field(
+        document.add_shared(std::sync::Arc::from(tv_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             true,
@@ -7685,7 +7676,7 @@ mod tests {
                 Tok::new("beta", 1, 18, 22),
                 Tok::new("gamma", 1, 23, 28),
             ],
-        ));
+        )));
         let (_, vectors) = flush_and_read_vectors(vec![document]);
         let doc = vectors[0].as_ref().expect("doc 0 has vectors");
         assert_eq!(
@@ -7712,7 +7703,7 @@ mod tests {
             (true, true, true),
         ] {
             let mut document = Document::new();
-            document.add(tv_field(
+            document.add_shared(std::sync::Arc::from(tv_field(
                 "body",
                 IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
                 true,
@@ -7724,7 +7715,7 @@ mod tests {
                     Tok::new("beta", 2, 10, 14).with_payload(b"two"),
                     Tok::new("alpha", 1, 20, 25),
                 ],
-            ));
+            )));
             let (_, vectors) = flush_and_read_vectors(vec![document]);
             let doc = vectors[0].as_ref().expect("doc 0 has vectors");
             let field = &doc[0];
@@ -7766,7 +7757,7 @@ mod tests {
     #[test]
     fn a_payload_is_ignored_when_the_field_did_not_ask_for_one() {
         let mut document = Document::new();
-        document.add(tv_field(
+        document.add_shared(std::sync::Arc::from(tv_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             true,
@@ -7774,7 +7765,7 @@ mod tests {
             false,
             false,
             vec![Tok::new("alpha", 1, 0, 5).with_payload(b"dropped")],
-        ));
+        )));
         let (_, vectors) = flush_and_read_vectors(vec![document]);
         let doc = vectors[0].as_ref().expect("doc 0 has vectors");
         assert!(
@@ -7787,7 +7778,7 @@ mod tests {
     fn fields_are_written_in_name_order_whatever_the_document_order() {
         let mut document = Document::new();
         for name in ["zeta", "alpha", "mu"] {
-            document.add(tv_field(
+            document.add_shared(std::sync::Arc::from(tv_field(
                 name,
                 IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
                 true,
@@ -7795,7 +7786,7 @@ mod tests {
                 true,
                 false,
                 vec![Tok::new("token", 1, 0, 5)],
-            ));
+            )));
         }
         let (_, vectors) = flush_and_read_vectors(vec![document]);
         let doc = vectors[0].as_ref().expect("doc 0 has vectors");
@@ -7815,7 +7806,7 @@ mod tests {
         // the one that must be reproduced.
         let mut document = Document::new();
         for name in ["\u{FFFF}", "\u{10000}"] {
-            document.add(tv_field(
+            document.add_shared(std::sync::Arc::from(tv_field(
                 name,
                 IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
                 true,
@@ -7823,7 +7814,7 @@ mod tests {
                 false,
                 false,
                 vec![Tok::new("token", 1, 0, 5)],
-            ));
+            )));
         }
         let (_, vectors) = flush_and_read_vectors(vec![document]);
         let doc = vectors[0].as_ref().expect("doc 0 has vectors");
@@ -7843,7 +7834,7 @@ mod tests {
         for doc_id in 0..5 {
             let mut document = Document::new();
             if doc_id == 2 {
-                document.add(tv_field(
+                document.add_shared(std::sync::Arc::from(tv_field(
                     "body",
                     IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
                     true,
@@ -7851,13 +7842,13 @@ mod tests {
                     false,
                     false,
                     vec![Tok::new("alpha", 1, 0, 5)],
-                ));
+                )));
             } else {
-                document.add(scripted_field(
+                document.add_shared(std::sync::Arc::from(scripted_field(
                     "other",
                     IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
                     vec![Tok::new("beta", 1, 0, 4)],
-                ));
+                )));
             }
             documents.push(document);
         }
@@ -7873,7 +7864,7 @@ mod tests {
     #[test]
     fn an_empty_document_after_a_vector_document_still_occupies_a_frame() {
         let mut first = Document::new();
-        first.add(tv_field(
+        first.add_shared(std::sync::Arc::from(tv_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             true,
@@ -7881,7 +7872,7 @@ mod tests {
             true,
             false,
             vec![Tok::new("alpha", 1, 0, 5)],
-        ));
+        )));
         let (_, vectors) = flush_and_read_vectors(vec![first, Document::new()]);
         assert!(vectors[0].is_some());
         assert!(
@@ -7893,7 +7884,7 @@ mod tests {
     #[test]
     fn a_vector_field_with_no_token_writes_no_field_but_keeps_the_frame() {
         let mut first = Document::new();
-        first.add(tv_field(
+        first.add_shared(std::sync::Arc::from(tv_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             true,
@@ -7901,9 +7892,9 @@ mod tests {
             false,
             false,
             vec![Tok::new("alpha", 1, 0, 5)],
-        ));
+        )));
         let mut second = Document::new();
-        second.add(tv_field(
+        second.add_shared(std::sync::Arc::from(tv_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             true,
@@ -7911,7 +7902,7 @@ mod tests {
             false,
             false,
             Vec::new(),
-        ));
+        )));
         let (_, vectors) = flush_and_read_vectors(vec![first, second]);
         assert!(vectors[0].is_some());
         assert!(
@@ -7924,7 +7915,7 @@ mod tests {
     fn a_multi_valued_field_accumulates_one_vector() {
         let mut document = Document::new();
         for value in 0..2 {
-            document.add(tv_field(
+            document.add_shared(std::sync::Arc::from(tv_field(
                 "body",
                 IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
                 true,
@@ -7932,7 +7923,7 @@ mod tests {
                 true,
                 false,
                 vec![Tok::new("alpha", 1, value * 10, value * 10 + 5)],
-            ));
+            )));
         }
         let (_, vectors) = flush_and_read_vectors(vec![document]);
         let doc = vectors[0].as_ref().expect("doc 0 has vectors");
@@ -7963,7 +7954,7 @@ mod tests {
                         )
                     })
                     .collect();
-                document.add(tv_field(
+                document.add_shared(std::sync::Arc::from(tv_field(
                     "body",
                     IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
                     true,
@@ -7971,7 +7962,7 @@ mod tests {
                     true,
                     false,
                     tokens,
-                ));
+                )));
                 document
             })
             .collect();
@@ -7994,7 +7985,7 @@ mod tests {
         // the value with `>>>`. `MAX_POSITION` still allows such a delta.
         let far = MAX_POSITION - 1;
         let mut document = Document::new();
-        document.add(tv_field(
+        document.add_shared(std::sync::Arc::from(tv_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             true,
@@ -8002,7 +7993,7 @@ mod tests {
             false,
             false,
             vec![Tok::new("alpha", 1, 0, 5), Tok::new("alpha", far, 6, 11)],
-        ));
+        )));
         let (_, vectors) = flush_and_read_vectors(vec![document]);
         let doc = vectors[0].as_ref().expect("doc 0 has vectors");
         assert_eq!(doc[0].terms[0].positions, vec![0, far]);
@@ -8013,7 +8004,7 @@ mod tests {
         let (mut bound, _tracking, _) = bound_chain(1);
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(tv_field(
+        document.add_shared(std::sync::Arc::from(tv_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             true,
@@ -8021,8 +8012,8 @@ mod tests {
             false,
             false,
             vec![Tok::new("alpha", 1, 0, 5)],
-        ));
-        document.add(tv_field(
+        )));
+        document.add_shared(std::sync::Arc::from(tv_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             true,
@@ -8030,7 +8021,7 @@ mod tests {
             false,
             false,
             vec![Tok::new("beta", 1, 6, 10)],
-        ));
+        )));
         let error = bound
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("the two instances disagree on storeTermVectorPositions");
@@ -8051,7 +8042,7 @@ mod tests {
         let (mut chain, _tracking, _) = bound_chain(1);
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(tv_field(
+        document.add_shared(std::sync::Arc::from(tv_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             true,
@@ -8059,7 +8050,7 @@ mod tests {
             false,
             true,
             vec![Tok::new("alpha", 1, 0, 5)],
-        ));
+        )));
         let error = chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("payloads need positions");
@@ -8080,7 +8071,7 @@ mod tests {
             let (mut chain, _tracking, _) = bound_chain(1);
             let mut field_infos = builder();
             let mut document = Document::new();
-            document.add(tv_field(
+            document.add_shared(std::sync::Arc::from(tv_field(
                 "body",
                 IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
                 false,
@@ -8088,7 +8079,7 @@ mod tests {
                 offsets,
                 payloads,
                 vec![Tok::new("alpha", 1, 0, 5)],
-            ));
+            )));
             let error = chain
                 .process_document(0, Some(&document), true, &mut field_infos)
                 .expect_err("term vectors were not requested");
@@ -8111,9 +8102,7 @@ mod tests {
             .set_store_term_vectors(true)
             .expect("store term vectors");
         field_type.freeze();
-        document.add(Box::new(
-            Field::new("title", "value".to_string(), field_type).expect("field"),
-        ));
+        document.add(Field::new("title", "value".to_string(), field_type).expect("field"));
         let error = chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a non-indexed field cannot store term vectors");
@@ -8129,7 +8118,7 @@ mod tests {
         let (mut chain, _tracking, _) = bound_chain(1);
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(tv_field(
+        document.add_shared(std::sync::Arc::from(tv_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             true,
@@ -8137,12 +8126,12 @@ mod tests {
             false,
             false,
             vec![Tok::new("alpha", 1, 0, 5)],
-        ));
-        document.add(scripted_field(
+        )));
+        document.add_shared(std::sync::Arc::from(scripted_field(
             "plain",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             vec![Tok::new("beta", 1, 0, 4)],
-        ));
+        )));
         chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
@@ -8163,7 +8152,7 @@ mod tests {
         let (mut chain, tracking, _) = bound_chain(1);
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(tv_field(
+        document.add_shared(std::sync::Arc::from(tv_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             true,
@@ -8171,7 +8160,7 @@ mod tests {
             true,
             false,
             vec![Tok::new("alpha", 1, 0, 5)],
-        ));
+        )));
         chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
@@ -8196,7 +8185,7 @@ mod tests {
         let mut chain = DefaultIndexingChain::new(config());
         let mut field_infos = builder();
         let mut document = Document::new();
-        document.add(tv_field(
+        document.add_shared(std::sync::Arc::from(tv_field(
             "body",
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             true,
@@ -8204,7 +8193,7 @@ mod tests {
             false,
             false,
             vec![Tok::new("alpha", 1, 0, 5)],
-        ));
+        )));
         let error = chain
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("silently dropping term vectors would corrupt the segment");

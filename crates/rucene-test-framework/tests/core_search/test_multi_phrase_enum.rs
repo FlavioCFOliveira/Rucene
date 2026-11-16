@@ -31,11 +31,7 @@ pub fn class_def() -> Arc<Class> {
 
 fn text(value: &str) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(
-        "field",
-        value.to_string(),
-        Store::NO,
-    )?));
+    doc.add(TextField::new("field", value.to_string(), Store::NO)?);
     Ok(doc)
 }
 

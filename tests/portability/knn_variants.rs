@@ -110,35 +110,25 @@ fn term(field: &str, text: &str) -> Term {
 /// its byte vector's first component.
 fn doc(i: i32, perturbed: bool) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(StringField::new("id", id(i), Store::YES).unwrap()));
-    d.add(Box::new(
-        StringField::new("tag", format!("t{}", i % 10), Store::NO).unwrap(),
-    ));
-    d.add(Box::new(
-        StringField::new("g", format!("g{}", i % 20), Store::NO).unwrap(),
-    ));
+    d.add(StringField::new("id", id(i), Store::YES).unwrap());
+    d.add(StringField::new("tag", format!("t{}", i % 10), Store::NO).unwrap());
+    d.add(StringField::new("g", format!("g{}", i % 20), Store::NO).unwrap());
     if i % 97 == 0 {
-        d.add(Box::new(
-            StringField::new("rare", "yes".to_string(), Store::NO).unwrap(),
-        ));
+        d.add(StringField::new("rare", "yes".to_string(), Store::NO).unwrap());
     }
     if i % 10 != 9 {
         let mut v = fvec(i);
         if perturbed && i == PERTURBED_DOC {
             v[0] += 0.25;
         }
-        d.add(Box::new(
-            KnnFloatVectorField::new("fvec", &v, VectorSimilarityFunction::EUCLIDEAN).unwrap(),
-        ));
+        d.add(KnnFloatVectorField::new("fvec", &v, VectorSimilarityFunction::EUCLIDEAN).unwrap());
     }
     if i % 7 != 6 {
         let mut v = bvec(i);
         if perturbed && i == PERTURBED_DOC {
             v[0] ^= 1;
         }
-        d.add(Box::new(
-            KnnByteVectorField::new("bvec", &v, VectorSimilarityFunction::DOT_PRODUCT).unwrap(),
-        ));
+        d.add(KnnByteVectorField::new("bvec", &v, VectorSimilarityFunction::DOT_PRODUCT).unwrap());
     }
     d
 }

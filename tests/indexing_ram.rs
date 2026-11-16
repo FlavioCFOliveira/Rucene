@@ -143,71 +143,46 @@ fn text(id: i32) -> String {
 fn doc(kind: &str, id: i32) -> Document {
     let mut d = Document::new();
     match kind {
-        "string" => d.add(Box::new(
-            StringField::new("id", format!("d{id}"), Store::NO).unwrap(),
-        )),
-        "text" => d.add(Box::new(
-            TextField::new("body", text(id), Store::NO).unwrap(),
-        )),
-        "freqs" => d.add(Box::new(
-            Field::new("freqs", text(id), docs_freqs_type()).unwrap(),
-        )),
-        "tv" => d.add(Box::new(Field::new("tv", text(id), tv_type()).unwrap())),
+        "string" => d.add(StringField::new("id", format!("d{id}"), Store::NO).unwrap()),
+        "text" => d.add(TextField::new("body", text(id), Store::NO).unwrap()),
+        "freqs" => d.add(Field::new("freqs", text(id), docs_freqs_type()).unwrap()),
+        "tv" => d.add(Field::new("tv", text(id), tv_type()).unwrap()),
         "stored" => {
-            d.add(Box::new(
-                StoredField::new_string("s", format!("v{id}")).unwrap(),
-            ));
-            d.add(Box::new(
-                StoredField::new_number("n", NumericValue::Int(id)).unwrap(),
-            ));
+            d.add(StoredField::new_string("s", format!("v{id}")).unwrap());
+            d.add(StoredField::new_number("n", NumericValue::Int(id)).unwrap());
         }
-        "numeric" => d.add(Box::new(NumericDocValuesField::new(
-            "num",
-            i64::from(id) * 1000,
-        ))),
-        "binary" => d.add(Box::new(BinaryDocValuesField::new(
-            "bin",
-            bytes(&format!("b{id}")),
-        ))),
-        "sorted" => d.add(Box::new(SortedDocValuesField::new(
+        "numeric" => d.add(NumericDocValuesField::new("num", i64::from(id) * 1000)),
+        "binary" => d.add(BinaryDocValuesField::new("bin", bytes(&format!("b{id}")))),
+        "sorted" => d.add(SortedDocValuesField::new(
             "sorted",
             bytes(&format!("s{}", id % 13)),
-        ))),
+        )),
         "sortedset" => {
             for j in 0..=id % 3 {
-                d.add(Box::new(SortedSetDocValuesField::new(
+                d.add(SortedSetDocValuesField::new(
                     "sset",
                     bytes(&format!("t{}", (id + j) % 11)),
-                )));
+                ));
             }
         }
         "sortednumeric" => {
             for j in 0..=id % 3 {
-                d.add(Box::new(SortedNumericDocValuesField::new(
+                d.add(SortedNumericDocValuesField::new(
                     "snum",
                     i64::from(id) * i64::from(j),
-                )));
+                ));
             }
         }
         "mixed" => {
-            d.add(Box::new(
-                StringField::new("id", format!("d{id}"), Store::YES).unwrap(),
-            ));
-            d.add(Box::new(
-                StringField::new("grp", format!("g{}", id % 5), Store::NO).unwrap(),
-            ));
-            d.add(Box::new(
-                TextField::new("body", text(id), Store::NO).unwrap(),
-            ));
-            d.add(Box::new(NumericDocValuesField::new("num", i64::from(id))));
-            d.add(Box::new(BinaryDocValuesField::new(
-                "bin",
-                bytes(&format!("b{id}")),
-            )));
-            d.add(Box::new(SortedDocValuesField::new(
+            d.add(StringField::new("id", format!("d{id}"), Store::YES).unwrap());
+            d.add(StringField::new("grp", format!("g{}", id % 5), Store::NO).unwrap());
+            d.add(TextField::new("body", text(id), Store::NO).unwrap());
+            d.add(NumericDocValuesField::new("num", i64::from(id)));
+            d.add(BinaryDocValuesField::new("bin", bytes(&format!("b{id}"))));
+            d.add(SortedDocValuesField::new(
                 "sorted",
                 bytes(&format!("s{}", id % 13)),
-            )));
+            ));
         }
         other => panic!("unknown kind {other}"),
     }

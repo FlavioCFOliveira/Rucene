@@ -724,9 +724,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
     fn points_add_random_fields(&self, doc: &mut Document) {
         let num_values = random().next_int_bound(3);
         for _ in 0..num_values {
-            doc.add(Box::new(
-                IntPoint::new("f", &[random().next_int()]).unwrap_or_else(|e| rethrow(e)),
-            ));
+            doc.add(IntPoint::new("f", &[random().next_int()]).unwrap_or_else(|e| rethrow(e)));
         }
     }
 
@@ -750,10 +748,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
             for i in 0..20 {
                 let mut doc = Document::new();
                 NumericUtils::int_to_sortable_bytes(i, &mut point, 0);
-                doc.add(Box::new(BinaryPoint::new(
-                    "dim",
-                    &[BytesRef::new(point.to_vec())],
-                )?));
+                doc.add(BinaryPoint::new("dim", &[BytesRef::new(point.to_vec())])?);
                 w.add_document(&doc)?;
                 if commit_at_10 && i == 10 {
                     w.commit()?;
@@ -802,16 +797,9 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
             for i in 0..10 {
                 let mut doc = Document::new();
                 NumericUtils::int_to_sortable_bytes(i, &mut point, 0);
-                doc.add(Box::new(BinaryPoint::new(
-                    "dim",
-                    &[BytesRef::new(point.to_vec())],
-                )?));
-                doc.add(Box::new(NumericDocValuesField::new("id", i64::from(i))));
-                doc.add(Box::new(LuceneTestCase::new_string_field(
-                    "x",
-                    "x",
-                    Store::NO,
-                )));
+                doc.add(BinaryPoint::new("dim", &[BytesRef::new(point.to_vec())])?);
+                doc.add(NumericDocValuesField::new("id", i64::from(i)));
+                doc.add(LuceneTestCase::new_string_field("x", "x", Store::NO));
                 w.add_document(&doc)?;
             }
             w.add_document(&Document::new())?;
@@ -1124,7 +1112,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                     }
                     docs.push(values);
                     let mut doc = Document::new();
-                    doc.add(Box::new(BinaryPoint::new("field", &bytes)?));
+                    doc.add(BinaryPoint::new("field", &bytes)?);
                     w.add_document(&doc)?;
                 }
 
@@ -1412,15 +1400,19 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                         }
                     }
                     let mut d = Document::new();
-                    d.add(Box::new(NumericDocValuesField::new("id", i64::from(id))));
+                    d.add(NumericDocValuesField::new("id", i64::from(id)));
                     doc = Some(d);
                 }
                 // pack the binary point
                 let val = flatten_binary_point(&doc_values[ord], nd, nb);
 
-                doc.as_mut().expect("a document is open").add(Box::new(
-                    BinaryPoint::new_with_packed("field", BytesRef::new(val), field_type.clone())?,
-                ));
+                doc.as_mut()
+                    .expect("a document is open")
+                    .add(BinaryPoint::new_with_packed(
+                        "field",
+                        BytesRef::new(val),
+                        field_type.clone(),
+                    )?);
                 last_id = id;
 
                 if random().next_int_bound(30) == 17 {
@@ -1439,16 +1431,12 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                     // randomly index some documents with this field, but we will delete them:
                     let mut xdoc = Document::new();
                     let val = flatten_binary_point(&doc_values[ord], nd, nb);
-                    xdoc.add(Box::new(BinaryPoint::new_with_packed(
+                    xdoc.add(BinaryPoint::new_with_packed(
                         "field",
                         BytesRef::new(val),
                         field_type.clone(),
-                    )?));
-                    xdoc.add(Box::new(StringField::new(
-                        "nukeme",
-                        "yes".to_string(),
-                        Store::NO,
-                    )?));
+                    )?);
+                    xdoc.add(StringField::new("nukeme", "yes".to_string(), Store::NO)?);
                     if use_real_writer {
                         w.w().add_document(&xdoc)?;
                     } else {
@@ -1704,10 +1692,10 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
         {
             let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir1.as_directory())?;
             let mut doc = Document::new();
-            doc.add(Box::new(IntPoint::new("int1", &[17])?));
+            doc.add(IntPoint::new("int1", &[17])?);
             w.add_document(&doc)?;
             let mut doc = Document::new();
-            doc.add(Box::new(IntPoint::new("int2", &[42])?));
+            doc.add(IntPoint::new("int2", &[42])?);
             w.add_document(&doc)?;
             w.close()?;
 
@@ -1715,10 +1703,10 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
             dir2 = LuceneTestCase::new_directory();
             let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir2.as_directory())?;
             let mut doc = Document::new();
-            doc.add(Box::new(IntPoint::new("int2", &[42])?));
+            doc.add(IntPoint::new("int2", &[42])?);
             w.add_document(&doc)?;
             let mut doc = Document::new();
-            doc.add(Box::new(IntPoint::new("int1", &[17])?));
+            doc.add(IntPoint::new("int1", &[17])?);
             w.add_document(&doc)?;
             w.close()?;
 
@@ -1759,13 +1747,13 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
             w.w().get_config().set_max_buffered_docs(2)?;
             for i in 0..2 {
                 let mut doc = Document::new();
-                doc.add(Box::new(IntPoint::new("int", &[i])?));
+                doc.add(IntPoint::new("int", &[i])?);
                 w.add_document(&doc)?;
             }
             // index has 1 segment now (with 2 docs) and that segment does have points
 
             let mut doc = Document::new();
-            doc.add(Box::new(IntPoint::new("id", &[0])?));
+            doc.add(IntPoint::new("id", &[0])?);
             w.add_document(&doc)?;
             // now we write another segment where the id field does have points:
             w.force_merge(1)?;
@@ -1830,8 +1818,8 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                 LuceneTestCase::new_index_writer_config(),
             )?;
             let mut doc = Document::new();
-            doc.add(Box::new(LongPoint::new("f", &[1])?));
-            doc.add(Box::new(LongPoint::new("g", &[42, 43])?));
+            doc.add(LongPoint::new("f", &[1])?);
+            doc.add(LongPoint::new("g", &[42, 43])?);
             w1.add_document(&doc)?;
 
             dir2 = LuceneTestCase::new_directory();

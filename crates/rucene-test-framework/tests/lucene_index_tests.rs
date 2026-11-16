@@ -70,11 +70,7 @@ fn test_asserting_leaf_reader() {
 
                         // Does get deleted:
                         let mut doc = Document::new();
-                        doc.add(Box::new(LuceneTestCase::new_string_field(
-                            "id",
-                            "0",
-                            Store::NO,
-                        )));
+                        doc.add(LuceneTestCase::new_string_field("id", "0", Store::NO));
                         w.add_document(&doc).unwrap_or_else(|e| rethrow(e));
                         w.commit().unwrap_or_else(|e| rethrow(e));
 

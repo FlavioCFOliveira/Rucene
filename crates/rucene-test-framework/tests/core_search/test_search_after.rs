@@ -218,7 +218,7 @@ fn search_after_set_up(f: &mut SearchAfter) -> Result<()> {
         )));
 
         let mut document = Document::new();
-        document.add(Box::new(StoredField::new_string("id", i.to_string())?));
+        document.add(StoredField::new_string("id", i.to_string())?);
         if verbose() {
             println!("  add doc id={i}");
         }
@@ -228,7 +228,7 @@ fn search_after_set_up(f: &mut SearchAfter) -> Result<()> {
                 if verbose() {
                     println!("    {}", field.name());
                 }
-                document.add(field);
+                document.add_shared(std::sync::Arc::from(field));
             }
         }
 

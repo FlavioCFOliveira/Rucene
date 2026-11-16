@@ -226,7 +226,7 @@ fn test_incompatible_indexes() -> Result<()> {
     let w2 = IndexWriter::new(dir2.as_directory(), new_iwc())?;
     let mut d3 = Document::new();
 
-    d3.add(text("f3", "v1"));
+    d3.add(*text("f3", "v1"));
     w2.add_document(&d3)?;
     w2.close()?;
 
@@ -351,16 +351,16 @@ fn single() -> Result<(IndexSearcher, TestDirectory)> {
     let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), new_iwc())?;
     let mut d1 = Document::new();
-    d1.add(text("f1", "v1"));
-    d1.add(text("f2", "v1"));
-    d1.add(text("f3", "v1"));
-    d1.add(text("f4", "v1"));
+    d1.add(*text("f1", "v1"));
+    d1.add(*text("f2", "v1"));
+    d1.add(*text("f3", "v1"));
+    d1.add(*text("f4", "v1"));
     w.add_document(&d1)?;
     let mut d2 = Document::new();
-    d2.add(text("f1", "v2"));
-    d2.add(text("f2", "v2"));
-    d2.add(text("f3", "v2"));
-    d2.add(text("f4", "v2"));
+    d2.add(*text("f1", "v2"));
+    d2.add(*text("f2", "v2"));
+    d2.add(*text("f3", "v2"));
+    d2.add(*text("f4", "v2"));
     w.add_document(&d2)?;
     w.close()?;
 
@@ -389,12 +389,12 @@ fn get_dir1() -> Result<TestDirectory> {
     conf.set_merge_policy(Some(Arc::new(LogMergePolicy::by_doc_count())))?;
     let w1 = IndexWriter::new(dir1.as_directory(), conf)?;
     let mut d1 = Document::new();
-    d1.add(text("f1", "v1"));
-    d1.add(text("f2", "v1"));
+    d1.add(*text("f1", "v1"));
+    d1.add(*text("f2", "v1"));
     w1.add_document(&d1)?;
     let mut d2 = Document::new();
-    d2.add(text("f1", "v2"));
-    d2.add(text("f2", "v2"));
+    d2.add(*text("f1", "v2"));
+    d2.add(*text("f2", "v2"));
     w1.add_document(&d2)?;
     w1.force_merge(1)?;
     w1.close()?;
@@ -408,12 +408,12 @@ fn get_dir2() -> Result<TestDirectory> {
     conf.set_merge_policy(Some(Arc::new(LogMergePolicy::by_doc_count())))?;
     let w2 = IndexWriter::new(dir2.as_directory(), conf)?;
     let mut d3 = Document::new();
-    d3.add(text("f3", "v1"));
-    d3.add(text("f4", "v1"));
+    d3.add(*text("f3", "v1"));
+    d3.add(*text("f4", "v1"));
     w2.add_document(&d3)?;
     let mut d4 = Document::new();
-    d4.add(text("f3", "v2"));
-    d4.add(text("f4", "v2"));
+    d4.add(*text("f3", "v2"));
+    d4.add(*text("f4", "v2"));
     w2.add_document(&d4)?;
     w2.force_merge(1)?;
     w2.close()?;
@@ -504,12 +504,8 @@ fn test_with_doc_values_updates() -> Result<()> {
     let iwc1 = new_iwc();
     let w1 = IndexWriter::new(dir1.as_directory(), iwc1)?;
     let mut d = Document::new();
-    d.add(Box::new(LuceneTestCase::new_text_field(
-        "name",
-        "billy",
-        Store::NO,
-    )));
-    d.add(Box::new(NumericDocValuesField::new("age", 21)));
+    d.add(LuceneTestCase::new_text_field("name", "billy", Store::NO));
+    d.add(NumericDocValuesField::new("age", 21));
     w1.add_document(&d)?;
     w1.commit()?;
     w1.update_numeric_doc_value(Term::from_text("name", "billy"), "age", 22)?;

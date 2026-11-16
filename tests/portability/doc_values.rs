@@ -960,26 +960,26 @@ fn write_with_rucene(
         for &(field, ref value) in values {
             let name = specs[field].0;
             match *value {
-                Dv::Num(value) => document.add(Box::new(NumericDocValuesField::new(name, value))),
-                Dv::Bin(bytes) => document.add(Box::new(BinaryDocValuesField::new(
+                Dv::Num(value) => document.add(NumericDocValuesField::new(name, value)),
+                Dv::Bin(bytes) => document.add(BinaryDocValuesField::new(
                     name,
                     BytesRef::new(bytes.to_vec()),
-                ))),
-                Dv::Sorted(bytes) => document.add(Box::new(SortedDocValuesField::new(
+                )),
+                Dv::Sorted(bytes) => document.add(SortedDocValuesField::new(
                     name,
                     BytesRef::new(bytes.to_vec()),
-                ))),
+                )),
                 Dv::SortedNum(ref values) => {
                     for &value in values {
-                        document.add(Box::new(SortedNumericDocValuesField::new(name, value)));
+                        document.add(SortedNumericDocValuesField::new(name, value));
                     }
                 }
                 Dv::SortedSet(ref terms) => {
                     for bytes in terms {
-                        document.add(Box::new(SortedSetDocValuesField::new(
+                        document.add(SortedSetDocValuesField::new(
                             name,
                             BytesRef::new(bytes.to_vec()),
-                        )));
+                        ));
                     }
                 }
             }

@@ -105,7 +105,7 @@ fn index_and_merge(mut add: impl FnMut(&RandomIndexWriter) -> Result<()>) -> Res
 /// Port of `TestMultiDocValues.testNumerics`.
 fn test_numerics() -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("numbers", 0)));
+    doc.add(NumericDocValuesField::new("numbers", 0));
     let ix = index_and_merge(|iw| {
         field_mut_as::<NumericDocValuesField>(&mut doc, "numbers").set_value(random().next_long());
         iw.add_document(&doc)?;
@@ -146,10 +146,7 @@ fn test_numerics() -> Result<()> {
 /// Port of `TestMultiDocValues.testBinary`.
 fn test_binary() -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(BinaryDocValuesField::new(
-        "bytes",
-        BytesRef::default(),
-    )));
+    doc.add(BinaryDocValuesField::new("bytes", BytesRef::default()));
     let ix = index_and_merge(|iw| {
         let r#ref = BytesRef::from_char_sequence(&TestUtil::random_unicode_string(&*random()));
         field_mut_as::<BinaryDocValuesField>(&mut doc, "bytes").set_bytes_value(r#ref)?;
@@ -211,10 +208,7 @@ fn sorted_advances(ix: &Indexed) -> Result<()> {
 /// Port of `TestMultiDocValues.testSorted`.
 fn test_sorted() -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(SortedDocValuesField::new(
-        "bytes",
-        BytesRef::default(),
-    )));
+    doc.add(SortedDocValuesField::new("bytes", BytesRef::default()));
     let ix = index_and_merge(|iw| {
         let r#ref = BytesRef::from_char_sequence(&TestUtil::random_unicode_string(&*random()));
         field_mut_as::<SortedDocValuesField>(&mut doc, "bytes").set_bytes_value(r#ref)?;
@@ -248,10 +242,7 @@ fn test_sorted() -> Result<()> {
 /// Port of `TestMultiDocValues.testSortedWithLotsOfDups`.
 fn test_sorted_with_lots_of_dups() -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(SortedDocValuesField::new(
-        "bytes",
-        BytesRef::default(),
-    )));
+    doc.add(SortedDocValuesField::new("bytes", BytesRef::default()));
     let ix = index_and_merge(|iw| {
         let r#ref =
             BytesRef::from_char_sequence(&TestUtil::random_simple_string_max(&*random(), 2));
@@ -286,10 +277,10 @@ fn sorted_set_case(value: impl Fn() -> String) -> Result<()> {
         let mut doc = Document::new();
         let num_values = random().next_int_bound(5);
         for _ in 0..num_values {
-            doc.add(Box::new(SortedSetDocValuesField::new(
+            doc.add(SortedSetDocValuesField::new(
                 "bytes",
                 BytesRef::from_char_sequence(&value()),
-            )));
+            ));
         }
         iw.add_document(&doc)?;
         Ok(())
@@ -355,10 +346,10 @@ fn test_sorted_numeric() -> Result<()> {
         let mut doc = Document::new();
         let num_values = random().next_int_bound(5);
         for _ in 0..num_values {
-            doc.add(Box::new(SortedNumericDocValuesField::new(
+            doc.add(SortedNumericDocValuesField::new(
                 "nums",
                 TestUtil::next_long(&*random(), i64::MIN, i64::MAX),
-            )));
+            ));
         }
         iw.add_document(&doc)?;
         Ok(())

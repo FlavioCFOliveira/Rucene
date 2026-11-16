@@ -1217,19 +1217,15 @@ fn documents(m: &Measured) {
     );
 
     let mut one = Document::new();
-    one.add(Box::new(
-        StringField::new("id", "1".to_string(), Store::NO).expect("string field"),
-    ));
+    one.add(StringField::new("id", "1".to_string(), Store::NO).expect("string field"));
     assert_eq!(
         one.to_string(),
         m.get("Document.toString/single-string-field")
     );
 
     let mut two = Document::new();
-    two.add(Box::new(
-        StringField::new("id", "1".to_string(), Store::NO).expect("string field"),
-    ));
-    two.add(Box::new(IntPoint::new("count", &[42]).expect("int point")));
+    two.add(StringField::new("id", "1".to_string(), Store::NO).expect("string field"));
+    two.add(IntPoint::new("count", &[42]).expect("int point"));
     assert_eq!(
         two.to_string(),
         m.get("Document.toString/string-and-point"),

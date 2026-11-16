@@ -1946,7 +1946,7 @@ impl TestUtil {
                     FieldType::new_from(field_type),
                 )?)
             };
-            doc2.add(field2);
+            doc2.add_shared(std::sync::Arc::from(field2));
         }
 
         Ok(doc2)

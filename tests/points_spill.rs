@@ -390,7 +390,7 @@ fn merge_points(max_mb: f64, value: fn(i32) -> [i32; 2]) -> MergeOutcome {
         for i in 0..2500 {
             let i = segment * 2500 + i;
             let mut doc = Document::new();
-            doc.add(Box::new(IntPoint::new("p", &value(i)).unwrap()));
+            doc.add(IntPoint::new("p", &value(i)).unwrap());
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();

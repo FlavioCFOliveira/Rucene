@@ -147,11 +147,11 @@ fn test_info_stream_gets_field_name() -> Result<()> {
     let c = throwing_config(&info_bytes)?;
     let writer = IndexWriter::new(dir.as_directory(), c)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_field(
+    doc.add(LuceneTestCase::new_field(
         "distinctiveFieldName",
         "aaa ",
         &stored_text_type(),
-    )));
+    ));
     expect_throws(BAD_NEWS, || writer.add_document(&doc));
     let info_stream = info_bytes.to_string_utf8();
     Assert::assert_true(info_stream.contains("distinctiveFieldName"));
@@ -167,11 +167,11 @@ fn test_no_extra_noise() -> Result<()> {
     let c = throwing_config(&info_bytes)?;
     let writer = IndexWriter::new(dir.as_directory(), c)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_field(
+    doc.add(LuceneTestCase::new_field(
         "boringFieldName",
         "aaa ",
         &stored_text_type(),
-    )));
+    ));
     // should not throw BadNews
     writer.add_document(&doc)?;
     let info_stream = info_bytes.to_string_utf8();

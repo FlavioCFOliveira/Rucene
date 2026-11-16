@@ -70,8 +70,8 @@ fn set_up(inst: &mut Instance) -> Result<()> {
     )?;
 
     let mut doc = Document::new();
-    doc.add(text("field1", "the quick brown fox jumps"));
-    doc.add(text("field2", "the quick brown fox jumps"));
+    doc.add(*text("field1", "the quick brown fox jumps"));
+    doc.add(*text("field2", "the quick brown fox jumps"));
     iw1.add_document(&doc)?;
 
     iw1.close()?;
@@ -84,8 +84,8 @@ fn set_up(inst: &mut Instance) -> Result<()> {
     )?;
 
     let mut doc = Document::new();
-    doc.add(text("field1", "the fox jumps over the lazy dog"));
-    doc.add(text("field3", "the fox jumps over the lazy dog"));
+    doc.add(*text("field1", "the fox jumps over the lazy dog"));
+    doc.add(*text("field3", "the fox jumps over the lazy dog"));
     iw2.add_document(&doc)?;
 
     iw2.close()?;

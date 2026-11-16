@@ -247,11 +247,11 @@ fn test_random() -> Result<()> {
                 }
                 // add doc
                 let mut doc = Document::new();
-                doc.add(Box::new(LuceneTestCase::new_string_field(
+                doc.add(LuceneTestCase::new_string_field(
                     "id",
                     &format!("{op}"),
                     Store::NO,
-                )));
+                ));
                 w.add_document(&doc)?;
                 live_ids.insert(op);
                 writer_num_docs += 1;
@@ -364,22 +364,14 @@ fn test_consistent_field_numbers() -> Result<()> {
     w.commit()?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "f0",
-        "foo",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("f0", "foo", Store::NO));
     w.add_document(&doc)?;
 
     let r = directory_reader::open_with_writer(&*w)?;
     assert_equals(&1, &r.max_doc());
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "f1",
-        "foo",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("f1", "foo", Store::NO));
     w.add_document(&doc)?;
 
     let r2 = directory_reader::open_if_changed(Arc::clone(&r))?;
@@ -394,16 +386,8 @@ fn test_consistent_field_numbers() -> Result<()> {
     r2.close()?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "f1",
-        "foo",
-        Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "f0",
-        "foo",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("f1", "foo", Store::NO));
+    doc.add(LuceneTestCase::new_string_field("f0", "foo", Store::NO));
     w2.add_document(&doc)?;
     w2.close()?;
     drop(d);

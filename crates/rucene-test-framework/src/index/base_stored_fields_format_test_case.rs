@@ -436,9 +436,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         let num_values = random().next_int_bound(3);
         for _ in 0..num_values {
             let value = TestUtil::random_simple_string_max(&*random(), 100);
-            d.add(Box::new(
-                StoredField::new_string("f", value).unwrap_or_else(|e| rethrow(e)),
-            ));
+            d.add(StoredField::new_string("f", value).unwrap_or_else(|e| rethrow(e)));
         }
     }
 
@@ -487,11 +485,11 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             for &field in &field_ids {
                 if rand.next_int_bound(4) != 3 {
                     let s = TestUtil::random_unicode_string_max(&*rand, 1000);
-                    doc.add(Box::new(LuceneTestCase::new_field(
+                    doc.add(LuceneTestCase::new_field(
                         &format!("f{field}"),
                         &s,
                         &custom_type2,
-                    )));
+                    ));
                     expected[field as usize] = Some(s);
                 }
             }
@@ -579,21 +577,9 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
 
         let custom_type = FieldType::new();
         custom_type.set_stored(true)?;
-        doc.add(Box::new(LuceneTestCase::new_field(
-            "zzz",
-            "a b c",
-            &custom_type,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_field(
-            "aaa",
-            "a b c",
-            &custom_type,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_field(
-            "zzz",
-            "1 2 3",
-            &custom_type,
-        )));
+        doc.add(LuceneTestCase::new_field("zzz", "a b c", &custom_type));
+        doc.add(LuceneTestCase::new_field("aaa", "a b c", &custom_type));
+        doc.add(LuceneTestCase::new_field("zzz", "1 2 3", &custom_type));
         w.add_document(&doc)?;
         let r = self.maybe_wrap_with_merging_reader(directory_reader::open_with_writer(&*w)?)?;
         let stored_fields = r.stored_fields()?;
@@ -644,7 +630,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         Assert::assert_equals(50, bx.bytes.len());
         Assert::assert_equals(10, bx.offset);
         Assert::assert_equals(17, bx.length);
-        doc.add(Box::new(f));
+        doc.add(f);
         w.add_document(&doc)?;
         w.close()?;
         drop(w);
@@ -695,14 +681,11 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
                     NumericValue::Long(random().next_long())
                 }
             };
-            doc.add(Box::new(StoredField::new_number("nf", answer)?));
+            doc.add(StoredField::new_number("nf", answer)?);
             answers.push(answer);
-            doc.add(Box::new(StoredField::new_number(
-                "id",
-                NumericValue::Int(id),
-            )?));
-            doc.add(Box::new(IntPoint::new("id", &[id])?));
-            doc.add(Box::new(NumericDocValuesField::new("id", i64::from(id))));
+            doc.add(StoredField::new_number("id", NumericValue::Int(id))?);
+            doc.add(IntPoint::new("id", &[id])?);
+            doc.add(NumericDocValuesField::new("id", i64::from(id)));
             w.add_document(&doc)?;
         }
         let r = self.maybe_wrap_with_merging_reader(w.get_reader()?)?;
@@ -751,16 +734,8 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut doc = Document::new();
         let only_stored = FieldType::new();
         only_stored.set_stored(true)?;
-        doc.add(Box::new(Field::new(
-            "field",
-            "value".to_string(),
-            only_stored,
-        )?));
-        doc.add(Box::new(StringField::new(
-            "field2",
-            "value".to_string(),
-            Store::YES,
-        )?));
+        doc.add(Field::new("field", "value".to_string(), only_stored)?);
+        doc.add(StringField::new("field2", "value".to_string(), Store::YES)?);
         w.add_document(&doc)?;
         let r = self.maybe_wrap_with_merging_reader(w.get_reader()?)?;
         let stored_fields = r.stored_fields()?;
@@ -925,7 +900,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         // make sure the readers are properly cloned
         let mut doc = Document::new();
         let field = StringField::new("fld", String::new(), Store::YES)?;
-        doc.add(Box::new(field));
+        doc.add(field);
         let num_docs = LuceneTestCase::at_least(1000);
         for i in 0..num_docs {
             doc.get_field_mut_as::<StringField>("fld")
@@ -1064,11 +1039,11 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             id.set_int_value(i as i32)?;
             id_stored.set_int_value(i as i32)?;
             for (j, bytes) in fields.iter().enumerate() {
-                doc.add(Box::new(Field::new_with_bytes(
+                doc.add(Field::new_with_bytes(
                     &format!("bytes{j}"),
                     BytesRef::new(bytes.clone()),
                     ty.clone(),
-                )?));
+                )?);
             }
             iw.w().add_document(&doc)?;
             if random().next_boolean() && (i % (data.len() / 10) == 0) {
@@ -1146,37 +1121,34 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         for i in 0..num_docs {
             let mut doc = Document::new();
             let to_delete = if random().next_boolean() { "yes" } else { "no" };
-            doc.add(Box::new(StringField::new(
+            doc.add(StringField::new(
                 "to_delete",
                 to_delete.to_string(),
                 Store::NO,
-            )?));
-            doc.add(Box::new(StoredField::new_number(
-                "id",
-                NumericValue::Int(i),
-            )?));
+            )?);
+            doc.add(StoredField::new_number("id", NumericValue::Int(i))?);
             let iv = NumericValue::Int(random().next_int_bound(50));
-            doc.add(Box::new(StoredField::new_number("i", iv)?));
+            doc.add(StoredField::new_number("i", iv)?);
             let lv = NumericValue::Long(random().next_long());
-            doc.add(Box::new(StoredField::new_number("l", lv)?));
+            doc.add(StoredField::new_number("l", lv)?);
             let dv = NumericValue::Double(random().next_double());
-            doc.add(Box::new(StoredField::new_number("d", dv)?));
+            doc.add(StoredField::new_number("d", dv)?);
             let fv = NumericValue::Float(random().next_float());
-            doc.add(Box::new(StoredField::new_number("f", fv)?));
+            doc.add(StoredField::new_number("f", fv)?);
             let s = RandomPicks::random_from(&*random(), &string_values).clone();
-            doc.add(Box::new(StoredField::new_string("s", s.clone())?));
+            doc.add(StoredField::new_string("s", s.clone())?);
             let value =
                 BytesRef::from_char_sequence(RandomPicks::random_from(&*random(), &string_values));
-            doc.add(Box::new(StoredField::new_bytes("b", value.clone())?));
+            doc.add(StoredField::new_bytes("b", value.clone())?);
             let bytes = value.bytes[value.offset..value.offset + value.length].to_vec();
             let length = bytes.len() as i32;
-            doc.add(Box::new(StoredField::new_stored_input(
+            doc.add(StoredField::new_stored_input(
                 "b2",
                 Some(Box::new(rucene::store::InputStreamDataInput::new(
                     std::io::Cursor::new(bytes.clone()),
                 ))),
                 length,
-            )?));
+            )?);
             docs.push(MergeFilterExpected {
                 s,
                 i: iv,
@@ -1291,7 +1263,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             )),
             only_stored,
         )?;
-        big_doc2.add(Box::new(big_field));
+        big_doc2.add(big_field);
 
         let num_docs = LuceneTestCase::at_least(5);
         let choices = [&empty_doc, &big_doc1, &big_doc2];
@@ -1344,11 +1316,11 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
         for i in 0..num_docs {
             let mut doc = Document::new();
-            doc.add(Box::new(StringField::new("id", i.to_string(), Store::YES)?));
-            doc.add(Box::new(StoredField::new_string(
+            doc.add(StringField::new("id", i.to_string(), Store::YES)?);
+            doc.add(StoredField::new_string(
                 "f",
                 TestUtil::random_simple_string(&*random()),
-            )?));
+            )?);
             w.add_document(&doc)?;
         }
         let delete_count = TestUtil::next_int(&*random(), 5, num_docs);
@@ -1380,11 +1352,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             let mut doc = Document::new();
             for j in 0..10 {
                 // add fields where name=value (e.g. 3=3) so we can detect if stuff gets screwed up.
-                doc.add(Box::new(StringField::new(
-                    &j.to_string(),
-                    j.to_string(),
-                    Store::YES,
-                )?));
+                doc.add(StringField::new(&j.to_string(), j.to_string(), Store::YES)?);
             }
             for _ in 0..10 {
                 iw.add_document(&doc)?;
@@ -1489,25 +1457,21 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             } else {
                 Store::NO
             };
-            doc.add(Box::new(StringField::new("id", id.to_string(), store)?));
+            doc.add(StringField::new("id", id.to_string(), store)?);
             if random().next_int_bound(100) <= 5 {
                 randomizedtesting::jdk::util::shuffle(&mut stored_fields, &*random());
             }
             for field_name in &stored_fields {
                 if random().next_boolean() {
                     let s = TestUtil::random_unicode_string_max(&*random(), 100);
-                    doc.add(Box::new(LuceneTestCase::new_field(
-                        field_name,
-                        &s,
-                        &store_type,
-                    )));
+                    doc.add(LuceneTestCase::new_field(field_name, &s, &store_type));
                 }
             }
             for (name, _) in &sort_fields {
-                doc.add(Box::new(NumericDocValuesField::new(
+                doc.add(NumericDocValuesField::new(
                     name,
                     i64::from(TestUtil::next_int(&*random(), 0, 10000)),
-                )));
+                ));
             }
             let stored = stored_values(&doc);
             Ok((doc, stored))

@@ -228,7 +228,7 @@ fn plain_searcher(r: &Arc<dyn DirectoryReader>) -> Result<IndexSearcher> {
 /// A document holding the single field `field`.
 fn doc_with(field: Box<dyn rucene::index::IndexableField>) -> Document {
     let mut doc = Document::new();
-    doc.add(field);
+    doc.add_shared(std::sync::Arc::from(field));
     doc
 }
 
@@ -649,28 +649,22 @@ fn verify_longs(values: Arc<Vec<i64>>, ids: Option<Vec<i32>>) -> Result<()> {
             }
 
             let mut d = Document::new();
-            d.add(Box::new(LuceneTestCase::new_string_field(
+            d.add(LuceneTestCase::new_string_field(
                 "id",
                 &id.to_string(),
                 Store::NO,
-            )));
-            d.add(Box::new(NumericDocValuesField::new("id", i64::from(id))));
+            ));
+            d.add(NumericDocValuesField::new("id", i64::from(id)));
             doc = Some(d);
             last_id = id;
         }
 
         if !missing.contains(&id) {
             let d = doc.as_mut().expect("doc was created for this id");
-            d.add(Box::new(LongPoint::new(
-                "sn_value",
-                &[values[id as usize]],
-            )?));
+            d.add(LongPoint::new("sn_value", &[values[id as usize]])?);
             let mut bytes = vec![0u8; 8];
             NumericUtils::long_to_sortable_bytes(values[id as usize], &mut bytes, 0);
-            d.add(Box::new(BinaryPoint::new(
-                "ss_value",
-                &[BytesRef::new(bytes)],
-            )?));
+            d.add(BinaryPoint::new("ss_value", &[BytesRef::new(bytes)])?);
         }
     }
 
@@ -956,12 +950,12 @@ fn verify_binary(
             }
 
             let mut d = Document::new();
-            d.add(Box::new(LuceneTestCase::new_string_field(
+            d.add(LuceneTestCase::new_string_field(
                 "id",
                 &id.to_string(),
                 Store::NO,
-            )));
-            d.add(Box::new(NumericDocValuesField::new("id", i64::from(id))));
+            ));
+            d.add(NumericDocValuesField::new("id", i64::from(id)));
             doc = Some(d);
             last_id = id;
         }
@@ -972,8 +966,8 @@ fn verify_binary(
                 .iter()
                 .map(|v| BytesRef::new(v.clone()))
                 .collect();
-            d.add(Box::new(BinaryPoint::new("value", &point)?));
-            d.add(Box::new(SortedNumericDocValuesField::new("value", 1)));
+            d.add(BinaryPoint::new("value", &point)?);
+            d.add(SortedNumericDocValuesField::new("value", 1));
             if verbose() {
                 println!("id={id}");
                 for dim in 0..num_dims {
@@ -1486,12 +1480,8 @@ fn test_wrong_num_bytes() -> Result<()> {
 /// A document with `id:0` and `value:0L`.
 fn id_zero_doc() -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "id",
-        "0".to_string(),
-        Store::NO,
-    )?));
-    doc.add(Box::new(LongPoint::new("value", &[0])?));
+    doc.add(StringField::new("id", "0".to_string(), Store::NO)?);
+    doc.add(LongPoint::new("value", &[0])?);
     Ok(doc)
 }
 
@@ -1958,8 +1948,8 @@ fn test_basic_multi_value_multi_dim_point_in_set_query() -> Result<()> {
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("int", &[17, 42])?));
-    doc.add(Box::new(IntPoint::new("int", &[34, 79])?));
+    doc.add(IntPoint::new("int", &[17, 42])?);
+    doc.add(IntPoint::new("int", &[34, 79])?);
     w.add_document(&doc)?;
     let r = directory_reader::open_with_writer(&*w)?;
     let s = LuceneTestCase::new_searcher_wrap(Arc::clone(&r), false);
@@ -2052,11 +2042,11 @@ fn test_invalid_multi_dim_point_in_set_query() -> Result<()> {
 /// A document with an `IntPoint`, `LongPoint`, `FloatPoint`, `DoublePoint`
 /// and `BinaryPoint {0, x}` of value `x`.
 fn all_points_doc(doc: &mut Document, x: i32) -> Result<()> {
-    doc.add(Box::new(IntPoint::new("int", &[x])?));
-    doc.add(Box::new(LongPoint::new("long", &[i64::from(x)])?));
-    doc.add(Box::new(FloatPoint::new("float", &[x as f32])?));
-    doc.add(Box::new(DoublePoint::new("double", &[f64::from(x)])?));
-    doc.add(Box::new(binary_point("bytes", vec![0, x as u8])?));
+    doc.add(IntPoint::new("int", &[x])?);
+    doc.add(LongPoint::new("long", &[i64::from(x)])?);
+    doc.add(FloatPoint::new("float", &[x as f32])?);
+    doc.add(DoublePoint::new("double", &[f64::from(x)])?);
+    doc.add(binary_point("bytes", vec![0, x as u8])?);
     Ok(())
 }
 
@@ -2264,16 +2254,16 @@ fn test_basic_multi_valued_point_in_set_query() -> Result<()> {
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("int", &[17])?));
-    doc.add(Box::new(IntPoint::new("int", &[42])?));
-    doc.add(Box::new(LongPoint::new("long", &[17])?));
-    doc.add(Box::new(LongPoint::new("long", &[42])?));
-    doc.add(Box::new(FloatPoint::new("float", &[17.0])?));
-    doc.add(Box::new(FloatPoint::new("float", &[42.0])?));
-    doc.add(Box::new(DoublePoint::new("double", &[17.0])?));
-    doc.add(Box::new(DoublePoint::new("double", &[42.0])?));
-    doc.add(Box::new(binary_point("bytes", vec![0, 17])?));
-    doc.add(Box::new(binary_point("bytes", vec![0, 42])?));
+    doc.add(IntPoint::new("int", &[17])?);
+    doc.add(IntPoint::new("int", &[42])?);
+    doc.add(LongPoint::new("long", &[17])?);
+    doc.add(LongPoint::new("long", &[42])?);
+    doc.add(FloatPoint::new("float", &[17.0])?);
+    doc.add(FloatPoint::new("float", &[42.0])?);
+    doc.add(DoublePoint::new("double", &[17.0])?);
+    doc.add(DoublePoint::new("double", &[42.0])?);
+    doc.add(binary_point("bytes", vec![0, 17])?);
+    doc.add(binary_point("bytes", vec![0, 42])?);
     w.add_document(&doc)?;
 
     let r = directory_reader::open_with_writer(&*w)?;
@@ -2422,11 +2412,11 @@ fn test_empty_point_in_set_query() -> Result<()> {
 /// single byte `(byte) x`.
 fn all_points_single_byte_doc(x: i32) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("int", &[x])?));
-    doc.add(Box::new(LongPoint::new("long", &[i64::from(x)])?));
-    doc.add(Box::new(FloatPoint::new("float", &[x as f32])?));
-    doc.add(Box::new(DoublePoint::new("double", &[f64::from(x)])?));
-    doc.add(Box::new(binary_point("bytes", vec![x as u8])?));
+    doc.add(IntPoint::new("int", &[x])?);
+    doc.add(LongPoint::new("long", &[i64::from(x)])?);
+    doc.add(FloatPoint::new("float", &[x as f32])?);
+    doc.add(DoublePoint::new("double", &[f64::from(x)])?);
+    doc.add(binary_point("bytes", vec![x as u8])?);
     Ok(doc)
 }
 
@@ -3404,8 +3394,8 @@ fn test_range_query_optimizes_rewrites() -> Result<()> {
 
     // Should rewrite to match all docs query if fully contained
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("field", &point)?));
-    doc.add(Box::new(SortedNumericDocValuesField::new("field", 1)));
+    doc.add(IntPoint::new("field", &point)?);
+    doc.add(SortedNumericDocValuesField::new("field", 1));
     w.add_document(&doc)?;
 
     let reader = w.get_reader()?;
@@ -3487,8 +3477,8 @@ fn test_range_query_skips_non_matching_segments() -> Result<()> {
         LuceneTestCase::new_index_writer_config(),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("field", &[2])?));
-    doc.add(Box::new(IntPoint::new("field2d", &[1, 3])?));
+    doc.add(IntPoint::new("field", &[2])?);
+    doc.add(IntPoint::new("field2d", &[1, 3])?);
     w.add_document(&doc)?;
 
     let reader = directory_reader::open_with_writer(&*w)?;
@@ -3521,8 +3511,8 @@ fn test_point_in_set_query_skips_non_matching_segments() -> Result<()> {
         LuceneTestCase::new_index_writer_config(),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(IntPoint::new("field", &[10])?));
-    doc.add(Box::new(IntPoint::new("field2d", &[10, 10])?));
+    doc.add(IntPoint::new("field", &[10])?);
+    doc.add(IntPoint::new("field2d", &[10, 10])?);
     w.add_document(&doc)?;
 
     let reader = directory_reader::open_with_writer(&*w)?;

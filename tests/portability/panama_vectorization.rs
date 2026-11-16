@@ -994,9 +994,7 @@ fn write_postings_index(path: &Path) {
             })
             .collect();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            Field::new("f", text.join(" "), field_type.clone()).unwrap(),
-        ));
+        doc.add(Field::new("f", text.join(" "), field_type.clone()).unwrap());
         writer.add_document(&doc).unwrap();
     }
     writer.force_merge(1).unwrap();

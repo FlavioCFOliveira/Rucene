@@ -66,7 +66,7 @@ fn create_doc() -> Result<Document> {
     ft.set_store_term_vectors(true)?;
     ft.set_store_term_vector_offsets(true)?;
     ft.set_store_term_vector_positions(true)?;
-    doc.add(Box::new(LuceneTestCase::new_field("c", "aaa", &ft)));
+    doc.add(LuceneTestCase::new_field("c", "aaa", &ft));
     Ok(doc)
 }
 
@@ -192,20 +192,20 @@ fn test_merge_with_payloads() -> Result<()> {
         // create one segment with payloads, and another without payloads
         for _ in 0..num_docs_in_segment {
             let mut doc = Document::new();
-            doc.add(Box::new(Field::new_with_token_stream(
+            doc.add(Field::new_with_token_stream(
                 "c",
                 tkg1.new_token_stream(),
                 Arc::clone(&ft1),
-            )?));
+            )?);
             writer.add_document(&doc)?;
         }
         for _ in 0..num_docs_in_segment {
             let mut doc = Document::new();
-            doc.add(Box::new(Field::new_with_token_stream(
+            doc.add(Field::new_with_token_stream(
                 "c",
                 tkg2.new_token_stream(),
                 Arc::clone(&ft1),
-            )?));
+            )?);
             writer.add_document(&doc)?;
         }
 

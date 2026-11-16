@@ -204,9 +204,9 @@ fn test_flush_exceptions() -> Result<()> {
     let mut doc = Document::new();
     let id_field = LuceneTestCase::new_string_field("id", "", Store::YES);
     let knn_field = KnnFloatVectorField::with_euclidean("knn", &[0.0, 0.0])?;
-    doc.add(Box::new(id_field));
+    doc.add(id_field);
     // Add knn float vectors to test parallel merge
-    doc.add(Box::new(knn_field));
+    doc.add(knn_field);
 
     #[allow(clippy::never_loop)]
     // the Java test loops the same way; `Assert::fail` and `break outer` end every iteration
@@ -279,7 +279,7 @@ fn test_delete_merging() -> Result<()> {
 
     let mut doc = Document::new();
     let id_field = LuceneTestCase::new_string_field("id", "", Store::YES);
-    doc.add(Box::new(id_field));
+    doc.add(id_field);
     for i in 0..10 {
         if verbose() {
             println!("\nTEST: cycle");
@@ -323,11 +323,11 @@ fn test_no_extra_files() -> Result<()> {
 
         for _ in 0..21 {
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_text_field(
+            doc.add(LuceneTestCase::new_text_field(
                 "content",
                 "a b c",
                 Store::NO,
-            )));
+            ));
             writer.add_document(&doc)?;
         }
 
@@ -352,9 +352,9 @@ fn test_no_wait_close() -> Result<()> {
     let mut doc = Document::new();
     let id_field = LuceneTestCase::new_string_field("id", "", Store::YES);
     let knn_field = KnnFloatVectorField::with_euclidean("knn", &[0.0, 0.0])?;
-    doc.add(Box::new(id_field));
+    doc.add(id_field);
     // Add knn float vectors to test parallel merge
-    doc.add(Box::new(knn_field));
+    doc.add(knn_field);
     let iwc = mock_iwc();
     // Force excessive merging:
     iwc.set_max_buffered_docs(2)?;
@@ -505,11 +505,11 @@ fn test_max_merge_count() -> Result<()> {
 
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_field(
+    doc.add(LuceneTestCase::new_field(
         "field",
         "field",
         TextField::type_not_stored(),
-    )));
+    ));
     while enough_merges_waiting.get_count() != 0 && !failed.load(Ordering::SeqCst) {
         for _ in 0..10 {
             w.add_document(&doc)?;
@@ -543,7 +543,7 @@ fn test_small_merges_don_not_get_threads() -> Result<()> {
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     for i in 0..10 {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+        doc.add(StringField::new("id", i.to_string(), Store::NO)?);
         w.add_document(&doc)?;
     }
     w.force_merge(1)?;
@@ -711,7 +711,7 @@ fn test_total_bytes_size() -> Result<()> {
     let w = IndexWriter::new(d.as_directory(), iwc)?;
     for i in 0..1000 {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+        doc.add(StringField::new("id", i.to_string(), Store::NO)?);
         w.add_document(&doc)?;
 
         if random().next_boolean() {
@@ -1037,11 +1037,11 @@ fn test_merge_thread_messages() -> Result<()> {
         std::sync::Arc::new(rucene::util::atomic_ref_cell::AtomicRefCell::new(
             CannedTokenStream::new(Vec::new()),
         ));
-    doc.add(Box::new(Field::new_with_token_stream(
+    doc.add(Field::new_with_token_stream(
         "foo",
         stream,
         rucene::document::FieldType::new_from(TextField::type_not_stored()),
-    )?));
+    )?);
     w.add_document(&doc)?;
     w.add_document(&Document::new())?;
     // flush
@@ -1187,11 +1187,11 @@ fn test_no_stall_merge_threads() -> Result<()> {
     let num_docs = if *TEST_NIGHTLY { 1000 } else { 100 };
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "field",
             &i.to_string(),
             Store::YES,
-        )));
+        ));
         w.add_document(&doc)?;
     }
     w.close()?;
@@ -1299,16 +1299,16 @@ fn test_change_max_merge_county_while_force_merge() -> Result<()> {
             let tried = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
                 for _ in 0..4 {
                     let mut document = Document::new();
-                    document.add(Box::new(TextField::new(
+                    document.add(TextField::new(
                         "foo",
                         "the quick brown fox jumps over the lazy dog".to_string(),
                         Store::YES,
-                    )?));
-                    document.add(Box::new(TextField::new(
+                    )?);
+                    document.add(TextField::new(
                         "bar",
                         RandomStrings::random_realistic_unicode_of_length(&*random(), 20),
                         Store::YES,
-                    )?));
+                    )?);
                     writer.add_document(&document)?;
                     writer.flush()?;
                 }

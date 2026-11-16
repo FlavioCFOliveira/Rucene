@@ -97,7 +97,7 @@ fn build_index(dir: Arc<dyn Directory>) -> Result<()> {
             .collect::<Vec<_>>()
             .join(" ");
         let f = TextField::new(BYTE_TEST_FIELD, value, Store::YES)?;
-        doc.add(Box::new(f));
+        doc.add(f);
         writer.add_document(&doc)?;
         doc.remove_field(BYTE_TEST_FIELD);
     }
@@ -193,11 +193,7 @@ fn test_empty_value_vs_no_value() -> Result<()> {
     let w = IndexWriter::new(dir.as_directory(), cfg)?;
     let mut doc = Document::new();
     w.add_document(&doc)?;
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "foo",
-        "",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("foo", "", Store::NO));
     w.add_document(&doc)?;
     w.force_merge(1)?;
     let reader: Arc<dyn IndexReader> = directory_reader::open_with_writer(&*w)?;

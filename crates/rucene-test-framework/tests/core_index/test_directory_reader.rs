@@ -338,11 +338,7 @@ fn add_doc_to_dir(
     })?;
     let iw = IndexWriter::new(Arc::clone(ram_dir1), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "body",
-        s,
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("body", s, Store::NO));
     iw.add_document(&doc)?;
     iw.close()
 }
@@ -388,26 +384,18 @@ fn test_get_field_names() -> Result<()> {
 
     let custom_type3 = stored_only_type()?;
 
-    doc.add(Box::new(StringField::new(
+    doc.add(StringField::new(
         "keyword",
         "test1".to_string(),
         Store::YES,
-    )?));
-    doc.add(Box::new(TextField::new(
-        "text",
-        "test1".to_string(),
-        Store::YES,
-    )?));
-    doc.add(Box::new(Field::new(
+    )?);
+    doc.add(TextField::new("text", "test1".to_string(), Store::YES)?);
+    doc.add(Field::new(
         "unindexed",
         "test1".to_string(),
         custom_type3.clone(),
-    )?));
-    doc.add(Box::new(TextField::new(
-        "unstored",
-        "test1".to_string(),
-        Store::NO,
-    )?));
+    )?);
+    doc.add(TextField::new("unstored", "test1".to_string(), Store::NO)?);
     writer.add_document(&doc)?;
 
     writer.close()?;
@@ -429,51 +417,35 @@ fn test_get_field_names() -> Result<()> {
     let merge_factor = as_lmp(&log_merge_policy(&writer)).get_merge_factor();
     for _ in 0..5 * merge_factor {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
+        doc.add(StringField::new(
             "keyword",
             "test1".to_string(),
             Store::YES,
-        )?));
-        doc.add(Box::new(TextField::new(
-            "text",
-            "test1".to_string(),
-            Store::YES,
-        )?));
-        doc.add(Box::new(Field::new(
+        )?);
+        doc.add(TextField::new("text", "test1".to_string(), Store::YES)?);
+        doc.add(Field::new(
             "unindexed",
             "test1".to_string(),
             custom_type3.clone(),
-        )?));
-        doc.add(Box::new(TextField::new(
-            "unstored",
-            "test1".to_string(),
-            Store::NO,
-        )?));
+        )?);
+        doc.add(TextField::new("unstored", "test1".to_string(), Store::NO)?);
         writer.add_document(&doc)?;
     }
     // new fields are in some different segments (we hope)
     for _ in 0..5 * merge_factor {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
+        doc.add(StringField::new(
             "keyword2",
             "test1".to_string(),
             Store::YES,
-        )?));
-        doc.add(Box::new(TextField::new(
-            "text2",
-            "test1".to_string(),
-            Store::YES,
-        )?));
-        doc.add(Box::new(Field::new(
+        )?);
+        doc.add(TextField::new("text2", "test1".to_string(), Store::YES)?);
+        doc.add(Field::new(
             "unindexed2",
             "test1".to_string(),
             custom_type3.clone(),
-        )?));
-        doc.add(Box::new(TextField::new(
-            "unstored2",
-            "test1".to_string(),
-            Store::NO,
-        )?));
+        )?);
+        doc.add(TextField::new("unstored2", "test1".to_string(), Store::NO)?);
         writer.add_document(&doc)?;
     }
     // new termvector fields
@@ -485,31 +457,27 @@ fn test_get_field_names() -> Result<()> {
 
     for _ in 0..5 * merge_factor {
         let mut doc = Document::new();
-        doc.add(Box::new(TextField::new(
-            "tvnot",
-            "tvnot".to_string(),
-            Store::YES,
-        )?));
-        doc.add(Box::new(Field::new(
+        doc.add(TextField::new("tvnot", "tvnot".to_string(), Store::YES)?);
+        doc.add(Field::new(
             "termvector",
             "termvector".to_string(),
             custom_type5.clone(),
-        )?));
-        doc.add(Box::new(Field::new(
+        )?);
+        doc.add(Field::new(
             "tvoffset",
             "tvoffset".to_string(),
             custom_type6.clone(),
-        )?));
-        doc.add(Box::new(Field::new(
+        )?);
+        doc.add(Field::new(
             "tvposition",
             "tvposition".to_string(),
             custom_type7.clone(),
-        )?));
-        doc.add(Box::new(Field::new(
+        )?);
+        doc.add(Field::new(
             "tvpositionoffset",
             "tvpositionoffset".to_string(),
             custom_type8.clone(),
-        )?));
+        )?);
         writer.add_document(&doc)?;
     }
 
@@ -609,31 +577,27 @@ fn test_term_vectors() -> Result<()> {
     for _ in 0..5 * merge_factor {
         let mut doc = Document::new();
         let text = "one two two three three three";
-        doc.add(Box::new(TextField::new(
-            "tvnot",
-            text.to_string(),
-            Store::YES,
-        )?));
-        doc.add(Box::new(Field::new(
+        doc.add(TextField::new("tvnot", text.to_string(), Store::YES)?);
+        doc.add(Field::new(
             "termvector",
             text.to_string(),
             custom_type5.clone(),
-        )?));
-        doc.add(Box::new(Field::new(
+        )?);
+        doc.add(Field::new(
             "tvoffset",
             text.to_string(),
             custom_type6.clone(),
-        )?));
-        doc.add(Box::new(Field::new(
+        )?);
+        doc.add(Field::new(
             "tvposition",
             text.to_string(),
             custom_type7.clone(),
-        )?));
-        doc.add(Box::new(Field::new(
+        )?);
+        doc.add(Field::new(
             "tvpositionoffset",
             text.to_string(),
             custom_type8.clone(),
-        )?));
+        )?);
 
         writer.add_document(&doc)?;
     }
@@ -708,21 +672,17 @@ fn test_binary_fields() -> Result<()> {
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(StoredField::new_bytes(
+    doc.add(StoredField::new_bytes(
         "bin1",
         BytesRef::new(bin1.to_vec()),
-    )?));
+    )?);
     // `new StoredFieldDataInput(new ByteArrayDataInput(bin2))`: the whole input.
-    doc.add(Box::new(StoredField::new_stored_input(
+    doc.add(StoredField::new_stored_input(
         "bin2",
         Some(Box::new(ByteArrayDataInput::new(bin2))),
         bin2.len() as i32,
-    )?));
-    doc.add(Box::new(TextField::new(
-        "junk",
-        "junk text".to_string(),
-        Store::NO,
-    )?));
+    )?);
+    doc.add(TextField::new("junk", "junk text".to_string(), Store::NO)?);
     writer.add_document(&doc)?;
     writer.close()?;
     check_binary_fields(&dir.as_directory(), bin1, bin2)?;
@@ -807,26 +767,18 @@ pub fn add_document_with_fields(writer: &IndexWriter) -> Result<()> {
     let mut doc = Document::new();
 
     let custom_type3 = stored_only_type()?;
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         "keyword",
         "test1",
         Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "text",
-        "test1",
-        Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_field(
+    ));
+    doc.add(LuceneTestCase::new_text_field("text", "test1", Store::YES));
+    doc.add(LuceneTestCase::new_field(
         "unindexed",
         "test1",
         &custom_type3,
-    )));
-    doc.add(Box::new(TextField::new(
-        "unstored",
-        "test1".to_string(),
-        Store::NO,
-    )?));
+    ));
+    doc.add(TextField::new("unstored", "test1".to_string(), Store::NO)?);
     writer.add_document(&doc)?;
     Ok(())
 }
@@ -836,26 +788,18 @@ pub fn add_document_with_different_fields(writer: &IndexWriter) -> Result<()> {
     let mut doc = Document::new();
 
     let custom_type3 = stored_only_type()?;
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         "keyword2",
         "test1",
         Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "text2",
-        "test1",
-        Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_field(
+    ));
+    doc.add(LuceneTestCase::new_text_field("text2", "test1", Store::YES));
+    doc.add(LuceneTestCase::new_field(
         "unindexed2",
         "test1",
         &custom_type3,
-    )));
-    doc.add(Box::new(TextField::new(
-        "unstored2",
-        "test1".to_string(),
-        Store::NO,
-    )?));
+    ));
+    doc.add(TextField::new("unstored2", "test1".to_string(), Store::NO)?);
     writer.add_document(&doc)?;
     Ok(())
 }
@@ -867,31 +811,27 @@ pub fn add_document_with_term_vector_fields(writer: &IndexWriter) -> Result<()> 
     let custom_type6 = tv_type(true, false)?;
     let custom_type7 = tv_type(false, true)?;
     let custom_type8 = tv_type(true, true)?;
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "tvnot",
-        "tvnot",
-        Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_field(
+    doc.add(LuceneTestCase::new_text_field("tvnot", "tvnot", Store::YES));
+    doc.add(LuceneTestCase::new_field(
         "termvector",
         "termvector",
         &custom_type5,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_field(
+    ));
+    doc.add(LuceneTestCase::new_field(
         "tvoffset",
         "tvoffset",
         &custom_type6,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_field(
+    ));
+    doc.add(LuceneTestCase::new_field(
         "tvposition",
         "tvposition",
         &custom_type7,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_field(
+    ));
+    doc.add(LuceneTestCase::new_field(
         "tvpositionoffset",
         "tvpositionoffset",
         &custom_type8,
-    )));
+    ));
 
     writer.add_document(&doc)?;
     Ok(())
@@ -900,11 +840,7 @@ pub fn add_document_with_term_vector_fields(writer: &IndexWriter) -> Result<()> 
 /// `static void addDoc(IndexWriter writer, String value)`.
 pub fn add_doc(writer: &IndexWriter, value: &str) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "content",
-        value,
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("content", value, Store::NO));
     writer.add_document(&doc)?;
     Ok(())
 }
@@ -1206,7 +1142,7 @@ pub fn create_document(id: &str) -> Result<Document> {
     custom_type.set_tokenized(false)?;
     custom_type.set_omit_norms(true)?;
 
-    doc.add(Box::new(LuceneTestCase::new_field("id", id, &custom_type)));
+    doc.add(LuceneTestCase::new_field("id", id, &custom_type));
     Ok(doc)
 }
 
@@ -1277,16 +1213,16 @@ fn test_unique_term_count() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "a b c d e f g h i j k l m n o p q r s t u v w x y z",
         Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    ));
+    doc.add(LuceneTestCase::new_text_field(
         "number",
         "0 1 2 3 4 5 6 7 8 9",
         Store::NO,
-    )));
+    ));
     writer.add_document(&doc)?;
     writer.add_document(&doc)?;
     writer.commit()?;
@@ -1380,11 +1316,7 @@ fn nrt_reader_over(dir: &Arc<dyn Directory>, docs: &[&str]) -> Result<Arc<dyn Di
     let writer = IndexWriter::new(Arc::clone(dir), mock_iwc())?;
     for text in docs {
         let mut d = Document::new();
-        d.add(Box::new(LuceneTestCase::new_text_field(
-            "f",
-            text,
-            Store::NO,
-        )));
+        d.add(LuceneTestCase::new_text_field("f", text, Store::NO));
         writer.add_document(&d)?;
     }
     let r = directory_reader::open_with_writer(writer.as_ref())?;
@@ -1626,16 +1558,16 @@ fn test_load_certain_fields() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         "field1",
         "foobar",
         Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    ));
+    doc.add(LuceneTestCase::new_string_field(
         "field2",
         "foobaz",
         Store::YES,
-    )));
+    ));
     writer.add_document(&doc)?;
     let r = writer.get_reader()?;
     writer.close()?;
@@ -1672,16 +1604,16 @@ fn test_open_with_invalid_min_compat_version() -> Result<()> {
     )?;
     let body = (|| -> Result<()> {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "field1",
             "foobar",
             Store::YES,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        ));
+        doc.add(LuceneTestCase::new_string_field(
             "field2",
             "foobaz",
             Store::YES,
-        )));
+        ));
         writer.add_document(&doc)?;
         writer.commit()?;
         let commit = Arc::clone(&directory_reader::list_commits(dir.as_directory())?[0]);
@@ -1752,11 +1684,7 @@ fn test_open_commit_with_executor() -> Result<()> {
         LuceneTestCase::new_index_writer_config(),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "1",
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_string_field("id", "1", Store::YES));
     writer.add_document(&doc)?;
     writer.commit()?;
     writer.close()?;
@@ -1918,16 +1846,16 @@ fn create_multi_segment_index(dir: &Arc<dyn Directory>, num_segments: i32) -> Re
     let writer = IndexWriter::new(Arc::clone(dir), iwc)?;
     for i in 0..num_segments {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::YES,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        doc.add(LuceneTestCase::new_text_field(
             "content",
             &format!("segment {i} content"),
             Store::YES,
-        )));
+        ));
         writer.add_document(&doc)?;
         writer.commit()?; // Force new segment
     }

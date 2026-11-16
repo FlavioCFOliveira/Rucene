@@ -1093,12 +1093,10 @@ mod scorer_cost_tests {
         for d in 0..64i64 {
             let mut doc = Document::new();
             if d % 4 == 0 {
-                doc.add(Box::new(
-                    StringField::new("b", "x".to_string(), Store::NO).unwrap(),
-                ));
+                doc.add(StringField::new("b", "x".to_string(), Store::NO).unwrap());
             }
-            doc.add(Box::new(LongPoint::new("l", &[d * 3 - 50]).unwrap()));
-            doc.add(Box::new(NumericDocValuesField::new("l", d * 3 - 50)));
+            doc.add(LongPoint::new("l", &[d * 3 - 50]).unwrap());
+            doc.add(NumericDocValuesField::new("l", d * 3 - 50));
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();

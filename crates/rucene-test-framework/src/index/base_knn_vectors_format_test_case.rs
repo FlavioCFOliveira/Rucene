@@ -475,7 +475,7 @@ fn new_writer(dir: Arc<dyn Directory>) -> Result<Arc<IndexWriter>> {
 /// A document of one float vector field.
 fn float_doc(name: &str, vector: &[f32], sim: VectorSimilarityFunction) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(KnnFloatVectorField::new(name, vector, sim)?));
+    doc.add(KnnFloatVectorField::new(name, vector, sim)?);
     Ok(doc)
 }
 
@@ -724,22 +724,15 @@ fn add_float(
 ) -> Result<()> {
     let mut doc = Document::new();
     if let Some(vector) = vector {
-        doc.add(Box::new(KnnFloatVectorField::new(
+        doc.add(KnnFloatVectorField::new(
             field,
             vector,
             similarity_function,
-        )?));
+        )?);
     }
-    doc.add(Box::new(NumericDocValuesField::new(
-        "sortkey",
-        i64::from(sortkey),
-    )));
+    doc.add(NumericDocValuesField::new("sortkey", i64::from(sortkey)));
     let id_string = id.to_string();
-    doc.add(Box::new(StringField::new(
-        "id",
-        id_string.clone(),
-        Store::YES,
-    )?));
+    doc.add(StringField::new("id", id_string.clone(), Store::YES)?);
     let id_term = Term::new("id", BytesRef::new(id_string.into_bytes()));
     iw.update_document(id_term, &doc)?;
     Ok(())
@@ -757,22 +750,11 @@ fn add_byte(
 ) -> Result<()> {
     let mut doc = Document::new();
     if let Some(vector) = vector {
-        doc.add(Box::new(KnnByteVectorField::new(
-            field,
-            vector,
-            similarity_function,
-        )?));
+        doc.add(KnnByteVectorField::new(field, vector, similarity_function)?);
     }
-    doc.add(Box::new(NumericDocValuesField::new(
-        "sortkey",
-        i64::from(sort_key),
-    )));
+    doc.add(NumericDocValuesField::new("sortkey", i64::from(sort_key)));
     let id_string = id.to_string();
-    doc.add(Box::new(StringField::new(
-        "id",
-        id_string.clone(),
-        Store::YES,
-    )?));
+    doc.add(StringField::new("id", id_string.clone(), Store::YES)?);
     let id_term = Term::new("id", BytesRef::new(id_string.into_bytes()));
     iw.update_document(id_term, &doc)?;
     Ok(())
@@ -906,14 +888,14 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn knn_add_random_fields(&self, doc: &mut Document) {
         let similarity_function = self.knn_state().similarity_function();
         match self.knn_state().vector_encoding() {
-            VectorEncoding::BYTE => doc.add(Box::new(
+            VectorEncoding::BYTE => doc.add(
                 KnnByteVectorField::new("v2", &random_vector8(30), similarity_function)
                     .unwrap_or_else(|e| rethrow(e)),
-            )),
-            VectorEncoding::FLOAT32 => doc.add(Box::new(
+            ),
+            VectorEncoding::FLOAT32 => doc.add(
                 KnnFloatVectorField::new("v2", &random_normalized_vector(30), similarity_function)
                     .unwrap_or_else(|e| rethrow(e)),
-            )),
+            ),
         }
     }
 
@@ -1111,20 +1093,20 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 for i in 0..10 {
                     let i = i as f32;
                     let mut doc = Document::new();
-                    doc.add(Box::new(KnnFloatVectorField::with_euclidean(
+                    doc.add(KnnFloatVectorField::with_euclidean(
                         "field",
                         &[i, i + 1.0, i + 2.0, i + 3.0],
-                    )?));
+                    )?);
                     writer.add_document(&doc)?;
                 }
                 writer.commit()?;
                 for i in 0..10 {
                     let i = i as f32;
                     let mut doc = Document::new();
-                    doc.add(Box::new(KnnFloatVectorField::with_euclidean(
+                    doc.add(KnnFloatVectorField::with_euclidean(
                         "otherVector",
                         &[i, i, i, i],
-                    )?));
+                    )?);
                     writer.add_document(&doc)?;
                 }
                 writer.commit()?;
@@ -1152,19 +1134,16 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 let writer = Arc::clone(writer);
                 for i in 0..10u8 {
                     let mut doc = Document::new();
-                    doc.add(Box::new(KnnByteVectorField::with_euclidean(
-                        "field",
-                        &[i, i, i, i],
-                    )?));
+                    doc.add(KnnByteVectorField::with_euclidean("field", &[i, i, i, i])?);
                     writer.add_document(&doc)?;
                 }
                 writer.commit()?;
                 for i in 0..10u8 {
                     let mut doc = Document::new();
-                    doc.add(Box::new(KnnByteVectorField::with_euclidean(
+                    doc.add(KnnByteVectorField::with_euclidean(
                         "otherVector",
                         &[i, i, i, i],
-                    )?));
+                    )?);
                     writer.add_document(&doc)?;
                 }
                 writer.commit()?;
@@ -1334,11 +1313,11 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                             Ok(())
                         })?;
                     }
-                    doc.add(Box::new(KnnFloatVectorField::new(
+                    doc.add(KnnFloatVectorField::new(
                         field_name,
                         &[0f32; 4],
                         VectorSimilarityFunction::DOT_PRODUCT,
-                    )?));
+                    )?);
                     {
                         with_writer(new_writer(dir2.as_directory())?, |w2| {
                             let w2 = Arc::clone(w2);
@@ -1591,16 +1570,16 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             with_writer(new_writer(dir.as_directory())?, |w| {
                 let w = Arc::clone(w);
                 let mut doc = Document::new();
-                doc.add(Box::new(KnnFloatVectorField::new(
+                doc.add(KnnFloatVectorField::new(
                     "f",
                     &[0f32; 4],
                     VectorSimilarityFunction::DOT_PRODUCT,
-                )?));
-                doc.add(Box::new(KnnFloatVectorField::new(
+                )?);
+                doc.add(KnnFloatVectorField::new(
                     "f",
                     &[0f32; 4],
                     VectorSimilarityFunction::DOT_PRODUCT,
-                )?));
+                )?);
                 let expected = expect_illegal_argument(|| w.add_document(&doc));
                 Assert::assert_equals_str(
             None,
@@ -1757,16 +1736,12 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             with_writer(new_writer(dir.as_directory())?, |w| {
                 let w = Arc::clone(w);
                 let mut doc = Document::new();
-                doc.add(Box::new(StringField::new(
-                    "id",
-                    "0".to_string(),
-                    Store::NO,
-                )?));
-                doc.add(Box::new(KnnFloatVectorField::new(
+                doc.add(StringField::new("id", "0".to_string(), Store::NO)?);
+                doc.add(KnnFloatVectorField::new(
                     "v",
                     &[2.0, 3.0, 5.0, 6.0],
                     VectorSimilarityFunction::DOT_PRODUCT,
-                )?));
+                )?);
                 w.add_document(&doc)?;
                 w.add_document(&Document::new())?;
                 w.commit()?;
@@ -1822,25 +1797,21 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 with_writer(new_writer(Arc::clone(dir))?, |w| {
                     let w = Arc::clone(w);
                     let mut doc = Document::new();
-                    doc.add(Box::new(StringField::new(
-                        "id",
-                        "0".to_string(),
-                        Store::NO,
-                    )?));
-                    doc.add(Box::new(KnnFloatVectorField::new(
+                    doc.add(StringField::new("id", "0".to_string(), Store::NO)?);
+                    doc.add(KnnFloatVectorField::new(
                         "v0",
                         &[2.0, 3.0, 5.0, 6.0],
                         VectorSimilarityFunction::DOT_PRODUCT,
-                    )?));
+                    )?);
                     w.add_document(&doc)?;
                     w.commit()?;
 
                     let mut doc = Document::new();
-                    doc.add(Box::new(KnnFloatVectorField::new(
+                    doc.add(KnnFloatVectorField::new(
                         "v1",
                         &[2.0, 3.0, 5.0, 6.0],
                         VectorSimilarityFunction::DOT_PRODUCT,
-                    )?));
+                    )?);
                     w.add_document(&doc)?;
                     w.force_merge(1)?;
                     Ok(())
@@ -1883,20 +1854,20 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                                 match field_vector_encodings[field] {
                                     VectorEncoding::BYTE => {
                                         let b = random_vector8(field_dims[field]);
-                                        doc.add(Box::new(KnnByteVectorField::new(
+                                        doc.add(KnnByteVectorField::new(
                                             &field_name,
                                             &b,
                                             field_similarity_functions[field],
-                                        )?));
+                                        )?);
                                         field_totals[field] += f64::from(b[0] as i8);
                                     }
                                     VectorEncoding::FLOAT32 => {
                                         let v = random_normalized_vector(field_dims[field]);
-                                        doc.add(Box::new(KnnFloatVectorField::new(
+                                        doc.add(KnnFloatVectorField::new(
                                             &field_name,
                                             &v,
                                             field_similarity_functions[field],
-                                        )?));
+                                        )?);
                                         field_totals[field] += f64::from(v[0]);
                                     }
                                 }
@@ -2178,32 +2149,24 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             with_writer(new_writer(dir.as_directory())?, |w| {
                 let w = Arc::clone(w);
                 let mut doc1 = Document::new();
-                doc1.add(Box::new(StringField::new(
-                    "id",
-                    "0".to_string(),
-                    Store::NO,
-                )?));
+                doc1.add(StringField::new("id", "0".to_string(), Store::NO)?);
                 if bytes {
-                    doc1.add(Box::new(KnnByteVectorField::new(
+                    doc1.add(KnnByteVectorField::new(
                         "v",
                         &[2, 3, 5, 6],
                         VectorSimilarityFunction::DOT_PRODUCT,
-                    )?));
+                    )?);
                 } else {
-                    doc1.add(Box::new(KnnFloatVectorField::new(
+                    doc1.add(KnnFloatVectorField::new(
                         "v",
                         &[2.0, 3.0, 5.0, 6.0],
                         VectorSimilarityFunction::DOT_PRODUCT,
-                    )?));
+                    )?);
                 }
                 w.add_document(&doc1)?;
 
                 let mut doc2 = Document::new();
-                doc2.add(Box::new(StringField::new(
-                    "id",
-                    "1".to_string(),
-                    Store::NO,
-                )?));
+                doc2.add(StringField::new("id", "1".to_string(), Store::NO)?);
                 w.add_document(&doc2)?;
 
                 w.delete_documents_by_terms(vec![Term::new("id", BytesRef::new(b"0".to_vec()))])?;
@@ -2426,27 +2389,27 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 let mut v = [1.0f32, 2.0];
                 let doc_with = |v: &[f32]| -> Result<Document> {
                     let mut doc = Document::new();
-                    doc.add(Box::new(KnnFloatVectorField::new(
+                    doc.add(KnnFloatVectorField::new(
                         "field1",
                         v,
                         VectorSimilarityFunction::EUCLIDEAN,
-                    )?));
-                    doc.add(Box::new(KnnFloatVectorField::new(
+                    )?);
+                    doc.add(KnnFloatVectorField::new(
                         "field2",
                         &[1.0, 2.0, 3.0, 4.0],
                         VectorSimilarityFunction::EUCLIDEAN,
-                    )?));
+                    )?);
                     Ok(doc)
                 };
                 iw.add_document(&doc_with(&v)?)?;
                 v[0] = 2.0;
                 iw.add_document(&doc_with(&v)?)?;
                 let mut doc = Document::new();
-                doc.add(Box::new(KnnFloatVectorField::new(
+                doc.add(KnnFloatVectorField::new(
                     "field3",
                     &[1.0, 2.0, 3.0, 4.0],
                     VectorSimilarityFunction::DOT_PRODUCT,
-                )?));
+                )?);
                 iw.add_document(&doc)?;
                 iw.force_merge(1)?;
                 with_reader(directory_reader::open_with_writer(&*iw)?, |reader| {
@@ -2957,18 +2920,18 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 with_writer(new_writer(dir.as_directory())?, |w| {
                     let w = Arc::clone(w);
                     let mut doc = Document::new();
-                    doc.add(Box::new(KnnFloatVectorField::new(
+                    doc.add(KnnFloatVectorField::new(
                         "v1",
                         &random_normalized_vector(4),
                         VectorSimilarityFunction::EUCLIDEAN,
-                    )?));
+                    )?);
                     w.add_document(&doc)?;
 
-                    doc.add(Box::new(KnnFloatVectorField::new(
+                    doc.add(KnnFloatVectorField::new(
                         "v2",
                         &random_normalized_vector(4),
                         VectorSimilarityFunction::EUCLIDEAN,
-                    )?));
+                    )?);
                     w.add_document(&doc)?;
                     Ok(())
                 })?;
@@ -3034,11 +2997,11 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                     let mut doc = Document::new();
                     // randomly add a vector field
                     if random().next_int_bound(4) == 3 {
-                        doc.add(Box::new(KnnFloatVectorField::new(
+                        doc.add(KnnFloatVectorField::new(
                             field_name,
                             &[0f32; 4],
                             VectorSimilarityFunction::EUCLIDEAN,
-                        )?));
+                        )?);
                     }
                     w.add_document(&doc)?;
                 }
@@ -3126,29 +3089,29 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                     for _ in 0..num_docs {
                         let mut doc = Document::new();
                         let doc_id = random().next_int_bound(num_docs);
-                        doc.add(Box::new(StoredField::new_number(
+                        doc.add(StoredField::new_number(
                             "id",
                             rucene::document::NumericValue::Int(doc_id),
-                        )?));
+                        )?);
                         if random().next_int_bound(4) == 3 {
                             match vector_encoding {
                                 VectorEncoding::BYTE => {
                                     let b = random_vector8(dim);
                                     field_values_check_sum += f64::from(b[0] as i8);
-                                    doc.add(Box::new(KnnByteVectorField::new(
+                                    doc.add(KnnByteVectorField::new(
                                         "knn_vector",
                                         &b,
                                         similarity_function,
-                                    )?));
+                                    )?);
                                 }
                                 VectorEncoding::FLOAT32 => {
                                     let v = random_normalized_vector(dim);
                                     field_values_check_sum += f64::from(v[0]);
-                                    doc.add(Box::new(KnnFloatVectorField::new(
+                                    doc.add(KnnFloatVectorField::new(
                                         "knn_vector",
                                         &v,
                                         similarity_function,
-                                    )?));
+                                    )?);
                                 }
                             }
                             field_doc_count += 1;
@@ -3323,11 +3286,11 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                     let w = Arc::clone(w);
                     for vector in &vectors {
                         let mut doc = Document::new();
-                        doc.add(Box::new(KnnFloatVectorField::new(
+                        doc.add(KnnFloatVectorField::new(
                             vector_field_name,
                             vector,
                             similarity_function,
-                        )?));
+                        )?);
                         w.add_document(&doc)?;
                     }
                     Ok(())
@@ -3400,11 +3363,8 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         {
             let w1 = new_writer(dir1.as_directory())?;
             let mut doc = Document::new();
-            doc.add(Box::new(KnnFloatVectorField::with_euclidean(
-                "float",
-                &[1.0, 2.0],
-            )?));
-            doc.add(Box::new(KnnByteVectorField::with_euclidean("byte", &[42])?));
+            doc.add(KnnFloatVectorField::with_euclidean("float", &[1.0, 2.0])?);
+            doc.add(KnnByteVectorField::with_euclidean("byte", &[42])?);
             w1.add_document(&doc)?;
 
             dir2 = LuceneTestCase::new_directory();

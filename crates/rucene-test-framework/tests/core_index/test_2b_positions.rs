@@ -49,7 +49,7 @@ fn test_() -> Result<()> {
     let stream: Arc<AtomicRefCell<dyn TokenStream>> =
         Arc::new(AtomicRefCell::new(MyTokenStream::new()?));
     let field = Field::new_with_token_stream("field", stream, ft)?;
-    doc.add(Box::new(field));
+    doc.add(field);
 
     let num_docs = (i32::MAX / 26) + 1;
     for i in 0..num_docs {

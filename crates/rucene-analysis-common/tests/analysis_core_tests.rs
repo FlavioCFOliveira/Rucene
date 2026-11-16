@@ -930,16 +930,12 @@ fn ka_set_up() -> Result<()> {
         IndexWriterConfig::with_analyzer(Some(Arc::clone(&analyzer))),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "partnum",
-        "Q36".to_string(),
-        Store::YES,
-    )?));
-    doc.add(Box::new(TextField::new(
+    doc.add(StringField::new("partnum", "Q36".to_string(), Store::YES)?);
+    doc.add(TextField::new(
         "description",
         "Illidium Space Modulator".to_string(),
         Store::YES,
-    )?));
+    )?);
     writer.add_document(&doc)?;
     writer.close()?;
     let reader = directory_reader::open(directory.as_directory())?;
@@ -966,18 +962,10 @@ fn ka_test_mutiple_document() -> Result<()> {
         IndexWriterConfig::with_analyzer(Some(Arc::clone(&analyzer))),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(
-        "partnum",
-        "Q36".to_string(),
-        Store::YES,
-    )?));
+    doc.add(TextField::new("partnum", "Q36".to_string(), Store::YES)?);
     writer.add_document(&doc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(
-        "partnum",
-        "Q37".to_string(),
-        Store::YES,
-    )?));
+    doc.add(TextField::new("partnum", "Q37".to_string(), Store::YES)?);
     writer.add_document(&doc)?;
     writer.close()?;
 

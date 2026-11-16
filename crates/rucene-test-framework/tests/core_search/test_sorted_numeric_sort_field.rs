@@ -190,9 +190,9 @@ fn check_sorted(docs: Vec<DocFn>, sort_field: SortField, expected_ids: &[&str]) 
 fn int_doc(values: &[i32], id: &str) -> Document {
     let mut doc = Document::new();
     for &v in values {
-        doc.add(Box::new(IntField::new("value", v, Store::NO)));
+        doc.add(IntField::new("value", v, Store::NO));
     }
-    doc.add(id_field(id));
+    doc.add(*id_field(id));
     doc
 }
 
@@ -285,15 +285,15 @@ fn test_singleton() -> Result<()> {
 fn test_float() -> Result<()> {
     let d1: DocFn = Box::new(|| {
         let mut d1 = Document::new();
-        d1.add(Box::new(FloatField::new("value", -3.0, Store::NO)));
-        d1.add(id_field("2"));
+        d1.add(FloatField::new("value", -3.0, Store::NO));
+        d1.add(*id_field("2"));
         d1
     });
     let d2: DocFn = Box::new(|| {
         let mut d2 = Document::new();
-        d2.add(Box::new(FloatField::new("value", -5.0, Store::NO)));
-        d2.add(Box::new(FloatField::new("value", 7.0, Store::NO)));
-        d2.add(id_field("1"));
+        d2.add(FloatField::new("value", -5.0, Store::NO));
+        d2.add(FloatField::new("value", 7.0, Store::NO));
+        d2.add(*id_field("1"));
         d2
     });
     // -5 comes before -3
@@ -308,15 +308,15 @@ fn test_float() -> Result<()> {
 fn test_double() -> Result<()> {
     let d1: DocFn = Box::new(|| {
         let mut d1 = Document::new();
-        d1.add(Box::new(DoubleField::new("value", -3.0, Store::YES)));
-        d1.add(id_field("2"));
+        d1.add(DoubleField::new("value", -3.0, Store::YES));
+        d1.add(*id_field("2"));
         d1
     });
     let d2: DocFn = Box::new(|| {
         let mut d2 = Document::new();
-        d2.add(Box::new(DoubleField::new("value", -5.0, Store::YES)));
-        d2.add(Box::new(DoubleField::new("value", 7.0, Store::YES)));
-        d2.add(id_field("1"));
+        d2.add(DoubleField::new("value", -5.0, Store::YES));
+        d2.add(DoubleField::new("value", 7.0, Store::YES));
+        d2.add(*id_field("1"));
         d2
     });
     // -5 comes before -3

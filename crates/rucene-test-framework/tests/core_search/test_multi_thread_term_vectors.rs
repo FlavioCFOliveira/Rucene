@@ -56,7 +56,7 @@ fn fixture_set_up(f: &mut Fixture) -> Result<()> {
     for i in 0..f.num_docs {
         let mut doc = Document::new();
         let fld = LuceneTestCase::new_field("field", &English::int_to_english(i), &custom_type);
-        doc.add(Box::new(fld));
+        doc.add(fld);
         writer.add_document(&doc)?;
     }
     writer.close()?;

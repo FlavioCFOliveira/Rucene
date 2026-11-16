@@ -368,9 +368,7 @@ fn indexed_fields_iterate_in_java_hash_set_order() {
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     let mut doc = Document::new();
     for name in &names {
-        doc.add(Box::new(
-            TextField::new(name, "some text".to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(TextField::new(name, "some text".to_string(), Store::NO).unwrap());
     }
     writer.add_document(&doc).unwrap();
     writer.commit().unwrap();

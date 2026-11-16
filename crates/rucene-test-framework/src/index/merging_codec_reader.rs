@@ -344,9 +344,7 @@ mod tests {
         let config = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
         let iw = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let mut d = Document::new();
-        d.add(Box::new(
-            StringField::new("id", "0".to_string(), Store::YES).unwrap(),
-        ));
+        d.add(StringField::new("id", "0".to_string(), Store::YES).unwrap());
         iw.add_document(&d).unwrap();
         iw.commit().unwrap();
         iw.close().unwrap();

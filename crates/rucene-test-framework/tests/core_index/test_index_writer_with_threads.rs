@@ -208,12 +208,12 @@ impl IndexerThread {
             Throwable::from_cause("java.lang.RuntimeException", java_throwable(&e)).throw();
         }
 
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             "field",
             "aaa bbb ccc ddd eee fff ggg hhh iii jjj",
             &custom_type,
-        )));
-        doc.add(Box::new(NumericDocValuesField::new("dv", 5)));
+        ));
+        doc.add(NumericDocValuesField::new("dv", 5));
 
         let mut id_upto = 0;
         let mut full_count = 0;
@@ -553,11 +553,11 @@ fn testing_single_thread_failure(failure: Arc<dyn Failure>) -> Result<()> {
     custom_type.set_store_term_vectors(true)?;
     custom_type.set_store_term_vector_positions(true)?;
     custom_type.set_store_term_vector_offsets(true)?;
-    doc.add(Box::new(LuceneTestCase::new_field(
+    doc.add(LuceneTestCase::new_field(
         "field",
         "aaa bbb ccc ddd eee fff ggg hhh iii jjj",
         &custom_type,
-    )));
+    ));
 
     for _ in 0..6 {
         writer.add_document(&doc)?;
@@ -743,7 +743,7 @@ fn delayed_index_and_close_runnable(
         let outcome = try_catch(THROWABLE, || -> Result<()> {
             let mut doc = Document::new();
             let field = LuceneTestCase::new_text_field("field", "testData", Store::YES);
-            doc.add(Box::new(field));
+            doc.add(field);
 
             if let Err(e) = sync_start.await_() {
                 Throwable::new(e.java_class(), "").throw();
@@ -996,7 +996,7 @@ fn stress_update_single_doc_with_threads(use_soft_deletes: bool, force_merge: bo
         let done = Arc::new(AtomicI32::new(0));
         let barrier = Arc::new(CyclicBarrier::new(num_threads + 1));
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new("id", "1".into(), Store::NO)?));
+        doc.add(StringField::new("id", "1".into(), Store::NO)?);
         writer.update_document(Term::from_text("id", "1"), &doc)?;
         let iters_per_thread = 100 + random().next_int_bound(2000);
         let mut threads = Vec::with_capacity(num_threads as usize);
@@ -1011,7 +1011,7 @@ fn stress_update_single_doc_with_threads(use_soft_deletes: bool, force_merge: bo
                     }
                     for _ in 0..iters_per_thread {
                         let mut d = Document::new();
-                        d.add(Box::new(StringField::new("id", "1".into(), Store::NO)?));
+                        d.add(StringField::new("id", "1".into(), Store::NO)?);
                         writer.update_document(Term::from_text("id", "1"), &d)?;
                     }
                     Ok(())

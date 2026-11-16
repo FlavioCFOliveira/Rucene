@@ -76,7 +76,7 @@ fn set_up(this: &mut Instance) -> Result<()> {
     let mut doc = Document::new();
     #[allow(clippy::disallowed_names)] // the Java test's variable name
     let foo = LuceneTestCase::new_text_field("foo", "", Store::NO);
-    doc.add(Box::new(foo));
+    doc.add(foo);
     for _ in 0..100 {
         let value = add_value(this);
         field_mut(&mut doc, "foo").set_string_value(value)?;

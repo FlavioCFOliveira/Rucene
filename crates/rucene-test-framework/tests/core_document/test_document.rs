@@ -87,8 +87,8 @@ fn test_binary_field() -> Result<()> {
         &binary_fld.field_type().index_options(),
     );
 
-    doc.add(Box::new(string_fld));
-    doc.add(Box::new(binary_fld));
+    doc.add(string_fld);
+    doc.add(binary_fld);
 
     assert_has_size(doc.get_fields().len(), 2);
 
@@ -101,7 +101,7 @@ fn test_binary_field() -> Result<()> {
     let string_test = doc.get("string").unwrap_or_default();
     assert_equal_to(binary_test.as_str(), string_test.as_str());
 
-    doc.add(Box::new(binary_fld2));
+    doc.add(binary_fld2);
 
     assert_has_size(doc.get_fields().len(), 3);
 
@@ -175,7 +175,7 @@ fn test_constructor_exceptions() -> Result<()> {
     let ft2 = FieldType::new();
     ft2.set_stored(true)?;
     ft2.set_store_term_vectors(true)?;
-    doc.add(Box::new(Field::new("name", "value".to_string(), ft2)?));
+    doc.add(Field::new("name", "value".to_string(), ft2)?);
     expect_throws(IAE, || w.add_document(&doc));
     w.close()?;
     dir.close()
@@ -279,56 +279,36 @@ fn make_document_with_fields() -> Result<Document> {
     let indexed_not_tokenized = FieldType::new();
     indexed_not_tokenized.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)?;
     indexed_not_tokenized.set_tokenized(false)?;
-    doc.add(Box::new(StringField::new(
+    doc.add(StringField::new(
         "keyword",
         "test1".to_string(),
         Store::YES,
-    )?));
-    doc.add(Box::new(StringField::new(
+    )?);
+    doc.add(StringField::new(
         "keyword",
         "test2".to_string(),
         Store::YES,
-    )?));
-    doc.add(Box::new(TextField::new(
-        "text",
-        "test1".to_string(),
-        Store::YES,
-    )?));
-    doc.add(Box::new(TextField::new(
-        "text",
-        "test2".to_string(),
-        Store::YES,
-    )?));
-    doc.add(Box::new(Field::new(
+    )?);
+    doc.add(TextField::new("text", "test1".to_string(), Store::YES)?);
+    doc.add(TextField::new("text", "test2".to_string(), Store::YES)?);
+    doc.add(Field::new(
         "unindexed",
         "test1".to_string(),
         stored.clone(),
-    )?));
-    doc.add(Box::new(Field::new(
-        "unindexed",
-        "test2".to_string(),
-        stored,
-    )?));
-    doc.add(Box::new(TextField::new(
-        "unstored",
-        "test1".to_string(),
-        Store::NO,
-    )?));
-    doc.add(Box::new(TextField::new(
-        "unstored",
-        "test2".to_string(),
-        Store::NO,
-    )?));
-    doc.add(Box::new(Field::new(
+    )?);
+    doc.add(Field::new("unindexed", "test2".to_string(), stored)?);
+    doc.add(TextField::new("unstored", "test1".to_string(), Store::NO)?);
+    doc.add(TextField::new("unstored", "test2".to_string(), Store::NO)?);
+    doc.add(Field::new(
         "indexed_not_tokenized",
         "test1".to_string(),
         indexed_not_tokenized.clone(),
-    )?));
-    doc.add(Box::new(Field::new(
+    )?);
+    doc.add(Field::new(
         "indexed_not_tokenized",
         "test2".to_string(),
         indexed_not_tokenized,
-    )?));
+    )?);
     Ok(doc)
 }
 
@@ -373,12 +353,8 @@ fn id_field(doc: &mut Document) -> &StringField {
 fn test_field_set_value() -> Result<()> {
     let field = StringField::new("id", "id1".to_string(), Store::YES)?;
     let mut doc = Document::new();
-    doc.add(Box::new(field));
-    doc.add(Box::new(StringField::new(
-        "keyword",
-        "test".to_string(),
-        Store::YES,
-    )?));
+    doc.add(field);
+    doc.add(StringField::new("keyword", "test".to_string(), Store::YES)?);
 
     let dir = LuceneTestCase::new_directory();
     let writer = random_writer(&dir)?;
@@ -437,16 +413,10 @@ fn test_invalid_fields() -> Result<()> {
 /// Port of `testNumericFieldAsString`.
 fn test_numeric_field_as_string() -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(StoredField::new_number(
-        "int",
-        NumericValue::Int(5),
-    )?));
+    doc.add(StoredField::new_number("int", NumericValue::Int(5))?);
     assert_equal_to(doc.get("int").unwrap_or_default().as_str(), "5");
     assert_null_value(&doc.get("somethingElse"));
-    doc.add(Box::new(StoredField::new_number(
-        "int",
-        NumericValue::Int(4),
-    )?));
+    doc.add(StoredField::new_number("int", NumericValue::Int(4))?);
     assert_array_containing(&doc.get_values("int"), &["5", "4"]);
 
     let dir = LuceneTestCase::new_directory();

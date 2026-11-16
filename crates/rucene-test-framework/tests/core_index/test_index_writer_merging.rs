@@ -208,11 +208,11 @@ fn fill_index(random: &dyn Random, dir: &TestDirectory, start: i32, num_docs: i3
 
     for i in start..(start + num_docs) {
         let mut temp = Document::new();
-        temp.add(Box::new(LuceneTestCase::new_string_field(
+        temp.add(LuceneTestCase::new_string_field(
             "count",
             &i.to_string(),
             Store::YES,
-        )));
+        ));
 
         writer.add_document(&temp)?;
     }
@@ -248,11 +248,11 @@ fn test_force_merge_deletes() -> Result<()> {
     let (custom_type, custom_type1) = force_merge_deletes_types(true)?;
 
     let id_field = LuceneTestCase::new_string_field("id", "", Store::NO);
-    document.add(Box::new(id_field));
+    document.add(id_field);
     let stored_field = LuceneTestCase::new_field("stored", "stored", &custom_type);
-    document.add(Box::new(stored_field));
+    document.add(stored_field);
     let term_vector_field = LuceneTestCase::new_field("termVector", "termVector", &custom_type1);
-    document.add(Box::new(term_vector_field));
+    document.add(term_vector_field);
     for i in 0..10 {
         field_mut(&mut document, "id").set_string_value(i.to_string())?;
         writer.add_document(&document)?;
@@ -291,11 +291,11 @@ fn ninety_eight_docs_half_deleted(dir: &TestDirectory) -> Result<()> {
     let mut document = Document::new();
 
     let stored_field = LuceneTestCase::new_field("stored", "stored", &custom_type);
-    document.add(Box::new(stored_field));
+    document.add(stored_field);
     let term_vector_field = LuceneTestCase::new_field("termVector", "termVector", &custom_type1);
-    document.add(Box::new(term_vector_field));
+    document.add(term_vector_field);
     let id_field = LuceneTestCase::new_string_field("id", "", Store::NO);
-    document.add(Box::new(id_field));
+    document.add(id_field);
     for i in 0..98 {
         field_mut(&mut document, "id").set_string_value(i.to_string())?;
         writer.add_document(&document)?;
@@ -398,7 +398,7 @@ fn ten_docs_half_deleted(dir: &TestDirectory, check_readers: bool) -> Result<()>
     for i in 0..10 {
         let mut doc = Document::new();
         let id_field = LuceneTestCase::new_string_field("id", &i.to_string(), Store::NO);
-        doc.add(Box::new(id_field));
+        doc.add(id_field);
         indexer.add_document(&doc)?;
     }
     indexer.close()?;
@@ -455,11 +455,7 @@ fn test_merge_observer_no_merges() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), no_merge_iwc()?)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "1",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("id", "1", Store::NO));
     writer.add_document(&doc)?;
     writer.commit()?;
 
@@ -476,11 +472,11 @@ fn test_merge_observer_await_with_timeout() -> Result<()> {
     let iw = IndexWriter::new(dir.as_directory(), log_iwc()?)?;
     for i in 0..10 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::NO,
-        )));
+        ));
         iw.add_document(&doc)?;
     }
     iw.commit()?;
@@ -533,11 +529,11 @@ fn test_merge_observer_await_timeout() -> Result<()> {
 
     for i in 0..20 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::NO,
-        )));
+        ));
         indexer.add_document(&doc)?;
     }
     indexer.commit()?;
@@ -588,11 +584,7 @@ fn test_blocking_mode_with_no_merges() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let iw = IndexWriter::new(dir.as_directory(), no_merge_iwc()?)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "1",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("id", "1", Store::NO));
     iw.add_document(&doc)?;
     iw.commit()?;
 
@@ -643,11 +635,7 @@ fn test_set_max_merge_docs() -> Result<()> {
     let custom_type = FieldType::new_from(TextField::type_not_stored());
     custom_type.set_store_term_vectors(true)?;
 
-    document.add(Box::new(LuceneTestCase::new_field(
-        "tvtest",
-        "a b c",
-        &custom_type,
-    )));
+    document.add(LuceneTestCase::new_field("tvtest", "a b c", &custom_type));
     for _ in 0..177 {
         iw.add_document(&document)?;
     }
@@ -664,7 +652,7 @@ fn test_no_wait_close() -> Result<()> {
     custom_type.set_tokenized(false)?;
 
     let id_field = LuceneTestCase::new_field("id", "", &custom_type);
-    doc.add(Box::new(id_field));
+    doc.add(id_field);
     let mut doc = Arc::new(doc);
 
     for pass in 0..2 {
@@ -776,11 +764,11 @@ fn test_add_estimated_bytes_to_merge() -> Result<()> {
     {
         let writer = IndexWriter::new(dir.as_directory(), no_merge_iwc()?)?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             "field",
             "content",
             Store::YES,
-        )));
+        ));
         for _ in 0..10 {
             writer.add_document(&doc)?;
         }

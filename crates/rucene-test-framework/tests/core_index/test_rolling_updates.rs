@@ -240,11 +240,11 @@ fn indexing_thread(_docs: Arc<LineFileDocs>, writer: Arc<IndexWriter>, num: i32)
             for i in 0..num {
                 let mut doc = Document::new(); // docs.nextDoc();
                 let br = BytesRef::new(b"test".to_vec());
-                doc.add(Box::new(LuceneTestCase::new_string_field_bytes(
+                doc.add(LuceneTestCase::new_string_field_bytes(
                     "id",
                     br.clone(),
                     Store::NO,
-                )));
+                ));
                 writer.update_document(Term::new("id", br), &doc)?;
                 if random().next_int_bound(3) == 0 {
                     if open.is_none() {

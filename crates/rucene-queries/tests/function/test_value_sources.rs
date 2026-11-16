@@ -285,68 +285,56 @@ fn before_class() -> Result<()> {
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_config)?;
     for doc in DOCUMENTS {
         let mut document = Document::new();
-        document.add(Box::new(StringField::new(
-            "id",
-            doc[0].to_string(),
-            Store::NO,
-        )?));
-        document.add(Box::new(SortedDocValuesField::new(
+        document.add(StringField::new("id", doc[0].to_string(), Store::NO)?);
+        document.add(SortedDocValuesField::new(
             "id",
             BytesRef::from_char_sequence(doc[0]),
-        )));
-        document.add(Box::new(NumericDocValuesField::new(
+        ));
+        document.add(NumericDocValuesField::new(
             "double",
             parse_double(doc[1]).to_bits() as i64,
-        )));
-        document.add(Box::new(NumericDocValuesField::new(
+        ));
+        document.add(NumericDocValuesField::new(
             "float",
             i64::from(parse_float(doc[2]).to_bits() as i32),
-        )));
-        document.add(Box::new(NumericDocValuesField::new(
+        ));
+        document.add(NumericDocValuesField::new(
             "int",
             i64::from(doc[3].parse::<i32>().expect("an int")),
-        )));
-        document.add(Box::new(NumericDocValuesField::new(
+        ));
+        document.add(NumericDocValuesField::new(
             "long",
             doc[4].parse::<i64>().expect("a long"),
-        )));
-        document.add(Box::new(StringField::new(
-            "string",
-            doc[5].to_string(),
-            Store::NO,
-        )?));
-        document.add(Box::new(SortedDocValuesField::new(
+        ));
+        document.add(StringField::new("string", doc[5].to_string(), Store::NO)?);
+        document.add(SortedDocValuesField::new(
             "string",
             BytesRef::from_char_sequence(doc[5]),
-        )));
-        document.add(Box::new(TextField::new(
-            "text",
-            doc[6].to_string(),
-            Store::NO,
-        )?));
+        ));
+        document.add(TextField::new("text", doc[6].to_string(), Store::NO)?);
         for v in &doc[7..10] {
-            document.add(Box::new(SortedNumericDocValuesField::new(
+            document.add(SortedNumericDocValuesField::new(
                 "floatMv",
                 i64::from(NumericUtils::float_to_sortable_int(parse_float(v))),
-            )));
+            ));
         }
         for v in &doc[7..10] {
-            document.add(Box::new(SortedNumericDocValuesField::new(
+            document.add(SortedNumericDocValuesField::new(
                 "doubleMv",
                 NumericUtils::double_to_sortable_long(parse_double(v)),
-            )));
+            ));
         }
         for v in &doc[10..13] {
-            document.add(Box::new(SortedNumericDocValuesField::new(
+            document.add(SortedNumericDocValuesField::new(
                 "intMv",
                 v.parse::<i64>().expect("a long"),
-            )));
+            ));
         }
         for v in &doc[10..13] {
-            document.add(Box::new(SortedNumericDocValuesField::new(
+            document.add(SortedNumericDocValuesField::new(
                 "longMv",
                 v.parse::<i64>().expect("a long"),
-            )));
+            ));
         }
         iw.add_document(&document)?;
     }

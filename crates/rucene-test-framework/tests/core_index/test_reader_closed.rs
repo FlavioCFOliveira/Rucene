@@ -68,7 +68,7 @@ fn set_up(inst: &mut TestReaderClosedInstance) -> Result<()> {
 
     let mut doc = Document::new();
     let field = LuceneTestCase::new_string_field("field", "", Store::NO);
-    doc.add(Box::new(field));
+    doc.add(field);
 
     // we generate aweful prefixes: good for testing.
     // but for preflex codec, the test can be very slow, so use less iterations.

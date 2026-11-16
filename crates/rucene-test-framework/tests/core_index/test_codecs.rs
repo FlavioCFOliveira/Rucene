@@ -1135,11 +1135,7 @@ fn test_docs_only_freq() -> Result<()> {
     let num_docs = LuceneTestCase::at_least_with(&*random, 50);
     for _ in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "f",
-            "doc".to_string(),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("f", "doc".to_string(), Store::NO)?);
         writer.add_document(&doc)?;
     }
     writer.close()?;

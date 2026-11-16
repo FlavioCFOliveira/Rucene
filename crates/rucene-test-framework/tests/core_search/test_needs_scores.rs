@@ -68,11 +68,11 @@ fn fixture_set_up(f: &mut Fixture) -> Result<()> {
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for i in 0..5 {
         let mut doc = Document::new();
-        doc.add(Box::new(TextField::new(
+        doc.add(TextField::new(
             "field",
             format!("this is document {i}"),
             Store::NO,
-        )?));
+        )?);
         iw.add_document(&doc)?;
     }
     let reader = iw.get_reader()?;

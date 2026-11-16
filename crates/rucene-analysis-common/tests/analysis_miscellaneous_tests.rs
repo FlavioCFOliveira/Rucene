@@ -1375,16 +1375,9 @@ fn ets_test_index_writer_lucene4656() -> Result<()> {
     );
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "id",
-        "0".to_string(),
-        Store::YES,
-    )?));
+    doc.add(StringField::new("id", "0".to_string(), Store::YES)?);
     let ts: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(ts));
-    doc.add(Box::new(TextField::new_with_token_stream(
-        "description",
-        ts,
-    )?));
+    doc.add(TextField::new_with_token_stream("description", ts)?);
 
     // this should not fail because we have no TermToBytesRefAttribute
     writer.add_document(&doc)?;
@@ -1426,7 +1419,7 @@ fn fbo_test_bogus_term_vectors() -> Result<()> {
     ]))?;
     let filter: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(filter));
     let field = Field::new_with_token_stream("foo", filter, ft)?;
-    doc.add(Box::new(field));
+    doc.add(field);
     iw.add_document(&doc)?;
     iw.close()?;
     dir.close()
@@ -2056,11 +2049,7 @@ fn ltca_test_limit_token_count_index_writer() -> Result<()> {
         }
         b.push_str(" x");
         b.push_str(" z");
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "field",
-            &b,
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_text_field("field", &b, Store::NO));
         writer.add_document(&doc)?;
         writer.close()?;
 

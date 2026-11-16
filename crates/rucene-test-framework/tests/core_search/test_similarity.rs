@@ -180,18 +180,10 @@ fn test_similarity() -> Result<()> {
     let writer = writer(&store, MockAnalyzer::new(&*random()))?;
 
     let mut d1 = Document::new();
-    d1.add(Box::new(LuceneTestCase::new_text_field(
-        "field",
-        "a c",
-        Store::YES,
-    )));
+    d1.add(LuceneTestCase::new_text_field("field", "a c", Store::YES));
 
     let mut d2 = Document::new();
-    d2.add(Box::new(LuceneTestCase::new_text_field(
-        "field",
-        "a c b",
-        Store::YES,
-    )));
+    d2.add(LuceneTestCase::new_text_field("field", "a c b", Store::YES));
 
     writer.add_document(&d1)?;
     writer.add_document(&d2)?;
@@ -302,18 +294,14 @@ fn test_similarity_term_doc_no_tf() -> Result<()> {
     let field_type = custom_freqs_type()?;
 
     let mut d1 = Document::new();
-    d1.add(Box::new(Field::new(
-        "field",
-        "a c".to_string(),
-        field_type.clone(),
-    )?));
+    d1.add(Field::new("field", "a c".to_string(), field_type.clone())?);
 
     let mut d2 = Document::new();
-    d2.add(Box::new(Field::new(
+    d2.add(Field::new(
         "field",
         "a c b".to_string(),
         field_type.clone(),
-    )?));
+    )?);
 
     writer.add_document(&d1)?;
     writer.add_document(&d2)?;
@@ -358,18 +346,14 @@ fn test_term_doc_similarity() -> Result<()> {
     let field_type = custom_freqs_type()?;
 
     let mut d1 = Document::new();
-    d1.add(Box::new(Field::new(
-        "field",
-        "a c".to_string(),
-        field_type.clone(),
-    )?));
+    d1.add(Field::new("field", "a c".to_string(), field_type.clone())?);
 
     let mut d2 = Document::new();
-    d2.add(Box::new(Field::new(
+    d2.add(Field::new(
         "field",
         "a c b d".to_string(),
         field_type.clone(),
-    )?));
+    )?);
 
     writer.add_document(&d1)?;
     writer.add_document(&d2)?;

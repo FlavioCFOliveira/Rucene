@@ -1833,9 +1833,7 @@ mod census_gap_index_sort_tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", "a".to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(StringField::new("id", "a".to_string(), Store::NO).unwrap());
         writer.add_document(&doc).unwrap();
         writer.commit().unwrap();
         writer.close().unwrap();

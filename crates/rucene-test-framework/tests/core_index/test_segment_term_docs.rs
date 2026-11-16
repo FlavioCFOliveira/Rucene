@@ -290,11 +290,7 @@ fn test_skip_to(_inst: &mut TestSegmentTermDocsInstance) -> Result<()> {
 /// `private void addDoc(IndexWriter writer, String value)`.
 fn add_doc(writer: &IndexWriter, value: &str) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "content",
-        value,
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("content", value, Store::NO));
     writer.add_document(&doc)?;
     Ok(())
 }

@@ -25,12 +25,10 @@ use rucene::util::BytesRef;
 
 fn doc(d: i32, colour: &str) -> Document {
     let mut document = Document::new();
-    document.add(Box::new(
-        StringField::new("id", format!("doc-{d}"), Store::YES).expect("id"),
-    ));
-    document.add(Box::new(
+    document.add(StringField::new("id", format!("doc-{d}"), Store::YES).expect("id"));
+    document.add(
         TextField::new("body", format!("{colour} thing number {d}"), Store::YES).expect("body"),
-    ));
+    );
     document
 }
 

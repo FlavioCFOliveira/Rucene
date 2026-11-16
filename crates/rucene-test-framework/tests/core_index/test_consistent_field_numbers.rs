@@ -71,8 +71,8 @@ fn test_same_field_numbers_across_segments() -> Result<()> {
         let mut writer = IndexWriter::new(dir.as_directory(), no_merge_iwc()?)?;
 
         let mut d1 = Document::new();
-        d1.add(text("f1", "first field", Store::YES)?);
-        d1.add(text("f2", "second field", Store::YES)?);
+        d1.add(*text("f1", "first field", Store::YES)?);
+        d1.add(*text("f2", "second field", Store::YES)?);
         writer.add_document(&d1)?;
 
         if i == 1 {
@@ -83,10 +83,10 @@ fn test_same_field_numbers_across_segments() -> Result<()> {
         }
 
         let mut d2 = Document::new();
-        d2.add(text("f2", "second field", Store::NO)?);
-        d2.add(text("f1", "first field", Store::YES)?);
-        d2.add(text("f3", "third field", Store::NO)?);
-        d2.add(text("f4", "fourth field", Store::NO)?);
+        d2.add(*text("f2", "second field", Store::NO)?);
+        d2.add(*text("f1", "first field", Store::YES)?);
+        d2.add(*text("f3", "third field", Store::NO)?);
+        d2.add(*text("f4", "fourth field", Store::NO)?);
         writer.add_document(&d2)?;
 
         writer.close()?;
@@ -130,18 +130,18 @@ fn test_add_indexes() -> Result<()> {
     let writer = IndexWriter::new(dir1.as_directory(), no_merge_iwc()?)?;
 
     let mut d1 = Document::new();
-    d1.add(text("f1", "first field", Store::YES)?);
-    d1.add(text("f2", "second field", Store::YES)?);
+    d1.add(*text("f1", "first field", Store::YES)?);
+    d1.add(*text("f2", "second field", Store::YES)?);
     writer.add_document(&d1)?;
 
     writer.close()?;
     let writer = IndexWriter::new(dir2.as_directory(), no_merge_iwc()?)?;
 
     let mut d2 = Document::new();
-    d2.add(text("f2", "second field", Store::YES)?);
-    d2.add(text("f1", "first field", Store::YES)?);
-    d2.add(text("f3", "third field", Store::YES)?);
-    d2.add(text("f4", "fourth field", Store::YES)?);
+    d2.add(*text("f2", "second field", Store::YES)?);
+    d2.add(*text("f1", "first field", Store::YES)?);
+    d2.add(*text("f3", "third field", Store::YES)?);
+    d2.add(*text("f4", "fourth field", Store::YES)?);
     writer.add_document(&d2)?;
 
     writer.close()?;
@@ -176,8 +176,8 @@ fn test_field_number_gaps() -> Result<()> {
         {
             let writer = IndexWriter::new(dir.as_directory(), no_merge_iwc()?)?;
             let mut d = Document::new();
-            d.add(text("f1", "d1 first field", Store::YES)?);
-            d.add(text("f2", "d1 second field", Store::YES)?);
+            d.add(*text("f1", "d1 first field", Store::YES)?);
+            d.add(*text("f2", "d1 second field", Store::YES)?);
             writer.add_document(&d)?;
             writer.close()?;
             let sis = SegmentInfos::read_latest_commit(dir.as_directory())?;
@@ -190,11 +190,8 @@ fn test_field_number_gaps() -> Result<()> {
         {
             let writer = IndexWriter::new(dir.as_directory(), no_merge_iwc()?)?;
             let mut d = Document::new();
-            d.add(text("f1", "d2 first field", Store::YES)?);
-            d.add(Box::new(StoredField::new_bytes(
-                "f3",
-                BytesRef::new(vec![1, 2, 3]),
-            )?));
+            d.add(*text("f1", "d2 first field", Store::YES)?);
+            d.add(StoredField::new_bytes("f3", BytesRef::new(vec![1, 2, 3]))?);
             writer.add_document(&d)?;
             writer.close()?;
             let sis = SegmentInfos::read_latest_commit(dir.as_directory())?;
@@ -211,12 +208,12 @@ fn test_field_number_gaps() -> Result<()> {
         {
             let writer = IndexWriter::new(dir.as_directory(), no_merge_iwc()?)?;
             let mut d = Document::new();
-            d.add(text("f1", "d3 first field", Store::YES)?);
-            d.add(text("f2", "d3 second field", Store::YES)?);
-            d.add(Box::new(StoredField::new_bytes(
+            d.add(*text("f1", "d3 first field", Store::YES)?);
+            d.add(*text("f2", "d3 second field", Store::YES)?);
+            d.add(StoredField::new_bytes(
                 "f3",
                 BytesRef::new(vec![1, 2, 3, 4, 5]),
-            )?));
+            )?);
             writer.add_document(&d)?;
             writer.close()?;
             let sis = SegmentInfos::read_latest_commit(dir.as_directory())?;
@@ -279,7 +276,7 @@ fn test_many_fields() -> Result<()> {
     for doc in &docs {
         let mut d = Document::new();
         for &number in doc {
-            d.add(get_field(number)?);
+            d.add_shared(std::sync::Arc::from(get_field(number)?));
         }
 
         writer.add_document(&d)?;

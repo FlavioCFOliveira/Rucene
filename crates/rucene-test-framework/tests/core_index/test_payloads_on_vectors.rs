@@ -106,7 +106,7 @@ fn test_mixup_docs() -> Result<()> {
     let custom_type = vector_type(true)?;
     let ts = whitespace_stream("here we go")?;
     let field = Field::new_with_token_stream("field", ts, custom_type)?;
-    doc.add(Box::new(field));
+    doc.add(field);
     writer.add_document(&doc)?;
 
     let ts = with_payload_stream();
@@ -134,13 +134,13 @@ fn test_mixup_multi_valued() -> Result<()> {
     let custom_type = vector_type(true)?;
     let ts = whitespace_stream("here we go")?;
     let field = Field::new_with_token_stream("field", ts, Arc::clone(&custom_type))?;
-    doc.add(Box::new(field));
+    doc.add(field);
     let ts = with_payload_stream();
     let field2 = Field::new_with_token_stream("field", ts, Arc::clone(&custom_type))?;
-    doc.add(Box::new(field2));
+    doc.add(field2);
     let ts = whitespace_stream("nopayload")?;
     let field3 = Field::new_with_token_stream("field", ts, Arc::clone(&custom_type))?;
-    doc.add(Box::new(field3));
+    doc.add(field3);
     writer.add_document(&doc)?;
     let reader = writer.get_reader()?;
     let terms = reader.term_vectors()?.get_field(0, "field")?;
@@ -156,11 +156,7 @@ fn test_payloads_without_positions() -> Result<()> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let custom_type = vector_type(false)?;
-    doc.add(Box::new(Field::new(
-        "field",
-        "foo".to_string(),
-        custom_type,
-    )?));
+    doc.add(Field::new("field", "foo".to_string(), custom_type)?);
 
     expect_throws(IAE, || writer.add_document(&doc));
 

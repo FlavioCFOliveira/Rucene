@@ -244,11 +244,11 @@ fn do_test_scores(total_hits_threshold: i32) -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("f", "a".to_string(), Store::NO)?));
+    doc.add(StringField::new("f", "a".to_string(), Store::NO)?);
     w.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("f", "b".to_string(), Store::NO)?));
+    doc.add(StringField::new("f", "b".to_string(), Store::NO)?);
     for _i in 0..10 {
         w.add_document(&doc)?;
     }
@@ -309,24 +309,24 @@ fn do_test_boosts(total_hits_threshold: i32) -> Result<()> {
     let field = |value: &str| -> Result<Box<Field>> {
         Ok(Box::new(Field::new("f", value.to_string(), ft.clone())?))
     };
-    doc.add(field("c")?);
+    doc.add(*field("c")?);
     w.add_document(&doc)?;
     for i in 0..10 {
         doc.clear();
-        doc.add(field("a a a a")?);
+        doc.add(*field("a a a a")?);
         w.add_document(&doc)?;
         if i % 2 == 0 {
             doc.clear();
-            doc.add(field("b b")?);
+            doc.add(*field("b b")?);
             w.add_document(&doc)?;
         } else {
             doc.clear();
-            doc.add(field("a a b")?);
+            doc.add(*field("a a b")?);
             w.add_document(&doc)?;
         }
     }
     doc.clear();
-    doc.add(field("c")?);
+    doc.add(*field("c")?);
     w.add_document(&doc)?;
     let reader = w.get_reader()?;
     let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
@@ -624,11 +624,7 @@ fn test_random_top_docs() -> Result<()> {
         for j in 0..num_values {
             let freq = TestUtil::next_int(&*random(), 1, 1 << random().next_int_bound(3));
             for _k in 0..freq {
-                doc.add(Box::new(TextField::new(
-                    "foo",
-                    (start + j).to_string(),
-                    Store::NO,
-                )?));
+                doc.add(TextField::new("foo", (start + j).to_string(), Store::NO)?);
             }
         }
         w.add_document(&doc)?;

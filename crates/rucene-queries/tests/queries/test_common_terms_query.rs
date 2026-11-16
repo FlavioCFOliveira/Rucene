@@ -96,16 +96,12 @@ fn random_max_freq() -> f32 {
 fn add_docs(w: &RandomIndexWriter) -> Result<()> {
     for (i, text) in DOCS.iter().enumerate() {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::YES,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "field",
-            text,
-            Store::NO,
-        )));
+        ));
+        doc.add(LuceneTestCase::new_text_field("field", text, Store::NO));
         w.add_document(&doc)?;
     }
     Ok(())

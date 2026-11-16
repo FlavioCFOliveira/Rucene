@@ -72,10 +72,10 @@ fn test_index_too_many_docs() -> Result<()> {
                     for _ in 0..100 {
                         let mut doc = Document::new();
                         let id = random().next_int_bound(num_max_doc * 2).to_string();
-                        doc.add(Box::new(
+                        doc.add(
                             StringField::new("id", id.clone(), Store::NO)
                                 .unwrap_or_else(|e| assertion_error(e)),
-                        ));
+                        );
                         let t = Term::from_text("id", &id);
                         let r = (|| -> Result<()> {
                             if random().next_int_bound(5) == 0 {

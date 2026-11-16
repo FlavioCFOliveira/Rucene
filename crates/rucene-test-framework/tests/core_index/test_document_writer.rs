@@ -253,16 +253,16 @@ fn test_position_increment_gap(inst: &Instance) -> Result<()> {
     )?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "repeated",
         "repeated one",
         Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    ));
+    doc.add(LuceneTestCase::new_text_field(
         "repeated",
         "repeated two",
         Store::YES,
-    )));
+    ));
 
     let info = add_commit_newest(&writer, &doc)?;
     let reader = open_segment(&info)?;
@@ -386,11 +386,7 @@ fn test_token_reuse(inst: &Instance) -> Result<()> {
     )?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "f1",
-        "a 5 a a",
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_text_field("f1", "a 5 a a", Store::YES));
 
     let info = add_commit_newest(&writer, &doc)?;
     let reader = open_segment(&info)?;
@@ -463,10 +459,7 @@ fn test_pre_analyzed_field(inst: &Instance) -> Result<()> {
         index: 0,
         term_att,
     }));
-    doc.add(Box::new(TextField::new_with_token_stream(
-        "preanalyzed",
-        stream,
-    )?));
+    doc.add(TextField::new_with_token_stream("preanalyzed", stream)?);
 
     let info = add_commit_newest(&writer, &doc)?;
     let reader = open_segment(&info)?;
@@ -506,26 +499,14 @@ fn test_lucene_1590(inst: &Instance) -> Result<()> {
     custom_type.set_omit_norms(true)?;
     let custom_type2 = FieldType::new();
     custom_type2.set_stored(true)?;
-    doc.add(Box::new(LuceneTestCase::new_field(
-        "f1",
-        "v1",
-        &custom_type,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_field(
-        "f1",
-        "v2",
-        &custom_type2,
-    )));
+    doc.add(LuceneTestCase::new_field("f1", "v1", &custom_type));
+    doc.add(LuceneTestCase::new_field("f1", "v2", &custom_type2));
     // f2 has no TF
     let custom_type3 = FieldType::new_from(TextField::type_not_stored());
     custom_type3.set_index_options(IndexOptions::DOCS)?;
     let f = LuceneTestCase::new_field("f2", "v1", &custom_type3);
-    doc.add(Box::new(f));
-    doc.add(Box::new(LuceneTestCase::new_field(
-        "f2",
-        "v2",
-        &custom_type2,
-    )));
+    doc.add(f);
+    doc.add(LuceneTestCase::new_field("f2", "v2", &custom_type2));
 
     let writer = IndexWriter::new(inst.dir(), mock_iwc())?;
     writer.add_document(&doc)?;
@@ -574,7 +555,7 @@ fn do_test_ram_usage(
         let mut doc = Document::new();
         const NUM_FIELDS: i64 = 100;
         for i in 0..NUM_FIELDS {
-            doc.add(field_supplier(&format!("f{i}"))?);
+            doc.add_shared(std::sync::Arc::from(field_supplier(&format!("f{i}"))?));
         }
         w.add_document(&doc)?;
         Assert::assert_true(w.has_changes_in_ram());
@@ -787,7 +768,7 @@ fn test_index_binary_value_without_token_stream(inst: &Instance) -> Result<()> {
             field_type: ft.clone(),
         };
         let mut doc = Document::new();
-        doc.add(Box::new(field));
+        doc.add(field);
         expect_throws(IAE, || w.add_document(&doc));
         w.close()?;
     }
@@ -801,7 +782,7 @@ fn test_index_binary_value_without_token_stream(inst: &Instance) -> Result<()> {
             field_type: FieldType::new_from(StringField::type_not_stored()),
         };
         let mut doc = Document::new();
-        doc.add(Box::new(field));
+        doc.add(field);
         expect_throws(IAE, || w.add_document(&doc));
         w.close()?;
     }
@@ -849,8 +830,8 @@ fn test_index_binary_value_without_token_stream(inst: &Instance) -> Result<()> {
             };
             let mut doc = Document::new();
             // Java adds the same field object twice.
-            doc.add(Box::new(field.clone()));
-            doc.add(Box::new(field));
+            doc.add(field.clone());
+            doc.add(field);
             w.add_document(&doc)?;
             w.close()?;
         }

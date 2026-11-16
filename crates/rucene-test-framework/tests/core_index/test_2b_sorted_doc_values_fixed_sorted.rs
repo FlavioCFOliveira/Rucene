@@ -59,7 +59,7 @@ fn test_fixed_sorted() -> Result<()> {
     let mut doc = Document::new();
     let mut bytes = [0u8; 2];
     let dv_field = SortedDocValuesField::new("dv", BytesRef::new(bytes.to_vec()));
-    doc.add(Box::new(dv_field));
+    doc.add(dv_field);
 
     for i in 0..MAX_DOCS {
         bytes[0] = (i >> 8) as u8;

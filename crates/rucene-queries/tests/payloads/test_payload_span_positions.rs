@@ -85,10 +85,10 @@ fn test_payloads_pos0() -> Result<()> {
         Arc::new(MockPayloadAnalyzer::new()),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new_with_reader(
+    doc.add(TextField::new_with_reader(
         "content",
         Box::new(StringCharReader::new("a a b c d e a f g h i j a b k k")),
-    )?));
+    )?);
     writer.add_document(&doc)?;
 
     let reader_from_writer = writer.get_reader()?;

@@ -69,25 +69,25 @@ fn custom_set_up(f: &mut CustomSearcherSort) -> Result<()> {
         if (i % 5) != 0 {
             // some documents must not have an entry in the first
             // sort field
-            doc.add(Box::new(SortedDocValuesField::new(
+            doc.add(SortedDocValuesField::new(
                 "publicationDate_",
                 BytesRef::from_char_sequence(&random_gen.get_lucene_date()),
-            )));
+            ));
         }
         if (i % 7) == 0 {
             // some documents to match the query (see below)
-            doc.add(Box::new(LuceneTestCase::new_text_field(
+            doc.add(LuceneTestCase::new_text_field(
                 "content",
                 "test",
                 Store::YES,
-            )));
+            ));
         }
         // every document has a defined 'mandant' field
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "mandant",
             &(i % 3).to_string(),
             Store::YES,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     f.reader = Some(writer.get_reader()?);

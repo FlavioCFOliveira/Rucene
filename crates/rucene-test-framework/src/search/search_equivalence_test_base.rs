@@ -142,8 +142,8 @@ pub fn before_class() -> Result<()> {
     let mut doc = Document::new();
     let id = StringField::new("id", String::new(), Store::NO)?;
     let field = TextField::new("field", String::new(), Store::NO)?;
-    doc.add(Box::new(id));
-    doc.add(Box::new(field));
+    doc.add(id);
+    doc.add(field);
 
     // index some docs
     let num_docs = if *TEST_NIGHTLY {

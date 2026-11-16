@@ -302,7 +302,7 @@ fn test_total_hits(_f: &mut TopFieldCollectorTest) -> Result<()> {
     config.set_ram_buffer_size_mb(f64::from(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH))?;
     let w = IndexWriter::new(dir.as_directory(), config)?;
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("foo", 3)));
+    doc.add(NumericDocValuesField::new("foo", 3));
     for d in [&doc, &doc, &doc, &doc] {
         w.add_document(d)?;
     }
@@ -681,9 +681,9 @@ fn test_compute_scores_only_once(_f: &mut TopFieldCollectorTest) -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let text = StringField::new("text", "foo".to_string(), Store::NO)?;
-    doc.add(Box::new(text));
+    doc.add(text);
     let relevance = NumericDocValuesField::new("relevance", 1);
-    doc.add(Box::new(relevance));
+    doc.add(relevance);
     w.add_document(&doc)?;
     field_mut_as::<StringField>(&mut doc, "text").set_string_value("bar".to_string())?;
     w.add_document(&doc)?;
@@ -733,9 +733,9 @@ fn test_populate_scores(_f: &mut TopFieldCollectorTest) -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let field = TextField::new("f", "foo bar".to_string(), Store::NO)?;
-    doc.add(Box::new(field));
+    doc.add(field);
     let sort_field = NumericDocValuesField::new("sort", 0);
-    doc.add(Box::new(sort_field));
+    doc.add(sort_field);
     w.add_document(&doc)?;
 
     field_mut_as::<TextField>(&mut doc, "f").set_string_value("".to_string())?;
@@ -961,13 +961,13 @@ fn test_random_min_competitive_score(_f: &mut TopFieldCollectorTest) -> Result<(
         };
         let mut doc = Document::new();
         for _j in 0..num_as {
-            doc.add(Box::new(StringField::new("f", "A".to_string(), Store::NO)?));
+            doc.add(StringField::new("f", "A".to_string(), Store::NO)?);
         }
         for _j in 0..num_bs {
-            doc.add(Box::new(StringField::new("f", "B".to_string(), Store::NO)?));
+            doc.add(StringField::new("f", "B".to_string(), Store::NO)?);
         }
         for _j in 0..num_cs {
-            doc.add(Box::new(StringField::new("f", "C".to_string(), Store::NO)?));
+            doc.add(StringField::new("f", "C".to_string(), Store::NO)?);
         }
         w.add_document(&doc)?;
     }
@@ -1001,11 +1001,7 @@ fn test_relation_vs_top_docs_count(_f: &mut TopFieldCollectorTest) -> Result<()>
         let w = no_merge_writer(&dir)?;
         let result = (|| -> Result<()> {
             let mut doc = Document::new();
-            doc.add(Box::new(TextField::new(
-                "f",
-                "foo bar".to_string(),
-                Store::NO,
-            )?));
+            doc.add(TextField::new("f", "foo bar".to_string(), Store::NO)?);
             w.add_documents(&[&doc, &doc, &doc, &doc, &doc])?;
             w.flush()?;
             w.add_documents(&[&doc, &doc, &doc, &doc, &doc])?;

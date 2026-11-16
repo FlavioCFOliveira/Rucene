@@ -129,7 +129,7 @@ fn write_documents(dir: &TestDirectory) -> Result<()> {
     for values in all {
         let mut doc = Document::new();
         for value in values {
-            doc.add(string_field("foo", value)?);
+            doc.add(*string_field("foo", value)?);
         }
         w.add_document(&doc)?;
         for _ in 1..INNER_WINDOW_SIZE {
@@ -662,10 +662,10 @@ fn test_deletes() -> Result<()> {
     // doc2 and doc3 hold the same field instances as doc1, then their own id
     let shared = |id: &str| -> Result<Document> {
         let mut doc = Document::new();
-        doc.add(string_field("field", "foo")?);
-        doc.add(string_field("field", "bar")?);
-        doc.add(string_field("field", "quux")?);
-        doc.add(string_field("id", id)?);
+        doc.add(*string_field("field", "foo")?);
+        doc.add(*string_field("field", "bar")?);
+        doc.add(*string_field("field", "quux")?);
+        doc.add(*string_field("id", id)?);
         Ok(doc)
     };
     let doc1 = shared("1")?;
@@ -762,12 +762,12 @@ fn test_filtered_disjunction_with_dense_filter() -> Result<()> {
         for i in 0..num_docs {
             let mut doc = Document::new();
             // Dense filter: every doc matches
-            doc.add(string_field("foo", "F")?);
+            doc.add(*string_field("foo", "F")?);
             if i == 0 || i == 1 {
-                doc.add(string_field("foo", "A")?);
+                doc.add(*string_field("foo", "A")?);
             }
             if i == 1 || i == 2 {
-                doc.add(string_field("foo", "C")?);
+                doc.add(*string_field("foo", "C")?);
             }
             w.add_document(&doc)?;
         }
@@ -836,9 +836,9 @@ fn test_filtered_disjunction_with_dense_filter_and_accept_docs() -> Result<()> {
         let w = log_merge_writer(&dir)?;
         for i in 0..num_docs {
             let mut doc = Document::new();
-            doc.add(string_field("foo", "F")?);
+            doc.add(*string_field("foo", "F")?);
             if i == 0 || i == 1 || i == 2 {
-                doc.add(string_field("foo", "A")?);
+                doc.add(*string_field("foo", "A")?);
             }
             w.add_document(&doc)?;
         }
@@ -914,16 +914,16 @@ fn test_filtered_disjunction_with_filter_gap_causing_negative_window_size() -> R
             let mut doc = Document::new();
             if i < INNER_WINDOW_SIZE {
                 // Dense filter: matches only in the first window
-                doc.add(string_field("filter", "F")?);
+                doc.add(*string_field("filter", "F")?);
             }
             if i == 0 {
-                doc.add(string_field("foo", "A")?);
-                doc.add(string_field("foo", "B")?);
+                doc.add(*string_field("foo", "A")?);
+                doc.add(*string_field("foo", "B")?);
             }
             // Place a scoring match beyond the filter range but within
             // outerWindowMax
             if i == INNER_WINDOW_SIZE + 4 {
-                doc.add(string_field("foo", "A")?);
+                doc.add(*string_field("foo", "A")?);
             }
             w.add_document(&doc)?;
         }
@@ -1056,12 +1056,12 @@ fn test_sparse_filter_uses_leap_frog() -> Result<()> {
     let w = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
     for i in 0..10000 {
         let mut doc = Document::new();
-        doc.add(text("body", "high")?);
+        doc.add(*text("body", "high")?);
         if i % 50 == 0 {
-            doc.add(text("body", "medium")?);
+            doc.add(*text("body", "medium")?);
         }
         if i % 20 == 0 {
-            doc.add(text("filter", "yes")?);
+            doc.add(*text("filter", "yes")?);
         }
         w.add_document(&doc)?;
     }
@@ -1098,13 +1098,13 @@ fn test_dense_scorers_use_bit_set() -> Result<()> {
     for i in 0..10000 {
         let mut doc = Document::new();
         if i % 2 == 0 {
-            doc.add(text("body", "dense1")?);
+            doc.add(*text("body", "dense1")?);
         }
         if i % 2 == 1 {
-            doc.add(text("body", "dense2")?);
+            doc.add(*text("body", "dense2")?);
         }
         if i % 20 == 1 {
-            doc.add(text("filter", "yes")?);
+            doc.add(*text("filter", "yes")?);
         }
         w.add_document(&doc)?;
     }

@@ -1167,8 +1167,8 @@ fn qasw_scenario(name: &str, corpus: &[Vec<u16>]) -> Result<Box<dyn Analyzer>> {
         for text in corpus {
             let text = String::from_utf16(text).expect("valid UTF-16");
             let mut doc = Document::new();
-            doc.add(Box::new(TextField::new("field", text.clone(), Store::NO)?));
-            doc.add(Box::new(TextField::new("body", text, Store::NO)?));
+            doc.add(TextField::new("field", text.clone(), Store::NO)?);
+            doc.add(TextField::new("body", text, Store::NO)?);
             w.add_document(&doc)?;
         }
         w.close()?;

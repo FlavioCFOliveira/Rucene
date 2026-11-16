@@ -72,27 +72,27 @@ fn dv_rewrite_set_up(f: &mut DocValuesRewrite) -> Result<()> {
     let num = LuceneTestCase::at_least(200);
     for i in 0..num {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::NO,
-        )));
+        ));
         let num_terms = random().next_int_bound(4);
         for _ in 0..num_terms {
             let s = TestUtil::random_unicode_string(&*random());
-            doc.add(Box::new(LuceneTestCase::new_string_field(
+            doc.add(LuceneTestCase::new_string_field(
                 &f.field_name,
                 &s,
                 Store::NO,
-            )));
-            doc.add(Box::new(SortedSetDocValuesField::new(
+            ));
+            doc.add(SortedSetDocValuesField::new(
                 &f.field_name,
                 BytesRef::from_char_sequence(&s),
-            )));
-            doc.add(Box::new(SortedSetDocValuesField::indexed_field(
+            ));
+            doc.add(SortedSetDocValuesField::indexed_field(
                 &format!("{}_with-skip", f.field_name),
                 BytesRef::from_char_sequence(&s),
-            )));
+            ));
             terms.push(s);
         }
         writer.add_document(&doc)?;

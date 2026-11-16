@@ -149,22 +149,22 @@ fn before_class() -> Result<()> {
     let writer = RandomIndexWriter::new(&*random(), directory.as_directory(), analyzer)?;
 
     let mut doc = Document::new();
-    doc.add(text_field("field", "one two three four five"));
-    doc.add(text_field(
+    doc.add(*text_field("field", "one two three four five"));
+    doc.add(*text_field(
         "repeated",
         "this is a repeated field - first part",
     ));
     let repeated_field = text_field("repeated", "second part of a repeated field");
-    doc.add(repeated_field);
-    doc.add(text_field("palindrome", "one two three two one"));
+    doc.add(*repeated_field);
+    doc.add(*text_field("palindrome", "one two three two one"));
     writer.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(text_field("nonexist", "phrase exist notexist exist found"));
+    doc.add(*text_field("nonexist", "phrase exist notexist exist found"));
     writer.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(text_field("nonexist", "phrase exist notexist exist found"));
+    doc.add(*text_field("nonexist", "phrase exist notexist exist found"));
     writer.add_document(&doc)?;
 
     let reader = writer.get_reader()?;
@@ -331,7 +331,7 @@ fn test_phrase_query_with_stop_analyzer() -> Result<()> {
         LuceneTestCase::new_index_writer_config_analyzer(Some(stop_analyzer)),
     )?;
     let mut doc = Document::new();
-    doc.add(text_field("field", "the stop words are here"));
+    doc.add(*text_field("field", "the stop words are here"));
     writer.add_document(&doc)?;
     let reader = writer.get_reader()?;
     writer.close()?;
@@ -355,12 +355,12 @@ fn test_phrase_query_in_conjunction_scorer() -> Result<()> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
 
     let mut doc = Document::new();
-    doc.add(text_field("source", "marketing info"));
+    doc.add(*text_field("source", "marketing info"));
     writer.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(text_field("contents", "foobar"));
-    doc.add(text_field("source", "marketing info"));
+    doc.add(*text_field("contents", "foobar"));
+    doc.add(*text_field("source", "marketing info"));
     writer.add_document(&doc)?;
 
     let reader = writer.get_reader()?;
@@ -390,15 +390,15 @@ fn test_phrase_query_in_conjunction_scorer() -> Result<()> {
     iwc.set_open_mode(OpenMode::CREATE)?;
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(text_field("contents", "map entry woo"));
+    doc.add(*text_field("contents", "map entry woo"));
     writer.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(text_field("contents", "woo map entry"));
+    doc.add(*text_field("contents", "woo map entry"));
     writer.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(text_field("contents", "map foobarword entry woo"));
+    doc.add(*text_field("contents", "map foobarword entry woo"));
     writer.add_document(&doc)?;
 
     let reader = writer.get_reader()?;
@@ -444,15 +444,15 @@ fn test_slop_scoring() -> Result<()> {
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
 
     let mut doc = Document::new();
-    doc.add(text_field("field", "foo firstname lastname foo"));
+    doc.add(*text_field("field", "foo firstname lastname foo"));
     writer.add_document(&doc)?;
 
     let mut doc2 = Document::new();
-    doc2.add(text_field("field", "foo firstname zzz lastname foo"));
+    doc2.add(*text_field("field", "foo firstname zzz lastname foo"));
     writer.add_document(&doc2)?;
 
     let mut doc3 = Document::new();
-    doc3.add(text_field("field", "foo firstname zzz yyy lastname foo"));
+    doc3.add(*text_field("field", "foo firstname zzz yyy lastname foo"));
     writer.add_document(&doc3)?;
 
     let reader = writer.get_reader()?;
@@ -757,7 +757,7 @@ fn test_zero_pos_incr() -> Result<()> {
     let mut doc = Document::new();
     let stream: Arc<AtomicRefCell<dyn TokenStream>> =
         Arc::new(AtomicRefCell::new(CannedTokenStream::new(tokens)));
-    doc.add(Box::new(TextField::new_with_token_stream("field", stream)?));
+    doc.add(TextField::new_with_token_stream("field", stream)?);
     writer.add_document(&doc)?;
     let r = writer.get_reader()?;
     writer.close()?;
@@ -800,7 +800,7 @@ fn test_random_phrases() -> Result<()> {
     let mut docs: Vec<Vec<String>> = Vec::new();
     let mut d = Document::new();
     let f = LuceneTestCase::new_text_field("f", "", Store::NO);
-    d.add(Box::new(f));
+    d.add(f);
 
     let r = random();
 
@@ -959,7 +959,7 @@ fn test_top_phrases() -> Result<()> {
     shuffle(&mut docs, &*random());
     for value in DOCS {
         let mut doc = Document::new();
-        doc.add(Box::new(TextField::new("f", value.to_string(), Store::NO)?));
+        doc.add(TextField::new("f", value.to_string(), Store::NO)?);
         w.add_document(&doc)?;
     }
     let r = directory_reader::open_with_writer(&*w)?;
@@ -1306,7 +1306,7 @@ fn test_random_top_docs() -> Result<()> {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        doc.add(Box::new(TextField::new("foo", text, Store::NO)?));
+        doc.add(TextField::new("foo", text, Store::NO)?);
         w.add_document(&doc)?;
     }
     let reader = directory_reader::open_with_writer(&*w)?;

@@ -281,11 +281,11 @@ fn test_update_document() -> Result<()> {
 
     let mut new_doc = r1.stored_fields()?.document(10)?;
     new_doc.remove_field("id");
-    new_doc.add(Box::new(Field::new(
+    new_doc.add(Field::new(
         "id",
         8000.to_string(),
         DocHelper::string_type_stored_with_tvs(),
-    )?));
+    )?);
     writer.update_document(term("id", &id10), &new_doc)?;
     Assert::assert_false(r1.is_current()?);
 
@@ -312,11 +312,7 @@ fn test_update_document() -> Result<()> {
 
     let writer = IndexWriter::new(dir1.as_directory(), mock_iwc())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "field",
-        "a b c",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("field", "a b c", Store::NO));
     writer.add_document(&doc)?;
     Assert::assert_false(r2.is_current()?);
     Assert::assert_true(r3.is_current()?);
@@ -340,22 +336,14 @@ fn test_is_current() -> Result<()> {
 
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "field",
-        "a b c",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("field", "a b c", Store::NO));
     writer.add_document(&doc)?;
     writer.close()?;
 
     let iwc = mock_iwc();
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "field",
-        "a b c",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("field", "a b c", Store::NO));
     let nrt_reader = directory_reader::open_with_writer(&*writer)?;
     Assert::assert_true(nrt_reader.is_current()?);
     writer.add_document(&doc)?;
@@ -1196,16 +1184,8 @@ fn test_force_merge_deletes() -> Result<()> {
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "field",
-        "a b c",
-        Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("field", "a b c", Store::NO));
+    doc.add(LuceneTestCase::new_string_field("id", "", Store::NO));
     field_mut(&mut doc, "id").set_string_value("0".to_string())?;
     w.add_document(&doc)?;
     field_mut(&mut doc, "id").set_string_value("1".to_string())?;
@@ -1229,16 +1209,8 @@ fn test_deletes_num_docs() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "field",
-        "a b c",
-        Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("field", "a b c", Store::NO));
+    doc.add(LuceneTestCase::new_string_field("id", "", Store::NO));
     field_mut(&mut doc, "id").set_string_value("0".to_string())?;
     w.add_document(&doc)?;
     field_mut(&mut doc, "id").set_string_value("1".to_string())?;
@@ -1309,11 +1281,7 @@ fn test_segment_warmer() -> Result<()> {
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "foo",
-        "bar",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("foo", "bar", Store::NO));
     for _ in 0..20 {
         w.add_document(&doc)?;
     }
@@ -1363,11 +1331,7 @@ fn test_simple_merged_segment_warmer() -> Result<()> {
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "foo",
-        "bar",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("foo", "bar", Store::NO));
     for _ in 0..20 {
         w.add_document(&doc)?;
     }
@@ -1495,11 +1459,11 @@ fn test_too_many_segments() -> Result<()> {
     // Create 500 segments:
     for i in 0..500 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::NO,
-        )));
+        ));
         w.add_document(&doc)?;
         let r = directory_reader::open_with_writer(&*w)?;
         // Make sure segment count never exceeds 100:
@@ -1615,10 +1579,10 @@ fn test_index_reader_writer_with_leaf_sorter() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(LongPoint::new(
+        doc.add(LongPoint::new(
             FIELD_NAME,
             &[RandomizedTest::random_long_between(1, 99)],
-        )?));
+        )?);
         writer.add_document(&doc)?;
         if i > 0 && i % 10 == 0 {
             writer.flush()?;
@@ -1630,7 +1594,7 @@ fn test_index_reader_writer_with_leaf_sorter() -> Result<()> {
     let add_first = || -> Result<()> {
         for _ in 0..10 {
             let mut doc = Document::new();
-            doc.add(Box::new(LongPoint::new(FIELD_NAME, &[first_value])?));
+            doc.add(LongPoint::new(FIELD_NAME, &[first_value])?);
             writer.add_document(&doc)?;
         }
         writer.commit()?;

@@ -115,12 +115,12 @@ fn test_rescore_field(f: &mut RescoreTopN) -> Result<()> {
                     let vector = random_float_vector(VECTOR_DIMENSION, &*random);
                     let mut doc = Document::new();
                     let id = j * num_vectors + i;
-                    doc.add(Box::new(IntField::new("id", id, Store::YES)));
-                    doc.add(Box::new(KnnFloatVectorField::new(
+                    doc.add(IntField::new("id", id, Store::YES));
+                    doc.add(KnnFloatVectorField::new(
                         FIELD,
                         &vector,
                         VECTOR_SIMILARITY_FUNCTION,
-                    )?));
+                    )?);
                     writer.add_document(&doc)?;
                     vectors.insert(id, vector);
                 }
@@ -201,11 +201,11 @@ fn test_missing_double_values(f: &mut RescoreTopN) -> Result<()> {
         let written = (|| -> Result<()> {
             let vector = random_float_vector(VECTOR_DIMENSION, &*random);
             let mut doc = Document::new();
-            doc.add(Box::new(KnnFloatVectorField::new(
+            doc.add(KnnFloatVectorField::new(
                 FIELD,
                 &vector,
                 VECTOR_SIMILARITY_FUNCTION,
-            )?));
+            )?);
             writer.add_document(&doc)?;
             Ok(())
         })();
@@ -273,21 +273,21 @@ fn test_late_interaction_query(_f: &mut RescoreTopN) -> Result<()> {
                         let mut doc = Document::new();
                         if random().next_int_bound(100) < 30 {
                             // skip value for some docs to create sparse field
-                            doc.add(Box::new(IntField::new("has_li_vector", 0, Store::YES)));
+                            doc.add(IntField::new("has_li_vector", 0, Store::YES));
                         } else {
                             let value = create_multi_vector(dim);
-                            doc.add(Box::new(IntField::new("id", id, Store::YES)));
+                            doc.add(IntField::new("id", id, Store::YES));
                             id += 1;
-                            doc.add(Box::new(LateInteractionField::new(
+                            doc.add(LateInteractionField::new(
                                 LATE_I_FIELD,
                                 Some(&rows(&value)),
-                            )?));
+                            )?);
                             corpus.push(value);
-                            doc.add(Box::new(KnnFloatVectorField::with_euclidean(
+                            doc.add(KnnFloatVectorField::with_euclidean(
                                 KNN_FIELD,
                                 &random_float_vector(dim, &*random()),
-                            )?));
-                            doc.add(Box::new(IntField::new("has_li_vector", 1, Store::YES)));
+                            )?);
+                            doc.add(IntField::new("has_li_vector", 1, Store::YES));
                         }
                         w.add_document(&doc)?;
                     }
@@ -296,7 +296,7 @@ fn test_late_interaction_query(_f: &mut RescoreTopN) -> Result<()> {
                 // add a segment with no vectors
                 for _i in 0..100 {
                     let mut doc = Document::new();
-                    doc.add(Box::new(IntField::new("has_li_vector", 0, Store::YES)));
+                    doc.add(IntField::new("has_li_vector", 0, Store::YES));
                     w.add_document(&doc)?;
                 }
                 w.flush()?;

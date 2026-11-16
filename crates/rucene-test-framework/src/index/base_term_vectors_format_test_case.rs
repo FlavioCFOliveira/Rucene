@@ -735,14 +735,14 @@ impl RandomDocument {
             // tokenStreams[i], fieldTypes[i])` (`BaseTermVectorsFormatTestCase.java:373-378`).
             let stream: Arc<AtomicRefCell<dyn TokenStream>> =
                 Arc::clone(&self.token_streams[i]) as _;
-            doc.add(Box::new(
+            doc.add(
                 Field::new_with_token_stream(
                     &self.field_names[i],
                     stream,
                     self.field_types[i].clone(),
                 )
                 .unwrap_or_else(|e| rethrow(e)),
-            ));
+            );
         }
         doc
     }
@@ -1228,7 +1228,7 @@ fn postings_enum_test(
     {
         let iw = IndexWriter::new(dir.as_directory(), iwc())?;
         let mut doc = Document::new();
-        doc.add(Box::new(field()?));
+        doc.add(field()?);
         iw.add_document(&doc)?;
         let reader = directory_reader::open_with_writer(&*iw)?;
 
@@ -1367,14 +1367,14 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             let ft = self.field_type(opts);
             let num_fields = random().next_int_bound(5);
             for _ in 0..num_fields {
-                doc.add(Box::new(
+                doc.add(
                     Field::new(
                         &format!("f_{opts}"),
                         TestUtil::random_simple_string_max(&*random(), 2),
                         ft.clone(),
                     )
                     .unwrap_or_else(|e| rethrow(e)),
-                ));
+                );
             }
         }
     }
@@ -1410,9 +1410,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `addId(doc, id)`.
     fn add_id(&self, mut doc: Document, id: &str) -> Document {
-        doc.add(Box::new(
-            StringField::new("id", id.to_string(), Store::NO).unwrap_or_else(|e| rethrow(e)),
-        ));
+        doc.add(StringField::new("id", id.to_string(), Store::NO).unwrap_or_else(|e| rethrow(e)));
         doc
     }
 
@@ -1666,10 +1664,10 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                     let mut doc = self.add_id(docs[id].to_document(), id);
                     if let Some(index_sort) = &index_sort {
                         for sort_field in index_sort.fields() {
-                            doc.add(Box::new(NumericDocValuesField::new(
+                            doc.add(NumericDocValuesField::new(
                                 npe(sort_field.field()),
                                 i64::from(TestUtil::next_int(&*random(), 0, 1024)),
-                            )));
+                            ));
                         }
                     }
                     if random().next_int_bound(100) < 5 {

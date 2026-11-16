@@ -146,16 +146,16 @@ fn boolean_or_set_up(f: &mut BooleanOr) -> Result<()> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     //
     let mut d = Document::new();
-    d.add(Box::new(LuceneTestCase::new_field(
+    d.add(LuceneTestCase::new_field(
         FIELD_T,
         "Optimize not deleting all files",
         TextField::type_stored(),
-    )));
-    d.add(Box::new(LuceneTestCase::new_field(
+    ));
+    d.add(LuceneTestCase::new_field(
         FIELD_C,
         "Deleted When I run an optimize in our production environment.",
         TextField::type_stored(),
-    )));
+    ));
     //
     writer.add_document(&d)?;
     let reader = writer.get_reader()?;
@@ -216,11 +216,11 @@ fn test_boolean_scorer_max(_f: &mut BooleanOr) -> Result<()> {
 
     for _ in 0..doc_count {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             "field",
             "a",
             TextField::type_not_stored(),
-        )));
+        ));
         riw.add_document(&doc)?;
     }
 

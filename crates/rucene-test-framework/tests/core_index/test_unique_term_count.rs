@@ -65,11 +65,7 @@ fn set_up(inst: &mut TestUniqueTermCountInstance) -> Result<()> {
     config.set_similarity(Some(Arc::new(TestSimilarity) as Arc<dyn Similarity>))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "foo",
-        "",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("foo", "", Store::NO));
     for _ in 0..100 {
         let value = add_value(inst);
         field_mut(&mut doc, "foo").set_string_value(value)?;
