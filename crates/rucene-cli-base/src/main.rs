@@ -1,5 +1,6 @@
 //! `rucene-base`: see the crate README for every command and flag.
 
+use std::io::Write;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -8,7 +9,11 @@ fn main() -> ExitCode {
         match arg.into_string() {
             Ok(arg) => args.push(arg),
             Err(arg) => {
-                eprintln!("rucene-base: error: argument {arg:?} is not valid UTF-8");
+                // Fallible write, as below: stderr may be closed.
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "rucene-base: error: argument {arg:?} is not valid UTF-8"
+                );
                 return ExitCode::from(2);
             }
         }
@@ -17,7 +22,9 @@ fn main() -> ExitCode {
     match rucene_cli_base::cli::run(&args, &mut stdout.lock()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("rucene-base: error: {error}");
+            // A fallible write: `eprintln!` panics (exit 101) when stderr is
+            // closed too, e.g. after the caller died with both pipes open.
+            let _ = writeln!(std::io::stderr(), "rucene-base: error: {error}");
             ExitCode::from(error.exit_code())
         }
     }

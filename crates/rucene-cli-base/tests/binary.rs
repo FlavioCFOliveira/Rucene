@@ -107,3 +107,66 @@ fn usage_errors_exit_2_and_input_errors_exit_1() {
     }
     assert!(stdout(&cli(&["anuncios", "help"])).contains("key: IDAnuncio"));
 }
+
+/// Runs `rucene-base help` with stdout and/or stderr connected to pipes whose
+/// read end is closed before the child writes, as when the calling script is
+/// killed. Returns the exit code and what stderr received (empty when closed).
+fn help_with_closed_pipes(close_stdout: bool, close_stderr: bool) -> (Option<i32>, String) {
+    let (out_reader, out_writer) = std::io::pipe().expect("stdout pipe");
+    let (err_reader, err_writer) = std::io::pipe().expect("stderr pipe");
+    let out_reader = (!close_stdout).then_some(out_reader);
+    let err_reader = (!close_stderr).then_some(err_reader);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rucene-base"))
+        .arg("help")
+        .stdout(out_writer)
+        .stderr(err_writer)
+        .spawn()
+        .expect("spawn rucene-base");
+    // An open stdout reader is drained so `help` cannot block on a full pipe.
+    let drain = out_reader.map(|mut reader| {
+        std::thread::spawn(move || {
+            let mut sink = Vec::new();
+            std::io::Read::read_to_end(&mut reader, &mut sink).expect("read stdout");
+        })
+    });
+    let status = child.wait().expect("wait rucene-base");
+    if let Some(drain) = drain {
+        drain.join().expect("stdout drain");
+    }
+    let mut stderr = String::new();
+    if let Some(mut reader) = err_reader {
+        std::io::Read::read_to_string(&mut reader, &mut stderr).expect("read stderr");
+    }
+    (status.code(), stderr)
+}
+
+#[test]
+fn closed_output_pipes_exit_cleanly() {
+    // Both closed: the broken-pipe report cannot be written either; the
+    // process still exits 1 instead of panicking with 101.
+    assert_eq!(help_with_closed_pipes(true, true), (Some(1), String::new()));
+    let (code, stderr) = help_with_closed_pipes(true, false);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.starts_with("rucene-base: error: I/O: Broken pipe"),
+        "{stderr}"
+    );
+    assert_eq!(
+        help_with_closed_pipes(false, true),
+        (Some(0), String::new())
+    );
+}
+
+#[test]
+fn invalid_utf8_argument_with_closed_stderr_exits_2() {
+    use std::os::unix::ffi::OsStrExt;
+    let (err_reader, err_writer) = std::io::pipe().expect("stderr pipe");
+    drop(err_reader);
+    let status = Command::new(env!("CARGO_BIN_EXE_rucene-base"))
+        .arg(std::ffi::OsStr::from_bytes(b"\xff"))
+        .stderr(err_writer)
+        .status()
+        .expect("run rucene-base");
+    // Usage error: exit 2, not a 101 panic on the unwritable report.
+    assert_eq!(status.code(), Some(2));
+}

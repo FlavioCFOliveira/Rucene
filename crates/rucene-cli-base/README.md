@@ -239,6 +239,12 @@ Result: `ação`, `acao`, `AÇÃO`, `ações`, `acoes`, `AÇÕES` → `acao`;
 `shoes`) gets the plural rule, exactly as its accented spelling would in
 Lucene's `PortugueseAnalyzer`.
 
+Precision caveat: `PortugueseLightStemmer` gives `limão` and `lima` the same
+stem (`lima`), so `--text limão` also finds "Ponte de Lima". On the full index
+4,928 of its 10,483 hits come from that collision (measured by the exercise
+run). Lucene's own stemmer does the same, and the analysis chain is
+intentionally left unchanged.
+
 Ids and codes are never analysed; names also get a not-stored
 `KeywordField` copy (`<field>_exact`) for exact match and sorting.
 
