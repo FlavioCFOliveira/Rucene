@@ -4,6 +4,7 @@
 //! `StrictMath.log` (`strict_math_log.tsv`).
 
 use std::collections::BTreeMap;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use super::{assert_same_lines, catch, java_error, mask_after, rows, seeds, Rec};
@@ -673,7 +674,7 @@ fn asserting_random_misuse_messages_equal_randomizedtesting() {
 
     // Foreign thread: the oracle's owner was `main`, the user `foreign-thread`.
     let owner_box: Arc<std::sync::Mutex<Option<Arc<AssertingRandom>>>> = Arc::default();
-    let result: Arc<std::sync::Mutex<String>> = Arc::default();
+    let result: Arc<std::sync::Mutex<Option<crate::jdk::exception::Throwable>>> = Arc::default();
     let (ob, res) = (owner_box.clone(), result.clone());
     let owner = Thread::new("main", move || {
         let a = Arc::new(AssertingRandom::new(
@@ -683,26 +684,35 @@ fn asserting_random_misuse_messages_equal_randomizedtesting() {
         *ob.lock().unwrap() = Some(a.clone());
         let res2 = res.clone();
         let foreign = Thread::new("foreign-thread", move || {
-            *res2.lock().unwrap() = match catch(|| a.next_int()) {
-                Ok(_) => "OK".into(),
-                Err(p) => p,
-            };
+            *res2.lock().unwrap() = std::panic::catch_unwind(AssertUnwindSafe(|| a.next_int()))
+                .err()
+                .map(crate::jdk::exception::Throwable::from_panic);
         });
         foreign.start();
         foreign.join().unwrap();
     });
     owner.start();
     owner.join().unwrap();
-    let message = result.lock().unwrap().clone();
-    let mut lines = message.lines();
-    let head = java_error(lines.next().unwrap());
-    let cause = java_error(lines.next().unwrap().trim_start_matches("Caused by: "));
+    // Java throws `IllegalStateException(message, StackTraceHolder)`: the
+    // holder is the cause, not part of the message.
+    let thrown = result
+        .lock()
+        .unwrap()
+        .take()
+        .expect("a foreign-thread use throws");
+    let java = |t: &crate::jdk::exception::Throwable| {
+        format!("{}\t{}", t.class_name(), t.message().unwrap_or("<null>"))
+    };
+    let cause = thrown
+        .cause()
+        .expect("the allocation stack holder is the cause");
+    assert!(cause.cause().is_none());
     assert_eq!(
-        mask_after(&head, "#"),
+        mask_after(&java(&thrown), "#"),
         mask_after(&error_row("foreign-thread"), "#")
     );
     assert_eq!(
-        mask_after(&cause, "#"),
+        mask_after(&java(cause), "#"),
         mask_after(&error_row("foreign-thread-cause"), "#")
     );
 

@@ -1,5 +1,6 @@
 //! `java.lang` behaviour: `String.hashCode`, `String.trim`,
-//! `Character.digit`, `Integer.parseInt`, `Long.parseLong`,
+//! `String.equalsIgnoreCase`, `Character.toUpperCase`,
+//! `Character.toLowerCase`, `Character.digit`, `Integer.parseInt`, `Long.parseLong`,
 //! `Double.parseDouble`, `Float.parseFloat`, `Double.toString` and
 //! `Float.toString`.
 //!
@@ -22,6 +23,64 @@ pub fn string_hash_code(s: &str) -> i32 {
 /// non-ASCII white space such as U+00A0.
 pub fn trim(s: &str) -> &str {
     s.trim_matches(|c: char| c <= '\u{20}')
+}
+
+/// `String.equalsIgnoreCase(other)`: equal UTF-16 lengths and, character by
+/// character, equal characters, or equal `Character.toUpperCase`, or equal
+/// `Character.toLowerCase` of those upper cases. A surrogate pair is
+/// compared as its code point.
+///
+/// Rust strings hold no lone surrogates, so walking both strings by
+/// character is Java's walk by code unit: a pair meets a pair, and a pair
+/// meeting a BMP character fails in both (no simple case mapping crosses
+/// planes). Observed on JDK 25: `"\u{10400}"` equals `"\u{10428}"`,
+/// `"\u{130}x"` equals `"IX"`.
+pub fn equals_ignore_case(a: &str, b: &str) -> bool {
+    if a.encode_utf16().count() != b.encode_utf16().count() {
+        return false;
+    }
+    a.chars().zip(b.chars()).all(|(x, y)| {
+        if x == y {
+            return true;
+        }
+        let ux = character_to_upper_case(x);
+        let uy = character_to_upper_case(y);
+        ux == uy || character_to_lower_case(ux) == character_to_lower_case(uy)
+    })
+}
+
+/// `Character.toUpperCase(int)`: the simple (one-character) upper-case
+/// mapping. Rust's `char::to_uppercase` is the full mapping (Unicode 16, as
+/// JDK 25); where it yields one character the two agree. Where it yields
+/// several, the simple mapping is the character itself except for the
+/// Greek letters with ypogegrammeni, which map to their title-case forms
+/// (the complete list, enumerated on JDK 25 over every code point).
+pub fn character_to_upper_case(c: char) -> char {
+    let mut u = c.to_uppercase();
+    match (u.next(), u.next()) {
+        (Some(x), None) => x,
+        _ => match c as u32 {
+            0x1F80..=0x1F87 | 0x1F90..=0x1F97 | 0x1FA0..=0x1FA7 => {
+                char::from_u32(c as u32 + 8).expect("a Greek capital")
+            }
+            0x1FB3 => '\u{1FBC}',
+            0x1FC3 => '\u{1FCC}',
+            0x1FF3 => '\u{1FFC}',
+            _ => c,
+        },
+    }
+}
+
+/// `Character.toLowerCase(int)`: the simple lower-case mapping. Rust's full
+/// mapping yields several characters only for U+0130, whose simple mapping
+/// is `i` (enumerated on JDK 25 over every code point).
+pub fn character_to_lower_case(c: char) -> char {
+    let mut l = c.to_lowercase();
+    match (l.next(), l.next()) {
+        (Some(x), None) => x,
+        _ if c == '\u{130}' => 'i',
+        _ => c,
+    }
 }
 
 /// The zero of every run of `DECIMAL_DIGIT_NUMBER` code units in the Basic

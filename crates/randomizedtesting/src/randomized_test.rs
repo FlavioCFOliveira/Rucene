@@ -341,10 +341,19 @@ impl RandomizedTest {
     /// `globalTempDir()`: a temporary directory under `java.io.tmpdir`,
     /// created once and removed at shutdown.
     ///
-    /// **Divergence.** Java names it `tests-yyyyMMddHHmmss-SSS` in
-    /// the JVM's default time zone; the port formats UTC (the standard
-    /// library has no time zone database). The removal runs from
-    /// [`runtime::run_shutdown_hooks`].
+    /// **Divergences.**
+    /// * Java names it `tests-yyyyMMddHHmmss-SSS` in the JVM's default time
+    ///   zone; the port formats UTC (the standard library has no time zone
+    ///   database). The removal runs from [`runtime::run_shutdown_hooks`].
+    /// * Java checks `Files.isWritable(tempDir)` (`RandomizedTest.java:355`),
+    ///   an `access(W_OK)` check for the running user; the standard library
+    ///   has no access check without `unsafe` FFI, so the port refuses only a
+    ///   directory whose permission bits grant no write access to anyone
+    ///   (`Permissions::readonly`).
+    /// * When the removal fails, Java prints the `IOException` with
+    ///   `printStackTrace(System.err)` (`RandomizedTest.java:373`); a Rust
+    ///   `io::Error` has no Java class nor stack frames, so the port prints
+    ///   its message.
     ///
     /// # Errors
     ///
@@ -801,9 +810,10 @@ impl RandomizedTest {
         match RandomizedTest::property(property_name) {
             None => default_value,
             Some((v, t)) => lang::parse_double(&t).unwrap_or_else(|| {
-                illegal_argument(format!(
-                    "Double value expected for property {property_name}: {v}"
-                ))
+                number_format_error(
+                    &format!("Double value expected for property {property_name}: {v}"),
+                    &t,
+                )
             }),
         }
     }
@@ -818,9 +828,10 @@ impl RandomizedTest {
         match RandomizedTest::property(property_name) {
             None => default_value,
             Some((v, t)) => lang::parse_float(&t).unwrap_or_else(|| {
-                illegal_argument(format!(
-                    "Float value expected for property {property_name}: {v}"
-                ))
+                number_format_error(
+                    &format!("Float value expected for property {property_name}: {v}"),
+                    &t,
+                )
             }),
         }
     }
@@ -835,9 +846,10 @@ impl RandomizedTest {
         match RandomizedTest::property(property_name) {
             None => default_value,
             Some((v, t)) => lang::parse_int(&t).unwrap_or_else(|| {
-                illegal_argument(format!(
-                    "Integer value expected for property {property_name}: {v}"
-                ))
+                number_format_error(
+                    &format!("Integer value expected for property {property_name}: {v}"),
+                    &t,
+                )
             }),
         }
     }
@@ -856,9 +868,10 @@ impl RandomizedTest {
             Some((v, t)) => match lang::parse_long(&t) {
                 // Java's long-to-float widening rounds to nearest, as `as`.
                 Some(l) => l as f32,
-                None => illegal_argument(format!(
-                    "Long value expected for property {property_name}: {v}"
-                )),
+                None => number_format_error(
+                    &format!("Long value expected for property {property_name}: {v}"),
+                    &t,
+                ),
             },
         }
     }
@@ -924,6 +937,22 @@ impl std::error::Error for CausedIoError {
 }
 
 /// `throw new AssumptionViolatedException(message)`.
+/// `throw new IllegalArgumentException(message, e)` where `e` is the
+/// `NumberFormatException` that `Integer.parseInt`, `Long.parseLong`,
+/// `Float.parseFloat` or `Double.parseDouble` throws for the trimmed value:
+/// `For input string: "<value>"` (observed on JDK 25 for each of the four).
+fn number_format_error(message: &str, trimmed: &str) -> ! {
+    Throwable::with_cause(
+        exception::ILLEGAL_ARGUMENT_EXCEPTION,
+        Some(message.to_string()),
+        Throwable::new(
+            "java.lang.NumberFormatException",
+            format!("For input string: \"{trimmed}\""),
+        ),
+    )
+    .throw()
+}
+
 fn assumption_violated(message: &str) -> ! {
     exception::throw(ASSUMPTION_VIOLATED_EXCEPTION, message)
 }
@@ -1011,5 +1040,65 @@ impl Closeable for ServerSocket {
             .unwrap_or_else(|e| e.into_inner())
             .take();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod property_tests {
+    use super::RandomizedTest;
+    use crate::jdk::exception::Throwable;
+    use crate::jdk::system;
+
+    fn thrown(f: impl FnOnce() + std::panic::UnwindSafe) -> Throwable {
+        std::panic::catch_unwind(f)
+            .map_err(Throwable::from_panic)
+            .expect_err("throws")
+    }
+
+    /// `systemPropertyAs{Int,Long,Float,Double}` wrap the parser's
+    /// `NumberFormatException` as the cause of their
+    /// `IllegalArgumentException` (`RandomizedTest.java:780-842`); the
+    /// message shows the untrimmed value, the cause the trimmed one.
+    #[test]
+    fn malformed_numeric_properties_are_caused_by_number_format_exception() {
+        let name = "randomizedtesting.test.malformed.numeric";
+        system::set_property(name, " 1x ");
+        let cases: [(&str, Throwable); 4] = [
+            (
+                "Integer",
+                thrown(|| {
+                    RandomizedTest::system_property_as_int(name, 0);
+                }),
+            ),
+            (
+                "Long",
+                thrown(|| {
+                    RandomizedTest::system_property_as_long(name, 0);
+                }),
+            ),
+            (
+                "Float",
+                thrown(|| {
+                    RandomizedTest::system_property_as_float(name, 0.0);
+                }),
+            ),
+            (
+                "Double",
+                thrown(|| {
+                    RandomizedTest::system_property_as_double(name, 0.0);
+                }),
+            ),
+        ];
+        system::clear_property(name);
+        for (kind, t) in cases {
+            assert_eq!(t.class_name(), "java.lang.IllegalArgumentException");
+            assert_eq!(
+                t.message(),
+                Some(format!("{kind} value expected for property {name}:  1x ").as_str())
+            );
+            let cause = t.cause().expect("the parser's exception is the cause");
+            assert_eq!(cause.class_name(), "java.lang.NumberFormatException");
+            assert_eq!(cause.message(), Some("For input string: \"1x\""));
+        }
     }
 }

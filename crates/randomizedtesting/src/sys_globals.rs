@@ -3,8 +3,9 @@
 
 use std::sync::Mutex;
 
-use crate::jdk::exception;
+use crate::jdk::exception::{self, StackTraceElement, Throwable};
 use crate::jdk::system;
+use crate::jdk::thread::Thread;
 
 /// `CHILDVM_SYSPROP_JVM_ID`.
 pub const CHILDVM_SYSPROP_JVM_ID: &str = "junit4.childvm.id";
@@ -35,7 +36,7 @@ pub struct SysGlobals {
 }
 
 /// The singleton and the stack of the thread that initialized it.
-static SINGLETON: Mutex<Option<(SysGlobals, String)>> = Mutex::new(None);
+static SINGLETON: Mutex<Option<(SysGlobals, Vec<StackTraceElement>)>> = Mutex::new(None);
 
 impl SysGlobals {
     fn new(prefix: &str) -> SysGlobals {
@@ -89,24 +90,28 @@ impl SysGlobals {
     /// # Panics
     ///
     /// `RuntimeException` when the singleton was already initialized with a
-    /// different prefix.
+    /// different prefix; its cause is an `Exception` ("Original singleton
+    /// initialization stack.") carrying the initializing thread's stack
+    /// trace (empty in the port, see [`crate::jdk::thread`]).
     pub fn initialize_with(prefix: &str) -> SysGlobals {
         let mut guard = SINGLETON.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_none() {
-            *guard = Some((
-                SysGlobals::new(prefix),
-                std::backtrace::Backtrace::capture().to_string(),
-            ));
+            *guard = Some((SysGlobals::new(prefix), Thread::current().get_stack_trace()));
         }
-        let (singleton, _stack) = guard.as_ref().expect("initialized");
+        let (singleton, init_stack) = guard.as_ref().expect("initialized");
         if singleton.prefix != prefix {
             let message = format!(
                 "A singleton has been initialized already with a different prefix: existing={}, \
                  attempted={}",
                 singleton.prefix, prefix
             );
+            let mut e = Throwable::new(
+                exception::EXCEPTION,
+                "Original singleton initialization stack.",
+            );
+            e.set_stack_trace(init_stack.clone());
             drop(guard);
-            exception::runtime(message);
+            Throwable::with_cause(exception::RUNTIME_EXCEPTION, Some(message), e).throw();
         }
         singleton.clone()
     }
@@ -186,5 +191,43 @@ impl SysGlobals {
     pub fn prefix_property(property_name: &str) -> String {
         let s = SysGlobals::singleton();
         SysGlobals::prefix_with(&s.prefix, property_name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SysGlobals;
+    use crate::jdk::exception::Throwable;
+
+    /// `initializeWith` with a different prefix throws a `RuntimeException`
+    /// caused by `Exception("Original singleton initialization stack.")`
+    /// (`SysGlobals.java:114-119`).
+    #[test]
+    fn different_prefix_is_caused_by_the_initialization_stack() {
+        let existing = SysGlobals::current_prefix();
+        let attempted = format!("{existing}x");
+        let t = std::panic::catch_unwind(|| SysGlobals::initialize_with(&attempted))
+            .map(|_| ())
+            .map_err(Throwable::from_panic)
+            .expect_err("a different prefix throws");
+        assert_eq!(t.class_name(), "java.lang.RuntimeException");
+        assert_eq!(
+            t.message(),
+            Some(
+                format!(
+                    "A singleton has been initialized already with a different prefix: \
+                     existing={existing}, attempted={attempted}"
+                )
+                .as_str()
+            )
+        );
+        let cause = t.cause().expect("the initialization stack is the cause");
+        assert_eq!(cause.class_name(), "java.lang.Exception");
+        assert_eq!(
+            cause.message(),
+            Some("Original singleton initialization stack.")
+        );
+        // The same prefix returns the singleton.
+        assert_eq!(SysGlobals::initialize_with(&existing).prefix, existing);
     }
 }

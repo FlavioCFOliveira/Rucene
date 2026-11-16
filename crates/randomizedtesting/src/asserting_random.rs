@@ -1,11 +1,10 @@
 //! Port of `com.carrotsearch.randomizedtesting.AssertingRandom`
 //! (randomizedtesting 2.8.1, `AssertingRandom.java`).
 
-use std::backtrace::Backtrace;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::jdk::exception::{self, ILLEGAL_STATE_EXCEPTION};
+use crate::jdk::exception::{self, StackTraceElement, Throwable, ILLEGAL_STATE_EXCEPTION};
 use crate::jdk::random::{Random, RandomFields};
 use crate::jdk::thread::{Thread, WeakThread};
 use crate::stack_trace_holder::StackTraceHolder;
@@ -29,7 +28,8 @@ pub struct AssertingRandom {
     delegate: Arc<dyn Random>,
     owner_ref: WeakThread,
     owner_name: String,
-    allocation_stack: Arc<Backtrace>,
+    /// `Thread.currentThread().getStackTrace()` at construction.
+    allocation_stack: Vec<StackTraceElement>,
     /// Java's `volatile boolean valid`.
     valid: AtomicBool,
 }
@@ -44,7 +44,7 @@ impl AssertingRandom {
             delegate,
             owner_ref: owner.downgrade(),
             owner_name: owner.to_string(),
-            allocation_stack: Arc::new(Backtrace::capture()),
+            allocation_stack: Thread::current().get_stack_trace(),
             valid: AtomicBool::new(true),
         }
     }
@@ -93,27 +93,23 @@ impl AssertingRandom {
         let current = Thread::current();
         let is_owner = self.owner_ref.get().is_some_and(|owner| owner == current);
         if !is_owner {
-            let cause = StackTraceHolder::new(
+            let allocation_ex = StackTraceHolder::new(
                 format!(
                     "Original allocation stack for this Random (allocated by {})",
                     self.owner_name
                 ),
-                Arc::clone(&self.allocation_stack),
+                self.allocation_stack.clone(),
             );
-            // Java chains the holder as the cause; the panic message carries
-            // it after the exception, as a printed stack trace would.
-            panic!(
-                "{}\nCaused by: {}",
-                exception::to_string(
-                    ILLEGAL_STATE_EXCEPTION,
-                    Some(&format!(
-                        "This Random was created for/by another thread ({}). Random instances \
-                         must not be shared (acquire per-thread). Current thread: {}",
-                        self.owner_name, current
-                    ))
-                ),
-                cause
-            );
+            Throwable::with_cause(
+                ILLEGAL_STATE_EXCEPTION,
+                Some(format!(
+                    "This Random was created for/by another thread ({}). Random instances must \
+                     not be shared (acquire per-thread). Current thread: {}",
+                    self.owner_name, current
+                )),
+                allocation_ex,
+            )
+            .throw();
         }
     }
 }

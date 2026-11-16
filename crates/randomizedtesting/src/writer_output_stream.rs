@@ -91,6 +91,12 @@ impl<W: CharWriter> WriterOutputStream<W> {
     }
 
     /// `new WriterOutputStream(writer, charset, bufferSize, writeImmediately)`.
+    ///
+    /// As Java's `CharBuffer.allocate(bufferSize)`, a buffer smaller than a
+    /// decoded character (0 units, or 1 unit for a supplementary character)
+    /// never accepts it: the decoder reports an overflow, the empty buffer
+    /// flushes nothing, and the write loops forever
+    /// (`WriterOutputStream.java:259-270`).
     pub fn with_options(
         writer: W,
         charset: Charset,
@@ -103,7 +109,7 @@ impl<W: CharWriter> WriterOutputStream<W> {
             write_immediately,
             decoder_in: Vec::with_capacity(IN_CAPACITY),
             decoder_out: Vec::with_capacity(buffer_size),
-            buffer_size: buffer_size.max(1),
+            buffer_size,
         }
     }
 
@@ -120,8 +126,10 @@ impl<W: CharWriter> WriterOutputStream<W> {
         self.writer.close_chars()
     }
 
+    /// Appends one decoded unit, flushing on overflow as `processInput`
+    /// does until the unit fits.
     fn push_char(&mut self, u: u16) -> io::Result<()> {
-        if self.decoder_out.len() == self.buffer_size {
+        while self.decoder_out.len() >= self.buffer_size {
             self.flush_output()?;
         }
         self.decoder_out.push(u);
@@ -132,7 +140,7 @@ impl<W: CharWriter> WriterOutputStream<W> {
         let mut buf = [0u16; 2];
         let units = c.encode_utf16(&mut buf);
         // A surrogate pair is decoded only when both units fit.
-        if units.len() == 2 && self.buffer_size - self.decoder_out.len() < 2 {
+        while units.len() == 2 && self.buffer_size.saturating_sub(self.decoder_out.len()) < 2 {
             self.flush_output()?;
         }
         for &u in units.iter() {

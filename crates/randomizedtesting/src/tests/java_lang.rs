@@ -172,3 +172,34 @@ fn seed_utils_and_randomness_equal_randomizedtesting() {
     }
     assert!(checked > 70);
 }
+
+/// `String.equalsIgnoreCase` on the pairs probed on JDK 25 (the expected
+/// booleans are JDK 25's): simple case mappings (U+0130, the ypogegrammeni
+/// letters), surrogate pairs compared as code points, Georgian, title case.
+#[test]
+fn equals_ignore_case_equals_jdk25() {
+    use crate::jdk::lang::equals_ignore_case;
+    let cases: [(&str, &str, bool); 18] = [
+        ("\u{130}", "i", true),
+        ("\u{1F80}", "\u{1F88}", true),
+        ("\u{10400}", "\u{10428}", true),
+        ("a\u{10400}", "A\u{10428}", true),
+        ("\u{131}", "I", true),
+        ("\u{3C2}", "\u{3A3}", true),
+        ("\u{10400}x", "\u{10428}X", true),
+        ("\u{10D0}", "\u{1C90}", true),
+        ("\u{1C5}", "\u{1C6}", true),
+        ("\u{1FB3}", "\u{1FBC}", true),
+        ("\u{1FB3}", "\u{391}\u{399}", false),
+        ("\u{212A}", "K", true),
+        ("\u{B5}", "\u{39C}", true),
+        ("\u{1E9E}", "\u{DF}", true),
+        ("\u{10400}", "\u{10401}", false),
+        ("\u{1E900}", "\u{1E922}", true),
+        ("nightly", "NIGHTLY", true),
+        ("\u{130}x", "IX", true),
+    ];
+    for (a, b, expected) in cases {
+        assert_eq!(equals_ignore_case(a, b), expected, "{a:?} vs {b:?}");
+    }
+}

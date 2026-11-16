@@ -27,6 +27,13 @@ impl Validation {
 
 /// `Class.toString()` of a parameter type: `int` for a primitive, `class
 /// <name>` otherwise.
+///
+/// **Divergence.** Java prints `interface <name>` for an interface type and
+/// the JVM descriptor for an array type (`class [I`,
+/// `Validation.java:36`, through `Arrays.toString(Class[])`). A declared
+/// type is only its name ([`crate::jdk::reflect`]): whether it names an
+/// interface is not declared, so every reference type prints as `class`
+/// with its declared name.
 fn type_to_string(t: &str) -> String {
     match t {
         "boolean" | "byte" | "char" | "short" | "int" | "long" | "float" | "double" | "void" => {
@@ -99,6 +106,13 @@ impl MethodValidation<'_> {
     /// `hasReturnType(clazz)`: the erased return type is `class_name` (the
     /// only assignability the runner asks for, `Iterable`, is checked by
     /// name).
+    ///
+    /// **Divergence.** Java asks `clazz.isAssignableFrom(m.getReturnType())`
+    /// (`Validation.java:56`), which walks the return type's supertypes. A
+    /// declared type is only its name ([`crate::jdk::reflect`]), so the port
+    /// accepts `Iterable` and the `java.util` collection types `Collection`,
+    /// `List`, `ArrayList`, `Set` and `LinkedList`; any other type, including
+    /// a declared class that implements `Iterable`, is refused.
     pub(crate) fn has_return_type(self, class_name: &str) -> Self {
         let rt = self.m.raw_return_type();
         let assignable = rt == class_name

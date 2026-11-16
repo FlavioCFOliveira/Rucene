@@ -456,3 +456,161 @@ fn ram_usage_estimator_as_java() {
     );
     assert_same_lines("ram", &exp, &actual);
 }
+
+/// Runs a `WriterOutputStream` of `buffer_size` units over `text` on its own
+/// thread for at most 1.5 s: whether the write is still running, then the
+/// writer's write count and text so far.
+fn wos_bounded(buffer_size: usize, text: &'static str) -> (bool, usize, String) {
+    use std::sync::{Arc, Mutex};
+    struct Shared(Arc<Mutex<(usize, Vec<u16>)>>);
+    impl CharWriter for Shared {
+        fn write_chars(&mut self, cbuf: &[u16]) -> std::io::Result<()> {
+            let mut s = self.0.lock().unwrap();
+            s.0 += 1;
+            s.1.extend_from_slice(cbuf);
+            Ok(())
+        }
+        fn flush_chars(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn close_chars(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let state = Arc::new(Mutex::new((0, Vec::new())));
+    let w = Shared(Arc::clone(&state));
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let d = Arc::clone(&done);
+    // A hung write never returns; the detached thread ends with the process.
+    std::thread::spawn(move || {
+        let mut os = WriterOutputStream::with_options(w, Charset::Utf8, buffer_size, false);
+        os.write_all(text.as_bytes()).expect("write");
+        os.close().expect("close");
+        d.store(true, std::sync::atomic::Ordering::Release);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    while !done.load(std::sync::atomic::Ordering::Acquire) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let s = state.lock().unwrap();
+    (
+        !done.load(std::sync::atomic::Ordering::Acquire),
+        s.0,
+        String::from_utf16_lossy(&s.1),
+    )
+}
+
+/// A character buffer smaller than a decoded character never accepts it
+/// and Java's write loops forever (`WriterOutputStream.java:259-270`);
+/// observed on JDK 25 with randomizedtesting 2.8.1: size 0 over `abc` and
+/// size 1 over `a😀` stay alive after 1.5 s (0 writes, and 1 write of `a`),
+/// size 1 over `abc` and size 2 over `a😀` finish (3 and 2 writes).
+#[test]
+fn writer_output_stream_undersized_buffer_hangs_as_java() {
+    assert_eq!(wos_bounded(1, "abc"), (false, 3, "abc".to_string()));
+    assert_eq!(
+        wos_bounded(2, "a\u{1F600}"),
+        (false, 2, "a\u{1F600}".to_string())
+    );
+    assert_eq!(wos_bounded(0, "abc"), (true, 0, String::new()));
+    assert_eq!(wos_bounded(1, "a\u{1F600}"), (true, 1, "a".to_string()));
+}
+
+/// Runs `class` under the ported runner: `description\tclass: message <- cause…`
+/// per failure.
+fn run_failures(class: &std::sync::Arc<crate::jdk::reflect::Class>) -> Vec<String> {
+    fn thr(t: &Throwable) -> String {
+        let mut b = format!("{}: {}", t.class_name(), t.message().unwrap_or("null"));
+        if let Some(c) = t.cause() {
+            b.push_str(&format!(" <- {}", thr(c)));
+        }
+        b
+    }
+    crate::junit::JUnitCore::new()
+        .run_class(class)
+        .failures()
+        .iter()
+        .map(|f| format!("{}\t{}", f.description(), thr(f.exception())))
+        .collect()
+}
+
+/// A parameter row whose length differs from the constructor's parameter
+/// count fails each test with Java's wrapped reflective error
+/// (`RandomizedRunner.java:1591-1594`). Expected lines observed on JDK 25
+/// with randomizedtesting 2.8.1 (a `Runner529$Arity` suite: `Arity(String)`,
+/// rows `{"x", "y"}`).
+#[test]
+fn constructor_argument_count_mismatch_is_wrapped_as_java() {
+    use crate::annotations::ParametersFactory;
+    use crate::jdk::reflect::{modifier, Class, Constructor, Method};
+    use crate::junit::Test;
+    let class = Class::builder("Runner529$Arity")
+        .modifiers(modifier::PUBLIC | modifier::STATIC)
+        .extends(&crate::RandomizedTest::class())
+        .constructor(Constructor::with_params(
+            &[("java.lang.String", None)],
+            |_| (),
+        ))
+        .method(
+            Method::new("p")
+                .returns("java.lang.Iterable<java.lang.Object[]>")
+                .annotate(ParametersFactory::default())
+                .static_value(|_| {
+                    Value::List(vec![Value::Array(vec![
+                        Value::Str("x".into()),
+                        Value::Str("y".into()),
+                    ])])
+                }),
+        )
+        .method(Method::new("t").annotate(Test::new()).body_any(|| {}))
+        .build();
+    assert_eq!(
+        run_failures(&class),
+        vec![
+            "t {p0=x}(Runner529$Arity)\tjava.lang.IllegalArgumentException: Constructor \
+             arguments do not match provider parameters? <- \
+             java.lang.IllegalArgumentException: wrong number of arguments: 2 expected: 1"
+                .to_string()
+        ]
+    );
+}
+
+/// A suite that leaves its own default uncaught exception handler fails
+/// with Java's message, which names the handler's class
+/// (`RandomizedRunner.java:653-659`; observed on JDK 25 for an anonymous
+/// handler of `Runner529$Handler`).
+#[test]
+fn replaced_default_handler_message_names_its_class_as_java() {
+    use crate::jdk::exception::Throwable as T;
+    use crate::jdk::reflect::{modifier, Class, Constructor, Method};
+    use crate::jdk::thread::{Thread, UncaughtExceptionHandler};
+    use crate::junit::{BeforeClass, Test};
+    struct Anonymous;
+    impl UncaughtExceptionHandler for Anonymous {
+        fn uncaught_exception(&self, _t: &Thread, _e: T) {}
+        fn class_name(&self) -> String {
+            "Runner529$Handler$1".to_string()
+        }
+    }
+    let class = Class::builder("Runner529$Handler")
+        .modifiers(modifier::PUBLIC | modifier::STATIC)
+        .extends(&crate::RandomizedTest::class())
+        .constructor(Constructor::no_args(|| ()))
+        .method(Method::new("bc").annotate(BeforeClass).static_body(|| {
+            Thread::set_default_uncaught_exception_handler(Some(std::sync::Arc::new(Anonymous)))
+        }))
+        .method(Method::new("t").annotate(Test::new()).body_any(|| {}))
+        .build();
+    let previous = Thread::get_default_uncaught_exception_handler();
+    let failures = run_failures(&class);
+    Thread::set_default_uncaught_exception_handler(previous);
+    assert_eq!(
+        failures,
+        vec![
+            "Runner529$Handler\tjava.lang.RuntimeException: Suite replaced \
+             Thread.defaultUncaughtExceptionHandler. It's better not to touch it. Or at least \
+             revert it to what it was before. Current: class Runner529$Handler$1"
+                .to_string()
+        ]
+    );
+}

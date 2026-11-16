@@ -180,7 +180,7 @@ impl GroupEvaluator {
                     fn has_group(&self, value: &str) -> bool {
                         let value = value.strip_prefix('@').unwrap_or(value);
                         self.values.iter().any(|a| {
-                            equals_ignore_case(
+                            crate::jdk::lang::equals_ignore_case(
                                 value,
                                 &self.evaluator.info(a.annotation_type()).name,
                             )
@@ -239,42 +239,4 @@ impl GroupEvaluator {
 fn annotation_to_string(ann: &AnnotationRef) -> String {
     let ty = ann.annotation_type();
     ann.to_java_string().replace(ty.name, ty.simple_name)
-}
-
-/// `String.equalsIgnoreCase`: equal lengths and every UTF-16 unit pair
-/// equal after upper- or lower-casing.
-fn equals_ignore_case(a: &str, b: &str) -> bool {
-    let a: Vec<u16> = a.encode_utf16().collect();
-    let b: Vec<u16> = b.encode_utf16().collect();
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b.iter()).all(|(&x, &y)| {
-        if x == y {
-            return true;
-        }
-        let (Some(cx), Some(cy)) = (char::from_u32(u32::from(x)), char::from_u32(u32::from(y)))
-        else {
-            return false;
-        };
-        let ux = single_upper(cx);
-        let uy = single_upper(cy);
-        ux == uy || single_lower(ux) == single_lower(uy)
-    })
-}
-
-fn single_upper(c: char) -> char {
-    let mut u = c.to_uppercase();
-    match (u.next(), u.next()) {
-        (Some(x), None) => x,
-        _ => c,
-    }
-}
-
-fn single_lower(c: char) -> char {
-    let mut l = c.to_lowercase();
-    match (l.next(), l.next()) {
-        (Some(x), None) => x,
-        _ => c,
-    }
 }
