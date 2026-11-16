@@ -30,8 +30,10 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::Bound;
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
+use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::random::{JdkRandom, Random};
 use randomizedtesting::jdk::util::shuffle;
 use randomizedtesting::junit::Assert;
@@ -62,7 +64,7 @@ use rucene::util::automaton::operations::{Operations, DEFAULT_DETERMINIZE_WORK_L
 use rucene::util::automaton::run_automaton::ByteRunnable;
 use rucene::util::string_helper::StringHelper;
 use rucene::util::unicode_util::UnicodeUtil;
-use rucene::util::{BytesRef, FixedBitSet, NoOutputInfoStream, Version};
+use rucene::util::{BytesRef, FixedBitSet, IOUtils, NoOutputInfoStream, Version};
 
 use rucene::codecs::term_state::Impact;
 
@@ -398,7 +400,7 @@ impl SeedPostings {
             self.pos_upto = self.freq;
             return -1;
         }
-        debug_assert!(self.pos_upto < self.freq);
+        java_assert_unchecked!(self.pos_upto < self.freq);
 
         if self.pos_upto == 0 && self.random.next_boolean() {
             // Sometimes index pos = 0
@@ -447,8 +449,12 @@ impl SeedPostings {
 }
 
 impl fmt::Display for SeedPostings {
+    /// `SeedPostings` does not override `toString()`: `Object`'s applies.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("SeedPostings")
+        f.write_str(&rucene::index::index_reader::java_object_to_string(
+            "org.apache.lucene.tests.index.RandomPostingsTester$SeedPostings",
+            self,
+        ))
     }
 }
 
@@ -616,8 +622,12 @@ impl SeedTermsEnum {
 }
 
 impl fmt::Display for SeedTermsEnum {
+    /// `SeedTermsEnum` does not override `toString()`: `Object`'s applies.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("SeedTermsEnum")
+        f.write_str(&rucene::index::index_reader::java_object_to_string(
+            "org.apache.lucene.tests.index.RandomPostingsTester$SeedTermsEnum",
+            self,
+        ))
     }
 }
 
@@ -782,8 +792,13 @@ struct FakeNormValues {
 }
 
 impl fmt::Display for FakeNormValues {
+    /// The anonymous `RandomPostingsTester$1$1` does not override
+    /// `toString()`: `Object`'s applies.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("FakeNormValues")
+        f.write_str(&rucene::index::index_reader::java_object_to_string(
+            "org.apache.lucene.tests.index.RandomPostingsTester$1$1",
+            self,
+        ))
     }
 }
 
@@ -825,6 +840,21 @@ impl NumericDocValues for FakeNormValues {
     fn long_value(&self) -> Result<i64> {
         Ok(doc_to_norm(self.doc))
     }
+}
+
+/// The data address of an enum: `prev == postingsEnum` on the objects.
+fn enum_address(e: &dyn PostingsEnum) -> usize {
+    std::ptr::from_ref(e).cast::<()>() as usize
+}
+
+/// What the VERBOSE report of `verifyEnum` needs of `prevPostingsEnum`
+/// before `postings(prev, flags)` consumes it: its identity and its
+/// `toString()`.
+///
+/// **Divergence.** Java renders `prevPostingsEnum` after the call; the port
+/// hands the enum to `postings` by value, so it is rendered just before.
+fn prev_identity(prev: Option<&dyn PostingsEnum>) -> Option<(usize, String)> {
+    prev.map(|prev| (enum_address(prev), prev.to_string()))
 }
 
 /// `Impact.toString()`: `"freq=" + freq + ",norm=" + norm`.
@@ -980,7 +1010,7 @@ impl RandomPostingsTester {
 
         let num_fields = TestUtil::next_int(&*random, 1, 5);
         if *VERBOSE {
-            println!("TEST: {num_fields} fields");
+            randomizedtesting::jdk::system::out_println(&format!("TEST: {num_fields} fields"));
         }
         let mut max_doc = 0;
 
@@ -1077,11 +1107,11 @@ impl RandomPostingsTester {
         }
 
         if *VERBOSE {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "TEST: done init postings; {} total terms, across {} fields",
                 all_terms.len(),
                 field_infos.size()
-            );
+            ));
         }
 
         Ok(RandomPostingsTester {
@@ -1194,7 +1224,7 @@ impl RandomPostingsTester {
 
         let max_index_option = index_option_ordinal(max_allowed);
         if *VERBOSE {
-            println!("\nTEST: now build index");
+            randomizedtesting::jdk::system::out_println("\nTEST: now build index");
         }
 
         // TODO use allowPayloads
@@ -1260,19 +1290,33 @@ impl RandomPostingsTester {
             max_doc: segment_info.max_doc()?,
         };
         let mut consumer = codec.postings_format().fields_consumer(&write_state)?;
-        match consumer.write(&seed_fields, Some(&fake_norms)) {
-            Ok(()) => consumer.close()?,
-            Err(e) => {
-                let _ = consumer.close();
+        // `try { consumer.write(...); success = true; } finally { success ?
+        // IOUtils.close(consumer) : IOUtils.closeWhileHandlingException(consumer)
+        // }`: the consumer is closed on every exit, a panic included.
+        let written = catch_unwind(AssertUnwindSafe(|| {
+            consumer.write(&seed_fields, Some(&fake_norms))
+        }));
+        let close_consumer = [IOUtils::closeable(|| consumer.close())];
+        match written {
+            Ok(Ok(())) => IOUtils::close(close_consumer)?,
+            Ok(Err(e)) => {
+                IOUtils::close_while_handling_exception(close_consumer)?;
                 return Err(e);
+            }
+            Err(payload) => {
+                IOUtils::close_while_handling_exception(close_consumer)?;
+                resume_unwind(payload);
             }
         }
         drop(consumer);
 
         if *VERBOSE {
-            println!("TEST: after indexing: files=");
+            randomizedtesting::jdk::system::out_println("TEST: after indexing: files=");
             for file in dir.list_all()? {
-                println!("  {file}: {} bytes", dir.file_length(&file)?);
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "  {file}: {} bytes",
+                    dir.file_length(&file)?
+                ));
             }
         }
 
@@ -1299,10 +1343,10 @@ impl RandomPostingsTester {
         always_test_max: bool,
     ) -> Result<()> {
         if *VERBOSE {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "  verifyEnum: options={options} maxTestOptions={}",
                 index_options_name(max_test_options)
-            );
+            ));
         }
 
         // Make sure TermsEnum really is positioned on the
@@ -1368,17 +1412,19 @@ impl RandomPostingsTester {
                 }
 
                 if *VERBOSE {
-                    println!("  get DocsEnum (but we won't check positions) flags={flags}");
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "  get DocsEnum (but we won't check positions) flags={flags}"
+                    ));
                 }
 
                 thread_state.reuse_postings_enum = None;
-                let had_prev = prev_postings_enum.is_some();
+                let prev = prev_identity(prev_postings_enum.as_deref());
                 let postings_enum = terms_enum.postings(prev_postings_enum.take(), flags)?;
                 return self.verify_postings(
                     random,
                     thread_state,
                     postings_enum,
-                    had_prev,
+                    prev,
                     &mut expected,
                     terms_enum,
                     field_info,
@@ -1393,13 +1439,13 @@ impl RandomPostingsTester {
                 );
             } else {
                 if *VERBOSE {
-                    println!("  get DocsEnum");
+                    randomizedtesting::jdk::system::out_println("  get DocsEnum");
                 }
                 if options.contains(TestOption::ReuseEnums) && random.next_int_bound(10) < 9 {
                     prev_postings_enum = thread_state.reuse_postings_enum.take();
                 }
                 thread_state.reuse_postings_enum = None;
-                let had_prev = prev_postings_enum.is_some();
+                let prev = prev_identity(prev_postings_enum.as_deref());
                 let postings_enum = terms_enum.postings(
                     prev_postings_enum.take(),
                     if do_check_freqs {
@@ -1412,7 +1458,7 @@ impl RandomPostingsTester {
                     random,
                     thread_state,
                     postings_enum,
-                    had_prev,
+                    prev,
                     &mut expected,
                     terms_enum,
                     field_info,
@@ -1440,17 +1486,17 @@ impl RandomPostingsTester {
         }
 
         if *VERBOSE {
-            println!("  get DocsEnum flags={flags}");
+            randomizedtesting::jdk::system::out_println(&format!("  get DocsEnum flags={flags}"));
         }
 
         thread_state.reuse_postings_enum = None;
-        let had_prev = prev_postings_enum.is_some();
+        let prev = prev_identity(prev_postings_enum.as_deref());
         let postings_enum = terms_enum.postings(prev_postings_enum.take(), flags)?;
         self.verify_postings(
             random,
             thread_state,
             postings_enum,
-            had_prev,
+            prev,
             &mut expected,
             terms_enum,
             field_info,
@@ -1474,7 +1520,7 @@ impl RandomPostingsTester {
         random: &dyn Random,
         thread_state: &mut ThreadState,
         postings_enum: Option<Box<dyn PostingsEnum>>,
-        had_prev: bool,
+        prev: Option<(usize, String)>,
         expected: &mut SeedPostings,
         terms_enum: &mut dyn TermsEnum,
         field_info: &FieldInfo,
@@ -1499,10 +1545,18 @@ impl RandomPostingsTester {
         );
 
         if *VERBOSE {
-            if !had_prev {
-                println!("  got enum={postings_enum}");
-            } else {
-                println!("  got enum={postings_enum} (reuse of a previous enum)");
+            match &prev {
+                None => randomizedtesting::jdk::system::out_println(&format!(
+                    "  got enum={postings_enum}"
+                )),
+                Some((address, _)) if *address == enum_address(&*postings_enum) => {
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "  got reuse enum={postings_enum}"
+                    ))
+                }
+                Some((_, prev_string)) => randomizedtesting::jdk::system::out_println(&format!(
+                    "  got enum={postings_enum} (reuse of {prev_string} failed)"
+                )),
             }
         }
 
@@ -1514,15 +1568,15 @@ impl RandomPostingsTester {
         {
             let stop_at = random.next_int_bound(expected.doc_freq - 1);
             if *VERBOSE {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "  will not consume all docs ({stop_at} vs {})",
                     expected.doc_freq
-                );
+                ));
             }
             stop_at
         } else {
             if *VERBOSE {
-                println!("  consume all docs");
+                randomizedtesting::jdk::system::out_println("  consume all docs");
             }
             expected.doc_freq
         };
@@ -1562,30 +1616,30 @@ impl RandomPostingsTester {
 
         if *VERBOSE {
             if options.contains(TestOption::Skipping) {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "  skipChance={} numSkips={num_skips}",
                     randomizedtesting::jdk::lang::double_to_string(skip_chance)
-                );
+                ));
             } else {
-                println!("  no skipping");
+                randomizedtesting::jdk::system::out_println("  no skipping");
             }
             if do_check_freqs {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "  freqAskChance={}",
                     randomizedtesting::jdk::lang::double_to_string(freq_ask_chance)
-                );
+                ));
             }
             if do_check_payloads {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "  payloadCheckChance={}",
                     randomizedtesting::jdk::lang::double_to_string(payload_check_chance)
-                );
+                ));
             }
             if do_check_offsets {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "  offsetCheckChance={}",
                     randomizedtesting::jdk::lang::double_to_string(offset_check_chance)
-                );
+                ));
             }
         }
 
@@ -1636,7 +1690,9 @@ impl RandomPostingsTester {
                         NO_MORE_DOCS
                     };
                     if *VERBOSE {
-                        println!("  now advance to end (target={target})");
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "  now advance to end (target={target})"
+                        ));
                     }
                     Assert::assert_equals_msg(
                         Some("DocsEnum should have ended but didn't"),
@@ -1647,18 +1703,18 @@ impl RandomPostingsTester {
                 } else {
                     if *VERBOSE {
                         if target_doc_id != -1 {
-                            println!(
+                            randomizedtesting::jdk::system::out_println(&format!(
                                 "  now advance to random target={target_doc_id} ({} of {stop_at}) current={}",
                                 expected.upto,
                                 postings_enum.doc_id()
-                            );
+                            ));
                         } else {
-                            println!(
+                            randomizedtesting::jdk::system::out_println(&format!(
                                 "  now advance to known-exists target={} ({} of {stop_at}) current={}",
                                 expected.doc_id(),
                                 expected.upto,
                                 postings_enum.doc_id()
-                            );
+                            ));
                         }
                     }
                     let doc_id = postings_enum.advance(if target_doc_id != -1 {
@@ -1671,11 +1727,11 @@ impl RandomPostingsTester {
             } else {
                 expected.next_doc()?;
                 if *VERBOSE {
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "  now nextDoc to {} ({} of {stop_at})",
                         expected.doc_id(),
                         expected.upto
-                    );
+                    ));
                 }
                 let doc_id = postings_enum.next_doc()?;
                 Assert::assert_equals_msg(Some("docID is wrong"), expected.doc_id(), doc_id);
@@ -1686,7 +1742,10 @@ impl RandomPostingsTester {
 
             if do_check_freqs && random.next_double() <= freq_ask_chance {
                 if *VERBOSE {
-                    println!("    now freq()={}", expected.freq);
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "    now freq()={}",
+                        expected.freq
+                    ));
                 }
                 let freq = postings_enum.freq()?;
                 Assert::assert_equals_msg(Some("freq is wrong"), expected.freq, freq);
@@ -1706,7 +1765,9 @@ impl RandomPostingsTester {
                 for _ in 0..num_pos_to_consume {
                     let pos = expected.next_position_inner();
                     if *VERBOSE {
-                        println!("    now nextPosition to {pos}");
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "    now nextPosition to {pos}"
+                        ));
                     }
                     Assert::assert_equals_msg(
                         Some("position is wrong"),
@@ -1718,10 +1779,10 @@ impl RandomPostingsTester {
                         let expected_payload = expected.payload().map(<[u8]>::to_vec);
                         if random.next_double() <= payload_check_chance {
                             if *VERBOSE {
-                                println!(
+                                randomizedtesting::jdk::system::out_println(&format!(
                                     "      now check expectedPayload length={}",
                                     expected_payload.as_ref().map_or(0, Vec::len)
-                                );
+                                ));
                             }
                             match &expected_payload {
                                 None => {
@@ -1768,20 +1829,20 @@ impl RandomPostingsTester {
                                 }
                             }
                         } else if *VERBOSE {
-                            println!(
+                            randomizedtesting::jdk::system::out_println(&format!(
                                 "      skip check payload length={}",
                                 expected_payload.as_ref().map_or(0, Vec::len)
-                            );
+                            ));
                         }
                     }
 
                     if do_check_offsets {
                         if random.next_double() <= offset_check_chance {
                             if *VERBOSE {
-                                println!(
+                                randomizedtesting::jdk::system::out_println(&format!(
                                     "      now check offsets: startOff={} endOffset={}",
                                     expected.start_offset, expected.end_offset
-                                );
+                                ));
                             }
                             Assert::assert_equals_msg(
                                 Some("startOffset is wrong"),
@@ -1794,13 +1855,15 @@ impl RandomPostingsTester {
                                 postings_enum.end_offset(),
                             );
                         } else if *VERBOSE {
-                            println!("      skip check offsets");
+                            randomizedtesting::jdk::system::out_println("      skip check offsets");
                         }
                     } else if !field_index_options
                         .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
                     {
                         if *VERBOSE {
-                            println!("      now check offsets are -1");
+                            randomizedtesting::jdk::system::out_println(
+                                "      now check offsets are -1",
+                            );
                         }
                         Assert::assert_equals_msg(
                             Some("startOffset isn't -1"),
@@ -1877,10 +1940,22 @@ impl RandomPostingsTester {
                     d = pe2.next_doc()?;
                 }
 
-                Assert::assert_true_msg(
-                    "expected:<FixedBitSet> but was:<FixedBitSet>",
-                    set1 == set2,
-                );
+                // `assertEquals(set1, set2)`: `FixedBitSet` does not override
+                // `toString()`, so the two (distinct) objects render as
+                // `Object.toString()`.
+                if set1 != set2 {
+                    Assert::fail(&format!(
+                        "expected:<{}> but was:<{}>",
+                        rucene::index::index_reader::java_object_to_string(
+                            "org.apache.lucene.util.FixedBitSet",
+                            &set1
+                        ),
+                        rucene::index::index_reader::java_object_to_string(
+                            "org.apache.lucene.util.FixedBitSet",
+                            &set2
+                        )
+                    ));
+                }
                 Assert::assert_equals(pe1.doc_id(), pe2.doc_id());
                 if pe1.doc_id() == NO_MORE_DOCS {
                     break;
@@ -2172,16 +2247,25 @@ impl RandomPostingsTester {
                             randomizedtesting::jdk::thread::Thread::start_context_scoped();
                         scope.spawn(move || {
                             context(Box::new(move || {
-                                if let Err(t) = self.test_terms_one_thread(
-                                    random,
-                                    fields_source,
-                                    options,
-                                    max_test_options,
-                                    max_index_options,
-                                    always_test_max,
-                                ) {
-                                    panic!("java.lang.RuntimeException: {t}");
-                                }
+                                // `catch (Throwable t) { throw new
+                                // RuntimeException(t); }`: an error returned
+                                // and a panic alike.
+                                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                                    self.test_terms_one_thread(
+                                        random,
+                                        fields_source,
+                                        options,
+                                        max_test_options,
+                                        max_index_options,
+                                        always_test_max,
+                                    )
+                                }));
+                                let t = match outcome {
+                                    Ok(Ok(())) => return,
+                                    Ok(Err(e)) => crate::util::java_exceptions::java_throwable(&e),
+                                    Err(payload) => Throwable::from_panic(payload),
+                                };
+                                Throwable::from_cause("java.lang.RuntimeException", t).throw()
                             }))
                         })
                     })
@@ -2246,18 +2330,18 @@ impl RandomPostingsTester {
                 upto += 1;
                 if *VERBOSE {
                     if use_term_ord {
-                        println!(
+                        randomizedtesting::jdk::system::out_println(&format!(
                             "\nTEST: seek to term={}:{} using ord={}",
                             field_and_term.field,
                             field_and_term.term.utf8_to_string()?,
                             field_and_term.ord
-                        );
+                        ));
                     } else {
-                        println!(
+                        randomizedtesting::jdk::system::out_println(&format!(
                             "\nTEST: seek to term={}:{}",
                             field_and_term.field,
                             field_and_term.term.utf8_to_string()?
-                        );
+                        ));
                     }
                 }
             } else {
@@ -2265,11 +2349,11 @@ impl RandomPostingsTester {
                 let idx = random.next_int_bound(term_states.len() as i32) as usize;
                 field_and_term = term_state_terms[idx].clone();
                 if *VERBOSE {
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "\nTEST: seek using TermState to term={}:{}",
                         field_and_term.field,
                         field_and_term.term.utf8_to_string()?
-                    );
+                    ));
                 }
                 term_state_idx = Some(idx);
             }
@@ -2363,7 +2447,9 @@ impl RandomPostingsTester {
             if always_test_max || random.next_int_bound(10) == 7 {
                 // Try same term again
                 if *VERBOSE {
-                    println!("TEST: try enum again on same term");
+                    randomizedtesting::jdk::system::out_println(
+                        "TEST: try enum again on same term",
+                    );
                 }
 
                 self.verify_enum(
@@ -2385,7 +2471,7 @@ impl RandomPostingsTester {
             loop {
                 let a = AutomatonTestUtil::random_automaton(random);
                 let a = Operations::determinize(&a, DEFAULT_DETERMINIZE_WORK_LIMIT)
-                    .map_err(|e| LuceneError::illegal_state(e.to_string()))?;
+                    .map_err(LuceneError::from)?;
                 let ca = CompiledAutomaton::new(a.clone(), false, true, false)?;
                 if ca.automaton_type != AutomatonType::Normal {
                     // Keep retrying until we get an A that will really "use" the PF's intersect code:
@@ -2470,10 +2556,21 @@ impl RandomPostingsTester {
     /// # Panics
     ///
     /// With an `AssertionError` when the iterator yields past its end.
+    ///
+    /// Java also checks that `iterator.remove()` throws
+    /// `UnsupportedOperationException`; a Rust `Iterator` has no `remove`, so
+    /// that guarantee holds by type.
     pub fn test_fields(&self, fields: &dyn Fields) {
         let mut iterator = fields.iterator();
         for _ in iterator.by_ref() {}
-        Assert::assert_false(iterator.next().is_some());
+        // `expectThrows(NoSuchElementException.class, iterator::next)`
+        if iterator.next().is_some() {
+            Throwable::new(
+                "junit.framework.AssertionFailedError",
+                "Expected exception NoSuchElementException but no exception was thrown",
+            )
+            .throw();
+        }
     }
 
     /// `testFull(codec, path, options, withPayloads)`: "Indexes all
@@ -2532,4 +2629,94 @@ impl RandomPostingsTester {
 /// `IndexOptions.toString()`.
 fn index_options_name(options: IndexOptions) -> String {
     format!("{options:?}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use randomizedtesting::jdk::exception::QuietPanics;
+
+    fn thrown(f: impl FnOnce()) -> Throwable {
+        let payload = {
+            let _quiet = QuietPanics::new();
+            catch_unwind(AssertUnwindSafe(f)).expect_err("a throwable")
+        };
+        Throwable::from_panic(payload)
+    }
+
+    /// `nextPosition()` past `freq` fails Java's bare `assert posUpto <
+    /// freq` (`RandomPostingsTester.java:394`): an `AssertionError` without a
+    /// message (with `-ea`, the port's `debug_assertions`).
+    #[test]
+    fn next_position_past_freq_fails_the_bare_assert() {
+        let mut postings =
+            SeedPostings::new(42, 1, 1, IndexOptions::DOCS_AND_FREQS_AND_POSITIONS, true);
+        postings.next_doc().unwrap();
+        let freq = postings.freq().unwrap();
+        for _ in 0..freq {
+            postings.next_position().unwrap();
+        }
+        if cfg!(debug_assertions) {
+            let t = thrown(|| {
+                let _ = postings.next_position();
+            });
+            assert_eq!(t.class_name(), "java.lang.AssertionError");
+            assert_eq!(t.message(), None);
+        }
+    }
+
+    /// `SeedPostings` keeps `Object.toString()`.
+    #[test]
+    fn seed_postings_render_as_object_to_string() {
+        let postings = SeedPostings::new(1, 1, 3, IndexOptions::DOCS, true);
+        assert!(postings
+            .to_string()
+            .starts_with("org.apache.lucene.tests.index.RandomPostingsTester$SeedPostings@"));
+    }
+
+    /// A `Fields` whose iterator yields again after reporting its end.
+    struct RestartingFields;
+
+    struct Restarting(u8);
+
+    impl Iterator for Restarting {
+        type Item = String;
+        fn next(&mut self) -> Option<String> {
+            self.0 += 1;
+            match self.0 {
+                1 => Some("f".to_string()),
+                2 => None,
+                _ => Some("again".to_string()),
+            }
+        }
+    }
+
+    impl Fields for RestartingFields {
+        fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            Box::new(Restarting(0))
+        }
+
+        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+            Ok(None)
+        }
+
+        fn size(&self) -> i32 {
+            1
+        }
+    }
+
+    /// `expectThrows(NoSuchElementException.class, iterator::next)` fails
+    /// with `AssertionFailedError("Expected exception NoSuchElementException
+    /// but no exception was thrown")` (`RandomPostingsTester.java:1789`,
+    /// `LuceneTestCase.java:2912-2918`).
+    #[test]
+    fn test_fields_reports_an_iterator_past_its_end_as_expect_throws() {
+        let tester = RandomPostingsTester::new(Arc::new(JdkRandom::new(3))).unwrap();
+        let t = thrown(|| tester.test_fields(&RestartingFields));
+        assert_eq!(t.class_name(), "junit.framework.AssertionFailedError");
+        assert_eq!(
+            t.message(),
+            Some("Expected exception NoSuchElementException but no exception was thrown")
+        );
+    }
 }

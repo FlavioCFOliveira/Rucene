@@ -64,8 +64,17 @@ struct Mappings {
 }
 
 /// `Math.abs(perFieldSeed ^ name.hashCode()) % size`, then `List.get`: Java's
-/// `Math.abs(Integer.MIN_VALUE)` stays negative, and `get` then throws.
+/// `Math.abs(Integer.MIN_VALUE)` stays negative, and `get` then throws; an
+/// empty list (every format avoided) throws the `ArithmeticException` of the
+/// `int` remainder by zero.
 fn pick_index(per_field_seed: i32, name: &str, size: usize) -> usize {
+    if size == 0 {
+        randomizedtesting::jdk::exception::Throwable::new(
+            "java.lang.ArithmeticException",
+            "/ by zero".to_string(),
+        )
+        .throw();
+    }
     let idx = (per_field_seed ^ string_hash_code(name)).wrapping_abs() % size as i32;
     if idx < 0 {
         panic!("java.lang.IndexOutOfBoundsException: Index {idx} out of bounds for length {size}");
@@ -509,5 +518,31 @@ mod tests {
             "java.lang.IndexOutOfBoundsException: Index -2 out of bounds for length 3"
         );
         assert_eq!(pick_index(-7 ^ string_hash_code("x"), "x", 4), 3);
+    }
+
+    /// With every doc values format avoided, `dvFormats` is empty and
+    /// `Math.abs(...) % dvFormats.size()` throws `ArithmeticException: / by
+    /// zero` (`RandomCodec.java:186`).
+    #[test]
+    fn every_format_avoided_throws_division_by_zero() {
+        let random = JdkRandom::new(7);
+        let avoid: HashSet<String> = ["Lucene90", "Asserting"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let codec = RandomCodec::new_avoiding(&random, avoid);
+        assert!(codec.dv_formats().is_empty());
+        let payload = {
+            let _quiet = randomizedtesting::jdk::exception::QuietPanics::new();
+            let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                codec.get_doc_values_format_for_field("dv")
+            })) else {
+                panic!("the ArithmeticException");
+            };
+            payload
+        };
+        let thrown = randomizedtesting::jdk::exception::Throwable::from_panic(payload);
+        assert_eq!(thrown.class_name(), "java.lang.ArithmeticException");
+        assert_eq!(thrown.message(), Some("/ by zero"));
     }
 }

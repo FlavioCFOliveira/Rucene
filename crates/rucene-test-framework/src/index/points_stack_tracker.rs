@@ -19,6 +19,8 @@
 //! utility class to track the current BKD stack based solely on calls to
 //! `IntersectVisitor.compare`.
 
+use randomizedtesting::jdk::exception::Throwable;
+
 /// Port of `org.apache.lucene.tests.index.PointsStackTracker`.
 #[derive(Debug, Clone)]
 pub struct PointsStackTracker {
@@ -47,18 +49,76 @@ impl Cell {
     /// bytes unsigned (`Arrays.compareUnsigned`).
     pub fn contains(&self, other: &Cell) -> bool {
         for dim in 0..self.num_dims {
-            let offset = (dim * self.bytes_per_dim) as usize;
-            let range = offset..offset + self.bytes_per_dim as usize;
+            let offset = dim.wrapping_mul(self.bytes_per_dim);
+            let end = offset.wrapping_add(self.bytes_per_dim);
             // other.min < min?
-            if other.min_packed_value[range.clone()] < self.min_packed_value[range.clone()] {
+            if compare_unsigned(
+                &other.min_packed_value,
+                offset,
+                end,
+                &self.min_packed_value,
+                offset,
+                end,
+            ) < 0
+            {
                 return false;
             }
             // other.max > max?
-            if other.max_packed_value[range.clone()] > self.max_packed_value[range] {
+            if compare_unsigned(
+                &other.max_packed_value,
+                offset,
+                end,
+                &self.max_packed_value,
+                offset,
+                end,
+            ) > 0
+            {
                 return false;
             }
         }
         true
+    }
+}
+
+/// `Arrays.compareUnsigned(a, aFromIndex, aToIndex, b, bFromIndex, bToIndex)`
+/// per the JDK 25 specification: both ranges are checked first (the
+/// `IllegalArgumentException` of a reversed range, the
+/// `ArrayIndexOutOfBoundsException` of an index outside the array, thrown),
+/// then the ranges compare lexicographically as unsigned bytes, a proper
+/// prefix first.
+fn compare_unsigned(a: &[u8], a_from: i32, a_to: i32, b: &[u8], b_from: i32, b_to: i32) -> i32 {
+    range_check(a.len(), a_from, a_to);
+    range_check(b.len(), b_from, b_to);
+    let a = &a[a_from as usize..a_to as usize];
+    let b = &b[b_from as usize..b_to as usize];
+    match a.iter().zip(b).find(|(x, y)| x != y) {
+        Some((x, y)) => i32::from(*x) - i32::from(*y),
+        None => a.len() as i32 - b.len() as i32,
+    }
+}
+
+/// `Arrays.rangeCheck(arrayLength, fromIndex, toIndex)`.
+fn range_check(array_length: usize, from_index: i32, to_index: i32) {
+    if from_index > to_index {
+        Throwable::new(
+            "java.lang.IllegalArgumentException",
+            format!("fromIndex({from_index}) > toIndex({to_index})"),
+        )
+        .throw();
+    }
+    if from_index < 0 {
+        Throwable::new(
+            "java.lang.ArrayIndexOutOfBoundsException",
+            format!("Array index out of range: {from_index}"),
+        )
+        .throw();
+    }
+    if to_index as usize > array_length {
+        Throwable::new(
+            "java.lang.ArrayIndexOutOfBoundsException",
+            format!("Array index out of range: {to_index}"),
+        )
+        .throw();
     }
 }
 
@@ -96,4 +156,44 @@ impl PointsStackTracker {
     }
 
     // TODO: expose other details about the stack...
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use randomizedtesting::jdk::exception::QuietPanics;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    /// `Cell.contains` reads each dimension through `Arrays.compareUnsigned`,
+    /// whose range check throws `ArrayIndexOutOfBoundsException` ("Array
+    /// index out of range: 8") for a dimension past the packed values
+    /// (`PointsStackTracker.java:50-68`).
+    #[test]
+    fn contains_past_the_packed_values_throws_the_jdk_range_exception() {
+        let mut tracker = PointsStackTracker::new(2, 4);
+        tracker.on_compare(&[0, 0, 0, 1], &[0, 0, 0, 9]);
+        let payload = {
+            let _quiet = QuietPanics::new();
+            catch_unwind(AssertUnwindSafe(|| {
+                tracker.on_compare(&[0, 0, 0, 1], &[0, 0, 0, 9])
+            }))
+            .expect_err("the ArrayIndexOutOfBoundsException")
+        };
+        let thrown = Throwable::from_panic(payload);
+        assert_eq!(
+            thrown.class_name(),
+            "java.lang.ArrayIndexOutOfBoundsException"
+        );
+        assert_eq!(thrown.message(), Some("Array index out of range: 8"));
+    }
+
+    /// Unsigned byte order: `0x80` sorts after `0x7f`.
+    #[test]
+    fn contains_compares_unsigned() {
+        let tracker = PointsStackTracker::new(1, 1);
+        let outer = tracker.new_cell(&[0x00], &[0xff]);
+        let inner = tracker.new_cell(&[0x7f], &[0x80]);
+        assert!(outer.contains(&inner));
+        assert!(!inner.contains(&outer));
+    }
 }

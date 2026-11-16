@@ -82,11 +82,6 @@ const DECLARED: &[(&str, &str, &str)] = &[
         "the ClassCastException message names run-time classes the port does not have",
     ),
     (
-        "\tmergewrapper\tskipper",
-        "class",
-        "the JDK's helpful NullPointerException message names Java's expression",
-    ),
-    (
         "\tmisuse\tdv_thread",
         "skip",
         "a doc-values iterator is not Send: Rust refuses to hand it to another thread",
