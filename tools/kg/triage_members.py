@@ -196,6 +196,88 @@ RE_DECL_CLAIM = re.compile(
     r"([a-z][A-Za-z0-9_$]*)")
 
 
+# A doc comment that *opens* with the Java member is the crate's usual way of
+# saying which member an item discharges when the type is already established by
+# the item's owner: ``/// `toString()`: `delegate.toString()`.`` on a `fmt`,
+# ``/// Overrides `verify(Method)`: `false` skips a method.`` on a builder, and
+# ``/// `value()`, default `random`.`` on an annotation's field. Anchored at the
+# start of the doc, after at most one lead-in and Java's modifiers, so a doc that
+# merely *discusses* a member somewhere in its prose is not read as a claim.
+RE_DOC_LEAD = re.compile(
+    r"^(?:(?:Overrides|Override of|Port of|Ported from|Equivalent to|Java's|Java|The)"
+    r"\s+(?:the\s+)?)?"
+    r"(?:(?:private|protected|public|static|abstract|final|synchronized)\s+)*"
+    r"`(?:@[A-Za-z]\w*\s+)?(?:(?P<t>[A-Z][\w$]*)[.#])?(?P<m>[a-z$][\w$]*)\s*(?:\(|`)")
+
+
+# Words that turn a mention into a denial: the crate names a member it decided
+# not to have in the same shape it names one it has.
+RE_DENIAL = re.compile(r"\bnot (?:ported|implemented|reproduced|supported)\b|"
+                       r"\bSkeleton of\b|\bomitted\b|\bunported\b|\bTODO\b", re.I)
+
+
+# The same correspondence written as a parenthesis inside the doc:
+# ``the `FieldMetadata` of the field being written (Java's `setField(FieldMetadata)`)``.
+RE_DOC_PAREN = re.compile(
+    r"\(Java's `(?:(?P<t>[A-Z][\w$]*)[.#])?(?P<m>[a-z$][\w$]*)\s*(?:\(|`)")
+# And as a parenthesis that glosses a value by the member computing it: a heap
+# key's "secondary key (`compareSecondary`: the field number ...)".
+RE_DOC_PAREN_COLON = re.compile(
+    r"\(`(?:(?P<t>[A-Z][\w$]*)[.#])?(?P<m>[a-z$][\w$]*)(?:\([^`]*\))?`:")
+
+
+def doc_lead(doc):
+    """`(java type simple name or None, java member name)` a doc opens with,
+    or names in a `(Java's `...`)` parenthesis."""
+    doc = (doc or "").strip()
+    m = RE_DOC_LEAD.match(doc) or RE_DOC_PAREN.search(doc) or RE_DOC_PAREN_COLON.search(doc)
+    if not m or RE_DENIAL.search(doc):
+        return None
+    return (m.group("t"), m.group("m"))
+
+
+# A paragraph declaring a divergence (`CLAUDE.md` 14.5): the port states that
+# it does not reproduce something of Lucene's, and why. When such a paragraph
+# names a member -- `**Divergences.** `toString`, `equals` and `hashCode`
+# (which Java ...)` -- the member's absence is the declared, approved
+# adaptation, not open work.
+RE_DIVERGENCE = re.compile(r"\*\*Divergences?\b|^#+\s*Divergences?\b", re.M)
+# A paragraph that declares a divergence or refers to one declared elsewhere
+# ("the divergence declared in `rucene::util::resource_loader`").
+RE_DIVERGENCE_REF = re.compile(r"\bdivergen(?:ce|ces|t)\b", re.I)
+
+
+def doc_paragraphs(text):
+    """`[(first line, paragraph text)]` of the `///` and `//!` comments of a file."""
+    out, cur, start = [], [], None
+    for i, line in enumerate(text.splitlines(), 1):
+        st = line.strip()
+        body = None
+        if st.startswith("///") or st.startswith("//!"):
+            body = st[3:].strip()
+        if body:
+            if not cur:
+                start = i
+            cur.append(body)
+            continue
+        if cur:
+            out.append((start, " ".join(cur)))
+            cur = []
+    if cur:
+        out.append((start, " ".join(cur)))
+    return out
+
+
+def code_lines(text):
+    """`[(line number, code)]` with `//` comments cut off, for call-site search."""
+    out = []
+    for i, line in enumerate(text.splitlines(), 1):
+        code = line.split("//", 1)[0]
+        if code.strip():
+            out.append((i, code))
+    return out
+
+
 def decl_claim_members(doc):
     """{(java type simple name, java member name)} a declaration's doc claims."""
     if not doc:
@@ -214,7 +296,11 @@ class Surface:
         self.file_fns = {}            # file -> {fn name -> [(where, doc)]}
         self.file_decls = {}          # file -> [(what it is, its doc)]
         self.type_claims = defaultdict(set)   # (rust type, file) -> {lucene fqn}
+        self.fields_of = defaultdict(list)    # rust type name -> [(file, field)]
         for f, rec in tree.items():
+            for name, td in rec["types"].items():
+                for fd in td.get("fields", ()):
+                    self.fields_of[name].append((f, fd))
             for t in rec["traits"]:
                 self.trait_decls[t["name"]].append((f, t))
                 for fqn in RE_CLAIM.findall(
@@ -232,6 +318,8 @@ class Surface:
             # one that answers `StandardTokenizerImpl`.
             got = defaultdict(list)
             for fn in rec["free"]:
+                if fn.get("test"):
+                    continue          # a test exercises a member; it does not port it
                 got[fn["name"]].append(("free fn", fn["doc"]))
             for im in rec["impls"]:
                 head = (f"impl {im['trait']} for {im['self']}" if im["trait"]
@@ -263,6 +351,19 @@ class Surface:
                 for v in td.get("variants", ()):
                     decls.append((f"variant {name}::{v['name']}", v["doc"]))
             self.file_decls[f] = decls
+
+    def is_closure_type(self, ty, depth=0):
+        """Whether a field type is a closure (`Fn`/`FnMut`/`FnOnce`), through
+        at most two type aliases."""
+        if re.search(r"\bFn(?:Mut|Once)?\s*\(|\bfn\s*\(", ty or ""):
+            return True
+        if depth >= 2:
+            return False
+        for name in re.findall(r"[A-Z][A-Za-z0-9_]*", ty or ""):
+            for _f, td in self.type_decl.get(name, ()):
+                if td.get("kind") == "type" and self.is_closure_type(td.get("alias"), depth + 1):
+                    return True
+        return False
 
     def traits_of(self, rtype, rfile=None):
         """Trait names `rtype` implements, plus their supertraits and derives."""
@@ -444,7 +545,19 @@ def classify(pair, ctx):
     S, rtypes, supertypes, files = (ctx["surface"], ctx["rtypes"].get(cls, []),
                                     ctx["srtypes"].get(cls, []),
                                     ctx["files"].get(cls, []))
-    doc_types = ctx["doctypes"].get(cls, {cls.rsplit(".", 1)[-1]})
+    doc_types = ctx["doctypes"].get(cls, {cls.rsplit(".", 1)[-1], cls.rsplit(".", 1)[-1].split("$")[-1]})
+    # A newtype wrapping the port type in a porting file answers for it: the
+    # port hands out `struct RAMTerms(Arc<RAMField>)` as the `Terms` Java's
+    # `RAMField` is, so the wrapper's impls are the type's own.
+    rtypes = list(rtypes)
+    for rt, rf in list(rtypes):
+        word = re.compile(r"\b" + re.escape(rt) + r"\b")
+        for f in files:
+            for wname, td in S.tree.get(f, {}).get("types", {}).items():
+                tup = td.get("tuple")
+                if tup and "," not in tup.strip().rstrip(",") and word.search(tup) \
+                        and (wname, f) not in rtypes:
+                    rtypes.append((wname, f))
     overloaded = ctx["overloads"].get((cls, java), 1) >= 2
 
     # 0. A member the port has decided against. `port_gaps_exclusions.json`
@@ -452,8 +565,14 @@ def classify(pair, ctx):
     #    of a Java construct (nothing to discharge) or work deferred (still an
     #    absence). Only the first is `na`.
     exc = ctx["excluded"].get(cls)
-    if exc and java in exc["methods"] and exc.get("triageClass") == "na":
+    if exc and java in exc.get("methods", ()) and exc.get("triageClass") == "na":
         return ("na", "excluded-construct", exc["triageReason"])
+    #    A verdict curated for one member, where no evidence rule can read the
+    #    port's shape (`memberVerdicts`): each carries its class and the file
+    #    and line that show it. The last resort, as for `nested_port_verdicts`.
+    mv = (exc or {}).get("memberVerdicts", {}).get(java)
+    if mv:
+        return (mv["triageClass"], "curated", mv["triageReason"])
 
     # 1. Java-only mechanisms: no contract to discharge at all.
     if java in JAVA_ONLY:
@@ -508,6 +627,26 @@ def classify(pair, ctx):
                         return ("renamed", f"rust-keyword[{tier}]",
                                 f"{h} in {have[h][0]} (`{c}` is a Rust keyword)")
 
+    # 2c. A *field* of the port type. Java declares an annotation's members as
+    #     methods (`Seeds.value()`, `Timeout.millis()`); the port keeps the
+    #     annotation as a value whose fields are those members. And Java makes
+    #     a behaviour overridable with a protected method a subclass replaces
+    #     (`NoShadowingOrOverridesOnMethodsRule.verify`); the port, which has no
+    #     subclassing, holds the replacement as a closure field set by a
+    #     builder. Own tier only: the field must be on the type that declares it
+    #     ports this one, and its name must be the member's.
+    java_kind = ctx["kinds"].get(cls)
+    for rt, rf in rtypes:
+        for f, fd in S.fields_of.get(rt, ()):
+            nm = fd["name"][2:] if fd["name"].startswith("r#") else fd["name"]
+            if nm not in name_candidates(java):
+                continue
+            where = f"field {rt}.{fd['name']} in {f}:{fd['line']}"
+            if java_kind == "annotation":
+                return ("renamed", "annotation-member[own]", where)
+            if S.is_closure_type(fd["ty"]):
+                return ("renamed", "closure-hook[own]", f"{where} ({fd['ty'].rstrip(',')})")
+
     # 3. A name rule, tried at each tier from the tightest binding outward.
     # A supertype's Rust trait only answers for this type if this type's own
     # port implements it. `Transition.ramBytesUsed` was answered by `trait
@@ -542,7 +681,10 @@ def classify(pair, ctx):
     #    in `impl Fields for EmptyFields`, which is the port of
     #    `Fields.terms`, not of anything on `Terms`.
     claimed, related = ctx["claimed"], ctx["related"].get(cls, {cls})
-    simple, multiword = cls.rsplit(".", 1)[-1], "_" in camel_to_snake(java)
+    # The type's own simple name: for a nested type the last `$` segment, the
+    # name its Rust item and its doc comments use.
+    simple, multiword = cls.rsplit(".", 1)[-1].split("$")[-1], "_" in camel_to_snake(java)
+    full_simple = cls.rsplit(".", 1)[-1]
     have = {}
     for f in files:
         for n, sites in S.file_fns.get(f, {}).items():
@@ -574,7 +716,7 @@ def classify(pair, ctx):
                 # `RadixSelector`). A name of two words or more cannot collide
                 # by accident and needs no such guard.
                 if not multiword and owner != "free fn":
-                    if not (own_ty and (simple in own_ty or own_ty in simple)):
+                    if not (own_ty and (simple in own_ty or own_ty in full_simple)):
                         continue
                 have.setdefault(n, (f"{f}: {owner}", doc))
                 break
@@ -650,6 +792,224 @@ def classify(pair, ctx):
                         continue
                     return ("renamed", "doc-comment[file]", f"{what} in {f}")
 
+    # 4c'. A hand-written `impl Debug` on the type that ports this one, for
+    #      `toString`. A Java `toString` that exists for diagnostics is answered
+    #      in Rust by `{:?}`, and a hand-written `fmt` is a deliberate rendering
+    #      of the value. A *derived* `Debug` is not: it prints Rust's field dump,
+    #      not Lucene's text, so it never settles a `toString`, and this rule
+    #      runs only after every claim and name rule has had its chance.
+    if java == "toString":
+        for rt, rf in rtypes:
+            if "Debug" in S.traits_of(rt, rf) and "Debug" not in S.derived_traits(rt):
+                return ("renamed", "debug-impl[own]", f"{rt}: impl Debug -> fmt")
+
+    # 4d. A doc comment that *opens* with this member (`RE_DOC_LEAD`), on a
+    #     function, a field or a declaration bound to this type: an item of the
+    #     type that ports it, or an item of a porting file whose owner claims
+    #     no unrelated Lucene type. A free function or a field is accepted at
+    #     file scope only when every Lucene type its file ports is related to
+    #     this one, since nothing else binds it to the type.
+    sites = []
+    for rt, rf in rtypes:
+        for n, (w, d) in S.item_fns(rt, rf).items():
+            sites.append((f"{n} in {w}", d, True))
+        for f, fd in S.fields_of.get(rt, ()):
+            sites.append((f"field {rt}.{fd['name']} in {f}:{fd['line']}", fd["doc"], True))
+    file_only_related = {f: ctx["file_classes"].get(f, set()) <= related for f in files}
+    for f in files:
+        for n, fsites in S.file_fns.get(f, {}).items():
+            for owner, doc in fsites:
+                own_ty = (owner.split(" for ", 1)[1].strip() if " for " in owner
+                          else owner[5:].strip() if owner.startswith("impl ")
+                          else owner[6:].strip() if owner.startswith("trait ") else None)
+                if own_ty is None:
+                    ok = file_only_related[f]
+                else:
+                    owned_by = claimed.get((own_ty, f), set()) | S.type_claims.get((own_ty, f), set())
+                    ok = bool(owned_by & related) or (not owned_by and file_only_related[f])
+                if ok:
+                    sites.append((f"{n} in {f}: {owner}", doc, False))
+        for what, doc in S.file_decls.get(f, ()):
+            if file_only_related[f]:
+                sites.append((f"{what} in {f}", doc, False))
+        rec = S.tree.get(f, {})
+        for tname, td in rec.get("types", {}).items():
+            owned_by = claimed.get((tname, f), set()) | S.type_claims.get((tname, f), set())
+            if (owned_by & related) or (not owned_by and file_only_related[f]):
+                for fd in td.get("fields", ()):
+                    sites.append((f"field {tname}.{fd['name']} in {f}:{fd['line']}", fd["doc"], False))
+    for where, doc, own in sites:
+        lead = doc_lead(doc)
+        if lead and lead[1] == java and (lead[0] is None or lead[0] in doc_types):
+            return ("renamed", f"doc-lead[{'own' if own else 'file'}]", where)
+
+    # 4e. A non-public Java helper whose body the port inlined or shares: the
+    #     porting file calls a function of the member's name (`read_line`,
+    #     `parse_int_at`, `starts_with`) that the crate declares or the standard
+    #     library provides. Private or package-private only -- neither is part
+    #     of the API a client reaches, so the call in the file that ports the
+    #     class is its use -- and the name must be two words or more, or be the
+    #     name of a function the crate declares, so a one-word coincidence
+    #     (`close(`) cannot settle it.
+    # An interface's or annotation's member is implicitly public (JLS 9.4).
+    if ctx["nonpublic"].get((cls, java)) and java_kind not in ("interface", "annotation"):
+        cands = {c for c in name_candidates(java) if len(c) >= 3}
+        declared = ctx["declared_fns"]
+        for f in files:
+            for ln, code in ctx["code"](f):
+                for c in sorted(cands):
+                    if re.search(r"(?<![\w:])(?:\.)?" + re.escape(c) + r"\s*\(", code) and \
+                            ("_" in c or c in declared):
+                        return ("renamed", "inlined-call[file]", f"`{c}(` called at {f}:{ln}")
+
+    # 4d-ii. The same explicit claim written on a function of a *sibling* file
+    #        of a porting file (same directory): the port moved the member to
+    #        the type that uses it. `OrdsSegmentTermsEnum.initIndexInput()` is
+    #        `SteCtx::init_index_input` in `ords_segment_terms_enum_frame.rs`,
+    #        whose doc says "Port of `OrdsSegmentTermsEnum.initIndexInput()`".
+    #        An equivalence lead-in (`RE_DECL_CLAIM`) naming this exact type is
+    #        required, never a bare mention.
+    dirs = {os.path.dirname(f) for f in files}
+    for f in sorted(S.file_fns):
+        if f in files or os.path.dirname(f) not in dirs:
+            continue
+        for n, fsites in S.file_fns[f].items():
+            for owner, doc in fsites:
+                if (simple, java) in decl_claim_members(doc):
+                    return ("renamed", "doc-comment[sibling]", f"{n} in {f}: {owner}")
+
+    # 4e-i. A body inlined where Java calls the member, and marked there with
+    #       a line comment naming it: `// createFieldsConsumer` above the
+    #       closure `fields_consumer` hands its shared body, which is what
+    #       Java's virtual call dispatches to. A file whose ported types are all
+    #       related to this one, and a comment that is the member's name alone,
+    #       or its name followed by `(`, `:` or a backtick.
+    marker = re.compile(r"^\s*//(?![/!])\s*`?(?:[A-Z][\w$]*[.#])?" + re.escape(java)
+                        + r"(?:\s*$|\s*[(:`])")
+    for f in files:
+        if not file_only_related[f]:
+            continue
+        for ln, line in enumerate(ctx["text"](f).splitlines(), 1):
+            if marker.match(line):
+                return ("renamed", "inline-marker[file]", f"{f}:{ln}: {line.strip()[:80]}")
+
+    # 4e-ii. A JUnit hook registered by name in the framework's class model:
+    #        Lucene's `@BeforeClass createPostings()` is found by reflection,
+    #        and the port's class model declares it as
+    #        `Method::new("createPostings")` with the body as its closure.
+    reflective = re.compile(r"\bMethod::new\(\s*\"" + re.escape(java) + r"\"")
+    for f in files:
+        for ln, code in ctx["code"](f):
+            if reflective.search(code):
+                return ("renamed", "reflective-method[file]", f"{f}:{ln}")
+
+    # 4e-iii. A no-argument factory a subclass overrides (`protected abstract
+    #         T newPosition()`), answered by `Default`: the port's position
+    #         type is `T: Default` or implements it, so `T::default()` is the
+    #         factory. The factory's name is `new`/`create` + the type's name,
+    #         and that type (or a trait of that name with a `Default` bound) is
+    #         declared in a porting file.
+    fm = re.match(r"(?:new|create)([A-Z]\w*)$", java)
+    if fm and ctx["noarg"].get((cls, java)):
+        suffix = fm.group(1)
+        # The porting files, then those of a Java supertype: an override of
+        # `LookaheadTokenFilter.newPosition` uses the `Default` bound the base
+        # declares.
+        sup_files = []
+        for st, sf in supertypes:
+            sup_files += [sf] + list(ctx["files"].get(ctx["port_of"].get((st, sf)), ()))
+        for f in list(files) + [x for x in sup_files if x not in files]:
+            rec = S.tree.get(f, {})
+            for t in rec.get("traits", ()):
+                if t["name"].endswith(suffix) and "Default" in t["supers"]:
+                    return ("renamed", "default-factory[file]",
+                            f"trait {t['name']}: Default in {f}:{t['line']}")
+            for im in rec.get("impls", ()):
+                if im["trait"] == "Default" and (im["self"] or "").endswith(suffix):
+                    return ("renamed", "default-factory[file]",
+                            f"impl Default for {im['self']} in {f}:{im['line']}")
+
+    # 4f. A declared divergence (`CLAUDE.md` 14.5) of a type that ports this
+    #     one, stating that the port delegates where Java wraps: the type's doc
+    #     names, as `[`T`]` or `` `T` ``, the Rust type that answers the
+    #     member, and that type declares it. `FilterPath`'s doc says its path is
+    #     a core `Path` of a filter filesystem and every method delegates, and
+    #     `Path` declares `resolve`, `normalize` and the rest.
+    delegate_files = set()
+    for rt, rf in rtypes:
+        tdoc = " ".join(td["doc"] for f2, td in S.type_decl.get(rt, ()) if f2 == rf or rf is None)
+        if not RE_DIVERGENCE.search(tdoc):
+            continue
+        # In the order the doc names them: the first type a divergence names
+        # is the one it says the port is (`FilterPath`: "this port's [`Path`]").
+        for target in dict.fromkeys(t for t in re.findall(r"`([A-Z][A-Za-z0-9_]*)`", tdoc)
+                                    if t != rt):
+            if target not in S.type_decl and target not in S.trait_decls:
+                continue
+            delegate_files.update(f2 for f2, _td in S.type_decl.get(target, ()))
+            delegate_files.update(f2 for f2, _td in S.trait_decls.get(target, ()))
+            have = S.item_fns(target)
+            if java in SHAPES:
+                rule_, prefixes = SHAPES[java]
+                for h in sorted(have):
+                    if h in prefixes or any(h.startswith(pre) for pre in prefixes
+                                            if pre.endswith("_")):
+                        return ("renamed", "delegated[divergence]",
+                                f"{rt} delegates to {target}::{h} ({have[h][0]}, {rule_})")
+            hit = try_names(java, have, "own", allow_expansion=False, doc_types=doc_types)
+            if hit:
+                return ("renamed", "delegated[divergence]",
+                        f"{rt} delegates to {target}::{hit[1]} ({have[hit[1]][0]})")
+            for trait, fn in CONTRACT_TRAITS.get(java, ()):
+                if trait in S.traits_of(target):
+                    return ("renamed", "delegated[divergence]",
+                            f"{rt} delegates to {target}: impl {trait} -> {fn}")
+
+    # 4g. A declared divergence that names the member: the port states it
+    #     does not reproduce it and why, which is the approved adaptation, not
+    #     open work. The paragraph must sit in a porting file whose Lucene types
+    #     are all related to this one, or name this type itself.
+    #     Three places are read: the porting files (a paragraph there binds by
+    #     the file, or by naming this type); the files porting a Java supertype,
+    #     where a paragraph binds only by naming this type (`BlockWriter`'s
+    #     divergence names `STBlockWriter`'s override of the factory it
+    #     inlines); and the files declaring the Rust type a divergence of 4f
+    #     delegates to, where the paragraph is about that type's own surface.
+    named = re.compile(r"`(?:[A-Z][\w$]*[.#])?" + re.escape(java) + r"\s*(?:\(|`)")
+    names_type = re.compile(r"\b" + re.escape(simple) + r"\b")
+    super_files = set()
+    for st, sf in supertypes:
+        super_files |= set(ctx["files"].get(ctx["port_of"].get((st, sf)), ())) | {sf}
+    # The files declaring the traits the port type implements: where Java
+    # extends a JDK class the port implements its emulation's trait, and that
+    # trait's module declares which of the JDK surface it leaves out
+    # (`java_nio_file.rs`: "the attribute-view class hierarchy
+    # (`getFileAttributeView`, `getFileStoreAttributeView`, ...) ... have no
+    # counterpart").
+    trait_files = set()
+    for rt, rf in rtypes:
+        for t in S.traits_of(rt, rf):
+            trait_files |= {tf for tf, _rec in S.resolve_trait(t, rf)}
+        # A port that is itself a trait: its supertraits.
+        trait_files |= {tf for t, tf, _rec in S.trait_closure(rt, rf) if t != rt}
+    for scope, fs in (("file", files), ("super", sorted(super_files - set(files))),
+                      ("delegate", sorted(delegate_files - set(files))),
+                      ("trait", sorted(trait_files - set(files) - delegate_files))):
+        for f in fs:
+            # A divergence paragraph that introduces a list ("The differences
+            # that span the module are:") carries its bullets with it.
+            in_div = False
+            for ln, para in ctx["paragraphs"](f):
+                in_div = bool(RE_DIVERGENCE_REF.search(para)) or (
+                    in_div and para.lstrip().startswith("* "))
+                if not in_div or not named.search(para):
+                    continue
+                if scope == "file" and not (file_only_related[f] or names_type.search(para)):
+                    continue
+                if scope == "super" and not names_type.search(para):
+                    continue
+                return ("na", f"declared-divergence[{scope}]", f"{f}:{ln}")
+
     # A `private` Java method is not part of any contract a caller can reach:
     # it exists to factor the body of a method that is. When every member of
     # its type that *is* reachable has been discharged, its absence is a
@@ -668,6 +1028,8 @@ def main():
     ap.add_argument("snapshot")
     ap.add_argument("out")
     ap.add_argument("--root", default=".")
+    ap.add_argument("--exclusions", default=str(Path(__file__).parent / "port_gaps_exclusions.json"),
+                    help="the curated member decisions (default: port_gaps_exclusions.json)")
     args = ap.parse_args()
 
     S = Path(args.snapshot)
@@ -731,13 +1093,15 @@ def main():
         all_supers[a].add(b)
     doctypes = {}
     for qn in {u["cls"] for u in unmatched}:
-        names, seen, frontier = {qn.rsplit(".", 1)[-1]}, {qn}, list(all_supers.get(qn, ()))
+        names = {qn.rsplit(".", 1)[-1], qn.rsplit(".", 1)[-1].split("$")[-1]}
+        seen, frontier = {qn}, list(all_supers.get(qn, ()))
         while frontier:
             p2 = frontier.pop()
             if p2 in seen:
                 continue
             seen.add(p2)
             names.add(p2.rsplit(".", 1)[-1])
+            names.add(p2.rsplit(".", 1)[-1].split("$")[-1])
             frontier += list(all_supers.get(p2, ()))
         doctypes[qn] = names
 
@@ -762,6 +1126,7 @@ def main():
     for a, b in load("supers_all"):
         subs[b].add(a)
     related = {}
+    all_classes = set(meta)
     for qn in {u["cls"] for u in unmatched}:
         rel, frontier = {qn}, [qn]
         while frontier:
@@ -770,16 +1135,57 @@ def main():
                 if y not in rel:
                     rel.add(y)
                     frontier.append(y)
+        # A type and the types nested in it, or enclosing it, answer for each
+        # other: the port routinely puts an outer type's member on the Rust
+        # type of an inner one and the reverse, and since nested types are
+        # triaged too (`DEPTH_PAIRS`), a Rust item porting `Outer$Inner` must not
+        # read as "another type's" item to `Outer`.
+        head = qn.split("$", 1)[0]
+        rel |= {c for c in all_classes if c == head or c.startswith(head + "$")}
         related[qn] = rel
 
     tree = parse_tree(root)
-    ctx = {"surface": Surface(tree), "claimed": claimed, "related": related, "rtypes": rtypes, "srtypes": srtypes,
+    kinds = {r[0]: r[3] for r in load("class_meta")}
+    file_classes = defaultdict(set)
+    for qn, f, n, kind in load("ports_any"):
+        if f:
+            file_classes[f].add(qn)
+    declared_fns = set()
+    for rec in tree.values():
+        declared_fns |= {fn["name"] for fn in rec["free"]}
+        for blk in rec["impls"] + rec["traits"]:
+            declared_fns |= {fn["name"] for fn in blk["fns"]}
+    text_cache = {}
+    port_of = {}
+    for qn, f, n, kind in load("ports_any"):
+        if n and f:
+            port_of.setdefault((n, f), qn)
+    nonpublic, noarg = {}, {}
+    for qn, name, kind, mods, sig, mqn, rt_ in load("member_kinds"):
+        if kind != "method":
+            continue
+        m_ = set((mods or "").split())
+        np_ = not (m_ & {"public", "protected"})
+        nonpublic[(qn, name)] = np_ and nonpublic.get((qn, name), True)
+        noarg[(qn, name)] = noarg.get((qn, name), False) or bool(re.search(r"\(\s*\)", sig or ""))
+
+    def text_of(f):
+        if f not in text_cache:
+            try:
+                text_cache[f] = (root / f).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text_cache[f] = ""
+        return text_cache[f]
+
+    ctx = {"surface": Surface(tree), "claimed": claimed, "kinds": kinds,
+           "file_classes": file_classes, "declared_fns": declared_fns,
+           "code": lambda f: code_lines(text_of(f)),
+           "text": text_of, "port_of": port_of, "nonpublic": nonpublic, "noarg": noarg,
+           "paragraphs": lambda f: doc_paragraphs(text_of(f)), "related": related, "rtypes": rtypes, "srtypes": srtypes,
            "files": {k: sorted(v) for k, v in files.items()},
            "doctypes": doctypes, "overloads": overloads, "private": private,
            "contract_clean": set(),
-           "excluded": json.loads(
-               (Path(__file__).parent / "port_gaps_exclusions.json")
-               .read_text(encoding="utf-8"))}
+           "excluded": json.loads(Path(args.exclusions).read_text(encoding="utf-8"))}
 
     # Two passes: the private-helper rule needs to know whether anything
     # *reachable* on the same type is still absent, which the first pass

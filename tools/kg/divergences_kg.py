@@ -4,8 +4,9 @@
 `CLAUDE.md` §14.5 requires every divergence to be declared at its point (item or
 module docs) and recorded in the Knowledge Graph with the Lucene source that
 defines the original behaviour. The crate writes each one as a doc-comment
-paragraph led by a bold `**Divergence…**` (or `**Divergences…**`). This script
-reads those paragraphs from a survey root (a `git archive` of the commit) and
+paragraph led by a bold `**Divergence…**` (or `**Divergences…**`), a Markdown
+heading section (`# Divergences from Lucene 10.5.0`) or a plain `Divergence:`
+lead. This script reads those paragraphs from a survey root (a `git archive` of the commit) and
 writes:
 
 * one `Divergence` node per paragraph, identity `id` = `"<file>:<line>"`;
@@ -33,6 +34,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from kgio import client, counters_of, esc, format_counters, read, unwind  # noqa: E402
 
 LEAD = re.compile(r"^\*\*(Divergences?\b[^*]*)\*\*")
+# The other two forms the crate declares a divergence in: a Markdown heading
+# (`/// # Divergences from Lucene 10.5.0`, whose section runs to the next
+# heading of the doc block, blank lines and bullets included) and a plain
+# `Divergence: ...` lead. Reading the bold lead alone missed 70 declarations,
+# `src/util/hnsw/merger.rs`'s among them.
+HEADING = re.compile(r"^#{1,6}\s+(Divergences?\b.*?)\s*$")
+PLAIN_LEAD = re.compile(r"^(Divergences?):\s")
+ANY_HEADING = re.compile(r"^#{1,6}\s")
 JAVA_REF = re.compile(
     r"\b([A-Z][A-Za-z0-9_]*\.java)(?::(\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)*))?")
 ATTR = re.compile(r"^\s*#!?\[")
@@ -130,15 +139,30 @@ def scan_text(path: str, text: str):
             owner = owners[-1] if owners and marker == "///" else None
             k = 0
             while k < len(block):
-                lead = LEAD.match(block[k].strip())
+                head = HEADING.match(block[k].strip())
+                # A bold lead may wrap: "**Divergence from Lucene 10.5.0: the
+                # serializer factories are" / "inlined.**" is one lead.
+                k2, joined = k, []
+                while k2 < len(block) and block[k2].strip():
+                    joined.append(block[k2].strip())
+                    k2 += 1
+                lead = head or LEAD.match(" ".join(joined)) or PLAIN_LEAD.match(block[k].strip())
                 if not lead:
                     k += 1
                     continue
                 para_start = k
                 para = []
-                while k < len(block) and block[k].strip():
-                    para.append(block[k].strip())
+                if head:
+                    # the section: every line up to the next heading
                     k += 1
+                    while k < len(block) and not ANY_HEADING.match(block[k].strip()):
+                        if block[k].strip():
+                            para.append(block[k].strip())
+                        k += 1
+                else:
+                    while k < len(block) and block[k].strip():
+                        para.append(block[k].strip())
+                        k += 1
                 body = " ".join(para)
                 refs = []
                 for jm in JAVA_REF.finditer(body):

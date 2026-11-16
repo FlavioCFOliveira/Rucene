@@ -67,6 +67,35 @@ def q_item(name):
             "RETURN f.path, labels(t)[0], t.qualifiedName, c.qualifiedName, e.evidence, e.note")
 
 
+def class_keys(fqn):
+    """The `Class.qualifiedName` keys a fully qualified Java name may denote.
+
+    The graph keys a nested type `pkg.Outer$Inner`; a reader writes it
+    `pkg.Outer.Inner` as often. Packages are lower-case and types capitalised, so
+    every segment after the first capitalised one is a nesting level: the dotted
+    spelling has exactly one `$` form. Both spellings are returned (a `$` already
+    present is kept)."""
+    segs = fqn.replace("$", ".$").split(".")
+    plain = [s.lstrip("$") for s in segs]
+    first = next((i for i, s in enumerate(plain) if s[:1].isupper()), None)
+    keys = {fqn}
+    if first is not None:
+        keys.add(".".join(plain[:first + 1]) + "".join("$" + s for s in plain[first + 1:]))
+    return sorted(keys)
+
+
+def q_item_fqn(fqn):
+    """A Java type by its fully qualified name, nested included, and every Rust
+    item that ports it (`PORTS`, with its evidence), or its state when none
+    does (`absorbed` names its host)."""
+    keys = "[" + ", ".join(esc(k) for k in class_keys(fqn)) + "]"
+    return ("MATCH (c:Class) WHERE c.qualifiedName IN " + keys + " "
+            "OPTIONAL MATCH (t)-[e:PORTS]->(c) "
+            "RETURN coalesce(t.file, c.file), coalesce(labels(t)[0], 'Class'), "
+            "coalesce(t.qualifiedName, c.qualifiedName), c.qualifiedName, "
+            "coalesce(e.evidence, c.portStateEvidence), coalesce(e.note, c.portStateNote)")
+
+
 def q_refs(qn):
     return ("MATCH (r)-[e:REFERENCES]->(x) WHERE x.qualifiedName = " + esc(qn) + " "
             "AND e.evidence = 'rust-analyzer-scip' "
@@ -91,7 +120,9 @@ def q_verdicts(label):
 Q_AWAITS = ("MATCH (n)-[:AWAITS_CALLER]->(c:Class) "
             "RETURN c.qualifiedName, c.portState, collect(n.qualifiedName) AS waiting "
             "ORDER BY size(waiting) DESC")
-Q_ABSENT = ("MATCH (c:Class) WHERE c.portScope = 'in' AND c.memberAbsent > 0 "
+# Nested types are measured too (`port_evidence_kg.DEPTH_PAIRS`), so their
+# absent members are work like any other.
+Q_ABSENT = ("MATCH (c:Class) WHERE c.portScope IN ['in', 'nested'] AND c.memberAbsent > 0 "
             "OPTIONAL MATCH (c)-[:DECLARES]->(m:Method) WHERE m.portTriage = 'absent' "
             "RETURN c.qualifiedName, c.memberAbsent, collect(DISTINCT m.name) "
             "ORDER BY c.memberAbsent DESC")
@@ -148,7 +179,13 @@ def cmd_divergences(a):
 
 
 def cmd_item(a):
-    emit(read(R, q_item(a.name)), ["file", "label", "qualifiedName", "ports", "evidence", "note"])
+    cols = ["file", "label", "qualifiedName", "ports", "evidence", "note"]
+    # A dotted name is a fully qualified Java name (`pkg.Outer.Inner`,
+    # `pkg.Outer$Inner`); a Rust qualified name (`a::b::C`) has no dot.
+    if "." in a.name or "$" in a.name:
+        emit(read(R, q_item_fqn(a.name)), cols)
+    else:
+        emit(read(R, q_item(a.name)), cols)
 
 
 def cmd_refs(a):
@@ -252,7 +289,17 @@ def cmd_coverage(a):
             raise SystemExit("--list needs --module")
         emit(read(R, q_coverage_list(a.module)), ["class", "status", "portState"])
     else:
-        emit(read(R, pm.coverage_query(a.module)), ["module", "status", "classes"])
+        top = read(R, pm.coverage_query(a.module))
+        nested = read(R, pm.nested_coverage_query(a.module))
+        absent = read(R, pm.member_absent_query(a.module))
+        emit(top, ["module", "status", "classes"])
+        for m, status, n in nested:
+            print(json.dumps({"module": m, "scope": "nested", "status": status, "classes": n}))
+        for m, classes, n in absent:
+            print(json.dumps({"module": m, "scope": "members", "status": "absent",
+                              "classes": classes, "members": n}))
+        for v in pm.fully_ported(top, nested, absent).values():
+            print(json.dumps(v))
 
 
 def cmd_early(a):

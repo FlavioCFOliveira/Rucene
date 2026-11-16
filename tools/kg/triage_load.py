@@ -70,8 +70,13 @@ def main():
     for r in rows:
         counts[r["type"]][r["class"]] += 1
 
+    # A nested type no longer measured keeps no rollup from an earlier run.
+    client(args.roadmap,
+           "MATCH (c:Class) WHERE c.portScope = 'nested' AND c.memberTotal IS NULL "
+           "AND c.memberTriage IS NOT NULL "
+           "REMOVE c.memberAbsent, c.memberRenamed, c.memberNa, c.memberTriage")
     measured = kg_read(args.roadmap,
-                       "MATCH (c:Class) WHERE c.portScope = 'in' "
+                       "MATCH (c:Class) WHERE c.portScope IN ['in', 'nested'] "
                        "AND c.memberTotal IS NOT NULL RETURN c.qualifiedName")
     classes = []
     for (qn,) in measured:

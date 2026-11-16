@@ -269,6 +269,66 @@
    "host": "ScalarQuantizedVectorSimilarity",
    "where": "src/util/quantization/scalar_quantized_vector_similarity.rs:13-18",
    "why": "same enum."
+  },
+  "org.apache.lucene.codecs.uniformsplit.sharedterms.STUniformSplitTermsWriter$FieldsIterator": {
+   "host": "create_field_metadata_list",
+   "where": "crates/rucene-codecs/src/uniformsplit/sharedterms/st_uniform_split_terms_writer.rs:274-276",
+   "why": "the `Iterator<FieldInfo>` over the field names is the iterator adapter `names.iter().map(|name| field_infos.field_info(name))` handed to `create_field_metadata_list`, as Java hands `new FieldsIterator(fields, fieldInfos)` (STUniformSplitTermsWriter.java:165)."
+  },
+  "org.apache.lucene.tests.util.TestRuleLimitSysouts$LimitPredicate": {
+   "host": "TestRuleLimitSysouts",
+   "where": "crates/rucene-test-framework/src/util/test_rule_limit_sysouts.rs:117",
+   "why": "the functional interface is the closure type `Arc<dyn Fn(i64, i64) -> bool + Send + Sync>` of `limit_check`, as Java's lambda assigned to `LimitPredicate limitCheck` (TestRuleLimitSysouts.java:113)."
+  },
+  "org.apache.lucene.tests.util.automaton.AutomatonTestUtil$RandomAcceptedStrings$ArrivingTransition": {
+   "host": "RandomAcceptedStrings",
+   "where": "crates/rucene-test-framework/src/util/automaton/automaton_test_util.rs:644,654",
+   "why": "the private record `(int from, Transition t)` is the tuple `(i32, usize)` of `all_arriving`, the transition kept as its index in `getSortedTransitions()` (the keying the type's doc at :619-621 declares)."
+  },
+  "com.carrotsearch.randomizedtesting.rules.RamUsageEstimator$DummyOneFieldObject": {
+   "host": "RamUsageEstimator",
+   "where": "crates/randomizedtesting/src/rules/ram_usage_estimator.rs:6-14",
+   "why": "a private probe Java allocates to measure the JVM's field layout; the port has no JVM and states the layout as constants, the module's declared divergence."
+  },
+  "com.carrotsearch.randomizedtesting.rules.RamUsageEstimator$DummyTwoLongObject": {
+   "host": "RamUsageEstimator",
+   "where": "crates/randomizedtesting/src/rules/ram_usage_estimator.rs:6-14",
+   "why": "a private probe Java allocates to measure the JVM's field layout; the port has no JVM and states the layout as constants, the module's declared divergence."
+  },
+  "com.carrotsearch.randomizedtesting.rules.RamUsageEstimator$ClassCache": {
+   "host": "RamUsageEstimator",
+   "where": "crates/randomizedtesting/src/rules/ram_usage_estimator.rs:15-22",
+   "why": "the per-class cache of the reflective object-graph walk; the port measures only values whose Java layout it can state and has no reflective walk to cache, the module's declared divergence."
+  },
+  "com.carrotsearch.randomizedtesting.rules.StaticFieldsInvariantRule$Entry": {
+   "host": "StaticFieldsInvariantRule",
+   "where": "crates/randomizedtesting/src/rules/static_fields_invariant_rule.rs:66,112",
+   "why": "the `(field, value)` entry sorted by size is the tuple `(Arc<Field>, Value, i64)` of `entries`, sorted by the comparator at :112 as `Entry.compareTo` sorts."
+  },
+  "com.carrotsearch.randomizedtesting.ClassModel$ClassElement": {
+   "host": "MethodModel / FieldModel",
+   "where": "crates/randomizedtesting/src/class_model.rs:45-118",
+   "why": "the abstract generic base of `MethodModel` and `FieldModel`; Rust has no implementation inheritance, so each model struct carries the base's fields (`element`, `up`, `down`) and its own `overrides_or_shadows` (:92, :115)."
+  },
+  "com.carrotsearch.randomizedtesting.ClassModel$ModelBuilder": {
+   "host": "ClassModel::new",
+   "where": "crates/randomizedtesting/src/class_model.rs:120-175",
+   "why": "the private abstract builder that groups members by signature and links overrides; `ClassModel::new` does the same per member kind inline."
+  },
+  "com.carrotsearch.randomizedtesting.FilterExpressionParser$InfixNode": {
+   "host": "Node",
+   "where": "crates/randomizedtesting/src/filter_expression_parser.rs:48-90",
+   "why": "the abstract base of `AndNode`/`OrNode`; the node hierarchy is the `Kind` enum and one `Node` struct, whose `args` and `lbp` (set per kind in `Node::new`) are the infix operands and binding power."
+  },
+  "com.carrotsearch.randomizedtesting.ThreadLeakControl$AwaitCond": {
+   "host": "join",
+   "where": "crates/randomizedtesting/src/thread_leak_control.rs:778-790",
+   "why": "the package-private functional interface is the closure parameter `cond: &mut dyn FnMut(i64) -> Result<(), Throwable>` of `join(t, millis, cond)`."
+  },
+  "com.carrotsearch.randomizedtesting.Rethrow$Rethrower": {
+   "host": "Rethrow::rethrow",
+   "where": "crates/randomizedtesting/src/rethrow.rs:10-19",
+   "why": "the private generic trick that throws a checked exception unchecked; the port resumes the panic payload (`resume_unwind`), the declared divergence on `rethrow`."
   }
  },
  "curated": {

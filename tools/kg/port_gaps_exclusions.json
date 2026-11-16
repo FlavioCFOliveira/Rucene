@@ -232,5 +232,77 @@
   ],
   "triageClass": "na",
   "triageReason": "A helper that breaks a keySet()/iterator() recursion between overridden Java methods; the port has no such recursion."
+ },
+ "com.carrotsearch.randomizedtesting.RunnerThreadGroup": {
+  "memberVerdicts": {
+   "uncaughtException": {
+    "triageClass": "renamed",
+    "triageReason": "The ThreadGroup subclass's override is the closure RunnerThreadGroup::new passes to ThreadGroup::with_uncaught_hook (crates/randomizedtesting/src/runner_thread_group.rs:17-32): augmentStackTrace, suppression on failure, then the default handler, as RunnerThreadGroup.java:17-29."
+   }
+  }
+ },
+ "org.apache.lucene.tests.mockfile.FilterFileSystem": {
+  "memberVerdicts": {
+   "newWatchService": {
+    "triageClass": "na",
+    "triageReason": "Delegates to a JDK surface the port leaves out: src/store/java_nio_file.rs:41-46 declares that watch services and user-principal lookups have no counterpart in the port's java.nio.file emulation (Lucene's store calls none of them)."
+   },
+   "getUserPrincipalLookupService": {
+    "triageClass": "na",
+    "triageReason": "Delegates to a JDK surface the port leaves out: src/store/java_nio_file.rs:41-46 declares that watch services and user-principal lookups have no counterpart in the port's java.nio.file emulation (Lucene's store calls none of them)."
+   }
+  }
+ },
+ "org.apache.lucene.tests.mockfile.FilterPath": {
+  "memberVerdicts": {
+   "register": {
+    "triageClass": "na",
+    "triageReason": "Path.register takes a WatchService: src/store/java_nio_file.rs:41-46 declares that watch services and user-principal lookups have no counterpart in the port's java.nio.file emulation (Lucene's store calls none of them); FilterPath's divergence (crates/rucene-test-framework/src/mockfile/filter_path.rs:30-37) makes a filter path a core Path."
+   },
+   "wrap": {
+    "triageClass": "renamed",
+    "triageReason": "wrap(other) is `fileSystem.parent.wrapPath(other)` (FilterPath.java:273-275), which is the provider's wrap_path (crates/rucene-test-framework/src/mockfile/filter_file_system_provider.rs:200), the path every delegating Path operation of the port returns (FilterPath's divergence, filter_path.rs:30-37)."
+   }
+  }
+ },
+ "org.apache.lucene.tests.util.fst.FSTTester": {
+  "memberVerdicts": {
+   "toIntsRefUTF32": {
+    "triageClass": "renamed",
+    "triageReason": "Inlined as the `// utf32` branch of FSTTester::to_ints_ref (crates/rucene-test-framework/src/util/fst/fst_tester.rs:199-214), the only caller in Java (FSTTester.java:132-140)."
+   }
+  }
+ },
+ "org.apache.lucene.codecs.memory.FSTTermsReader$TermsReader$BaseTermsEnum": {
+  "memberVerdicts": {
+   "ord": {
+    "triageClass": "renamed",
+    "triageReason": "The abstract base's `ord()` throws UnsupportedOperationException (FSTTermsReader.java:327-329); the port has no base struct for methods (BaseState holds the shared state) and both enums implement it as `Err(unsupported())`: SegmentTermsEnum::ord and IntersectTermsEnum::ord (crates/rucene-codecs/src/memory/fst_terms_reader.rs:660, :1130)."
+   }
+  }
+ },
+ "org.apache.lucene.codecs.memory.FSTTermsReader$TermsReader$IntersectTermsEnum": {
+  "memberVerdicts": {
+   "topFrame": {
+    "triageClass": "renamed",
+    "triageReason": "`topFrame()` is `stack[level]` (FSTTermsReader.java:733-735); the port's frames are indices and every method works on `stack[level]` directly, as the type's doc states (crates/rucene-codecs/src/memory/fst_terms_reader.rs:715-718)."
+   }
+  }
+ },
+ "org.apache.lucene.codecs.uniformsplit.sharedterms.STUniformSplitTermsWriter$MergingFieldTerms": {
+  "memberVerdicts": {
+   "resetIterator": {
+    "triageClass": "renamed",
+    "triageReason": "resetIterator's body, `((STMergingTermsEnum) termsEnum).reset(term, segmentPostingsList)` (STUniformSplitTermsWriter.java:516-518), is inlined at its one call site as `field_terms.terms_enum.reset(term.clone(), segment_postings_list)` (crates/rucene-codecs/src/uniformsplit/sharedterms/st_uniform_split_terms_writer.rs:546-548)."
+   }
+  }
+ },
+ "org.apache.lucene.tests.index.RandomPostingsTester$SeedTermsEnum": {
+  "memberVerdicts": {
+   "reset": {
+    "triageClass": "renamed",
+    "triageReason": "reset() rewinds `iterator` to the head of the entry set (RandomPostingsTester.java:602-604) and is called once, right after construction (:538); the port constructs the enum already positioned there, `iterator_after: Some(Bound::Unbounded)`, marked `// termsEnum.reset()` (crates/rucene-test-framework/src/index/random_postings_tester.rs:550-556)."
+   }
+  }
  }
 }

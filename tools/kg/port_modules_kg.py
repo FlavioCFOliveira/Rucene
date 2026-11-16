@@ -242,6 +242,20 @@ COVERAGE_QUERY = (
     "WHEN c.portState = 'notApplicable' THEN 'notApplicable' ELSE 'unported' END AS status, "
     "count(c) AS classes ORDER BY module, status"
 )
+# The nested types per module and `portState` (`ported`, `absorbed`,
+# `skeleton`, `unported`): the half of a module `COVERAGE_QUERY` leaves out.
+NESTED_COVERAGE_QUERY = (
+    "MATCH (c:Class) WHERE c.portScope = 'nested' "
+    "RETURN c.module AS module, coalesce(c.portState, 'unstated') AS status, "
+    "count(c) AS classes ORDER BY module, status"
+)
+# The member work still open per module: the types, top-level or nested, with
+# an `absent` member verdict, and how many such members.
+MEMBER_ABSENT_QUERY = (
+    "MATCH (c:Class) WHERE c.portScope IN ['in', 'nested'] AND c.memberAbsent > 0 "
+    "RETURN c.module AS module, count(c) AS classes, sum(c.memberAbsent) AS absent "
+    "ORDER BY module"
+)
 # The members ported early under the cycle rule, by module.
 EARLY_QUERY = (
     "MATCH (t:Task)-[e:PORTS_EARLY]->(m:Method)<-[:DECLARES]-(c:Class) "
@@ -257,6 +271,48 @@ def coverage_query(module=None):
         return COVERAGE_QUERY
     return COVERAGE_QUERY.replace(
         "WHERE c.portScope = 'in' ", f"WHERE c.portScope = 'in' AND c.module = {esc(module)} ")
+
+
+def nested_coverage_query(module=None):
+    """`NESTED_COVERAGE_QUERY`, narrowed to one module when `module` is given."""
+    if module is None:
+        return NESTED_COVERAGE_QUERY
+    return NESTED_COVERAGE_QUERY.replace(
+        "WHERE c.portScope = 'nested' ", f"WHERE c.portScope = 'nested' AND c.module = {esc(module)} ")
+
+
+def member_absent_query(module=None):
+    """`MEMBER_ABSENT_QUERY`, narrowed to one module when `module` is given."""
+    if module is None:
+        return MEMBER_ABSENT_QUERY
+    return MEMBER_ABSENT_QUERY.replace(
+        "AND c.memberAbsent > 0 ", f"AND c.memberAbsent > 0 AND c.module = {esc(module)} ")
+
+
+def fully_ported(top_rows, nested_rows, absent_rows):
+    """`{module: verdict}` from the three coverage answers.
+
+    A module is fully ported when every in-scope class is `ported` or
+    `notApplicable`, every nested type `ported` or `absorbed`, and no type of it
+    carries an `absent` member verdict. The verdict lists what stands in the way.
+    """
+    out = {}
+    def entry(m):
+        return out.setdefault(m, {"module": m, "topLevelOpen": 0, "nestedOpen": 0,
+                                  "absentMembers": 0})
+    for m, status, n in top_rows:
+        e = entry(m)
+        if status not in ("ported", "notApplicable"):
+            e["topLevelOpen"] += n
+    for m, status, n in nested_rows:
+        e = entry(m)
+        if status not in ("ported", "absorbed"):
+            e["nestedOpen"] += n
+    for m, _classes, absent in absent_rows:
+        entry(m)["absentMembers"] += absent or 0
+    for e in out.values():
+        e["fullyPorted"] = not (e["topLevelOpen"] or e["nestedOpen"] or e["absentMembers"])
+    return out
 
 
 def early_query(module=None):

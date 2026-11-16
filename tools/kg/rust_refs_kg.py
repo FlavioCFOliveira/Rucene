@@ -77,7 +77,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import scipio  # noqa: E402
-from extract_rucene_kg import base_type_name, blank_macro_bodies, mask  # noqa: E402
+from extract_rucene_kg import (base_type_name, blank_macro_bodies, load_workspace,  # noqa: E402
+                               mask, member_of)
 from kgio import client, counters_of, esc, format_counters, kg_target, read, unwind_maps  # noqa: E402
 
 EVIDENCE = "rust-analyzer-scip"
@@ -89,6 +90,50 @@ LEXICAL = "macro-body-lexical"
 OWNED = (EVIDENCE, LEXICAL)
 TYPE_LABELS = ("RustStruct", "RustEnum", "RustTrait", "RustAlias")
 CRATE_PREFIX = "rust-analyzer cargo rucene "
+# The packages whose symbols are this project's: the root crate and, once
+# `set_workspace` has read `crates/*/Cargo.toml`, every workspace member
+# (`randomizedtesting`, `rucene-codecs`, `rucene-test-framework`, ...). Reading
+# the root crate's prefix alone left every member crate without a single
+# `REFERENCES` edge, so `ask.py refs` found no caller of
+# `randomizedtesting::deadline_clock::DeadlineClock` although
+# `thread_leak_control.rs` constructs it three times.
+PACKAGES = {"rucene": "rucene"}
+_SYMBOL = re.compile(r"^rust-analyzer cargo (?P<pkg>\S+) (?P<ver>\S+) (?P<desc>.*)$", re.S)
+
+
+def set_workspace(root):
+    """Register the workspace members under `root/crates/` as project packages."""
+    for _d, (pkg, ident) in load_workspace(Path(root)).items():
+        PACKAGES[pkg] = ident
+
+
+def is_crate_symbol(symbol: str) -> bool:
+    """Whether `symbol` belongs to one of this project's packages."""
+    m = _SYMBOL.match(symbol)
+    return bool(m) and m.group("pkg") in PACKAGES
+
+
+def crate_ident(symbol: str):
+    """The Rust crate identifier of a project symbol (`rucene_codecs`), or None."""
+    m = _SYMBOL.match(symbol)
+    return PACKAGES.get(m.group("pkg")) if m else None
+
+
+def ident_of_file(path):
+    """The crate identifier of a file of the checkout: a member's, else `rucene`."""
+    if path:
+        mem = member_of(path)
+        if mem:
+            return mem[2]
+    return "rucene"
+
+
+def is_production_path(path: str) -> bool:
+    """A library source file: the root crate's `src/` or a member's `crates/<d>/src/`."""
+    mem = member_of(path)
+    if mem:
+        return path.startswith(mem[0] + "/src/")
+    return path.startswith("src/")
 
 RE_CFG_TEST = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 RE_TEST_ATTR = re.compile(r"#\[\s*(?:tokio::)?test\b")
@@ -157,12 +202,11 @@ def _name(desc, i):
 
 
 def crate_descriptors(symbol: str):
-    """The descriptor string of a symbol of this package, or None."""
-    if not symbol.startswith(CRATE_PREFIX):
+    """The descriptor string of a symbol of this project's packages, or None."""
+    m = _SYMBOL.match(symbol)
+    if not m or m.group("pkg") not in PACKAGES:
         return None
-    rest = symbol[len(CRATE_PREFIX):]
-    _version, _, desc = rest.partition(" ")
-    return desc
+    return m.group("desc")
 
 
 def item_of(symbol: str):
@@ -347,12 +391,16 @@ class KgIndex:
         for (file, owner, name), qns in self.fns.items():
             self.fn_by_owner_name[(owner, name)] += [(file, q) for q in qns]
 
-    def node(self, item, file):
-        """The KG node key for a crate item defined in `file`, or None."""
+    def node(self, item, file, crate=None):
+        """The KG node key for a crate item defined in `file`, or None.
+
+        `crate` is the item's crate identifier when no file is known; else the
+        crate holding `file` (`ident_of_file`)."""
         if item is None:
             return None
         kind, owner, name, mods = item
-        qn = "::".join(["rucene", *mods, *([owner] if owner else []), name])
+        root = crate or ident_of_file(file)
+        qn = "::".join([root, *mods, *([owner] if owner else []), name])
         if kind == "type":
             label = self.types.get((name, file))
             if label:
@@ -444,7 +492,7 @@ def attribute_document(doc, text, kg, def_index):
     path = doc.path
     regions = scan_regions(text)
     lines = regions["lines"]
-    file_is_test = not path.startswith("src/")
+    file_is_test = not is_production_path(path)
 
     defs = []  # (span, def_line, symbol, node, is_test)
     for o in doc.occurrences:
@@ -526,15 +574,16 @@ def _target(symbol, path, kg, def_index):
     """
     tgt_defs = def_index.get(symbol)
     if not tgt_defs:
-        if not symbol.startswith(CRATE_PREFIX):
+        if not is_crate_symbol(symbol):
             return None
         item = item_of(symbol)
-        return kg.node(item, None) if item and item[0] in ("type", "fn") else None
+        return (kg.node(item, None, crate_ident(symbol))
+                if item and item[0] in ("type", "fn") else None)
     tgt = next(((dp, di) for dp, di in tgt_defs if dp == path), None)
     if tgt is None:
-        src_defs = [d for d in tgt_defs if d[0].startswith("src/")]
+        src_defs = [d for d in tgt_defs if is_production_path(d[0])]
         tgt = src_defs[0] if src_defs else tgt_defs[0]
-    if not tgt[0].startswith("src/"):
+    if not is_production_path(tgt[0]):
         return None
     return kg.node(tgt[1], tgt[0])
 
@@ -557,7 +606,7 @@ def build_def_index(docs):
     idx = defaultdict(list)
     for doc in docs:
         for o in doc.occurrences:
-            if o.is_definition and o.symbol.startswith(CRATE_PREFIX):
+            if o.is_definition and is_crate_symbol(o.symbol):
                 idx[o.symbol].append((doc.path, item_of(o.symbol)))
     return idx
 
@@ -594,7 +643,7 @@ def macro_mentions(docs, read_text, kg):
     """
     bodies = defaultdict(list)  # macro name -> [masked body]
     for doc in docs:
-        if not doc.path.startswith("src/"):
+        if not is_production_path(doc.path):
             continue
         text = read_text(doc.path)
         if text is None or "macro_rules!" not in text:
@@ -606,7 +655,7 @@ def macro_mentions(docs, read_text, kg):
     invocations = defaultdict(list)  # macro name -> [path]
     for doc in docs:
         for o in doc.occurrences:
-            if o.is_definition or not o.symbol.startswith(CRATE_PREFIX) or not o.symbol.endswith("!"):
+            if o.is_definition or not is_crate_symbol(o.symbol) or not o.symbol.endswith("!"):
                 continue
             name = re.split(r"[/ ]", o.symbol[:-1])[-1].strip("`")
             if name in bodies:
@@ -630,7 +679,7 @@ def macro_mentions(docs, read_text, kg):
                 elif len(kg.type_by_name.get(tname, [])) == 1:
                     hits.append((kg.type_by_name[tname][0], n))
             for tgt, n in hits:
-                agg[(("File", path), tgt)][0 if path.startswith("src/") else 1] += n
+                agg[(("File", path), tgt)][0 if is_production_path(path) else 1] += n
     return agg
 
 
@@ -762,6 +811,7 @@ def main():
     args = ap.parse_args()
 
     root = Path(args.source_root)
+    set_workspace(root)
     work = Path(args.work)
     work.mkdir(parents=True, exist_ok=True)
     head, _ = head_commit(root)

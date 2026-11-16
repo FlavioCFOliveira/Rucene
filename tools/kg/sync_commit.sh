@@ -117,9 +117,12 @@ KG=tools/kg
   offline python3 $KG/port_evidence_kg.py "$R" --source-root "$S" --phase extract
   run python3 $KG/port_evidence_kg.py "$R" --source-root "$S" --phase load --commit "$FULL" --date "$DATE"
   run python3 $KG/expanded_evidence_kg.py "$R" --source-root "$S" --commit "$FULL" --date "$DATE"
-  run python3 $KG/port_evidence_kg.py "$R" --source-root "$S" --phase depth --commit "$FULL" --date "$DATE"
   run python3 $KG/nested_port_kg.py "$R" --lucene-root "$LUCENE" --commit "$FULL" --date "$DATE"
-  run python3 $KG/port_coverage_kg.py "$R" --survey "$K/rucene_kg/survey.json" --lucene-root "$LUCENE" --rt-root "$RT" --commit "$FULL" --date "$DATE" --phase scope
+  run python3 $KG/port_coverage_kg.py "$R" --survey "$K/rucene_kg/survey.json" --lucene-root "$LUCENE" --rt-root "$RT" --source-root "$S" --commit "$FULL" --date "$DATE" --phase scope
+  # The member depth runs after the scope phase: it measures the nested types
+  # with a type-level port too, and the scope phase writes the `host-file-name`
+  # ports of the added modules' nested types (`port_evidence_kg.DEPTH_PAIRS`).
+  run python3 $KG/port_evidence_kg.py "$R" --source-root "$S" --phase depth --commit "$FULL" --date "$DATE"
   run python3 $KG/port_coverage_kg.py "$R" --survey "$K/rucene_kg/survey.json" --lucene-root "$LUCENE" --rt-root "$RT" --commit "$FULL" --date "$DATE" --phase candidates
   # The member triage: `memberAbsent` is the number to plan from, so it is
   # re-derived at every sync from the floor the depth phase just measured.
@@ -135,6 +138,8 @@ KG=tools/kg
   run python3 $KG/no_caller_kg.py "$R" --commit "$FULL"
   run python3 $KG/no_caller_verdicts_kg.py "$R" --commit "$FULL" --date "$DATE"
   run python3 $KG/divergences_kg.py "$R" --source-root "$S" --commit "$FULL" --date "$DATE"
+  # The port modules' own tests and resources, and their Rust counterparts.
+  run python3 $KG/lucene_tests_kg.py "$R" --lucene-root "$LUCENE" --rt-root "$RT" --source-root "$S" --commit "$FULL" --date "$DATE" --phase framework
   offline python3 $KG/audit_kg.py "$R" --survey "$K/rucene_kg/survey.json" --lucene-root "$LUCENE" --rt-root "$RT" --source-root "$S" --commit "$FULL"
   # The marker `ask.py status` reads: written only once the audit has passed, so
   # a sync still running, or one that failed, never reads as current.
