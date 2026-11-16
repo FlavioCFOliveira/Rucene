@@ -1646,6 +1646,11 @@ impl LuceneTestCase {
     }
 }
 
+/// Java: `public interface`.
+///
+/// Skeleton of `org.apache.lucene.tests.util.LuceneTestCase.ThrowingConsumer`; ported by rmp task #511.
+pub trait ThrowingConsumer {}
+
 // ---------------------------------------------------------------------------
 // The searcher factory (`newSearcher`) and what it calls (`maybeWrapReader`,
 // `wrapReader`, `Concurrency`, the shared executor, the `slices` override),

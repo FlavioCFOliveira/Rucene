@@ -377,6 +377,15 @@ impl Terms for FieldReader {
     }
 }
 
+/// Java: `public long ramBytesUsed()` (`BlockTermsReader.java:250-253`).
+///
+/// Skeleton of member `org.apache.lucene.codecs.blockterms.BlockTermsReader.FieldReader.ramBytesUsed`; ported by rmp task #514.
+impl rucene::util::Accountable for FieldReader {
+    fn ram_bytes_used(&self) -> i64 {
+        todo!("ported by rmp task #514")
+    }
+}
+
 /// Java's `BytesRefBuilder term`: `setLength` keeps the bytes of the
 /// backing array, and `grow` zero-fills the new ones.
 #[derive(Default)]

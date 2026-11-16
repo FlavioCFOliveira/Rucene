@@ -51,6 +51,24 @@ impl fmt::Display for FieldIndexData {
     }
 }
 
+/// `FieldIndexData implements Accountable` (`FixedGapTermsIndexReader.java:240`).
+impl rucene::util::Accountable for FieldIndexData {
+    /// Java: `public long ramBytesUsed()` (`FixedGapTermsIndexReader.java:289-293`).
+    ///
+    /// Skeleton of member `org.apache.lucene.codecs.blockterms.FixedGapTermsIndexReader.FieldIndexData.ramBytesUsed`; ported by rmp task #514.
+    fn ram_bytes_used(&self) -> i64 {
+        todo!("ported by rmp task #514")
+    }
+
+    /// Java: `public Collection<Accountable> getChildResources()`
+    /// (`FixedGapTermsIndexReader.java:295-305`).
+    ///
+    /// Skeleton of member `org.apache.lucene.codecs.blockterms.FixedGapTermsIndexReader.FieldIndexData.getChildResources`; ported by rmp task #514.
+    fn child_resources(&self) -> Vec<Box<dyn rucene::util::Accountable + '_>> {
+        todo!("ported by rmp task #514")
+    }
+}
+
 /// What every [`FieldIndexEnum`] of the reader reads: Java's
 /// `termBytesReader`, `indexInterval` and `fields`.
 struct Shared {

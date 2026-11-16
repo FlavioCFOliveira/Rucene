@@ -113,6 +113,25 @@ pub trait CharReader: Debug + Send + Sync {
     fn as_char_filter(&self) -> Option<&dyn CharFilter> {
         None
     }
+
+    /// Java: `public boolean markSupported()` of `java.io.Reader` (JDK 25).
+    ///
+    /// Skeleton of member `java.io.Reader.markSupported`; ported by rmp task #512.
+    fn mark_supported(&self) -> bool {
+        todo!("ported by rmp task #512")
+    }
+
+    /// Java: `public boolean ready() throws IOException` of `java.io.Reader`
+    /// (JDK 25).
+    ///
+    /// Skeleton of member `java.io.Reader.ready`; ported by rmp task #512.
+    ///
+    /// # Errors
+    ///
+    /// Java's `IOException`.
+    fn ready(&mut self) -> Result<bool> {
+        todo!("ported by rmp task #512")
+    }
 }
 
 /// A [`CharReader`] backed by an in-memory string: `java.io.StringReader`.

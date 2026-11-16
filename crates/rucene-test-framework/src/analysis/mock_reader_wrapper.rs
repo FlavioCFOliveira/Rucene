@@ -115,4 +115,18 @@ impl CharReader for MockReaderWrapper {
     fn close(&mut self) -> Result<()> {
         self.input.close()
     }
+
+    /// Java: `public boolean markSupported()` (`MockReaderWrapper.java:81-84`).
+    ///
+    /// Skeleton of member `org.apache.lucene.tests.analysis.MockReaderWrapper.markSupported`; ported by rmp task #512.
+    fn mark_supported(&self) -> bool {
+        todo!("ported by rmp task #512")
+    }
+
+    /// Java: `public boolean ready()` (`MockReaderWrapper.java:86-89`).
+    ///
+    /// Skeleton of member `org.apache.lucene.tests.analysis.MockReaderWrapper.ready`; ported by rmp task #512.
+    fn ready(&mut self) -> Result<bool> {
+        todo!("ported by rmp task #512")
+    }
 }

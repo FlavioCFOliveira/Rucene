@@ -139,6 +139,15 @@ impl AssertingBits {
     }
 }
 
+/// Java: `public String toString()` (`AssertingLiveDocsFormat.java:103-106`).
+///
+/// Skeleton of member `org.apache.lucene.tests.codecs.asserting.AssertingLiveDocsFormat.AssertingBits.toString`; ported by rmp task #511.
+impl std::fmt::Display for AssertingBits {
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!("ported by rmp task #511")
+    }
+}
+
 impl Bits for AssertingBits {
     fn get(&self, index: usize) -> bool {
         java_assert_unchecked!(

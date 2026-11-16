@@ -339,6 +339,15 @@ struct PendingTerm {
     state: BlockTermState,
 }
 
+/// Java: `public String toString()` (`OrdsBlockTreeTermsWriter.java:270-273`).
+///
+/// Skeleton of member `org.apache.lucene.codecs.blocktreeords.OrdsBlockTreeTermsWriter.PendingTerm.toString`; ported by rmp task #514.
+impl std::fmt::Display for PendingTerm {
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!("ported by rmp task #514")
+    }
+}
+
 /// Port of the private record `OrdsBlockTreeTermsWriter.SubIndex`.
 struct SubIndex {
     index: FST<FSTOrdsOutputs>,
@@ -380,6 +389,15 @@ impl PendingBlock {
             tot_floor_term_count: 0,
             total_term_count,
         }
+    }
+}
+
+/// Java: `public String toString()` (`OrdsBlockTreeTermsWriter.java:308-311`).
+///
+/// Skeleton of member `org.apache.lucene.codecs.blocktreeords.OrdsBlockTreeTermsWriter.PendingBlock.toString`; ported by rmp task #514.
+impl std::fmt::Display for PendingBlock {
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!("ported by rmp task #514")
     }
 }
 
