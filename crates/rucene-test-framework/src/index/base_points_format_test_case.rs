@@ -54,7 +54,7 @@ use rucene::document::{
     BinaryPoint, Document, FieldType, IntPoint, LongPoint, NumericDocValuesField, Store,
     StringField,
 };
-use rucene::error::{LuceneError, LuceneErrorKind, Result};
+use rucene::error::{LuceneError, Result};
 use rucene::index::codec_reader::CodecReader;
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::index_writer::IndexWriter;
@@ -73,7 +73,8 @@ use rucene::store::Directory;
 use rucene::util::{Bits, BytesRef, NumericUtils};
 
 use super::base_index_file_format_test_case::{
-    exception_message, format_test, rethrow, BaseIndexFileFormatTestCase,
+    exception_without_message, format_test, io_utils_close, npe_with, rethrow, try_with,
+    BaseIndexFileFormatTestCase,
 };
 use super::mismatched_codec_reader::MismatchedCodecReader;
 use super::random_index_writer::RandomIndexWriter;
@@ -185,10 +186,77 @@ fn compare_unsigned(
     a[a_from..a_to].cmp(&b[b_from..b_to])
 }
 
-/// The `IllegalStateException` of `visit(int docID)` in the visitors that
-/// expect only `visit(docID, packedValue)`.
+/// The `new IllegalStateException()` of `visit(int docID)` in the visitors
+/// that expect only `visit(docID, packedValue)`: no message.
 fn illegal_state() -> LuceneError {
-    LuceneError::illegal_state(String::new())
+    exception_without_message("java.lang.IllegalStateException")
+}
+
+/// `new UnsupportedOperationException()`: no message.
+fn unsupported() -> LuceneError {
+    exception_without_message("java.lang.UnsupportedOperationException")
+}
+
+/// `PointValues.intersect(IntersectVisitor)` on a local that may be `null`,
+/// with the JDK's helpful message naming the local.
+fn intersect_npe<'a>(values: Option<&'a dyn PointValues>, local: &str) -> &'a dyn PointValues {
+    npe_with(values, || {
+        format!(
+            "Cannot invoke \"org.apache.lucene.index.PointValues.intersect(org.apache.lucene.index.PointValues$IntersectVisitor)\" because \"{local}\" is null"
+        )
+    })
+}
+
+/// The exception a `catch` clause of `testWithExceptions` or `verify`
+/// receives: the throwable a body's outcome carries, `None` when it
+/// completed.
+enum Caught {
+    /// The body returned `Err`.
+    Err(LuceneError, Throwable),
+    /// The body panicked.
+    Panic(Box<dyn std::any::Any + Send>, Throwable),
+}
+
+impl Caught {
+    fn of(outcome: std::thread::Result<Result<()>>) -> Option<Caught> {
+        match outcome {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => {
+                let t = crate::util::java_exceptions::java_throwable(&e);
+                Some(Caught::Err(e, t))
+            }
+            Err(payload) => {
+                let t = crate::mockfile::panic_throwable(&*payload);
+                Some(Caught::Panic(payload, t))
+            }
+        }
+    }
+
+    fn throwable(&self) -> &Throwable {
+        match self {
+            Caught::Err(_, t) | Caught::Panic(_, t) => t,
+        }
+    }
+
+    /// Rethrows the exception unchanged: the `Err` returned, the panic
+    /// resumed.
+    fn rethrow<T>(self) -> Result<T> {
+        match self {
+            Caught::Err(e, _) => Err(e),
+            Caught::Panic(payload, _) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    /// `assertTrue(iae.getMessage().contains("either increase maxMBSortInHeap
+    /// or decrease maxPointsInLeafNode"))`.
+    fn assert_heap_message(&self) {
+        let message = npe_with(self.throwable().message(), || {
+            "Cannot invoke \"String.contains(java.lang.CharSequence)\" because the return value of \"java.lang.IllegalArgumentException.getMessage()\" is null".to_string()
+        });
+        Assert::assert_true(
+            message.contains("either increase maxMBSortInHeap or decrease maxPointsInLeafNode"),
+        );
+    }
 }
 
 /// The visitor of `testBasic` and `testMerge`: every cell crosses, and each
@@ -302,7 +370,7 @@ impl IntersectVisitor for BigIntVisitor<'_> {
                 dim * self.num_bytes_per_dim,
                 self.num_bytes_per_dim,
             );
-            debug_assert!(max >= min);
+            java_assert!(max >= min);
 
             if max < self.query_min[dim] || min > self.query_max[dim] {
                 return Ok(Relation::CellOutsideQuery);
@@ -450,7 +518,7 @@ struct FixedSizeTree {
 
 impl PointTree for FixedSizeTree {
     fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
-        Err(LuceneError::unsupported_operation(String::new()))
+        Err(unsupported())
     }
 
     fn move_to_child(&mut self) -> Result<bool> {
@@ -478,11 +546,11 @@ impl PointTree for FixedSizeTree {
     }
 
     fn visit_doc_ids(&mut self, _visitor: &mut dyn IntersectVisitor) -> Result<()> {
-        Err(LuceneError::unsupported_operation(String::new()))
+        Err(unsupported())
     }
 
     fn visit_doc_values(&mut self, _visitor: &mut dyn IntersectVisitor) -> Result<()> {
-        Err(LuceneError::unsupported_operation(String::new()))
+        Err(unsupported())
     }
 }
 
@@ -510,23 +578,23 @@ impl PointValues for FixedPointValues {
     }
 
     fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
-        Err(LuceneError::unsupported_operation(String::new()))
+        Err(unsupported())
     }
 
     fn max_packed_value(&self) -> Result<Option<Vec<u8>>> {
-        Err(LuceneError::unsupported_operation(String::new()))
+        Err(unsupported())
     }
 
     fn num_dimensions(&self) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(String::new()))
+        Err(unsupported())
     }
 
     fn num_index_dimensions(&self) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(String::new()))
+        Err(unsupported())
     }
 
     fn bytes_per_dimension(&self) -> Result<i32> {
-        Err(LuceneError::unsupported_operation(String::new()))
+        Err(unsupported())
     }
 }
 
@@ -539,9 +607,15 @@ struct ExpectedValueVisitor {
 
 impl IntersectVisitor for ExpectedValueVisitor {
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
-        Assert::assert_true(
-            &self.expected.bytes[self.expected.offset..self.expected.offset + self.expected.length]
-                == packed_value,
+        // `assertEquals(LongPoint.pack(..), new BytesRef(packedValue))`:
+        // `BytesRef.equals`, printed by `BytesRef.toString()`.
+        let expected =
+            &self.expected.bytes[self.expected.offset..self.expected.offset + self.expected.length];
+        let actual = BytesRef::new(packed_value.to_vec());
+        super::base_index_file_format_test_case::assert_equals_object(
+            expected == packed_value,
+            Some(("org.apache.lucene.util.BytesRef", self.expected.to_string())),
+            Some(("org.apache.lucene.util.BytesRef", actual.to_string())),
         );
         Assert::assert_equals(i64::from(self.expected_doc), i64::from(doc_id));
         self.expected_doc += 1;
@@ -549,7 +623,7 @@ impl IntersectVisitor for ExpectedValueVisitor {
     }
 
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
-        Err(LuceneError::unsupported_operation(String::new()))
+        Err(unsupported())
     }
 
     fn compare(&self, _min: &[u8], _max: &[u8]) -> Result<Relation> {
@@ -559,26 +633,20 @@ impl IntersectVisitor for ExpectedValueVisitor {
 
 /// `handlePossiblyFakeException(e)` (`private`): `true` when a message of
 /// the cause chain is a random `IOException` of `MockDirectoryWrapper` or a
-/// background merge failure; rethrows anything else.
-fn handle_possibly_fake_exception(e: LuceneError) -> bool {
-    let mut ex: Option<&(dyn std::error::Error + 'static)> = Some(&e);
+/// background merge failure; rethrows (`Rethrow.rethrow(e)`) anything else.
+fn handle_possibly_fake_exception(e: Caught) -> Result<bool> {
+    let mut ex = Some(e.throwable());
     while let Some(t) = ex {
-        let message = match t.downcast_ref::<LuceneError>() {
-            Some(l) => Some(exception_message(l)),
-            None => t
-                .downcast_ref::<std::io::Error>()
-                .and_then(rucene::store::java_nio_file::java_message_of),
-        };
-        if let Some(message) = message {
+        if let Some(message) = t.message() {
             if message.contains("a random IOException")
                 || message.contains("background merge hit exception")
             {
-                return true;
+                return Ok(true);
             }
         }
-        ex = t.source();
+        ex = t.cause();
     }
-    rethrow(e)
+    e.rethrow()
 }
 
 /// `flattenBinaryPoint(value, numDataDims, numBytesPerDim)` (`private`).
@@ -696,19 +764,22 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
 
             let r = directory_reader::open(dir.as_directory())?;
             let sub = LuceneTestCase::get_only_leaf_reader(Arc::clone(&r) as _)?;
-            let values = sub.get_point_values("dim")?.expect("the field has points");
+            let values = sub.get_point_values("dim")?;
 
             // Simple test: make sure intersect can visit every doc:
             let mut visitor = SeenVisitor {
                 seen: JavaBitSet::default(),
             };
-            intersect(&*values, &mut visitor)?;
+            intersect(intersect_npe(values.as_deref(), "values"), &mut visitor)?;
             Assert::assert_equals(20i64, i64::from(visitor.seen.cardinality()));
             drop(values);
             drop(sub);
-            r.close()?;
+            // `IOUtils.close(r, dir)`; every handle on `dir` is released before
+            // it closes.
+            let r_closed = r.close();
+            drop((r, w));
+            io_utils_close([r_closed, dir.close()])
         }
-        dir.close()
     }
 
     /// `testBasic()`.
@@ -789,10 +860,10 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                             doc_id: i32,
                             packed_value: &[u8],
                         ) -> Result<()> {
-                            if self
-                                .live_docs
-                                .expect("one document is deleted")
-                                .get(doc_id as usize)
+                            if npe_with(self.live_docs, || {
+                                "Cannot invoke \"org.apache.lucene.util.Bits.get(int)\" because \"this.val$liveDocs\" is null".to_string()
+                            })
+                            .get(doc_id as usize)
                             {
                                 self.seen.set(doc_id);
                             }
@@ -815,9 +886,13 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                     Assert::assert_equals(0i64, i64::from(visitor.seen.cardinality()));
                 }
             }
-            r.close()?;
+            drop(ir);
+            // `IOUtils.close(r, dir)`; every handle on `dir` is released before
+            // it closes.
+            let r_closed = r.close();
+            drop((r, w, live_docs));
+            io_utils_close([r_closed, dir.close()])
         }
-        dir.close()
     }
 
     /// `testWithExceptions()`: make sure we close open files, delete temp
@@ -842,54 +917,53 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
         // MDW:
         let mut done = false;
         while !done {
-            let dir = LuceneTestCase::new_mock_fs_directory(&LuceneTestCase::create_temp_dir());
-            {
-                let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    dir.set_random_io_exception_rate(0.05);
-                    dir.set_random_io_exception_rate_on_open(0.05);
-                    self.verify_in(
-                        dir.as_directory(),
-                        &doc_values,
-                        None,
-                        num_dims,
-                        num_index_dims,
-                        num_bytes_per_dim,
-                        true,
-                    )
-                }));
-                match outcome {
-                    Ok(Ok(())) => {}
-                    Ok(Err(LuceneError {
-                        kind: LuceneErrorKind::IllegalArgument { message, .. },
-                        ..
-                    })) => {
-                        // This just means we got a too-small maxMB for the maxPointsInLeafNode; just
-                        // retry w/ more heap
-                        Assert::assert_true(message.contains(
-                            "either increase maxMBSortInHeap or decrease maxPointsInLeafNode",
-                        ));
-                    }
-                    Ok(Err(e)) => {
-                        // `IllegalStateException` and `IOException`
-                        done = handle_possibly_fake_exception(e);
-                    }
-                    Err(payload) => {
-                        let ae = Throwable::from_panic(payload);
-                        if ae.is_instance("java.lang.AssertionError")
-                            && ae
-                                .message()
-                                .is_some_and(|m| m.contains("does not exist; files="))
+            // `try (MockDirectoryWrapper dir = newMockFSDirectory(createTempDir()))`:
+            // the directory is closed on every exit.
+            done = try_with(
+                LuceneTestCase::new_mock_fs_directory(&LuceneTestCase::create_temp_dir()),
+                |dir| dir.close(),
+                |dir| -> Result<bool> {
+                    let outcome = catch_unwind(AssertUnwindSafe(|| {
+                        dir.set_random_io_exception_rate(0.05);
+                        dir.set_random_io_exception_rate_on_open(0.05);
+                        self.verify_in(
+                            dir.as_directory(),
+                            &doc_values,
+                            None,
+                            num_dims,
+                            num_index_dims,
+                            num_bytes_per_dim,
+                            true,
+                        )
+                    }));
+                    let Some(caught) = Caught::of(outcome) else {
+                        return Ok(false);
+                    };
+                    let t = caught.throwable();
+                    if t.is_instance("java.lang.IllegalStateException") {
+                        handle_possibly_fake_exception(caught)
+                    } else if t.is_instance("java.lang.AssertionError") {
+                        if t.message()
+                            .is_some_and(|m| m.contains("does not exist; files="))
                         {
-                            // OK: likely we threw the random IOExc when IW was asserting the commit
-                            // files exist
-                            done = true;
+                            // OK: likely we threw the random IOExc when IW was asserting the
+                            // commit files exist
+                            Ok(true)
                         } else {
-                            ae.throw()
+                            caught.rethrow()
                         }
+                    } else if t.is_instance("java.lang.IllegalArgumentException") {
+                        // This just means we got a too-small maxMB for the maxPointsInLeafNode;
+                        // just retry w/ more heap
+                        caught.assert_heap_message();
+                        Ok(false)
+                    } else if t.is_instance("java.io.IOException") {
+                        handle_possibly_fake_exception(caught)
+                    } else {
+                        caught.rethrow()
                     }
-                }
-            }
-            dir.close()?;
+                },
+            )?;
         }
         Ok(())
     }
@@ -1010,107 +1084,119 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
     /// dimension is a `BigInteger`.
     fn test_big_int_n_dims(&self) -> Result<()> {
         let num_docs = LuceneTestCase::at_least(200);
-        let dir = get_directory(num_docs);
-        {
-            let num_bytes_per_dim = TestUtil::next_int(&*random(), 2, MAX_NUM_BYTES) as usize;
-            let num_dims = TestUtil::next_int(&*random(), 1, MAX_INDEX_DIMENSIONS) as usize;
-            let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
-                MockAnalyzer::new(&*random()),
-            )));
-            // We rely on docIDs not changing:
-            iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
-            let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
-            let mut docs: Vec<Vec<i128>> = Vec::with_capacity(num_docs as usize);
+        // `try (Directory dir = getDirectory(numDocs))`: closed on every exit.
+        try_with(
+            get_directory(num_docs),
+            |dir| dir.close(),
+            |dir| {
+                let num_bytes_per_dim = TestUtil::next_int(&*random(), 2, MAX_NUM_BYTES) as usize;
+                let num_dims = TestUtil::next_int(&*random(), 1, MAX_INDEX_DIMENSIONS) as usize;
+                let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+                    MockAnalyzer::new(&*random()),
+                )));
+                // We rely on docIDs not changing:
+                iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
+                let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
+                let mut docs: Vec<Vec<i128>> = Vec::with_capacity(num_docs as usize);
 
-            for doc_id in 0..num_docs {
-                let mut values = Vec::with_capacity(num_dims);
-                if *VERBOSE {
-                    println!("  docID={doc_id}");
-                }
-                let mut bytes = Vec::with_capacity(num_dims);
-                for dim in 0..num_dims {
-                    values.push(random_big_int(num_bytes_per_dim));
-                    let mut b = vec![0u8; num_bytes_per_dim];
-                    NumericUtils::big_int_to_sortable_bytes(
-                        &to_byte_array(values[dim]),
-                        num_bytes_per_dim,
-                        &mut b,
-                        0,
-                    );
-                    bytes.push(BytesRef::new(b));
+                for doc_id in 0..num_docs {
+                    let mut values = Vec::with_capacity(num_dims);
                     if *VERBOSE {
-                        println!("    {dim} -> {}", values[dim]);
+                        randomizedtesting::jdk::system::out_println(&format!("  docID={doc_id}"));
                     }
-                }
-                docs.push(values);
-                let mut doc = Document::new();
-                doc.add(Box::new(BinaryPoint::new("field", &bytes)?));
-                w.add_document(&doc)?;
-            }
-
-            let r = w.get_reader()?;
-            w.close()?;
-
-            let iters = LuceneTestCase::at_least(100);
-            for iter in 0..iters {
-                if *VERBOSE {
-                    println!("\nTEST: iter={iter}");
-                }
-
-                // Random N dims rect query:
-                let mut query_min = vec![0i128; num_dims];
-                let mut query_max = vec![0i128; num_dims];
-                for dim in 0..num_dims {
-                    query_min[dim] = random_big_int(num_bytes_per_dim);
-                    query_max[dim] = random_big_int(num_bytes_per_dim);
-                    if query_min[dim] > query_max[dim] {
-                        query_min.swap(dim, dim);
-                        std::mem::swap(&mut query_min[dim], &mut query_max[dim]);
+                    let mut bytes = Vec::with_capacity(num_dims);
+                    for dim in 0..num_dims {
+                        values.push(random_big_int(num_bytes_per_dim));
+                        let mut b = vec![0u8; num_bytes_per_dim];
+                        NumericUtils::big_int_to_sortable_bytes(
+                            &to_byte_array(values[dim]),
+                            num_bytes_per_dim,
+                            &mut b,
+                            0,
+                        );
+                        bytes.push(BytesRef::new(b));
+                        if *VERBOSE {
+                            randomizedtesting::jdk::system::out_println(&format!(
+                                "    {dim} -> {}",
+                                values[dim]
+                            ));
+                        }
                     }
+                    docs.push(values);
+                    let mut doc = Document::new();
+                    doc.add(Box::new(BinaryPoint::new("field", &bytes)?));
+                    w.add_document(&doc)?;
+                }
+
+                let r = w.get_reader()?;
+                w.close()?;
+
+                let iters = LuceneTestCase::at_least(100);
+                for iter in 0..iters {
                     if *VERBOSE {
-                        println!(
-                            "  {dim}\n    min={}\n    max={}",
-                            query_min[dim], query_max[dim]
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "\nTEST: iter={iter}"
+                        ));
+                    }
+
+                    // Random N dims rect query:
+                    let mut query_min = vec![0i128; num_dims];
+                    let mut query_max = vec![0i128; num_dims];
+                    for dim in 0..num_dims {
+                        query_min[dim] = random_big_int(num_bytes_per_dim);
+                        query_max[dim] = random_big_int(num_bytes_per_dim);
+                        if query_min[dim] > query_max[dim] {
+                            query_min.swap(dim, dim);
+                            std::mem::swap(&mut query_min[dim], &mut query_max[dim]);
+                        }
+                        if *VERBOSE {
+                            randomizedtesting::jdk::system::out_println(&format!(
+                                "  {dim}\n    min={}\n    max={}",
+                                query_min[dim], query_max[dim]
+                            ));
+                        }
+                    }
+
+                    let mut hits = JavaBitSet::default();
+                    for ctx in Arc::clone(&r).leaves()? {
+                        let Some(dim_values) = ctx.leaf_reader().get_point_values("field")? else {
+                            continue;
+                        };
+
+                        let doc_base = ctx.doc_base();
+
+                        let mut visitor = BigIntVisitor {
+                            hits: &mut hits,
+                            doc_base,
+                            num_dims,
+                            num_bytes_per_dim,
+                            query_min: &query_min,
+                            query_max: &query_max,
+                        };
+                        intersect(&*dim_values, &mut visitor)?;
+                    }
+
+                    for doc_id in 0..num_docs {
+                        let doc_values = &docs[doc_id as usize];
+                        let mut expected = true;
+                        for dim in 0..num_dims {
+                            let x = doc_values[dim];
+                            if x < query_min[dim] || x > query_max[dim] {
+                                expected = false;
+                                break;
+                            }
+                        }
+                        let actual = hits.get(doc_id);
+                        Assert::assert_equals_msg(
+                            Some(&format!("docID={doc_id}")),
+                            expected,
+                            actual,
                         );
                     }
                 }
-
-                let mut hits = JavaBitSet::default();
-                for ctx in Arc::clone(&r).leaves()? {
-                    let Some(dim_values) = ctx.leaf_reader().get_point_values("field")? else {
-                        continue;
-                    };
-
-                    let doc_base = ctx.doc_base();
-
-                    let mut visitor = BigIntVisitor {
-                        hits: &mut hits,
-                        doc_base,
-                        num_dims,
-                        num_bytes_per_dim,
-                        query_min: &query_min,
-                        query_max: &query_max,
-                    };
-                    intersect(&*dim_values, &mut visitor)?;
-                }
-
-                for doc_id in 0..num_docs {
-                    let doc_values = &docs[doc_id as usize];
-                    let mut expected = true;
-                    for dim in 0..num_dims {
-                        let x = doc_values[dim];
-                        if x < query_min[dim] || x > query_max[dim] {
-                            expected = false;
-                            break;
-                        }
-                    }
-                    let actual = hits.get(doc_id);
-                    Assert::assert_equals_msg(Some(&format!("docID={doc_id}")), expected, actual);
-                }
-            }
-            r.close()?;
-        }
-        dir.close()
+                r.close()
+            },
+        )
     }
 
     /// `testRandomBinaryTiny()`.
@@ -1183,38 +1269,41 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
         num_index_dims: i32,
         num_bytes_per_dim: i32,
     ) -> Result<()> {
-        let dir = get_directory(doc_values.len() as i32);
-        {
-            loop {
-                match self.verify_in(
-                    dir.as_directory(),
-                    doc_values,
-                    doc_ids,
-                    num_data_dims,
-                    num_index_dims,
-                    num_bytes_per_dim,
-                    false,
-                ) {
-                    Ok(()) => break,
-                    Err(LuceneError {
-                        kind: LuceneErrorKind::IllegalArgument { message, .. },
-                        ..
-                    }) => {
-                        println!("java.lang.IllegalArgumentException: {message}");
-                        // This just means we got a too-small maxMB for the maxPointsInLeafNode; just
-                        // retry
-                        Assert::assert_true(message.contains(
-                            "either increase maxMBSortInHeap or decrease maxPointsInLeafNode",
-                        ));
-                    }
-                    Err(e) => {
-                        let _ = dir.close();
-                        return Err(e);
-                    }
+        // `try (Directory dir = getDirectory(docValues.length))`: closed on
+        // every exit.
+        try_with(
+            get_directory(doc_values.len() as i32),
+            |dir| dir.close(),
+            |dir| loop {
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    self.verify_in(
+                        dir.as_directory(),
+                        doc_values,
+                        doc_ids,
+                        num_data_dims,
+                        num_index_dims,
+                        num_bytes_per_dim,
+                        false,
+                    )
+                }));
+                let Some(caught) = Caught::of(outcome) else {
+                    return Ok(());
+                };
+                if !caught
+                    .throwable()
+                    .is_instance("java.lang.IllegalArgumentException")
+                {
+                    return caught.rethrow();
                 }
-            }
-        }
-        dir.close()
+                // `iae.printStackTrace()`: to `System.err`.
+                randomizedtesting::jdk::system::err_println(
+                    &randomizedtesting::jdk::system::format_stack_trace(caught.throwable()),
+                );
+                // This just means we got a too-small maxMB for the maxPointsInLeafNode; just
+                // retry
+                caught.assert_heap_message();
+            },
+        )
     }
 
     /// `verify(dir, docValues, ids, numDims, numIndexDims, numBytesPerDim,
@@ -1232,9 +1321,9 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
     ) -> Result<()> {
         let num_values = doc_values.len();
         if *VERBOSE {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "TEST: numValues={num_values} numDims={num_dims} numIndexDims={num_index_dims} numBytesPerDim={num_bytes_per_dim}"
-            );
+            ));
         }
         let nd = num_dims as usize;
         let nid = num_index_dims as usize;
@@ -1298,7 +1387,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
             add_indexes_at = 0;
         }
 
-        let body = (|| -> Result<()> {
+        let body = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
             let field_type = FieldType::new();
             field_type.set_dimensions_with_index_count(
                 num_dims,
@@ -1342,7 +1431,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                         w.add_document(&Document::new())?;
                     }
                     if *VERBOSE {
-                        println!("add empty doc");
+                        randomizedtesting::jdk::system::out_println("add empty doc");
                     }
                 }
 
@@ -1366,7 +1455,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                         w.add_document(&xdoc)?;
                     }
                     if *VERBOSE {
-                        println!("add doc doc-to-delete");
+                        randomizedtesting::jdk::system::out_println("add doc doc-to-delete");
                     }
 
                     if random().next_int_bound(5) == 1 {
@@ -1380,23 +1469,35 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                 }
 
                 if *VERBOSE {
-                    println!("  ord={ord} id={id}");
+                    randomizedtesting::jdk::system::out_println(&format!("  ord={ord} id={id}"));
                     #[allow(clippy::needless_range_loop)]
                     // Java's indexed loop, kept as the test writes it
                     for dim in 0..nd {
-                        println!(
+                        randomizedtesting::jdk::system::out_println(&format!(
                             "    dim={dim} value={}",
                             BytesRef::new(doc_values[ord][dim].clone())
-                        );
+                        ));
                     }
                 }
 
                 if save_w.is_some() && ord as i32 >= add_indexes_at {
-                    let target = save_w.take().expect("checked above");
-                    let mut d = side_dir.take().expect("the separate directory");
-                    // `w = saveW` after `switchIndex(w, dir, saveW)`.
-                    let old = std::mem::replace(&mut w, target);
-                    switch_index(old, &mut d, &w)?;
+                    // `switchIndex(w, dir, saveW); w = saveW; dir = saveDir; saveW =
+                    // null; saveDir = null;`
+                    let d = side_dir.take().expect("the separate directory");
+                    let old = std::mem::replace(&mut w, save_w.take().expect("checked above"));
+                    if let Err((failure, old, d)) = switch_index(old, d, &w) {
+                        // The switch threw before the assignments: the `finally`
+                        // still sees the old writer as `w`, the target as `saveW`
+                        // and the separate directory as `dir`.
+                        side_dir = Some(d);
+                        if let Some(old) = old {
+                            save_w = Some(std::mem::replace(&mut w, old));
+                        }
+                        match failure {
+                            SwitchFailure::Err(e) => return Err(e),
+                            SwitchFailure::Panic(payload) => std::panic::resume_unwind(payload),
+                        }
+                    }
                 }
             }
             w.add_document(doc.as_ref().expect("at least one value"))?;
@@ -1404,7 +1505,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
 
             if random().next_boolean() {
                 if *VERBOSE {
-                    println!("\nTEST: now force merge");
+                    randomizedtesting::jdk::system::out_println("\nTEST: now force merge");
                 }
                 w.force_merge(1)?;
             }
@@ -1414,12 +1515,13 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
             w.close()?;
 
             if *VERBOSE {
-                println!("TEST: reader={reader}");
+                randomizedtesting::jdk::system::out_println(&format!("TEST: reader={reader}"));
             }
 
             let ir: Arc<dyn IndexReader> = Arc::clone(&reader) as _;
-            let mut id_values =
-                MultiDocValues::get_numeric_values(&ir, "id")?.expect("every document has an id");
+            let mut id_values = npe_with(MultiDocValues::get_numeric_values(&ir, "id")?, || {
+                "Cannot invoke \"org.apache.lucene.index.NumericDocValues.nextDoc()\" because \"idValues\" is null".to_string()
+            });
             let mut doc_id_to_id = vec![0i32; reader.max_doc() as usize];
             loop {
                 let doc_id = id_values.next_doc()?;
@@ -1440,8 +1542,11 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                     continue;
                 };
                 assert_size(&mut *dim_values.point_tree()?)?;
-                let leaf_min_values = dim_values.min_packed_value()?.expect("the leaf has points");
-                let leaf_max_values = dim_values.max_packed_value()?.expect("the leaf has points");
+                // A `null` packed value fails in `Arrays.compareUnsigned`.
+                let leaf_min_values = npe_with(dim_values.min_packed_value()?, || {
+                    "Cannot read the array length because \"a\" is null".to_string()
+                });
+                let leaf_max_values = dim_values.max_packed_value()?;
                 for dim in 0..nid {
                     let (from, to) = (dim * nb, dim * nb + nb);
                     if compare_unsigned(&leaf_min_values, from, to, &min_values, from, to)
@@ -1449,7 +1554,10 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                     {
                         min_values[from..to].copy_from_slice(&leaf_min_values[from..to]);
                     }
-                    if compare_unsigned(&leaf_max_values, from, to, &max_values, from, to)
+                    let leaf_max_values = npe_with(leaf_max_values.as_deref(), || {
+                        "Cannot read the array length because \"a\" is null".to_string()
+                    });
+                    if compare_unsigned(leaf_max_values, from, to, &max_values, from, to)
                         == Ordering::Greater
                     {
                         max_values[from..to].copy_from_slice(&leaf_max_values[from..to]);
@@ -1467,7 +1575,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
             let iters = LuceneTestCase::at_least(100);
             for iter in 0..iters {
                 if *VERBOSE {
-                    println!("\nTEST: iter={iter}");
+                    randomizedtesting::jdk::system::out_println(&format!("\nTEST: iter={iter}"));
                 }
 
                 // Random N dims rect query:
@@ -1485,11 +1593,11 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
 
                 if *VERBOSE {
                     for dim in 0..nid {
-                        println!(
+                        randomizedtesting::jdk::system::out_println(&format!(
                             "  dim={dim}\n    queryMin={}\n    queryMax={}",
                             BytesRef::new(query_min[dim].clone()),
                             BytesRef::new(query_max[dim].clone())
-                        );
+                        ));
                     }
                 }
 
@@ -1543,7 +1651,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                 let mut success_count = 0;
                 for id in 0..limit {
                     if expected.get(id) != hits.get(id) {
-                        println!("FAIL: id={id}");
+                        randomizedtesting::jdk::system::out_println(&format!("FAIL: id={id}"));
                         fail_count += 1;
                     } else {
                         success_count += 1;
@@ -1552,7 +1660,9 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
 
                 if fail_count != 0 {
                     for (doc_id, id) in doc_id_to_id.iter().enumerate() {
-                        println!("  docID={doc_id} id={id}");
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "  docID={doc_id} id={id}"
+                        ));
                     }
 
                     Assert::fail(&format!(
@@ -1561,20 +1671,27 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                 }
             }
             Ok(())
-        })();
-        // `IOUtils.closeWhileHandlingException(r, w, saveW, saveDir == null ? null : dir)`
-        if let Some(r) = r {
-            let _ = r.close();
-        }
-        let _ = w.close();
-        if let Some(save_w) = save_w {
-            let _ = save_w.close();
-        }
-        if let Some(d) = side_dir {
-            let _ = d.close();
-        }
+        }));
+        // `finally { IOUtils.closeWhileHandlingException(r, w, saveW, saveDir ==
+        // null ? null : dir); }`: on every exit of the body; every failure but
+        // an `Error` is swallowed, and an `Error` replaces the body's outcome.
+        use rucene::util::IOUtils;
+        IOUtils::close_while_handling_exception([
+            r.as_ref()
+                .and_then(|r| IOUtils::closeable(move || r.close())),
+            IOUtils::closeable(|| w.close()),
+            save_w
+                .as_ref()
+                .and_then(|save_w| IOUtils::closeable(move || save_w.close())),
+            side_dir
+                .as_ref()
+                .and_then(|d| IOUtils::closeable(move || d.close())),
+        ])?;
         drop(dir);
-        body
+        match body {
+            Ok(outcome) => outcome,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 
     /// `testAddIndexes()`.
@@ -1652,9 +1769,12 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
             w.add_document(&doc)?;
             // now we write another segment where the id field does have points:
             w.force_merge(1)?;
-            w.close()?;
+            // `IOUtils.close(w, dir)`; every handle on `dir` is released before
+            // it closes.
+            let w_closed = w.close();
+            drop(w);
+            io_utils_close([w_closed, dir.close()])
         }
-        dir.close()
     }
 
     /// `testDocCountEdgeCases()`.
@@ -1739,7 +1859,9 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
             let leaf_reader = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
             Assert::assert_equals(2i64, i64::from(leaf_reader.max_doc()));
 
-            let f_points = leaf_reader.get_point_values("f")?.expect("f has points");
+            let f_points = npe_with(leaf_reader.get_point_values("f")?, || {
+                "Cannot invoke \"org.apache.lucene.index.PointValues.size()\" because \"fPoints\" is null".to_string()
+            });
             Assert::assert_equals(2i64, f_points.size()?);
             intersect(
                 &*f_points,
@@ -1749,10 +1871,10 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                 },
             )?;
 
-            let g_points = leaf_reader.get_point_values("g")?.expect("g has points");
+            let g_points = leaf_reader.get_point_values("g")?;
             Assert::assert_equals(2i64, f_points.size()?);
             intersect(
-                &*g_points,
+                intersect_npe(g_points.as_deref(), "gPoints"),
                 &mut ExpectedValueVisitor {
                     expected: LongPoint::pack(&[42, 43])?,
                     expected_doc: 0,
@@ -1762,11 +1884,13 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
             drop(f_points);
             drop(g_points);
             drop(leaf_reader);
-            reader.close()?;
-            w2.close()?;
+            // `IOUtils.close(reader, w2, dir1, dir2)`; every handle on the
+            // directories is released before they close.
+            let reader_closed = reader.close();
+            let w2_closed = w2.close();
+            drop((reader, w1, w2, doc));
+            io_utils_close([reader_closed, w2_closed, dir1.close(), dir2.close()])
         }
-        dir1.close()?;
-        dir2.close()
     }
 }
 
@@ -1832,71 +1956,86 @@ fn random_point_tree_navigation(tree: &mut dyn PointTree) -> Result<()> {
     Ok(())
 }
 
-/// `switchIndex(w, dir, saveW)` (`private`). Takes `w` by value: the
-/// closed writer holds `dir`, released before `dir.close()`.
-///
-/// When the switch throws, Java's caller has not yet run `w = saveW; dir =
-/// saveDir; saveDir = null`, so its `finally` still closes this writer and
-/// this directory (`IOUtils.closeWhileHandlingException(r, w, saveW, saveDir
-/// == null ? null : dir)`, `BasePointsFormatTestCase.java:798-804, 1081-1083`);
-/// the caller here has already handed both over, so they are closed here,
-/// their failures ignored as `closeWhileHandlingException` ignores them.
+/// How `switchIndex` threw.
+enum SwitchFailure {
+    /// An exception returned as `Err`.
+    Err(LuceneError),
+    /// A panic.
+    Panic(Box<dyn std::any::Any + Send>),
+}
+
+/// `switchIndex(w, dir, saveW)` (`private`). Takes `w` and `dir` by value:
+/// the closed writer is released before `dir.close()`. When it throws, `w`
+/// (unless it was already released) and `dir` are handed back, so that the
+/// caller's `finally` closes them as Java's does
+/// (`BasePointsFormatTestCase.java:798-804, 1081-1083`).
+#[allow(clippy::type_complexity, clippy::result_large_err)]
 fn switch_index(
     w: RandomIndexWriter,
-    dir: &mut TestDirectory,
+    dir: TestDirectory,
     save_w: &RandomIndexWriter,
-) -> Result<()> {
-    let outcome = (|| -> Result<()> {
+) -> std::result::Result<(), (SwitchFailure, Option<RandomIndexWriter>, TestDirectory)> {
+    let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         if random().next_boolean() {
             // Add via readers:
-            let r = w.get_reader()?;
-            let outcome = (|| -> Result<()> {
-                if random().next_boolean() {
-                    // Add via CodecReaders:
-                    let mut subs: Vec<Arc<dyn CodecReader>> = Vec::new();
-                    for context in Arc::clone(&r).leaves()? {
-                        subs.push(
-                            context
-                                .leaf_reader()
-                                .as_codec_reader()
-                                .expect("a segment reader is a CodecReader"),
-                        );
+            // `try (DirectoryReader r = w.getReader())`: closed on every exit.
+            try_with(
+                w.get_reader()?,
+                |r| r.close(),
+                |r| -> Result<()> {
+                    if random().next_boolean() {
+                        // Add via CodecReaders:
+                        let mut subs: Vec<Arc<dyn CodecReader>> = Vec::new();
+                        for context in Arc::clone(r).leaves()? {
+                            subs.push(
+                                context
+                                    .leaf_reader()
+                                    .as_codec_reader()
+                                    .expect("a segment reader is a CodecReader"),
+                            );
+                        }
+                        if *VERBOSE {
+                            randomizedtesting::jdk::system::out_println(
+                                "TEST: now use addIndexes(CodecReader[]) to switch writers",
+                            );
+                        }
+                        save_w.add_indexes_codec_readers(&subs)?;
+                    } else {
+                        if *VERBOSE {
+                            randomizedtesting::jdk::system::out_println(
+                                "TEST: now use TestUtil.addIndexesSlowly(DirectoryReader[]) to switch writers",
+                            );
+                        }
+                        TestUtil::add_indexes_slowly(save_w.w(), &[Arc::clone(r)])?;
                     }
-                    if *VERBOSE {
-                        println!("TEST: now use addIndexes(CodecReader[]) to switch writers");
-                    }
-                    save_w.add_indexes_codec_readers(&subs)?;
-                } else {
-                    if *VERBOSE {
-                        println!(
-                            "TEST: now use TestUtil.addIndexesSlowly(DirectoryReader[]) to switch writers"
-                        );
-                    }
-                    TestUtil::add_indexes_slowly(save_w.w(), &[Arc::clone(&r)])?;
-                }
-                Ok(())
-            })();
-            let closed = r.close();
-            outcome?;
-            closed?;
+                    Ok(())
+                },
+            )
         } else {
             // Add via directory:
             if *VERBOSE {
-                println!("TEST: now use addIndexes(Directory[]) to switch writers");
+                randomizedtesting::jdk::system::out_println(
+                    "TEST: now use addIndexes(Directory[]) to switch writers",
+                );
             }
             w.close()?;
             save_w.add_indexes_dirs(&[dir.as_directory()])?;
+            Ok(())
         }
-        w.close()
-    })();
-    if outcome.is_err() {
-        let _ = w.close();
-        drop(w);
-        let _ = dir.close();
-        return outcome;
+    }));
+    let failure = match outcome {
+        Ok(Ok(())) => match w.close() {
+            Ok(()) => None,
+            Err(e) => Some(SwitchFailure::Err(e)),
+        },
+        Ok(Err(e)) => Some(SwitchFailure::Err(e)),
+        Err(payload) => Some(SwitchFailure::Panic(payload)),
+    };
+    if let Some(failure) = failure {
+        return Err((failure, Some(w), dir));
     }
     drop(w);
-    dir.close()
+    dir.close().map_err(|e| (SwitchFailure::Err(e), None, dir))
 }
 
 /// `getPointValues(size, docCount, estimatedPointCount)` (`private`).
@@ -1905,5 +2044,84 @@ fn get_point_values(size: i64, doc_count: i32, estimated_point_count: i64) -> Fi
         size,
         doc_count,
         estimated_point_count,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn thrown(f: impl FnOnce()) -> Throwable {
+        Throwable::from_panic(catch_unwind(AssertUnwindSafe(f)).expect_err("must throw"))
+    }
+
+    /// `new IllegalStateException()` / `new UnsupportedOperationException()`
+    /// have no message (`getMessage()` is `null`, `toString()` is the bare
+    /// class name).
+    #[test]
+    fn visitor_exceptions_have_no_message() {
+        let t = crate::util::java_exceptions::java_throwable(&illegal_state());
+        assert_eq!(t.class_name(), "java.lang.IllegalStateException");
+        assert_eq!(t.message(), None);
+        let t = crate::util::java_exceptions::java_throwable(&unsupported());
+        assert_eq!(t.to_string(), "java.lang.UnsupportedOperationException");
+    }
+
+    /// `handlePossiblyFakeException` walks the cause chain for the random
+    /// `IOException` message, and rethrows anything else unchanged.
+    #[test]
+    fn possibly_fake_exception_walks_the_cause_chain() {
+        let fake = Caught::of(Err(Box::new(Throwable::with_cause(
+            "java.lang.IllegalStateException",
+            Some("wrapper".to_string()),
+            Throwable::new("java.io.IOException", "a random IOException (foo)"),
+        )) as Box<dyn std::any::Any + Send>))
+        .expect("caught");
+        assert!(handle_possibly_fake_exception(fake).expect("fake"));
+
+        let real = Caught::of(Ok(Err(LuceneError::illegal_state("real")))).expect("caught");
+        let e = handle_possibly_fake_exception(real).expect_err("rethrown");
+        assert!(e.to_string().contains("real"));
+    }
+
+    /// `iae.getMessage().contains(...)` with a `null` message: the JDK's
+    /// helpful `NullPointerException`.
+    #[test]
+    fn heap_message_check_npe_on_null_message() {
+        let caught = Caught::of(Ok(Err(exception_without_message(
+            "java.lang.IllegalArgumentException",
+        ))))
+        .expect("caught");
+        let t = thrown(|| caught.assert_heap_message());
+        assert_eq!(t.class_name(), "java.lang.NullPointerException");
+        assert_eq!(
+            t.message(),
+            Some(
+                "Cannot invoke \"String.contains(java.lang.CharSequence)\" because the return value of \"java.lang.IllegalArgumentException.getMessage()\" is null"
+            )
+        );
+    }
+
+    /// `values.intersect(...)` on a `null` local names it, and the
+    /// mismatched-fields visitor fails with `BytesRef.toString()` renderings.
+    #[test]
+    fn npe_and_bytes_messages() {
+        let t = thrown(|| {
+            intersect_npe(None, "values");
+        });
+        assert_eq!(
+            t.message(),
+            Some(
+                "Cannot invoke \"org.apache.lucene.index.PointValues.intersect(org.apache.lucene.index.PointValues$IntersectVisitor)\" because \"values\" is null"
+            )
+        );
+        let mut v = ExpectedValueVisitor {
+            expected: BytesRef::new(vec![1, 2]),
+            expected_doc: 0,
+        };
+        let t = thrown(|| {
+            let _ = v.visit_with_value(0, &[1, 3]);
+        });
+        assert_eq!(t.message(), Some("expected:<[1 2]> but was:<[1 3]>"));
     }
 }

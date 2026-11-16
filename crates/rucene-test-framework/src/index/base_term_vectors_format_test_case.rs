@@ -32,6 +32,15 @@
 //!   `docsOnly` as `docsOnly2`; a reused Rust enum is moved into the call
 //!   that reuses it, so the port reads the freq of `docsOnly2`, which is
 //!   the same object whenever the format reuses it.
+//! * `testRareVectors`'s `assertNull(fields)`: the port's `Fields` trait has
+//!   no `toString()`, so the failure message prints `Fields` for the
+//!   object Java renders with `Object.toString()`.
+//! * `testClone`'s threads run the assertions as free functions over the
+//!   reader (`docID`, `assertEquals(RandomDocument, Fields)`): the emulated
+//!   `Thread` needs a `'static` body, which cannot borrow the test instance,
+//!   so an override of those two `protected` methods is not seen there (no
+//!   Lucene 10.5.0 subclass overrides them; `getReadPastLastPositionExceptionClass()`
+//!   is read on the test thread and passed in).
 
 use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::any::{Any, TypeId};
@@ -73,8 +82,8 @@ use rucene::util::attribute::{AttributeImpl, AttributeReflector, AttributeSource
 use rucene::util::BytesRef;
 
 use super::base_index_file_format_test_case::{
-    expect_throws_lucene, format_test, is_instance_of_java_class, rethrow,
-    BaseIndexFileFormatTestCase,
+    exception_without_message, expect_throws_lucene, format_test, io_utils_close,
+    is_instance_of_java_class, npe_with, rethrow, try_with, BaseIndexFileFormatTestCase,
 };
 use super::base_stored_fields_format_test_case::java_hash_map_key_order;
 use crate::analysis::attributes::{char_term_id, payload_id, pos_inc_id, Att};
@@ -163,6 +172,21 @@ fn assert_null_msg(message: Option<&str>, actual: Option<String>) {
         )
         .throw()
     }
+}
+
+/// The JDK's helpful `NullPointerException` for `<local>.<method>` on a
+/// `null` enum.
+fn enum_npe(local: &'static str, method: &'static str) -> impl FnOnce() -> String {
+    move || {
+        format!(
+            "Cannot invoke \"org.apache.lucene.index.PostingsEnum.{method}\" because \"{local}\" is null"
+        )
+    }
+}
+
+/// `termsEnum.term().utf8ToString()` on a `null` term.
+fn term_npe() -> String {
+    "Cannot invoke \"org.apache.lucene.util.BytesRef.utf8ToString()\" because the return value of \"org.apache.lucene.index.TermsEnum.term()\" is null".to_string()
 }
 
 /// `assertNotNull(object)`.
@@ -671,7 +695,9 @@ impl RandomDocument {
         sample_term_bytes: &[BytesRef],
     ) -> Result<Self> {
         if field_count as usize > field_names.len() {
-            return Err(LuceneError::illegal_argument(String::new()));
+            return Err(exception_without_message(
+                "java.lang.IllegalArgumentException",
+            ));
         }
         let field_count = field_count as usize;
         let field_types = vec![field_type; field_count];
@@ -862,7 +888,10 @@ fn assert_tk_equals(
     ft: &FieldType,
     terms: Option<&dyn Terms>,
 ) -> Result<()> {
-    let terms = npe(terms);
+    let terms = npe_with(terms, || {
+        "Cannot invoke \"org.apache.lucene.index.Terms.getDocCount()\" because \"terms\" is null"
+            .to_string()
+    });
     Assert::assert_equals(1, terms.doc_count()?);
     let term_count = tk.terms.iter().collect::<HashSet<_>>().len() as i64;
     Assert::assert_equals(term_count, terms.size()?);
@@ -902,7 +931,7 @@ fn assert_tk_equals(
         Assert::assert_equals(0, postings_enum.next_doc()?);
         Assert::assert_equals(0, postings_enum.doc_id());
         Assert::assert_equals(
-            freq_of(&npe(terms_enum.term()?))?,
+            freq_of(&npe_with(terms_enum.term()?, term_npe))?,
             Boxed(Some(postings_enum.freq()?)),
         );
         Assert::assert_equals(NO_MORE_DOCS, postings_enum.next_doc()?);
@@ -916,10 +945,16 @@ fn assert_tk_equals(
         };
         let mut docs_and_positions_enum = terms_enum.postings(reuse, POSITIONS)?;
         if terms.has_positions() || terms.has_offsets() {
-            let docs_and_positions_enum = npe(docs_and_positions_enum.as_mut());
+            let docs_and_positions_enum = npe_with(
+                docs_and_positions_enum.as_mut(),
+                enum_npe("docsAndPositionsEnum", "nextDoc()"),
+            );
             Assert::assert_equals(0, docs_and_positions_enum.next_doc()?);
             let freq = docs_and_positions_enum.freq()?;
-            Assert::assert_equals(freq_of(&npe(terms_enum.term()?))?, Boxed(Some(freq)));
+            Assert::assert_equals(
+                freq_of(&npe_with(terms_enum.term()?, term_npe))?,
+                Boxed(Some(freq)),
+            );
             let current = terms_enum.term()?;
             for _ in 0..freq {
                 let position = docs_and_positions_enum.next_position()?;
@@ -1103,12 +1138,18 @@ fn check_one_doc(p: &mut dyn PostingsEnum, freq: FreqIs, positions: &[PositionIs
 #[derive(Debug)]
 struct MockTokenizerAnalyzer {
     state: AnalyzerState,
+    /// The anonymous class: `$2` in `testPostingsEnumFreqs`, `$3` in
+    /// `testPostingsEnumPositions`, `$4` in `testPostingsEnumOffsets`, `$5`
+    /// in `testPostingsEnumOffsetsWithoutPositions` (the jar's
+    /// `EnclosingMethod` attributes; `$1` is `testClone`'s thread).
+    class_name: &'static str,
 }
 
 impl MockTokenizerAnalyzer {
-    fn new() -> Self {
+    fn new(class_name: &'static str) -> Self {
         MockTokenizerAnalyzer {
             state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
+            class_name,
         }
     }
 }
@@ -1119,7 +1160,7 @@ impl Analyzer for MockTokenizerAnalyzer {
     }
 
     fn java_class_name(&self) -> &'static str {
-        "org.apache.lucene.tests.index.BaseTermVectorsFormatTestCase$1"
+        self.class_name
     }
 
     fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
@@ -1131,9 +1172,16 @@ impl Analyzer for MockTokenizerAnalyzer {
 }
 
 /// `new IndexWriterConfig(new Analyzer() {...})` of the
-/// `testPostingsEnum*` tests.
-fn mock_tokenizer_config() -> IndexWriterConfig {
-    IndexWriterConfig::with_analyzer(Some(Arc::new(MockTokenizerAnalyzer::new())))
+/// `testPostingsEnum*` tests, the analyzer being the anonymous class
+/// `BaseTermVectorsFormatTestCase$<n>`.
+fn mock_tokenizer_config(n: u8) -> IndexWriterConfig {
+    let class_name = match n {
+        2 => "org.apache.lucene.tests.index.BaseTermVectorsFormatTestCase$2",
+        3 => "org.apache.lucene.tests.index.BaseTermVectorsFormatTestCase$3",
+        4 => "org.apache.lucene.tests.index.BaseTermVectorsFormatTestCase$4",
+        _ => "org.apache.lucene.tests.index.BaseTermVectorsFormatTestCase$5",
+    };
+    IndexWriterConfig::with_analyzer(Some(Arc::new(MockTokenizerAnalyzer::new(class_name))))
 }
 
 /// The two `bar` tokens of `testPostingsEnumPayloads`/`All`, with payloads
@@ -1184,19 +1232,23 @@ fn postings_enum_test(
         iw.add_document(&doc)?;
         let reader = directory_reader::open_with_writer(&*iw)?;
 
-        let terms = npe(
+        let terms = npe_with(
             LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?
                 .term_vectors()?
                 .get_field(0, "foo")?,
+            || {
+                "Cannot invoke \"org.apache.lucene.index.Terms.iterator()\" because \"terms\" is null".to_string()
+            },
         );
         let mut terms_enum = terms.iterator()?;
         let bar = LuceneTestCase::new_bytes_ref_str("bar");
         Assert::assert_equals(Boxed(Some(bar)), Boxed(terms_enum.next()?));
 
         // simple use (FREQS)
-        let mut postings = terms_enum
-            .postings(None, FREQS)?
-            .ok_or_else(LuceneError::null_pointer)?;
+        let mut postings = npe_with(
+            terms_enum.postings(None, FREQS)?,
+            enum_npe("postings", "docID()"),
+        );
         check_one_doc(&mut *postings, FreqIs::Eq(2), &[])?;
 
         // termsenum reuse (FREQS)
@@ -1207,9 +1259,10 @@ fn postings_enum_test(
         check_one_doc(&mut *postings2, FreqIs::Eq(2), &[])?;
 
         // asking for docs only: ok
-        let mut docs_only = terms_enum
-            .postings(None, NONE)?
-            .ok_or_else(LuceneError::null_pointer)?;
+        let mut docs_only = npe_with(
+            terms_enum.postings(None, NONE)?,
+            enum_npe("docsOnly", "docID()"),
+        );
         // we don't define what it is, but if its something else, we should look into it?
         check_one_doc(&mut *docs_only, FreqIs::OneOrTwo, &[])?;
         // reuse that too
@@ -1228,9 +1281,10 @@ fn postings_enum_test(
                 } else {
                     FreqIs::Unchecked
                 };
-                let mut postings = terms_enum
-                    .postings(None, flag)?
-                    .ok_or_else(LuceneError::null_pointer)?;
+                let mut postings = npe_with(
+                    terms_enum.postings(None, flag)?,
+                    enum_npe("postings", "docID()"),
+                );
                 check_one_doc(&mut *postings, freq, &[])?;
                 // reuse that too
                 let postings2 = terms_enum.postings(Some(postings), flag)?;
@@ -1245,17 +1299,20 @@ fn postings_enum_test(
                 if flag != POSITIONS {
                     assert_not_null(docs_and_positions_enum.is_some());
                 }
-                let mut docs_and_positions_enum =
-                    docs_and_positions_enum.ok_or_else(LuceneError::null_pointer)?;
+                let mut docs_and_positions_enum = npe_with(
+                    docs_and_positions_enum,
+                    enum_npe("docsAndPositionsEnum", "docID()"),
+                );
                 check_one_doc(
                     &mut *docs_and_positions_enum,
                     FreqIs::Eq(2),
                     &positions(flag),
                 )?;
                 // now reuse
-                let mut docs_and_positions_enum2 = terms_enum
-                    .postings(Some(docs_and_positions_enum), flag)?
-                    .ok_or_else(LuceneError::null_pointer)?;
+                let mut docs_and_positions_enum2 = npe_with(
+                    terms_enum.postings(Some(docs_and_positions_enum), flag)?,
+                    enum_npe("docsAndPositionsEnum2", "docID()"),
+                );
                 check_one_doc(
                     &mut *docs_and_positions_enum2,
                     FreqIs::Eq(2),
@@ -1570,23 +1627,40 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 let mut live_doc_ids: Vec<String> = Vec::new();
                 let mut ids: Vec<String> = java_hash_map_key_order(&inserted, docs.len());
                 randomizedtesting::jdk::util::shuffle(&mut ids, &*random());
+                // `try (DirectoryReader reader = ...) { ... } catch (IOException e)
+                // { throw new UncheckedIOException(e); }`: the reader is closed on
+                // every exit, and an `IOException` (of opening, the body or
+                // closing) is rethrown unchecked.
                 let verify_term_vectors = |live_doc_ids: &[String]| -> Result<()> {
-                    let reader = self.maybe_wrap_with_merging_reader(writer.get_reader()?)?;
-                    let checked = (|| -> Result<()> {
-                        let reader = Arc::clone(&reader) as Arc<dyn IndexReader>;
-                        let term_vectors = reader.term_vectors()?;
-                        for id in live_doc_ids {
-                            let doc_id = self.doc_id(&reader, id)?;
-                            self.assert_equals_doc(
-                                &docs[id],
-                                term_vectors.get(doc_id)?.as_deref(),
-                            )?;
+                    let verified = writer
+                        .get_reader()
+                        .and_then(|reader| self.maybe_wrap_with_merging_reader(reader))
+                        .and_then(|reader| {
+                            try_with(
+                                reader,
+                                |reader| reader.close(),
+                                |reader| -> Result<()> {
+                                    let reader = Arc::clone(reader) as Arc<dyn IndexReader>;
+                                    let term_vectors = reader.term_vectors()?;
+                                    for id in live_doc_ids {
+                                        let doc_id = self.doc_id(&reader, id)?;
+                                        self.assert_equals_doc(
+                                            &docs[id],
+                                            term_vectors.get(doc_id)?.as_deref(),
+                                        )?;
+                                    }
+                                    Ok(())
+                                },
+                            )
+                        });
+                    if let Err(e) = verified {
+                        let t = crate::util::java_exceptions::java_throwable(&e);
+                        if t.is_instance("java.io.IOException") {
+                            Throwable::from_cause("java.io.UncheckedIOException", t).throw()
                         }
-                        Ok(())
-                    })();
-                    let closed = reader.close();
-                    checked?;
-                    closed
+                        return Err(e);
+                    }
+                    Ok(())
                 };
                 for id in &ids {
                     let mut doc = self.add_id(docs[id].to_document(), id);
@@ -1604,29 +1678,37 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                         if let Some(index_sort) = &index_sort {
                             other_iwc.set_index_sort(index_sort.clone())?;
                         }
-                        let other_dir = LuceneTestCase::new_directory();
-                        let other_iw = RandomIndexWriter::new_with_config(
-                            &*random(),
-                            other_dir.as_directory(),
-                            other_iwc,
+                        // `try (Directory otherDir = newDirectory(); RandomIndexWriter
+                        // otherIw = ...) { ... try (DirectoryReader otherReader = ...) }`:
+                        // each resource closed on every exit, in reverse order.
+                        try_with(
+                            LuceneTestCase::new_directory(),
+                            |other_dir| other_dir.close(),
+                            |other_dir| {
+                                let other_iw = RandomIndexWriter::new_with_config(
+                                    &*random(),
+                                    other_dir.as_directory(),
+                                    other_iwc,
+                                )?;
+                                try_with(
+                                    other_iw,
+                                    |other_iw| other_iw.close(),
+                                    |other_iw| {
+                                        other_iw.add_document(&doc)?;
+                                        try_with(
+                                            other_iw.get_reader()?,
+                                            |other_reader| other_reader.close(),
+                                            |other_reader| {
+                                                TestUtil::add_indexes_slowly(
+                                                    writer.w(),
+                                                    std::slice::from_ref(&*other_reader),
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
                         )?;
-                        let added = (|| -> Result<()> {
-                            other_iw.add_document(&doc)?;
-                            let other_reader = other_iw.get_reader()?;
-                            let slowly = TestUtil::add_indexes_slowly(
-                                writer.w(),
-                                std::slice::from_ref(&other_reader),
-                            );
-                            let closed = other_reader.close();
-                            slowly?;
-                            closed
-                        })();
-                        let closed_iw = other_iw.close();
-                        drop(other_iw);
-                        let closed_dir = other_dir.close();
-                        added?;
-                        closed_iw?;
-                        closed_dir?;
                     } else {
                         writer.add_document(&doc)?;
                     }
@@ -1651,11 +1733,12 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 verify_term_vectors(&live_doc_ids)?;
                 writer.force_merge(1)?;
                 verify_term_vectors(&live_doc_ids)?;
-                // `IOUtils.close(writer, dir)`
-                writer.close()?;
+                // `IOUtils.close(writer, dir)`; every handle on `dir` is released
+                // before it closes.
+                let writer_closed = writer.close();
                 drop(writer);
+                io_utils_close([writer_closed, dir.close()])?;
             }
-            dir.close()?;
         }
         Ok(())
     }
@@ -1724,38 +1807,38 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                         Arc::clone(&exception),
                     );
                     threads.push(Thread::unnamed(move || {
-                    let run = std::panic::catch_unwind(AssertUnwindSafe(|| -> Result<()> {
-                        let term_vectors = reader.term_vectors()?;
-                        let mut i = 0;
-                        while i < LuceneTestCase::at_least(100) {
-                            let idx = random().next_int_bound(num_docs) as usize;
-                            let doc_id = doc_id_of(&reader, &idx.to_string())?;
-                            assert_doc_equals(read_past, &docs[idx], term_vectors.get(doc_id)?.as_deref())?;
-                            i += 1;
+                        let run = std::panic::catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+                            let term_vectors = reader.term_vectors()?;
+                            let mut i = 0;
+                            while i < LuceneTestCase::at_least(100) {
+                                let idx = random().next_int_bound(num_docs) as usize;
+                                let doc_id = doc_id_of(&reader, &idx.to_string())?;
+                                assert_doc_equals(
+                                    read_past,
+                                    &docs[idx],
+                                    term_vectors.get(doc_id)?.as_deref(),
+                                )?;
+                                i += 1;
+                            }
+                            Ok(())
+                        }));
+                        let thrown = match run {
+                            Ok(Ok(())) => None,
+                            Ok(Err(e)) => Some(crate::util::java_exceptions::java_throwable(&e)),
+                            Err(payload) => Some(Throwable::from_panic(payload)),
+                        };
+                        if let Some(t) = thrown {
+                            *exception.lock().unwrap_or_else(PoisonError::into_inner) = Some(t);
                         }
-                        Ok(())
                     }));
-                    let thrown = match run {
-                        Ok(Ok(())) => None,
-                        Ok(Err(e)) => {
-                            let (class, message) =
-                                crate::analysis::base_token_stream_test_case::java_class_and_message(&e);
-                            Some(Throwable::new(class, message))
-                        }
-                        Err(payload) => Some(Throwable::from_panic(payload)),
-                    };
-                    if let Some(t) = thrown {
-                        *exception.lock().unwrap_or_else(PoisonError::into_inner) = Some(t);
-                    }
-                }));
                 }
                 for thread in &threads {
                     thread.start();
                 }
                 for thread in &threads {
-                    if let Err(payload) = thread.join() {
-                        std::panic::resume_unwind(payload);
-                    }
+                    // `thread.join()` returns normally: an uncaught exception
+                    // ended the thread through its uncaught exception handler.
+                    let _ = thread.join();
                 }
                 reader.close()?;
                 drop(reader);
@@ -1779,7 +1862,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testPostingsEnumFreqs()`.
     fn test_postings_enum_freqs(&self) -> Result<()> {
         postings_enum_test(
-            mock_tokenizer_config,
+            || mock_tokenizer_config(2),
             || Field::new("foo", "bar bar".to_string(), tv_type(false, false, false)?),
             true,
             &|_| unreachable!("no position checks"),
@@ -1790,7 +1873,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_postings_enum_positions(&self) -> Result<()> {
         use OffsetIs::Eq as E;
         postings_enum_test(
-            mock_tokenizer_config,
+            || mock_tokenizer_config(3),
             || Field::new("foo", "bar bar".to_string(), tv_type(true, false, false)?),
             false,
             &|_| {
@@ -1806,7 +1889,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_postings_enum_offsets(&self) -> Result<()> {
         use OffsetIs::{Either, Eq as E};
         postings_enum_test(
-            mock_tokenizer_config,
+            || mock_tokenizer_config(4),
             || Field::new("foo", "bar bar".to_string(), tv_type(true, true, false)?),
             false,
             &|flag| {
@@ -1830,7 +1913,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_postings_enum_offsets_without_positions(&self) -> Result<()> {
         use OffsetIs::{Either, Eq as E};
         postings_enum_test(
-            mock_tokenizer_config,
+            || mock_tokenizer_config(5),
             || Field::new("foo", "bar bar".to_string(), tv_type(false, true, false)?),
             false,
             &|flag| {
@@ -1931,4 +2014,41 @@ fn random_long_sort() -> Result<Sort> {
         )?);
     }
     Sort::new_fields(sort_fields)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `new IllegalArgumentException()` when the document asks for more
+    /// fields than there are names: no message.
+    #[test]
+    fn random_document_too_many_fields_has_no_message() {
+        let e = RandomDocument::new(2, 1, FieldType::new(), &["a".to_string()], &[], &[])
+            .expect_err("more fields than names");
+        let t = crate::util::java_exceptions::java_throwable(&e);
+        assert_eq!(t.class_name(), "java.lang.IllegalArgumentException");
+        assert_eq!(t.message(), None);
+    }
+
+    /// Each `testPostingsEnum*` analyzer is its own anonymous class.
+    #[test]
+    fn analyzer_classes_follow_the_jar() {
+        for (n, expected) in [
+            (
+                2,
+                "org.apache.lucene.tests.index.BaseTermVectorsFormatTestCase$2",
+            ),
+            (
+                5,
+                "org.apache.lucene.tests.index.BaseTermVectorsFormatTestCase$5",
+            ),
+        ] {
+            let iwc = mock_tokenizer_config(n);
+            assert_eq!(
+                iwc.analyzer().expect("an analyzer").java_class_name(),
+                expected
+            );
+        }
+    }
 }

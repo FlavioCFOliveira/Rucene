@@ -74,7 +74,10 @@ use rucene::search::Query;
 use rucene::store::Directory;
 use rucene::util::BytesRef;
 
-use super::base_index_file_format_test_case::{format_test, rethrow, BaseIndexFileFormatTestCase};
+use super::base_index_file_format_test_case::{
+    assert_equals_object, caught_exception, format_test, io_utils_close, npe_with, rethrow,
+    try_with, BaseIndexFileFormatTestCase,
+};
 use crate::analysis::MockAnalyzer;
 use crate::index::random_index_writer::RandomIndexWriter;
 use crate::index::MismatchedDirectoryReader;
@@ -165,14 +168,26 @@ fn doc_get(doc: &Document, name: &str) -> Option<String> {
     doc.get_values(name).into_iter().next()
 }
 
-/// `doc.getField(name)`, dereferenced as Java does.
-fn get_field<'a>(doc: &'a Document, name: &str) -> &'a dyn IndexableField {
-    npe(doc.get_field(name))
+/// `doc.getField(name).<then>`: a `null` field is the JDK's helpful
+/// `NullPointerException` naming `IndexableField.<then>` (`then` is the
+/// method with its parameter types, as `numericValue()`).
+fn get_field<'a>(doc: &'a Document, name: &str, then: &str) -> &'a dyn IndexableField {
+    npe_with(doc.get_field(name), || {
+        format!(
+            "Cannot invoke \"org.apache.lucene.index.IndexableField.{then}\" because the return value of \"org.apache.lucene.document.Document.getField(String)\" is null"
+        )
+    })
 }
 
-/// `field.numericValue()`, dereferenced as Java does.
-fn numeric_value(field: &dyn IndexableField) -> NumericValue {
-    npe(field.numeric_value())
+/// `doc.getField(name).numericValue().intValue()`, each `null` the JDK's
+/// helpful `NullPointerException`.
+fn id_value(doc: &Document, name: &str) -> i32 {
+    int_value(npe_with(
+        get_field(doc, name, "numericValue()").numeric_value(),
+        || {
+            "Cannot invoke \"java.lang.Number.intValue()\" because the return value of \"org.apache.lucene.index.IndexableField.numericValue()\" is null".to_string()
+        },
+    ))
 }
 
 /// `Number.intValue()`.
@@ -254,6 +269,18 @@ impl fmt::Display for NumberClass {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "class {}", self.0)
     }
+}
+
+/// JUnit's `assertEquals(Object, Object)` of two boxed numbers (`null` for
+/// `None`): `Number.equals` (same class and value), and `Assert.format`'s
+/// message, which names the classes when both print the same.
+fn assert_numbers_equal(expected: Option<NumericValue>, actual: Option<NumericValue>) {
+    let object = |n: Option<NumericValue>| n.map(|n| (NumberClass::of(n).0, n.to_string()));
+    assert_equals_object(
+        JavaNumber(expected) == JavaNumber(actual),
+        object(expected),
+        object(actual),
+    );
 }
 
 /// A `BytesRef` as JUnit compares (`BytesRef.equals`) and prints it, or
@@ -440,7 +467,9 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut docs: JavaKeyedMap<Vec<Option<String>>> = JavaKeyedMap::new();
 
         if *VERBOSE {
-            println!("TEST: build index docCount={doc_count}");
+            randomizedtesting::jdk::system::out_println(&format!(
+                "TEST: build index docCount={doc_count}"
+            ));
         }
 
         let custom_type2 = FieldType::new();
@@ -451,7 +480,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             doc.add_shared(Arc::clone(&id_field) as Arc<dyn IndexableField>);
             id_field.set_string_value(id.clone())?;
             if *VERBOSE {
-                println!("TEST: add doc id={id}");
+                randomizedtesting::jdk::system::out_println(&format!("TEST: add doc id={id}"));
             }
 
             let mut expected: Vec<Option<String>> = vec![None; field_count as usize];
@@ -475,7 +504,9 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             if rand.next_int_bound(5) == 3 && i > 0 {
                 let del_id = rand.next_int_bound(i).to_string();
                 if *VERBOSE {
-                    println!("TEST: delete doc id={del_id}");
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "TEST: delete doc id={del_id}"
+                    ));
                 }
                 w.delete_documents(term("id", &del_id))?;
                 docs.remove(&del_id);
@@ -483,7 +514,10 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         }
 
         if *VERBOSE {
-            println!("TEST: {} docs in index; now load fields", docs.len());
+            randomizedtesting::jdk::system::out_println(&format!(
+                "TEST: {} docs in index; now load fields",
+                docs.len()
+            ));
         }
         if docs.len() > 0 {
             let ids_list = docs.key_set();
@@ -494,19 +528,25 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
                 let stored_fields = r.stored_fields()?;
 
                 if *VERBOSE {
-                    println!("TEST: cycle x={x} r={r}");
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "TEST: cycle x={x} r={r}"
+                    ));
                 }
 
                 let num = LuceneTestCase::at_least(100);
                 for _ in 0..num {
                     let test_id = &ids_list[rand.next_int_bound(ids_list.len() as i32) as usize];
                     if *VERBOSE {
-                        println!("TEST: test id={test_id}");
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "TEST: test id={test_id}"
+                        ));
                     }
                     let hits = s.search(term_query("id", test_id), 1)?;
                     Assert::assert_equals(1i64, hits.total_hits.value());
                     let doc = stored_fields.document(hits.score_docs[0].doc)?;
-                    let doc_exp = npe(docs.get(test_id));
+                    let doc_exp = npe_with(docs.get(test_id), || {
+                        "Cannot invoke \"org.apache.lucene.document.Document.get(String)\" because \"docExp\" is null".to_string()
+                    });
                     for i in 0..field_count {
                         Assert::assert_equals_str(
                             Some(&format!("doc {test_id}, field f{field_count} is wrong")),
@@ -597,7 +637,9 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
                 length: 17,
             },
         )?;
-        let bx = npe(f.binary_value());
+        let bx = npe_with(f.binary_value(), || {
+            "Cannot read field \"bytes\" because the return value of \"org.apache.lucene.document.Field.binaryValue()\" is null".to_string()
+        });
         Assert::assert_true(!bx.bytes.is_empty());
         Assert::assert_equals(50, bx.bytes.len());
         Assert::assert_equals(10, bx.offset);
@@ -610,9 +652,15 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         let ir = directory_reader::open(dir.as_directory())?;
         let stored_fields = ir.stored_fields()?;
         let doc2 = stored_fields.document(0)?;
-        let f2 = get_field(&doc2, "binary");
-        let b = npe(f2.binary_value());
-        let b = &b.bytes[b.offset..b.offset + b.length];
+        let f2 = npe_with(doc2.get_field("binary"), || {
+            "Cannot invoke \"org.apache.lucene.index.IndexableField.binaryValue()\" because \"f2\" is null".to_string()
+        });
+        // `b = f2.binaryValue().bytes`: the backing array, whatever the
+        // value's offset and length.
+        let b = npe_with(f2.binary_value(), || {
+            "Cannot read field \"bytes\" because the return value of \"org.apache.lucene.index.IndexableField.binaryValue()\" is null".to_string()
+        })
+        .bytes;
         Assert::assert_true(!b.is_empty());
         // assertEquals(17, b.length, 17): the delta overload, as doubles.
         Assert::assert_equals_double_msg(None, 17.0, b.len() as f64, 17.0);
@@ -669,15 +717,25 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             let stored_fields = sub.stored_fields()?;
             for doc_id in 0..sub.num_docs() {
                 let doc = stored_fields.document(doc_id)?;
-                let f = get_field(&doc, "nf");
+                // `(Field) doc.getField("nf")`: `null` passes the cast and fails
+                // the `instanceof` check, printed as `null`.
+                let f = doc.get_field("nf");
                 Assert::assert_true_msg(
-                    &format!("got f={}", JavaNumber(f.numeric_value())),
-                    f.as_any().is_some_and(|a| a.is::<StoredField>()),
+                    &format!(
+                        "got f={}",
+                        f.map_or_else(|| "null".to_string(), |f| f.to_string())
+                    ),
+                    f.and_then(|f| f.as_any())
+                        .is_some_and(|a| a.is::<StoredField>()),
                 );
+                let f = npe(f);
                 Assert::assert_equals(doc_id, ids.next_doc()?);
-                let answer = answers[ids.long_value()? as usize];
-                Assert::assert_equals(JavaNumber(Some(answer)), JavaNumber(f.numeric_value()));
-                Assert::assert_equals(NumberClass::of(answer), NumberClass::of(numeric_value(f)));
+                let answer = answers[ids.long_value()? as i32 as usize];
+                assert_numbers_equal(Some(answer), f.numeric_value());
+                let class = NumberClass::of(npe_with(f.numeric_value(), || {
+                    "Cannot invoke \"Object.getClass()\" because the return value of \"org.apache.lucene.document.Field.numericValue()\" is null".to_string()
+                }));
+                Assert::assert_equals(NumberClass::of(answer), class);
             }
         }
         r.close()?;
@@ -708,12 +766,23 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         let stored_fields = r.stored_fields()?;
         w.close()?;
         drop(w);
-        let options = get_field(&stored_fields.document(0)?, "field")
+        let options = get_field(&stored_fields.document(0)?, "field", "fieldType()")
             .field_type()
             .index_options();
-        Assert::assert_true(options == IndexOptions::NONE);
+        // `assertEquals(IndexOptions.NONE, ...)`: an enum prints its name.
+        assert_equals_object(
+            options == IndexOptions::NONE,
+            Some((
+                "org.apache.lucene.index.IndexOptions",
+                format!("{:?}", IndexOptions::NONE),
+            )),
+            Some((
+                "org.apache.lucene.index.IndexOptions",
+                format!("{options:?}"),
+            )),
+        );
         // assertNotNull(...indexOptions()): an enum value is never null.
-        let _ = get_field(&stored_fields.document(0)?, "field2")
+        let _ = get_field(&stored_fields.document(0)?, "field2", "fieldType()")
             .field_type()
             .index_options();
         drop(stored_fields);
@@ -779,9 +848,16 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             let fld_name = fld.name();
             let s_doc =
                 stored_fields.document_fields(doc_id, &HashSet::from([fld_name.to_string()]))?;
-            let s_field = get_field(&s_doc, fld_name);
+            let s_field = s_doc.get_field(fld_name);
             // `Field.class.equals(fld.getClass())`
-            if fld.as_any().is_some_and(|any| any.is::<Field>()) {
+            let is_field = fld.as_any().is_some_and(|any| any.is::<Field>());
+            let s_field = npe_with(s_field, || {
+                format!(
+                    "Cannot invoke \"org.apache.lucene.index.IndexableField.{}\" because \"sField\" is null",
+                    if is_field { "binaryValue()" } else { "numericValue()" }
+                )
+            });
+            if is_field {
                 Assert::assert_equals(
                     JavaBytes::of(fld.binary_value()),
                     JavaBytes::of(s_field.binary_value()),
@@ -792,10 +868,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
                     s_field.string_value().as_deref(),
                 );
             } else {
-                Assert::assert_equals(
-                    JavaNumber(fld.numeric_value()),
-                    JavaNumber(s_field.numeric_value()),
-                );
+                assert_numbers_equal(fld.numeric_value(), s_field.numeric_value());
             }
         }
         drop(stored_fields);
@@ -870,7 +943,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut read_threads: Vec<Thread> = Vec::new();
         // `AtomicReference<Exception> ex`: the first exception a thread
         // caught.
-        let ex: Arc<Mutex<Option<LuceneError>>> = Arc::new(Mutex::new(None));
+        let ex: Arc<Mutex<Option<Throwable>>> = Arc::new(Mutex::new(None));
         for _ in 0..concurrent_reads {
             // The instance initializer, on this thread.
             let queries: Vec<i32> = (0..reads_per_thread)
@@ -880,29 +953,32 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             read_threads.push(Thread::unnamed(move || {
                 for q in queries {
                     let query = term_query("fld", &q.to_string());
-                    let outcome = (|| -> Result<()> {
-                        let stored_fields = rd.stored_fields()?;
-                        let top_docs = searcher.search(query, 1)?;
-                        if top_docs.total_hits.value() != 1 {
-                            return Err(LuceneError::illegal_state(format!(
-                                "Expected 1 hit, got {}",
-                                top_docs.total_hits.value()
-                            )));
-                        }
-                        let sdoc = stored_fields.document(top_docs.score_docs[0].doc)?;
-                        let Some(fld) = doc_get(&sdoc, "fld") else {
-                            return Err(LuceneError::illegal_state(format!(
-                                "Could not find document {q}"
-                            )));
-                        };
-                        if q.to_string() != fld {
-                            return Err(LuceneError::illegal_state(format!(
-                                "Expected {q}, but got {fld}"
-                            )));
-                        }
-                        Ok(())
-                    })();
-                    if let Err(e) = outcome {
+                    // `try { ... } catch (Exception e) { ex.compareAndSet(null, e); }`:
+                    // an `Error` (a failed assertion) is not caught.
+                    let outcome =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
+                            let stored_fields = rd.stored_fields()?;
+                            let top_docs = searcher.search(query, 1)?;
+                            if top_docs.total_hits.value() != 1 {
+                                return Err(LuceneError::illegal_state(format!(
+                                    "Expected 1 hit, got {}",
+                                    top_docs.total_hits.value()
+                                )));
+                            }
+                            let sdoc = stored_fields.document(top_docs.score_docs[0].doc)?;
+                            let Some(fld) = doc_get(&sdoc, "fld") else {
+                                return Err(LuceneError::illegal_state(format!(
+                                    "Could not find document {q}"
+                                )));
+                            };
+                            if q.to_string() != fld {
+                                return Err(LuceneError::illegal_state(format!(
+                                    "Expected {q}, but got {fld}"
+                                )));
+                            }
+                            Ok(())
+                        }));
+                    if let Some(e) = caught_exception(outcome) {
                         let mut slot = ex.lock().unwrap_or_else(PoisonError::into_inner);
                         if slot.is_none() {
                             *slot = Some(e);
@@ -915,15 +991,16 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             thread.start();
         }
         for thread in &read_threads {
-            if let Err(payload) = thread.join() {
-                std::panic::resume_unwind(payload);
-            }
+            // `thread.join()` returns normally: an uncaught exception ended
+            // the thread through its uncaught exception handler.
+            let _ = thread.join();
         }
         drop(searcher);
         rd.close()?;
         drop(rd);
+        // `throw ex.get()`: the exception the thread caught, rethrown.
         if let Some(e) = ex.lock().unwrap_or_else(PoisonError::into_inner).take() {
-            return Err(e);
+            e.throw()
         }
 
         iw.close()?;
@@ -1031,10 +1108,13 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         for i in 0..ir.max_doc() {
             let doc = stored_fields.document(i)?;
             num_docs += 1;
-            let doc_id = int_value(numeric_value(get_field(&doc, "id"))) as usize;
+            let doc_id = id_value(&doc, "id") as usize;
             Assert::assert_equals(data[doc_id].len() + 1, doc.get_fields().len());
             for (j, arr) in data[doc_id].iter().enumerate() {
-                let arr2_ref = npe(doc.get_binary_value(&format!("bytes{j}")));
+                // `BytesRef.deepCopyOf(null)`: `other.bytes` throws.
+                let arr2_ref = npe_with(doc.get_binary_value(&format!("bytes{j}")), || {
+                    "Cannot read field \"bytes\" because \"other\" is null".to_string()
+                });
                 let arr2 = &arr2_ref.bytes[arr2_ref.offset..arr2_ref.offset + arr2_ref.length];
                 assert_byte_array_equals(arr, arr2);
             }
@@ -1129,7 +1209,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         let stored_fields = reader.stored_fields()?;
         for i in 0..reader.max_doc() {
             let doc = stored_fields.document(i)?;
-            let id = int_value(numeric_value(get_field(&doc, "id")));
+            let id = id_value(&doc, "id");
             let expected = &docs[id as usize];
             Assert::assert_equals_str(None, Some(&expected.s), doc_get(&doc, "s").as_deref());
             for (name, value) in [
@@ -1138,20 +1218,20 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
                 ("d", expected.d),
                 ("f", expected.f),
             ] {
-                Assert::assert_equals(
-                    JavaNumber(Some(value)),
-                    JavaNumber(get_field(&doc, name).numeric_value()),
+                assert_numbers_equal(
+                    Some(value),
+                    get_field(&doc, name, "numericValue()").numeric_value(),
                 );
             }
             Assert::assert_equals(
                 JavaBytes(Some(expected.b.clone())),
-                JavaBytes::of(get_field(&doc, "b").binary_value()),
+                JavaBytes::of(get_field(&doc, "b", "binaryValue()").binary_value()),
             );
             // The value is the same for fields "b" and "b2". Read the expected value from "b" as "b2" was
             // consumed during indexing
             Assert::assert_equals(
                 JavaBytes(Some(expected.b.clone())),
-                JavaBytes::of(get_field(&doc, "b2").binary_value()),
+                JavaBytes::of(get_field(&doc, "b2", "binaryValue()").binary_value()),
             );
         }
 
@@ -1325,12 +1405,13 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             drop(adder);
             dirs.push(added);
 
-            // IOUtils.close(reader, iw, dir)
-            reader.close()?;
+            // IOUtils.close(reader, iw, dir); every handle on `dir` is released
+            // before it closes.
+            let reader_closed = reader.close();
             drop(reader);
-            iw.close()?;
+            let iw_closed = iw.close();
             drop(iw);
-            dir.close()?;
+            io_utils_close([reader_closed, iw_closed, dir.close()])?;
         }
 
         let everything = LuceneTestCase::new_directory();
@@ -1360,16 +1441,22 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
 
         drop(stored_fields);
         // IOUtils.close(iw, ir, everything)
-        iw.close()?;
-        drop(iw);
-        Arc::clone(&ir).as_index_reader().close()?;
-        drop(ir);
-        everything.close()?;
+        // Every handle on `everything` is released before it closes.
+        let iw_closed = iw.close();
+        let ir_closed = Arc::clone(&ir).as_index_reader().close();
+        drop((iw, ir));
+        io_utils_close([iw_closed, ir_closed, everything.close()])?;
         // IOUtils.close(dirs)
+        let mut first: Option<LuceneError> = None;
         for dir in &mut dirs {
-            dir.close()?;
+            if let Err(t) = dir.close() {
+                match first.as_mut() {
+                    None => first = Some(t),
+                    Some(first) => first.add_suppressed(t),
+                }
+            }
         }
-        Ok(())
+        first.map_or(Ok(()), Err)
     }
 
     /// `testRandomStoredFieldsWithIndexSort()`.
@@ -1447,39 +1534,64 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             if added_ids.is_empty() {
                 return Ok(());
             }
-            let reader = self.maybe_wrap_with_merging_reader(iw.get_reader()?)?;
-            let outcome = (|| -> Result<()> {
-                let actual_stored_fields = reader.stored_fields()?;
-                let searcher = IndexSearcher::new(Arc::clone(&reader) as Arc<dyn IndexReader>)?;
-                let iters = TestUtil::next_int(&*random(), 1, 10);
-                for _ in 0..iters {
-                    let test_id =
-                        &added_ids[random().next_int_bound(added_ids.len() as i32) as usize];
-                    if *VERBOSE {
-                        println!("TEST: test id={test_id}");
-                    }
-                    let hits = searcher.search(term_query("id", test_id), 1)?;
-                    Assert::assert_equals(1i64, hits.total_hits.value());
-                    let expected_fields = &npe(docs.get(test_id)).1;
-                    let actual_doc = actual_stored_fields.document(hits.score_docs[0].doc)?;
-                    Assert::assert_equals(expected_fields.len(), actual_doc.get_fields().len());
-                    for (name, value) in expected_fields {
-                        let actual_fields = actual_doc.get_fields_by_name(name);
-                        Assert::assert_equals(1, actual_fields.len());
-                        Assert::assert_equals_str(
-                            None,
-                            value.as_deref(),
-                            actual_fields[0].string_value().as_deref(),
-                        );
-                    }
+            // `try (DirectoryReader reader = ...) { ... } catch (IOException e)
+            // { throw new UncheckedIOException(e); }`: the reader is closed on
+            // every exit, and an `IOException` (of the body, of opening the
+            // reader, or of closing it) is rethrown unchecked.
+            let verified = iw
+                .get_reader()
+                .and_then(|reader| self.maybe_wrap_with_merging_reader(reader))
+                .and_then(|reader| {
+                    try_with(
+                        reader,
+                        |reader| reader.close(),
+                        |reader| -> Result<()> {
+                            let actual_stored_fields = reader.stored_fields()?;
+                            let searcher =
+                                IndexSearcher::new(Arc::clone(reader) as Arc<dyn IndexReader>)?;
+                            let iters = TestUtil::next_int(&*random(), 1, 10);
+                            for _ in 0..iters {
+                                let test_id = &added_ids
+                                    [random().next_int_bound(added_ids.len() as i32) as usize];
+                                if *VERBOSE {
+                                    randomizedtesting::jdk::system::out_println(&format!(
+                                        "TEST: test id={test_id}"
+                                    ));
+                                }
+                                let hits = searcher.search(term_query("id", test_id), 1)?;
+                                Assert::assert_equals(1i64, hits.total_hits.value());
+                                let expected_fields = &npe_with(docs.get(test_id), || {
+                                    "Cannot invoke \"org.apache.lucene.document.Document.getFields()\" because the return value of \"java.util.Map.get(Object)\" is null".to_string()
+                                })
+                                .1;
+                                let actual_doc =
+                                    actual_stored_fields.document(hits.score_docs[0].doc)?;
+                                Assert::assert_equals(
+                                    expected_fields.len(),
+                                    actual_doc.get_fields().len(),
+                                );
+                                for (name, value) in expected_fields {
+                                    let actual_fields = actual_doc.get_fields_by_name(name);
+                                    Assert::assert_equals(1, actual_fields.len());
+                                    Assert::assert_equals_str(
+                                        None,
+                                        value.as_deref(),
+                                        actual_fields[0].string_value().as_deref(),
+                                    );
+                                }
+                            }
+                            Ok(())
+                        },
+                    )
+                });
+            if let Err(e) = verified {
+                let t = crate::util::java_exceptions::java_throwable(&e);
+                if t.is_instance("java.io.IOException") {
+                    Throwable::from_cause("java.io.UncheckedIOException", t).throw()
                 }
-                Ok(())
-            })();
-            // try-with-resources: the reader is closed after the body, a
-            // failure to close suppressed by the body's own.
-            let closed = reader.close();
-            outcome?;
-            closed
+                return Err(e);
+            }
+            Ok(())
         };
         let mut ids = docs.key_set();
         randomizedtesting::jdk::util::shuffle(&mut ids, &*random());
@@ -1488,28 +1600,39 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
                 // add via foreign reader
                 let other_iwc = LuceneTestCase::new_index_writer_config();
                 other_iwc.set_index_sort(sort()?)?;
-                let other_dir = LuceneTestCase::new_directory();
-                let other_iw = RandomIndexWriter::new_with_config(
-                    &*random(),
-                    other_dir.as_directory(),
-                    other_iwc,
+                // `try (Directory otherDir = newDirectory(); RandomIndexWriter
+                // otherIw = new RandomIndexWriter(random(), otherDir, otherIwc))`,
+                // with `try (DirectoryReader otherReader = otherIw.getReader())`
+                // inside: each resource is closed on every exit, in reverse
+                // order, close failures suppressed.
+                try_with(
+                    LuceneTestCase::new_directory(),
+                    |other_dir| other_dir.close(),
+                    |other_dir| {
+                        let other_iw = RandomIndexWriter::new_with_config(
+                            &*random(),
+                            other_dir.as_directory(),
+                            other_iwc,
+                        )?;
+                        try_with(
+                            other_iw,
+                            |other_iw| other_iw.close(),
+                            |other_iw| {
+                                other_iw.add_document(&npe(docs.get(id)).0)?;
+                                try_with(
+                                    other_iw.get_reader()?,
+                                    |other_reader| other_reader.close(),
+                                    |other_reader| {
+                                        TestUtil::add_indexes_slowly(
+                                            iw.w(),
+                                            std::slice::from_ref(&*other_reader),
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    },
                 )?;
-                let outcome = (|| -> Result<()> {
-                    other_iw.add_document(&npe(docs.get(id)).0)?;
-                    let other_reader = other_iw.get_reader()?;
-                    let added =
-                        TestUtil::add_indexes_slowly(iw.w(), std::slice::from_ref(&other_reader));
-                    let closed = other_reader.close();
-                    added?;
-                    closed
-                })();
-                // try-with-resources closes otherIw, then otherDir.
-                let closed_iw = other_iw.close();
-                drop(other_iw);
-                let closed_dir = other_dir.close();
-                outcome?;
-                closed_iw?;
-                closed_dir?;
             } else {
                 // add normally
                 iw.add_document(&npe(docs.get(id)).0)?;
@@ -1539,53 +1662,71 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         verify_store_fields(&iw, &added_ids, &docs)?;
         iw.force_merge(TestUtil::next_int(&*random(), 1, 3))?;
         verify_store_fields(&iw, &added_ids, &docs)?;
-        // IOUtils.close(iw, dir)
-        iw.close()?;
+        // IOUtils.close(iw, dir); every handle on `dir` is released before it
+        // closes.
+        let iw_closed = iw.close();
         drop(iw);
-        dir.close()?;
-        Ok(())
+        io_utils_close([iw_closed, dir.close()])
     }
 
     /// `testLineFileDocs()`: test realistic data, which typically compresses
     /// better than random data.
     fn test_line_file_docs(&self) -> Result<()> {
         // Use an FS dir and a non-randomized IWC to not slow down indexing
-        let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
-        {
-            let docs = LineFileDocs::with_default_file(&*random()).map_err(LuceneError::from)?;
-            let w = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
-            let outcome = (|| -> Result<()> {
-                let num_docs = LuceneTestCase::at_least(10_000);
-                for _ in 0..num_docs {
-                    // Only keep stored fields
-                    let doc = docs.next_doc()?;
-                    let mut stored_doc = Document::new();
-                    for field in doc.borrow().get_fields().iter().cloned() {
-                        if field.field_type().stored() {
-                            let stored_field: Arc<dyn IndexableField> = match field.string_value() {
-                                // Disable indexing
-                                Some(value) => {
-                                    Arc::new(StoredField::new_string(field.name(), value)?)
-                                }
-                                None => field,
-                            };
-                            stored_doc.add_shared(stored_field);
-                        }
-                    }
+        // `try (Directory dir = newFSDirectory(createTempDir())) { try
+        // (LineFileDocs docs = new LineFileDocs(random()); IndexWriter w = new
+        // IndexWriter(dir, new IndexWriterConfig())) { ... }
+        // TestUtil.checkIndex(dir); }`: every resource closed on every exit.
+        try_with(
+            LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir()),
+            |dir| dir.close(),
+            |dir| {
+                let docs =
+                    LineFileDocs::with_default_file(&*random()).map_err(LuceneError::from)?;
+                try_with(
+                    docs,
+                    |docs| {
+                        docs.close();
+                        Ok(())
+                    },
+                    |docs| {
+                        let w = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
+                        try_with(
+                            w,
+                            |w| w.close(),
+                            |w| -> Result<()> {
+                                let num_docs = LuceneTestCase::at_least(10_000);
+                                for _ in 0..num_docs {
+                                    // Only keep stored fields
+                                    let doc = docs.next_doc()?;
+                                    let mut stored_doc = Document::new();
+                                    for field in doc.borrow().get_fields().iter().cloned() {
+                                        if field.field_type().stored() {
+                                            let stored_field: Arc<dyn IndexableField> = match field
+                                                .string_value()
+                                            {
+                                                // Disable indexing
+                                                Some(value) => Arc::new(StoredField::new_string(
+                                                    field.name(),
+                                                    value,
+                                                )?),
+                                                None => field,
+                                            };
+                                            stored_doc.add_shared(stored_field);
+                                        }
+                                    }
 
-                    w.add_document(&stored_doc)?;
-                }
-                w.force_merge(1)
-            })();
-            // try-with-resources closes w, then docs.
-            let closed = w.close();
-            docs.close();
-            outcome?;
-            closed?;
-        }
-        TestUtil::check_index(dir.as_directory())?;
-        dir.close()?;
-        Ok(())
+                                    w.add_document(&stored_doc)?;
+                                }
+                                w.force_merge(1)
+                            },
+                        )
+                    },
+                )?;
+                TestUtil::check_index(dir.as_directory())?;
+                Ok(())
+            },
+        )
     }
 }
 
@@ -1738,5 +1879,39 @@ impl DirectoryReaderWrapper for DummyFilterDirectoryReader {
 
     fn subclass_simple_name(&self) -> &'static str {
         "DummyFilterDirectoryReader"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use super::*;
+
+    fn message(f: impl FnOnce()) -> String {
+        let t = Throwable::from_panic(catch_unwind(AssertUnwindSafe(f)).expect_err("must fail"));
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+        t.message().unwrap_or_default().to_string()
+    }
+
+    /// `assertEquals(Number, Number)`: an `Integer` and a `Long` that print
+    /// the same differ by class, and JUnit names both classes.
+    #[test]
+    fn number_assertion_names_classes_on_equal_renderings() {
+        assert_eq!(
+            message(|| assert_numbers_equal(
+                Some(NumericValue::Int(5)),
+                Some(NumericValue::Long(5))
+            )),
+            "expected: java.lang.Integer<5> but was: java.lang.Long<5>"
+        );
+        assert_eq!(
+            message(|| assert_numbers_equal(Some(NumericValue::Float(1.5)), None)),
+            "expected:<1.5> but was:<null>"
+        );
+        assert_numbers_equal(
+            Some(NumericValue::Double(f64::NAN)),
+            Some(NumericValue::Double(f64::NAN)),
+        );
     }
 }

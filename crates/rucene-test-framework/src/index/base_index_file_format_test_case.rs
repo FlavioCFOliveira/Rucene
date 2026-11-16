@@ -1725,7 +1725,7 @@ impl fmt::Display for FileTrackingDirectoryWrapper {
 type ReadByte = Arc<dyn Fn(i32) + Send + Sync>;
 
 /// `new <class>()`: an unchecked exception whose `getMessage()` is `null`.
-fn exception_without_message(class: &'static str) -> LuceneError {
+pub fn exception_without_message(class: &'static str) -> LuceneError {
     LuceneError::from(LuceneErrorKind::Unchecked {
         class,
         message: None,
@@ -2006,6 +2006,67 @@ pub fn assert_null(actual: Option<String>) {
     }
 }
 
+/// A `null` that Java dereferences: the `NullPointerException` the JDK
+/// throws, whose helpful message (`message`, built only when `value` is
+/// `None`) names the dereference, as `Cannot invoke "<Class>.<method>(<params>)"
+/// because "<local>" is null`; the test-framework jar keeps its local
+/// variable names.
+pub fn npe_with<T>(value: Option<T>, message: impl FnOnce() -> String) -> T {
+    value.unwrap_or_else(|| Throwable::new("java.lang.NullPointerException", message()).throw())
+}
+
+/// The `Exception` a `catch (Exception e)` around a body catches, given the
+/// body's outcome: its `Err`, or a panic whose throwable is not an `Error`;
+/// a panic carrying an `Error` is rethrown unchanged.
+pub fn caught_exception(outcome: std::thread::Result<Result<()>>) -> Option<Throwable> {
+    match outcome {
+        Ok(Ok(())) => None,
+        Ok(Err(e)) => Some(crate::util::java_exceptions::java_throwable(&e)),
+        Err(payload) => {
+            if crate::mockfile::is_java_error(&*payload) {
+                std::panic::resume_unwind(payload)
+            }
+            Some(crate::mockfile::panic_throwable(&*payload))
+        }
+    }
+}
+
+/// JUnit 4's `assertEquals(Object expected, Object actual)` for two
+/// non-`String` objects, each given as `(getClass().getName(), toString())`
+/// (`None` for `null`); `equal` is `expected.equals(actual)` (or both
+/// `null`). On failure, `Assert.format`: `expected:<x> but was:<y>`, or, when
+/// the two renderings are equal, `expected: Class<x> but was: Class<y>`.
+pub fn assert_equals_object(
+    equal: bool,
+    expected: Option<(&str, String)>,
+    actual: Option<(&str, String)>,
+) {
+    if equal {
+        return;
+    }
+    let value = |o: &Option<(&str, String)>| o.as_ref().map_or("null".to_string(), |o| o.1.clone());
+    let class =
+        |o: &Option<(&str, String)>| o.as_ref().map_or("null".to_string(), |o| o.0.to_string());
+    let (e, a) = (value(&expected), value(&actual));
+    let message = if e == a {
+        format!(
+            "expected: {}<{e}> but was: {}<{a}>",
+            class(&expected),
+            class(&actual)
+        )
+    } else {
+        format!("expected:<{e}> but was:<{a}>")
+    };
+    Throwable::new("java.lang.AssertionError", message).throw()
+}
+
+/// `AbstractCollection.toString()` of a `java.util.HashSet<String>`: `[a,
+/// b]`, in the set's own iteration order.
+pub fn java_hash_set_to_string(set: &rucene::util::java_collections::JavaHashSet) -> String {
+    let items: Vec<&str> = set.iter().map(String::as_str).collect();
+    format!("[{}]", items.join(", "))
+}
+
 /// JUnit's `assertEquals(expected, actual)` over two objects whose
 /// `toString()` the port renders with `Debug`: `expected:<…> but was:<…>`.
 pub fn assert_equals_debug<T: PartialEq + fmt::Debug>(expected: &T, actual: &T) {
@@ -2147,5 +2208,50 @@ mod tests {
         let wrapper = FileTrackingDirectoryWrapper::new(Arc::clone(&inner) as Arc<dyn Directory>);
         wrapper.close().expect("close");
         assert!(inner.list_all().is_err(), "the delegate is closed");
+    }
+
+    /// JUnit's `assertEquals(Object, Object)` message: plain values, and
+    /// the class names when the two values print the same (`Assert.format`).
+    #[test]
+    fn assert_equals_object_uses_junit_format() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let message = |f: Box<dyn FnOnce()>| {
+            Throwable::from_panic(catch_unwind(AssertUnwindSafe(f)).expect_err("fails"))
+                .message()
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert_eq!(
+            message(Box::new(|| assert_equals_object(
+                false,
+                Some(("java.util.HashSet", "[a]".to_string())),
+                Some(("java.util.HashSet", "[b]".to_string())),
+            ))),
+            "expected:<[a]> but was:<[b]>"
+        );
+        assert_eq!(
+            message(Box::new(|| assert_equals_object(
+                false,
+                Some(("org.apache.lucene.search.Sort", "<x>".to_string())),
+                Some(("java.lang.String", "<x>".to_string())),
+            ))),
+            "expected: org.apache.lucene.search.Sort<<x>> but was: java.lang.String<<x>>"
+        );
+        assert_eq!(
+            message(Box::new(|| assert_equals_object(
+                false,
+                None,
+                Some(("org.apache.lucene.search.Sort", "<x>".to_string())),
+            ))),
+            "expected:<null> but was:<<x>>"
+        );
+        assert_equals_object(true, None, None);
+        let set: rucene::util::java_collections::JavaHashSet =
+            ["_123.si".to_string(), "_123.a".to_string()]
+                .into_iter()
+                .collect();
+        let rendered = java_hash_set_to_string(&set);
+        let items: Vec<&String> = set.iter().collect();
+        assert_eq!(rendered, format!("[{}, {}]", items[0], items[1]));
     }
 }

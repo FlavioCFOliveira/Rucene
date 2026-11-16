@@ -57,7 +57,7 @@ use rucene::search::NO_MORE_DOCS;
 use rucene::util::{BytesRef, FixedBitSet};
 
 use super::base_index_file_format_test_case::{
-    assert_array_equals, format_test, BaseIndexFileFormatTestCase,
+    assert_array_equals, caught_exception, format_test, npe_with, BaseIndexFileFormatTestCase,
 };
 use crate::analysis::mock_tokenizer::WHITESPACE;
 use crate::analysis::MockAnalyzer;
@@ -258,8 +258,14 @@ fn check_norms_vs_doc_values(ir: &Arc<dyn IndexReader>) -> Result<()> {
             Assert::assert_equals(i64::from(NO_MORE_DOCS), i64::from(actual.next_doc()?));
 
             // Now check bulk fetching
-            let mut expected = npe(r.get_numeric_doc_values("dv")?);
-            let mut actual = npe(r.get_norm_values("indexed")?);
+            let expected = r.get_numeric_doc_values("dv")?;
+            let mut actual = r.get_norm_values("indexed")?;
+            let bulk_npe = |local: &str| {
+                format!(
+                    "Cannot invoke \"org.apache.lucene.index.NumericDocValues.longValues(int, int[], long[], long)\" because \"{local}\" is null"
+                )
+            };
+            let mut expected = npe_with(expected, || bulk_npe("expected"));
 
             let mut docs = [0i32; 16];
             let mut expected_values = [0i64; 16];
@@ -276,20 +282,27 @@ fn check_norms_vs_doc_values(ir: &Arc<dyn IndexReader>) -> Result<()> {
                     size += 1;
                 }
 
-                expected.long_values(
-                    size as i32,
-                    &docs,
-                    0,
-                    &mut expected_values,
-                    0,
-                    size as i64,
-                )?;
-                actual.long_values(size as i32, &docs, 0, &mut actual_values, 0, size as i64)?;
+                bulk_long_values(&mut *expected, size, &docs, &mut expected_values)?;
+                let actual = npe_with(actual.as_mut(), || bulk_npe("actual"));
+                bulk_long_values(&mut **actual, size, &docs, &mut actual_values)?;
                 assert_array_equals(&expected_values, &actual_values);
             }
         }
     }
     Ok(())
+}
+
+/// `values.longValues(size, docs, buffer, size)`: the four-argument
+/// overload (`NumericDocValues.java:82-85`), which wrappers such as
+/// `AssertingLeafReader.AssertingNumericDocValues` override, with `size` as
+/// the default value.
+fn bulk_long_values(
+    values: &mut dyn rucene::index::doc_values::NumericDocValues,
+    size: usize,
+    docs: &[i32],
+    buffer: &mut [i64],
+) -> Result<()> {
+    values.long_values_no_offsets(size as i32, docs, buffer, size as i64)
 }
 
 /// A null result Java would dereference: `NullPointerException`.
@@ -838,16 +851,16 @@ pub trait BaseNormsFormatTestCase: BaseIndexFileFormatTestCase {
         for _ in 0..num_threads {
             let (reader, latch) = (Arc::clone(&reader), Arc::clone(&latch));
             threads.push(Thread::unnamed(move || {
-                latch.wait();
-                let reader = reader as Arc<dyn IndexReader>;
-                let checked = check_norms_vs_doc_values(&reader)
-                    .and_then(|()| TestUtil::check_reader(&reader));
-                if let Err(e) = checked {
-                    // `throw new RuntimeException(e)`
-                    let (class, message) =
-                        crate::analysis::base_token_stream_test_case::java_class_and_message(&e);
-                    Throwable::new("java.lang.RuntimeException", format!("{class}: {message}"))
-                        .throw()
+                // `try { ... } catch (Exception e) { throw new RuntimeException(e); }`:
+                // an `Error` (a failed assertion) passes through unwrapped.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    latch.wait();
+                    let reader = reader as Arc<dyn IndexReader>;
+                    check_norms_vs_doc_values(&reader)?;
+                    TestUtil::check_reader(&reader)
+                }));
+                if let Some(e) = caught_exception(outcome) {
+                    Throwable::from_cause("java.lang.RuntimeException", e).throw()
                 }
             }));
         }
@@ -857,9 +870,10 @@ pub trait BaseNormsFormatTestCase: BaseIndexFileFormatTestCase {
         }
         latch.count_down();
         for thread in &threads {
-            if let Err(payload) = thread.join() {
-                std::panic::resume_unwind(payload);
-            }
+            // `thread.join()` returns normally: an uncaught exception ended
+            // the thread through its uncaught exception handler, which
+            // reports it to the runner.
+            let _ = thread.join();
         }
 
         reader.close()?;
@@ -921,13 +935,20 @@ fn independant_iterators<C: BaseNormsFormatTestCase + ?Sized>(
     let r = LuceneTestCase::get_only_leaf_reader(
         case.maybe_wrap_with_merging_reader(writer.get_reader()?)? as Arc<dyn IndexReader>,
     )?;
-    let mut n1 = npe(r.get_norm_values("indexed")?);
-    let mut n2 = npe(r.get_norm_values("indexed")?);
+    let n1 = r.get_norm_values("indexed")?;
+    let n2 = r.get_norm_values("indexed")?;
+    let next_doc_npe = |local: &str| {
+        format!(
+            "Cannot invoke \"org.apache.lucene.index.NumericDocValues.nextDoc()\" because \"{local}\" is null"
+        )
+    };
+    let mut n1 = npe_with(n1, || next_doc_npe("n1"));
     let (d0, d1, d2) = if sparse { (0, 2, 4) } else { (0, 1, 2) };
     Assert::assert_equals(d0, n1.next_doc()?);
     Assert::assert_equals(42, n1.long_value()?);
     Assert::assert_equals(d1, n1.next_doc()?);
     Assert::assert_equals(10, n1.long_value()?);
+    let mut n2 = npe_with(n2, || next_doc_npe("n2"));
     Assert::assert_equals(d0, n2.next_doc()?);
     Assert::assert_equals(42, n2.long_value()?);
     Assert::assert_equals(d1, n2.next_doc()?);
@@ -939,10 +960,118 @@ fn independant_iterators<C: BaseNormsFormatTestCase + ?Sized>(
     Assert::assert_equals(NO_MORE_DOCS, n1.next_doc()?);
     Assert::assert_equals(NO_MORE_DOCS, n2.next_doc()?);
     drop((n1, n2));
-    // `IOUtils.close(r, writer, dir)`
-    Arc::clone(&r).as_index_reader().close()?;
+    // `IOUtils.close(r, writer, dir)`: every one is closed, later failures
+    // suppressed into the first.
+    // Every handle on `dir` is released before it closes.
+    let r_closed = Arc::clone(&r).as_index_reader().close();
     drop(r);
-    writer.close()?;
+    let writer_closed = writer.close();
     drop(writer);
-    dir.close()
+    super::base_index_file_format_test_case::io_utils_close([r_closed, writer_closed, dir.close()])
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use rucene::index::doc_values::{DocValuesIterator, NumericDocValues};
+    use rucene::search::DocIdSetIterator;
+
+    use super::*;
+
+    /// Records which `longValues` overload was called.
+    #[derive(Default)]
+    struct Recording {
+        four_arg: Option<(i32, i64)>,
+        six_arg: bool,
+    }
+
+    impl DocIdSetIterator for Recording {
+        fn doc_id(&self) -> i32 {
+            -1
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            Ok(NO_MORE_DOCS)
+        }
+        fn advance(&mut self, _target: i32) -> Result<i32> {
+            Ok(NO_MORE_DOCS)
+        }
+        fn cost(&self) -> i64 {
+            0
+        }
+    }
+
+    impl DocValuesIterator for Recording {
+        fn advance_exact(&mut self, _target: i32) -> Result<bool> {
+            Ok(false)
+        }
+    }
+
+    impl NumericDocValues for Recording {
+        fn long_value(&self) -> Result<i64> {
+            Ok(0)
+        }
+        fn long_values_no_offsets(
+            &mut self,
+            size: i32,
+            _docs: &[i32],
+            _values: &mut [i64],
+            default_value: i64,
+        ) -> Result<()> {
+            self.four_arg = Some((size, default_value));
+            Ok(())
+        }
+        fn long_values(
+            &mut self,
+            _size: i32,
+            _docs: &[i32],
+            _docs_offset: i32,
+            _values: &mut [i64],
+            _values_offset: i32,
+            _default_value: i64,
+        ) -> Result<()> {
+            self.six_arg = true;
+            Ok(())
+        }
+    }
+
+    /// `checkNormsVsDocValues` bulk-fetches through `longValues(size, docs,
+    /// values, size)`, the four-argument overload a wrapper may override
+    /// (`AssertingNumericDocValues` overrides only that one), not the
+    /// offset-aware six-argument one.
+    #[test]
+    fn bulk_fetch_calls_the_four_argument_overload() {
+        let mut values = Recording::default();
+        let mut buffer = [0i64; 16];
+        bulk_long_values(&mut values, 5, &[0; 16], &mut buffer).unwrap();
+        assert_eq!(values.four_arg, Some((5, 5)));
+        assert!(!values.six_arg);
+    }
+
+    /// `catch (Exception e)`: an `Err` or a non-`Error` panic is caught, an
+    /// `Error` passes through.
+    #[test]
+    fn catch_exception_lets_errors_through() {
+        let caught = caught_exception(Ok(Err(LuceneError::illegal_state("broken")))).unwrap();
+        assert_eq!(
+            Throwable::from_cause("java.lang.RuntimeException", caught).message(),
+            Some("java.lang.IllegalStateException: broken")
+        );
+        let panic = catch_unwind(|| -> Result<()> {
+            Throwable::new("java.lang.IllegalArgumentException", "x").throw()
+        });
+        assert_eq!(
+            caught_exception(panic).unwrap().class_name(),
+            "java.lang.IllegalArgumentException"
+        );
+        let error = catch_unwind(|| -> Result<()> {
+            Throwable::new("java.lang.AssertionError", "y").throw()
+        });
+        let rethrown = catch_unwind(AssertUnwindSafe(|| caught_exception(error)))
+            .expect_err("an Error is rethrown");
+        assert_eq!(
+            Throwable::from_panic(rethrown).class_name(),
+            "java.lang.AssertionError"
+        );
+    }
 }

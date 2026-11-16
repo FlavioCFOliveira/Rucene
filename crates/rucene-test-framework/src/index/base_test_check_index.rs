@@ -54,14 +54,16 @@ pub fn class() -> Arc<Class> {
     Arc::clone(&CLASS)
 }
 
-/// `new PrintStream(bos, …, UTF_8)` over a `ByteArrayOutputStream(1024)`,
-/// or `System.out` when `VERBOSE`.
-fn info_stream(bos: &Arc<Mutex<Vec<u8>>>) -> Arc<dyn PrintStream> {
-    if *VERBOSE {
-        Arc::new(WriterPrintStream::stdout())
-    } else {
-        Arc::new(PrintStreamLines(Arc::clone(bos)))
-    }
+/// `System.out` as a `PrintStream` (`checker.setInfoStream(System.out)`
+/// when `VERBOSE`): the emulated `System.out` sink `sink` (`None`: the
+/// process's standard output), written through as each line is printed.
+fn system_out_print_stream(
+    sink: Option<randomizedtesting::jdk::system::PrintSink>,
+) -> Arc<dyn PrintStream> {
+    Arc::new(WriterPrintStream::new(
+        Box::new(crate::search::shard_searching_test_base::SystemOut(sink)),
+        true,
+    ))
 }
 
 /// `bos.toString(UTF_8)`.
@@ -69,9 +71,12 @@ fn bos_string(bos: &Arc<Mutex<Vec<u8>>>) -> String {
     String::from_utf8_lossy(&bos.lock().unwrap_or_else(|e| e.into_inner())).into_owned()
 }
 
-/// The error of a status, as `assertNull(status.error)` renders it.
+/// The error of a status, as `assertNull(status.error)` renders it: the
+/// `Throwable.toString()` of the Java exception it stands for.
 fn error_string(error: &Option<LuceneError>) -> Option<String> {
-    error.as_ref().map(|e| format!("{e}"))
+    error
+        .as_ref()
+        .map(|e| crate::util::java_exceptions::java_throwable(e).to_string())
 }
 
 /// `testDeletedDocs(dir)`.
@@ -109,12 +114,14 @@ pub fn test_deleted_docs(dir: Arc<dyn Directory>) -> Result<()> {
     checker.set_info_stream(Arc::new(PrintStreamLines(Arc::clone(&bos))));
     checker.set_level(Level::MIN_LEVEL_FOR_INTEGRITY_CHECKS)?;
     if *VERBOSE {
-        checker.set_info_stream(info_stream(&bos));
+        checker.set_info_stream(system_out_print_stream(
+            randomizedtesting::jdk::system::out(),
+        ));
     }
     let index_status = checker.check_index()?;
     if !index_status.clean {
-        println!("CheckIndex failed");
-        println!("{}", bos_string(&bos));
+        randomizedtesting::jdk::system::out_println("CheckIndex failed");
+        randomizedtesting::jdk::system::out_println(&bos_string(&bos));
         Assert::fail_without_message();
     }
 
@@ -181,7 +188,9 @@ fn checksums_only(dir: Arc<dyn Directory>) -> Result<()> {
     let mut checker = CheckIndex::new(Arc::clone(&dir))?;
     checker.set_info_stream(Arc::new(PrintStreamLines(Arc::clone(&bos))));
     if *VERBOSE {
-        checker.set_info_stream(info_stream(&bos));
+        checker.set_info_stream(system_out_print_stream(
+            randomizedtesting::jdk::system::out(),
+        ));
     }
     let index_status = checker.check_index()?;
     Assert::assert_true(index_status.clean);
@@ -237,4 +246,42 @@ pub fn test_obtains_lock(dir: Arc<dyn Directory>) -> Result<()> {
     );
 
     iw.close()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `assertNull(seg.xxxStatus.error)` renders the error as JUnit renders
+    /// a `Throwable`: its `toString()`, the Java class then the message.
+    #[test]
+    fn status_error_renders_as_the_java_throwable() {
+        let e = LuceneError::illegal_argument("bad");
+        assert_eq!(
+            error_string(&Some(e)).as_deref(),
+            Some("java.lang.IllegalArgumentException: bad")
+        );
+        assert_eq!(error_string(&None), None);
+    }
+
+    /// `checker.setInfoStream(System.out)` writes to the emulated
+    /// `System.out`, not to the process's standard output.
+    #[test]
+    fn verbose_info_stream_is_the_emulated_system_out() {
+        let captured = Arc::new(Mutex::new(String::new()));
+        let sink: randomizedtesting::jdk::system::PrintSink = {
+            let captured = Arc::clone(&captured);
+            Arc::new(move |text: &str| captured.lock().unwrap().push_str(text))
+        };
+        let stream = system_out_print_stream(Some(sink));
+        stream.println("Checking 1 segments");
+        assert_eq!(
+            captured.lock().unwrap().as_str(),
+            format!(
+                "Checking 1 segments{}",
+                rucene::util::print_stream::LINE_SEPARATOR
+            )
+            .as_str()
+        );
+    }
 }

@@ -119,3 +119,81 @@ fn test_lucene99_segment_info_format() {
     let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
     run_suite(lucene99_class);
 }
+
+// -----------------------------------------------------------------------------
+// One `getCodec()` per test (pass B2, rmp #520)
+// -----------------------------------------------------------------------------
+
+/// The `getCodec()` calls of [`CountingSuite`] since the counter was reset.
+static GET_CODEC_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `TestLucene99SegmentInfoFormat` counting its `getCodec()` calls.
+struct CountingSuite;
+
+impl BaseIndexFileFormatTestCase for CountingSuite {
+    fn get_codec(&self) -> Arc<dyn Codec> {
+        GET_CODEC_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        TestUtil::get_default_codec()
+    }
+
+    fn add_random_fields(&self, doc: &mut Document) {
+        self.segment_infos_add_random_fields(doc);
+    }
+
+    fn as_segment_infos(&self) -> Option<&dyn BaseSegmentInfoFormatTestCase> {
+        Some(self)
+    }
+}
+
+impl BaseSegmentInfoFormatTestCase for CountingSuite {
+    fn get_versions(&self) -> Vec<Version> {
+        vec![Version::LATEST]
+    }
+}
+
+/// A test running `body` on the counting suite, then asserting that it
+/// called `getCodec()` exactly once, as each Java test does (`Codec codec =
+/// getCodec();`, then `codec` is passed to `new SegmentInfo`).
+fn counting_test(
+    name: &str,
+    body: fn(&dyn BaseSegmentInfoFormatTestCase) -> rucene::error::Result<()>,
+) -> Method {
+    rucene_test_framework::index::base_index_file_format_test_case::format_test(name, move |c| {
+        GET_CODEC_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+        body(c.as_segment_infos().expect("a segment-infos case"))?;
+        randomizedtesting::junit::Assert::assert_equals(
+            1i64,
+            GET_CODEC_CALLS.load(std::sync::atomic::Ordering::SeqCst) as i64,
+        );
+        Ok(())
+    })
+}
+
+/// The tests whose port called `getCodec()` a second time (in the shared
+/// `new SegmentInfo(...)` helper), one of each fixture shape.
+fn counting_class() -> Arc<Class> {
+    Class::builder("org.apache.lucene.codecs.lucene99.TestSegmentInfoGetCodecCalls")
+        .extends(&LuceneTestCase::class())
+        .constructor(Constructor::no_args(|| {
+            FormatTestInstance::new(Arc::new(CountingSuite))
+        }))
+        .method(counting_test("testFiles", |c| c.test_files()))
+        .method(counting_test("testHasBlocks", |c| c.test_has_blocks()))
+        .method(counting_test("testDiagnostics", |c| c.test_diagnostics()))
+        .method(counting_test("testExceptionOnCreateOutput", |c| {
+            c.test_exception_on_create_output()
+        }))
+        .method(counting_test("testExceptionOnCloseInput", |c| {
+            c.test_exception_on_close_input()
+        }))
+        .build()
+}
+
+/// Each `BaseSegmentInfoFormatTestCase` test obtains its codec once, before
+/// the segment id, and builds its `SegmentInfo` with it (rmp #520): the port
+/// called `getCodec()` again inside its `new SegmentInfo(...)` helper.
+#[test]
+fn test_segment_info_tests_call_get_codec_once() {
+    let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
+    run_suite(counting_class);
+}

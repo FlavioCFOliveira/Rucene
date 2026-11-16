@@ -155,14 +155,34 @@ impl Assert {
         let (expected, actual) = match (expected, actual) {
             (Some(e), Some(a)) => (e, a),
             (e, a) => {
-                // `ComparisonFailure` with a null side: `Assert.format` of
-                // the plain values.
+                // A null side is not `instanceof String`: `failNotEquals`,
+                // a plain `AssertionError` with `Assert.format`'s message,
+                // which names the classes when both sides print the same
+                // (`expected: null<null> but was: java.lang.String<null>`).
                 let show = |v: Option<&str>| v.unwrap_or("null").to_string();
-                Throwable::new(
-                    COMPARISON_FAILURE,
-                    format_values(message, &show(e), &show(a)),
-                )
-                .throw()
+                let (es, as_) = (show(e), show(a));
+                let text = if es == as_ {
+                    let class = |v: Option<&str>| {
+                        if v.is_some() {
+                            "java.lang.String"
+                        } else {
+                            "null"
+                        }
+                    };
+                    let prefix = if message.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{message} ")
+                    };
+                    format!(
+                        "{prefix}expected: {}<{es}> but was: {}<{as_}>",
+                        class(e),
+                        class(a)
+                    )
+                } else {
+                    format_values(message, &es, &as_)
+                };
+                Throwable::new(ASSERTION_ERROR, text).throw()
             }
         };
         let e: Vec<u16> = expected.encode_utf16().collect();
@@ -247,5 +267,37 @@ impl Assume {
     /// `throw new AssumptionViolatedException(assumption)`.
     pub fn violated(assumption: &str) -> ! {
         Throwable::new(ASSUMPTION_VIOLATED, assumption).throw()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use super::*;
+
+    fn thrown(f: impl FnOnce()) -> Throwable {
+        Throwable::from_panic(catch_unwind(AssertUnwindSafe(f)).expect_err("must fail"))
+    }
+
+    /// `assertEquals(Object, Object)` with a `null` side is not a
+    /// `ComparisonFailure` (a `null` is not `instanceof String`): JUnit 4.13.1
+    /// calls `failNotEquals`, a plain `AssertionError`.
+    #[test]
+    fn null_side_is_a_plain_assertion_error() {
+        let t = thrown(|| Assert::assert_equals_str(Some("m"), None, Some("x")));
+        assert_eq!(t.class_name(), ASSERTION_ERROR);
+        assert_eq!(t.message(), Some("m expected:<null> but was:<x>"));
+
+        let t = thrown(|| Assert::assert_equals_str(None, Some("null"), None));
+        assert_eq!(t.class_name(), ASSERTION_ERROR);
+        assert_eq!(
+            t.message(),
+            Some("expected: java.lang.String<null> but was: null<null>")
+        );
+
+        let t = thrown(|| Assert::assert_equals_str(None, Some("ab"), Some("ac")));
+        assert_eq!(t.class_name(), COMPARISON_FAILURE);
+        assert_eq!(t.message(), Some("expected:<a[b]> but was:<a[c]>"));
     }
 }
