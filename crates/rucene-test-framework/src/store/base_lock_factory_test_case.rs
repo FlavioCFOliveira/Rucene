@@ -38,6 +38,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Barrier, LazyLock, Mutex};
 
+use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::reflect::{modifier, Class, Method};
 use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::Assert;
@@ -55,7 +56,7 @@ use rucene::util::BytesRef;
 
 use super::base_directory_test_case::close_shared;
 use crate::analysis::MockAnalyzer;
-use crate::util::java_exceptions::{expect_throws, rethrow_java};
+use crate::util::java_exceptions::{expect_throws, rethrow_java, try_with};
 use crate::util::lucene_test_case::VERBOSE;
 use crate::util::{LuceneTestCase, TestUtil};
 
@@ -197,15 +198,25 @@ pub trait BaseLockFactoryTestCase: Send + Sync + 'static {
             let thread = Thread::unnamed(move || {
                 barrier.wait();
                 while running.load(Ordering::SeqCst) {
-                    match directory.obtain_lock("foo.lock") {
-                        Ok(lock) => {
-                            match asserting_lock.try_lock() {
-                                // assertFalse(assertingLock.isLocked()), then tryLock and unlock
-                                Ok(guard) => drop(guard),
-                                Err(_) => Assert::assert_false(true),
-                            }
-                            let _ = lock.close();
-                        }
+                    // `try (Lock lock = directory.obtainLock("foo.lock")) { ... }
+                    // catch (IOException ex) {}`: the lock closes on every exit
+                    // of the body; the catch also sees the obtain and the close.
+                    let outcome = directory.obtain_lock("foo.lock").and_then(|lock| {
+                        try_with(
+                            lock,
+                            |lock| lock.close(),
+                            |_| {
+                                match asserting_lock.try_lock() {
+                                    // assertFalse(assertingLock.isLocked()), then tryLock and unlock
+                                    Ok(guard) => drop(guard),
+                                    Err(_) => Assert::assert_false(true),
+                                }
+                                Ok(())
+                            },
+                        )
+                    });
+                    match outcome {
+                        Ok(()) => {}
                         Err(e) if e.is_io_exception() => {
                             //
                         }
@@ -220,9 +231,8 @@ pub trait BaseLockFactoryTestCase: Send + Sync + 'static {
             threads.push(thread);
         }
         for thread in threads {
-            if let Err(payload) = thread.join() {
-                std::panic::resume_unwind(payload);
-            }
+            // `Thread.join()` returns normally whatever the thread threw.
+            let _ = thread.join();
         }
         close_shared(directory)
     }
@@ -265,14 +275,9 @@ pub trait BaseLockFactoryTestCase: Send + Sync + 'static {
         writer.start();
         searcher.start();
 
-        let joined_writer = writer.join();
-        let joined_searcher = searcher.join();
-        if let Err(payload) = joined_writer {
-            std::panic::resume_unwind(payload);
-        }
-        if let Err(payload) = joined_searcher {
-            std::panic::resume_unwind(payload);
-        }
+        // `Thread.join()` returns normally whatever the thread threw.
+        let _ = writer.join();
+        let _ = searcher.join();
 
         Assert::assert_true_msg(
             "IndexWriter hit unexpected exceptions",
@@ -349,34 +354,69 @@ fn writer_thread_run(num_iteration: i32, dir: &Arc<dyn Directory>, hit_exception
 
         let _ = writeln!(print_stream, "\nTEST: WriterThread iter={i}");
         let _ = iwc.set_open_mode(OpenMode::APPEND);
-        let writer = match IndexWriter::new(Arc::clone(dir), iwc) {
+        // Each `catch (Throwable t)`: an error or any panic.
+        let writer = match catch_throwable(|| IndexWriter::new(Arc::clone(dir), iwc)) {
             Ok(writer) => writer,
             Err(t) => {
                 report(hit_exception, "creation", &t, &baos);
                 break;
             }
         };
-        if let Err(t) = add_doc(&writer) {
+        if let Err(t) = catch_throwable(|| add_doc(&writer)) {
             report(hit_exception, "addDoc", &t, &baos);
             break;
         }
-        if let Err(t) = writer.close() {
+        if let Err(t) = catch_throwable(|| writer.close()) {
             report(hit_exception, "close", &t, &baos);
             break;
         }
     }
 }
 
+/// `try { body } catch (Throwable t)`: the throwable of an error or of any
+/// panic.
+fn catch_throwable<T>(body: impl FnOnce() -> Result<T>) -> std::result::Result<T, Throwable> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(e)) => Err(crate::util::java_exceptions::java_throwable(&e)),
+        Err(payload) => Err(crate::mockfile::panic_throwable(&*payload)),
+    }
+}
+
 /// The `catch (Throwable t)` of `WriterThread.run()` (`Constants.WINDOWS`
-/// is false on the platforms the port runs on).
-fn report(hit_exception: &AtomicBool, what: &str, t: &LuceneError, baos: &SharedBytes) {
+/// is false on the platforms the port runs on): the message,
+/// `t.printStackTrace(System.out)`, then the infoStream output.
+fn report(hit_exception: &AtomicBool, what: &str, t: &Throwable, baos: &SharedBytes) {
     hit_exception.store(true, Ordering::SeqCst);
-    let t = crate::util::java_exceptions::java_throwable(t);
     randomizedtesting::jdk::system::out_println(&format!(
         "Stress Test Index Writer: {what} hit unexpected exception: {t}"
     ));
-    randomizedtesting::jdk::system::out_println(&format!("{t}"));
+    randomizedtesting::jdk::system::out_println(
+        &randomizedtesting::jdk::system::format_stack_trace(t),
+    );
     randomizedtesting::jdk::system::out_println(&baos.text());
+}
+
+/// A `catch` clause of `SearcherThread.run()`: the flag, the message and
+/// `e.printStackTrace(System.out)`.
+fn report_searcher(hit_exception: &AtomicBool, what: &str, e: &Throwable) {
+    hit_exception.store(true, Ordering::SeqCst);
+    randomizedtesting::jdk::system::out_println(&format!(
+        "Stress Test Index Searcher: {what} hit unexpected exception: {e}"
+    ));
+    randomizedtesting::jdk::system::out_println(
+        &randomizedtesting::jdk::system::format_stack_trace(e),
+    );
+}
+
+/// `catch (IOException e)`: the throwable of an I/O error; any other error
+/// propagates out of `run()` as the Java exception it stands for.
+fn caught_io(e: &LuceneError) -> Throwable {
+    let t = crate::util::java_exceptions::java_throwable(e);
+    if !t.is_instance(randomizedtesting::jdk::exception::IO_EXCEPTION) {
+        t.throw()
+    }
+    t
 }
 
 /// `SearcherThread.run()`.
@@ -386,33 +426,30 @@ fn searcher_thread_run(num_iteration: i32, dir: &Arc<dyn Directory>, hit_excepti
         BytesRef::new(b"aaa".to_vec()),
     )));
     for _ in 0..num_iteration {
-        let reader = match directory_reader::open(Arc::clone(dir)) {
-            Ok(reader) => reader,
+        // `catch (Exception e)` around opening the reader and the searcher:
+        // an error, or a panic that is not an `Error`.
+        let opened = crate::util::java_exceptions::caught_value(std::panic::catch_unwind(
+            std::panic::AssertUnwindSafe(|| {
+                let reader = directory_reader::open(Arc::clone(dir))?;
+                let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
+                Ok((reader, searcher))
+            }),
+        ));
+        let (reader, searcher) = match opened {
+            Ok(opened) => opened,
             Err(e) => {
-                hit_exception.store(true, Ordering::SeqCst);
-                let e = crate::util::java_exceptions::java_throwable(&e);
-                randomizedtesting::jdk::system::out_println(&format!(
-                    "Stress Test Index Searcher: create hit unexpected exception: {e}"
-                ));
+                report_searcher(hit_exception, "create", &e);
                 break;
             }
         };
-        let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
         if let Err(e) = searcher.search(Arc::clone(&query), 1000) {
-            hit_exception.store(true, Ordering::SeqCst);
-            let e = crate::util::java_exceptions::java_throwable(&e);
-            randomizedtesting::jdk::system::out_println(&format!(
-                "Stress Test Index Searcher: search hit unexpected exception: {e}"
-            ));
+            report_searcher(hit_exception, "search", &caught_io(&e));
             break;
         }
+        // System.out.println(hits.length() + " total results");
         drop(searcher);
         if let Err(e) = reader.close() {
-            hit_exception.store(true, Ordering::SeqCst);
-            let e = crate::util::java_exceptions::java_throwable(&e);
-            randomizedtesting::jdk::system::out_println(&format!(
-                "Stress Test Index Searcher: close hit unexpected exception: {e}"
-            ));
+            report_searcher(hit_exception, "close", &caught_io(&e));
             break;
         }
     }

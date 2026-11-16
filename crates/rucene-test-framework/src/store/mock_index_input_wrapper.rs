@@ -34,7 +34,9 @@ use rucene::store::java_nio_file::throw_unchecked;
 use rucene::store::{DataInput, IOContext, IndexInput};
 use rucene::util::java_collections::{JavaStringMap, JavaStringSet};
 
-use super::mock_directory_wrapper::{runtime_exception, try_with_resources, MockDirectoryWrapper};
+use super::mock_directory_wrapper::{
+    runtime_exception, try_with_resources_outcome, MockDirectoryWrapper,
+};
 use super::slow_closing_mock_index_input_wrapper::SlowClosingMockIndexInputWrapper;
 use super::slow_opening_mock_index_input_wrapper::SlowOpeningMockIndexInputWrapper;
 
@@ -248,18 +250,20 @@ impl MockIndexInputWrapper {
         // Pending resolution on LUCENE-686 we may want to
         // remove the conditional check so we also track that
         // all clones get closed:
-        let body = {
+        // `try (Closeable delegate = in)`: the delegate closes on every exit
+        // of the body, a panic included.
+        let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let dir = self.dir();
             if self.parent.is_none() {
                 dir.remove_index_input_id(self.ctl.id, &self.name);
             }
             dir.maybe_throw_deterministic_exception()
-        };
+        }));
         let closed = self.r#in.close();
         if self.parent.is_none() {
             self.dir = None;
         }
-        try_with_resources(body, [closed])
+        try_with_resources_outcome(body, [closed])
     }
 
     /// `toString()`: `MockIndexInputWrapper(<in>)`.

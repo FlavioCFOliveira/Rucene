@@ -105,9 +105,16 @@ impl FilterFileSystemProvider for ShuffleFS {
                 }
             }
         }
+        // try-with-resources: an iteration failure is thrown with the close
+        // failure added as suppressed; else the close failure is thrown.
         let closed = stream.close();
         if let Some(error) = failure {
-            return Err(error);
+            return Err(match closed {
+                Err(close_error) => {
+                    rucene::store::java_nio_file::add_suppressed(error, &close_error)
+                }
+                Ok(()) => error,
+            });
         }
         closed?;
         // `path1.getFileName().toString().compareTo(...)`: UTF-16 order.

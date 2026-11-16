@@ -31,6 +31,7 @@ use rucene::util::string_helper::IntsRef;
 use rucene::util::unicode_util::UnicodeUtil;
 use rucene::util::BytesRef;
 
+use crate::util::java_exceptions::try_with;
 use crate::util::{LuceneTestCase, TestUtil};
 use randomizedtesting::junit::Assert;
 
@@ -347,18 +348,23 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                     None
                 }
                 Some(metadata) => {
-                    let fst = {
-                        // `try (IndexInput in = dir.openInput(...))`
-                        // (`FSTTester.java:287`): closed however the read ends.
-                        let mut input = self
+                    // `try (IndexInput in = dir.openInput(...)) {...} finally {
+                    // dir.deleteFile(...); }` (`FSTTester.java:287-291`): the
+                    // input closes however the read ends, and the `finally`
+                    // runs on every exit, a failed open included; a `finally`
+                    // that throws replaces the pending exception.
+                    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let input = self
                             .dir
                             .open_input("fstOffHeap.bin", &*DEFAULT_IO_CONTEXT)?;
-                        let read = FST::new(metadata, &mut *input);
-                        let closed = input.close();
-                        read.and_then(|fst| closed.map(|()| fst))
-                    };
+                        try_with(
+                            input,
+                            |input| input.close(),
+                            |input| FST::new(metadata, &mut **input),
+                        )
+                    }));
                     self.dir.delete_file("fstOffHeap.bin")?;
-                    Some(fst?)
+                    Some(read.unwrap_or_else(|payload| std::panic::resume_unwind(payload))?)
                 }
             }
         } else {
@@ -376,28 +382,36 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                         .expect("INVARIANT: metadata is present");
                     if self.random.next_boolean() {
                         let context = LuceneTestCase::new_io_context(self.random);
-                        {
-                            let mut out = self.dir.create_output("fst.bin", &*context)?;
-                            // fst.save(out, out): the metadata, then the bytes,
-                            // into one output.
-                            let mut meta = ByteBuffersDataOutput::new();
-                            let mut body = ByteBuffersDataOutput::new();
-                            fst.save(&mut meta, &mut body)?;
-                            meta.copy_to(&mut *out)?;
-                            body.copy_to(&mut *out)?;
-                            out.close()?;
-                        }
-                        let fst = {
-                            // `try (IndexInput in = dir.openInput(...))`
-                            // (`FSTTester.java:300`).
-                            let mut input = self.dir.open_input("fst.bin", &*context)?;
-                            let read = FST::read_metadata(&mut *input, self.outputs.clone())
-                                .and_then(|metadata| FST::new(metadata, &mut *input));
-                            let closed = input.close();
-                            read.and_then(|fst| closed.map(|()| fst))
-                        };
+                        // `try (IndexOutput out = dir.createOutput(...))`
+                        // (`FSTTester.java:297-299`).
+                        try_with(
+                            self.dir.create_output("fst.bin", &*context)?,
+                            |out| out.close(),
+                            |out| {
+                                // fst.save(out, out): the metadata, then the bytes,
+                                // into one output.
+                                let mut meta = ByteBuffersDataOutput::new();
+                                let mut body = ByteBuffersDataOutput::new();
+                                fst.save(&mut meta, &mut body)?;
+                                meta.copy_to(&mut **out)?;
+                                body.copy_to(&mut **out)
+                            },
+                        )?;
+                        // `try (IndexInput in = dir.openInput(...)) {...} finally
+                        // { dir.deleteFile("fst.bin"); }` (`FSTTester.java:300-304`).
+                        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let input = self.dir.open_input("fst.bin", &*context)?;
+                            try_with(
+                                input,
+                                |input| input.close(),
+                                |input| {
+                                    FST::read_metadata(&mut **input, self.outputs.clone())
+                                        .and_then(|metadata| FST::new(metadata, &mut **input))
+                                },
+                            )
+                        }));
                         self.dir.delete_file("fst.bin")?;
-                        Some(fst?)
+                        Some(read.unwrap_or_else(|payload| std::panic::resume_unwind(payload))?)
                     } else {
                         Some(fst)
                     }

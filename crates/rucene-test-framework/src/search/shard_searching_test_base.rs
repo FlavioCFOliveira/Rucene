@@ -556,9 +556,8 @@ impl ShardSearchingTestBase {
     pub fn finish(&self) -> Result<()> {
         let thread = lock(&self.change_indices_thread).take();
         if let Some(thread) = thread {
-            if let Err(payload) = thread.join() {
-                std::panic::resume_unwind(payload);
-            }
+            // `Thread.join()` returns normally whatever the thread threw.
+            let _ = thread.join();
         }
         for node in self.nodes().iter() {
             let node = node
@@ -623,7 +622,7 @@ fn throwable_of(e: &LuceneError) -> Throwable {
 fn change_indices_run(base: &Arc<ShardSearchingTestBase>) {
     let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         let docs = LineFileDocs::with_default_file(&*random()).map_err(LuceneError::from)?;
-        let result = (|| -> Result<()> {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
             let mut num_docs = 0;
             while nano_time() < base.end_time_nanos() {
                 let what = random().next_int_bound(3);
@@ -677,10 +676,10 @@ fn change_indices_run(base: &Arc<ShardSearchingTestBase>) {
                 }
             }
             Ok(())
-        })();
-        // try-with-resources
+        }));
+        // try-with-resources: closed on every exit of the body.
         docs.close();
-        result
+        result.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
     }));
     let failure = match outcome {
         Ok(Ok(())) => None,

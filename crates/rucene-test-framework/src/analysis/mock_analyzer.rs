@@ -183,15 +183,15 @@ impl MockAnalyzer {
                     }
                     if *VERBOSE {
                         if val == i32::MAX {
-                            println!(
+                            randomizedtesting::jdk::system::out_println(&format!(
                                 "MockAnalyzer: field={} gets variable length payloads",
                                 shown
-                            );
+                            ));
                         } else if val != -1 {
-                            println!(
+                            randomizedtesting::jdk::system::out_println(&format!(
                                 "MockAnalyzer: field={} gets fixed length={} payloads",
                                 shown, val
-                            );
+                            ));
                         }
                     }
                     previous_mappings.insert(key, val); // save it so we are consistent for this field

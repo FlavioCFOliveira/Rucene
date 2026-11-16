@@ -19,9 +19,10 @@
 
 use std::sync::Arc;
 
+use randomizedtesting::jdk::exception::{Throwable, RUNTIME_EXCEPTION};
 use randomizedtesting::jdk::random::Random;
 use rucene::analysis::CharReader;
-use rucene::error::{LuceneError, LuceneErrorKind, Result};
+use rucene::error::{LuceneError, Result};
 
 use crate::util::TestUtil;
 
@@ -75,11 +76,16 @@ impl MockReaderWrapper {
         self.throw_exc_next = true;
     }
 
-    /// `isMyEvilException(Throwable)`: a `RuntimeException` with the
-    /// message this wrapper throws.
+    /// `isMyEvilException(Throwable)`: a `RuntimeException` (or a subclass)
+    /// with the message this wrapper throws.
     pub fn is_my_evil_exception(t: &LuceneError) -> bool {
-        matches!(t, LuceneError { kind: LuceneErrorKind::Unchecked { class, message: Some(m), .. }, .. }
-            if *class == "java.lang.RuntimeException" && m == FAKE_EXCEPTION)
+        Self::is_my_evil_throwable(&crate::util::java_exceptions::java_throwable(t))
+    }
+
+    /// `isMyEvilException(Throwable)` over a thrown [`Throwable`] (a panic's
+    /// payload, or the Java throwable an error stands for).
+    pub fn is_my_evil_throwable(t: &Throwable) -> bool {
+        t.is_instance(RUNTIME_EXCEPTION) && t.message() == Some(FAKE_EXCEPTION)
     }
 }
 
@@ -176,5 +182,23 @@ mod tests {
         );
         assert!(!w.mark_supported());
         assert!(!w.ready().unwrap());
+    }
+
+    /// `isMyEvilException(Throwable)` is `t instanceof RuntimeException &&
+    /// "fake exception now!".equals(t.getMessage())`
+    /// (`MockReaderWrapper.java:91-93`): a subclass of `RuntimeException`
+    /// with that message qualifies, any other class does not. The port
+    /// accepted only the exact class `java.lang.RuntimeException`.
+    #[test]
+    fn evil_exception_is_any_runtime_exception_with_the_message() {
+        use rucene::error::LuceneError;
+        let subclass = LuceneError::illegal_state("fake exception now!");
+        assert!(MockReaderWrapper::is_my_evil_exception(&subclass));
+        let exact = LuceneError::unchecked("java.lang.RuntimeException", "fake exception now!");
+        assert!(MockReaderWrapper::is_my_evil_exception(&exact));
+        let other_message = LuceneError::unchecked("java.lang.RuntimeException", "other");
+        assert!(!MockReaderWrapper::is_my_evil_exception(&other_message));
+        let checked = LuceneError::unchecked("java.lang.Exception", "fake exception now!");
+        assert!(!MockReaderWrapper::is_my_evil_exception(&checked));
     }
 }

@@ -23,7 +23,7 @@ use std::sync::Arc;
 use rucene::error::{LuceneError, Result};
 use rucene::store::{DataOutput, Directory, IndexOutput, DEFAULT_IO_CONTEXT};
 
-use super::mock_directory_wrapper::try_with_resources;
+use super::mock_directory_wrapper::{try_with_resources, try_with_resources_outcome};
 
 /// Port of `org.apache.lucene.tests.store.CorruptingIndexOutput` (`extends
 /// FilterIndexOutput`): once closed, flips bit 0 of byte `byte_to_corrupt`
@@ -101,7 +101,7 @@ impl CorruptingIndexOutput {
         };
         let new_temp_name = tmp_out.name().to_string();
         let byte_to_corrupt = self.byte_to_corrupt;
-        let body = (|| -> Result<()> {
+        let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
             if byte_to_corrupt >= r#in.length() {
                 return Err(LuceneError::illegal_argument(format!(
                     "byteToCorrupt={byte_to_corrupt} but file \"{name}\" is only length={}",
@@ -114,10 +114,10 @@ impl CorruptingIndexOutput {
             tmp_out.write_byte(b)?;
             let rest = r#in.length() - byte_to_corrupt - 1;
             tmp_out.copy_bytes(r#in.as_mut(), rest)
-        })();
+        }));
         let closed_in = r#in.close();
         let closed_out = tmp_out.close();
-        try_with_resources(body, [closed_in, closed_out])?;
+        try_with_resources_outcome(body, [closed_in, closed_out])?;
 
         // Delete original and copy corrupt version back:
         self.dir.delete_file(&name)?;

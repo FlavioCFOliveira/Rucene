@@ -43,7 +43,7 @@ use super::base_directory_test_case::{directory_test, BaseDirectoryTestCase};
 use crate::analysis::MockAnalyzer;
 use crate::index::RandomIndexWriter;
 use crate::store::MockDirectoryWrapper;
-use crate::util::java_exceptions::expect_throws;
+use crate::util::java_exceptions::{expect_throws, try_with};
 use crate::util::lucene_test_case::TEST_NIGHTLY;
 use crate::util::{LuceneTestCase, TestUtil};
 
@@ -137,9 +137,12 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
     /// `testGroupVIntMultiBlocks()`.
     fn test_group_v_int_multi_blocks(&self) -> Result<()> {
         let max_chunk_size = random().next_int_range(64, 512);
-        let dir = self.get_directory_chunked(&LuceneTestCase::create_temp_dir(), max_chunk_size)?;
-        let result = self.do_test_group_v_int(&*dir, 10, 1, 31, 1024);
-        result.and(dir.close())
+        // try (Directory dir = getDirectory(createTempDir(), maxChunkSize))
+        try_with(
+            self.get_directory_chunked(&LuceneTestCase::create_temp_dir(), max_chunk_size)?,
+            |dir| dir.close(),
+            |dir| self.do_test_group_v_int(&**dir, 10, 1, 31, 1024),
+        )
     }
 
     /// `testCloneClose()`.
@@ -459,114 +462,148 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
         };
         let mut bytes = vec![0u8; num as usize];
         random().next_bytes(&mut bytes);
-        let dir = self.get_directory_chunked(&temp_dir("testBytesCrossBoundary"), 16)?;
-        let result = (|| -> Result<()> {
-            let mut out = dir.create_output(
-                "bytesCrossBoundary",
-                &*LuceneTestCase::new_io_context(&*random()),
-            )?;
-            let written = out.write_bytes(&bytes, 0, bytes.len());
-            written.and(out.close())?;
-            let mut input = dir.open_input(
-                "bytesCrossBoundary",
-                &*LuceneTestCase::new_io_context(&*random()),
-            )?;
-            let body = (|| -> Result<()> {
-                let mut slice = input.random_access_slice(0, input.length())?;
-                Assert::assert_equals(input.length(), slice.length());
-                self.assert_bytes(&mut *slice, &bytes, 0)?;
+        // try (Directory dir = ...) { try (IndexOutput out = ...) {...}
+        // try (IndexInput input = ...) {...} }
+        try_with(
+            self.get_directory_chunked(&temp_dir("testBytesCrossBoundary"), 16)?,
+            |dir| dir.close(),
+            |dir| {
+                try_with(
+                    dir.create_output(
+                        "bytesCrossBoundary",
+                        &*LuceneTestCase::new_io_context(&*random()),
+                    )?,
+                    |out| out.close(),
+                    |out| out.write_bytes(&bytes, 0, bytes.len()),
+                )?;
+                try_with(
+                    dir.open_input(
+                        "bytesCrossBoundary",
+                        &*LuceneTestCase::new_io_context(&*random()),
+                    )?,
+                    |input| input.close(),
+                    |input| {
+                        let mut slice = input.random_access_slice(0, input.length())?;
+                        Assert::assert_equals(input.length(), slice.length());
+                        self.assert_bytes(&mut *slice, &bytes, 0)?;
 
-                // subslices
-                for offset in 1..bytes.len() {
-                    let mut subslice =
-                        input.random_access_slice(offset as i64, input.length() - offset as i64)?;
-                    Assert::assert_equals(input.length() - offset as i64, subslice.length());
-                    self.assert_bytes(&mut *subslice, &bytes, offset)?;
-                }
+                        // subslices
+                        for offset in 1..bytes.len() {
+                            let mut subslice = input.random_access_slice(
+                                offset as i64,
+                                input.length() - offset as i64,
+                            )?;
+                            Assert::assert_equals(
+                                input.length() - offset as i64,
+                                subslice.length(),
+                            );
+                            self.assert_bytes(&mut *subslice, &bytes, offset)?;
+                        }
 
-                // with padding
-                for i in 1..7 {
-                    let name = format!("bytes-{i}");
-                    let mut o =
-                        dir.create_output(&name, &*LuceneTestCase::new_io_context(&*random()))?;
-                    let mut junk = vec![0u8; i];
-                    random().next_bytes(&mut junk);
-                    o.write_bytes(&junk, 0, junk.len())?;
-                    input.seek(0)?;
-                    let len = input.length();
-                    o.copy_bytes(&mut *input, len)?;
-                    o.close()?;
-                    let mut padded =
-                        dir.open_input(&name, &*LuceneTestCase::new_io_context(&*random()))?;
-                    let mut whole =
-                        padded.random_access_slice(i as i64, padded.length() - i as i64)?;
-                    Assert::assert_equals(padded.length() - i as i64, whole.length());
-                    self.assert_bytes(&mut *whole, &bytes, 0)?;
-                    padded.close()?;
-                }
-                Ok(())
-            })();
-            body.and(input.close())
-        })();
-        result.and(dir.close())
+                        // with padding
+                        for i in 1..7 {
+                            let name = format!("bytes-{i}");
+                            let mut o = dir.create_output(
+                                &name,
+                                &*LuceneTestCase::new_io_context(&*random()),
+                            )?;
+                            let mut junk = vec![0u8; i];
+                            random().next_bytes(&mut junk);
+                            o.write_bytes(&junk, 0, junk.len())?;
+                            input.seek(0)?;
+                            let len = input.length();
+                            o.copy_bytes(&mut **input, len)?;
+                            o.close()?;
+                            let mut padded = dir
+                                .open_input(&name, &*LuceneTestCase::new_io_context(&*random()))?;
+                            let mut whole =
+                                padded.random_access_slice(i as i64, padded.length() - i as i64)?;
+                            Assert::assert_equals(padded.length() - i as i64, whole.length());
+                            self.assert_bytes(&mut *whole, &bytes, 0)?;
+                            padded.close()?;
+                        }
+                        Ok(())
+                    },
+                )
+            },
+        )
     }
 
     /// `testLittleEndianLongsCrossBoundary()`.
     fn test_little_endian_longs_cross_boundary(&self) -> Result<()> {
-        let dir =
-            self.get_directory_chunked(&temp_dir("testLittleEndianLongsCrossBoundary"), 16)?;
-        let result = (|| -> Result<()> {
-            let mut out = dir.create_output(
-                "littleEndianLongs",
-                &*LuceneTestCase::new_io_context(&*random()),
-            )?;
-            out.write_byte(2)?;
-            out.write_long(3)?;
-            out.write_long(i64::MAX)?;
-            out.write_long(-3)?;
-            out.close()?;
-            let mut input = dir.open_input(
-                "littleEndianLongs",
-                &*LuceneTestCase::new_io_context(&*random()),
-            )?;
-            Assert::assert_equals(25, input.length());
-            Assert::assert_equals(2, input.read_byte()?);
-            let mut l = [0i64; 4];
-            input.read_longs(Some(&mut l), 1, 3)?;
-            crate::index::base_index_file_format_test_case::assert_array_equals(
-                &[0i64, 3, i64::MAX, -3],
-                &l,
-            );
-            Assert::assert_equals(25, input.file_pointer()?);
-            input.close()
-        })();
-        result.and(dir.close())
+        try_with(
+            self.get_directory_chunked(&temp_dir("testLittleEndianLongsCrossBoundary"), 16)?,
+            |dir| dir.close(),
+            |dir| {
+                try_with(
+                    dir.create_output(
+                        "littleEndianLongs",
+                        &*LuceneTestCase::new_io_context(&*random()),
+                    )?,
+                    |out| out.close(),
+                    |out| {
+                        out.write_byte(2)?;
+                        out.write_long(3)?;
+                        out.write_long(i64::MAX)?;
+                        out.write_long(-3)
+                    },
+                )?;
+                try_with(
+                    dir.open_input(
+                        "littleEndianLongs",
+                        &*LuceneTestCase::new_io_context(&*random()),
+                    )?,
+                    |input| input.close(),
+                    |input| {
+                        Assert::assert_equals(25, input.length());
+                        Assert::assert_equals(2, input.read_byte()?);
+                        let mut l = [0i64; 4];
+                        input.read_longs(Some(&mut l), 1, 3)?;
+                        crate::index::base_index_file_format_test_case::assert_array_equals(
+                            &[0i64, 3, i64::MAX, -3],
+                            &l,
+                        );
+                        Assert::assert_equals(25, input.file_pointer()?);
+                        Ok(())
+                    },
+                )
+            },
+        )
     }
 
     /// `testLittleEndianFloatsCrossBoundary()`.
     fn test_little_endian_floats_cross_boundary(&self) -> Result<()> {
-        let dir = self.get_directory_chunked(&temp_dir("testFloatsCrossBoundary"), 8)?;
-        let result = (|| -> Result<()> {
-            let mut out =
-                dir.create_output("Floats", &*LuceneTestCase::new_io_context(&*random()))?;
-            out.write_byte(2)?;
-            out.write_int(3f32.to_bits() as i32)?;
-            out.write_int(f32::MAX.to_bits() as i32)?;
-            out.write_int((-3f32).to_bits() as i32)?;
-            out.close()?;
-            let mut input =
-                dir.open_input("Floats", &*LuceneTestCase::new_io_context(&*random()))?;
-            Assert::assert_equals(13, input.length());
-            Assert::assert_equals(2, input.read_byte()?);
-            let mut ff = [0f32; 4];
-            input.read_floats(Some(&mut ff), 1, 3)?;
-            for (e, a) in [0f32, 3.0, f32::MAX, -3.0].iter().zip(ff.iter()) {
-                Assert::assert_equals_float_msg(None, *e, *a, 0.0);
-            }
-            Assert::assert_equals(13, input.file_pointer()?);
-            input.close()
-        })();
-        result.and(dir.close())
+        try_with(
+            self.get_directory_chunked(&temp_dir("testFloatsCrossBoundary"), 8)?,
+            |dir| dir.close(),
+            |dir| {
+                try_with(
+                    dir.create_output("Floats", &*LuceneTestCase::new_io_context(&*random()))?,
+                    |out| out.close(),
+                    |out| {
+                        out.write_byte(2)?;
+                        out.write_int(3f32.to_bits() as i32)?;
+                        out.write_int(f32::MAX.to_bits() as i32)?;
+                        out.write_int((-3f32).to_bits() as i32)
+                    },
+                )?;
+                try_with(
+                    dir.open_input("Floats", &*LuceneTestCase::new_io_context(&*random()))?,
+                    |input| input.close(),
+                    |input| {
+                        Assert::assert_equals(13, input.length());
+                        Assert::assert_equals(2, input.read_byte()?);
+                        let mut ff = [0f32; 4];
+                        input.read_floats(Some(&mut ff), 1, 3)?;
+                        for (e, a) in [0f32, 3.0, f32::MAX, -3.0].iter().zip(ff.iter()) {
+                            Assert::assert_equals_float_msg(None, *e, *a, 0.0);
+                        }
+                        Assert::assert_equals(13, input.file_pointer()?);
+                        Ok(())
+                    },
+                )
+            },
+        )
     }
 }
 

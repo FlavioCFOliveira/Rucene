@@ -26,6 +26,7 @@ use super::attributes::{char_term_id, Att};
 use super::lookahead_token_filter::{
     new_lookahead_filter, LookaheadLogic, LookaheadTokenFilter, Position,
 };
+use crate::index::base_index_file_format_test_case::npe_with;
 use crate::util::TestUtil;
 
 const DEBUG: bool = false;
@@ -47,21 +48,23 @@ impl LookaheadLogic for MockGraphTokenFilterLogic {
         input: &mut dyn TokenStream,
     ) -> Result<()> {
         if DEBUG {
-            println!("MockGraphTF.afterPos");
+            randomizedtesting::jdk::system::out_println("MockGraphTF.afterPos");
         }
-        let random = f
-            .logic
-            .random
-            .as_ref()
-            .expect("java.lang.NullPointerException: reset() was not called");
+        let random = npe_with(f.logic.random.as_ref(), || {
+            "Cannot invoke \"java.util.Random.nextInt(int)\" because \"this.random\" is null"
+                .to_string()
+        });
         if random.next_int_bound(7) == 5 {
             let pos_length = TestUtil::next_int(random, 1, 5);
 
             if DEBUG {
-                println!("  do insert! posLen={}", pos_length);
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "  do insert! posLen={}",
+                    pos_length
+                ));
             }
 
-            let end_pos = f.output_pos + pos_length;
+            let end_pos = f.output_pos.wrapping_add(pos_length);
             let end_offset_at =
                 |f: &mut LookaheadTokenFilter<Self>| f.positions.get(end_pos).end_offset;
 
@@ -89,10 +92,10 @@ impl LookaheadLogic for MockGraphTokenFilterLogic {
                     .offset_mut()
                     .set_offset(start_offset, end_offset);
                 if DEBUG {
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "  inject: outputPos={} startOffset={} endOffset={} posLength={}",
                         f.output_pos, start_offset, end_offset, pos_length
-                    );
+                    ));
                 }
                 // TODO: set TypeAtt too?
             } else {
@@ -124,10 +127,10 @@ impl LookaheadLogic for MockGraphTokenFilterLogic {
         input: &mut dyn TokenStream,
     ) -> Result<bool> {
         if DEBUG {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "MockGraphTF.incr inputPos={} outputPos={}",
                 f.input_pos, f.output_pos
-            );
+            ));
         }
         if f.logic.random.is_none() {
             return Err(LuceneError::illegal_state(

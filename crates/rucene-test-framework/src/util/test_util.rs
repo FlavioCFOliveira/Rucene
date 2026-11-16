@@ -956,54 +956,51 @@ impl TestUtil {
         // TODO: actually use the dir's locking, unless test uses a special method?
         // some tests e.g. exception tests become much more complicated if they have to close the writer
         let lock = NoLockFactory::instance().obtain_lock(&*dir, "bogus")?;
-        let mut checker = CheckIndex::with_write_lock(dir, Some(lock));
-        checker.set_level(level)?;
-        checker.set_fail_fast(fail_fast);
-        checker
-            .set_info_stream_verbose(Some(Arc::new(PrintStreamLines(Arc::clone(&buffer)))), false);
-        if concurrent {
-            checker.set_thread_count(RandomizedTest::random_int_between(2, 5))?;
-        } else {
-            checker.set_thread_count(1)?;
-        }
-        // The body of Java's try-with-resources: it runs, and prints and
-        // throws on an unclean index, before `checker.close()`; a close
-        // failure is suppressed into the body's exception, or thrown when the
-        // body completed (`TestUtil.java:337-359`).
-        let body = (|| -> Result<Status> {
-            let index_status = checker.check_index();
-            // `output` is the stream CheckIndex writes to: it holds what was
-            // written even when `checkIndex` throws.
-            let text = buffer.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            if let Some(output) = output {
-                output.extend_from_slice(&text);
-            }
-            let index_status = index_status?;
-            if !index_status.clean {
-                system::out_println("CheckIndex failed");
-                system::out_println(&String::from_utf8_lossy(&text));
-                Err(LuceneError::from(LuceneErrorKind::Unchecked {
-                    class: "java.lang.RuntimeException",
-                    message: Some("CheckIndex failed".to_string()),
-                    cause: None,
-                }))
-            } else {
-                if *crate::util::lucene_test_case::INFOSTREAM {
-                    system::out_println(&String::from_utf8_lossy(&text));
+        let checker = CheckIndex::with_write_lock(dir, Some(lock));
+        // `try (CheckIndex checker = ...)`: the body (setup included) runs,
+        // and prints and throws on an unclean index, before `checker.close()`,
+        // which runs on every exit; a close failure is suppressed into the
+        // body's exception, or thrown when the body completed
+        // (`TestUtil.java:337-359`).
+        crate::util::java_exceptions::try_with(
+            checker,
+            |checker| checker.close(),
+            |checker| -> Result<Status> {
+                checker.set_level(level)?;
+                checker.set_fail_fast(fail_fast);
+                checker.set_info_stream_verbose(
+                    Some(Arc::new(PrintStreamLines(Arc::clone(&buffer)))),
+                    false,
+                );
+                if concurrent {
+                    checker.set_thread_count(RandomizedTest::random_int_between(2, 5))?;
+                } else {
+                    checker.set_thread_count(1)?;
                 }
-                Ok(index_status)
-            }
-        })();
-        let closed = checker.close();
-        match (body, closed) {
-            (Ok(status), Ok(())) => Ok(status),
-            (Ok(_), Err(close_error)) => Err(close_error),
-            (Err(mut e), Err(close_error)) => {
-                e.add_suppressed(close_error);
-                Err(e)
-            }
-            (Err(e), Ok(())) => Err(e),
-        }
+                let index_status = checker.check_index();
+                // `output` is the stream CheckIndex writes to: it holds what was
+                // written even when `checkIndex` throws.
+                let text = buffer.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                if let Some(output) = output {
+                    output.extend_from_slice(&text);
+                }
+                let index_status = index_status?;
+                if !index_status.clean {
+                    system::out_println("CheckIndex failed");
+                    system::out_println(&String::from_utf8_lossy(&text));
+                    Err(LuceneError::from(LuceneErrorKind::Unchecked {
+                        class: "java.lang.RuntimeException",
+                        message: Some("CheckIndex failed".to_string()),
+                        cause: None,
+                    }))
+                } else {
+                    if *crate::util::lucene_test_case::INFOSTREAM {
+                        system::out_println(&String::from_utf8_lossy(&text));
+                    }
+                    Ok(index_status)
+                }
+            },
+        )
     }
 
     /// `alwaysPostingsFormat(format)`: a codec that can read any of the

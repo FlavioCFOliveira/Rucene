@@ -135,15 +135,21 @@ impl CharFilter for MockCharFilter {
     /// `correct(int)`: the offset plus the correction of the greatest
     /// recorded offset `<= currentOff`.
     fn correct(&self, current_off: i32) -> i32 {
-        let ret = match self.corrections.range(..=current_off).next_back() {
+        // `corrections.lowerEntry(currentOff + 1)`: Java `int` arithmetic,
+        // so `Integer.MAX_VALUE + 1` wraps and finds no entry.
+        let ret = match self
+            .corrections
+            .range(..current_off.wrapping_add(1))
+            .next_back()
+        {
             None => current_off,
-            Some((_, diff)) => current_off + diff,
+            Some((_, diff)) => current_off.wrapping_add(*diff),
         };
         java_assert_unchecked!(
             ret >= 0,
             "currentOff={},diff={}",
             current_off,
-            ret - current_off
+            ret.wrapping_sub(current_off)
         );
         ret
     }
@@ -154,5 +160,28 @@ impl CharFilter for MockCharFilter {
 
     fn input_mut(&mut self) -> &mut dyn CharReader {
         self.input.as_mut()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rucene::analysis::{CharFilter, CharReader, StringCharReader};
+
+    use super::MockCharFilter;
+
+    /// `correct(currentOff)` looks up `corrections.lowerEntry(currentOff + 1)`
+    /// in Java `int` arithmetic (`MockCharFilter.java:95-99`): at
+    /// `Integer.MAX_VALUE` the key wraps to `Integer.MIN_VALUE`, no entry is
+    /// found and the offset comes back uncorrected. The port found the last
+    /// correction and returned `Integer.MAX_VALUE - 1`.
+    #[test]
+    fn correct_wraps_the_lookup_key_like_java_int() {
+        // '2' % 10 == 0: doubled, which records the correction (1, -1).
+        let mut f = MockCharFilter::new(Box::new(StringCharReader::new("2")), 0).unwrap();
+        let mut buf = [0u16; 4];
+        assert_eq!(f.read(&mut buf).unwrap(), 2);
+        assert_eq!(f.correct(1), 0);
+        assert_eq!(f.correct(i32::MAX - 1), i32::MAX - 2);
+        assert_eq!(f.correct(i32::MAX), i32::MAX);
     }
 }

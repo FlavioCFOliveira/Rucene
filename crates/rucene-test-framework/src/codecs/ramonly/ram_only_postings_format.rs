@@ -210,15 +210,20 @@ impl PostingsFormat for RAMOnlyPostingsFormat {
         let mut out = write_state
             .directory
             .create_output(&id_file_name, write_state.context)?;
-        let written = (|| -> Result<()> {
+        // The `finally` runs on every exit of the `try`, a panic included.
+        let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
             write_header(out.as_mut(), RAM_ONLY_NAME, VERSION_LATEST)?;
             out.write_v_int(id)
-        })();
+        }));
         match written {
-            Ok(()) => IOUtils::close([IOUtils::closeable(|| out.close())])?,
-            Err(e) => {
+            Ok(Ok(())) => IOUtils::close([IOUtils::closeable(|| out.close())])?,
+            Ok(Err(e)) => {
                 IOUtils::close_while_handling_exception([IOUtils::closeable(|| out.close())])?;
                 return Err(e);
+            }
+            Err(payload) => {
+                IOUtils::close_while_handling_exception([IOUtils::closeable(|| out.close())])?;
+                std::panic::resume_unwind(payload);
             }
         }
 
@@ -249,18 +254,23 @@ impl PostingsFormat for RAMOnlyPostingsFormat {
         let mut input = read_state
             .directory
             .open_input(&id_file_name, read_state.context)?;
-        let read = (|| -> Result<i32> {
+        // The `finally` runs on every exit of the `try`, a panic included.
+        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<i32> {
             check_header(input.as_mut(), RAM_ONLY_NAME, VERSION_START, VERSION_LATEST)?;
             input.read_v_int()
-        })();
+        }));
         let id = match read {
-            Ok(id) => {
+            Ok(Ok(id)) => {
                 IOUtils::close([IOUtils::closeable(|| input.close())])?;
                 id
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 IOUtils::close_while_handling_exception([IOUtils::closeable(|| input.close())])?;
                 return Err(e);
+            }
+            Err(payload) => {
+                IOUtils::close_while_handling_exception([IOUtils::closeable(|| input.close())])?;
+                std::panic::resume_unwind(payload);
             }
         };
 

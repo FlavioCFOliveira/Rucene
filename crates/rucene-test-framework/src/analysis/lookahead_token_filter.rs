@@ -250,10 +250,10 @@ impl<L: LookaheadLogic> LookaheadTokenFilter<L> {
         input: &mut dyn TokenStream,
     ) -> Result<bool> {
         if DEBUG {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "LTF.peekToken inputPos={} outputPos={} tokenPending={}",
                 self.input_pos, self.output_pos, self.token_pending
-            );
+            ));
         }
         java_assert_unchecked!(!self.end);
         java_assert_unchecked!(self.input_pos == -1 || self.output_pos <= self.input_pos);
@@ -264,13 +264,21 @@ impl<L: LookaheadLogic> LookaheadTokenFilter<L> {
         }
         let got_token = input.increment_token()?;
         if DEBUG {
-            println!("  input.incrToken() returned {}", got_token);
+            randomizedtesting::jdk::system::out_println(&format!(
+                "  input.incrToken() returned {}",
+                got_token
+            ));
         }
         if got_token {
-            self.input_pos += self.pos_inc_att.pos_inc().get_position_increment();
+            self.input_pos = self
+                .input_pos
+                .wrapping_add(self.pos_inc_att.pos_inc().get_position_increment());
             java_assert_unchecked!(self.input_pos >= 0);
             if DEBUG {
-                println!("  now inputPos={}", self.input_pos);
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "  now inputPos={}",
+                    self.input_pos
+                ));
             }
 
             let pos_len = self.pos_len_att.pos_len().get_position_length();
@@ -295,7 +303,10 @@ impl<L: LookaheadLogic> LookaheadTokenFilter<L> {
                 }
             }
             {
-                let end_pos_data = self.positions.get(input_pos + pos_len).position_mut();
+                let end_pos_data = self
+                    .positions
+                    .get(input_pos.wrapping_add(pos_len))
+                    .position_mut();
                 if end_pos_data.end_offset == -1 {
                     end_pos_data.end_offset = end_offset;
                 } else {
@@ -330,10 +341,10 @@ impl<L: LookaheadLogic> LookaheadTokenFilter<L> {
         input: &mut dyn TokenStream,
     ) -> Result<bool> {
         if DEBUG {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "LTF.nextToken inputPos={} outputPos={} tokenPending={}",
                 self.input_pos, self.output_pos, self.token_pending
-            );
+            ));
         }
         let mut pos = self.output_pos;
         self.positions.get(pos);
@@ -349,7 +360,9 @@ impl<L: LookaheadLogic> LookaheadTokenFilter<L> {
             };
             if next_read < buffered {
                 if DEBUG {
-                    println!("  return previously buffered token");
+                    randomizedtesting::jdk::system::out_println(
+                        "  return previously buffered token",
+                    );
                 }
                 // This position has buffered tokens to serve up:
                 if self.token_pending {
@@ -375,20 +388,22 @@ impl<L: LookaheadLogic> LookaheadTokenFilter<L> {
                     // Fast path: just return token we had just incr'd,
                     // without having captured/restored its state:
                     if DEBUG {
-                        println!("  pass-through: return pending token");
+                        randomizedtesting::jdk::system::out_println(
+                            "  pass-through: return pending token",
+                        );
                     }
                     self.token_pending = false;
                     return Ok(true);
                 } else if self.end || !self.peek_token(source, input)? {
                     if DEBUG {
-                        println!("  END");
+                        randomizedtesting::jdk::system::out_println("  END");
                     }
                     L::after_position(self, source, input)?;
                     if self.insert_pending {
                         // Subclass inserted a token at this same
                         // position:
                         if DEBUG {
-                            println!("  return inserted token");
+                            randomizedtesting::jdk::system::out_println("  return inserted token");
                         }
                         java_assert_unchecked!(self.inserted_token_consistent());
                         self.insert_pending = false;
@@ -401,14 +416,14 @@ impl<L: LookaheadLogic> LookaheadTokenFilter<L> {
                 if start_offset != -1 {
                     // This position had at least one token leaving
                     if DEBUG {
-                        println!("  call afterPosition");
+                        randomizedtesting::jdk::system::out_println("  call afterPosition");
                     }
                     L::after_position(self, source, input)?;
                     if self.insert_pending {
                         // Subclass inserted a token at this same
                         // position:
                         if DEBUG {
-                            println!("  return inserted token");
+                            randomizedtesting::jdk::system::out_println("  return inserted token");
                         }
                         java_assert_unchecked!(self.inserted_token_consistent());
                         self.insert_pending = false;
@@ -417,9 +432,12 @@ impl<L: LookaheadLogic> LookaheadTokenFilter<L> {
                 }
 
                 // Done with this position; move on:
-                self.output_pos += 1;
+                self.output_pos = self.output_pos.wrapping_add(1);
                 if DEBUG {
-                    println!("  next position: outputPos={}", self.output_pos);
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "  next position: outputPos={}",
+                        self.output_pos
+                    ));
                 }
                 self.positions.free_before(self.output_pos);
                 pos = self.output_pos;
@@ -434,7 +452,7 @@ impl<L: LookaheadLogic> LookaheadTokenFilter<L> {
         let pos_len = self.pos_len_att.pos_len().get_position_length();
         let end_pos_data_end_offset = self
             .positions
-            .get(self.output_pos + pos_len)
+            .get(self.output_pos.wrapping_add(pos_len))
             .position()
             .end_offset;
         java_assert_unchecked!(end_pos_data_end_offset != -1);

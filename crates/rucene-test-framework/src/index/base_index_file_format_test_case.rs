@@ -102,77 +102,11 @@ pub fn rethrow(e: LuceneError) -> ! {
     Throwable::new(class, message).throw()
 }
 
-/// Java's try-with-resources outcome over one resource: the body's
-/// exception, with the exception closing the resource added to it as
-/// suppressed (`Throwable.addSuppressed`); else the close's exception.
-///
-/// # Errors
-///
-/// The body's exception, else the close's.
-pub fn try_with_resource<T>(body: Result<T>, closed: Result<()>) -> Result<T> {
-    match body {
-        Err(mut e) => {
-            if let Err(close_error) = closed {
-                e.add_suppressed(close_error);
-            }
-            Err(e)
-        }
-        Ok(value) => closed.map(|()| value),
-    }
-}
-
-/// Java's `try (R r = resource) { body }`, panic-safe: `close` runs on every
-/// exit of `body` (an `Err`, a panic, or success). A close failure is added
-/// as suppressed to the body's throwable (`Throwable.addSuppressed`, on the
-/// `Err` or on the panic's throwable, which is then rethrown); when the body
-/// succeeded, the close failure alone is thrown.
-///
-/// `try (A a = ...; B b = ...) { body }` is `try (A a) { try (B b) { body }
-/// }` in Java (resources close in reverse declaration order, each close
-/// failure suppressed in that order), so N resources nest N calls.
-///
-/// # Errors
-///
-/// The body's error, else the close's.
-pub fn try_with<R, T>(
-    mut resource: R,
-    close: impl FnOnce(&mut R) -> Result<()>,
-    body: impl FnOnce(&mut R) -> Result<T>,
-) -> Result<T> {
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&mut resource)));
-    let closed = close(&mut resource);
-    match outcome {
-        Ok(result) => try_with_resource(result, closed),
-        Err(payload) => match closed {
-            Ok(()) => std::panic::resume_unwind(payload),
-            Err(close_error) => {
-                let mut t = Throwable::from_panic(payload);
-                t.add_suppressed(crate::util::java_exceptions::java_throwable(&close_error));
-                t.throw()
-            }
-        },
-    }
-}
-
-/// `IOUtils.close(Closeable...)` over the outcomes of closing each object,
-/// in argument order: every object is closed; the first exception is
-/// rethrown with the later ones added to it as suppressed.
-///
-/// # Errors
-///
-/// The first close's exception.
-pub fn io_utils_close<const N: usize>(closes: [Result<()>; N]) -> Result<()> {
-    let mut th: Option<LuceneError> = None;
-    for closed in closes {
-        if let Err(t) = closed {
-            match th.as_mut() {
-                None => th = Some(t),
-                Some(first) => first.add_suppressed(t),
-            }
-        }
-    }
-    th.map_or(Ok(()), Err)
-}
+// Java's try-with-resources, `IOUtils.close` and `catch (Exception e)`
+// helpers live in `crate::util::java_exceptions`, shared by every package.
+pub use crate::util::java_exceptions::{
+    caught_exception, io_utils_close, try_with, try_with_resource,
+};
 
 /// `INDEX_WRITER_ACCESS.isDeleterClosed(iw)`.
 fn is_deleter_closed(iw: &IndexWriter) -> bool {
@@ -2013,22 +1947,6 @@ pub fn assert_null(actual: Option<String>) {
 /// variable names.
 pub fn npe_with<T>(value: Option<T>, message: impl FnOnce() -> String) -> T {
     value.unwrap_or_else(|| Throwable::new("java.lang.NullPointerException", message()).throw())
-}
-
-/// The `Exception` a `catch (Exception e)` around a body catches, given the
-/// body's outcome: its `Err`, or a panic whose throwable is not an `Error`;
-/// a panic carrying an `Error` is rethrown unchanged.
-pub fn caught_exception(outcome: std::thread::Result<Result<()>>) -> Option<Throwable> {
-    match outcome {
-        Ok(Ok(())) => None,
-        Ok(Err(e)) => Some(crate::util::java_exceptions::java_throwable(&e)),
-        Err(payload) => {
-            if crate::mockfile::is_java_error(&*payload) {
-                std::panic::resume_unwind(payload)
-            }
-            Some(crate::mockfile::panic_throwable(&*payload))
-        }
-    }
 }
 
 /// JUnit 4's `assertEquals(Object expected, Object actual)` for two

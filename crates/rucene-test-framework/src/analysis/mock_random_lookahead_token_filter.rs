@@ -57,7 +57,10 @@ impl LookaheadLogic for MockRandomLookaheadTokenFilterLogic {
         input: &mut dyn TokenStream,
     ) -> Result<bool> {
         if DEBUG {
-            println!("\n{:?}: MRLTF.incrToken", std::thread::current().name());
+            randomizedtesting::jdk::system::out_println(&format!(
+                "\n{}: MRLTF.incrToken",
+                randomizedtesting::jdk::thread::Thread::current().name()
+            ));
         }
 
         if !f.end {
@@ -65,20 +68,23 @@ impl LookaheadLogic for MockRandomLookaheadTokenFilterLogic {
                 if f.logic.random.next_int_bound(3) == 1 {
                     if !f.peek_token(source, input)? {
                         if DEBUG {
-                            println!("  peek; inputPos={} END", f.input_pos);
+                            randomizedtesting::jdk::system::out_println(&format!(
+                                "  peek; inputPos={} END",
+                                f.input_pos
+                            ));
                         }
                         break;
                     }
                     if DEBUG {
-                        println!(
+                        randomizedtesting::jdk::system::out_println(&format!(
                             "  peek; inputPos={} token={}",
                             f.input_pos,
                             f.logic.term_att.term_string()
-                        );
+                        ));
                     }
                 } else {
                     if DEBUG {
-                        println!("  done peek");
+                        randomizedtesting::jdk::system::out_println("  done peek");
                     }
                     break;
                 }
@@ -88,12 +94,12 @@ impl LookaheadLogic for MockRandomLookaheadTokenFilterLogic {
         let result = f.next_token(source, input)?;
         if DEBUG {
             if result {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "  return nextToken token={}",
                     f.logic.term_att.term_string()
-                );
+                ));
             } else {
-                println!("  return nextToken END");
+                randomizedtesting::jdk::system::out_println("  return nextToken END");
             }
         }
         Ok(result)

@@ -20,6 +20,7 @@
 use std::any::{Any, TypeId};
 use std::sync::{Arc, OnceLock};
 
+use randomizedtesting::jdk::exception::Throwable;
 use rucene::analysis::default_attribute_factory;
 use rucene::analysis::tokenattributes::{
     CharTermAttribute, FlagsAttribute, OffsetAttribute, PackedTokenAttributeImpl, PayloadAttribute,
@@ -360,16 +361,37 @@ impl AttributeImpl for Token {
     /// Java's `ClassCastException` when `target` implements neither
     /// `FlagsAttribute` nor `PayloadAttribute` as a `Token`.
     fn copy_to(&self, target: &mut dyn AttributeImpl) {
-        match target.as_any_mut().downcast_mut::<Token>() {
-            Some(t) => {
-                self.packed.copy_to(&mut t.packed);
-                t.flags = self.flags;
-                t.payload = self.payload.as_ref().map(BytesRef::deep_copy_of);
-            }
-            None => panic!(
-                "java.lang.ClassCastException: {:?} cannot be cast to org.apache.lucene.analysis.tokenattributes.FlagsAttribute",
-                target
-            ),
+        if let Some(t) = target.as_any_mut().downcast_mut::<Token>() {
+            self.packed.copy_to(&mut t.packed);
+            t.flags = self.flags;
+            t.payload = self.payload.as_ref().map(BytesRef::deep_copy_of);
+            return;
+        }
+        // `super.copyTo(target)` first, then the casts
+        // `((FlagsAttribute) target)` and `((PayloadAttribute) target)`, each
+        // throwing `ClassCastException` when the target lacks the interface.
+        // **Divergence from Lucene 10.5.0** (`Token.java:183-187`): the
+        // message names the target by its Rust type, as an `AttributeImpl`
+        // carries no Java class name.
+        self.packed.copy_to(target);
+        let class_cast = |target: &dyn AttributeImpl, iface: &str| -> ! {
+            let from = target.impl_type_name();
+            let to = format!("org.apache.lucene.analysis.tokenattributes.{iface}");
+            Throwable::new(
+                "java.lang.ClassCastException",
+                format!(
+                    "class {from} cannot be cast to class {to} ({from} and {to} are in unnamed module of loader 'app')"
+                ),
+            )
+            .throw()
+        };
+        match target.as_flags_attribute_mut() {
+            Some(flags) => flags.set_flags(self.flags),
+            None => class_cast(target, "FlagsAttribute"),
+        }
+        match target.as_payload_attribute_mut() {
+            Some(payload) => payload.set_payload(self.payload.as_ref().map(BytesRef::deep_copy_of)),
+            None => class_cast(target, "PayloadAttribute"),
         }
     }
 
@@ -441,5 +463,42 @@ impl AttributeImpl for Token {
             code = code.wrapping_mul(31).wrapping_add(payload.hash_code());
         }
         code
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use randomizedtesting::jdk::exception::Throwable;
+    use rucene::analysis::tokenattributes::{CharTermAttribute, PackedTokenAttributeImpl};
+    use rucene::util::attribute::AttributeImpl;
+
+    use super::Token;
+
+    /// `Token.copyTo(target)` runs `super.copyTo(target)` before the cast
+    /// `((FlagsAttribute) target)` (`Token.java:183-187`): a
+    /// `PackedTokenAttributeImpl` target receives the packed fields, then the
+    /// cast throws `ClassCastException` in the JDK's `class A cannot be cast
+    /// to class B (...)` form. The port threw before copying anything.
+    #[test]
+    fn copy_to_a_packed_target_copies_then_fails_the_flags_cast() {
+        let token = Token::with_offsets("abc", 1, 4);
+        let mut target = PackedTokenAttributeImpl::default();
+        let t = match catch_unwind(AssertUnwindSafe(|| token.copy_to(&mut target))) {
+            Ok(()) => panic!("expected the ClassCastException"),
+            Err(payload) => Throwable::from_panic(payload),
+        };
+        assert_eq!(t.class_name(), "java.lang.ClassCastException");
+        let message = t.message().unwrap();
+        assert!(message.starts_with("class "), "{message}");
+        assert!(
+            message.contains(
+                " cannot be cast to class org.apache.lucene.analysis.tokenattributes.FlagsAttribute ("
+            ),
+            "{message}"
+        );
+        let term: String = target.buffer()[..target.length()].iter().collect();
+        assert_eq!(term, "abc");
     }
 }

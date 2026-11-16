@@ -164,12 +164,14 @@ impl PostingsFormat for MockRandomPostingsFormat {
 
         let seed_file_name =
             segment_file_name(&state.segment_info.name, &state.segment_suffix, SEED_EXT);
-        {
-            // try (IndexOutput out = state.directory.createOutput(seedFileName, state.context))
-            let mut out = state
+        // try (IndexOutput out = state.directory.createOutput(seedFileName, state.context)):
+        // closed on every exit, a close failure suppressed into the body's.
+        crate::util::java_exceptions::try_with(
+            state
                 .directory
-                .create_output(&seed_file_name, state.context)?;
-            let written = (|| -> Result<()> {
+                .create_output(&seed_file_name, state.context)?,
+            |out| out.close(),
+            |out| {
                 write_index_header(
                     out.as_mut(),
                     "MockRandomSeed",
@@ -179,16 +181,8 @@ impl PostingsFormat for MockRandomPostingsFormat {
                 )?;
                 out.write_long(seed)?;
                 write_footer(out.as_mut())
-            })();
-            match written {
-                Ok(()) => out.close()?,
-                Err(e) => {
-                    // The resource's close exception is suppressed.
-                    let _ = out.close();
-                    return Err(e);
-                }
-            }
-        }
+            },
+        )?;
 
         let random = JdkRandom::new(seed);
 

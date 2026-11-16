@@ -824,7 +824,7 @@ impl MockDirectoryWrapper {
                     let mut out = delegate
                         .create_output(name, &*context)
                         .map_err(unexpected)?;
-                    let mut written = || -> Result<()> {
+                    let written = || -> Result<()> {
                         while upto < length {
                             let limit = (length - upto).min(zeroes.len() as i64) as usize;
                             out.write_bytes(&zeroes, 0, limit)?;
@@ -832,9 +832,9 @@ impl MockDirectoryWrapper {
                         }
                         Ok(())
                     };
-                    let body = written();
+                    let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(written));
                     let closed = out.close();
-                    try_with_resources(body, [closed]).map_err(unexpected)?;
+                    try_with_resources_outcome(body, [closed]).map_err(unexpected)?;
                 }
                 2 => {
                     action = "partially truncated".to_string();
@@ -949,10 +949,12 @@ impl MockDirectoryWrapper {
             }
         };
         let temp_file_name = temp_out.name().to_string();
-        let result = body(temp_out.as_mut(), ii.as_mut());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            body(temp_out.as_mut(), ii.as_mut())
+        }));
         let closed_in = ii.close();
         let closed_out = temp_out.close();
-        try_with_resources(result, [closed_in, closed_out])?;
+        try_with_resources_outcome(result, [closed_in, closed_out])?;
         Ok(temp_file_name)
     }
 
@@ -971,11 +973,13 @@ impl MockDirectoryWrapper {
                 return try_with_resources(Err(e), [closed]);
             }
         };
-        let length = ii.length();
-        let result = out.copy_bytes(ii.as_mut(), length);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let length = ii.length();
+            out.copy_bytes(ii.as_mut(), length)
+        }));
         let closed_in = ii.close();
         let closed_out = out.close();
-        try_with_resources(result, [closed_in, closed_out])
+        try_with_resources_outcome(result, [closed_in, closed_out])
     }
 
     /// `crash()`: simulates a crash of OS or machine by overwriting unsynced
@@ -1136,12 +1140,37 @@ impl MockDirectoryWrapper {
                 Some(failures) if i < failures.len() => Arc::clone(&failures[i]),
                 _ => return Ok(()),
             };
-            if let Err(t) = failure.eval(self) {
-                if *VERBOSE {
-                    randomizedtesting::jdk::system::out_println("MockDirectoryWrapper: throw exc");
-                    randomizedtesting::jdk::system::out_println(&format!("{t}"));
+            // `catch (Throwable t)`: under VERBOSE the throwable is printed
+            // (`t.printStackTrace(System.out)`), then rethrown as is
+            // (`IOUtils.rethrowAlways`), a panic included.
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| failure.eval(self))) {
+                Ok(Ok(())) => {}
+                Ok(Err(t)) => {
+                    if *VERBOSE {
+                        randomizedtesting::jdk::system::out_println(
+                            "MockDirectoryWrapper: throw exc",
+                        );
+                        randomizedtesting::jdk::system::out_println(
+                            &randomizedtesting::jdk::system::format_stack_trace(
+                                &crate::util::java_exceptions::java_throwable(&t),
+                            ),
+                        );
+                    }
+                    return Err(t);
                 }
-                return Err(t);
+                Err(payload) => {
+                    if *VERBOSE {
+                        randomizedtesting::jdk::system::out_println(
+                            "MockDirectoryWrapper: throw exc",
+                        );
+                        randomizedtesting::jdk::system::out_println(
+                            &randomizedtesting::jdk::system::format_stack_trace(
+                                &crate::mockfile::panic_throwable(&*payload),
+                            ),
+                        );
+                    }
+                    std::panic::resume_unwind(payload);
+                }
             }
             i += 1;
         }
@@ -1750,13 +1779,20 @@ impl Directory for MockDirectoryWrapper {
         if !self.core.is_open.swap(false, Ordering::SeqCst) {
             return self.close_delegate(); // but call it again on our wrapped dir
         }
-        match self.close_checks() {
-            // `IOUtils.close(in)`
-            Ok(()) => self.close_delegate(),
-            Err(e) => {
-                // `IOUtils.closeWhileHandlingException(in)`
-                let _ = self.close_delegate();
+        // `finally { if (success) IOUtils.close(in); else
+        // IOUtils.closeWhileHandlingException(in); }`: on every exit of the
+        // checks, a panic included; an `Error` closing the delegate replaces
+        // the pending exception.
+        let close_in = || [Some(|| self.close_delegate())];
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.close_checks())) {
+            Ok(Ok(())) => rucene::util::IOUtils::close(close_in()),
+            Ok(Err(e)) => {
+                rucene::util::IOUtils::close_while_handling_exception(close_in())?;
                 Err(e)
+            }
+            Err(payload) => {
+                rucene::util::IOUtils::close_while_handling_exception(close_in())?;
+                std::panic::resume_unwind(payload)
             }
         }
     }
@@ -1846,24 +1882,42 @@ pub(crate) fn try_with_resources<T, const N: usize>(
     body: Result<T>,
     closes: [Result<()>; N],
 ) -> Result<T> {
-    let mut first_close_error = None;
-    for close in closes {
-        if let Err(e) = close {
-            first_close_error.get_or_insert(e);
+    // The closes, in closing order, are `IOUtils.close`'s: the first failure
+    // with the later ones suppressed; then Java's try-with-resources: the
+    // body's exception with that failure suppressed, else that failure.
+    crate::util::java_exceptions::try_with_resource(
+        body,
+        crate::util::java_exceptions::io_utils_close(closes),
+    )
+}
+
+/// [`try_with_resources`] over a body that may have panicked (its
+/// `catch_unwind` outcome): the resources were closed after it on every
+/// exit; a panic is rethrown with the close failures added to its throwable
+/// as suppressed.
+pub(crate) fn try_with_resources_outcome<T, const N: usize>(
+    outcome: std::thread::Result<Result<T>>,
+    closes: [Result<()>; N],
+) -> Result<T> {
+    match outcome {
+        Ok(body) => try_with_resources(body, closes),
+        Err(payload) => {
+            let failures: Vec<LuceneError> = closes.into_iter().filter_map(|c| c.err()).collect();
+            if failures.is_empty() {
+                std::panic::resume_unwind(payload)
+            }
+            let mut t = randomizedtesting::jdk::exception::Throwable::from_panic(payload);
+            for e in &failures {
+                t.add_suppressed(crate::util::java_exceptions::java_throwable(e));
+            }
+            t.throw()
         }
-    }
-    match (body, first_close_error) {
-        (Err(e), _) => Err(e),
-        (Ok(_), Some(e)) => Err(e),
-        (Ok(v), None) => Ok(v),
     }
 }
 
 /// `Thread.currentThread().getName()`.
 fn current_thread_name() -> String {
-    std::thread::current()
-        .name()
-        .map_or_else(|| "main".to_string(), str::to_string)
+    randomizedtesting::jdk::thread::Thread::current().name()
 }
 
 /// `AbstractMap.toString()` over a map's iteration order.
@@ -1914,5 +1968,71 @@ fn io_context_to_string(context: &dyn IOContext) -> String {
             let hints: Vec<String> = context.hints().iter().map(|h| format!("{h:?}")).collect();
             format!("DefaultIOContext[hints=[{}]]", hints.join(", "))
         }
+    }
+}
+
+#[cfg(test)]
+mod try_with_resources_tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use randomizedtesting::jdk::exception::Throwable;
+    use rucene::error::LuceneError;
+
+    use super::{try_with_resources, try_with_resources_outcome};
+
+    fn message(e: &LuceneError) -> String {
+        crate::analysis::base_token_stream_test_case::java_message(e).unwrap_or_default()
+    }
+
+    /// `try (A a = ...; B b = ...) { body }` closes `b`, then `a`; a close
+    /// failure is added as suppressed to the body's exception, or, when the
+    /// body completed, the first close failure is thrown with the later ones
+    /// suppressed (`Throwable.addSuppressed`, JLS 14.20.3). The store helper
+    /// dropped every close failure but the first, and every one after a
+    /// failing body.
+    #[test]
+    fn close_failures_are_suppressed_in_closing_order() {
+        let e = try_with_resources::<(), 2>(
+            Err(LuceneError::illegal_state("body")),
+            [
+                Err(LuceneError::illegal_state("close b")),
+                Err(LuceneError::illegal_state("close a")),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(message(&e), "body");
+        let suppressed: Vec<String> = e.get_suppressed().iter().map(|s| message(s)).collect();
+        assert_eq!(suppressed, ["close b", "close a"]);
+
+        let e = try_with_resources(
+            Ok(()),
+            [
+                Err(LuceneError::illegal_state("close b")),
+                Err(LuceneError::illegal_state("close a")),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(message(&e), "close b");
+        let suppressed: Vec<String> = e.get_suppressed().iter().map(|s| message(s)).collect();
+        assert_eq!(suppressed, ["close a"]);
+    }
+
+    /// A body that panicked (an unchecked throwable) is rethrown after the
+    /// closes, with their failures suppressed into it.
+    #[test]
+    fn a_panicking_body_carries_the_close_failures() {
+        let outcome = catch_unwind(AssertUnwindSafe(|| -> rucene::error::Result<()> {
+            Throwable::new("java.lang.RuntimeException", "boom").throw()
+        }));
+        let t = match catch_unwind(AssertUnwindSafe(|| {
+            try_with_resources_outcome(outcome, [Err(LuceneError::illegal_state("close"))])
+        })) {
+            Ok(_) => panic!("expected the body's throwable"),
+            Err(payload) => Throwable::from_panic(payload),
+        };
+        assert_eq!(t.class_name(), "java.lang.RuntimeException");
+        assert_eq!(t.message(), Some("boom"));
+        assert_eq!(t.suppressed().len(), 1);
+        assert_eq!(t.suppressed()[0].message(), Some("close"));
     }
 }

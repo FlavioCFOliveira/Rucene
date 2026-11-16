@@ -71,6 +71,56 @@ impl MaybeResourceLoaderAware for dyn CharFilterFactory {
 }
 
 /// Port of `org.apache.lucene.tests.analysis.BaseTokenStreamFactoryTestCase`.
+/// A throwable a constructor threw (a panic), as the cause of a Rucene error.
+#[derive(Debug)]
+struct ThrownThrowable {
+    class: &'static str,
+    message: Option<String>,
+    cause: Option<Arc<LuceneError>>,
+    io: bool,
+}
+
+impl rucene::error::JavaThrowable for ThrownThrowable {
+    fn java_class(&self) -> &'static str {
+        self.class
+    }
+    fn get_message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+    fn get_cause(&self) -> Option<&Arc<LuceneError>> {
+        self.cause.as_ref()
+    }
+    fn is_io_exception(&self) -> bool {
+        self.io
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// The Rucene error standing for the Java throwable `t`, its causes
+/// included; the class name is interned once per name.
+fn thrown_error(t: &randomizedtesting::jdk::exception::Throwable) -> LuceneError {
+    static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let class = {
+        let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+        match names.iter().find(|n| **n == t.class_name()) {
+            Some(n) => *n,
+            None => {
+                let n: &'static str = Box::leak(t.class_name().to_string().into_boxed_str());
+                names.push(n);
+                n
+            }
+        }
+    };
+    LuceneError::from(LuceneErrorKind::Throwable(Arc::new(ThrownThrowable {
+        class,
+        message: t.message().map(str::to_string),
+        cause: t.cause().map(|c| Arc::new(thrown_error(c))),
+        io: t.is_instance(randomizedtesting::jdk::exception::IO_EXCEPTION),
+    })))
+}
+
 pub struct BaseTokenStreamFactoryTestCase;
 
 impl BaseTokenStreamFactoryTestCase {
@@ -117,21 +167,29 @@ impl BaseTokenStreamFactoryTestCase {
             Self::assert_null("duplicate values for key: luceneMatchVersion", previous);
         }
         let constructor = clazz.get_constructor()?;
-        let mut factory = match constructor(&mut args) {
-            Ok(factory) => factory,
+        // `newInstance(args)` wraps whatever the constructor throws (an
+        // `Error` too) in an `InvocationTargetException`; the catch rethrows
+        // a cause that is an `instanceof IllegalArgumentException`.
+        let invocation_target = |cause: LuceneError| {
+            LuceneError::from(LuceneErrorKind::Unchecked {
+                class: "java.lang.reflect.InvocationTargetException",
+                message: None,
+                cause: Some(Arc::new(cause)),
+            })
+        };
+        let constructed =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| constructor(&mut args)));
+        let mut factory = match constructed {
+            Ok(Ok(factory)) => factory,
             // to simplify tests that check for illegal parameters
-            Err(
-                e @ LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                },
-            ) => return Err(e),
-            Err(e) => {
-                return Err(LuceneError::from(LuceneErrorKind::Unchecked {
-                    class: "java.lang.reflect.InvocationTargetException",
-                    message: None,
-                    cause: Some(Arc::new(e)),
-                }))
+            Ok(Err(e)) if e.kind().is_illegal_argument_exception() => return Err(e),
+            Ok(Err(e)) => return Err(invocation_target(e)),
+            Err(payload) => {
+                let t = crate::mockfile::panic_throwable(&*payload);
+                if t.is_instance(randomizedtesting::jdk::exception::ILLEGAL_ARGUMENT_EXCEPTION) {
+                    std::panic::resume_unwind(payload);
+                }
+                return Err(invocation_target(thrown_error(&t)));
             }
         };
         let fresh = Arc::get_mut(&mut factory)
@@ -303,5 +361,69 @@ impl BaseTokenStreamFactoryTestCase {
             loader,
             keys_and_values,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use randomizedtesting::jdk::exception::Throwable;
+    use rucene::analysis::factories::{
+        AnalysisFactoryClass, AnalysisFactoryConstructor, SPINameField, TokenizerFactory,
+    };
+    use rucene::error::{LuceneError, LuceneErrorKind, Result};
+    use rucene::util::resource_loader::ClasspathResourceLoader;
+
+    use super::BaseTokenStreamFactoryTestCase;
+    use crate::util::java_exceptions::java_throwable;
+
+    fn throws_pattern_syntax(_: &mut HashMap<String, String>) -> Result<Arc<dyn TokenizerFactory>> {
+        Err(LuceneError::unchecked(
+            "java.util.regex.PatternSyntaxException",
+            "bad pattern",
+        ))
+    }
+
+    fn panics_with_runtime(_: &mut HashMap<String, String>) -> Result<Arc<dyn TokenizerFactory>> {
+        Throwable::new("java.lang.RuntimeException", "boom").throw()
+    }
+
+    fn construct(constructor: AnalysisFactoryConstructor<dyn TokenizerFactory>) -> LuceneError {
+        let class: AnalysisFactoryClass<dyn TokenizerFactory> = AnalysisFactoryClass::new(
+            "org.example.TestFactory",
+            SPINameField::Declared("test"),
+            Some(constructor),
+        );
+        let loader = ClasspathResourceLoader::new(HashMap::new());
+        match BaseTokenStreamFactoryTestCase::analysis_factory(&class, None, &loader, &[]) {
+            Ok(_) => panic!("expected an exception"),
+            Err(e) => e,
+        }
+    }
+
+    /// `analysisFactory` rethrows a constructor exception that is an
+    /// `instanceof IllegalArgumentException` (a `PatternSyntaxException`
+    /// included) and wraps any other throwable, a thrown unchecked one too,
+    /// in an `InvocationTargetException` (`BaseTokenStreamFactoryTestCase.java:60-68`).
+    /// The port rethrew only the `IllegalArgument` kind and let panics
+    /// through unwrapped.
+    #[test]
+    fn constructor_failures_follow_reflection() {
+        let e = construct(throws_pattern_syntax);
+        assert!(matches!(
+            e.kind(),
+            LuceneErrorKind::Unchecked { class, .. } if *class == "java.util.regex.PatternSyntaxException"
+        ));
+        let t = java_throwable(&construct(panics_with_runtime));
+        assert_eq!(
+            t.class_name(),
+            "java.lang.reflect.InvocationTargetException"
+        );
+        assert_eq!(t.message(), None);
+        let cause = t.cause().expect("getCause()");
+        assert_eq!(cause.class_name(), "java.lang.RuntimeException");
+        assert_eq!(cause.message(), Some("boom"));
     }
 }

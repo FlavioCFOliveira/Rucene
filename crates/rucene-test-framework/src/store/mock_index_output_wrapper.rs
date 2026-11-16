@@ -31,7 +31,7 @@ use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::store::java_nio_file::io_exception;
 use rucene::store::{DataInput, DataOutput, IndexOutput};
 
-use super::mock_directory_wrapper::{try_with_resources, MockDirectoryWrapper};
+use super::mock_directory_wrapper::{try_with_resources_outcome, MockDirectoryWrapper};
 use crate::util::lucene_test_case::VERBOSE;
 
 /// An output's delegate and `closed` flag.
@@ -69,21 +69,27 @@ pub(crate) fn close_output(cell: &OutputCell, dir: &MockDirectoryWrapper) -> Res
         inner.closed = true;
     }
     // try (Closeable out = this.out) { dir.maybeThrowDeterministicException(); }
-    let body = dir.maybe_throw_deterministic_exception();
+    // The `try` (and its resource close) and the `finally` run on every
+    // exit, a panic included; a `finally` that throws replaces the pending
+    // exception.
+    let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dir.maybe_throw_deterministic_exception()
+    }));
     let closed = cell.lock().out.close();
-    let result = try_with_resources(body, [closed]);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        try_with_resources_outcome(body, [closed])
+    }));
     // finally:
     dir.remove_index_output_id(cell.id, &cell.name);
     if dir.track_disk_usage() {
         // Now compute actual disk usage & track the maxUsedSize
         // in the MockDirectoryWrapper:
-        // A `finally` that throws replaces the pending exception.
         let size = dir.size_in_bytes()?;
         if size > dir.get_max_used_size_in_bytes() {
             dir.set_max_used_size_in_bytes(size);
         }
     }
-    result
+    result.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
 }
 
 /// Port of `org.apache.lucene.tests.store.MockIndexOutputWrapper` (`extends
