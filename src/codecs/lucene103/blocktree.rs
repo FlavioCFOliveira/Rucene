@@ -2452,16 +2452,17 @@ impl Lucene103BlockTreeTermsReader {
                         &meta_desc,
                     ));
                 }
+                // PERF: the shared handle, as Java keeps the reference
+                // (`Lucene103BlockTreeTermsReader.java:167`), not a deep copy.
                 let field_info = state
                     .field_infos
-                    .field_info_checked(field_number)?
+                    .field_info_checked_shared(field_number)?
                     .ok_or_else(|| {
                         LuceneError::corrupt_index(
                             format!("invalid field number: {field_number}"),
                             &meta_desc,
                         )
-                    })?
-                    .clone();
+                    })?;
 
                 let sum_total_term_freq = meta_in.read_v_long()?;
                 // With frequencies omitted the two sums are equal and only one is

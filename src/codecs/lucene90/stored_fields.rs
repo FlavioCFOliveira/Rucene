@@ -2521,7 +2521,10 @@ impl Lucene90CompressingStoredFieldsReader {
             check_footer(meta_in.as_mut())?;
             meta_in.close()?;
 
-            let cloned_field_infos = FieldInfos::new(field_infos.iter().cloned().collect())?;
+            // PERF: share the one `FieldInfos`, as Java stores the reference
+            // (`Lucene90CompressingStoredFieldsReader.java:137`, and `:106` for
+            // the clone constructor).
+            let cloned_field_infos = field_infos.clone();
             Ok((
                 version,
                 chunk_size,
@@ -2661,7 +2664,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
         self.ensure_open()?;
         Ok(Box::new(Self {
             version: self.version,
-            field_infos: FieldInfos::new(self.field_infos.iter().cloned().collect())?,
+            field_infos: self.field_infos.clone(),
             index_reader: self.index_reader.clone_index()?,
             max_pointer: self.max_pointer,
             chunk_size: self.chunk_size,
@@ -2691,7 +2694,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
         self.ensure_open()?;
         Ok(Box::new(Self {
             version: self.version,
-            field_infos: FieldInfos::new(self.field_infos.iter().cloned().collect())?,
+            field_infos: self.field_infos.clone(),
             index_reader: self.index_reader.clone_index()?,
             max_pointer: self.max_pointer,
             chunk_size: self.chunk_size,

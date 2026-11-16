@@ -73,7 +73,9 @@ impl std::fmt::Debug for BlockTreeShared {
 #[derive(Clone)]
 pub struct FieldReader {
     shared: Arc<BlockTreeShared>,
-    field_info: FieldInfo,
+    /// The field's one `FieldInfo` object, shared with the segment's `FieldInfos`
+    /// as Java's `final FieldInfo fieldInfo` reference is (`FieldReader.java:38`).
+    field_info: Arc<FieldInfo>,
     num_terms: i64,
     sum_total_term_freq: i64,
     sum_doc_freq: i64,
@@ -106,7 +108,7 @@ impl FieldReader {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         shared: Arc<BlockTreeShared>,
-        field_info: FieldInfo,
+        field_info: Arc<FieldInfo>,
         num_terms: i64,
         sum_total_term_freq: i64,
         sum_doc_freq: i64,

@@ -349,6 +349,35 @@ pub(crate) fn to_hex_string(value: i32) -> String {
 /// Java counterparts both build the string with that constructor
 /// (`CodecUtil.java:383`, `DataInput.java:234`).
 pub fn java_utf8_to_string(bytes: &[u8]) -> String {
+    // PERF: well-formed input needs no replacement, so it is copied as is
+    // (see `java_utf8_vec_to_string` for why the result is the JDK's).
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_owned(),
+        Err(_) => java_utf8_to_string_malformed(bytes),
+    }
+}
+
+/// [`java_utf8_to_string`] over owned bytes, reusing their allocation when
+/// they are well-formed UTF-8.
+///
+/// For well-formed input the JDK decoder and [`str::from_utf8`] agree: the
+/// JDK replaces exactly the sequences Unicode calls ill-formed (overlong
+/// forms, encoded surrogates `ED A0..BF xx`, values above U+10FFFF, stray or
+/// missing continuation bytes), which are also exactly what `from_utf8`
+/// rejects, and decodes every other sequence to its code point. So a
+/// well-formed input decodes to the very characters its bytes already spell,
+/// as the JDK's own ASCII and valid-UTF-8 fast paths in
+/// `String.decodeUTF8_UTF16` do; any other input takes the JDK replica.
+pub fn java_utf8_vec_to_string(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(error) => java_utf8_to_string_malformed(error.as_bytes()),
+    }
+}
+
+/// The JDK replica behind [`java_utf8_to_string`], for input that is not
+/// well-formed UTF-8 (it also gives the JDK's answer for well-formed input).
+fn java_utf8_to_string_malformed(bytes: &[u8]) -> String {
     const REPL: u16 = 0xFFFD;
     fn is_not_continuation(b: u8) -> bool {
         b & 0xC0 != 0x80
@@ -746,6 +775,60 @@ pub fn parse_float(s: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both entry points answer what the JDK replica answers, for every one-
+    /// and two-byte input, every three-byte input that starts with a lead
+    /// byte, and a deterministic sample of four- and longer inputs (well-formed
+    /// and malformed alike).
+    #[test]
+    fn utf8_fast_path_equals_the_jdk_replica() {
+        let check = |bytes: &[u8]| {
+            let expected = java_utf8_to_string_malformed(bytes);
+            assert_eq!(java_utf8_to_string(bytes), expected, "{bytes:02X?}");
+            assert_eq!(
+                java_utf8_vec_to_string(bytes.to_vec()),
+                expected,
+                "{bytes:02X?}"
+            );
+        };
+        check(&[]);
+        for a in 0..=255u8 {
+            check(&[a]);
+            for b in 0..=255u8 {
+                check(&[a, b]);
+                if a >= 0xC0 {
+                    for c in 0..=255u8 {
+                        check(&[a, b, c]);
+                    }
+                }
+            }
+        }
+        // Lead bytes and continuation-range bytes dominate the sample, so that
+        // well-formed multi-byte sequences are frequent.
+        const POOL: [u8; 16] = [
+            0x41, 0x7F, 0x80, 0x8F, 0x90, 0x9F, 0xA0, 0xBF, 0xC2, 0xDF, 0xE0, 0xED, 0xEF, 0xF0,
+            0xF4, 0xF5,
+        ];
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        for _ in 0..200_000 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let len = 4 + (state >> 60) as usize;
+            let bytes: Vec<u8> = (0..len)
+                .map(|i| {
+                    let r = state.rotate_left(7 * i as u32 + 3);
+                    if r & 1 == 0 {
+                        POOL[((r >> 1) & 15) as usize]
+                    } else {
+                        (r >> 8) as u8
+                    }
+                })
+                .collect();
+            check(&bytes);
+        }
+        check("héllo € 😀 ação".as_bytes());
+    }
 
     #[test]
     fn double_to_string_keeps_a_fraction_digit_and_switches_to_scientific() {

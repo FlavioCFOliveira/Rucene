@@ -930,10 +930,10 @@ impl MergingDisiInput {
         n: i64,
         read: impl FnOnce(&mut dyn IndexInput) -> Result<T>,
     ) -> Result<T> {
-        let offset = self.offset;
-        let shared = Arc::clone(&self.r#in);
-        let mut r#in = shared.lock().unwrap_or_else(PoisonError::into_inner);
-        r#in.seek(offset)?;
+        // PERF: `r#in` and `offset` are disjoint fields, so the shared input is
+        // locked through `self` directly; no reference-count round trip per read.
+        let mut r#in = self.r#in.lock().unwrap_or_else(PoisonError::into_inner);
+        r#in.seek(self.offset)?;
         self.offset += n;
         read(r#in.as_mut())
     }

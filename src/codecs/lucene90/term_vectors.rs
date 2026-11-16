@@ -1906,7 +1906,7 @@ impl Lucene90CompressingTermVectorsReader {
             check_footer(meta_in.as_mut())?;
             meta_in.close()?;
             Ok((
-                FieldInfos::new(field_infos.iter().cloned().collect())?,
+                field_infos.clone(),
                 version,
                 packed_ints_version,
                 chunk_size,
@@ -2006,7 +2006,7 @@ impl Lucene90CompressingTermVectorsReader {
         let vectors_stream = self.vectors_stream.clone_input()?;
         let index_reader = self.index_reader.clone_index()?;
         Ok(Self {
-            field_infos: FieldInfos::new(self.field_infos.iter().cloned().collect())?,
+            field_infos: self.field_infos.clone(),
             index_reader,
             version: self.version,
             packed_ints_version: self.packed_ints_version,
@@ -2030,8 +2030,7 @@ impl Lucene90CompressingTermVectorsReader {
 impl Clone for Lucene90CompressingTermVectorsReader {
     fn clone(&self) -> Self {
         Self {
-            field_infos: FieldInfos::new(self.field_infos.iter().cloned().collect())
-                .expect("clone field infos"),
+            field_infos: self.field_infos.clone(),
             index_reader: self.index_reader.clone_index().expect("clone index"),
             version: self.version,
             packed_ints_version: self.packed_ints_version,
