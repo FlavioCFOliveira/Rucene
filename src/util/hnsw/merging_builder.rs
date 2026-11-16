@@ -5,7 +5,7 @@ use crate::internal::hppc::IntHashSet;
 use crate::search::NO_MORE_DOCS;
 use crate::util::FixedBitSet;
 
-use super::builder::{HnswBuilder, HnswGraphBuilder};
+use super::builder::{HnswBuilder, HnswGraphBuilder, HNSW_COMPONENT};
 use super::initialized_builder::InitializedHnswGraphBuilder;
 use super::on_heap::OnHeapHnswGraph;
 use super::scorer::RandomVectorScorerSupplier;
@@ -140,6 +140,21 @@ impl HnswBuilder for MergingHnswGraphBuilder {
             return Err(crate::error::LuceneError::illegal_state(
                 "This HnswGraphBuilder is frozen and cannot be updated".to_string(),
             ));
+        }
+        // `MergingHnswGraphBuilder.java:115-128`: the size of every graph,
+        // each followed by a space.
+        if self.inner.info_stream.is_enabled(HNSW_COMPONENT) {
+            let mut graph_sizes = String::new();
+            for g in &self.graphs {
+                graph_sizes.push_str(&format!("{} ", g.size()));
+            }
+            self.inner.info_stream.message(
+                HNSW_COMPONENT,
+                &format!(
+                    "build graph from merging {} graphs of {max_ord} vectors, graph sizes:{graph_sizes}",
+                    self.graphs.len()
+                ),
+            );
         }
         for i in 1..self.graphs.len() {
             self.update_graph(i)?;

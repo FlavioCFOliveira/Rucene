@@ -11,7 +11,6 @@ use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
 use rucene::codecs::hnsw::graph_provider::HnswGraphProvider;
-use rucene::codecs::lucene99::hnsw_vectors_format::Lucene99HnswVectorsReader;
 use rucene::document::{
     BinaryDocValuesField, Document, Field, FieldType, KnnFloatVectorField, LongPoint,
     NumericDocValuesField, SortedDocValuesField, SortedNumericDocValuesField,
@@ -207,8 +206,8 @@ fn test_sort_on_add_indices_int() -> Result<()> {
 }
 
 /// `vectorsReader instanceof HnswGraphProvider hnswGraphProvider ?
-/// hnswGraphProvider.getGraph("vector") : null`. Rucene's only
-/// `HnswGraphProvider` reader is `Lucene99HnswVectorsReader`.
+/// hnswGraphProvider.getGraph("vector") : null`
+/// (`TestSortingCodecReader.java:252-257`).
 fn graph_of(leaf: &Arc<dyn LeafReader>) -> Result<Option<Box<dyn HnswGraph>>> {
     let codec_reader = Arc::clone(leaf).as_codec_reader().unwrap_or_else(|| {
         Throwable::new("java.lang.ClassCastException", "not a CodecReader").throw()
@@ -216,8 +215,7 @@ fn graph_of(leaf: &Arc<dyn LeafReader>) -> Result<Option<Box<dyn HnswGraph>>> {
     let vectors_reader = codec_reader.get_vector_reader()?;
     match vectors_reader
         .as_ref()
-        .and_then(|r| r.as_any())
-        .and_then(|a| a.downcast_ref::<Lucene99HnswVectorsReader>())
+        .and_then(|r| r.as_hnsw_graph_provider())
     {
         Some(provider) => Ok(Some(HnswGraphProvider::get_graph(provider, "vector")?)),
         None => Ok(None),

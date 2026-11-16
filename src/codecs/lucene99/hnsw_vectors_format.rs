@@ -1255,16 +1255,10 @@ impl HnswWriterState {
     ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsWriter#buildAndWriteGraph`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java hands each source reader to the
-    /// merger as a `KnnVectorsReader` and the merger narrows it to an
-    /// `HnswGraphProvider` with `instanceof`, reusing the source graph when it
-    /// is one. Rust cannot narrow a `dyn KnnVectorsReader`, so
-    /// [`HnswGraphMerger::add_reader`] takes the provider as a separate
-    /// argument and `None` is passed here — the merger then treats the reader
-    /// exactly as Java treats one that is not a provider, and rebuilds. The
-    /// divergence is the merger's, already recorded on that trait; this method
-    /// only inherits it.
+    /// Each source reader goes to the merger as it sits in the merge state
+    /// (`Lucene99HnswVectorsWriter.java:481-486`); the merger reuses the graph
+    /// of every reader that is an `HnswGraphProvider`
+    /// ([`KnnVectorsReader::as_hnsw_graph_provider`]).
     fn build_and_write_graph(
         &mut self,
         field_info: &FieldInfo,
@@ -1299,7 +1293,7 @@ impl HnswWriterState {
                 continue;
             };
             let doc_map = Arc::new(merge_state.doc_maps[i].clone());
-            merger.add_reader(reader, None, doc_map, merge_state.live_docs[i].as_deref())?;
+            merger.add_reader(reader, doc_map, merge_state.live_docs[i].as_deref())?;
         }
         let graph = merger.merge(
             vector_values,
@@ -2539,6 +2533,12 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
     /// `instanceof QuantizedVectorsReader` on it are `true`
     /// (`BaseKnnVectorsFormatTestCase.hasHNSW`, `hasQuantized`).
     fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// This reader is a provider: `Lucene99HnswVectorsReader implements
+    /// HnswGraphProvider` (`Lucene99HnswVectorsReader.java:73-74`).
+    fn as_hnsw_graph_provider(&self) -> Option<&dyn HnswGraphProvider> {
         Some(self)
     }
 

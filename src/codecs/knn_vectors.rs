@@ -1913,6 +1913,31 @@ pub trait KnnVectorsReader: Send + Sync + fmt::Debug {
         None
     }
 
+    /// Returns this reader as an [`HnswGraphProvider`] when it is one, and
+    /// `None` when it is not.
+    ///
+    /// This hook stands for Java's `reader instanceof HnswGraphProvider` and
+    /// the cast that follows it, in the same shape as
+    /// [`as_flat_vectors_reader`](Self::as_flat_vectors_reader): Rust cannot
+    /// narrow a `dyn KnnVectorsReader` to a `dyn HnswGraphProvider`, so the
+    /// question is asked of the reader itself. Its callers are the HNSW graph
+    /// mergers (`IncrementalHnswGraphMerger.java:93-96,151`,
+    /// `ConcurrentHnswMerger.java:66`), which reuse the graph of every source
+    /// reader that is a provider.
+    ///
+    /// The default answers `None`, which is what the `instanceof` answers for
+    /// every reader that is not a provider; the readers that implement
+    /// `HnswGraphProvider` in Lucene 10.5.0 (`Lucene99HnswVectorsReader`, the
+    /// test framework's `AssertingKnnVectorsReader`) override it with
+    /// `Some(self)`.
+    ///
+    /// [`HnswGraphProvider`]: crate::codecs::hnsw::graph_provider::HnswGraphProvider
+    fn as_hnsw_graph_provider(
+        &self,
+    ) -> Option<&dyn crate::codecs::hnsw::graph_provider::HnswGraphProvider> {
+        None
+    }
+
     /// Returns this reader as [`std::any::Any`], so that a caller can test it
     /// for a concrete type and reach that type's members.
     ///

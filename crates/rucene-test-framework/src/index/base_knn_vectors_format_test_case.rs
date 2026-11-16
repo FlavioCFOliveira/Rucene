@@ -52,7 +52,6 @@ use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::random::Random;
 use randomizedtesting::jdk::reflect::{modifier, Class, Method};
 use randomizedtesting::junit::{Assert, Before};
-use rucene::codecs::hnsw::graph_provider::HnswGraphProvider;
 use rucene::codecs::knn_vectors::{
     merge_off_heap_byte_size_maps, FieldVectorWriter, KnnVectorsFormat, KnnVectorsReader,
     KnnVectorsWriter,
@@ -549,13 +548,12 @@ fn has_quantized(reader: &dyn KnnVectorsReader, field_info: &FieldInfo) -> Resul
     Ok(simple_name(reader).contains("quantized"))
 }
 
-/// `hasHNSW(knnVectorsReader, fieldInfo)` (`static`).
+/// `hasHNSW(knnVectorsReader, fieldInfo)` (`static`): `instanceof
+/// HnswGraphProvider` after unwrapping an `AssertingKnnVectorsReader`
+/// (`BaseKnnVectorsFormatTestCase.java:2196-2207`).
 fn has_hnsw(reader: &dyn KnnVectorsReader, field_info: &FieldInfo) -> Result<bool> {
     let reader = unwrap_asserting(reader);
-    if let Some(provider) = reader
-        .as_any()
-        .and_then(|a| a.downcast_ref::<Lucene99HnswVectorsReader>())
-    {
+    if let Some(provider) = reader.as_hnsw_graph_provider() {
         return Ok(provider.get_graph(&field_info.name)?.size() > 0);
     }
     Ok(simple_name(reader).contains("hnsw"))

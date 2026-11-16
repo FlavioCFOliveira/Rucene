@@ -22,16 +22,18 @@ use std::fmt;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
+use rucene::codecs::hnsw::graph_provider::HnswGraphProvider;
 use rucene::codecs::knn_vectors::{FieldVectorWriter, IORunnable};
 use rucene::codecs::state::OwnedSegmentWriteState;
 use rucene::codecs::{
     ByteVectorValues, FloatVectorValues, KnnCollector, KnnVectorsFormat, KnnVectorsReader,
     KnnVectorsWriter, MergeState, SegmentReadState, SorterDocMap,
 };
-use rucene::error::Result;
+use rucene::error::{LuceneError, Result};
 use rucene::index::VectorEncoding;
 use rucene::index::{FieldInfo, FieldInfos};
 use rucene::search::AcceptDocs;
+use rucene::util::hnsw::HnswGraph;
 
 use crate::index::asserting_leaf_reader::npe;
 use crate::search::AssertingAcceptDocs;
@@ -154,12 +156,10 @@ struct MergeInstance {
 /// [`get_merge_instance`](KnnVectorsReader::get_merge_instance) returns stands
 /// for Java's anonymous subclass (only usable for merging, finished once).
 ///
-/// **Divergence.** Java's class also `implements HnswGraphProvider` by
-/// casting its delegate. A `dyn KnnVectorsReader` cannot be narrowed to a
-/// provider in this port, the limitation the HNSW merger already records
-/// (`Lucene99HnswVectorsWriter::build_and_write_graph`), so the reader is not
-/// a provider and a merge rebuilds the graph as Java does for any reader that
-/// is not one.
+/// Like Java's class, it is an [`HnswGraphProvider`] that hands out its
+/// delegate's graph, so an HNSW merge whose merge-state readers are this
+/// reader (a codec whose `knnVectorsFormat()` is this format itself, not a
+/// `PerFieldKnnVectorsFormat`) starts from the largest source graph.
 #[derive(Debug)]
 pub struct AssertingKnnVectorsReader {
     /// `delegate`.
@@ -196,6 +196,14 @@ impl KnnVectorsReader for AssertingKnnVectorsReader {
     /// AssertingKnnVectorsFormat.AssertingKnnVectorsReader` on it is `true`
     /// (`BaseKnnVectorsFormatTestCase.hasQuantized`, `hasHNSW`).
     fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// `AssertingKnnVectorsReader extends KnnVectorsReader implements
+    /// HnswGraphProvider` (`AssertingKnnVectorsFormat.java:110-111`): the
+    /// reader, and the merge instance Java subclasses from it, are always
+    /// providers.
+    fn as_hnsw_graph_provider(&self) -> Option<&dyn HnswGraphProvider> {
         Some(self)
     }
 
@@ -312,5 +320,33 @@ impl KnnVectorsReader for AssertingKnnVectorsReader {
                 || self.merge_instance_count.load(Ordering::SeqCst) == finish_merge_count
         );
         Ok(())
+    }
+}
+
+impl HnswGraphProvider for AssertingKnnVectorsReader {
+    /// `((HnswGraphProvider) delegate).getGraph(field)`
+    /// (`AssertingKnnVectorsFormat.java:240-243`), with no assertion of its
+    /// own.
+    ///
+    /// # Errors
+    ///
+    /// What the delegate's `getGraph` raises; a `ClassCastException` when the
+    /// delegate is not a provider. That cast cannot fail here: the delegate is
+    /// the reader of `TestUtil.getDefaultKnnVectorsFormat()`, a
+    /// `Lucene99HnswVectorsReader`, or its merge instance, which is one too
+    /// (`Lucene99HnswVectorsReader.java:146-148`); so the message names the
+    /// cast rather than reproducing the JVM's, which would need the
+    /// delegate's runtime class.
+    fn get_graph(&self, field: &str) -> Result<Box<dyn HnswGraph>> {
+        self.delegate
+            .as_hnsw_graph_provider()
+            .ok_or_else(|| {
+                LuceneError::unchecked(
+                    "java.lang.ClassCastException",
+                    "the delegate cannot be cast to class \
+                     org.apache.lucene.codecs.hnsw.HnswGraphProvider",
+                )
+            })?
+            .get_graph(field)
     }
 }

@@ -436,13 +436,10 @@ fn vector_reader(leaf: Arc<dyn LeafReader>) -> Result<Option<Arc<dyn KnnVectorsR
     codec_reader.get_vector_reader()
 }
 
-/// `maybeReader instanceof HnswGraphProvider provider`: the providers of
-/// Lucene core, a declared list (`Lucene99HnswVectorsReader`).
+/// `maybeReader instanceof HnswGraphProvider provider`
+/// (`HnswGraphTestCase.java:277`).
 fn as_graph_provider(reader: &dyn KnnVectorsReader) -> Option<&dyn HnswGraphProvider> {
-    reader
-        .as_any()
-        .and_then(|a| a.downcast_ref::<Lucene99HnswVectorsReader>())
-        .map(|r| r as &dyn HnswGraphProvider)
+    reader.as_hnsw_graph_provider()
 }
 
 fn test_graph_merge_with_deletes<C: HnswCase>(this: &mut Fixture<C>) -> Result<()> {
