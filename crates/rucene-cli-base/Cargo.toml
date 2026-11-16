@@ -1,0 +1,18 @@
+[package]
+name = "rucene-cli-base"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Command-line example that manages one rucene index per Portal BASE (Portuguese public procurement) entity, with pt-PT accent-insensitive search."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[dependencies]
+rucene = { path = "../.." }
+rucene-analysis-common = { path = "../rucene-analysis-common" }
+
+[[bin]]
+name = "rucene-base"
+path = "src/main.rs"

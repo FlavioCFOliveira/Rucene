@@ -19,7 +19,9 @@ categories = ["database-implementations", "data-structures", "algorithms"]
 # `randomizedtesting` (com.carrotsearch.randomizedtesting 2.8.1, the runner of
 # Lucene's tests) and `rucene-test-framework` (lucene/test-framework).
 # `rucene-cli-example` is not a Lucene module: it is the command-line example
-# that drives the public `rucene` API end to end (sprint 10).
+# that drives the public `rucene` API end to end (sprint 10); `rucene-cli-base`
+# is the second one, one index per Portal BASE entity with pt-PT analysis
+# (sprint 14).
 [workspace]
 members = [
     "crates/rucene-codecs",
@@ -30,6 +32,7 @@ members = [
     "crates/randomizedtesting",
     "crates/rucene-test-framework",
     "crates/rucene-cli-example",
+    "crates/rucene-cli-base",
 ]
 
 [features]

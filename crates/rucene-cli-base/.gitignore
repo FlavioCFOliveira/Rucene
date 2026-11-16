@@ -1,0 +1,4 @@
+# Everything scripts/ingest_base.py writes inside the crate lives under
+# data/base/: raw downloads, clean/ and cli/ JSON Lines, spill/ buckets,
+# the default index root index/ and run logs. Never committed.
+/data/base/
