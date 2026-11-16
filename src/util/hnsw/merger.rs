@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::codecs::hnsw::graph_provider::HnswGraphProvider;
 use crate::codecs::knn_vectors::KnnVectorsReader;
 use crate::error::{LuceneError, Result};
 use crate::index::field_infos::FieldInfo;
@@ -26,12 +25,6 @@ use super::scorer::RandomVectorScorerSupplier;
 /// Abstraction of merging multiple graphs into one on-heap graph.
 ///
 /// Equivalent to `org.apache.lucene.util.hnsw.HnswGraphMerger`.
-///
-/// # Divergences from Lucene 10.5.0
-///
-/// * `add_reader` takes the [`HnswGraphProvider`] explicitly, because Rust cannot
-///   cast a `dyn KnnVectorsReader` to a `dyn HnswGraphProvider` the way Java's
-///   `instanceof` does. `None` stands for a reader that is not a graph provider.
 pub trait HnswGraphMerger {
     /// Adds a reader to the graph merger, recording its state.
     ///
@@ -41,7 +34,6 @@ pub trait HnswGraphMerger {
     fn add_reader(
         &mut self,
         reader: Arc<dyn KnnVectorsReader>,
-        graph_provider: Option<Arc<dyn HnswGraphProvider>>,
         doc_map: Arc<DocMap>,
         live_docs: Option<&dyn Bits>,
     ) -> Result<()>;
@@ -116,8 +108,10 @@ impl ConcurrentHnswMerger {
         let graph = match self.inner.largest_graph_reader.clone() {
             None => OnHeapHnswGraph::new(m, max_ord),
             Some(largest) => {
+                // `((HnswGraphProvider) initReader).getGraph(fieldInfo.name)`
+                // (`ConcurrentHnswMerger.java:66`).
                 let mut initializer_graph = largest
-                    .graph_provider
+                    .graph_provider()
                     .get_graph(&self.inner.field_info().name)?;
                 if initializer_graph.size() == 0 {
                     OnHeapHnswGraph::new(m, max_ord)
@@ -225,12 +219,10 @@ impl HnswGraphMerger for ConcurrentHnswMerger {
     fn add_reader(
         &mut self,
         reader: Arc<dyn KnnVectorsReader>,
-        graph_provider: Option<Arc<dyn HnswGraphProvider>>,
         doc_map: Arc<DocMap>,
         live_docs: Option<&dyn Bits>,
     ) -> Result<()> {
-        self.inner
-            .add_reader(reader, graph_provider, doc_map, live_docs)
+        self.inner.add_reader(reader, doc_map, live_docs)
     }
 
     fn merge(

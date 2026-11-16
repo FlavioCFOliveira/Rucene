@@ -111,7 +111,11 @@ impl AutomatonTestUtil {
     /// min=… max=…`) when the range holds only surrogates.
     fn get_random_code_point<R: Random + ?Sized>(r: &R, min: i32, max: i32) -> i32 {
         let (high_start, high_end) = (UNI_SUR_HIGH_START as i32, UNI_SUR_HIGH_END as i32);
-        let only_surrogates = || panic!("transition accepts only surrogates: min={min} max={max}");
+        let only_surrogates = || {
+            randomizedtesting::jdk::exception::illegal_argument(format!(
+                "transition accepts only surrogates: min={min} max={max}"
+            ))
+        };
         let code = if max < high_start || min > high_end {
             // easy: entire range is before or after surrogates
             min + r.next_int_bound(max - min + 1)
@@ -160,14 +164,26 @@ impl AutomatonTestUtil {
     pub fn random_single_automaton<R: Random + ?Sized>(random: &R) -> Automaton {
         loop {
             let regexp = Self::random_regexp(random);
-            let mut a1 = RegExp::with_flags(&regexp, RegExp::NONE)
-                .and_then(|re| re.to_automaton())
-                .unwrap_or_else(|e| panic!("{e}"));
+            // `catch (TooComplexToDeterminizeException)` retries; any other
+            // exception propagates (`AutomatonTestUtil.java:264-277`).
+            let too_complex = |e: &rucene::error::LuceneError| {
+                matches!(
+                    e.kind(),
+                    rucene::error::LuceneErrorKind::TooComplexToDeterminize(_)
+                )
+            };
+            let mut a1 =
+                match RegExp::with_flags(&regexp, RegExp::NONE).and_then(|re| re.to_automaton()) {
+                    Ok(a1) => a1,
+                    Err(e) if too_complex(&e) => continue,
+                    Err(e) => crate::util::java_exceptions::rethrow_java(e),
+                };
             if random.next_boolean() {
                 match Operations::complement(&a1, Self::DEFAULT_MAX_DETERMINIZED_STATES) {
                     Ok(complement) => a1 = complement,
                     // This can (rarely) happen if the random regexp is too
-                    // hard; just try again...
+                    // hard; just try again... (`complement` fails only with
+                    // `TooComplexToDeterminizeException`).
                     Err(_) => continue,
                 }
             }
@@ -192,8 +208,13 @@ impl AutomatonTestUtil {
             0 => Operations::concatenate(&[a1, a2]),
             1 => Operations::union(&[a1, a2]),
             2 => Operations::intersection(&a1, &a2),
-            _ => Operations::minus(&a1, &a2, Self::DEFAULT_MAX_DETERMINIZED_STATES)
-                .unwrap_or_else(|e| panic!("{e}")),
+            _ => Operations::minus(&a1, &a2, Self::DEFAULT_MAX_DETERMINIZED_STATES).unwrap_or_else(
+                |e| {
+                    crate::util::java_exceptions::rethrow_java(rucene::error::LuceneError::from(
+                        rucene::error::LuceneErrorKind::TooComplexToDeterminize(Box::new(e)),
+                    ))
+                },
+            ),
         }
     }
 
@@ -270,7 +291,10 @@ impl AutomatonTestUtil {
     pub fn assert_minimal_dfa(automaton: &Automaton) {
         Self::assert_clean_dfa(automaton);
         let minimized = Self::minimize_simple(automaton);
-        assert_eq!(minimized.get_num_states(), automaton.get_num_states());
+        randomizedtesting::junit::Assert::assert_equals(
+            i64::from(minimized.get_num_states()),
+            i64::from(automaton.get_num_states()),
+        );
     }
 
     /// `assertCleanDFA(automaton)`: asserts that an automaton is a DFA with
@@ -550,10 +574,10 @@ impl AutomatonTestUtil {
     /// deterministic`).
     pub fn subset_of(a1: &Automaton, a2: &Automaton) -> bool {
         if !a1.is_deterministic() {
-            panic!("a1 must be deterministic");
+            randomizedtesting::jdk::exception::illegal_argument("a1 must be deterministic");
         }
         if !a2.is_deterministic() {
-            panic!("a2 must be deterministic");
+            randomizedtesting::jdk::exception::illegal_argument("a2 must be deterministic");
         }
         java_assert_unchecked!(!Operations::has_dead_states_from_initial(a1));
         java_assert_unchecked!(!Operations::has_dead_states_from_initial(a2));
@@ -636,7 +660,7 @@ impl<'a> RandomAcceptedStrings<'a> {
     /// automaton without states.
     pub fn new(a: &'a Automaton) -> Self {
         if a.get_num_states() == 0 {
-            panic!("this automaton accepts nothing");
+            randomizedtesting::jdk::exception::illegal_argument("this automaton accepts nothing");
         }
         let transitions = a.get_sorted_transitions();
 
@@ -702,7 +726,7 @@ impl<'a> RandomAcceptedStrings<'a> {
             }
 
             if self.a.get_num_transitions(s) == 0 {
-                panic!("this automaton has dead states");
+                randomizedtesting::jdk::exception::runtime("this automaton has dead states");
             }
 
             let cheat = r.next_boolean();
@@ -730,5 +754,46 @@ impl<'a> RandomAcceptedStrings<'a> {
             s = t.dest;
         }
         code_points
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use randomizedtesting::jdk::exception::Throwable;
+    use rucene::util::automaton::Automaton;
+
+    use super::{AutomatonTestUtil, RandomAcceptedStrings};
+
+    fn thrown(f: impl FnOnce()) -> Throwable {
+        Throwable::from_panic(catch_unwind(AssertUnwindSafe(f)).expect_err("must throw"))
+    }
+
+    /// `AutomatonTestUtil.java:165, 624`: `IllegalArgumentException`s, not
+    /// untyped panics (which read as `AssertionError`).
+    #[test]
+    fn argument_checks_are_illegal_argument_exceptions() {
+        let empty = Automaton::new();
+        let t = thrown(|| {
+            RandomAcceptedStrings::new(&empty);
+        });
+        assert_eq!(t.class_name(), "java.lang.IllegalArgumentException");
+        assert_eq!(t.message(), Some("this automaton accepts nothing"));
+
+        let mut nfa = Automaton::new();
+        let s0 = nfa.create_state();
+        let s1 = nfa.create_state();
+        let s2 = nfa.create_state();
+        nfa.set_accept(s1, true);
+        nfa.set_accept(s2, true);
+        nfa.add_transition(s0, s1, i32::from(b'a'));
+        nfa.add_transition(s0, s2, i32::from(b'a'));
+        nfa.finish_state();
+        let t = thrown(|| {
+            AutomatonTestUtil::subset_of(&nfa, &nfa);
+        });
+        assert_eq!(t.class_name(), "java.lang.IllegalArgumentException");
+        assert_eq!(t.message(), Some("a1 must be deterministic"));
     }
 }

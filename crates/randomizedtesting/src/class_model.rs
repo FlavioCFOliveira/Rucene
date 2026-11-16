@@ -101,7 +101,49 @@ impl MethodModel {
     }
 }
 
+impl std::hash::Hash for MethodModel {
+    /// `MethodModel.hashCode()` (`ClassModel.java:148-155`): the name and the
+    /// parameter types, the fields `equals` compares
+    /// (`same_signature`).
+    ///
+    /// **Divergence from randomizedtesting 2.8.1.** Java sums
+    /// `element.getName().hashCode()` and `31 * c.hashCode()` per parameter
+    /// class, where `Class.hashCode()` is the JVM identity hash, so the value
+    /// changes from run to run and no port can reproduce it. The port hashes
+    /// the name and the parameter type names instead, which keeps the `Hash`
+    /// contract with that equality.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.element.name().hash(state);
+        self.element.parameter_types().hash(state);
+    }
+}
+
+impl std::fmt::Display for FieldModel {
+    /// `FieldModel.toString()` (`ClassModel.java:171-174`):
+    /// `getDeclaringClass().getSimpleName() + "." + getName()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let c = self.element.declaring_class();
+        let simple = c.rsplit(['.', '$']).next().unwrap_or(c);
+        write!(f, "{}.{}", simple, self.element.name())
+    }
+}
+
+impl std::hash::Hash for FieldModel {
+    /// `FieldModel.hashCode()` (`ClassModel.java:194-197`): Java's value,
+    /// [`hash_code`](FieldModel::hash_code), consistent with `equals`, which
+    /// compares the field names.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_i32(self.hash_code());
+    }
+}
+
 impl FieldModel {
+    /// `FieldModel.hashCode()` (`ClassModel.java:194-197`):
+    /// `element.getName().hashCode()`.
+    pub fn hash_code(&self) -> i32 {
+        crate::jdk::lang::string_hash_code(self.element.name())
+    }
+
     /// `getAccessScope()`.
     pub fn access_scope(&self) -> Scope {
         self.scope
@@ -309,5 +351,80 @@ impl ClassModel {
         inherited: bool,
     ) -> bool {
         self.get_annotation::<A>(method, inherited).is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jdk::reflect::Value;
+    use std::hash::BuildHasher;
+
+    fn model() -> ClassModel {
+        let class = Class::builder("com.example.Outer$Inner")
+            .field(Field::new_static("count", "int", || Value::Null))
+            .field(Field::new_static(
+                "aVeryLongFieldNameForOverflow",
+                "int",
+                || Value::Null,
+            ))
+            .method(Method::new("run").params(&["int", "java.lang.String"]))
+            .method(Method::new("run").params(&["int"]))
+            .build();
+        ClassModel::new(&class)
+    }
+
+    #[test]
+    fn field_model_to_string_is_simple_class_dot_name() {
+        let m = model();
+        let count = m
+            .fields()
+            .iter()
+            .find(|f| f.element.name() == "count")
+            .unwrap();
+        // `getDeclaringClass().getSimpleName() + "." + getName()`.
+        assert_eq!(count.to_string(), "Inner.count");
+    }
+
+    #[test]
+    fn field_model_hash_code_is_java_string_hash_of_name() {
+        let m = model();
+        let by_name = |n: &str| m.fields().iter().find(|f| f.element.name() == n).unwrap();
+        // `"count".hashCode()` and a name whose hash wraps in `int` arithmetic.
+        assert_eq!(by_name("count").hash_code(), 94851343);
+        assert_eq!(
+            by_name("aVeryLongFieldNameForOverflow").hash_code(),
+            258827513
+        );
+        let other = Class::builder("com.example.Other")
+            .field(Field::new_static("count", "long", || Value::Null))
+            .build();
+        let other = ClassModel::new(&other);
+        // `equals` compares names only, so equal names hash alike.
+        let s = std::collections::hash_map::RandomState::new();
+        assert_eq!(s.hash_one(by_name("count")), s.hash_one(&other.fields()[0]));
+    }
+
+    #[test]
+    fn method_model_hash_follows_name_and_parameter_types() {
+        let m = model();
+        let two = m
+            .methods()
+            .iter()
+            .find(|x| x.element.parameter_types().len() == 2)
+            .unwrap();
+        let one = m
+            .methods()
+            .iter()
+            .find(|x| x.element.parameter_types().len() == 1)
+            .unwrap();
+        let again = Class::builder("com.example.Sub")
+            .method(Method::new("run").params(&["int", "java.lang.String"]))
+            .build();
+        let again = ClassModel::new(&again);
+        let s = std::collections::hash_map::RandomState::new();
+        assert!(two.same_signature(&again.methods()[0]));
+        assert_eq!(s.hash_one(two), s.hash_one(&again.methods()[0]));
+        assert_ne!(s.hash_one(two), s.hash_one(one));
     }
 }

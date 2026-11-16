@@ -22,6 +22,7 @@ use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::random::{JdkRandom, Random};
 use rucene::analysis::Analyzer;
 use rucene::document::{Field, FieldType, NumericValue};
@@ -43,6 +44,7 @@ use rucene::search::term_query::TermQuery;
 use rucene::search::Query;
 use rucene::store::Directory;
 use rucene::util::BytesRef;
+use rucene::util::IOUtils;
 use rucene::util::InfoStream;
 
 use crate::analysis::MockAnalyzer;
@@ -190,24 +192,32 @@ impl RandomIndexWriter {
             && conf.open_mode() != OpenMode::CREATE
         {
             if *VERBOSE {
-                println!("RIW: open writer from reader");
+                randomizedtesting::jdk::system::out_println("RIW: open writer from reader");
             }
             let opened = directory_reader::open(Arc::clone(&dir))?;
             conf.set_index_commit(Some(Arc::from(opened.index_commit()?)));
             reader = Some(opened);
         }
 
-        let iw = IndexWriter::new_with_test_points(dir, shared);
+        // `try { iw = new IndexWriter(dir, conf) {...}; success = true; }
+        // finally { ... }`: the reader is closed on every exit, a panic
+        // included.
+        let iw = catch_unwind(AssertUnwindSafe(|| {
+            IndexWriter::new_with_test_points(dir, shared)
+        }));
         if let Some(reader) = reader {
+            let close_reader = [IOUtils::closeable(|| reader.close())];
             match &iw {
-                Ok(_) => reader.close()?,
+                // `IOUtils.close(reader)`
+                Ok(Ok(_)) => IOUtils::close(close_reader)?,
                 // `IOUtils.closeWhileHandlingException(reader)`
-                Err(_) => {
-                    let _ = reader.close();
-                }
+                _ => IOUtils::close_while_handling_exception(close_reader)?,
             }
         }
-        iw
+        match iw {
+            Ok(iw) => iw,
+            Err(payload) => resume_unwind(payload),
+        }
     }
 
     /// `new RandomIndexWriter(r, dir)`: "create a RandomIndexWriter with a
@@ -300,7 +310,10 @@ impl RandomIndexWriter {
             None
         };
         if *VERBOSE {
-            println!("RIW dir={}", dir.directory_to_string());
+            randomizedtesting::jdk::system::out_println(&format!(
+                "RIW dir={}",
+                dir.directory_to_string()
+            ));
         }
 
         // Make sure we sometimes test indices that don't get
@@ -365,7 +378,7 @@ impl RandomIndexWriter {
         let doc_count = {
             let mut counters = self.counters.lock().unwrap_or_else(PoisonError::into_inner);
             let hit = counters.doc_count == counters.flush_at;
-            counters.doc_count += 1;
+            counters.doc_count = counters.doc_count.wrapping_add(1);
             hit.then_some(counters.doc_count)
         };
         if let Some(doc_count) = doc_count {
@@ -373,19 +386,27 @@ impl RandomIndexWriter {
                 self.flush_all_buffers_sequentially(doc_count)?;
             } else if self.r.next_boolean() {
                 if *VERBOSE {
-                    println!("RIW.add/updateDocument: now doing a flush at docCount={doc_count}");
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "RIW.add/updateDocument: now doing a flush at docCount={doc_count}"
+                    ));
                 }
                 self.w.flush()?;
             } else {
                 if *VERBOSE {
-                    println!("RIW.add/updateDocument: now doing a commit at docCount={doc_count}");
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "RIW.add/updateDocument: now doing a commit at docCount={doc_count}"
+                    ));
                 }
                 self.w.commit()?;
             }
             let mut counters = self.counters.lock().unwrap_or_else(PoisonError::into_inner);
             let factor = counters.flush_at_factor;
-            counters.flush_at +=
-                TestUtil::next_int(&self.r, (factor * 10.0) as i32, (factor * 1000.0) as i32);
+            // Java's `int` addition wraps.
+            counters.flush_at = counters.flush_at.wrapping_add(TestUtil::next_int(
+                &self.r,
+                (factor * 10.0) as i32,
+                (factor * 1000.0) as i32,
+            ));
             if factor < 2e6 {
                 // gradually but exponentially increase time b/w flushes
                 counters.flush_at_factor *= 1.05;
@@ -397,9 +418,9 @@ impl RandomIndexWriter {
     /// `flushAllBuffersSequentially()`.
     fn flush_all_buffers_sequentially(&self, doc_count: i32) -> Result<()> {
         if *VERBOSE {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "RIW.add/updateDocument: now flushing the largest writer at docCount={doc_count}"
-            );
+            ));
         }
         let thread_pool_size = index_writer_access().get_doc_writer_thread_pool_size(&self.w);
         let num_flushes = 1.min(self.r.next_int_bound(thread_pool_size + 1));
@@ -592,9 +613,10 @@ impl RandomIndexWriter {
     ///
     /// Java's `return w.commit()` inside the `try` returns once the thread is
     /// joined, whatever the thread threw; when the commit throws, the first
-    /// throwable recorded (the thread's or the commit's) is rethrown. Java
-    /// adds the later ones to it as suppressed exceptions, which
-    /// [`LuceneError`] cannot hold: they are dropped.
+    /// throwable recorded (the thread's or the commit's) is rethrown, the
+    /// later ones added to it as suppressed (`RandomIndexWriter.java:398-410`):
+    /// as is when it is an `IOException` or a `RuntimeException`, else as
+    /// `new AssertionError(primary)`.
     ///
     /// # Errors
     ///
@@ -602,10 +624,6 @@ impl RandomIndexWriter {
     pub fn commit_with(&self, flush_concurrently: bool) -> Result<i64> {
         LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
         if flush_concurrently {
-            enum Thrown {
-                Error(LuceneError),
-                Panic(Box<dyn std::any::Any + Send>),
-            }
             let throwable_list: Mutex<Vec<Thrown>> = Mutex::new(Vec::new());
             // `new Thread(...)` (`RandomIndexWriter.java`): the thread is in
             // this thread's group, so it runs under the test's randomized
@@ -660,14 +678,11 @@ impl RandomIndexWriter {
             if let Some(seq_no) = committed {
                 return Ok(seq_no);
             }
-            let mut throwable_list = throwable_list
+            let throwable_list = throwable_list
                 .into_inner()
                 .unwrap_or_else(PoisonError::into_inner);
             if !throwable_list.is_empty() {
-                match throwable_list.swap_remove(0) {
-                    Thrown::Error(e) => return Err(e),
-                    Thrown::Panic(payload) => resume_unwind(payload),
-                }
+                return Err(rethrow_primary(throwable_list));
             }
         }
         self.w.commit()
@@ -753,14 +768,16 @@ impl RandomIndexWriter {
             if self.r.next_boolean() || seg_count == 0 {
                 // full forceMerge
                 if *VERBOSE {
-                    println!("RIW: doRandomForceMerge(1)");
+                    randomizedtesting::jdk::system::out_println("RIW: doRandomForceMerge(1)");
                 }
                 self.w.force_merge(1)?;
             } else if self.r.next_boolean() {
                 // partial forceMerge
                 let limit = TestUtil::next_int(&self.r, 1, seg_count);
                 if *VERBOSE {
-                    println!("RIW: doRandomForceMerge({limit})");
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "RIW: doRandomForceMerge({limit})"
+                    ));
                 }
                 self.w.force_merge(limit)?;
                 let tiered = self
@@ -778,7 +795,9 @@ impl RandomIndexWriter {
                 }
             } else {
                 if *VERBOSE {
-                    println!("RIW: do random forceMergeDeletes()");
+                    randomizedtesting::jdk::system::out_println(
+                        "RIW: do random forceMergeDeletes()",
+                    );
                 }
                 self.w.force_merge_deletes()?;
             }
@@ -804,7 +823,7 @@ impl RandomIndexWriter {
         if !apply_deletions || self.r.next_boolean() {
             // if we have soft deletes we can't open from a directory
             if *VERBOSE {
-                println!("RIW.getReader: use NRT reader");
+                randomizedtesting::jdk::system::out_println("RIW.getReader: use NRT reader");
             }
             if self.r.next_int_bound(5) == 1 {
                 self.w.commit()?;
@@ -812,7 +831,7 @@ impl RandomIndexWriter {
             index_writer_access().get_reader(&self.w, apply_deletions, write_all_deletes)
         } else {
             if *VERBOSE {
-                println!("RIW.getReader: open new reader");
+                randomizedtesting::jdk::system::out_println("RIW.getReader: open new reader");
             }
             self.w.commit()?;
             if self.r.next_boolean() {
@@ -834,7 +853,7 @@ impl RandomIndexWriter {
     /// What the writer throws.
     pub fn close(&self) -> Result<()> {
         let access = index_writer_access();
-        let result = (|| -> Result<()> {
+        let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
             if !access.is_closed(&self.w) {
                 LuceneTestCase::maybe_change_live_index_writer_config(&self.r, &self.config);
             }
@@ -852,23 +871,28 @@ impl RandomIndexWriter {
                 }
             }
             Ok(())
-        })();
+        }));
+        // `finally { if (success) IOUtils.close(w, analyzer); else
+        // IOUtils.closeWhileHandlingException(w, analyzer); }`: both are
+        // closed on every exit of the body, a panic included.
+        let closers = [
+            IOUtils::closeable(|| self.w.close()),
+            self.analyzer.as_ref().and_then(|analyzer| {
+                IOUtils::closeable(move || {
+                    analyzer.close();
+                    Ok(())
+                })
+            }),
+        ];
         match result {
-            // `IOUtils.close(w, analyzer)`
-            Ok(()) => {
-                let closed = self.w.close();
-                if let Some(analyzer) = &self.analyzer {
-                    analyzer.close();
-                }
-                closed
-            }
-            // `IOUtils.closeWhileHandlingException(w, analyzer)`
-            Err(e) => {
-                let _ = self.w.close();
-                if let Some(analyzer) = &self.analyzer {
-                    analyzer.close();
-                }
+            Ok(Ok(())) => IOUtils::close(closers),
+            Ok(Err(e)) => {
+                IOUtils::close_while_handling_exception(closers)?;
                 Err(e)
+            }
+            Err(payload) => {
+                IOUtils::close_while_handling_exception(closers)?;
+                resume_unwind(payload)
             }
         }
     }
@@ -888,6 +912,55 @@ impl fmt::Debug for RandomIndexWriter {
         f.debug_struct("RandomIndexWriter")
             .field("soft_deletes_ratio", &self.soft_deletes_ratio)
             .finish_non_exhaustive()
+    }
+}
+
+/// A throwable `commit(true)` records: an error returned, or a panic.
+enum Thrown {
+    Error(LuceneError),
+    Panic(Box<dyn std::any::Any + Send>),
+}
+
+/// The tail of `commit(flushConcurrently)` (`RandomIndexWriter.java:398-410`):
+/// the later throwables are added to the first (`primary.addSuppressed`),
+/// and the primary is thrown when it is an `IOException` or a
+/// `RuntimeException`; any other primary (an `Error`, a checked exception)
+/// is thrown wrapped as `new AssertionError(primary)`, whose message is
+/// `primary.toString()`.
+///
+/// A panic cannot be held as a [`LuceneError`]: suppressing one into an
+/// error primary drops it, as core's `IOUtils` family does.
+fn rethrow_primary(throwable_list: Vec<Thrown>) -> LuceneError {
+    use crate::util::java_exceptions::java_throwable;
+    use randomizedtesting::jdk::exception::{ASSERTION_ERROR, IO_EXCEPTION, RUNTIME_EXCEPTION};
+    let mut list = throwable_list.into_iter();
+    let primary = list.next().expect("a non-empty throwable list");
+    match primary {
+        Thrown::Error(mut primary) => {
+            for t in list {
+                if let Thrown::Error(e) = t {
+                    primary.add_suppressed(e);
+                }
+            }
+            let t = java_throwable(&primary);
+            if t.is_instance(IO_EXCEPTION) || t.is_instance(RUNTIME_EXCEPTION) {
+                return primary;
+            }
+            Throwable::from_cause(ASSERTION_ERROR, t).throw()
+        }
+        Thrown::Panic(payload) => {
+            let mut primary = Throwable::from_panic(payload);
+            for t in list {
+                primary.add_suppressed(match t {
+                    Thrown::Error(e) => java_throwable(&e),
+                    Thrown::Panic(payload) => Throwable::from_panic(payload),
+                });
+            }
+            if primary.is_instance(IO_EXCEPTION) || primary.is_instance(RUNTIME_EXCEPTION) {
+                primary.throw()
+            }
+            Throwable::from_cause(ASSERTION_ERROR, primary).throw()
+        }
     }
 }
 
@@ -922,5 +995,54 @@ impl DocumentsIterable for SingleDocIterable<'_> {
             doc: self.0,
             done: false,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use randomizedtesting::jdk::exception::QuietPanics;
+    use rucene::error::LuceneErrorKind;
+
+    fn assertion_error(message: &str) -> LuceneError {
+        LuceneError::from(LuceneErrorKind::AssertionError(message.to_string()))
+    }
+
+    /// An `IOException` primary is thrown as is, the later throwables added
+    /// to it as suppressed (`RandomIndexWriter.java:398-404`).
+    #[test]
+    fn io_primary_is_thrown_with_the_later_ones_suppressed() {
+        let io = LuceneError::from(std::io::Error::other("disk full"));
+        let thrown = rethrow_primary(vec![
+            Thrown::Error(io),
+            Thrown::Error(LuceneError::illegal_state("second")),
+        ]);
+        assert!(matches!(thrown.kind(), LuceneErrorKind::Io(_)));
+        assert_eq!(thrown.get_suppressed().len(), 1);
+        assert!(matches!(
+            thrown.get_suppressed()[0].kind(),
+            LuceneErrorKind::IllegalState { .. }
+        ));
+    }
+
+    /// A primary that is neither an `IOException` nor a `RuntimeException`
+    /// (here an `AssertionError`) is thrown as `new AssertionError(primary)`:
+    /// message `primary.toString()`, cause the primary
+    /// (`RandomIndexWriter.java:405-409`).
+    #[test]
+    fn error_primary_is_wrapped_in_a_new_assertion_error() {
+        let payload = {
+            let _quiet = QuietPanics::new();
+            std::panic::catch_unwind(AssertUnwindSafe(|| {
+                rethrow_primary(vec![Thrown::Error(assertion_error("boom"))])
+            }))
+            .expect_err("the AssertionError")
+        };
+        let thrown = Throwable::from_panic(payload);
+        assert_eq!(thrown.class_name(), "java.lang.AssertionError");
+        assert_eq!(thrown.message(), Some("java.lang.AssertionError: boom"));
+        let cause = thrown.cause().expect("the primary as cause");
+        assert_eq!(cause.class_name(), "java.lang.AssertionError");
+        assert_eq!(cause.message(), Some("boom"));
     }
 }

@@ -27,7 +27,7 @@ use rucene::codecs::norms::NormsProducer;
 use rucene::codecs::postings::FieldsProducer;
 use rucene::codecs::stored_fields::StoredFieldsReader;
 use rucene::codecs::term_vectors::TermVectorsReader;
-use rucene::error::Result;
+use rucene::error::{LuceneError, Result};
 use rucene::index::codec_reader::CodecReader;
 use rucene::index::index_reader::{CacheHelper, IndexReaderCore, StoredFields};
 use rucene::index::leaf_reader::{EmptyTermVectors, TermVectors};
@@ -40,7 +40,6 @@ use rucene::search::knn::KnnCollector;
 use rucene::search::AcceptDocs;
 use rucene::util::Bits;
 
-use super::asserting_leaf_reader::npe;
 use super::shared_producers::{NullStoredFields, StoredFieldsReaderView, TermVectorsReaderView};
 
 /// Port of the package-private `org.apache.lucene.tests.index.MergeReaderWrapper`
@@ -125,11 +124,27 @@ impl MergeReaderWrapper {
         Some(fi.clone())
     }
 
-    /// `docValues`, whose dereference throws the `NullPointerException` when
-    /// the wrapped reader has no doc-values producer.
-    fn doc_values(&self) -> Result<&dyn DocValuesProducer> {
-        self.doc_values.as_deref().ok_or_else(npe)
+    /// `docValues`, whose dereference throws the JDK's helpful
+    /// `NullPointerException` for `DocValuesProducer.<method>` when the
+    /// wrapped reader has no doc-values producer.
+    fn doc_values(&self, method: &str) -> Result<&dyn DocValuesProducer> {
+        self.doc_values.as_deref().ok_or_else(|| {
+            helpful_npe(
+                "org.apache.lucene.codecs.DocValuesProducer",
+                method,
+                "docValues",
+            )
+        })
     }
+}
+
+/// The JDK's helpful message for `this.<field>.<method>` on a `null` field:
+/// `Cannot invoke "<class>.<method>" because "this.<field>" is null`.
+fn helpful_npe(class: &str, method: &str, field: &str) -> LuceneError {
+    LuceneError::unchecked(
+        "java.lang.NullPointerException",
+        format!("Cannot invoke \"{class}.{method}\" because \"this.{field}\" is null"),
+    )
 }
 
 impl fmt::Debug for MergeReaderWrapper {
@@ -165,7 +180,9 @@ impl LeafReader for MergeReaderWrapper {
         self.core.ensure_open()?;
         match self.dv_field(field, DocValuesType::NUMERIC) {
             None => Ok(None),
-            Some(fi) => self.doc_values()?.get_numeric(&fi),
+            Some(fi) => self
+                .doc_values("getNumeric(org.apache.lucene.index.FieldInfo)")?
+                .get_numeric(&fi),
         }
     }
 
@@ -173,7 +190,9 @@ impl LeafReader for MergeReaderWrapper {
         self.core.ensure_open()?;
         match self.dv_field(field, DocValuesType::BINARY) {
             None => Ok(None),
-            Some(fi) => self.doc_values()?.get_binary(&fi),
+            Some(fi) => self
+                .doc_values("getBinary(org.apache.lucene.index.FieldInfo)")?
+                .get_binary(&fi),
         }
     }
 
@@ -181,7 +200,9 @@ impl LeafReader for MergeReaderWrapper {
         self.core.ensure_open()?;
         match self.dv_field(field, DocValuesType::SORTED) {
             None => Ok(None),
-            Some(fi) => self.doc_values()?.get_sorted(&fi),
+            Some(fi) => self
+                .doc_values("getSorted(org.apache.lucene.index.FieldInfo)")?
+                .get_sorted(&fi),
         }
     }
 
@@ -192,7 +213,9 @@ impl LeafReader for MergeReaderWrapper {
         self.core.ensure_open()?;
         match self.dv_field(field, DocValuesType::SORTED_NUMERIC) {
             None => Ok(None),
-            Some(fi) => self.doc_values()?.get_sorted_numeric(&fi),
+            Some(fi) => self
+                .doc_values("getSortedNumeric(org.apache.lucene.index.FieldInfo)")?
+                .get_sorted_numeric(&fi),
         }
     }
 
@@ -203,7 +226,9 @@ impl LeafReader for MergeReaderWrapper {
         self.core.ensure_open()?;
         match self.dv_field(field, DocValuesType::SORTED_SET) {
             None => Ok(None),
-            Some(fi) => self.doc_values()?.get_sorted_set(&fi),
+            Some(fi) => self
+                .doc_values("getSortedSet(org.apache.lucene.index.FieldInfo)")?
+                .get_sorted_set(&fi),
         }
     }
 
@@ -212,7 +237,17 @@ impl LeafReader for MergeReaderWrapper {
         let infos = self.get_field_infos();
         match infos.field_info(field) {
             // Field does not exist or does not index norms
-            Some(fi) if fi.has_norms() => self.norms.as_deref().ok_or_else(npe)?.get_norms(fi),
+            Some(fi) if fi.has_norms() => self
+                .norms
+                .as_deref()
+                .ok_or_else(|| {
+                    helpful_npe(
+                        "org.apache.lucene.codecs.NormsProducer",
+                        "getNorms(org.apache.lucene.index.FieldInfo)",
+                        "norms",
+                    )
+                })?
+                .get_norms(fi),
             _ => Ok(None),
         }
     }
@@ -223,7 +258,9 @@ impl LeafReader for MergeReaderWrapper {
         match infos.field_info(field) {
             // Field does not exist
             None => Ok(None),
-            Some(fi) => self.doc_values()?.get_skipper(fi),
+            Some(fi) => self
+                .doc_values("getSkipper(org.apache.lucene.index.FieldInfo)")?
+                .get_skipper(fi),
         }
     }
 

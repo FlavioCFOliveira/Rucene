@@ -77,12 +77,11 @@ impl HnswUtil {
     /// chain of casts (`HnswUtil.java:209-215`): it unwraps the leaf to a
     /// `CodecReader`, casts its vector reader to
     /// `PerFieldKnnVectorsFormat.FieldsReader`, asks it for the field's reader
-    /// and casts *that* to `HnswGraphProvider`. Two of those narrowings do not
-    /// exist in this port — a `dyn LeafReader` cannot be narrowed to a
-    /// `dyn CodecReader`, and a `dyn KnnVectorsReader` cannot be narrowed to a
-    /// `dyn HnswGraphProvider`, which is the same limitation
-    /// [`IncrementalHnswGraphMerger`](super::IncrementalHnswGraphMerger) records
-    /// for `addReader`. The cast chain is therefore supplied by the caller as
+    /// and casts *that* to `HnswGraphProvider`. The first of those narrowings
+    /// does not exist in this port — a `dyn LeafReader` cannot be narrowed to a
+    /// `dyn CodecReader` — while the last is
+    /// [`KnnVectorsReader::as_hnsw_graph_provider`](crate::codecs::knn_vectors::KnnVectorsReader::as_hnsw_graph_provider).
+    /// The cast chain is therefore supplied by the caller as
     /// `graph_of_leaf`, and everything Java does around it — walking the
     /// leaves, testing each graph with [`HnswUtil::is_rooted`] and answering
     /// `false` at the first leaf that is not rooted — is unchanged.

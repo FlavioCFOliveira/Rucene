@@ -18,12 +18,14 @@
 //! Port of `org.apache.lucene.tests.analysis.BaseTokenStreamTestCase`.
 
 use std::any::{Any, TypeId};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
-use randomizedtesting::jdk::exception::{Throwable, ASSERTION_ERROR};
+use randomizedtesting::jdk::exception::{
+    Throwable, ASSERTION_ERROR, ILLEGAL_STATE_EXCEPTION, NULL_POINTER_EXCEPTION, RUNTIME_EXCEPTION,
+};
 use randomizedtesting::jdk::random::{JdkRandom, Random};
 use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::Assert;
@@ -37,6 +39,7 @@ use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::{IndexOptions, IndexableFieldType};
 use rucene::util::attribute::{Attribute, AttributeFactory, AttributeImpl, AttributeReflector};
 use rucene::util::fst::Util;
+use rucene::util::java_collections::JavaHashSet;
 use rucene::util::{BytesRef, BytesRefBuilder, IntsRef};
 
 use super::attributes::{
@@ -48,8 +51,10 @@ use super::mock_reader_wrapper::MockReaderWrapper;
 use super::mock_tokenizer::{MockTokenizer, KEYWORD, WHITESPACE};
 use super::token::Token;
 use super::token_stream_to_dot::TokenStreamToDot;
+use crate::index::base_index_file_format_test_case::npe_with;
 use crate::index::RandomIndexWriter;
 use crate::util::automaton::AutomatonTestUtil;
+use crate::util::java_exceptions;
 use crate::util::lucene_test_case::{TestDirectory, VERBOSE};
 use crate::util::{LuceneTestCase, TestUtil};
 
@@ -173,8 +178,13 @@ pub fn java_message(e: &LuceneError) -> Option<String> {
         | LuceneErrorKind::Arithmetic(message)
         | LuceneErrorKind::MergeAborted(message)
         | LuceneErrorKind::Merge(message)
-        | LuceneErrorKind::AssertionError(message)
         | LuceneErrorKind::Other(message) => message.clone(),
+        // An `assert` without a message (`java_assert!(cond)`, the core's
+        // `AssertionError(String::new())`) is `new AssertionError()`, whose
+        // `getMessage()` is `null`; the core reads an empty message the same
+        // way (`rucene::util::concurrent::throwable_to_string`).
+        LuceneErrorKind::AssertionError(message) if message.is_empty() => return None,
+        LuceneErrorKind::AssertionError(message) => message.clone(),
         LuceneErrorKind::IllegalArgument { message, .. }
         | LuceneErrorKind::IllegalState { message, .. }
         | LuceneErrorKind::CheckIndex { message, .. }
@@ -204,27 +214,51 @@ pub fn java_class_and_message(e: &LuceneError) -> (String, String) {
     )
 }
 
-/// Whether Java's `catch (RuntimeException e)` catches the error.
-fn is_runtime_exception(e: &LuceneError) -> bool {
-    !e.is_io_exception()
-}
-
-/// Whether Java's `catch (IllegalStateException e)` catches the error.
-fn is_illegal_state(e: &LuceneError) -> bool {
-    matches!(
-        e,
-        LuceneError {
-            kind: LuceneErrorKind::IllegalState { .. },
-            ..
-        }
-    )
-}
-
 /// Rethrows an error inside a thread, as `Rethrow.rethrow(e)` does: the
-/// panic payload is the Java throwable.
+/// panic payload is the Java throwable, with its cause and suppressed
+/// exceptions.
 fn rethrow(e: &LuceneError) -> ! {
-    let (class, message) = java_class_and_message(e);
-    Throwable::new(class, message).throw()
+    java_exceptions::java_throwable(e).throw()
+}
+
+/// `try { ts.end(); } catch (IllegalStateException ise) { if
+/// (ise.getMessage().contains("end() called in wrong state=")) { // OK }
+/// else { throw ise; } }`: MockTokenizer's anger at an `end()` before the
+/// stream is exhausted is ignored; a `null` message throws Java's helpful
+/// `NullPointerException`.
+fn end_ignoring_wrong_state(ts: &mut dyn TokenStream) -> Result<()> {
+    let tolerated = |message: Option<&str>| {
+        match message {
+        Some(m) => m.contains("end() called in wrong state="),
+        None => Throwable::new(
+            NULL_POINTER_EXCEPTION,
+            "Cannot invoke \"String.contains(java.lang.CharSequence)\" because the return value of \"java.lang.IllegalStateException.getMessage()\" is null",
+        )
+        .throw(),
+    }
+    };
+    match catch_unwind(AssertUnwindSafe(|| ts.end())) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(ise)) => {
+            if java_exceptions::is_instance(&ise, ILLEGAL_STATE_EXCEPTION)
+                && tolerated(java_message(&ise).as_deref())
+            {
+                // OK
+                Ok(())
+            } else {
+                Err(ise)
+            }
+        }
+        Err(payload) => {
+            let t = crate::mockfile::panic_throwable(&*payload);
+            if t.is_instance(ILLEGAL_STATE_EXCEPTION) && tolerated(t.message()) {
+                // OK
+                Ok(())
+            } else {
+                resume_unwind(payload)
+            }
+        }
+    }
 }
 
 /// Base class for all Lucene unit tests that use TokenStreams.
@@ -319,10 +353,28 @@ impl BaseTokenStreamTestCase {
             // ConcatenateGraphFilter has some tricky logic violating this. We have an extra assert there:
             let simple_name = format!("{:?}", bytes_att.implementation());
             if !simple_name.starts_with("BytesRefBuilderTermAttributeImpl") && !t.same(&bytes_att) {
+                // `assertSame(message, termAtt, bytesAtt)`: JUnit's
+                // `failNotSame` renders both with `toString()`; a
+                // `CharTermAttributeImpl` (and every subclass) renders its
+                // term. **Divergence from Lucene 10.5.0**
+                // (`BaseTokenStreamTestCase.java:126-128`): any other
+                // implementation renders `Object.toString()`, a class name and
+                // an identity hash Rust cannot reproduce; its `Debug` stands in.
+                let rendering = |att: &Att| {
+                    if att
+                        .implementation()
+                        .attribute_interfaces()
+                        .contains(&char_term_id())
+                    {
+                        att.term_string()
+                    } else {
+                        format!("{:?}", att.implementation())
+                    }
+                };
                 Assert::fail(&format!(
-                    "TermToBytesRefAttribute must be implemented by same instance expected same:<{:?}> was not:<{:?}>",
-                    t.implementation(),
-                    bytes_att.implementation()
+                    "TermToBytesRefAttribute must be implemented by same instance expected same:<{}> was not:<{}>",
+                    rendering(&t),
+                    rendering(&bytes_att)
                 ));
             }
             term_att = Some(t);
@@ -538,10 +590,13 @@ impl BaseTokenStreamTestCase {
             }
             if let Some(a) = &boost_att {
                 let actual = a.boost().get_boost();
-                Assert::assert_equals_float_msg(
+                // `assertEquals(String, float, float, 0.001)`: the delta is a
+                // `double` literal, so Java binds the `double` overload and
+                // widens both floats.
+                Assert::assert_equals_double_msg(
                     Some(&format!("boostAtt {} term={}", i, actual_term)),
-                    boost.unwrap()[i],
-                    actual,
+                    f64::from(boost.unwrap()[i]),
+                    f64::from(actual),
                     0.001,
                 );
             }
@@ -1637,29 +1692,62 @@ impl BaseTokenStreamTestCase {
     ///
     /// What the analyzer throws while consuming correctly.
     pub fn check_reset_exception(a: &dyn Analyzer, input: &str) -> Result<()> {
+        /// What the `try`/`catch` throws once its `finally` has run.
+        enum Pending {
+            None,
+            Fail(String),
+            Err(LuceneError),
+            Panic(Box<dyn Any + Send>),
+        }
+        // `catch (IllegalStateException expected)`, then `catch (Exception
+        // unexpected)`; an `Error` is caught by neither.
+        let caught = |t: Throwable| -> Option<String> {
+            if t.is_instance(ILLEGAL_STATE_EXCEPTION) {
+                // ok
+                return None;
+            }
+            randomizedtesting::jdk::system::err_println(
+                &randomizedtesting::jdk::system::format_stack_trace(&t),
+            );
+            Some(format!("got wrong exception when reset() not called: {t}"))
+        };
         let ts = a.token_stream_from_str("bogus", input)?;
-        let outcome = match ts.borrow_mut().increment_token() {
-            Ok(true) => Some("didn't get expected exception when reset() not called".to_string()),
-            Ok(false) => None,
-            Err(e) if is_illegal_state(&e) => None, // ok
-            Err(unexpected) => {
-                eprintln!("{}", java_to_string(&unexpected));
-                Some(format!(
-                    "got wrong exception when reset() not called: {}",
-                    java_to_string(&unexpected)
-                ))
+        let pending = match catch_unwind(AssertUnwindSafe(|| ts.borrow_mut().increment_token())) {
+            Ok(Ok(true)) => {
+                // System.out.println(ts.reflectAsString(false));
+                Pending::Fail("didn't get expected exception when reset() not called".to_string())
+            }
+            Ok(Ok(false)) => Pending::None,
+            Ok(Err(e)) => {
+                let t = java_exceptions::java_throwable(&e);
+                if t.is_instance(randomizedtesting::jdk::exception::ERROR) {
+                    Pending::Err(e)
+                } else {
+                    caught(t).map_or(Pending::None, Pending::Fail)
+                }
+            }
+            Err(payload) => {
+                if crate::mockfile::is_java_error(&*payload) {
+                    Pending::Panic(payload)
+                } else {
+                    caught(crate::mockfile::panic_throwable(&*payload))
+                        .map_or(Pending::None, Pending::Fail)
+                }
             }
         };
         {
-            // consume correctly
+            // finally: consume correctly
             let mut ts = ts.borrow_mut();
             ts.reset()?;
             while ts.increment_token()? {}
             ts.end()?;
             ts.close()?;
         }
-        if let Some(message) = outcome {
-            Assert::fail(&message);
+        match pending {
+            Pending::None => {}
+            Pending::Fail(message) => Assert::fail(&message),
+            Pending::Err(e) => return Err(e),
+            Pending::Panic(payload) => resume_unwind(payload),
         }
 
         // check for a missing close()
@@ -1670,18 +1758,29 @@ impl BaseTokenStreamTestCase {
             while ts.increment_token()? {}
             ts.end()?;
         }
-        match a.token_stream_from_str("bogus", input) {
-            Ok(new_ts) => {
+        // `try { ts = a.tokenStream(...); fail(...); } catch
+        // (IllegalStateException expected) {} finally { ts.close(); }`: the
+        // `finally` closes the new stream when one was returned, else the
+        // previous one, and its exception replaces the one in flight.
+        match catch_unwind(AssertUnwindSafe(|| a.token_stream_from_str("bogus", input))) {
+            Ok(Ok(new_ts)) => {
                 new_ts.borrow_mut().close()?;
                 Assert::fail("didn't get expected exception when close() not called");
             }
-            Err(e) if is_illegal_state(&e) => {
+            Ok(Err(e)) => {
+                ts.borrow_mut().close()?;
+                if !java_exceptions::is_instance(&e, ILLEGAL_STATE_EXCEPTION) {
+                    return Err(e);
+                }
                 // ok
-                ts.borrow_mut().close()?;
             }
-            Err(e) => {
+            Err(payload) => {
                 ts.borrow_mut().close()?;
-                return Err(e);
+                if !crate::mockfile::panic_throwable(&*payload).is_instance(ILLEGAL_STATE_EXCEPTION)
+                {
+                    resume_unwind(payload);
+                }
+                // ok
             }
         }
         Ok(())
@@ -1810,35 +1909,38 @@ impl BaseTokenStreamTestCase {
             )?));
             dir = Some(d);
         }
-        let result = Self::check_random_data_threads(
-            seed,
-            a,
-            iterations,
-            max_word_length,
-            use_char_filter,
-            simple,
-            graph_offsets_are_correct,
-            random,
-            &mut iw,
-        );
+        // `try { ... success = true; } finally { if (success) IOUtils.close(dir);
+        // else IOUtils.closeWhileHandlingException(dir); }`: the `finally`
+        // runs on every exit of the `try`, a panic included.
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            Self::check_random_data_threads(
+                seed,
+                a,
+                iterations,
+                max_word_length,
+                use_char_filter,
+                simple,
+                graph_offsets_are_correct,
+                random,
+                &mut iw,
+            )
+        }));
         // The writer's handle on the directory goes with it: a
         // `MockDirectoryWrapper` closes its delegate only once no copy of it
         // is alive.
         drop(iw);
-        match result {
-            Ok(()) => {
-                // `IOUtils.close(dir)`
-                if let Some(dir) = dir {
-                    dir.close()?;
-                }
-                Ok(())
-            }
-            Err(e) => {
-                // `IOUtils.closeWhileHandlingException(dir); // checkindex`
-                if let Some(dir) = dir {
-                    let _ = dir.close();
-                }
+        let close_dir = || [dir.as_ref().map(|d| move || d.close())];
+        match outcome {
+            Ok(Ok(())) => rucene::util::IOUtils::close(close_dir()),
+            Ok(Err(e)) => {
+                // checkindex
+                rucene::util::IOUtils::close_while_handling_exception(close_dir())?;
                 Err(e)
+            }
+            Err(payload) => {
+                // checkindex
+                rucene::util::IOUtils::close_while_handling_exception(close_dir())?;
+                resume_unwind(payload)
             }
         }
     }
@@ -1968,11 +2070,11 @@ impl BaseTokenStreamTestCase {
             let report = |text: &str| {
                 // TODO: really we should pass a random seed to
                 // checkAnalysisConsistency then print it here too:
-                eprintln!(
+                randomizedtesting::jdk::system::err_println(&format!(
                     "TEST FAIL: useCharFilter={} text='{}'",
                     use_char_filter,
                     Self::escape(text)
-                );
+                ));
             };
             match catch_unwind(AssertUnwindSafe(|| {
                 Self::check_analysis_consistency_field(
@@ -2123,11 +2225,11 @@ impl BaseTokenStreamTestCase {
         field: Option<&SharedReader>,
     ) -> Result<()> {
         if *VERBOSE {
-            println!(
-                "{:?}: NOTE: BaseTokenStreamTestCase: get first token stream now text={}",
-                std::thread::current().name(),
+            randomizedtesting::jdk::system::out_println(&format!(
+                "{}: NOTE: BaseTokenStreamTestCase: get first token stream now text={}",
+                Thread::current().name(),
                 text
-            );
+            ));
         }
 
         let remainder = random.next_int_bound(10);
@@ -2189,10 +2291,10 @@ impl BaseTokenStreamTestCase {
                 let evilness = random.next_int_bound(50);
                 if evilness == 17 {
                     if *VERBOSE {
-                        println!(
-                            "{:?}: NOTE: BaseTokenStreamTestCase: re-run analysis w/ exception",
-                            std::thread::current().name()
-                        );
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "{}: NOTE: BaseTokenStreamTestCase: re-run analysis w/ exception",
+                            Thread::current().name()
+                        ));
                     }
                     // Throw an errant exception from the Reader:
 
@@ -2218,45 +2320,45 @@ impl BaseTokenStreamTestCase {
                     // a.tokenStream inside the try since we may
                     // hit the exc on init:
                     let mut current = Arc::clone(&ts);
-                    let attempt: Result<()> = (|| {
+                    let attempt = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
                         current = a.token_stream("dummy", reader)?;
                         let mut ts = current.borrow_mut();
                         ts.reset()?;
                         while ts.increment_token()? {}
                         Ok(())
-                    })();
+                    }));
+                    // `catch (RuntimeException re)`: an error or a panic
+                    // whose throwable is a `RuntimeException`.
                     match attempt {
-                        Ok(()) => Assert::fail("did not hit exception"),
-                        Err(re) if is_runtime_exception(&re) => {
-                            Assert::assert_true(MockReaderWrapper::is_my_evil_exception(&re));
+                        Ok(Ok(())) => Assert::fail("did not hit exception"),
+                        Ok(Err(re)) => {
+                            let t = java_exceptions::java_throwable(&re);
+                            if !t.is_instance(RUNTIME_EXCEPTION) {
+                                return Err(re);
+                            }
+                            Assert::assert_true(MockReaderWrapper::is_my_evil_throwable(&t));
                         }
-                        Err(e) => return Err(e),
+                        Err(payload) => {
+                            let t = crate::mockfile::panic_throwable(&*payload);
+                            if !t.is_instance(RUNTIME_EXCEPTION) {
+                                resume_unwind(payload);
+                            }
+                            Assert::assert_true(MockReaderWrapper::is_my_evil_throwable(&t));
+                        }
                     }
                     let mut ts = current.borrow_mut();
-                    if let Err(ise) = ts.end() {
-                        // Catch & ignore MockTokenizer's
-                        // anger...
-                        match &ise {
-                            LuceneError {
-                                kind: LuceneErrorKind::IllegalState { message, .. },
-                                ..
-                            } if message.contains("end() called in wrong state=") => {
-                                // OK
-                            }
-                            _ => return Err(ise),
-                        }
-                    }
+                    end_ignoring_wrong_state(&mut *ts)?;
                     ts.close()?;
                 } else if evilness == 7 {
                     // Only consume a subset of the tokens:
                     let num_tokens_to_read = random.next_int_bound(tokens.len() as i32);
                     if *VERBOSE {
-                        println!(
-                            "{:?}: NOTE: BaseTokenStreamTestCase: re-run analysis, only consuming {} of {} tokens",
-                            std::thread::current().name(),
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "{}: NOTE: BaseTokenStreamTestCase: re-run analysis, only consuming {} of {} tokens",
+                            Thread::current().name(),
                             num_tokens_to_read,
                             tokens.len()
-                        );
+                        ));
                     }
                     let ts = a.token_stream(
                         "dummy",
@@ -2267,19 +2369,7 @@ impl BaseTokenStreamTestCase {
                     for _ in 0..num_tokens_to_read {
                         Assert::assert_true(ts.increment_token()?);
                     }
-                    if let Err(ise) = ts.end() {
-                        // Catch & ignore MockTokenizer's
-                        // anger...
-                        match &ise {
-                            LuceneError {
-                                kind: LuceneErrorKind::IllegalState { message, .. },
-                                ..
-                            } if message.contains("end() called in wrong state=") => {
-                                // OK
-                            }
-                            _ => return Err(ise),
-                        }
-                    }
+                    end_ignoring_wrong_state(&mut *ts)?;
                     ts.close()?;
                 }
             }
@@ -2289,20 +2379,20 @@ impl BaseTokenStreamTestCase {
         // results from first pass:
 
         if *VERBOSE {
-            println!(
-                "{:?}: NOTE: BaseTokenStreamTestCase: re-run analysis; {} tokens",
-                std::thread::current().name(),
+            randomizedtesting::jdk::system::out_println(&format!(
+                "{}: NOTE: BaseTokenStreamTestCase: re-run analysis; {} tokens",
+                Thread::current().name(),
                 tokens.len()
-            );
+            ));
         }
         let seed = random.next_long();
         let random: Arc<dyn Random> = Arc::new(JdkRandom::new(seed));
         let wrap = if random.next_int_bound(30) == 7 {
             if *VERBOSE {
-                println!(
-                    "{:?}: NOTE: BaseTokenStreamTestCase: using spoon-feed reader",
-                    std::thread::current().name()
-                );
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "{}: NOTE: BaseTokenStreamTestCase: using spoon-feed reader",
+                    Thread::current().name()
+                ));
             }
             Some(Arc::clone(&random))
         } else {
@@ -2402,10 +2492,10 @@ impl BaseTokenStreamTestCase {
             let random = JdkRandom::new(seed);
             if random.next_int_bound(30) == 7 {
                 if *VERBOSE {
-                    println!(
-                        "{:?}: NOTE: BaseTokenStreamTestCase: indexing using spoon-feed reader",
-                        std::thread::current().name()
-                    );
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "{}: NOTE: BaseTokenStreamTestCase: indexing using spoon-feed reader",
+                        Thread::current().name()
+                    ));
                 }
 
                 reader = Box::new(MockReaderWrapper::new(Arc::new(random), reader));
@@ -2442,8 +2532,14 @@ impl BaseTokenStreamTestCase {
     ///
     /// What the analyzer throws, and the I/O errors of writing the file.
     pub fn to_dot_file(a: &dyn Analyzer, input_text: &str, local_file_name: &str) -> Result<()> {
+        // `Files.newBufferedWriter(Paths.get(localFileName), UTF_8)` opens
+        // (creates or truncates) the file before the analysis runs.
+        let path =
+            rucene::store::java_nio_file::FileSystems::get_default().get_path(local_file_name, &[]);
+        let mut w = rucene::store::java_nio_file::Files::new_output_stream(&path, &[])?;
         let dot = Self::to_dot(a, input_text)?;
-        std::fs::write(local_file_name, dot)?;
+        w.write(dot.as_bytes(), 0, dot.len())?;
+        w.close()?;
         Ok(())
     }
 
@@ -2508,7 +2604,9 @@ impl BaseTokenStreamTestCase {
     }
 
     fn to_string_set(strings: &HashSet<String>) -> String {
-        let strings_list: BTreeSet<&String> = strings.iter().collect();
+        let mut strings_list: Vec<&String> = strings.iter().collect();
+        // `Collections.sort`: `String.compareTo`, UTF-16 code-unit order.
+        strings_list.sort_by(|x, y| x.encode_utf16().cmp(y.encode_utf16()));
         let mut b = String::new();
         for s in strings_list {
             b.push_str("  ");
@@ -2539,11 +2637,13 @@ impl BaseTokenStreamTestCase {
             text,
             true,
         )?;
-        Self::with_stream(analyzer, "dummy", text, |ts| {
-            let result = Self::assert_graph_strings_of(ts, expected_strings);
-            ts.close()?;
-            result
-        })
+        // `try (TokenStream tokenStream = analyzer.tokenStream("dummy", text))`
+        let ts = analyzer.token_stream_from_str("dummy", text)?;
+        java_exceptions::try_with(
+            ts,
+            |ts| ts.borrow_mut().close(),
+            |ts| Self::assert_graph_strings_of(&mut *ts.borrow_mut(), expected_strings),
+        )
     }
 
     /// Enumerates all accepted strings in the token graph created by the
@@ -2556,7 +2656,8 @@ impl BaseTokenStreamTestCase {
         token_stream: &mut dyn TokenStream,
         expected_strings: &[&str],
     ) -> Result<()> {
-        let actual_strings = Self::get_graph_strings_of(token_stream)?;
+        let actual_java = Self::graph_strings(token_stream)?;
+        let actual_strings = actual_java.to_std();
         let expected_strings_set: HashSet<String> =
             expected_strings.iter().map(|s| s.to_string()).collect();
         let message = |s: &str| {
@@ -2567,7 +2668,8 @@ impl BaseTokenStreamTestCase {
                 Self::to_string_set(&actual_strings)
             )
         };
-        for s in &actual_strings {
+        // `for (String s : actualStrings)`: `java.util.HashSet` order.
+        for s in actual_java.iter() {
             Assert::assert_true_msg(&message(s), expected_strings_set.contains(s));
         }
         for s in expected_strings {
@@ -2584,11 +2686,13 @@ impl BaseTokenStreamTestCase {
     ///
     /// What the analyzer throws.
     pub fn get_graph_strings(analyzer: &dyn Analyzer, text: &str) -> Result<HashSet<String>> {
-        Self::with_stream(analyzer, "dummy", text, |ts| {
-            let result = Self::get_graph_strings_of(ts);
-            ts.close()?;
-            result
-        })
+        // `try (TokenStream tokenStream = analyzer.tokenStream("dummy", text))`
+        let ts = analyzer.token_stream_from_str("dummy", text)?;
+        java_exceptions::try_with(
+            ts,
+            |ts| ts.borrow_mut().close(),
+            |ts| Self::get_graph_strings_of(&mut *ts.borrow_mut()),
+        )
     }
 
     /// Returns all paths accepted by the token stream graph produced by the
@@ -2598,10 +2702,16 @@ impl BaseTokenStreamTestCase {
     ///
     /// What the stream throws.
     pub fn get_graph_strings_of(token_stream: &mut dyn TokenStream) -> Result<HashSet<String>> {
+        Ok(Self::graph_strings(token_stream)?.to_std())
+    }
+
+    /// The body of `getGraphStrings(TokenStream)`, as the `java.util.HashSet`
+    /// Java builds, whose iteration order `assertGraphStrings` reports.
+    fn graph_strings(token_stream: &mut dyn TokenStream) -> Result<JavaHashSet> {
         let automaton = TokenStreamToAutomaton::new().to_automaton(token_stream)?;
         let actual_string_paths = AutomatonTestUtil::get_finite_strings_recursive(&automaton, -1);
         let mut scratch = BytesRefBuilder::new();
-        let mut paths = HashSet::new();
+        let mut paths = JavaHashSet::new();
         for ir in actual_string_paths {
             let ints = IntsRef::new(ir);
             let bytes = Util::to_bytes_ref(&ints, &mut scratch)?;
@@ -2619,48 +2729,54 @@ impl BaseTokenStreamTestCase {
     ///
     /// What the analyzer throws.
     pub fn to_string(analyzer: &dyn Analyzer, text: &str) -> Result<String> {
-        Self::with_stream(analyzer, "field", text, |ts| {
-            let mut b = String::new();
-            let source = ts.attribute_source();
-            let term_att = Att::get(source, char_term_id());
-            let pos_inc_att = Att::get(source, pos_inc_id());
-            let pos_length_att = Att::get(source, pos_len_id());
-            let offset_att = Att::get(source, offset_id());
-            Assert::assert_true(offset_att.is_some());
-            let offset_att = offset_att.unwrap();
-            ts.reset()?;
-            let mut pos = -1;
-            while ts.increment_token()? {
-                pos += pos_inc_att
-                    .as_ref()
-                    .expect("java.lang.NullPointerException")
+        // `try (TokenStream ts = analyzer.tokenStream("field", text))`
+        let ts = analyzer.token_stream_from_str("field", text)?;
+        java_exceptions::try_with(
+            ts,
+            |ts| ts.borrow_mut().close(),
+            |ts| {
+                let mut ts = ts.borrow_mut();
+                let mut b = String::new();
+                let source = ts.attribute_source();
+                let term_att = Att::get(source, char_term_id());
+                let pos_inc_att = Att::get(source, pos_inc_id());
+                let pos_length_att = Att::get(source, pos_len_id());
+                let offset_att = Att::get(source, offset_id());
+                Assert::assert_true(offset_att.is_some());
+                let offset_att = offset_att.unwrap();
+                ts.reset()?;
+                let mut pos = -1;
+                while ts.increment_token()? {
+                    pos += npe_with(pos_inc_att.as_ref(), || {
+                        "Cannot invoke \"org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute.getPositionIncrement()\" because \"posIncAtt\" is null".to_string()
+                    })
                     .pos_inc()
                     .get_position_increment();
-                b.push_str(
-                    &term_att
-                        .as_ref()
-                        .map_or_else(|| "null".to_string(), Att::term_string),
-                );
-                b.push_str(" at pos=");
-                b.push_str(&pos.to_string());
-                if let Some(pl) = &pos_length_att {
-                    b.push_str(" to pos=");
-                    b.push_str(&(pos + pl.pos_len().get_position_length()).to_string());
+                    b.push_str(
+                        &term_att
+                            .as_ref()
+                            .map_or_else(|| "null".to_string(), Att::term_string),
+                    );
+                    b.push_str(" at pos=");
+                    b.push_str(&pos.to_string());
+                    if let Some(pl) = &pos_length_att {
+                        b.push_str(" to pos=");
+                        b.push_str(&(pos + pl.pos_len().get_position_length()).to_string());
+                    }
+                    b.push_str(" offsets=");
+                    let (s, e) = {
+                        let o = offset_att.offset();
+                        (o.start_offset(), o.end_offset())
+                    };
+                    b.push_str(&s.to_string());
+                    b.push('-');
+                    b.push_str(&e.to_string());
+                    b.push('\n');
                 }
-                b.push_str(" offsets=");
-                let (s, e) = {
-                    let o = offset_att.offset();
-                    (o.start_offset(), o.end_offset())
-                };
-                b.push_str(&s.to_string());
-                b.push('-');
-                b.push_str(&e.to_string());
-                b.push('\n');
-            }
-            ts.end()?;
-            ts.close()?;
-            Ok(b)
-        })
+                ts.end()?;
+                Ok(b)
+            },
+        )
     }
 }
 
@@ -2714,5 +2830,89 @@ impl AnalysisThread {
             Ok(()) => success.1 = true,
             Err(e) => rethrow(&e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use randomizedtesting::jdk::exception::Throwable;
+    use rucene::analysis::TokenStream;
+    use rucene::error::{LuceneError, LuceneErrorKind, Result};
+    use rucene::util::attribute::AttributeSource;
+
+    use super::end_ignoring_wrong_state;
+
+    /// A stream whose `end()` throws the configured error.
+    #[derive(Debug)]
+    struct EndThrows(Option<LuceneError>, AttributeSource);
+
+    impl TokenStream for EndThrows {
+        fn increment_token(&mut self) -> Result<bool> {
+            Ok(false)
+        }
+        fn end(&mut self) -> Result<()> {
+            match self.0.take() {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
+        }
+        fn reset(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn attribute_source(&self) -> &AttributeSource {
+            &self.1
+        }
+        fn attribute_source_mut(&mut self) -> &mut AttributeSource {
+            &mut self.1
+        }
+    }
+
+    fn end_of(e: LuceneError) -> std::thread::Result<Result<()>> {
+        let mut ts = EndThrows(Some(e), AttributeSource::new());
+        catch_unwind(AssertUnwindSafe(|| end_ignoring_wrong_state(&mut ts)))
+    }
+
+    /// `checkAnalysisConsistency`'s `catch (IllegalStateException ise)`
+    /// around `ts.end()` (`BaseTokenStreamTestCase.java:1329-1338`): it
+    /// catches any `IllegalStateException` (whatever kind carries it), ignores
+    /// MockTokenizer's `end() called in wrong state=` and rethrows any other;
+    /// a `null` message makes `ise.getMessage().contains(...)` throw the
+    /// helpful `NullPointerException`. The port matched only the
+    /// `IllegalState` kind and could not represent the `null` message.
+    #[test]
+    fn end_ignores_only_mock_tokenizer_anger() {
+        assert!(matches!(
+            end_of(LuceneError::illegal_state(
+                "end() called in wrong state=RESET!"
+            )),
+            Ok(Ok(()))
+        ));
+        assert!(matches!(
+            end_of(LuceneError::unchecked(
+                "java.lang.IllegalStateException",
+                "end() called in wrong state=INCREMENT!"
+            )),
+            Ok(Ok(()))
+        ));
+        assert!(matches!(
+            end_of(LuceneError::illegal_state("other")),
+            Ok(Err(_))
+        ));
+        let null_message = LuceneError::from(LuceneErrorKind::Unchecked {
+            class: "java.lang.IllegalStateException",
+            message: None,
+            cause: None,
+        });
+        let t = Throwable::from_panic(end_of(null_message).expect_err("the NPE"));
+        assert_eq!(t.class_name(), "java.lang.NullPointerException");
+        assert_eq!(
+            t.message(),
+            Some("Cannot invoke \"String.contains(java.lang.CharSequence)\" because the return value of \"java.lang.IllegalStateException.getMessage()\" is null")
+        );
     }
 }

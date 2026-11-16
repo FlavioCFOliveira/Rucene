@@ -1,0 +1,7 @@
+# C<TAB>scenario<TAB>run<TAB>fail<TAB>ignored<TAB>assumption failures
+# F<TAB>scenario<TAB>test<TAB>exception class<TAB>first line of the message
+C	direct	0	0	12	1
+C	nested DEADBEEF	12	3	0	0
+F	nested DEADBEEF	ugly(com.carrotsearch.randomizedtesting.snippets.TheGoodBadAndUglySnippet$TheGoodBadAndUgly)	com.carrotsearch.randomizedtesting.ThreadLeakError	1 thread leaked from TEST scope at ugly(com.carrotsearch.randomizedtesting.snippets.TheGoodBadAndUglySnippet$TheGoodBadAndUgly): 
+F	nested DEADBEEF	bad {seed=[DEADBEEF:1CFB3CFD49ADF1A]}(com.carrotsearch.randomizedtesting.snippets.TheGoodBadAndUglySnippet$TheGoodBadAndUgly)	java.lang.AssertionError	<null>
+F	nested DEADBEEF	bad {seed=[DEADBEEF:63F3D80435144143]}(com.carrotsearch.randomizedtesting.snippets.TheGoodBadAndUglySnippet$TheGoodBadAndUgly)	java.lang.AssertionError	<null>

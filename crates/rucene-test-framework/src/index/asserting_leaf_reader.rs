@@ -360,11 +360,33 @@ impl TermsEnum for AssertingTermsEnum {
         let reused_identity = actual_reuse.as_deref().map(identity);
         let docs = self.r#in.postings(actual_reuse, flags)?;
         java_assert!(docs.is_some());
-        // `docs == actualReuse` is false for a `null` docs: Java wraps it,
-        // and `FilterPostingsEnum`'s constructor rejects it.
-        let docs = docs.ok_or_else(|| {
-            LuceneError::null_pointer_with_message("incoming PostingsEnum must not be null")
-        })?;
+        let Some(docs) = docs else {
+            // Without `-ea`, a `null` docs: when `actualReuse` is `null` too,
+            // `docs == actualReuse` holds and Java runs
+            // `((AssertingPostingsEnum) reuse).reset()`; otherwise it wraps
+            // `null`, which `FilterPostingsEnum`'s constructor rejects.
+            if reused_identity.is_some() {
+                return Err(LuceneError::null_pointer_with_message(
+                    "incoming PostingsEnum must not be null",
+                ));
+            }
+            return Err(match reuse {
+                // The helpful message: the jar keeps the parameter's name.
+                None => LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"org.apache.lucene.tests.index.AssertingLeafReader$AssertingPostingsEnum.reset()\" \
+                     because \"reuse\" is null",
+                ),
+                // **Divergence** (declared): Java's `ClassCastException`
+                // message names the class of `reuse` and its loader; the port
+                // has no Java class name for an arbitrary `PostingsEnum`, so
+                // the exception carries no message.
+                Some(_) => LuceneError::from(LuceneErrorKind::Unchecked {
+                    class: "java.lang.ClassCastException",
+                    message: None,
+                    cause: None,
+                }),
+            });
+        };
         if reused_identity == Some(identity(&*docs)) {
             // codec reused, reset asserting state
             let mut reuse = reuse.expect("a reused enum comes from `reuse`");
@@ -694,6 +716,17 @@ impl<P: ?Sized + PostingsEnum + 'static> fmt::Display for AssertingPostingsEnum<
 }
 
 impl<P: ?Sized + PostingsEnum + 'static> DocIdSetIterator for AssertingPostingsEnum<P> {
+    /// `toString()`: the inherited `Object.toString()`, which `Display`
+    /// renders.
+    fn java_to_string(&self) -> String {
+        self.to_string()
+    }
+
+    /// **Divergence** (declared): Java's assertion message prints
+    /// `in.getClass()`, `class <binary name>` of the delegate
+    /// (`AssertingLeafReader.java:529-534`); a `PostingsEnum` of this port
+    /// carries no Java class name, so the message prints the delegate's
+    /// `toString()` in its place.
     fn doc_id(&self) -> i32 {
         assert_thread_unchecked("Docs enums", &self.creation_thread);
         java_assert_unchecked!(
@@ -952,8 +985,12 @@ impl ImpactsSource for AssertingImpactsEnum {
             target,
             self.last_shallow_target
         );
-        let doc_id = self.doc_id();
-        java_assert!(target >= doc_id, "target = {} < docID = {}", target, doc_id);
+        // `assert target >= docID() : ...`: `docID()` (and its thread check)
+        // runs under `-ea` only.
+        if cfg!(debug_assertions) {
+            let doc_id = self.doc_id();
+            java_assert!(target >= doc_id, "target = {} < docID = {}", target, doc_id);
+        }
         self.last_shallow_target = target;
         self.publish_position();
         self.asserting_postings.unwrap_mut().advance_shallow(target)
@@ -971,23 +1008,34 @@ impl ImpactsSource for AssertingImpactsEnum {
             r#in: impacts,
             position: Arc::clone(&self.position),
             valid_for,
+            creation_thread: self.asserting_postings.creation_thread.clone(),
         }))
     }
 }
 
 impl DocIdSetIterator for AssertingImpactsEnum {
+    /// `toString()`: the inherited `Object.toString()`, which `Display`
+    /// renders.
+    fn java_to_string(&self) -> String {
+        self.to_string()
+    }
+
     fn doc_id(&self) -> i32 {
         self.asserting_postings.doc_id()
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        let doc_id = self.doc_id();
-        java_assert!(
-            doc_id + 1 >= self.last_shallow_target,
-            "target = {} < last shallow target = {}",
-            doc_id + 1,
-            self.last_shallow_target
-        );
+        // `assert docID() + 1 >= lastShallowTarget : ...`: `docID()` (and its
+        // thread check) runs under `-ea` only; `int` arithmetic.
+        if cfg!(debug_assertions) {
+            let doc_id = self.doc_id();
+            java_assert!(
+                doc_id.wrapping_add(1) >= self.last_shallow_target,
+                "target = {} < last shallow target = {}",
+                doc_id.wrapping_add(1),
+                self.last_shallow_target
+            );
+        }
         let doc = self.asserting_postings.next_doc()?;
         self.publish_position();
         Ok(doc)
@@ -1036,14 +1084,32 @@ impl ImpactsEnum for AssertingImpactsEnum {}
 
 /// Port of `AssertingLeafReader.AssertingImpacts`: impacts that refuse to be
 /// read once their enum has moved.
+///
+/// Java's impacts keep a reference to their enum and evaluate
+/// `Math.max(impactsEnum.docID(), impactsEnum.lastShallowTarget)` in each
+/// `assert`; `docID()` is `AssertingPostingsEnum.docID()`, whose thread check
+/// ("Docs enums", the enum's creating thread) runs first. The port keeps that
+/// thread and the enum's published position.
+///
+/// **Divergence** (declared): `AssertingPostingsEnum.docID()` also asserts
+/// `doc == in.docID()` against the enum's delegate
+/// (`AssertingLeafReader.java:529-534`), which these impacts cannot reach: the
+/// enum owns its delegate, and the impacts outlive the `&mut` borrow they are
+/// handed out under. That check runs at the enum's own next `docID()`.
 struct AssertingImpacts {
     r#in: Box<dyn Impacts>,
     position: Arc<AtomicI32>,
     valid_for: i32,
+    /// The creating thread of the enum's `AssertingPostingsEnum`.
+    creation_thread: Thread,
 }
 
 impl AssertingImpacts {
     fn assert_valid_for(&self) {
+        // `impactsEnum.docID()` runs inside the `assert`, under `-ea` only.
+        if cfg!(debug_assertions) {
+            assert_thread_unchecked("Docs enums", &self.creation_thread);
+        }
         java_assert_unchecked!(
             self.valid_for == self.position.load(Ordering::Relaxed),
             "Cannot reuse impacts after advancing the iterator"
@@ -1140,6 +1206,11 @@ impl AssertingNumericDocValues {
 }
 
 impl DocIdSetIterator for AssertingNumericDocValues {
+    /// `toString()`: `"AssertingNumericDocValues(" + in + ")"`.
+    fn java_to_string(&self) -> String {
+        format!("AssertingNumericDocValues({})", self.r#in.java_to_string())
+    }
+
     fn doc_id(&self) -> i32 {
         assert_thread_unchecked("Numeric doc values", &self.creation_thread);
         self.r#in.doc_id()
@@ -1202,40 +1273,53 @@ impl NumericDocValues for AssertingNumericDocValues {
         self.r#in.long_value()
     }
 
-    /// `longValues(size, docs, values, defaultValue)`: the checks, then
-    /// `super.longValues` — `NumericDocValues`'s default, which reads every
-    /// document through this wrapper's `advanceExact` and `longValue`.
-    fn long_values(
+    /// `longValues(size, docs, values, defaultValue)`, the four-argument
+    /// overload Java overrides: the checks, then `super.longValues(size, docs,
+    /// values, defaultValue)`, which is `longValues(size, docs, 0, values, 0,
+    /// defaultValue)`. Java does not override the offset-aware overload, so
+    /// that call reaches `NumericDocValues`'s default
+    /// ([`NumericDocValues::long_values`], not overridden here either), which
+    /// reads every document through this wrapper's `advanceExact` and
+    /// `longValue` (`AssertingLeafReader.java:853-867`,
+    /// `NumericDocValues.java:82-111`).
+    ///
+    /// The `docs[i]` reads of the `assert`s throw Java's
+    /// `ArrayIndexOutOfBoundsException` outside the array.
+    fn long_values_no_offsets(
         &mut self,
         size: i32,
         docs: &[i32],
-        docs_offset: i32,
         values: &mut [i64],
-        values_offset: i32,
         default_value: i64,
     ) -> Result<()> {
         assert_thread("Numeric doc values", &self.creation_thread)?;
-        let at = |i: i32| docs[(docs_offset + i) as usize];
-        java_assert!(size >= 0);
-        java_assert!(size == 0 || at(0) >= self.doc_id());
-        java_assert!(size == 0 || at(0) >= 0);
-        for i in 1..size {
-            java_assert!(at(i) > at(i - 1));
+        // `docs[i]`: Java's array read.
+        let at = |i: i32| -> Result<i32> {
+            usize::try_from(i)
+                .ok()
+                .and_then(|u| docs.get(u).copied())
+                .ok_or_else(|| {
+                    LuceneError::unchecked(
+                        "java.lang.ArrayIndexOutOfBoundsException",
+                        format!("Index {i} out of bounds for length {}", docs.len()),
+                    )
+                })
+        };
+        if cfg!(debug_assertions) {
+            java_assert!(size >= 0);
+            java_assert!(size == 0 || at(0)? >= self.doc_id());
+            java_assert!(size == 0 || at(0)? >= 0);
+            for i in 1..size {
+                java_assert!(at(i)? > at(i - 1)?);
+            }
+            java_assert!(size == 0 || at(size.wrapping_sub(1))? < self.max_doc);
         }
-        java_assert!(size == 0 || at(size - 1) < self.max_doc);
         let expected_doc_id_on_return = if size == 0 {
             self.doc_id()
         } else {
-            at(size - 1)
+            at(size.wrapping_sub(1))?
         };
-        for i in 0..size.max(0) {
-            let doc = docs[(docs_offset + i) as usize];
-            values[(values_offset + i) as usize] = if self.advance_exact(doc)? {
-                self.long_value()?
-            } else {
-                default_value
-            };
-        }
+        self.long_values(size, docs, 0, values, 0, default_value)?;
         self.last_doc_id = self.r#in.doc_id();
         java_assert!(self.last_doc_id == expected_doc_id_on_return);
         Ok(())
@@ -1278,6 +1362,11 @@ impl AssertingBinaryDocValues {
 }
 
 impl DocIdSetIterator for AssertingBinaryDocValues {
+    /// `toString()`: `"AssertingBinaryDocValues(" + in + ")"`.
+    fn java_to_string(&self) -> String {
+        format!("AssertingBinaryDocValues({})", self.r#in.java_to_string())
+    }
+
     fn doc_id(&self) -> i32 {
         assert_thread_unchecked("Binary doc values", &self.creation_thread);
         self.r#in.doc_id()
@@ -1374,6 +1463,14 @@ impl AssertingSortedDocValues {
 }
 
 impl DocIdSetIterator for AssertingSortedDocValues {
+    /// `AssertingSortedDocValues` declares no `toString()`: `java.lang.Object.toString()`
+    /// ([`java_object_to_string_stand_in`](rucene::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        rucene::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.tests.index.AssertingLeafReader$AssertingSortedDocValues",
+        )
+    }
+
     fn doc_id(&self) -> i32 {
         assert_thread_unchecked("Sorted doc values", &self.creation_thread);
         self.r#in.doc_id()
@@ -1510,6 +1607,14 @@ impl AssertingSortedNumericDocValues {
 }
 
 impl DocIdSetIterator for AssertingSortedNumericDocValues {
+    /// `AssertingSortedNumericDocValues` declares no `toString()`: `java.lang.Object.toString()`
+    /// ([`java_object_to_string_stand_in`](rucene::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        rucene::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.tests.index.AssertingLeafReader$AssertingSortedNumericDocValues",
+        )
+    }
+
     /// Java's `docID()` makes no thread check here.
     fn doc_id(&self) -> i32 {
         self.r#in.doc_id()
@@ -1574,12 +1679,14 @@ impl SortedNumericDocValues for AssertingSortedNumericDocValues {
     fn next_value(&mut self) -> Result<i64> {
         assert_thread("Sorted numeric doc values", &self.creation_thread)?;
         java_assert!(self.exists);
-        let count = self.r#in.doc_value_count()?;
+        // `assert valueUpto < in.docValueCount() : "valueUpto=" + valueUpto +
+        // " in.docValueCount()=" + in.docValueCount()`: both calls run under
+        // `-ea` only, the second when the assertion fails.
         java_assert!(
-            self.value_upto < count,
+            self.value_upto < self.r#in.doc_value_count()?,
             "valueUpto={} in.docValueCount()={}",
             self.value_upto,
-            count
+            self.r#in.doc_value_count()?
         );
         self.value_upto += 1;
         self.r#in.next_value()
@@ -1657,6 +1764,14 @@ impl AssertingSortedSetDocValues {
 }
 
 impl DocIdSetIterator for AssertingSortedSetDocValues {
+    /// `AssertingSortedSetDocValues` declares no `toString()`: `java.lang.Object.toString()`
+    /// ([`java_object_to_string_stand_in`](rucene::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        rucene::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.tests.index.AssertingLeafReader$AssertingSortedSetDocValues",
+        )
+    }
+
     fn doc_id(&self) -> i32 {
         assert_thread_unchecked("Sorted set doc values", &self.creation_thread);
         self.r#in.doc_id()
@@ -1930,6 +2045,14 @@ fn require_non_null(value: Option<Vec<u8>>) -> Result<Option<Vec<u8>>> {
 }
 
 impl PointValues for AssertingPointValues {
+    /// `AssertingPointValues` declares no `toString()`: `java.lang.Object.toString()`
+    /// ([`java_object_to_string_stand_in`](rucene::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        rucene::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.tests.index.AssertingLeafReader$AssertingPointValues",
+        )
+    }
+
     fn point_tree(&self) -> Result<Box<dyn PointTree>> {
         assert_thread("Points", &self.creation_thread)?;
         Ok(Box::new(AssertingPointTree {
@@ -1995,6 +2118,14 @@ impl AssertingPointTree {
 }
 
 impl PointTree for AssertingPointTree {
+    /// `AssertingPointTree` declares no `toString()`: `java.lang.Object.toString()`
+    /// ([`java_object_to_string_stand_in`](rucene::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        rucene::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.tests.index.AssertingLeafReader$AssertingPointTree",
+        )
+    }
+
     fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
         Ok(Box::new(AssertingPointTree {
             point_values: Arc::clone(&self.point_values),
@@ -2088,6 +2219,14 @@ impl<'v> AssertingIntersectVisitor<'v> {
 }
 
 impl IntersectVisitor for AssertingIntersectVisitor<'_> {
+    /// `AssertingIntersectVisitor` declares no `toString()`: `java.lang.Object.toString()`
+    /// ([`java_object_to_string_stand_in`](rucene::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        rucene::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.tests.index.AssertingLeafReader$AssertingIntersectVisitor",
+        )
+    }
+
     fn visit(&mut self, doc_id: i32) -> Result<()> {
         java_assert!(
             {
@@ -2239,7 +2378,7 @@ struct KeyCheckListener {
 impl ClosedListener for KeyCheckListener {
     fn on_close(&self, cache_key: CacheKey) -> Result<()> {
         let expected_key = &self.expected_key;
-        debug_assert!(
+        java_assert!(
             *expected_key == cache_key,
             "Core closed listener called on a different key {expected_key} <> {cache_key}"
         );
@@ -2262,7 +2401,7 @@ impl AssertingLeafReader {
         // check some basic reader sanity
         java_assert!(reader.max_doc() >= 0);
         java_assert!(reader.num_docs() <= reader.max_doc());
-        java_assert!(reader.num_deleted_docs() + reader.num_docs() == reader.max_doc());
+        java_assert!(reader.num_deleted_docs().wrapping_add(reader.num_docs()) == reader.max_doc());
         java_assert!(
             !reader.has_deletions()
                 || reader.num_deleted_docs() > 0 && reader.num_docs() < reader.max_doc()
@@ -2475,7 +2614,11 @@ impl LeafReader for AssertingLeafReader {
             Some(skipper) => {
                 if cfg!(debug_assertions) {
                     let Some(fi) = fi.as_ref() else {
-                        return Err(npe());
+                        // The helpful message: the jar keeps the local's name.
+                        return Err(LuceneError::null_pointer_with_message(
+                            "Cannot invoke \"org.apache.lucene.index.FieldInfo.docValuesSkipIndexType()\" \
+                             because \"fi\" is null",
+                        ));
                     };
                     java_assert!(fi.doc_values_skip_index_type() != DocValuesSkipIndexType::NONE);
                 }
@@ -2774,5 +2917,475 @@ impl LiveDocs for AssertingLiveDocs {
 
     fn deleted_docs_iterator(&self) -> Result<Box<dyn DocIdSetIterator>> {
         self.live_docs.deleted_docs_iterator()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use randomizedtesting::jdk::exception::Throwable;
+    use rucene::index::{
+        BinaryDocValues, ByteVectorValues, FieldInfos, FloatVectorValues, IndexReaderCore,
+        LeafMetaData,
+    };
+    use rucene::util::extra::Version;
+
+    use super::*;
+
+    /// A dense numeric doc values over `max_doc` documents, document `d`
+    /// holding `10 * d`.
+    struct DenseNumeric {
+        doc: i32,
+        max_doc: i32,
+    }
+
+    impl DocIdSetIterator for DenseNumeric {
+        fn doc_id(&self) -> i32 {
+            self.doc
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            self.advance(self.doc + 1)
+        }
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            self.doc = if target >= self.max_doc {
+                NO_MORE_DOCS
+            } else {
+                target
+            };
+            Ok(self.doc)
+        }
+        fn cost(&self) -> i64 {
+            i64::from(self.max_doc)
+        }
+    }
+
+    impl DocValuesIterator for DenseNumeric {
+        fn advance_exact(&mut self, target: i32) -> Result<bool> {
+            self.doc = target;
+            Ok(true)
+        }
+    }
+
+    impl NumericDocValues for DenseNumeric {
+        fn long_value(&self) -> Result<i64> {
+            Ok(i64::from(self.doc) * 10)
+        }
+    }
+
+    fn dense(max_doc: i32) -> AssertingNumericDocValues {
+        AssertingNumericDocValues::new(Box::new(DenseNumeric { doc: -1, max_doc }), max_doc)
+            .expect("an unpositioned delegate")
+    }
+
+    /// Java overrides only the four-argument `longValues`
+    /// (`AssertingLeafReader.java:853-867`): the offset-aware overload is
+    /// `NumericDocValues`'s default, which reads through `advanceExact`, so a
+    /// repeated document (accepted by `advanceExact`) passes there, while the
+    /// four-argument overload asserts strictly increasing documents.
+    #[test]
+    fn only_the_four_argument_long_values_is_checked() {
+        let mut values = [0i64; 2];
+        dense(10)
+            .long_values(2, &[2, 2], 0, &mut values, 0, -1)
+            .expect("the offset-aware overload makes no ordering check");
+        assert_eq!(values, [20, 20]);
+        let result = dense(10).long_values_no_offsets(2, &[2, 2], &mut values, -1);
+        if cfg!(debug_assertions) {
+            let err = result.expect_err("assert docs[i] > docs[i - 1]");
+            assert!(matches!(err.kind(), LuceneErrorKind::AssertionError(m) if m.is_empty()));
+        } else {
+            result.expect("no assertion without -ea");
+        }
+    }
+
+    /// `docs[0]` past the end of the array (`size > docs.length`) is Java's
+    /// `ArrayIndexOutOfBoundsException`, not a Rust panic.
+    #[test]
+    fn long_values_reads_past_the_array_are_the_jvm_exception() {
+        let mut values = [0i64; 1];
+        let err = dense(10)
+            .long_values_no_offsets(1, &[], &mut values, -1)
+            .expect_err("docs[0] of an empty array");
+        assert!(matches!(
+            err.kind(),
+            LuceneErrorKind::Unchecked { class: "java.lang.ArrayIndexOutOfBoundsException", message: Some(m), .. }
+                if m == "Index 0 out of bounds for length 0"
+        ));
+    }
+
+    /// `AssertingNumericDocValues.toString()` is `"AssertingNumericDocValues("
+    /// + in + ")"`; the classes without a `toString()` render
+    /// `Object.toString()` of their own binary name, not the Rust type.
+    #[test]
+    fn wrappers_render_their_java_to_string() {
+        let inner = DenseNumeric {
+            doc: -1,
+            max_doc: 3,
+        }
+        .java_to_string();
+        assert_eq!(
+            dense(3).java_to_string(),
+            format!("AssertingNumericDocValues({inner})")
+        );
+
+        struct Accept;
+        impl IntersectVisitor for Accept {
+            fn visit(&mut self, _doc_id: i32) -> Result<()> {
+                Ok(())
+            }
+            fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) -> Result<()> {
+                Ok(())
+            }
+            fn compare(&self, _min: &[u8], _max: &[u8]) -> Result<Relation> {
+                Ok(Relation::CellCrossesQuery)
+            }
+        }
+        let mut accept = Accept;
+        let visitor = AssertingIntersectVisitor::new(1, 1, 4, &mut accept);
+        assert_eq!(
+            visitor.java_to_string(),
+            rucene::index::index_reader::java_object_to_string_stand_in(
+                "org.apache.lucene.tests.index.AssertingLeafReader$AssertingIntersectVisitor"
+            )
+        );
+    }
+
+    /// The closed listener's `assert expectedKey == cacheKey` is a Java
+    /// `assert`: an `AssertionError` with Java's message, not a Rust panic.
+    #[test]
+    fn closed_listener_on_another_key_is_an_assertion_error() {
+        let listener = KeyCheckListener {
+            expected_key: CacheKey::new(),
+        };
+        let other = CacheKey::new();
+        let result = listener.on_close(other);
+        if cfg!(debug_assertions) {
+            let err = result.expect_err("a different key");
+            assert!(matches!(err.kind(), LuceneErrorKind::AssertionError(m)
+                if m.starts_with("Core closed listener called on a different key org.apache.lucene.index.IndexReader$CacheKey@")
+                    && m.contains(" <> org.apache.lucene.index.IndexReader$CacheKey@")));
+        } else {
+            result.expect("no assertion without -ea");
+        }
+    }
+
+    /// One level of impacts.
+    struct OneLevel;
+
+    impl Impacts for OneLevel {
+        fn num_levels(&self) -> i32 {
+            1
+        }
+        fn doc_id_up_to(&self, _level: i32) -> i32 {
+            NO_MORE_DOCS
+        }
+        fn get_impacts(&self, _level: i32) -> FreqAndNormBuffer {
+            let mut buffer = FreqAndNormBuffer::new();
+            buffer.add(1, 1);
+            buffer
+        }
+    }
+
+    /// Java's impacts evaluate `impactsEnum.docID()` in their `assert`s, whose
+    /// thread check fails on a thread other than the enum's creating thread.
+    #[test]
+    fn impacts_read_on_another_thread_fail_the_thread_check() {
+        let other = std::thread::spawn(Thread::current)
+            .join()
+            .expect("the other thread");
+        let impacts = AssertingImpacts {
+            r#in: Box::new(OneLevel),
+            position: Arc::new(AtomicI32::new(3)),
+            valid_for: 3,
+            creation_thread: other,
+        };
+        let result = catch_unwind(AssertUnwindSafe(|| impacts.num_levels()));
+        if cfg!(debug_assertions) {
+            let thrown = Throwable::from_panic(result.expect_err("the thread check"));
+            assert_eq!(thrown.class_name(), "java.lang.AssertionError");
+            assert!(thrown
+                .message()
+                .is_some_and(|m| m.starts_with("Docs enums are only supposed to be consumed in the thread in which they have been acquired.")));
+        } else {
+            assert_eq!(result.expect("no assertion without -ea"), 1);
+        }
+    }
+
+    /// A terms enum over one term whose `postings` returns `null`, a codec
+    /// breaking its contract.
+    struct NullPostings {
+        attributes: AttributeSource,
+    }
+
+    impl fmt::Display for NullPostings {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("NullPostings")
+        }
+    }
+
+    impl TermsEnum for NullPostings {
+        fn attributes(&mut self) -> &mut AttributeSource {
+            &mut self.attributes
+        }
+        fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+            Ok(SeekStatus::FOUND)
+        }
+        fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+            Ok(())
+        }
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(BytesRef::new(b"a".to_vec())))
+        }
+        fn ord(&self) -> Result<i64> {
+            Ok(0)
+        }
+        fn doc_freq(&mut self) -> Result<i32> {
+            Ok(1)
+        }
+        fn total_term_freq(&mut self) -> Result<i64> {
+            Ok(1)
+        }
+        fn postings(
+            &mut self,
+            _reuse: Option<Box<dyn PostingsEnum>>,
+            _flags: i32,
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(None)
+        }
+        fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+            Err(npe())
+        }
+        fn next(&mut self) -> Result<Option<BytesRef>> {
+            Ok(Some(BytesRef::new(b"a".to_vec())))
+        }
+    }
+
+    /// A `null` postings with no `reuse`: under `-ea` the `assert docs !=
+    /// null`; without it, `docs == actualReuse` holds (both `null`) and
+    /// `((AssertingPostingsEnum) reuse).reset()` throws the helpful
+    /// `NullPointerException`.
+    #[test]
+    fn null_postings_without_reuse() {
+        let mut terms_enum = AssertingTermsEnum::new(
+            Box::new(NullPostings {
+                attributes: AttributeSource::new(),
+            }),
+            true,
+        );
+        terms_enum.next().expect("positioned");
+        let err = match terms_enum.postings(None, 0) {
+            Ok(_) => panic!("a null postings is rejected"),
+            Err(err) => err,
+        };
+        if cfg!(debug_assertions) {
+            assert!(matches!(err.kind(), LuceneErrorKind::AssertionError(m) if m.is_empty()));
+        } else {
+            assert!(matches!(
+                err.kind(),
+                LuceneErrorKind::Unchecked { class: "java.lang.NullPointerException", message: Some(m), .. }
+                    if m == "Cannot invoke \"org.apache.lucene.tests.index.AssertingLeafReader$AssertingPostingsEnum.reset()\" because \"reuse\" is null"
+            ));
+        }
+    }
+
+    /// An unpositioned one-level skipper.
+    struct Unpositioned;
+
+    impl DocValuesSkipper for Unpositioned {
+        fn advance(&mut self, _target: i32) -> Result<()> {
+            Ok(())
+        }
+        fn num_levels(&self) -> i32 {
+            1
+        }
+        fn min_doc_id(&self, _level: i32) -> i32 {
+            -1
+        }
+        fn max_doc_id(&self, _level: i32) -> i32 {
+            -1
+        }
+        fn min_value(&self, _level: i32) -> i64 {
+            0
+        }
+        fn max_value(&self, _level: i32) -> i64 {
+            0
+        }
+        fn doc_count(&self, _level: i32) -> i32 {
+            0
+        }
+        fn global_min_value(&self) -> i64 {
+            0
+        }
+        fn global_max_value(&self) -> i64 {
+            0
+        }
+        fn global_doc_count(&self) -> i32 {
+            0
+        }
+    }
+
+    /// An empty reader with no field infos whose every field has a skipper.
+    #[derive(Debug)]
+    struct SkipperWithoutInfos {
+        core: IndexReaderCore,
+    }
+
+    impl fmt::Display for SkipperWithoutInfos {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("SkipperWithoutInfos")
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoStoredFields;
+
+    impl StoredFields for NoStoredFields {
+        fn document_with_visitor(
+            &self,
+            _doc_id: i32,
+            _visitor: &mut dyn StoredFieldVisitor,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    impl LeafReader for SkipperWithoutInfos {
+        fn core(&self) -> &IndexReaderCore {
+            &self.core
+        }
+        fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+            Ok(Box::new(rucene::index::EmptyTermVectors))
+        }
+        fn num_docs(&self) -> i32 {
+            0
+        }
+        fn max_doc(&self) -> i32 {
+            0
+        }
+        fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+            Ok(Box::new(NoStoredFields))
+        }
+        fn do_close(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+            None
+        }
+        fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+            None
+        }
+        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+            Ok(None)
+        }
+        fn get_numeric_doc_values(
+            &self,
+            _field: &str,
+        ) -> Result<Option<Box<dyn NumericDocValues>>> {
+            Ok(None)
+        }
+        fn get_binary_doc_values(&self, _field: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted_doc_values(&self, _field: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted_numeric_doc_values(
+            &self,
+            _field: &str,
+        ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted_set_doc_values(
+            &self,
+            _field: &str,
+        ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+            Ok(None)
+        }
+        fn get_norm_values(&self, _field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+            Ok(None)
+        }
+        fn get_doc_values_skipper(
+            &self,
+            _field: &str,
+        ) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+            Ok(Some(Box::new(Unpositioned)))
+        }
+        fn get_float_vector_values(
+            &self,
+            _field: &str,
+        ) -> Result<Option<Box<dyn FloatVectorValues>>> {
+            Ok(None)
+        }
+        fn get_byte_vector_values(
+            &self,
+            _field: &str,
+        ) -> Result<Option<Box<dyn ByteVectorValues>>> {
+            Ok(None)
+        }
+        fn search_nearest_vectors(
+            &self,
+            _field: &str,
+            _target: &[f32],
+            _collector: &mut dyn KnnCollector,
+            _accept_docs: &mut dyn AcceptDocs,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn search_nearest_vectors_byte(
+            &self,
+            _field: &str,
+            _target: &[u8],
+            _collector: &mut dyn KnnCollector,
+            _accept_docs: &mut dyn AcceptDocs,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn get_field_infos(&self) -> FieldInfos {
+            FieldInfos::empty()
+        }
+        fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+            None
+        }
+        fn get_point_values(&self, _field: &str) -> Result<Option<Box<dyn PointValues>>> {
+            Ok(None)
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_meta_data(&self) -> LeafMetaData {
+            LeafMetaData::new(
+                Version::LATEST.major as i32,
+                Some(Version::LATEST),
+                None,
+                false,
+            )
+            .expect("the latest version is a valid created version")
+        }
+    }
+
+    /// `assert fi.docValuesSkipIndexType() != NONE` on a `null` `fi`: the
+    /// helpful `NullPointerException`, which names the local `fi` (the jar
+    /// keeps local variable names).
+    #[test]
+    fn skipper_without_field_info_is_the_helpful_npe() {
+        let reader = AssertingLeafReader::new(Arc::new(SkipperWithoutInfos {
+            core: IndexReaderCore::new(),
+        }))
+        .expect("a sane reader");
+        let result = reader.get_doc_values_skipper("f");
+        if cfg!(debug_assertions) {
+            let err = match result {
+                Ok(_) => panic!("fi is null"),
+                Err(err) => err,
+            };
+            assert!(matches!(
+                err.kind(),
+                LuceneErrorKind::Unchecked { class: "java.lang.NullPointerException", message: Some(m), .. }
+                    if m == "Cannot invoke \"org.apache.lucene.index.FieldInfo.docValuesSkipIndexType()\" because \"fi\" is null"
+            ));
+        } else {
+            assert!(result.expect("no assertion without -ea").is_some());
+        }
     }
 }

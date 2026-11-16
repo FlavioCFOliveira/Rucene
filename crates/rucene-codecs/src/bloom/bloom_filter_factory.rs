@@ -29,6 +29,11 @@ use super::fuzzy_set::FuzzySet;
 /// for each field. Also called to right-size bitsets for serialization.
 ///
 /// Port of the abstract class `org.apache.lucene.codecs.bloom.BloomFilterFactory`.
+///
+/// Java's `FieldInfo` arguments are nullable: `BloomFilteredFieldsConsumer`
+/// passes `state.fieldInfos.fieldInfo(field)`, `null` for a field the
+/// segment does not know, and only dereferences it when writing the
+/// filter's field number. They are `Option<&FieldInfo>` here.
 pub trait BloomFilterFactory: Send + Sync + fmt::Debug {
     /// Returns an appropriately sized set or `None` if no BloomFiltering
     /// required for the field `info` of the content `state` indexes.
@@ -42,7 +47,7 @@ pub trait BloomFilterFactory: Send + Sync + fmt::Debug {
     fn get_set_for_field(
         &self,
         state: &SegmentWriteState<'_>,
-        info: &FieldInfo,
+        info: Option<&FieldInfo>,
     ) -> Result<Option<FuzzySet>>;
 
     /// Called when downsizing bitsets for serialization: `None` or a
@@ -50,7 +55,7 @@ pub trait BloomFilterFactory: Send + Sync + fmt::Debug {
     /// bits accumulated for the field with sparse set bits `field_info`.
     ///
     /// Port of `downsize(FieldInfo, FuzzySet)`.
-    fn downsize(&self, field_info: &FieldInfo, initial_set: &FuzzySet) -> Option<FuzzySet> {
+    fn downsize(&self, field_info: Option<&FieldInfo>, initial_set: &FuzzySet) -> Option<FuzzySet> {
         let _ = field_info;
         let target_max_saturation = initial_set.get_target_max_saturation();
         initial_set.downsize(target_max_saturation)
@@ -61,5 +66,5 @@ pub trait BloomFilterFactory: Send + Sync + fmt::Debug {
     /// reached saturation and should be retired.
     ///
     /// Port of `isSaturated(FuzzySet, FieldInfo)`.
-    fn is_saturated(&self, bloom_filter: &FuzzySet, field_info: &FieldInfo) -> bool;
+    fn is_saturated(&self, bloom_filter: &FuzzySet, field_info: Option<&FieldInfo>) -> bool;
 }

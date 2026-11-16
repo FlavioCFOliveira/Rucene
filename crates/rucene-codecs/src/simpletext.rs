@@ -79,6 +79,7 @@ pub mod doc_values_writer;
 pub mod field_infos_format;
 pub mod fields_reader;
 pub mod fields_writer;
+pub(crate) mod java_decimal_format;
 pub mod knn_vectors_format;
 pub mod knn_vectors_reader;
 pub mod knn_vectors_writer;
@@ -97,6 +98,8 @@ pub mod stored_fields_writer;
 pub mod term_vectors_format;
 pub mod term_vectors_reader;
 pub mod term_vectors_writer;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod util;
 
 pub use codec::SimpleTextCodec;

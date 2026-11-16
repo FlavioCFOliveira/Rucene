@@ -118,7 +118,7 @@ impl Query for AssertingQuery {
                 .is_some_and(|other| self.inner.query_eq(&*other.inner))
     }
 
-    /// `-in.hashCode()`.
+    /// `getClass().getName()`.
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.tests.search.AssertingQuery"
     }

@@ -1,7 +1,7 @@
 //! Port of `com.carrotsearch.randomizedtesting.rules.SystemPropertiesInvariantRule`
 //! (randomizedtesting 2.8.1, `rules/SystemPropertiesInvariantRule.java`).
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use super::system_properties_restore_rule::{restore, system_properties_as_map};
@@ -60,17 +60,21 @@ impl TestRule for SystemPropertiesInvariantRule {
     }
 }
 
-/// `collectErrorMessage(before, after)`: the missing, new and changed keys.
+/// `collectErrorMessage(before, after)`: the missing, new and changed keys,
+/// each list in Java's `TreeSet<String>` order (`String.compareTo`, UTF-16
+/// code units).
 fn collect_error_message(
     before: &BTreeMap<String, String>,
     after: &BTreeMap<String, String>,
 ) -> String {
-    let new_keys: BTreeSet<&String> = after.keys().filter(|k| !before.contains_key(*k)).collect();
-    let missing: BTreeSet<&String> = before.keys().filter(|k| !after.contains_key(*k)).collect();
-    let different: BTreeSet<&String> = before
-        .keys()
-        .filter(|k| after.contains_key(*k) && before.get(*k) != after.get(*k))
-        .collect();
+    let new_keys = java_sorted(after.keys().filter(|k| !before.contains_key(*k)).collect());
+    let missing = java_sorted(before.keys().filter(|k| !after.contains_key(*k)).collect());
+    let different = java_sorted(
+        before
+            .keys()
+            .filter(|k| after.contains_key(*k) && before.get(*k) != after.get(*k))
+            .collect(),
+    );
     let mut b = String::new();
     if !missing.is_empty() {
         b.push_str("Missing keys:\n");
@@ -92,4 +96,32 @@ fn collect_error_message(
         }
     }
     b
+}
+
+/// `v` sorted as a Java `TreeSet<String>` iterates.
+fn java_sorted(mut v: Vec<&String>) -> Vec<&String> {
+    v.sort_by(|a, b| crate::annotations::jdk_string_compare(a, b));
+    v
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::collect_error_message;
+
+    /// Keys sort as Java strings: a supplementary character (high surrogate
+    /// `D800..DBFF`) sorts before `U+FFFD`, unlike UTF-8 byte order.
+    #[test]
+    fn keys_are_listed_in_java_string_order() {
+        let before = BTreeMap::new();
+        let after: BTreeMap<String, String> = [("\u{FFFD}", "a"), ("\u{10000}", "b")]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert_eq!(
+            collect_error_message(&before, &after),
+            "New keys:\n  \u{10000}=b\n  \u{FFFD}=a\n"
+        );
+    }
 }

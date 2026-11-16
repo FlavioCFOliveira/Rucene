@@ -28,9 +28,9 @@
 //! tests) and the static helpers [`new_corpus`] and [`new_term`]. The class
 //! state (`READER`, `DIR`) is [`CLASS_STATE`].
 //!
-//! **Divergence** (`doTestScoring`'s `finally`): Java prints the similarity,
-//! corpus, term, norm and freq when the case fails; the port prints the
-//! same lines from a drop guard that runs while a failure unwinds.
+//! `doTestScoring`'s `finally`, which prints the similarity, corpus, term,
+//! norm and freq when the case fails, is a drop guard: it runs while a
+//! failure unwinds and when an error returns.
 
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -41,6 +41,7 @@ use rucene::document::{Document, FieldType, TextField};
 use rucene::error::Result;
 use rucene::index::{IndexOptions, IndexReader, IndexableFieldType, LeafReader};
 use rucene::search::similarities::{CollectionStatistics, Explanation, Similarity, TermStatistics};
+use rucene::util::java_fmt::float_to_string;
 use rucene::util::small_float::SmallFloat;
 use rucene::util::{ArrayUtil, BytesRef};
 
@@ -174,7 +175,15 @@ pub fn after_class() -> Result<()> {
         let closed_reader = Arc::clone(&reader).as_index_reader().close();
         drop(reader);
         let closed_dir = dir.close();
-        closed_reader.and(closed_dir)?;
+        // `IOUtils.close`: every resource is closed; the first failure is
+        // thrown with the later ones suppressed.
+        match (closed_reader, closed_dir) {
+            (Err(mut first), Err(second)) => {
+                first.add_suppressed(second);
+                return Err(first);
+            }
+            (first, second) => first.and(second)?,
+        }
     }
     Ok(())
 }
@@ -423,16 +432,73 @@ pub trait BaseSimilarityTestCase: Send + Sync + 'static {
                 .map(|i| scorer.score(freqs[i], norms[i]))
                 .collect();
             bulk_scorer.score(size, &freqs, &norms, &mut scores);
-            for (i, (e, a)) in expected_scores.iter().zip(&scores[..size]).enumerate() {
-                if e.to_bits() != a.to_bits() && e != a {
-                    Assert::fail(&format!(
-                        "arrays first differed at element [{i}]; expected:<{e:?}> but was:<{a:?}>"
-                    ));
-                }
-            }
+            assert_float_array_equals(&expected_scores, &scores[..size]);
         }
         Ok(())
     }
+}
+
+/// JUnit 4's `assertArrayEquals(float[] expecteds, float[] actuals, 0f)`
+/// over arrays of the same length: the first element that
+/// `Assert.floatIsDifferent` reports (`Float.compare != 0` and `|e - a| > 0`)
+/// fails with an `org.junit.internal.ArrayComparisonFailure`, caused by the
+/// element's `AssertionError`.
+fn assert_float_array_equals(expecteds: &[f32], actuals: &[f32]) {
+    use randomizedtesting::jdk::exception::Throwable;
+    for (i, (&e, &a)) in expecteds.iter().zip(actuals).enumerate() {
+        // `Float.compare(e, a) == 0` (all NaNs are equal, -0f is below 0f),
+        // else `Math.abs(e - a) <= delta`.
+        let same = (e.is_nan() && a.is_nan()) || e.to_bits() == a.to_bits();
+        // `!(Math.abs(e - a) <= delta)`: a NaN difference is outside.
+        let within_delta = matches!(
+            (e - a).abs().partial_cmp(&0.0),
+            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+        );
+        if !same && !within_delta {
+            let cause = Throwable::new(
+                "java.lang.AssertionError",
+                format!(
+                    "expected:<{}> but was:<{}>",
+                    float_to_string(e),
+                    float_to_string(a)
+                ),
+            );
+            Throwable::with_cause(
+                "org.junit.internal.ArrayComparisonFailure",
+                Some(format!(
+                    "arrays first differed at element [{i}]; {}",
+                    cause.message().unwrap_or_default()
+                )),
+                cause,
+            )
+            .throw()
+        }
+    }
+}
+
+/// `CollectionStatistics.toString()`: the record's
+/// `CollectionStatistics[field=…, maxDoc=…, docCount=…, sumTotalTermFreq=…,
+/// sumDocFreq=…]`.
+fn collection_statistics_string(c: &CollectionStatistics) -> String {
+    format!(
+        "CollectionStatistics[field={}, maxDoc={}, docCount={}, sumTotalTermFreq={}, sumDocFreq={}]",
+        c.field(),
+        c.max_doc(),
+        c.doc_count(),
+        c.sum_total_term_freq(),
+        c.sum_doc_freq()
+    )
+}
+
+/// `TermStatistics.toString()`: the record's `TermStatistics[term=…,
+/// docFreq=…, totalTermFreq=…]`, the term as `BytesRef.toString()`.
+fn term_statistics_string(t: &TermStatistics) -> String {
+    format!(
+        "TermStatistics[term={}, docFreq={}, totalTermFreq={}]",
+        t.term(),
+        t.doc_freq(),
+        t.total_term_freq()
+    )
 }
 
 /// Prints what Java's `finally` prints when a case fails.
@@ -448,19 +514,22 @@ struct FailureReport<'a> {
 impl Drop for FailureReport<'_> {
     fn drop(&mut self) {
         if !self.success {
-            println!("{:?}", self.similarity);
-            println!("{:?}", self.corpus);
-            println!("{:?}", self.term);
+            randomizedtesting::jdk::system::out_println(&self.similarity.to_java_string());
+            randomizedtesting::jdk::system::out_println(&collection_statistics_string(self.corpus));
+            randomizedtesting::jdk::system::out_println(&term_statistics_string(self.term));
             if self.norm == 0 {
-                println!("norms=omitted");
+                randomizedtesting::jdk::system::out_println("norms=omitted");
             } else {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "norm={} (doc length ~ {})",
                     self.norm,
                     SmallFloat::byte4_to_int(self.norm as u8)
-                );
+                ));
             }
-            println!("freq={:?}", self.freq);
+            randomizedtesting::jdk::system::out_println(&format!(
+                "freq={}",
+                float_to_string(self.freq)
+            ));
         }
     }
 }
@@ -476,6 +545,12 @@ pub fn do_test_scoring(
     freq: f32,
     norm: i32,
 ) -> Result<()> {
+    let is_indri = similarity.java_class_name()
+        == "org.apache.lucene.search.similarities.IndriDirichletSimilarity";
+    let norm_l = i64::from(norm);
+    // Java calls `similarity.scorer(...)` before its `try`: the `finally`
+    // report does not cover it.
+    let scorer = similarity.scorer(boost, corpus, std::slice::from_ref(term));
     let mut report = FailureReport {
         success: false,
         similarity,
@@ -484,27 +559,36 @@ pub fn do_test_scoring(
         norm,
         freq,
     };
-    let is_indri = similarity.java_class_name()
-        == "org.apache.lucene.search.similarities.IndriDirichletSimilarity";
-    let norm_l = i64::from(norm);
-    let scorer = similarity.scorer(boost, corpus, std::slice::from_ref(term));
     let max_score = scorer.score(f32::MAX, 1);
     Assert::assert_false_msg("maxScore is NaN", max_score.is_nan());
 
     let score = scorer.score(freq, norm_l);
     // check that score isn't infinite or negative
-    Assert::assert_true_msg(&format!("infinite/NaN score: {score:?}"), score.is_finite());
+    Assert::assert_true_msg(
+        &format!("infinite/NaN score: {}", float_to_string(score)),
+        score.is_finite(),
+    );
     if !is_indri {
-        Assert::assert_true_msg(&format!("negative score: {score:?}"), score >= 0.0);
+        Assert::assert_true_msg(
+            &format!("negative score: {}", float_to_string(score)),
+            score >= 0.0,
+        );
     }
     Assert::assert_true_msg(
-        &format!("greater than maxScore: {score:?}>{max_score:?}"),
+        &format!(
+            "greater than maxScore: {}>{}",
+            float_to_string(score),
+            float_to_string(max_score)
+        ),
         score <= max_score,
     );
     // check explanation matches
     let explanation = scorer.explain(&freq_explanation(freq), norm_l);
     if f64::from(score) != explanation.value().double_value() {
-        Assert::fail(&format!("expected: {score:?}, got: {explanation}"));
+        Assert::fail(&format!(
+            "expected: {}, got: {explanation}",
+            float_to_string(score)
+        ));
     }
     if LuceneTestCase::rarely() {
         CheckHits::verify_explanation("<test query>", 0, score, true, &explanation);
@@ -533,7 +617,8 @@ pub fn do_test_scoring(
     let prev_explanation = scorer.explain(&freq_explanation(prev_freq), norm_l);
     if f64::from(prev_score) != prev_explanation.value().double_value() {
         Assert::fail(&format!(
-            "expected: {prev_score:?}, got: {prev_explanation}"
+            "expected: {}, got: {prev_explanation}",
+            float_to_string(prev_score)
         ));
     }
     if LuceneTestCase::rarely() {
@@ -547,10 +632,14 @@ pub fn do_test_scoring(
     }
 
     if prev_score > score {
-        println!("{prev_explanation}");
-        println!("{explanation}");
+        randomizedtesting::jdk::system::out_println(&format!("{prev_explanation}"));
+        randomizedtesting::jdk::system::out_println(&format!("{explanation}"));
         Assert::fail(&format!(
-            "score({prev_freq:?})={prev_score:?} > score({freq:?})={score:?}"
+            "score({})={} > score({})={}",
+            float_to_string(prev_freq),
+            float_to_string(prev_score),
+            float_to_string(freq),
+            float_to_string(score)
         ));
     }
 
@@ -567,7 +656,8 @@ pub fn do_test_scoring(
         let prev_norm_explanation = scorer.explain(&freq_explanation(freq), norm_l - 1);
         if f64::from(prev_norm_score) != prev_norm_explanation.value().double_value() {
             Assert::fail(&format!(
-                "expected: {prev_norm_score:?}, got: {prev_norm_explanation}"
+                "expected: {}, got: {prev_norm_explanation}",
+                float_to_string(prev_norm_score)
             ));
         }
         if LuceneTestCase::rarely() {
@@ -580,11 +670,15 @@ pub fn do_test_scoring(
             );
         }
         if prev_norm_score < score {
-            println!("{prev_norm_explanation}");
-            println!("{explanation}");
+            randomizedtesting::jdk::system::out_println(&format!("{prev_norm_explanation}"));
+            randomizedtesting::jdk::system::out_println(&format!("{explanation}"));
             Assert::fail(&format!(
-                "score({freq:?},{})={prev_norm_score:?} < score({freq:?},{norm})={score:?}",
-                norm - 1
+                "score({},{})={} < score({},{norm})={}",
+                float_to_string(freq),
+                norm - 1,
+                float_to_string(prev_norm_score),
+                float_to_string(freq),
+                float_to_string(score)
             ));
         }
     }
@@ -611,7 +705,8 @@ pub fn do_test_scoring(
         let prev_term_explanation = prev_term_scorer.explain(&freq_explanation(freq), norm_l);
         if f64::from(prev_term_score) != prev_term_explanation.value().double_value() {
             Assert::fail(&format!(
-                "expected: {prev_term_score:?}, got: {prev_term_explanation}"
+                "expected: {}, got: {prev_term_explanation}",
+                float_to_string(prev_term_score)
             ));
         }
         if LuceneTestCase::rarely() {
@@ -625,14 +720,65 @@ pub fn do_test_scoring(
         }
 
         if prev_term_score < score {
-            println!("{prev_term_explanation}");
-            println!("{explanation}");
+            randomizedtesting::jdk::system::out_println(&format!("{prev_term_explanation}"));
+            randomizedtesting::jdk::system::out_println(&format!("{explanation}"));
             Assert::fail(&format!(
-                "score({freq:?},{prev_term:?})={prev_term_score:?} < score({freq:?},{term:?})={score:?}"
+                "score({},{})={} < score({},{})={}",
+                float_to_string(freq),
+                term_statistics_string(&prev_term),
+                float_to_string(prev_term_score),
+                float_to_string(freq),
+                term_statistics_string(term),
+                float_to_string(score)
             ));
         }
     }
 
     report.success = true;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use randomizedtesting::jdk::exception::Throwable;
+
+    use super::*;
+
+    /// The records print as Java's record `toString()`.
+    #[test]
+    fn statistics_print_as_java_records() {
+        let corpus = CollectionStatistics::new("field", 10, 5, 20, 15).expect("valid");
+        assert_eq!(
+            collection_statistics_string(&corpus),
+            "CollectionStatistics[field=field, maxDoc=10, docCount=5, sumTotalTermFreq=20, sumDocFreq=15]"
+        );
+        let term = TermStatistics::new(term_bytes(), 2, 3).expect("valid");
+        assert_eq!(
+            term_statistics_string(&term),
+            "TermStatistics[term=[74 65 72 6d], docFreq=2, totalTermFreq=3]"
+        );
+    }
+
+    /// `assertArrayEquals(float[], float[], 0f)`: an `ArrayComparisonFailure`
+    /// caused by the element's `AssertionError`, floats as `Float.toString`;
+    /// NaNs compare equal.
+    #[test]
+    fn float_array_mismatch_is_an_array_comparison_failure() {
+        assert_float_array_equals(&[f32::NAN, 1.0], &[f32::NAN, 1.0]);
+        let payload = catch_unwind(AssertUnwindSafe(|| {
+            assert_float_array_equals(&[1.0, 1.0e10], &[1.0, 2.0e10]);
+        }))
+        .expect_err("the failure");
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "org.junit.internal.ArrayComparisonFailure");
+        assert_eq!(
+            t.message(),
+            Some("arrays first differed at element [1]; expected:<1.0E10> but was:<2.0E10>")
+        );
+        let cause = t.cause().expect("the element failure");
+        assert_eq!(cause.class_name(), "java.lang.AssertionError");
+        assert_eq!(cause.message(), Some("expected:<1.0E10> but was:<2.0E10>"));
+    }
 }

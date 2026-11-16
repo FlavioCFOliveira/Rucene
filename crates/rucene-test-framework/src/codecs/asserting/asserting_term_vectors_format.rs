@@ -159,6 +159,7 @@ enum Status {
 /// Port of `AssertingTermVectorsFormat.AssertingTermVectorsWriter`.
 #[derive(Debug)]
 struct AssertingTermVectorsWriter {
+    // The four counters are Java `int`s: `++`/`--` wrap.
     r#in: Box<dyn TermVectorsWriter>,
     doc_status: Status,
     field_status: Status,
@@ -204,7 +205,7 @@ impl TermVectorsWriter for AssertingTermVectorsWriter {
         self.r#in.start_document(num_vector_fields)?;
         self.doc_status = Status::Started;
         self.field_count = num_vector_fields;
-        self.doc_count += 1;
+        self.doc_count = self.doc_count.wrapping_add(1);
         Ok(())
     }
 
@@ -240,7 +241,7 @@ impl TermVectorsWriter for AssertingTermVectorsWriter {
         java_assert!(self.field_status == Status::Started);
         self.r#in.finish_field()?;
         self.field_status = Status::Finished;
-        self.field_count -= 1;
+        self.field_count = self.field_count.wrapping_sub(1);
         Ok(())
     }
 
@@ -261,7 +262,7 @@ impl TermVectorsWriter for AssertingTermVectorsWriter {
         java_assert!(self.term_status == Status::Started);
         self.r#in.finish_term()?;
         self.term_status = Status::Finished;
-        self.term_count -= 1;
+        self.term_count = self.term_count.wrapping_sub(1);
         Ok(())
     }
 
@@ -277,7 +278,7 @@ impl TermVectorsWriter for AssertingTermVectorsWriter {
         java_assert!(self.term_status == Status::Started);
         self.r#in
             .add_position(position, start_offset, end_offset, payload)?;
-        self.position_count -= 1;
+        self.position_count = self.position_count.wrapping_sub(1);
         Ok(())
     }
 
@@ -299,5 +300,68 @@ impl TermVectorsWriter for AssertingTermVectorsWriter {
     fn close(&mut self) -> Result<()> {
         self.r#in.close()?;
         self.r#in.close() // close again
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A writer that accepts every call.
+    #[derive(Debug)]
+    struct Sink;
+
+    impl Accountable for Sink {
+        fn ram_bytes_used(&self) -> i64 {
+            0
+        }
+    }
+
+    impl TermVectorsWriter for Sink {
+        fn start_document(&mut self, _num_vector_fields: i32) -> Result<()> {
+            Ok(())
+        }
+        fn start_field(
+            &mut self,
+            _info: &FieldInfo,
+            _num_terms: i32,
+            _positions: bool,
+            _offsets: bool,
+            _payloads: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn start_term(&mut self, _term: &BytesRef, _freq: i32) -> Result<()> {
+            Ok(())
+        }
+        fn add_position(
+            &mut self,
+            _position: i32,
+            _start_offset: i32,
+            _end_offset: i32,
+            _payload: Option<&BytesRef>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn finish(&mut self, _num_docs: i32) -> Result<()> {
+            Ok(())
+        }
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `--positionCount` of `addPosition` (`AssertingTermVectorsFormat.java:184`)
+    /// is Java `int` arithmetic: from `Integer.MIN_VALUE` it wraps to
+    /// `Integer.MAX_VALUE` instead of overflowing.
+    #[test]
+    fn position_count_decrement_wraps_as_java_int() {
+        let mut writer = AssertingTermVectorsWriter::new(Box::new(Sink));
+        writer.doc_status = Status::Started;
+        writer.field_status = Status::Started;
+        writer.term_status = Status::Started;
+        writer.position_count = i32::MIN;
+        writer.add_position(0, -1, -1, None).unwrap();
+        assert_eq!(writer.position_count, i32::MAX);
     }
 }

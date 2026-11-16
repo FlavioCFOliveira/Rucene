@@ -6397,9 +6397,10 @@ fn test_random_operations_with_soft_deletes() -> Result<()> {
                     let min = retaining_seq_no.load(Ordering::SeqCst);
                     let max = seq_no.load(Ordering::SeqCst);
                     if min < max && random().next_boolean() {
+                        // Java `int` arithmetic: both subtractions wrap.
                         let _ = retaining_seq_no.compare_exchange(
                             min,
-                            min - random().next_int_bound(max - min),
+                            min.wrapping_sub(random().next_int_bound(max.wrapping_sub(min))),
                             Ordering::SeqCst,
                             Ordering::SeqCst,
                         );

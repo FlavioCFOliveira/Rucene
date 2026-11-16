@@ -252,8 +252,10 @@ pub fn java_class_name(e: &LuceneError) -> String {
 /// suppressed exceptions (`getSuppressed()`).
 pub fn java_throwable(e: &LuceneError) -> Throwable {
     register_hierarchy();
-    let (_, message) = crate::analysis::base_token_stream_test_case::java_class_and_message(e);
-    let mut throwable = Throwable::new(java_class_name(e), message);
+    // `getMessage()`: `null` stays `null` (`Throwable.toString()` then
+    // prints the class name alone).
+    let message = crate::analysis::base_token_stream_test_case::java_message(e);
+    let mut throwable = Throwable::with_message(java_class_name(e), message);
     // `getStackTrace()`: the frames captured when the error was created, each
     // function named as Java names the method (`check_max_clause_count` is
     // `checkMaxClauseCount`).
@@ -367,6 +369,119 @@ pub fn expect_throws_any_of<T>(
     })
 }
 
+/// Java's try-with-resources outcome over one resource: the body's
+/// exception, with the exception closing the resource added to it as
+/// suppressed (`Throwable.addSuppressed`); else the close's exception.
+///
+/// # Errors
+///
+/// The body's exception, else the close's.
+pub fn try_with_resource<T>(body: Result<T>, closed: Result<()>) -> Result<T> {
+    match body {
+        Err(mut e) => {
+            if let Err(close_error) = closed {
+                e.add_suppressed(close_error);
+            }
+            Err(e)
+        }
+        Ok(value) => closed.map(|()| value),
+    }
+}
+
+/// Java's `try (R r = resource) { body }`, panic-safe: `close` runs on every
+/// exit of `body` (an `Err`, a panic, or success). A close failure is added
+/// as suppressed to the body's throwable (`Throwable.addSuppressed`, on the
+/// `Err` or on the panic's throwable, which is then rethrown); when the body
+/// succeeded, the close failure alone is thrown.
+///
+/// `try (A a = ...; B b = ...) { body }` is `try (A a) { try (B b) { body }
+/// }` in Java (resources close in reverse declaration order, each close
+/// failure suppressed in that order), so N resources nest N calls.
+///
+/// # Errors
+///
+/// The body's error, else the close's.
+pub fn try_with<R, T>(
+    mut resource: R,
+    close: impl FnOnce(&mut R) -> Result<()>,
+    body: impl FnOnce(&mut R) -> Result<T>,
+) -> Result<T> {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&mut resource)));
+    let closed = close(&mut resource);
+    match outcome {
+        Ok(result) => try_with_resource(result, closed),
+        Err(payload) => match closed {
+            Ok(()) => std::panic::resume_unwind(payload),
+            Err(close_error) => {
+                let mut t = Throwable::from_panic(payload);
+                t.add_suppressed(java_throwable(&close_error));
+                t.throw()
+            }
+        },
+    }
+}
+
+/// `IOUtils.close(Closeable...)` over the outcomes of closing each object,
+/// in argument order: every object is closed; the first exception is
+/// rethrown with the later ones added to it as suppressed.
+///
+/// # Errors
+///
+/// The first close's exception.
+pub fn io_utils_close<const N: usize>(closes: [Result<()>; N]) -> Result<()> {
+    let mut th: Option<LuceneError> = None;
+    for closed in closes {
+        if let Err(t) = closed {
+            match th.as_mut() {
+                None => th = Some(t),
+                Some(first) => first.add_suppressed(t),
+            }
+        }
+    }
+    th.map_or(Ok(()), Err)
+}
+
+/// The `Exception` a `catch (Exception e)` around a body catches, given the
+/// body's outcome: its `Err`, or a panic whose throwable is not an `Error`;
+/// a panic carrying an `Error` is rethrown unchanged.
+pub fn caught_exception(outcome: std::thread::Result<Result<()>>) -> Option<Throwable> {
+    match outcome {
+        Ok(Ok(())) => None,
+        Ok(Err(e)) => Some(java_throwable(&e)),
+        Err(payload) => {
+            if crate::mockfile::is_java_error(&*payload) {
+                std::panic::resume_unwind(payload)
+            }
+            Some(crate::mockfile::panic_throwable(&*payload))
+        }
+    }
+}
+
+/// `try { value = body; } catch (Exception e)` over the body's outcome:
+/// the value, or the `Exception` caught (an `Err`, or a panic whose
+/// throwable is not an `Error`); an `Error`, as an `Err` or a panic, is
+/// rethrown.
+pub fn caught_value<T>(
+    outcome: std::thread::Result<Result<T>>,
+) -> std::result::Result<T, Throwable> {
+    match outcome {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(e)) => {
+            let t = java_throwable(&e);
+            if t.is_instance(randomizedtesting::jdk::exception::ERROR) {
+                t.throw()
+            }
+            Err(t)
+        }
+        Err(payload) => {
+            if crate::mockfile::is_java_error(&*payload) {
+                std::panic::resume_unwind(payload)
+            }
+            Err(crate::mockfile::panic_throwable(&*payload))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,5 +520,86 @@ mod tests {
         );
         let cause = java_throwable(&e).cause().cloned().expect("getCause()");
         assert_eq!(cause.class_name(), "java.lang.IllegalArgumentException");
+    }
+
+    /// A `null` message stays `null`: `Throwable.toString()` is the class
+    /// name alone (`Throwable.java`, JDK 25 spec). The port gave the
+    /// throwable the literal message `<null>`.
+    #[test]
+    fn a_null_message_stays_null() {
+        let e = LuceneError::from(LuceneErrorKind::Unchecked {
+            class: "java.lang.RuntimeException",
+            message: None,
+            cause: None,
+        });
+        let t = java_throwable(&e);
+        assert_eq!(t.message(), None);
+        assert_eq!(t.to_string(), "java.lang.RuntimeException");
+    }
+
+    /// An `assert` without a message (`java_assert!(cond)`, the core's
+    /// `AssertionError(String::new())`) is `new AssertionError()`:
+    /// `getMessage()` is `null`, not `""`; a message stays a message.
+    #[test]
+    fn a_bare_assertion_has_a_null_message() {
+        let e = LuceneError::from(LuceneErrorKind::AssertionError(String::new()));
+        assert_eq!(
+            crate::analysis::base_token_stream_test_case::java_message(&e),
+            None
+        );
+        let t = java_throwable(&e);
+        assert_eq!(t.message(), None);
+        assert_eq!(t.to_string(), "java.lang.AssertionError");
+        let e = LuceneError::from(LuceneErrorKind::AssertionError("m".into()));
+        assert_eq!(java_throwable(&e).message(), Some("m"));
+    }
+
+    /// `try { body } catch (Exception e)` over a value: an `Err` or a
+    /// non-`Error` panic is caught; an `Error` (as an `Err` or a panic)
+    /// propagates, as `catch (Exception)` never catches it.
+    #[test]
+    fn caught_value_lets_errors_through() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let caught = caught_value::<()>(Ok(Err(LuceneError::illegal_state("ise"))));
+        assert_eq!(
+            caught.unwrap_err().class_name(),
+            "java.lang.IllegalStateException"
+        );
+        let caught = caught_value::<()>(catch_unwind(|| {
+            Throwable::new("java.lang.RuntimeException", "boom").throw()
+        }));
+        assert_eq!(caught.unwrap_err().message(), Some("boom"));
+        let error = catch_unwind(AssertUnwindSafe(|| {
+            caught_value::<()>(Ok(Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                "bad".to_string(),
+            )))))
+        }));
+        let t = Throwable::from_panic(error.expect_err("an Error propagates"));
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+    }
+
+    /// `try (R r = ...) { body }`: the resource closes when the body panics,
+    /// and its close failure rides on the body's throwable as suppressed.
+    #[test]
+    fn try_with_closes_on_a_panic_and_suppresses_the_close_failure() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let closed = std::sync::atomic::AtomicBool::new(false);
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            try_with(
+                (),
+                |_| {
+                    closed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Err(LuceneError::illegal_state("close"))
+                },
+                |_| -> Result<()> { Throwable::new("java.lang.RuntimeException", "boom").throw() },
+            )
+        }));
+        assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
+        let t = Throwable::from_panic(outcome.expect_err("the body's throwable"));
+        assert_eq!(t.message(), Some("boom"));
+        assert_eq!(
+            t.suppressed()[0].class_name(),
+            "java.lang.IllegalStateException"
+        );
     }
 }

@@ -96,11 +96,17 @@ use crate::util::ram_usage_tester::{self, JavaObject, Queue, RamObject};
 use crate::util::TestUtil;
 
 /// Throws a Rucene error out of a test method, as Java's `throws Exception`:
-/// the throwable has the Java class and message the error stands for.
+/// the throwable is the one the error stands for (class, message — `null`
+/// staying `null` —, cause and suppressed exceptions).
 pub fn rethrow(e: LuceneError) -> ! {
-    let (class, message) = crate::analysis::base_token_stream_test_case::java_class_and_message(&e);
-    Throwable::new(class, message).throw()
+    crate::util::java_exceptions::java_throwable(&e).throw()
 }
+
+// Java's try-with-resources, `IOUtils.close` and `catch (Exception e)`
+// helpers live in `crate::util::java_exceptions`, shared by every package.
+pub use crate::util::java_exceptions::{
+    caught_exception, io_utils_close, try_with, try_with_resource,
+};
 
 /// `INDEX_WRITER_ACCESS.isDeleterClosed(iw)`.
 fn is_deleter_closed(iw: &IndexWriter) -> bool {
@@ -472,8 +478,14 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
     }
 
     /// `bytesUsedByExtension(d)` (`private`).
-    fn bytes_used_by_extension(&self, d: &dyn Directory) -> Result<HashMap<String, i64>> {
-        let mut bytes_used_by_extension: HashMap<String, i64> = HashMap::new();
+    ///
+    /// Java's `HashMap`: its iteration order, which `assertEquals` prints,
+    /// follows the insertions (in `listAll()` order).
+    fn bytes_used_by_extension(
+        &self,
+        d: &dyn Directory,
+    ) -> Result<rucene::util::java_collections::JavaHashMap<i64>> {
+        let mut bytes_used_by_extension = rucene::util::java_collections::JavaHashMap::new();
         for file in d.list_all()? {
             if index_file_names::is_codec_file(&file) {
                 let ext = index_file_names::get_extension(&file)
@@ -506,8 +518,12 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         cfg.set_use_compound_file(false)?;
         cfg.set_merge_policy(Some(Arc::new(mp)))?;
         if *VERBOSE {
-            cfg.set_info_stream(Arc::new(rucene::util::PrintStreamInfoStream::new(
-                Box::new(std::io::stdout()),
+            // `cfg.setInfoStream(System.out)`: a `PrintStreamInfoStream` over
+            // the emulated `System.out` as it is now.
+            cfg.set_info_stream(Arc::new(rucene::util::PrintStreamInfoStream::system(
+                Box::new(crate::search::shard_searching_test_base::SystemOut(
+                    randomizedtesting::jdk::system::out(),
+                )),
             )))?;
         }
         let w = IndexWriter::new(dir.as_directory(), cfg)?;
@@ -648,125 +664,168 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
 
         // PostingsFormat
         let fake_norms = OneDocNorms(Arc::clone(&one_doc_reader));
+        // Each `try (resource) { ...; IOUtils.close(resource);
+        // IOUtils.close(resource); }`: the body, then the implicit close on
+        // every exit, whose failure is suppressed into the body's.
         {
-            let mut consumer = codec.postings_format().fields_consumer(&write_state)?;
-            let indexed_fields: BTreeSet<String> =
-                FieldInfos::get_indexed_fields(Arc::clone(&one_doc_reader).as_index_reader())?
+            try_with(
+                codec.postings_format().fields_consumer(&write_state)?,
+                |c| c.close(),
+                |consumer| {
+                    let indexed_fields: BTreeSet<String> = FieldInfos::get_indexed_fields(
+                        Arc::clone(&one_doc_reader).as_index_reader(),
+                    )?
                     .into_iter()
                     .collect();
-            let fields = OneDocFields {
-                indexed_fields,
-                reader: Arc::clone(&one_doc_reader),
-            };
-            consumer.write(&fields, Some(&fake_norms))?;
-            consumer.close()?;
-            consumer.close()?;
-            consumer.close()?;
+                    let fields = OneDocFields {
+                        indexed_fields,
+                        reader: Arc::clone(&one_doc_reader),
+                    };
+                    consumer.write(&fields, Some(&fake_norms))?;
+                    consumer.close()?;
+                    consumer.close()
+                },
+            )?;
         }
         {
-            let producer = codec.postings_format().fields_producer(&read_state)?;
-            producer.close()?;
-            producer.close()?;
-            producer.close()?;
+            try_with(
+                codec.postings_format().fields_producer(&read_state)?,
+                |p| p.close(),
+                |producer| {
+                    producer.close()?;
+                    producer.close()
+                },
+            )?;
         }
 
         // DocValuesFormat
         {
-            let mut consumer = codec.doc_values_format().fields_consumer(&write_state)?;
-            consumer.add_numeric_field(&field, &OneValueProducer)?;
-            consumer.close()?;
-            consumer.close()?;
-            consumer.close()?;
+            try_with(
+                codec.doc_values_format().fields_consumer(&write_state)?,
+                |c| c.close(),
+                |consumer| {
+                    consumer.add_numeric_field(&field, &OneValueProducer)?;
+                    consumer.close()?;
+                    consumer.close()
+                },
+            )?;
         }
         {
-            let producer = codec.doc_values_format().fields_producer(&read_state)?;
-            producer.close()?;
-            producer.close()?;
-            producer.close()?;
+            try_with(
+                codec.doc_values_format().fields_producer(&read_state)?,
+                |p| p.close(),
+                |producer| {
+                    producer.close()?;
+                    producer.close()
+                },
+            )?;
         }
 
         // NormsFormat
         {
-            let mut consumer = codec.norms_format().norms_consumer(&write_state)?;
-            consumer.add_norms_field(&field, &OneValueNorms)?;
-            consumer.close()?;
-            consumer.close()?;
-            consumer.close()?;
+            try_with(
+                codec.norms_format().norms_consumer(&write_state)?,
+                |c| c.close(),
+                |consumer| {
+                    consumer.add_norms_field(&field, &OneValueNorms)?;
+                    consumer.close()?;
+                    consumer.close()
+                },
+            )?;
         }
         {
-            let producer = codec.norms_format().norms_producer(&read_state)?;
-            producer.close()?;
-            producer.close()?;
-            producer.close()?;
+            try_with(
+                codec.norms_format().norms_producer(&read_state)?,
+                |p| p.close(),
+                |producer| {
+                    producer.close()?;
+                    producer.close()
+                },
+            )?;
         }
 
         // TermVectorsFormat
         {
-            let mut consumer = codec.term_vectors_format().vectors_writer(
-                &directory,
-                &segment_info,
-                write_state.context,
+            try_with(
+                codec.term_vectors_format().vectors_writer(
+                    &directory,
+                    &segment_info,
+                    write_state.context,
+                )?,
+                |c| c.close(),
+                |consumer| {
+                    consumer.start_document(1)?;
+                    consumer.start_field(&field, 1, false, false, false)?;
+                    consumer.start_term(&BytesRef::from_char_sequence("testing"), 2)?;
+                    consumer.finish_term()?;
+                    consumer.finish_field()?;
+                    consumer.finish_document()?;
+                    consumer.finish(1)?;
+                    consumer.close()?;
+                    consumer.close()
+                },
             )?;
-            consumer.start_document(1)?;
-            consumer.start_field(&field, 1, false, false, false)?;
-            consumer.start_term(&BytesRef::from_char_sequence("testing"), 2)?;
-            consumer.finish_term()?;
-            consumer.finish_field()?;
-            consumer.finish_document()?;
-            consumer.finish(1)?;
-            consumer.close()?;
-            consumer.close()?;
-            consumer.close()?;
         }
         {
-            let mut producer = codec.term_vectors_format().vectors_reader(
-                &*directory,
-                &segment_info,
-                &field_infos,
-                read_state.context,
+            try_with(
+                codec.term_vectors_format().vectors_reader(
+                    &*directory,
+                    &segment_info,
+                    &field_infos,
+                    read_state.context,
+                )?,
+                |p| p.close(),
+                |producer| {
+                    producer.close()?;
+                    producer.close()
+                },
             )?;
-            producer.close()?;
-            producer.close()?;
-            producer.close()?;
         }
 
         // StoredFieldsFormat
         {
-            let mut consumer = codec.stored_fields_format().fields_writer(
-                &directory,
-                &segment_info,
-                write_state.context,
+            try_with(
+                codec.stored_fields_format().fields_writer(
+                    &directory,
+                    &segment_info,
+                    write_state.context,
+                )?,
+                |c| c.close(),
+                |consumer| {
+                    consumer.start_document()?;
+                    match stored_value {
+                        Some(StoredValue::Integer(v)) => consumer.write_field_i32(&field, v)?,
+                        Some(StoredValue::Long(v)) => consumer.write_field_i64(&field, v)?,
+                        Some(StoredValue::Float(v)) => consumer.write_field_f32(&field, v)?,
+                        Some(StoredValue::Double(v)) => consumer.write_field_f64(&field, v)?,
+                        Some(StoredValue::Binary(v)) => consumer
+                            .write_field_bytes(&field, &v.bytes[v.offset..v.offset + v.length])?,
+                        Some(StoredValue::String(v)) => consumer.write_field_string(&field, &v)?,
+                        _ => randomizedtesting::jdk::exception::throw_without_message(
+                            "java.lang.AssertionError",
+                        ),
+                    }
+                    consumer.finish_document()?;
+                    consumer.finish(1)?;
+                    consumer.close()?;
+                    consumer.close()
+                },
             )?;
-            consumer.start_document()?;
-            match stored_value {
-                Some(StoredValue::Integer(v)) => consumer.write_field_i32(&field, v)?,
-                Some(StoredValue::Long(v)) => consumer.write_field_i64(&field, v)?,
-                Some(StoredValue::Float(v)) => consumer.write_field_f32(&field, v)?,
-                Some(StoredValue::Double(v)) => consumer.write_field_f64(&field, v)?,
-                Some(StoredValue::Binary(v)) => {
-                    consumer.write_field_bytes(&field, &v.bytes[v.offset..v.offset + v.length])?
-                }
-                Some(StoredValue::String(v)) => consumer.write_field_string(&field, &v)?,
-                _ => randomizedtesting::jdk::exception::throw_without_message(
-                    "java.lang.AssertionError",
-                ),
-            }
-            consumer.finish_document()?;
-            consumer.finish(1)?;
-            consumer.close()?;
-            consumer.close()?;
-            consumer.close()?;
         }
         {
-            let mut producer = codec.stored_fields_format().fields_reader(
-                &*directory,
-                &segment_info,
-                &field_infos,
-                read_state.context,
+            try_with(
+                codec.stored_fields_format().fields_reader(
+                    &*directory,
+                    &segment_info,
+                    &field_infos,
+                    read_state.context,
+                )?,
+                |p| p.close(),
+                |producer| {
+                    producer.close()?;
+                    producer.close()
+                },
             )?;
-            producer.close()?;
-            producer.close()?;
-            producer.close()?;
         }
 
         drop(write_state);
@@ -775,12 +834,12 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         drop(directory);
         // `IOUtils.close(oneDocReader, oneDocIndex, dir)`
         drop(fake_norms);
-        Arc::clone(&one_doc_reader).as_index_reader().close()?;
+        let reader_closed = Arc::clone(&one_doc_reader).as_index_reader().close();
         drop(one_doc_reader);
         drop(one_doc_dir_reader);
-        one_doc_index.close()?;
-        dir.close()?;
-        Ok(())
+        let index_closed = one_doc_index.close();
+        let dir_closed = dir.close();
+        io_utils_close([reader_closed, index_closed, dir_closed])
     }
 
     /// `testRandomExceptions()`: tests exception handling on write and
@@ -816,74 +875,32 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         let num_docs = LuceneTestCase::at_least(500);
 
         let mut iw = IndexWriter::new(dir.as_directory(), conf)?;
-        let outcome = (|| -> Result<()> {
-            let mut allow_already_closed = false;
-            for i in 0..num_docs {
-                dir.set_random_io_exception_rate_on_open(0.02); // turn on exceptions for openInput/createOutput
+        // `try { ... } catch (Throwable t)`: Java's handler also catches the
+        // `AssertionError`s and rethrown exceptions, which panic in the port.
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
+            let outcome = (|| -> Result<()> {
+                let mut allow_already_closed = false;
+                for i in 0..num_docs {
+                    dir.set_random_io_exception_rate_on_open(0.02); // turn on exceptions for openInput/createOutput
 
-                let mut doc = Document::new();
-                doc.add(Box::new(LuceneTestCase::new_string_field(
-                    "id",
-                    &i.to_string(),
-                    rucene::document::Store::NO,
-                )));
-                self.add_random_fields(&mut doc);
-
-                // single doc
-                let added = iw.add_document(&doc).and_then(|_| {
-                    // we made it, sometimes delete our doc
-                    iw.delete_documents_by_terms(vec![rucene::index::terms::Term::new(
+                    let mut doc = Document::new();
+                    doc.add(Box::new(LuceneTestCase::new_string_field(
                         "id",
-                        BytesRef::from_char_sequence(&i.to_string()),
-                    )])
-                    .map(|_| ())
-                });
-                match added {
-                    Ok(()) => {}
-                    Err(LuceneError {
-                        kind: LuceneErrorKind::AlreadyClosed { .. },
-                        ..
-                    }) => {
-                        // OK: writer was closed by abort; we just reopen now:
-                        dir.set_random_io_exception_rate_on_open(0.0); // disable exceptions on openInput until next iteration
-                        Assert::assert_true(is_deleter_closed(&iw));
-                        Assert::assert_true(allow_already_closed);
-                        allow_already_closed = false;
-                        let conf = new_conf(&analyzer)?;
-                        iw = IndexWriter::new(dir.as_directory(), conf)?;
-                    }
-                    Err(e) if e.is_io_exception() => {
-                        handle_fake_io_exception(e, &mut exception_log);
-                        allow_already_closed = true;
-                    }
-                    Err(e) => return Err(e),
-                }
+                        &i.to_string(),
+                        rucene::document::Store::NO,
+                    )));
+                    self.add_random_fields(&mut doc);
 
-                if LuceneTestCase::random().next_int_bound(10) == 0 {
-                    // trigger flush:
-                    let flushed = (|| -> Result<()> {
-                        if LuceneTestCase::random().next_boolean() {
-                            let ir = directory_reader::open_with_writer_flags(
-                                &*iw,
-                                LuceneTestCase::random().next_boolean(),
-                                false,
-                            )?;
-                            dir.set_random_io_exception_rate_on_open(0.0); // disable exceptions on openInput until next iteration
-                            let checked = TestUtil::check_reader(&(Arc::clone(&ir) as _));
-                            // `IOUtils.closeWhileHandlingException(ir)`
-                            let _ = ir.close();
-                            checked?;
-                        } else {
-                            dir.set_random_io_exception_rate_on_open(0.0); // disable exceptions on openInput until next iteration:
-                                                                           // or we make slowExists angry and trip a scarier assert!
-                            iw.commit()?;
-                        }
-                        if directory_reader::index_exists(&*dir.as_directory())? {
-                            TestUtil::check_index(dir.as_directory())?;
-                        }
-                        Ok(())
-                    })();
-                    match flushed {
+                    // single doc
+                    let added = iw.add_document(&doc).and_then(|_| {
+                        // we made it, sometimes delete our doc
+                        iw.delete_documents_by_terms(vec![rucene::index::terms::Term::new(
+                            "id",
+                            BytesRef::from_char_sequence(&i.to_string()),
+                        )])
+                        .map(|_| ())
+                    });
+                    match added {
                         Ok(()) => {}
                         Err(LuceneError {
                             kind: LuceneErrorKind::AlreadyClosed { .. },
@@ -903,33 +920,93 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
                         }
                         Err(e) => return Err(e),
                     }
-                }
-            }
 
-            dir.set_random_io_exception_rate_on_open(0.0); // disable exceptions on openInput until next iteration:
-                                                           // or we make slowExists angry and trip a scarier assert!
-            if let Err(e) = iw.close() {
-                if !e.is_io_exception() {
-                    return Err(e);
+                    if LuceneTestCase::random().next_int_bound(10) == 0 {
+                        // trigger flush:
+                        let flushed = (|| -> Result<()> {
+                            if LuceneTestCase::random().next_boolean() {
+                                let ir = directory_reader::open_with_writer_flags(
+                                    &*iw,
+                                    LuceneTestCase::random().next_boolean(),
+                                    false,
+                                )?;
+                                dir.set_random_io_exception_rate_on_open(0.0); // disable exceptions on openInput until next iteration
+                                let checked = TestUtil::check_reader(&(Arc::clone(&ir) as _));
+                                // `IOUtils.closeWhileHandlingException(ir)`
+                                let _ = ir.close();
+                                checked?;
+                            } else {
+                                dir.set_random_io_exception_rate_on_open(0.0); // disable exceptions on openInput until next iteration:
+                                                                               // or we make slowExists angry and trip a scarier assert!
+                                iw.commit()?;
+                            }
+                            if directory_reader::index_exists(&*dir.as_directory())? {
+                                TestUtil::check_index(dir.as_directory())?;
+                            }
+                            Ok(())
+                        })();
+                        match flushed {
+                            Ok(()) => {}
+                            Err(LuceneError {
+                                kind: LuceneErrorKind::AlreadyClosed { .. },
+                                ..
+                            }) => {
+                                // OK: writer was closed by abort; we just reopen now:
+                                dir.set_random_io_exception_rate_on_open(0.0); // disable exceptions on openInput until next iteration
+                                Assert::assert_true(is_deleter_closed(&iw));
+                                Assert::assert_true(allow_already_closed);
+                                allow_already_closed = false;
+                                let conf = new_conf(&analyzer)?;
+                                iw = IndexWriter::new(dir.as_directory(), conf)?;
+                            }
+                            Err(e) if e.is_io_exception() => {
+                                handle_fake_io_exception(e, &mut exception_log);
+                                allow_already_closed = true;
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
                 }
-                handle_fake_io_exception(e, &mut exception_log);
-                let _ = iw.rollback();
-            }
-            Ok(())
-        })();
-        let outcome = outcome.and_then(|()| {
+
+                dir.set_random_io_exception_rate_on_open(0.0); // disable exceptions on openInput until next iteration:
+                                                               // or we make slowExists angry and trip a scarier assert!
+                if let Err(e) = iw.close() {
+                    if !e.is_io_exception() {
+                        return Err(e);
+                    }
+                    handle_fake_io_exception(e, &mut exception_log);
+                    // `try { iw.rollback(); } catch (Throwable t) {}`
+                    let _ =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| iw.rollback()));
+                }
+                Ok(())
+            })();
+            outcome?;
             drop(iw);
             dir.close()
-        });
-        if let Err(t) = outcome {
-            println!("Unexpected exception: dumping fake-exception-log:...");
-            println!("{exception_log}");
-            return Err(t);
+        }));
+        let failure = match caught {
+            Ok(Ok(())) => None,
+            Ok(Err(t)) => Some(Ok(t)),
+            Err(payload) => Some(Err(payload)),
+        };
+        if let Some(t) = failure {
+            randomizedtesting::jdk::system::out_println(
+                "Unexpected exception: dumping fake-exception-log:...",
+            );
+            randomizedtesting::jdk::system::out_println(&exception_log);
+            // `Rethrow.rethrow(t)`
+            match t {
+                Ok(t) => return Err(t),
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
         }
 
         if *VERBOSE {
-            println!("TEST PASSED: dumping fake-exception-log:...");
-            println!("{exception_log}");
+            randomizedtesting::jdk::system::out_println(
+                "TEST PASSED: dumping fake-exception-log:...",
+            );
+            randomizedtesting::jdk::system::out_println(&exception_log);
         }
         Ok(())
     }
@@ -986,17 +1063,18 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
 
         let read_bytes_map = read_bytes_wrapper_dir.get_read_bytes();
 
-        let mut unread_files: HashSet<String> = dir.get_files();
-        println!("{}", java_array_to_string(&dir.list_all()?));
+        // `new HashSet<>(dir.getFiles())`: its capacity follows the copied
+        // set's size, which decides the iteration order the message prints.
+        let mut unread_files =
+            rucene::util::java_collections::JavaHashSet::from_collection(dir.get_files());
+        randomizedtesting::jdk::system::out_println(&java_array_to_string(&dir.list_all()?));
         for name in read_bytes_map.keys() {
             unread_files.remove(name);
         }
         unread_files.remove(rucene::index::index_file_deleter::WRITE_LOCK_NAME);
+        let unread: Vec<&str> = unread_files.iter().map(String::as_str).collect();
         Assert::assert_true_msg(
-            &format!(
-                "Some files have not been open: {}",
-                java_set_to_string(&unread_files)
-            ),
+            &format!("Some files have not been open: [{}]", unread.join(", ")),
             unread_files.is_empty(),
         );
 
@@ -1018,8 +1096,10 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         reader.close()?;
         drop(reader);
         drop(read_bytes_wrapper_dir);
+        // `dir.close()`: the tracking wrapper closes the test directory.
+        dir.close()?;
         drop(dir);
-        inner.close()?;
+        drop(inner);
         Ok(())
     }
 }
@@ -1031,9 +1111,7 @@ fn handle_fake_io_exception(e: LuceneError, exception_stream: &mut String) {
     let mut ex: Option<&(dyn std::error::Error + 'static)> = Some(&e);
     while let Some(t) = ex {
         let message = match t.downcast_ref::<LuceneError>() {
-            Some(l) => {
-                Some(crate::analysis::base_token_stream_test_case::java_class_and_message(l).1)
-            }
+            Some(l) => crate::analysis::base_token_stream_test_case::java_message(l),
             None => t
                 .downcast_ref::<std::io::Error>()
                 .and_then(rucene::store::java_nio_file::java_message_of),
@@ -1041,7 +1119,18 @@ fn handle_fake_io_exception(e: LuceneError, exception_stream: &mut String) {
         if let Some(message) = message {
             if message.starts_with("a random IOException") {
                 exception_stream.push_str(&format!("\nTEST: got expected fake exc:{message}\n"));
-                exception_stream.push_str(&format!("{e:?}\n"));
+                // `ex.printStackTrace(exceptionStream)`: the matched throwable
+                // (`ex`, which may be a cause of `e`), not `e`.
+                let trace = match t.downcast_ref::<LuceneError>() {
+                    Some(l) => randomizedtesting::jdk::system::format_stack_trace(
+                        &crate::util::java_exceptions::java_throwable(l),
+                    ),
+                    None => t.downcast_ref::<std::io::Error>().map_or_else(
+                        || t.to_string(),
+                        rucene::store::java_nio_file::java_to_string,
+                    ),
+                };
+                exception_stream.push_str(&format!("{trace}\n"));
                 return;
             }
         }
@@ -1233,23 +1322,15 @@ fn java_set_to_string(values: &HashSet<String>) -> String {
     format!("[{}]", items.join(", "))
 }
 
-/// A `HashMap<String, Long>` as JUnit's `assertEquals` compares and prints
-/// it (`AbstractMap.toString()`, in the JDK's iteration order).
+/// A `HashMap<String, Long>` as JUnit's `assertEquals` compares
+/// (`AbstractMap.equals`) and prints it (`AbstractMap.toString()`, in the
+/// map's own iteration order).
 #[derive(PartialEq)]
-struct JavaHashMap(HashMap<String, i64>);
+struct JavaHashMap(rucene::util::java_collections::JavaHashMap<i64>);
 
 impl fmt::Display for JavaHashMap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let keys: Vec<(String, i32)> = self
-            .0
-            .keys()
-            .map(|k| (k.clone(), randomizedtesting::jdk::lang::string_hash_code(k)))
-            .collect();
-        let order = randomizedtesting::jdk::util::hash_iteration_order(&keys, |a, b| a == b);
-        let items: Vec<String> = order
-            .iter()
-            .map(|&i| format!("{}={}", keys[i].0, self.0[&keys[i].0]))
-            .collect();
+        let items: Vec<String> = self.0.iter().map(|(k, v)| format!("{k}={v}")).collect();
         write!(f, "{{{}}}", items.join(", "))
     }
 }
@@ -1306,18 +1387,26 @@ impl Fields for OneDocFields {
 }
 
 /// The anonymous `NumericDocValues` of `testMultiClose`: document 0 has the
-/// value 5.
+/// value 5. Two anonymous classes of the same body: the doc values
+/// producer's (`BaseIndexFileFormatTestCase$3$1`) and the norms producer's
+/// (`BaseIndexFileFormatTestCase$4$1`), named by `class`.
 struct OneValue {
     doc_id: i32,
+    class: &'static str,
 }
 
 impl fmt::Display for OneValue {
+    /// `Object.toString()`: the class declares no `toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("NumericDocValues")
+        f.write_str(&rucene::index::index_reader::java_object_to_string_stand_in(self.class))
     }
 }
 
 impl DocIdSetIterator for OneValue {
+    fn java_to_string(&self) -> String {
+        self.to_string()
+    }
+
     fn doc_id(&self) -> i32 {
         self.doc_id
     }
@@ -1364,7 +1453,10 @@ struct OneValueProducer;
 
 impl DocValuesProducer for OneValueProducer {
     fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
-        Ok(Some(Box::new(OneValue { doc_id: -1 })))
+        Ok(Some(Box::new(OneValue {
+            doc_id: -1,
+            class: "org.apache.lucene.tests.index.BaseIndexFileFormatTestCase$3$1",
+        })))
     }
 
     fn get_binary(
@@ -1422,7 +1514,10 @@ struct OneValueNorms;
 
 impl NormsProducer for OneValueNorms {
     fn get_norms(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
-        Ok(Some(Box::new(OneValue { doc_id: -1 })))
+        Ok(Some(Box::new(OneValue {
+            doc_id: -1,
+            class: "org.apache.lucene.tests.index.BaseIndexFileFormatTestCase$4$1",
+        })))
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -1531,10 +1626,9 @@ impl Directory for FileTrackingDirectoryWrapper {
         self.r#in.obtain_lock(name)
     }
 
-    /// `FilterDirectory.close()` closes the delegate; the delegate here is
-    /// the shared test directory, which its owner closes.
+    /// `FilterDirectory.close()`: `in.close()`.
     fn close(&self) -> Result<()> {
-        Ok(())
+        self.r#in.close()
     }
 
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
@@ -1563,6 +1657,15 @@ impl fmt::Display for FileTrackingDirectoryWrapper {
 /// The `IntConsumer readByte` of a [`ReadBytesIndexInputWrapper`]: marks a
 /// byte of the file as read.
 type ReadByte = Arc<dyn Fn(i32) + Send + Sync>;
+
+/// `new <class>()`: an unchecked exception whose `getMessage()` is `null`.
+pub fn exception_without_message(class: &'static str) -> LuceneError {
+    LuceneError::from(LuceneErrorKind::Unchecked {
+        class,
+        message: None,
+        cause: None,
+    })
+}
 
 /// `Math.toIntExact(v)`.
 fn to_int_exact(v: i64) -> Result<i32> {
@@ -1720,7 +1823,8 @@ impl ReadBytesDirectoryWrapper {
             }
         };
         if set.lock().unwrap_or_else(PoisonError::into_inner).length() as i64 != length {
-            return Err(LuceneError::illegal_state(String::new()));
+            // `new IllegalStateException()`: no message.
+            return Err(exception_without_message("java.lang.IllegalStateException"));
         }
         Ok(set)
     }
@@ -1739,17 +1843,23 @@ impl Directory for ReadBytesDirectoryWrapper {
         self.r#in.file_length(name)
     }
 
+    /// `throw new UnsupportedOperationException()`: no message.
     fn create_output(&self, _name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::unsupported_operation(String::new()))
+        Err(exception_without_message(
+            "java.lang.UnsupportedOperationException",
+        ))
     }
 
+    /// `throw new UnsupportedOperationException()`: no message.
     fn create_temp_output(
         &self,
         _prefix: &str,
         _suffix: &str,
         _context: &dyn IOContext,
     ) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::unsupported_operation(String::new()))
+        Err(exception_without_message(
+            "java.lang.UnsupportedOperationException",
+        ))
     }
 
     fn sync(&self, names: &[String]) -> Result<()> {
@@ -1789,10 +1899,9 @@ impl Directory for ReadBytesDirectoryWrapper {
         self.r#in.obtain_lock(name)
     }
 
-    /// `FilterDirectory.close()` closes the delegate; the delegate here is
-    /// shared, and its owner closes it.
+    /// `FilterDirectory.close()`: `in.close()`.
     fn close(&self) -> Result<()> {
-        Ok(())
+        self.r#in.close()
     }
 
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
@@ -1831,6 +1940,51 @@ pub fn assert_null(actual: Option<String>) {
     }
 }
 
+/// A `null` that Java dereferences: the `NullPointerException` the JDK
+/// throws, whose helpful message (`message`, built only when `value` is
+/// `None`) names the dereference, as `Cannot invoke "<Class>.<method>(<params>)"
+/// because "<local>" is null`; the test-framework jar keeps its local
+/// variable names.
+pub fn npe_with<T>(value: Option<T>, message: impl FnOnce() -> String) -> T {
+    value.unwrap_or_else(|| Throwable::new("java.lang.NullPointerException", message()).throw())
+}
+
+/// JUnit 4's `assertEquals(Object expected, Object actual)` for two
+/// non-`String` objects, each given as `(getClass().getName(), toString())`
+/// (`None` for `null`); `equal` is `expected.equals(actual)` (or both
+/// `null`). On failure, `Assert.format`: `expected:<x> but was:<y>`, or, when
+/// the two renderings are equal, `expected: Class<x> but was: Class<y>`.
+pub fn assert_equals_object(
+    equal: bool,
+    expected: Option<(&str, String)>,
+    actual: Option<(&str, String)>,
+) {
+    if equal {
+        return;
+    }
+    let value = |o: &Option<(&str, String)>| o.as_ref().map_or("null".to_string(), |o| o.1.clone());
+    let class =
+        |o: &Option<(&str, String)>| o.as_ref().map_or("null".to_string(), |o| o.0.to_string());
+    let (e, a) = (value(&expected), value(&actual));
+    let message = if e == a {
+        format!(
+            "expected: {}<{e}> but was: {}<{a}>",
+            class(&expected),
+            class(&actual)
+        )
+    } else {
+        format!("expected:<{e}> but was:<{a}>")
+    };
+    Throwable::new("java.lang.AssertionError", message).throw()
+}
+
+/// `AbstractCollection.toString()` of a `java.util.HashSet<String>`: `[a,
+/// b]`, in the set's own iteration order.
+pub fn java_hash_set_to_string(set: &rucene::util::java_collections::JavaHashSet) -> String {
+    let items: Vec<&str> = set.iter().map(String::as_str).collect();
+    format!("[{}]", items.join(", "))
+}
+
 /// JUnit's `assertEquals(expected, actual)` over two objects whose
 /// `toString()` the port renders with `Debug`: `expected:<…> but was:<…>`.
 pub fn assert_equals_debug<T: PartialEq + fmt::Debug>(expected: &T, actual: &T) {
@@ -1840,5 +1994,213 @@ pub fn assert_equals_debug<T: PartialEq + fmt::Debug>(expected: &T, actual: &T) 
             format!("expected:<{expected:?}> but was:<{actual:?}>"),
         )
         .throw()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rucene::store::ByteBuffersDirectory;
+
+    use super::*;
+
+    /// `rethrow` throws the throwable the error stands for: a `null`
+    /// message stays `null` (the port built the literal `<null>`), and the
+    /// cause is kept.
+    #[test]
+    fn rethrow_keeps_a_null_message_null() {
+        let payload = std::panic::catch_unwind(|| {
+            rethrow(LuceneError::from(LuceneErrorKind::AssertionError(
+                String::new(),
+            )))
+        })
+        .unwrap_err();
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+        assert_eq!(t.message(), None);
+        let cause = LuceneError::illegal_state("inner");
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            rethrow(LuceneError::from(LuceneErrorKind::Unchecked {
+                class: "java.lang.RuntimeException",
+                message: None,
+                cause: Some(std::sync::Arc::new(cause)),
+            }))
+        }))
+        .unwrap_err();
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.message(), None);
+        assert_eq!(
+            t.cause().map(|c| c.class_name().to_string()).as_deref(),
+            Some("java.lang.IllegalStateException")
+        );
+    }
+
+    fn io_error(message: &str) -> LuceneError {
+        LuceneError::from(LuceneErrorKind::Io(std::io::Error::other(
+            message.to_string(),
+        )))
+    }
+
+    /// try-with-resources: when the body throws and closing throws too, the
+    /// close's exception is suppressed into the body's
+    /// (`Throwable.addSuppressed`), not dropped.
+    #[test]
+    fn try_with_resource_suppresses_the_close_failure() {
+        let err = try_with_resource::<()>(Err(io_error("body")), Err(io_error("close")))
+            .expect_err("the body's exception");
+        assert!(err.to_string().contains("body"));
+        assert_eq!(err.get_suppressed().len(), 1);
+        assert!(err.get_suppressed()[0].to_string().contains("close"));
+
+        let err = try_with_resource(Ok(()), Err(io_error("close"))).expect_err("the close's");
+        assert!(err.to_string().contains("close"));
+        assert!(err.get_suppressed().is_empty());
+        assert_eq!(try_with_resource(Ok(7), Ok(())).expect("no failure"), 7);
+    }
+
+    /// `try (Directory dir = ...) { body }` with a failing body: the
+    /// directory is still closed, on a panic (a JUnit failure) as on an
+    /// `Err`, and a close failure is suppressed into the body's throwable;
+    /// two resources close in reverse order, suppressed in that order.
+    #[test]
+    fn try_with_closes_on_a_failing_body_and_suppresses_the_close_failure() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::sync::Mutex;
+
+        // A failing body still closes the directory.
+        let inner = Arc::new(ByteBuffersDirectory::new());
+        let thrown = catch_unwind(AssertUnwindSafe(|| {
+            let _ = try_with(
+                Arc::clone(&inner),
+                |d| d.close(),
+                |_dir| -> Result<()> {
+                    Throwable::new("java.lang.AssertionError", "body failed").throw()
+                },
+            );
+        }))
+        .expect_err("the body's failure propagates");
+        assert_eq!(
+            Throwable::from_panic(thrown).class_name(),
+            "java.lang.AssertionError"
+        );
+        assert!(inner.list_all().is_err(), "the directory was closed");
+
+        // A close failure is suppressed into a panicking body's throwable,
+        // after the closes of the inner resources, in reverse order.
+        let closes = Mutex::new(Vec::new());
+        let closing = |name: &'static str| {
+            let closes = &closes;
+            move |_: &mut ()| -> Result<()> {
+                closes.lock().unwrap().push(name);
+                Err(io_error(name))
+            }
+        };
+        let thrown = catch_unwind(AssertUnwindSafe(|| {
+            let _ = try_with((), closing("dir"), |_| {
+                try_with((), closing("w"), |_| -> Result<()> {
+                    Throwable::new("java.lang.AssertionError", "body failed").throw()
+                })
+            });
+        }))
+        .expect_err("the body's failure propagates");
+        let t = Throwable::from_panic(thrown);
+        assert_eq!(t.message(), Some("body failed"));
+        assert_eq!(t.suppressed().len(), 2);
+        assert!(t.suppressed()[0].to_string().contains('w'));
+        assert!(t.suppressed()[1].to_string().contains("dir"));
+        assert_eq!(*closes.lock().unwrap(), vec!["w", "dir"]);
+
+        // An `Err` body: closed, close failure suppressed.
+        let err = try_with((), closing("dir"), |_| -> Result<()> {
+            Err(io_error("body"))
+        })
+        .expect_err("the body's error");
+        assert!(err.to_string().contains("body"));
+        assert_eq!(err.get_suppressed().len(), 1);
+        // A succeeding body: the close failure alone.
+        let err = try_with((), closing("dir"), |_| Ok(())).expect_err("the close's error");
+        assert!(err.to_string().contains("dir"));
+    }
+
+    /// `IOUtils.close(a, b, c)`: every object is closed; the first exception
+    /// is rethrown with the later ones suppressed into it.
+    #[test]
+    fn io_utils_close_rethrows_the_first_and_suppresses_the_rest() {
+        let err = io_utils_close([Ok(()), Err(io_error("second")), Err(io_error("third"))])
+            .expect_err("the first failure");
+        assert!(err.to_string().contains("second"));
+        assert_eq!(err.get_suppressed().len(), 1);
+        assert!(err.get_suppressed()[0].to_string().contains("third"));
+        io_utils_close([Ok(()), Ok(())]).expect("no failure");
+    }
+
+    /// `ReadBytesDirectoryWrapper.createOutput` throws `new
+    /// UnsupportedOperationException()`, whose message is `null`.
+    #[test]
+    fn read_bytes_wrapper_refuses_writes_without_a_message() {
+        let wrapper = ReadBytesDirectoryWrapper::new(Arc::new(ByteBuffersDirectory::new()));
+        let err = match wrapper.create_output("x", &*DEFAULT_IO_CONTEXT) {
+            Ok(_) => panic!("createOutput is unsupported"),
+            Err(err) => err,
+        };
+        assert!(is_unsupported_operation(&err));
+        assert_eq!(
+            crate::analysis::base_token_stream_test_case::java_message(&err),
+            None
+        );
+    }
+
+    /// `FileTrackingDirectoryWrapper.close()` is `FilterDirectory.close()`:
+    /// it closes the delegate.
+    #[test]
+    fn file_tracking_wrapper_closes_its_delegate() {
+        let inner = Arc::new(ByteBuffersDirectory::new());
+        let wrapper = FileTrackingDirectoryWrapper::new(Arc::clone(&inner) as Arc<dyn Directory>);
+        wrapper.close().expect("close");
+        assert!(inner.list_all().is_err(), "the delegate is closed");
+    }
+
+    /// JUnit's `assertEquals(Object, Object)` message: plain values, and
+    /// the class names when the two values print the same (`Assert.format`).
+    #[test]
+    fn assert_equals_object_uses_junit_format() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let message = |f: Box<dyn FnOnce()>| {
+            Throwable::from_panic(catch_unwind(AssertUnwindSafe(f)).expect_err("fails"))
+                .message()
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert_eq!(
+            message(Box::new(|| assert_equals_object(
+                false,
+                Some(("java.util.HashSet", "[a]".to_string())),
+                Some(("java.util.HashSet", "[b]".to_string())),
+            ))),
+            "expected:<[a]> but was:<[b]>"
+        );
+        assert_eq!(
+            message(Box::new(|| assert_equals_object(
+                false,
+                Some(("org.apache.lucene.search.Sort", "<x>".to_string())),
+                Some(("java.lang.String", "<x>".to_string())),
+            ))),
+            "expected: org.apache.lucene.search.Sort<<x>> but was: java.lang.String<<x>>"
+        );
+        assert_eq!(
+            message(Box::new(|| assert_equals_object(
+                false,
+                None,
+                Some(("org.apache.lucene.search.Sort", "<x>".to_string())),
+            ))),
+            "expected:<null> but was:<<x>>"
+        );
+        assert_equals_object(true, None, None);
+        let set: rucene::util::java_collections::JavaHashSet =
+            ["_123.si".to_string(), "_123.a".to_string()]
+                .into_iter()
+                .collect();
+        let rendered = java_hash_set_to_string(&set);
+        let items: Vec<&String> = set.iter().collect();
+        assert_eq!(rendered, format!("[{}, {}]", items[0], items[1]));
     }
 }

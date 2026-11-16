@@ -26,10 +26,9 @@
 //! (`TestICUCollationKeyAnalyzer`), outside this port. The methods are
 //! exercised over a core analyzer in this crate's tests.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use randomizedtesting::jdk::exception::Throwable;
+use randomizedtesting::jdk::exception::{Throwable, IO_EXCEPTION, RUNTIME_EXCEPTION};
 use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::Assert;
 use rucene::analysis::Analyzer;
@@ -42,9 +41,11 @@ use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::{IndexReader, Term};
 use rucene::search::boolean_clause::Occur;
 use rucene::search::{BooleanQueryBuilder, IndexSearcher, Query, TermQuery, TermRangeQuery};
+use rucene::util::java_collections::JavaHashMap;
 use rucene::util::BytesRef;
 
 use super::attributes::{term_to_bytes_ref_id, Att};
+use crate::util::java_exceptions;
 use crate::util::{LuceneTestCase, TestUtil};
 
 /// Port of `org.apache.lucene.tests.analysis.CollationTestBase`.
@@ -297,7 +298,8 @@ impl CollationTestBase {
     pub fn assert_thread_safe(&self, analyzer: Arc<dyn Analyzer>) -> Result<()> {
         let num_test_points = 100;
         let num_threads = TestUtil::next_int(&*LuceneTestCase::random(), 3, 5);
-        let mut map: HashMap<String, BytesRef> = HashMap::new();
+        // `java.util.HashMap`: the threads iterate `map.entrySet()` in its order.
+        let mut map: JavaHashMap<BytesRef> = JavaHashMap::new();
 
         // create a map<String,SortKey> up front.
         // then with multiple threads, generate sort keys for all the keys in the map
@@ -319,9 +321,14 @@ impl CollationTestBase {
                     for (term, expected) in map.iter() {
                         match single_term_bytes(&*analyzer, term) {
                             Ok(actual) => Assert::assert_equals(expected.clone(), actual),
-                            // `catch (IOException e) { throw new RuntimeException(e); }`
+                            // `catch (IOException e) { throw new RuntimeException(e); }`;
+                            // any other exception propagates unchanged.
                             Err(e) => {
-                                Throwable::new("java.lang.RuntimeException", e.to_string()).throw()
+                                let t = java_exceptions::java_throwable(&e);
+                                if t.is_instance(IO_EXCEPTION) {
+                                    Throwable::from_cause(RUNTIME_EXCEPTION, t).throw()
+                                }
+                                t.throw()
                             }
                         }
                     }
@@ -341,22 +348,22 @@ impl CollationTestBase {
 /// `analyzer.tokenStream("fake", term)` reset, its single token's
 /// `TermToBytesRefAttribute.getBytesRef()`, then `end()` and `close()`.
 fn single_term_bytes(analyzer: &dyn Analyzer, term: &str) -> Result<BytesRef> {
+    // try (TokenStream ts = analyzer.tokenStream("fake", term))
     let ts = analyzer.token_stream_from_str("fake", term)?;
-    let mut ts = ts.borrow_mut();
-    let term_att = Att::add(ts.attribute_source_mut(), term_to_bytes_ref_id())?;
-    let result = (|| -> Result<BytesRef> {
-        ts.reset()?;
-        Assert::assert_true(ts.increment_token()?);
-        let bytes = term_att.term_to_bytes_ref().get_bytes_ref();
-        Assert::assert_false(ts.increment_token()?);
-        ts.end()?;
-        Ok(bytes)
-    })();
-    // try-with-resources
-    let closed = ts.close();
-    let bytes = result?;
-    closed?;
-    Ok(bytes)
+    java_exceptions::try_with(
+        ts,
+        |ts| ts.borrow_mut().close(),
+        |ts| {
+            let mut ts = ts.borrow_mut();
+            let term_att = Att::add(ts.attribute_source_mut(), term_to_bytes_ref_id())?;
+            ts.reset()?;
+            Assert::assert_true(ts.increment_token()?);
+            let bytes = term_att.term_to_bytes_ref().get_bytes_ref();
+            Assert::assert_false(ts.increment_token()?);
+            ts.end()?;
+            Ok(bytes)
+        },
+    )
 }
 
 #[cfg(test)]

@@ -124,8 +124,9 @@ pub struct HnswGraphBuilder {
     /// Where the builder reports its progress.
     ///
     /// Equivalent to `HnswGraphBuilder.infoStream`, which defaults to
-    /// `InfoStream.getDefault()`.
-    info_stream: Arc<dyn InfoStream>,
+    /// `InfoStream.getDefault()`; `protected`, so the subclass
+    /// `MergingHnswGraphBuilder` reports through it too.
+    pub(crate) info_stream: Arc<dyn InfoStream>,
     /// When the merge this builder works for began, as a [`now_ns`] reading,
     /// or `-1` when it builds on its own; progress reports measure from it
     /// when it is set.

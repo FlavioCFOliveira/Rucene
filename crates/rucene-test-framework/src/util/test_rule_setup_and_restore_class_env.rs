@@ -517,18 +517,48 @@ impl AbstractBeforeAfterRule for TestRuleSetupAndRestoreClassEnv {
 
     /// `after()`: "after suite cleanup (always invoked)."
     fn after(&self) {
-        let mut env = self.env();
-        if let Some(codec) = env.saved_codec.take() {
-            rucene::codecs::set_default(codec);
-        }
-        if let Some(info_stream) = env.saved_info_stream.take() {
+        // The saved values are fields of the rule, kept after `after()` as
+        // Java keeps them (`TestRuleSetupAndRestoreClassEnv.java:61-64`).
+        let env = self.env();
+        // `Codec.setDefault(savedCodec)`: `Objects.requireNonNull` throws
+        // when `before()` failed before saving it (`Codec.java:152`).
+        let Some(codec) = env.saved_codec.clone() else {
+            drop(env);
+            exception::throw_without_message(exception::NULL_POINTER_EXCEPTION)
+        };
+        rucene::codecs::set_default(codec);
+        // `savedInfoStream` is saved before `savedCodec`: it is set here.
+        if let Some(info_stream) = env.saved_info_stream.clone() {
             rucene::util::set_default_info_stream(info_stream);
         }
-        if let Some(saved) = env.saved_locale.take() {
+        if let Some(saved) = env.saved_locale.clone() {
             locale::set_default(saved);
         }
-        if let Some(saved) = env.saved_time_zone.take() {
+        if let Some(saved) = env.saved_time_zone {
             LuceneTestCase::set_default_time_zone(saved);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use randomizedtesting::jdk::exception::Throwable;
+
+    use super::TestRuleSetupAndRestoreClassEnv;
+    use crate::util::abstract_before_after_rule::AbstractBeforeAfterRule;
+
+    /// `TestRuleSetupAndRestoreClassEnv.java:285`: `after()` without a saved
+    /// codec (the rule never saved one) calls `Codec.setDefault(null)`, whose
+    /// `Objects.requireNonNull` throws a `NullPointerException`.
+    #[test]
+    fn after_without_saved_codec_throws_npe() {
+        let rule = TestRuleSetupAndRestoreClassEnv::new();
+        let payload = catch_unwind(AssertUnwindSafe(|| rule.after()))
+            .expect_err("Codec.setDefault(null) must throw");
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.NullPointerException");
+        assert_eq!(t.message(), None);
     }
 }

@@ -94,8 +94,9 @@ impl FilterFileSystemProvider for ExtrasFS {
         ffsp::create_directory(self, dir)?;
         // ok, we created the directory successfully.
         if self.active {
-            // `catch (Exception ignored)`: best effort.
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // `catch (Exception ignored)`: best effort. An `Error` is not an
+            // `Exception` and propagates.
+            let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let target = dir.resolve_str(EXTRA_FILE_NAME);
                 if self.create_directory {
                     let _ = ffsp::create_directory(self, &target);
@@ -103,9 +104,91 @@ impl FilterFileSystemProvider for ExtrasFS {
                     let _ = Files::create_file(&target);
                 }
             }));
+            if let Err(payload) = attempt {
+                if super::is_java_error(&*payload) {
+                    std::panic::resume_unwind(payload);
+                }
+            }
         }
         Ok(())
     }
 }
 
 crate::impl_file_system_provider!(ExtrasFS);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use randomizedtesting::jdk::exception::{Throwable, ASSERTION_ERROR, RUNTIME_EXCEPTION};
+    use rucene::store::java_nio_file::default_file_system;
+
+    /// A filter whose `createDirectory` of an `extra0` directory throws
+    /// `class`.
+    struct ThrowOnExtra {
+        filter: FilterState,
+        class: &'static str,
+    }
+
+    impl FilterFileSystemProvider for ThrowOnExtra {
+        fn filter(&self) -> &FilterState {
+            &self.filter
+        }
+        fn class_name(&self) -> &'static str {
+            "ThrowOnExtra"
+        }
+        fn create_directory(&self, dir: &Path) -> io::Result<()> {
+            if dir.to_string().ends_with(EXTRA_FILE_NAME) {
+                Throwable::new(self.class, "extra refused").throw()
+            }
+            ffsp::create_directory(self, dir)
+        }
+    }
+
+    crate::impl_file_system_provider!(ThrowOnExtra);
+
+    fn extras_over_throwing(class: &'static str) -> Arc<ExtrasFS> {
+        let default = default_file_system();
+        let inner = Arc::new(ThrowOnExtra {
+            filter: FilterState::new("throwonextra://", &default),
+            class,
+        });
+        install(&inner, default);
+        ExtrasFS::new(
+            FilterFileSystemProvider::get_file_system(&*inner),
+            true,
+            true,
+        )
+    }
+
+    fn fresh_dir(fs: &ExtrasFS, name: &str) -> Path {
+        let base =
+            std::env::temp_dir().join(format!("rucene-extras-fs-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        FilterFileSystemProvider::get_file_system(fs).get_path(&base.to_string_lossy(), &[])
+    }
+
+    /// `catch (Exception ignored)` (`ExtrasFS.java:69-73`) swallows an
+    /// exception of the extra file's creation ...
+    #[test]
+    fn an_exception_creating_the_extra_is_ignored() {
+        let fs = extras_over_throwing(RUNTIME_EXCEPTION);
+        let dir = fresh_dir(&fs, "exception");
+        FilterFileSystemProvider::create_directory(&*fs, &dir).unwrap();
+        std::fs::remove_dir_all(dir.to_string()).unwrap();
+    }
+
+    /// ... but an `Error` is no `Exception`: it propagates.
+    #[test]
+    fn an_error_creating_the_extra_propagates() {
+        let fs = extras_over_throwing(ASSERTION_ERROR);
+        let dir = fresh_dir(&fs, "error");
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = FilterFileSystemProvider::create_directory(&*fs, &dir);
+        }))
+        .unwrap_err();
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), ASSERTION_ERROR);
+        assert_eq!(t.message(), Some("extra refused"));
+        std::fs::remove_dir_all(dir.to_string()).unwrap();
+    }
+}

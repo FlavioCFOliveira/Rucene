@@ -180,10 +180,11 @@ impl Outputs for FSTOrdsOutputs {
         };
         debug_assert!(output.start_ord >= inc.start_ord);
         debug_assert!(output.end_ord >= inc.end_ord);
+        // Java's `long` arithmetic wraps.
         self.new_output(
             suffix,
-            output.start_ord - inc.start_ord,
-            output.end_ord - inc.end_ord,
+            output.start_ord.wrapping_sub(inc.start_ord),
+            output.end_ord.wrapping_sub(inc.end_ord),
         )
     }
 
@@ -196,10 +197,12 @@ impl Outputs for FSTOrdsOutputs {
         let mut bytes = Vec::with_capacity(prefix.bytes.len() + output.bytes.len());
         bytes.extend_from_slice(&prefix.bytes);
         bytes.extend_from_slice(&output.bytes);
+        // Java's `long` arithmetic wraps; the record's assertions then see
+        // the negative ord.
         self.new_output(
             bytes,
-            prefix.start_ord + output.start_ord,
-            prefix.end_ord + output.end_ord,
+            prefix.start_ord.wrapping_add(output.start_ord),
+            prefix.end_ord.wrapping_add(output.end_ord),
         )
     }
 
@@ -343,6 +346,29 @@ mod tests {
         O.skip_output(&mut input).unwrap();
         O.skip_final_output(&mut input).unwrap();
         assert!(input.eof());
+    }
+
+    /// Regression (rmp #527): `add` sums the ords in Java's wrapping `long`
+    /// arithmetic, so an overflow reaches the record's assertion
+    /// (`startOrd=<negative>`) under `-ea` and a negative ord without it,
+    /// not Rust's overflow panic.
+    #[test]
+    fn add_wraps_like_java_long() {
+        let a = out(b"a", i64::MAX, 1);
+        let b = out(b"b", 1, 1);
+        let added = std::panic::catch_unwind(|| O.add(&a, &b));
+        if cfg!(debug_assertions) {
+            let payload = added.expect_err("the record's assertion fails");
+            let message = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(message, "startOrd=-9223372036854775808");
+        } else {
+            let added = added.expect("no assertion without -ea");
+            assert_eq!(added.start_ord(), i64::MIN);
+            assert_eq!(added.end_ord(), 2);
+        }
     }
 
     #[test]

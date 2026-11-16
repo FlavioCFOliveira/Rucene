@@ -114,7 +114,8 @@ impl LiveDocsFormat for AssertingLiveDocsFormat {
         Self::check(
             bits,
             info.info.max_doc()?,
-            info.get_del_count() + new_del_count,
+            // Java `int` addition wraps.
+            info.get_del_count().wrapping_add(new_del_count),
         )?;
         self.r#in
             .get()
@@ -136,6 +137,15 @@ impl AssertingBits {
     fn new(r#in: Box<dyn Bits>) -> Result<Self> {
         // `assert in.length() >= 0`: a `usize` always is.
         Ok(AssertingBits { r#in })
+    }
+}
+
+/// Port of `AssertingBits.toString()` (`AssertingLiveDocsFormat.java:103-106`):
+/// `"Asserting(" + in + ")"`, the delegate rendered by its own `toString()`
+/// ([`Bits::bits_to_string`]).
+impl std::fmt::Display for AssertingBits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Asserting({})", self.r#in.bits_to_string())
     }
 }
 
@@ -173,6 +183,11 @@ impl Bits for AssertingBits {
         self.r#in
             .into_live_docs()
             .map(|live_docs| Box::new(AssertingLiveDocs { r#in: live_docs }) as Box<dyn LiveDocs>)
+    }
+
+    /// `AssertingBits.toString()`, see the [`Display`](std::fmt::Display) impl.
+    fn bits_to_string(&self) -> String {
+        self.to_string()
     }
 }
 
@@ -215,6 +230,12 @@ impl Bits for AssertingLiveDocs {
     fn into_live_docs(self: Box<Self>) -> Option<Box<dyn LiveDocs>> {
         Some(self)
     }
+
+    /// `AssertingBits.toString()`, which `AssertingLiveDocs` inherits
+    /// (`AssertingLiveDocsFormat.java:103-106`).
+    fn bits_to_string(&self) -> String {
+        format!("Asserting({})", self.r#in.bits_to_string())
+    }
 }
 
 impl LiveDocs for AssertingLiveDocs {
@@ -231,5 +252,33 @@ impl LiveDocs for AssertingLiveDocs {
         java_assert_unchecked!(count >= 0);
         java_assert_unchecked!(count as usize <= self.length());
         count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rucene::index::index_reader::java_object_to_string;
+    use rucene::util::{Bits, FixedBitSet};
+
+    use super::AssertingBits;
+
+    /// `AssertingBits.toString()` is `"Asserting(" + in + ")"`; a delegate
+    /// without a `toString()` of its own (`FixedBitSet`) renders as
+    /// `Object.toString()`, and a wrapped `AssertingBits` as its own text.
+    #[test]
+    fn to_string_wraps_the_delegate_text() {
+        let raw: Box<dyn Bits> = Box::new(FixedBitSet::new(10));
+        let raw_text = java_object_to_string(std::any::type_name::<FixedBitSet>(), &*raw);
+        assert_eq!(raw.bits_to_string(), raw_text);
+
+        let asserting = AssertingBits::new(raw).unwrap();
+        assert_eq!(asserting.to_string(), format!("Asserting({raw_text})"));
+        assert_eq!(asserting.bits_to_string(), asserting.to_string());
+
+        let twice = AssertingBits::new(Box::new(asserting)).unwrap();
+        assert_eq!(
+            twice.to_string(),
+            format!("Asserting(Asserting({raw_text}))")
+        );
     }
 }

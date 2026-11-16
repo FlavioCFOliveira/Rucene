@@ -4395,6 +4395,24 @@ pub trait Bits: Send + Sync + Debug {
     fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
         None
     }
+
+    /// Returns the text of Java's `toString()` for these bits.
+    ///
+    /// Java renders a `Bits` with its class's `toString()`, as
+    /// `AssertingLiveDocsFormat.AssertingBits` does with its delegate
+    /// (`"Asserting(" + in + ")"`, `AssertingLiveDocsFormat.java:103-106`).
+    /// Rust has no `toString()` on a trait object, so the trait carries it, as
+    /// [`Codec::to_java_string`](crate::codecs::Codec::to_java_string) does.
+    /// The default is the `Object.toString()` that `Bits` implementations
+    /// without a `toString()` of their own inherit (`FixedBits`,
+    /// `FixedBitSet`): `getClass().getName() + "@" + hex identity`, rendered by
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// with the implementing type's name standing in for the Java class name,
+    /// since a Rust type has no Java binary name; an implementation whose Java
+    /// class overrides `toString()` overrides this method.
+    fn bits_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(std::any::type_name::<Self>(), self)
+    }
 }
 
 /// Returns whether `left` and `right` are the same bits, or both absent.

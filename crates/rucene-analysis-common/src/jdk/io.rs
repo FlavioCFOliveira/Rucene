@@ -541,6 +541,18 @@ impl<R: Read + Debug + Send + Sync> CharReader for InputStreamReader<R> {
     fn close(&mut self) -> Result<()> {
         self.close_stream()
     }
+
+    /// `InputStreamReader.ready()` of JDK 25, which is `StreamDecoder.ready()`:
+    /// `ensureOpen()`, then `haveLeftoverChar || bb.hasRemaining() ||
+    /// inReady()`. `markSupported()` is not overridden: `Reader`'s `false`.
+    ///
+    /// # Errors
+    ///
+    /// `IOException("Stream closed")` once closed.
+    fn ready(&mut self) -> Result<bool> {
+        self.ensure_open()?;
+        Ok(self.leftover.is_some() || self.position < self.limit || self.in_ready())
+    }
 }
 
 /// The source a [`BufferedReader`] reads: Java's `Reader`.
@@ -629,9 +641,26 @@ impl<S: ReadChars> Debug for BufferedReader<S> {
 impl<S: ReadChars> BufferedReader<S> {
     /// Equivalent to `new BufferedReader(in)`.
     pub fn new(input: S) -> Self {
+        Self::sized(input, DEFAULT_CHAR_BUFFER_SIZE)
+    }
+
+    /// Equivalent to `new BufferedReader(in, sz)`: a buffer of `sz` units.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException("Buffer size <= 0")` when `sz <= 0`, as
+    /// Java throws.
+    pub fn with_size(input: S, sz: i32) -> Result<Self> {
+        if sz <= 0 {
+            return Err(LuceneError::illegal_argument("Buffer size <= 0"));
+        }
+        Ok(Self::sized(input, sz as usize))
+    }
+
+    fn sized(input: S, sz: usize) -> Self {
         Self {
             input: Some(input),
-            cb: vec![0; DEFAULT_CHAR_BUFFER_SIZE],
+            cb: vec![0; sz],
             n_chars: 0,
             next_char: 0,
             skip_lf: false,
@@ -965,5 +994,56 @@ impl<S: ReadChars> LineNumberReader<S> {
     /// What closing the reader raises.
     pub fn close(&mut self) -> Result<()> {
         self.inner.close()
+    }
+}
+
+#[cfg(test)]
+mod ready_tests {
+    use rucene::analysis::CharReader;
+    use rucene::error::LuceneErrorKind;
+    use rucene::store::java_nio_file::java_to_string;
+
+    use super::InputStreamReader;
+
+    fn utf8(bytes: &[u8]) -> InputStreamReader<std::io::Cursor<Vec<u8>>> {
+        InputStreamReader::new_utf8(std::io::Cursor::new(bytes.to_vec()))
+    }
+
+    /// JDK 25 `InputStreamReader` over a `ByteArrayInputStream` (probe on
+    /// 25.0.5): `markSupported()` is `false`, open or closed; `ready()` is
+    /// `true` while a decoded char, an undecoded byte or an available byte
+    /// remains, `false` at the end, and throws `IOException("Stream closed")`
+    /// once closed.
+    #[test]
+    fn ready_and_mark_supported_match_jdk25() {
+        let mut r = utf8(b"ab");
+        assert!(!r.mark_supported());
+        assert!(r.ready().unwrap());
+        let mut one = [0u16; 1];
+        assert_eq!((r.read(&mut one).unwrap(), one[0]), (1, u16::from(b'a')));
+        assert!(r.ready().unwrap());
+        assert_eq!((r.read(&mut one).unwrap(), one[0]), (1, u16::from(b'b')));
+        assert!(!r.ready().unwrap());
+        assert!(!utf8(b"").ready().unwrap());
+
+        // U+1F600 read one unit at a time: the low surrogate is the leftover.
+        let mut sup = utf8("\u{1F600}".as_bytes());
+        assert_eq!((sup.read(&mut one).unwrap(), one[0]), (1, 0xD83D));
+        assert!(sup.ready().unwrap());
+        assert_eq!((sup.read(&mut one).unwrap(), one[0]), (1, 0xDE00));
+        assert!(!sup.ready().unwrap());
+
+        let mut big = utf8(&[0u8; 20000]);
+        assert_eq!(big.read(&mut [0u16; 10]).unwrap(), 10);
+        assert!(big.ready().unwrap());
+
+        r.close().unwrap();
+        assert!(!r.mark_supported());
+        match r.ready().unwrap_err().kind {
+            LuceneErrorKind::Io(e) => {
+                assert_eq!(java_to_string(&e), "java.io.IOException: Stream closed")
+            }
+            other => panic!("expected an IOException, got {other:?}"),
+        }
     }
 }

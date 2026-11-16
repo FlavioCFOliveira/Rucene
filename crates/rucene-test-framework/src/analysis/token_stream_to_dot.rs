@@ -17,6 +17,7 @@
 
 //! Port of `org.apache.lucene.tests.analysis.TokenStreamToDot`.
 
+use randomizedtesting::jdk::exception::Throwable;
 use rucene::analysis::TokenStream;
 use rucene::error::Result;
 
@@ -81,20 +82,22 @@ impl<'a> TokenStreamToDot<'a> {
         // make the "main path" a straight line and have the
         // non-sausage arcs not affect node placement...
 
-        let mut pos = -1;
-        let mut last_end_pos = -1;
+        let mut pos: i32 = -1;
+        let mut last_end_pos: i32 = -1;
         while self.input.increment_token()? {
             let is_first = pos == -1;
             let mut pos_inc = self.pos_inc_att.pos_inc().get_position_increment();
             if is_first && pos_inc == 0 {
                 // TODO: hmm are TS's still allowed to do this...?
-                eprintln!("WARNING: first posInc was 0; correcting to 1");
+                randomizedtesting::jdk::system::err_println(
+                    "WARNING: first posInc was 0; correcting to 1",
+                );
                 pos_inc = 1;
             }
 
             if pos_inc > 0 {
                 // New node:
-                pos += pos_inc;
+                pos = pos.wrapping_add(pos_inc);
                 self.write_node(pos, Some(&pos.to_string()));
             }
 
@@ -118,6 +121,21 @@ impl<'a> TokenStreamToDot<'a> {
                 match &self.input_text {
                     Some(input_text) => {
                         let units: Vec<u16> = input_text.encode_utf16().collect();
+                        // `inputText.substring(startOffset, endOffset)`.
+                        // **Divergence from Lucene 10.5.0**
+                        // (`TokenStreamToDot.java:94`): a fragment that splits
+                        // a surrogate pair keeps the lone surrogate in Java; a
+                        // Rust `String` cannot hold one, so it becomes U+FFFD.
+                        let length = units.len() as i32;
+                        if start_offset < 0 || start_offset > end_offset || end_offset > length {
+                            Throwable::new(
+                                "java.lang.StringIndexOutOfBoundsException",
+                                format!(
+                                    "Range [{start_offset}, {end_offset}) out of bounds for length {length}"
+                                ),
+                            )
+                            .throw();
+                        }
                         let fragment = String::from_utf16_lossy(
                             &units[start_offset as usize..end_offset as usize],
                         );
@@ -133,8 +151,8 @@ impl<'a> TokenStreamToDot<'a> {
             }
 
             let pos_length = self.pos_length_att.pos_len().get_position_length();
-            self.write_arc(pos, pos + pos_length, Some(&arc_label), None);
-            last_end_pos = pos + pos_length;
+            self.write_arc(pos, pos.wrapping_add(pos_length), Some(&arc_label), None);
+            last_end_pos = pos.wrapping_add(pos_length);
         }
 
         self.input.end()?;
@@ -203,5 +221,32 @@ impl<'a> TokenStreamToDot<'a> {
     /// Override to customize.
     pub fn write_trailer(&mut self) {
         self.out.push_str("}\n");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use randomizedtesting::jdk::exception::Throwable;
+
+    use super::TokenStreamToDot;
+    use crate::analysis::{CannedTokenStream, Token};
+
+    /// `inputText.substring(startOffset, endOffset)` with an offset past the
+    /// text throws JDK 25's `StringIndexOutOfBoundsException: Range [0, 9)
+    /// out of bounds for length 3` (`TokenStreamToDot.java:94`; message
+    /// probed on JDK 25). The port panicked with Rust's slice message, which
+    /// the runner reads as an `AssertionError`.
+    #[test]
+    fn an_offset_past_the_text_throws_java_string_index_out_of_bounds() {
+        let mut ts = CannedTokenStream::new(vec![Token::with_offsets("abcdef", 0, 9)]);
+        let mut dot = TokenStreamToDot::new(Some("abc"), &mut ts).unwrap();
+        let t = match catch_unwind(AssertUnwindSafe(|| dot.to_dot())) {
+            Ok(_) => panic!("expected the StringIndexOutOfBoundsException"),
+            Err(payload) => Throwable::from_panic(payload),
+        };
+        assert_eq!(t.class_name(), "java.lang.StringIndexOutOfBoundsException");
+        assert_eq!(t.message(), Some("Range [0, 9) out of bounds for length 3"));
     }
 }

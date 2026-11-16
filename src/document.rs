@@ -1145,6 +1145,18 @@ impl CharReader for SharedCharReader {
     fn close(&mut self) -> Result<()> {
         self.0.borrow_mut().close()
     }
+
+    /// The shared reader's own answer: this handle stands for the `Reader`
+    /// object Java passes, not for a wrapper class.
+    fn mark_supported(&self) -> bool {
+        self.0.borrow().mark_supported()
+    }
+
+    /// The shared reader's own answer, as for
+    /// [`mark_supported`](Self::mark_supported).
+    fn ready(&mut self) -> Result<bool> {
+        self.0.borrow_mut().ready()
+    }
 }
 
 /// The analyzer a tokenized field dereferences: Java's `analyzer.tokenStream(...)`
@@ -9767,5 +9779,34 @@ mod shared_mutable_field_tests {
         );
         string.set_string_value("y".to_string()).unwrap();
         assert_eq!(string.string_value().as_deref(), Some("y"));
+    }
+}
+
+#[cfg(test)]
+mod shared_char_reader_tests {
+    use super::*;
+    use crate::analysis::StringCharReader;
+
+    /// The handle a field's reader is analysed through answers
+    /// `markSupported()`/`ready()` as the reader itself does (Java passes the
+    /// `Reader` object): `StringReader`'s `true`/`true`, `Reader`'s
+    /// `false`/`false`.
+    #[test]
+    fn answers_as_the_shared_reader() {
+        let shared: SharedReader =
+            Arc::new(AtomicRefCell::new(Box::new(StringCharReader::new("x"))));
+        let mut handle = SharedCharReader(Arc::clone(&shared));
+        assert!(handle.mark_supported());
+        assert!(handle.ready().unwrap());
+        handle.close().unwrap();
+        assert!(handle.ready().is_err());
+        assert!(shared.borrow_mut().ready().is_err());
+
+        let plain: SharedReader = Arc::new(AtomicRefCell::new(Box::new(
+            crate::analysis::IllegalStateReader,
+        )));
+        let mut handle = SharedCharReader(plain);
+        assert!(!handle.mark_supported());
+        assert!(!handle.ready().unwrap());
     }
 }

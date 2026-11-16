@@ -148,6 +148,7 @@ pub use read_write_data_output::ReadWriteDataOutput;
 pub use reverse_bytes_reader::ReverseBytesReader;
 pub use reverse_random_access_reader::ReverseRandomAccessReader;
 
+pub use fst::OutputToString;
 pub use fst::{
     flag_is_set, get_num_presence_bytes, target_has_arcs, Arc, BitTable, BytesReader, FSTMetadata,
     InputType, ARCS_FOR_BINARY_SEARCH, ARCS_FOR_CONTINUOUS, ARCS_FOR_DIRECT_ADDRESSING,

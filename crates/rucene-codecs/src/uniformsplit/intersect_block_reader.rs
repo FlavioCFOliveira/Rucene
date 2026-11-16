@@ -598,10 +598,9 @@ impl AutomatonNextTermCalculator {
             if let Some(visited) = self.visited.as_mut() {
                 let state = state as usize;
                 if state >= visited.len() {
-                    let new_len = (state + 1)
-                        .max(visited.len() + (visited.len() >> 3))
-                        .max(state + 1);
-                    visited.resize(new_len, 0);
+                    // `ArrayUtil.grow(visited, state + 1)`: `oversize(state + 1,
+                    // Short.BYTES)` elements, the new ones zero.
+                    visited.resize(rucene::util::ArrayUtil::oversize(state + 1, 2), 0);
                 }
                 visited[state] = self.cur_gen;
             }

@@ -20,29 +20,26 @@
 //! The JUnit assertions of Java (`assertEquals`, `assertFalse`, …) fail by
 //! throwing an unchecked `AssertionError`; here they panic with that
 //! `Throwable`, as [`randomizedtesting::junit::Assert`] does. Java's
-//! `RuntimeException` around an `IOException` is a panic with that class whose
-//! message is the I/O error.
+//! `new RuntimeException(e)` around an `IOException` is a
+//! `java.lang.RuntimeException` whose message is `e.toString()` and whose
+//! cause is `e`.
 //!
 //! **Divergences.**
 //!
 //! * The searcher arguments that Java allows to be `null` are `Option`s.
-//! * A `null` scorer (supplier) where Java dereferences it throws Java's
-//!   `NullPointerException` (without a message).
-//! * The diagnostics that print a scorer, a query class or a searcher (only
-//!   under `VERBOSE`) print `<scorer>`, `<query class>` and `<searcher>`.
+//! * The `VERBOSE` diagnostic of `assertDocAndScore` prints the scorer as
+//!   `<scorer>`: Rust's [`Scorer`] has no string form.
 
 use std::any::Any;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
-use randomizedtesting::jdk::exception::{
-    java_assert_no_message, throw, throw_without_message, NULL_POINTER_EXCEPTION, RUNTIME_EXCEPTION,
-};
+use randomizedtesting::jdk::exception::{java_assert_no_message, throw, NULL_POINTER_EXCEPTION};
 use randomizedtesting::jdk::lang::float_to_string;
 use randomizedtesting::jdk::random::Random;
 use randomizedtesting::junit::Assert;
 use rucene::codecs::stub::StoredFieldVisitor;
-use rucene::error::Result;
+use rucene::error::{LuceneError, Result};
 use rucene::index::{
     BinaryDocValues, ByteVectorValues, CacheHelper, DocValuesSkipper, FieldInfos,
     FloatVectorValues, IndexReader, IndexReaderCore, LeafMetaData, LeafReader, LeafReaderContext,
@@ -58,31 +55,35 @@ use rucene::util::extra::Version;
 use rucene::util::{Bits, MatchNoBits};
 
 use crate::search::check_hits::CheckHits;
+use crate::util::java_exceptions::rethrow_java;
 use crate::util::lucene_test_case::{LuceneTestCase, VERBOSE};
 
 /// Java's `catch (IOException e) { throw new RuntimeException(e); }`: an
-/// I/O error becomes a `RuntimeException`; an unchecked exception or an
-/// assertion error carried as an error propagates as itself.
-pub(crate) fn runtime_exception(e: rucene::error::LuceneError) -> ! {
-    match e {
-        rucene::error::LuceneError {
-            kind: rucene::error::LuceneErrorKind::Unchecked { class, message, .. },
-            ..
-        } => match message {
-            Some(message) => throw(class, message),
-            None => throw_without_message(class),
-        },
-        rucene::error::LuceneError {
-            kind: rucene::error::LuceneErrorKind::AssertionError(message),
-            ..
-        } => throw(randomizedtesting::jdk::exception::ASSERTION_ERROR, message),
-        other => throw(RUNTIME_EXCEPTION, other),
+/// `IOException` is wrapped (`message = e.toString()`, `cause = e`); any
+/// other error is not caught and propagates as the Java exception it stands
+/// for.
+pub(crate) fn wrap_io_exception(e: LuceneError) -> LuceneError {
+    if e.is_io_exception() {
+        LuceneError::runtime_exception(e)
+    } else {
+        e
     }
 }
 
-/// A `null` dereference.
-fn null_pointer() -> ! {
-    throw_without_message(NULL_POINTER_EXCEPTION)
+/// Throws what `check(random, q1, s, wrap)` lets escape for `e`: see
+/// [`wrap_io_exception`].
+pub(crate) fn runtime_exception(e: LuceneError) -> ! {
+    rethrow_java(wrap_io_exception(e))
+}
+
+/// The JVM's `NullPointerException` for `<variable>.<method>` on a `null`
+/// receiver, with its helpful message (the test-framework jar carries a
+/// `LocalVariableTable`, so locals are named).
+fn null_receiver(method: &str, variable: &str) -> ! {
+    throw(
+        NULL_POINTER_EXCEPTION,
+        format!("Cannot invoke \"{method}\" because \"{variable}\" is null"),
+    )
 }
 
 /// Whether two readers are the same object (`==`).
@@ -113,6 +114,12 @@ impl Query for WhackyQuery {
     /// `o == this`.
     fn query_eq(&self, other: &dyn Query) -> bool {
         std::ptr::addr_eq(self as *const Self, other as *const dyn Query)
+    }
+
+    /// The anonymous class's binary name (the first anonymous class of
+    /// `QueryUtils.java`, jar listing).
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.tests.search.QueryUtils$1"
     }
 
     /// `System.identityHashCode(this)`.
@@ -153,14 +160,21 @@ impl QueryUtils {
     ///
     /// # Panics
     ///
-    /// With Java's `AssertionError` (`expected:<q1> but was:<q2>`).
+    /// With Java's `AssertionError`: JUnit's `expected:<q1> but was:<q2>`,
+    /// or `expected: Class<q1> but was: Class<q2>` when the two queries print
+    /// the same.
     pub fn check_equal(q1: &dyn Query, q2: &dyn Query) {
         if !q1.query_eq(q2) {
-            Assert::fail(&format!(
-                "expected:<{}> but was:<{}>",
-                query_to_string(q1),
-                query_to_string(q2)
-            ));
+            let (expected, actual) = (query_to_string(q1), query_to_string(q2));
+            if expected == actual {
+                // `Assert.format`'s `formatClassAndValue`.
+                Assert::fail(&format!(
+                    "expected: {}<{expected}> but was: {}<{actual}>",
+                    q1.java_class_name(),
+                    q2.java_class_name()
+                ));
+            }
+            Assert::fail(&format!("expected:<{expected}> but was:<{actual}>"));
         }
         Assert::assert_equals(q1.query_hash(), q2.query_hash());
     }
@@ -464,6 +478,7 @@ impl QueryUtils {
         op: i32,
         skip_op: i32,
         q: &Arc<dyn Query>,
+        s: &IndexSearcher,
     ) -> Result<()> {
         let scorer_doc = scorer.doc_id();
         let scorer_score = scorer.score()?;
@@ -500,11 +515,11 @@ impl QueryUtils {
                 for &o in order {
                     sbord.push_str(if o == skip_op { " skip()" } else { " next()" });
                 }
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "ERROR matching docs:\n\t{}doc={}, scorerDoc={}\n\t{}tscorer.more={}\n\t{}\
                      scorerScore={} scoreDiff={} maxDiff={}\n\t{}scorerScore2={} scorerDiff={}\
                      \n\thitCollector.doc={} score={}\n\t Scorer=<scorer>\n\t Query={}  \
-                     <query class>\n\t Searcher=<searcher>\n\t Order={}\n\t Op={}",
+                     {}\n\t Searcher={:?}\n\t Order={}\n\t Op={}",
                     if doc != scorer_doc { "--> " } else { "" },
                     doc,
                     scorer_doc,
@@ -520,9 +535,11 @@ impl QueryUtils {
                     doc,
                     float_to_string(score),
                     query_to_string(&**q),
+                    q.java_class_name(),
+                    s,
                     sbord,
                     if op == skip_op { " skip()" } else { " next()" }
-                );
+                ));
             }
             resume_unwind(failure);
         }
@@ -539,9 +556,12 @@ impl QueryUtils {
         leaf_context: &LeafReaderContext,
         max_diff: f32,
     ) -> Result<()> {
-        let mut supplier = w
-            .scorer_supplier(leaf_context)?
-            .unwrap_or_else(|| null_pointer());
+        let mut supplier = w.scorer_supplier(leaf_context)?.unwrap_or_else(|| {
+            null_receiver(
+                "org.apache.lucene.search.ScorerSupplier.get(long)",
+                "supplier",
+            )
+        });
         let mut scorer = supplier.get(1)?; // only checking one doc, so leadCost = 1
         let advanced = scorer.iterator().advance(i)?;
         Assert::assert_true_msg(
@@ -600,21 +620,26 @@ impl QueryUtils {
             let bulk_scorer = weight.bulk_scorer(&context)?;
             let (mut scorer, mut bulk_scorer) = match (scorer, bulk_scorer) {
                 (None, None) => continue,
-                (scorer, None) => {
-                    // ensure scorer is exhausted (it just didnt return null)
-                    let mut scorer = scorer.unwrap_or_else(|| null_pointer());
-                    let next = scorer.iterator().next_doc()?;
-                    java_assert_no_message(next == NO_MORE_DOCS);
+                (Some(mut scorer), None) => {
+                    // ensure scorer is exhausted (it just didnt return null):
+                    // a Java `assert`, whose `nextDoc()` runs only under -ea.
+                    if cfg!(debug_assertions) {
+                        let next = scorer.iterator().next_doc()?;
+                        java_assert_no_message(next == NO_MORE_DOCS);
+                    }
                     continue;
                 }
-                (None, Some(_)) => null_pointer(),
+                (None, Some(_)) => {
+                    null_receiver("org.apache.lucene.search.Scorer.iterator()", "scorer")
+                }
                 (Some(scorer), Some(bulk_scorer)) => (scorer, bulk_scorer),
             };
-            let mut up_to = 0;
+            let mut up_to: i32 = 0;
             loop {
-                let min = up_to + r.next_int_bound(5);
+                // Java's int additions wrap.
+                let min = up_to.wrapping_add(r.next_int_bound(5));
                 let bound = if r.next_boolean() { 10 } else { 5000 };
-                let max = min + 1 + r.next_int_bound(bound);
+                let max = min.wrapping_add(1).wrapping_add(r.next_int_bound(bound));
                 if scorer.doc_id() < min {
                     scorer.iterator().advance(min)?;
                 }
@@ -721,11 +746,22 @@ impl LeafCollector for SkipToCollector<'_> {
     fn collect(&mut self, doc: i32, sc: &mut dyn Scorable) -> CollectionResult<()> {
         let score = sc.score()?;
         self.last_doc = doc;
+        // `try { … } catch (IOException e) { throw new RuntimeException(e); }`
+        self.collect_body(doc, score)
+            .map_err(|e| wrap_io_exception(e).into())
+    }
+}
+
+impl SkipToCollector<'_> {
+    /// The `try` block of `collect`.
+    fn collect_body(&mut self, doc: i32, score: f32) -> Result<()> {
         if self.scorer.is_none() {
             let rewritten = self.s.rewrite(Arc::clone(self.q))?;
             let w = self.s.create_weight(rewritten, ScoreMode::COMPLETE, 1.0)?;
             let context = &self.reader_context_array[self.leaf_ptr];
-            self.scorer = Some(w.scorer(context)?.unwrap_or_else(|| null_pointer()));
+            self.scorer = Some(w.scorer(context)?.unwrap_or_else(|| {
+                null_receiver("org.apache.lucene.search.Scorer.iterator()", "this.scorer")
+            }));
         }
         let scorer = self
             .scorer
@@ -735,7 +771,8 @@ impl LeafCollector for SkipToCollector<'_> {
         let op = self.order[self.opidx % self.order.len()];
         self.opidx += 1;
         let more = if op == 0 {
-            let target = scorer.doc_id() + 1;
+            // `scorer.docID() + 1`: Java's int addition wraps.
+            let target = scorer.doc_id().wrapping_add(1);
             scorer.iterator().advance(target)? != NO_MORE_DOCS
         } else {
             scorer.iterator().next_doc()? != NO_MORE_DOCS
@@ -750,8 +787,8 @@ impl LeafCollector for SkipToCollector<'_> {
             op,
             0,
             self.q,
-        )?;
-        Ok(())
+            self.s,
+        )
     }
 }
 
@@ -811,9 +848,18 @@ impl LeafCollector for FirstSkipToCollector<'_> {
 
     fn collect(&mut self, doc: i32, scorer: &mut dyn Scorable) -> CollectionResult<()> {
         let score = scorer.score()?;
+        // `try { … } catch (IOException e) { throw new RuntimeException(e); }`
+        self.collect_body(doc, score)
+            .map_err(|e| wrap_io_exception(e).into())
+    }
+}
+
+impl FirstSkipToCollector<'_> {
+    /// The `try` block of `collect`.
+    fn collect_body(&mut self, doc: i32, score: f32) -> Result<()> {
         // The intervalTimes32 trick helps contain the runtime of this check: first we check
         // every single doc in the interval, then after 32 docs we check every 2 docs, etc.
-        let mut i = self.last_doc + 1;
+        let mut i = self.last_doc.wrapping_add(1);
         while i <= doc {
             QueryUtils::assert_advance_to(
                 doc,
@@ -967,9 +1013,10 @@ struct EmptyReader {
 }
 
 impl std::fmt::Display for EmptyReader {
-    /// `Object.toString()` of the anonymous class (without its hash code).
+    /// `Object.toString()` of the anonymous class, `QueryUtils$2` (the jar's
+    /// numbering: the "whacky" query is `$1`), without its hash code.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("org.apache.lucene.tests.search.QueryUtils$1")
+        f.write_str("org.apache.lucene.tests.search.QueryUtils$2")
     }
 }
 
@@ -1110,5 +1157,69 @@ impl LeafReader for EmptyReader {
             false,
         )
         .expect("INVARIANT: the latest version is a valid created version")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use randomizedtesting::jdk::exception::Throwable;
+
+    use super::*;
+
+    fn thrown(f: impl FnOnce()) -> Throwable {
+        Throwable::from_panic(catch_unwind(AssertUnwindSafe(f)).expect_err("a throwable"))
+    }
+
+    /// Two unequal queries that print the same: JUnit's `Assert.format`
+    /// adds the class names.
+    #[test]
+    fn check_equal_of_same_strings_names_the_classes() {
+        let (a, b) = (WhackyQuery, WhackyQuery);
+        let t = thrown(|| QueryUtils::check_equal(&a, &b));
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+        assert_eq!(
+            t.message(),
+            Some(
+                "expected: org.apache.lucene.tests.search.QueryUtils$1<My Whacky Query> but was: org.apache.lucene.tests.search.QueryUtils$1<My Whacky Query>"
+            )
+        );
+    }
+
+    /// `throw new RuntimeException(e)`: the message is `e.toString()` and the
+    /// `IOException` is the cause.
+    #[test]
+    fn io_exception_becomes_runtime_exception_with_cause() {
+        let io = LuceneError::from(std::io::Error::other("boom"));
+        assert!(io.is_io_exception());
+        let t = thrown(|| runtime_exception(io));
+        assert_eq!(t.class_name(), "java.lang.RuntimeException");
+        let cause = t.cause().expect("the cause");
+        assert_eq!(cause.class_name(), "java.io.IOException");
+        assert_eq!(t.message(), Some(cause.to_string().as_str()));
+    }
+
+    /// An unchecked exception is not caught by `catch (IOException e)`.
+    #[test]
+    fn unchecked_exception_propagates_unwrapped() {
+        let e = LuceneError::illegal_state("state");
+        let t = thrown(|| runtime_exception(e));
+        assert_eq!(t.class_name(), "java.lang.IllegalStateException");
+        assert_eq!(t.message(), Some("state"));
+        assert!(t.cause().is_none());
+    }
+
+    /// `emptyReader`'s anonymous class is `QueryUtils$2`.
+    #[test]
+    fn empty_reader_class_is_the_second_anonymous_class() {
+        let reader = EmptyReader {
+            core: IndexReaderCore::new(),
+            max_doc: 4,
+        };
+        assert_eq!(
+            reader.to_string(),
+            "org.apache.lucene.tests.search.QueryUtils$2"
+        );
     }
 }

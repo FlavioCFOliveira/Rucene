@@ -255,6 +255,7 @@ def test_port_state_is_ported_then_skeleton_then_unported(monkeypatch):
     ])
     monkeypatch.setattr(pc, "read", g.read)
     monkeypatch.setattr(pc, "run_unwind", g.run_unwind)
+    monkeypatch.setattr(pc, "rmp", lambda *a, **k: "{}")  # the host-file-name PORTS retirement
     pc.phase_scope("r", top, "c" * 40, "2026-11-13", 200)
     assert {r["qn"]: r["rule"] for r in g.rows("portScope = in")}[b] == \
         "sprint-12-module-top-level"

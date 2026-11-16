@@ -27,6 +27,11 @@ static DEFAULT_HANDLER: Mutex<Option<Arc<dyn UncaughtExceptionHandler>>> = Mutex
 struct Recording;
 
 impl UncaughtExceptionHandler for Recording {
+    fn class_name(&self) -> String {
+        "com.carrotsearch.randomizedtesting.TestOverridingDefaultExceptionHandler$Nested$1"
+            .to_string()
+    }
+
     fn uncaught_exception(&self, t: &Thread, e: Throwable) {
         if e.is_instance(TEST_EXCEPTION) {
             THROWABLE_MESSAGES

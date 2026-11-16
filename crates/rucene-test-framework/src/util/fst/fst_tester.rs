@@ -31,15 +31,54 @@ use rucene::util::string_helper::IntsRef;
 use rucene::util::unicode_util::UnicodeUtil;
 use rucene::util::BytesRef;
 
+use crate::util::java_exceptions::try_with;
 use crate::util::{LuceneTestCase, TestUtil};
+use randomizedtesting::junit::Assert;
 
-/// `FSTTester.InputOutput`: one input/output pair, ordered by its input.
+/// JUnit's `failNotNull(message, actual)` of a failed `assertNull`:
+/// `message `, then `expected null, but was:<actual>`.
+fn assert_null_failed(message: Option<&str>, actual: &str) -> ! {
+    let formatted = message.map_or_else(String::new, |m| format!("{m} "));
+    Assert::fail(&format!("{formatted}expected null, but was:<{actual}>"))
+}
+
+/// `Object.toString()` of an `IntsRefFSTEnum.InputOutput`, which does not
+/// override it (class name and identity hash).
+fn input_output_to_string<T: ?Sized>(io: &T) -> String {
+    rucene::index::index_reader::java_object_to_string(
+        "org.apache.lucene.util.fst.IntsRefFSTEnum$InputOutput",
+        io,
+    )
+}
+
+/// Holds one input/output pair.
+///
+/// Port of the record `FSTTester.InputOutput<T>(IntsRef input, T output)
+/// implements Comparable<InputOutput<T>>` (`FSTTester.java:166-173`).
+///
+/// **Divergence from Lucene 10.5.0, in shape only.** Java's `compareTo`
+/// orders by `input` alone while the record's `equals` compares both
+/// components; Rust's `Ord` must agree with `Eq`, so the type cannot carry
+/// both as trait impls. `Comparable.compareTo` is therefore the inherent
+/// [`compare_to`](Self::compare_to), used exactly where Java compares pairs
+/// (`Collections.binarySearch`, `FSTTester.java:434` and `:554`). Its
+/// argument may carry any output type, so that Java's search key
+/// `new InputOutput<>(term, null)` is a pair whose output is `None`: the
+/// comparison never reads it.
 #[derive(Debug, Clone)]
 pub struct InputOutput<T> {
     /// `input`.
     pub input: IntsRef,
     /// `output`.
     pub output: T,
+}
+
+impl<T> InputOutput<T> {
+    /// Port of `compareTo(InputOutput<T> other)` (`FSTTester.java:169-172`):
+    /// `input.compareTo(other.input)`.
+    pub fn compare_to<U>(&self, other: &InputOutput<U>) -> std::cmp::Ordering {
+        self.input.cmp(&other.input)
+    }
 }
 
 /// Port of `org.apache.lucene.tests.util.fst.FSTTester`.
@@ -309,18 +348,23 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                     None
                 }
                 Some(metadata) => {
-                    let fst = {
-                        // `try (IndexInput in = dir.openInput(...))`
-                        // (`FSTTester.java:287`): closed however the read ends.
-                        let mut input = self
+                    // `try (IndexInput in = dir.openInput(...)) {...} finally {
+                    // dir.deleteFile(...); }` (`FSTTester.java:287-291`): the
+                    // input closes however the read ends, and the `finally`
+                    // runs on every exit, a failed open included; a `finally`
+                    // that throws replaces the pending exception.
+                    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let input = self
                             .dir
                             .open_input("fstOffHeap.bin", &*DEFAULT_IO_CONTEXT)?;
-                        let read = FST::new(metadata, &mut *input);
-                        let closed = input.close();
-                        read.and_then(|fst| closed.map(|()| fst))
-                    };
+                        try_with(
+                            input,
+                            |input| input.close(),
+                            |input| FST::new(metadata, &mut **input),
+                        )
+                    }));
                     self.dir.delete_file("fstOffHeap.bin")?;
-                    Some(fst?)
+                    Some(read.unwrap_or_else(|payload| std::panic::resume_unwind(payload))?)
                 }
             }
         } else {
@@ -338,28 +382,36 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                         .expect("INVARIANT: metadata is present");
                     if self.random.next_boolean() {
                         let context = LuceneTestCase::new_io_context(self.random);
-                        {
-                            let mut out = self.dir.create_output("fst.bin", &*context)?;
-                            // fst.save(out, out): the metadata, then the bytes,
-                            // into one output.
-                            let mut meta = ByteBuffersDataOutput::new();
-                            let mut body = ByteBuffersDataOutput::new();
-                            fst.save(&mut meta, &mut body)?;
-                            meta.copy_to(&mut *out)?;
-                            body.copy_to(&mut *out)?;
-                            out.close()?;
-                        }
-                        let fst = {
-                            // `try (IndexInput in = dir.openInput(...))`
-                            // (`FSTTester.java:300`).
-                            let mut input = self.dir.open_input("fst.bin", &*context)?;
-                            let read = FST::read_metadata(&mut *input, self.outputs.clone())
-                                .and_then(|metadata| FST::new(metadata, &mut *input));
-                            let closed = input.close();
-                            read.and_then(|fst| closed.map(|()| fst))
-                        };
+                        // `try (IndexOutput out = dir.createOutput(...))`
+                        // (`FSTTester.java:297-299`).
+                        try_with(
+                            self.dir.create_output("fst.bin", &*context)?,
+                            |out| out.close(),
+                            |out| {
+                                // fst.save(out, out): the metadata, then the bytes,
+                                // into one output.
+                                let mut meta = ByteBuffersDataOutput::new();
+                                let mut body = ByteBuffersDataOutput::new();
+                                fst.save(&mut meta, &mut body)?;
+                                meta.copy_to(&mut **out)?;
+                                body.copy_to(&mut **out)
+                            },
+                        )?;
+                        // `try (IndexInput in = dir.openInput(...)) {...} finally
+                        // { dir.deleteFile("fst.bin"); }` (`FSTTester.java:300-304`).
+                        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let input = self.dir.open_input("fst.bin", &*context)?;
+                            try_with(
+                                input,
+                                |input| input.close(),
+                                |input| {
+                                    FST::read_metadata(&mut **input, self.outputs.clone())
+                                        .and_then(|metadata| FST::new(metadata, &mut **input))
+                                },
+                            )
+                        }));
                         self.dir.delete_file("fst.bin")?;
-                        Some(fst?)
+                        Some(read.unwrap_or_else(|payload| std::panic::resume_unwind(payload))?)
                     } else {
                         Some(fst)
                     }
@@ -369,11 +421,13 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
 
         if *crate::util::lucene_test_case::VERBOSE {
             match &fst {
-                None => println!("  fst has 0 nodes (fully pruned)"),
-                Some(_) => println!(
+                None => {
+                    randomizedtesting::jdk::system::out_println("  fst has 0 nodes (fully pruned)")
+                }
+                Some(_) => randomizedtesting::jdk::system::out_println(&format!(
                     "  fst has {} nodes and {} arcs",
                     self.node_count, self.arc_count
-                ),
+                )),
             }
         }
 
@@ -385,11 +439,14 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
     /// `verifyUnPruned(inputMode, fst)`: the FST is complete.
     fn verify_un_pruned(&self, input_mode: i32, fst: Option<&FST<O>>) -> Result<()> {
         if self.pairs.is_empty() {
-            assert!(fst.is_none());
+            // assertNull(fst)
+            if let Some(fst) = fst {
+                assert_null_failed(None, &fst.to_string());
+            }
             return Ok(());
         }
 
-        let fst = fst.expect("assertNotNull(fst)");
+        let fst = fst.unwrap_or_else(|| Assert::fail_without_message());
         let pairs = &self.pairs;
 
         // visit valid pairs in order -- make sure all words
@@ -405,20 +462,31 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                         Self::input_to_string(input_mode, term)
                     )
                 });
-                assert!(self.outputs_equal(&pair.output, &output));
+                randomizedtesting::junit::Assert::assert_true(
+                    self.outputs_equal(&pair.output, &output),
+                );
 
                 // verify enum's next
-                let t = fst_enum.next()?.expect("assertNotNull(t)");
-                assert_eq!(
+                let t = fst_enum
+                    .next()?
+                    .unwrap_or_else(|| Assert::fail_without_message());
+                Assert::assert_equals_msg(
+                    Some(&format!(
+                        "expected input={} but fstEnum returned {}",
+                        Self::input_to_string(input_mode, term),
+                        Self::input_to_string(input_mode, t.input)
+                    )),
                     term,
                     t.input,
-                    "expected input={} but fstEnum returned {}",
-                    Self::input_to_string(input_mode, term),
-                    Self::input_to_string(input_mode, t.input)
                 );
-                assert!(self.outputs_equal(&pair.output, t.output));
+                randomizedtesting::junit::Assert::assert_true(
+                    self.outputs_equal(&pair.output, t.output),
+                );
             }
-            assert!(fst_enum.next()?.is_none());
+            // assertNull(fstEnum.next())
+            if let Some(t) = fst_enum.next()? {
+                assert_null_failed(None, &input_output_to_string(&t));
+            }
         }
 
         let terms_map: HashMap<Vec<i32>, &O::Output> = pairs
@@ -438,13 +506,21 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                     Self::input_to_string(input_mode, &word)
                 )
             });
-            assert!(self.outputs_equal(expected, &output));
+            randomizedtesting::junit::Assert::assert_true(self.outputs_equal(expected, &output));
         }
 
         // test IntsRefFSTEnum.seek:
         let mut fst_enum = IntsRefFSTEnum::new(fst)?;
         let num = LuceneTestCase::at_least_with(self.random, 100);
-        let search = |term: &IntsRef| pairs.binary_search_by(|p| p.input.cmp(term));
+        // `Collections.binarySearch(pairs, new InputOutput<>(term, null))`,
+        // which compares each probed pair with the key: `midVal.compareTo(key)`.
+        let search = |term: &IntsRef| {
+            let key: InputOutput<Option<O::Output>> = InputOutput {
+                input: term.clone(),
+                output: None,
+            };
+            pairs.binary_search_by(|p| p.compare_to(&key))
+        };
         for _ in 0..num {
             if self.random.next_boolean() {
                 // seek to term that doesn't exist:
@@ -470,17 +546,30 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                                     Self::input_to_string(input_mode, &expected.input)
                                 )
                             });
-                            assert_eq!(&expected.input, seek_result.input);
-                            assert!(self.outputs_equal(&expected.output, seek_result.output));
+                            Assert::assert_equals_msg(
+                                Some(&format!(
+                                    "expected {} but got {}",
+                                    Self::input_to_string(input_mode, &expected.input),
+                                    Self::input_to_string(input_mode, seek_result.input)
+                                )),
+                                &expected.input,
+                                seek_result.input,
+                            );
+                            randomizedtesting::junit::Assert::assert_true(
+                                self.outputs_equal(&expected.output, seek_result.output),
+                            );
                         } else {
                             // seeked before start or beyond end
-                            assert!(
-                                seek_result.is_none(),
-                                "expected null but got {}",
-                                seek_result
-                                    .map(|r| Self::input_to_string(input_mode, r.input))
-                                    .unwrap_or_default()
-                            );
+                            // assertNull("expected null but got " + ..., seekResult)
+                            if let Some(r) = seek_result {
+                                assert_null_failed(
+                                    Some(&format!(
+                                        "expected null but got {}",
+                                        Self::input_to_string(input_mode, r.input)
+                                    )),
+                                    &input_output_to_string(&r),
+                                );
+                            }
                         }
                         break;
                     }
@@ -495,9 +584,19 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                 } else {
                     fst_enum.seek_ceil(&pair.input)?
                 };
-                let seek_result = seek_result.expect("assertNotNull(seekResult)");
-                assert_eq!(&pair.input, seek_result.input);
-                assert!(self.outputs_equal(&pair.output, seek_result.output));
+                let seek_result = seek_result.unwrap_or_else(|| Assert::fail_without_message());
+                Assert::assert_equals_msg(
+                    Some(&format!(
+                        "got {} but expected {}",
+                        Self::input_to_string(input_mode, seek_result.input),
+                        Self::input_to_string(input_mode, &pair.input)
+                    )),
+                    &pair.input,
+                    seek_result.input,
+                );
+                randomizedtesting::junit::Assert::assert_true(
+                    self.outputs_equal(&pair.output, seek_result.output),
+                );
             }
         }
 
@@ -532,7 +631,7 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
 
                             if self.random.next_boolean() {
                                 upto -= 1;
-                                assert!(upto != -1);
+                                randomizedtesting::junit::Assert::assert_true(upto != -1);
                                 done = Some(fst_enum.seek_floor(&term)?.is_none());
                             } else {
                                 done = Some(fst_enum.seek_ceil(&term)?.is_none());
@@ -560,16 +659,101 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                     };
                 }
                 if upto == n {
-                    assert!(is_done);
+                    randomizedtesting::junit::Assert::assert_true(is_done);
                     break;
                 } else {
-                    assert!(!is_done);
+                    randomizedtesting::junit::Assert::assert_true(!is_done);
                     let current = fst_enum.current().expect("current");
-                    assert_eq!(&pairs[upto as usize].input, current.input);
-                    assert!(self.outputs_equal(&pairs[upto as usize].output, current.output));
+                    Assert::assert_equals(&pairs[upto as usize].input, current.input);
+                    randomizedtesting::junit::Assert::assert_true(
+                        self.outputs_equal(&pairs[upto as usize].output, current.output),
+                    );
                 }
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cmp::Ordering;
+
+    use rucene::util::string_helper::IntsRef;
+
+    use super::InputOutput;
+
+    fn pair(input: &[i32], output: i64) -> InputOutput<i64> {
+        InputOutput {
+            input: IntsRef::new(input.to_vec()),
+            output,
+        }
+    }
+
+    /// Java's `compareTo` is `input.compareTo(other.input)`: signed,
+    /// lexicographic, a prefix first, and blind to the outputs.
+    #[test]
+    fn compare_to_orders_by_input_only() {
+        assert_eq!(
+            pair(&[1, 2], 9).compare_to(&pair(&[1, 3], 0)),
+            Ordering::Less
+        );
+        assert_eq!(
+            pair(&[1, 3], 0).compare_to(&pair(&[1, 2], 9)),
+            Ordering::Greater
+        );
+        assert_eq!(pair(&[1], 0).compare_to(&pair(&[1, 0], 0)), Ordering::Less);
+        assert_eq!(pair(&[-1], 0).compare_to(&pair(&[0], 0)), Ordering::Less);
+        assert_eq!(
+            pair(&[5, 6], 1).compare_to(&pair(&[5, 6], 2)),
+            Ordering::Equal
+        );
+        // `new InputOutput<>(term, null)`: the key's output is never read.
+        let key: InputOutput<Option<i64>> = InputOutput {
+            input: IntsRef::new(vec![5, 6]),
+            output: None,
+        };
+        assert_eq!(pair(&[5, 6], 1).compare_to(&key), Ordering::Equal);
+        // `Collections.binarySearch` over pairs sorted by input.
+        let pairs = [pair(&[1], 0), pair(&[3], 0), pair(&[7], 0)];
+        let find = |t: i32| {
+            let key: InputOutput<Option<i64>> = InputOutput {
+                input: IntsRef::new(vec![t]),
+                output: None,
+            };
+            pairs.binary_search_by(|p| p.compare_to(&key))
+        };
+        assert_eq!(find(3), Ok(1));
+        assert_eq!(find(4), Err(2));
+    }
+}
+
+#[cfg(test)]
+mod junit_message_tests {
+    use super::*;
+    use randomizedtesting::jdk::exception::Throwable;
+
+    fn failure(f: impl FnOnce() + std::panic::UnwindSafe) -> Throwable {
+        Throwable::from_panic(std::panic::catch_unwind(f).unwrap_err())
+    }
+
+    /// `assertNull(message, x)` fails with `message expected null, but
+    /// was:<x>`, `assertNull(x)` without the prefix (JUnit 4
+    /// `failNotNull`), and `assertNotNull(x)` with a `null` message.
+    #[test]
+    fn null_assertions_use_junit_messages() {
+        let t = failure(|| assert_null_failed(Some("expected null but got [1]"), "IO@1"));
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+        assert_eq!(
+            t.message(),
+            Some("expected null but got [1] expected null, but was:<IO@1>")
+        );
+        let t = failure(|| assert_null_failed(None, "FST(input=BYTE1,output=x"));
+        assert_eq!(
+            t.message(),
+            Some("expected null, but was:<FST(input=BYTE1,output=x>")
+        );
+        let t = failure(|| Assert::fail_without_message());
+        assert_eq!(t.message(), None);
     }
 }

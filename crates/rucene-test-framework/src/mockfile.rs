@@ -83,3 +83,23 @@ pub(crate) fn identity_string<T: ?Sized>(class_name: &str, object: &T) -> String
     let address = std::ptr::from_ref(object).cast::<()>() as usize;
     format!("{class_name}@{:x}", (address >> 3) as u32)
 }
+
+/// The `Throwable` a panic payload stands for, read without consuming the
+/// payload: the payload itself, or the conversion of a string panic
+/// (`Throwable::from_text`: a Rust panic text reads as an `AssertionError`).
+pub(crate) fn panic_throwable(
+    payload: &(dyn std::any::Any + Send),
+) -> randomizedtesting::jdk::exception::Throwable {
+    use randomizedtesting::jdk::exception::{panic_message, Throwable};
+    match payload.downcast_ref::<Throwable>() {
+        Some(t) => t.clone(),
+        None => Throwable::from_text(&panic_message(payload)),
+    }
+}
+
+/// Whether a panic payload is a Java `Error` (`AssertionError`,
+/// `OutOfMemoryError`, ...), the throwables a `catch (Exception e)` lets
+/// through and `IOUtils.closeWhileHandlingException` rethrows.
+pub(crate) fn is_java_error(payload: &(dyn std::any::Any + Send)) -> bool {
+    panic_throwable(payload).is_instance(randomizedtesting::jdk::exception::ERROR)
+}

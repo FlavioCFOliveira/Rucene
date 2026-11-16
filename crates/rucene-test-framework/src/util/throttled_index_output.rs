@@ -139,7 +139,7 @@ impl ThrottledIndexOutput {
                 let expected =
                     self.pending_bytes.wrapping_mul(1000) / i64::from(self.bytes_per_second);
                 // TimeUnit.NANOSECONDS.toMillis: truncation.
-                let delay = expected - self.time_elapsed / 1_000_000;
+                let delay = expected.wrapping_sub(self.time_elapsed / 1_000_000);
                 self.pending_bytes = 0;
                 self.time_elapsed = 0;
                 return delay;
@@ -187,7 +187,7 @@ impl DataOutput for ThrottledIndexOutput {
         self.time_elapsed = self
             .time_elapsed
             .wrapping_add(before.elapsed().as_nanos() as i64);
-        self.pending_bytes += length as i64;
+        self.pending_bytes = self.pending_bytes.wrapping_add(length as i64);
         let delay = self.get_delay(false);
         Self::sleep(delay)
     }
@@ -196,7 +196,7 @@ impl DataOutput for ThrottledIndexOutput {
 impl IndexOutput for ThrottledIndexOutput {
     /// `close()`: sleeps, then (in a `finally`) closes the delegate.
     fn close(&mut self) -> Result<()> {
-        let delay = self.close_delay_millis + self.get_delay(true);
+        let delay = self.close_delay_millis.wrapping_add(self.get_delay(true));
         let slept = Self::sleep(delay);
         let closed = self.out.close();
         // A `finally` that throws replaces the pending exception.
@@ -296,5 +296,24 @@ mod tests {
         assert!(start.elapsed().as_millis() >= 15, "{:?}", start.elapsed());
         slow.close().unwrap();
         out.close().unwrap();
+    }
+
+    /// `ThrottledIndexOutput.java:81`: `closeDelayMillis + getDelay(true)` is
+    /// Java `long` arithmetic, which wraps; the wrapped (negative) delay makes
+    /// `sleep` return at once and the delegate is still closed. `getDelay`
+    /// must be positive for the sum to wrap: 10 bytes in 1000 ns is
+    /// `(1000 / 10) * 10^9` B/s, above 1000 B/s, so the delay is
+    /// `10 * 1000 / 1000 - 0 = 10` ms.
+    #[test]
+    fn close_delay_sum_wraps_as_java_long() {
+        let dir = ByteBuffersDirectory::default();
+        let mut out =
+            ThrottledIndexOutput::with_delays(1000, 0, i64::MAX, 0, 10, delegate(&dir, "e.bin"));
+        out.pending_bytes = 10;
+        out.time_elapsed = 1000;
+        let start = Instant::now();
+        out.close().unwrap();
+        assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
+        assert_eq!(dir.file_length("e.bin").unwrap(), 0);
     }
 }

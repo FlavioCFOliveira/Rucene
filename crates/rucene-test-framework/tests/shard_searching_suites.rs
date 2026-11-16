@@ -190,7 +190,15 @@ fn test_simple(inst: &ShardSearchingInstance) -> Result<()> {
                 );
             }
 
-            match base.nodes()[my_node_id].acquire_versions(&prev.versions) {
+            match base
+                .nodes()
+                .deref(
+                    my_node_id as i32,
+                    "invoke \"org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState.acquire(long[])\"",
+                    "this.nodes[myNodeID]",
+                )
+                .acquire_versions(&prev.versions)
+            {
                 Ok(s) => local_shard_searcher = s,
                 Err(see) if is_searcher_expired(&see) => {
                     // Expected, sometimes; in a "real" app we would
@@ -212,7 +220,14 @@ fn test_simple(inst: &ShardSearchingInstance) -> Result<()> {
                 println!("\nTEST: fresh query");
             }
             // Do fresh query:
-            local_shard_searcher = base.nodes()[my_node_id].acquire();
+            local_shard_searcher = base
+                .nodes()
+                .deref(
+                    my_node_id as i32,
+                    "invoke \"org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState.acquire()\"",
+                    "this.nodes[myNodeID]",
+                )
+                .acquire();
             prev_search_state = None;
         }
 
@@ -230,7 +245,9 @@ fn test_simple(inst: &ShardSearchingInstance) -> Result<()> {
                 let mut node_id = 0i32;
                 while node_id < num_nodes {
                     let sub_version = local_shard_searcher.node_versions()[node_id as usize];
-                    let sub = base.nodes()[node_id as usize]
+                    let sub = base
+                        .nodes()
+                        .deref(node_id, "read field \"searchers\"", "this.nodes[nodeID]")
                         .searchers()
                         .acquire(sub_version)?;
                     let Some(sub) = sub else {
@@ -395,7 +412,14 @@ fn test_simple(inst: &ShardSearchingInstance) -> Result<()> {
             Ok(())
         })();
         // finally
-        let released = base.nodes()[my_node_id].release(&local_shard_searcher);
+        let released = base
+            .nodes()
+            .deref(
+                my_node_id as i32,
+                "invoke \"org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState.release(org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState$ShardIndexSearcher)\"",
+                "this.nodes[myNodeID]",
+            )
+            .release(&local_shard_searcher);
         let mut dec_refs: Result<()> = Ok(());
         for sub in subs.iter().flatten() {
             if dec_refs.is_ok() {
@@ -616,4 +640,41 @@ static SUITES: Mutex<()> = Mutex::new(());
 fn test_shard_searching() {
     let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
     run_suite(shard_searching_class);
+}
+
+/// `start(...)` assigns `nodes` (`ShardSearchingTestBase.java:602`): a second
+/// call replaces the node array instead of failing.
+fn start_twice_class() -> Arc<Class> {
+    Class::builder("org.apache.lucene.search.TestShardSearchingStartTwice")
+        .extends(&shard_searching_test_base::class())
+        .annotate(SuppressCodecs {
+            value: vec!["SimpleText".to_string(), "Direct".to_string()],
+        })
+        .constructor(Constructor::no_args(|| ShardSearchingInstance {
+            base: ShardSearchingTestBase::new(),
+        }))
+        .method(
+            Method::new("testStartTwiceReplacesTheNodes")
+                .throws(&["java.lang.Exception"])
+                .body(|inst: &mut ShardSearchingInstance| {
+                    let run = || -> Result<()> {
+                        inst.base.start(2, 0.0, 1)?;
+                        let first = inst.base.nodes();
+                        inst.base.finish()?;
+                        inst.base.start(3, 0.0, 1)?;
+                        let second = inst.base.nodes();
+                        Assert::assert_false(Arc::ptr_eq(&first, &second));
+                        Assert::assert_equals(3, second.len());
+                        inst.base.finish()
+                    };
+                    run().unwrap_or_else(|e: LuceneError| rethrow_java(e))
+                }),
+        )
+        .build()
+}
+
+#[test]
+fn test_shard_searching_start_twice() {
+    let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
+    run_suite(start_twice_class);
 }

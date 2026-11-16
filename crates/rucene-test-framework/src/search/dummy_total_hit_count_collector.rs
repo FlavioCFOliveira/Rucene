@@ -61,7 +61,8 @@ impl LeafCollector for Leaf<'_> {
     }
 
     fn collect(&mut self, _doc: i32, _scorer: &mut dyn Scorable) -> CollectionResult<()> {
-        *self.total_hits += 1;
+        // `totalHits++`: Java's int arithmetic wraps.
+        *self.total_hits = self.total_hits.wrapping_add(1);
         Ok(())
     }
 }
@@ -99,5 +100,31 @@ impl CollectorManager for DummyTotalHitCountCollectorManager {
             sum = sum.wrapping_add(coll.total_hits);
         }
         Ok(sum)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scorable the collector never reads.
+    struct NoScore;
+
+    impl Scorable for NoScore {
+        fn score(&mut self) -> Result<f32> {
+            Ok(0.0)
+        }
+    }
+
+    /// Java's `totalHits++` wraps from `Integer.MAX_VALUE` to
+    /// `Integer.MIN_VALUE` instead of failing.
+    #[test]
+    fn total_hits_increment_wraps_as_java_int() {
+        let mut total_hits = i32::MAX;
+        let mut leaf = Leaf {
+            total_hits: &mut total_hits,
+        };
+        assert!(leaf.collect(0, &mut NoScore).is_ok());
+        assert_eq!(total_hits, i32::MIN);
     }
 }

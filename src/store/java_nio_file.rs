@@ -108,6 +108,8 @@ pub const CLOSED_CHANNEL_EXCEPTION: &str = "java.nio.channels.ClosedChannelExcep
 pub const NON_READABLE_CHANNEL_EXCEPTION: &str = "java.nio.channels.NonReadableChannelException";
 /// `java.nio.channels.NonWritableChannelException` (unchecked).
 pub const NON_WRITABLE_CHANNEL_EXCEPTION: &str = "java.nio.channels.NonWritableChannelException";
+/// `java.nio.ReadOnlyBufferException` (unchecked).
+pub const READ_ONLY_BUFFER_EXCEPTION: &str = "java.nio.ReadOnlyBufferException";
 /// `java.util.concurrent.ExecutionException`.
 pub const EXECUTION_EXCEPTION: &str = "java.util.concurrent.ExecutionException";
 
@@ -1893,6 +1895,148 @@ pub trait SeekableByteChannel: Send + Sync {
     fn channel_to_string(&self) -> String;
 }
 
+/// `java.nio.channels.FileChannel.MapMode`: a file-mapping mode.
+///
+/// `toString()` is the mode's name ([`Display`](fmt::Display)), as
+/// `MapMode.toString()` of JDK 25 returns it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MapMode {
+    /// `READ_ONLY`: mode for a read-only mapping.
+    ReadOnly,
+    /// `READ_WRITE`: mode for a read/write mapping; changes reach the file.
+    ReadWrite,
+    /// `PRIVATE`: mode for a private (copy-on-write) mapping; changes never
+    /// reach the file.
+    Private,
+}
+
+impl fmt::Display for MapMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            MapMode::ReadOnly => "READ_ONLY",
+            MapMode::ReadWrite => "READ_WRITE",
+            MapMode::Private => "PRIVATE",
+        })
+    }
+}
+
+/// `java.nio.MappedByteBuffer`: a byte buffer whose content is a
+/// memory-mapped region of a file, as [`FileChannel::map`] returns it.
+///
+/// The emulation covers the buffer's capacity, its read-only flag and its
+/// absolute `get(int)` / `put(int, byte)`, with JDK 25's exceptions; the
+/// mapping is released when the buffer is dropped, as the JDK's cleaner
+/// releases it when the buffer is collected. A zero-length mapping maps
+/// nothing, as `FileChannelImpl.map` returns an empty buffer then.
+#[cfg(feature = "mmap")]
+pub struct MappedByteBuffer {
+    region: MappedRegion,
+}
+
+#[cfg(feature = "mmap")]
+enum MappedRegion {
+    /// The buffer of a zero-length mapping; `true` when read-only.
+    Empty(bool),
+    /// A read-only mapping (`DirectByteBufferR`).
+    ReadOnly(memmap2::Mmap),
+    /// A writable mapping, shared or private (`DirectByteBuffer`).
+    Writable(memmap2::MmapMut),
+}
+
+#[cfg(feature = "mmap")]
+impl MappedByteBuffer {
+    /// The empty buffer of a zero-length mapping.
+    pub(crate) fn empty(read_only: bool) -> MappedByteBuffer {
+        MappedByteBuffer {
+            region: MappedRegion::Empty(read_only),
+        }
+    }
+
+    /// A read-only buffer over `mapping`.
+    pub(crate) fn read_only(mapping: memmap2::Mmap) -> MappedByteBuffer {
+        MappedByteBuffer {
+            region: MappedRegion::ReadOnly(mapping),
+        }
+    }
+
+    /// A writable buffer over `mapping`.
+    pub(crate) fn writable(mapping: memmap2::MmapMut) -> MappedByteBuffer {
+        MappedByteBuffer {
+            region: MappedRegion::Writable(mapping),
+        }
+    }
+
+    /// The mapped bytes.
+    pub fn as_slice(&self) -> &[u8] {
+        match &self.region {
+            MappedRegion::Empty(_) => &[],
+            MappedRegion::ReadOnly(m) => m,
+            MappedRegion::Writable(m) => m,
+        }
+    }
+
+    /// `capacity()`: the number of mapped bytes.
+    pub fn capacity(&self) -> i32 {
+        self.as_slice().len() as i32
+    }
+
+    /// `isReadOnly()`.
+    pub fn is_read_only(&self) -> bool {
+        match &self.region {
+            MappedRegion::Empty(read_only) => *read_only,
+            MappedRegion::ReadOnly(_) => true,
+            MappedRegion::Writable(_) => false,
+        }
+    }
+
+    /// `get(int index)`: the byte at `index`.
+    ///
+    /// # Panics
+    ///
+    /// `IndexOutOfBoundsException` (no message on JDK 25) when `index` is
+    /// negative or not below the capacity.
+    pub fn get(&self, index: i32) -> u8 {
+        match usize::try_from(index)
+            .ok()
+            .and_then(|i| self.as_slice().get(i))
+        {
+            Some(b) => *b,
+            None => throw_unchecked("java.lang.IndexOutOfBoundsException", None),
+        }
+    }
+
+    /// `put(int index, byte b)`: writes `b` at `index`.
+    ///
+    /// # Panics
+    ///
+    /// `ReadOnlyBufferException` on a read-only buffer, checked first as
+    /// `DirectByteBufferR.put` does; then `IndexOutOfBoundsException` (no
+    /// message on JDK 25) when `index` is out of bounds.
+    pub fn put(&mut self, index: i32, b: u8) {
+        let slot = match &mut self.region {
+            MappedRegion::Writable(m) => usize::try_from(index).ok().and_then(|i| m.get_mut(i)),
+            MappedRegion::Empty(false) => None,
+            MappedRegion::Empty(true) | MappedRegion::ReadOnly(_) => {
+                throw_unchecked(READ_ONLY_BUFFER_EXCEPTION, None)
+            }
+        };
+        match slot {
+            Some(slot) => *slot = b,
+            None => throw_unchecked("java.lang.IndexOutOfBoundsException", None),
+        }
+    }
+}
+
+#[cfg(feature = "mmap")]
+impl fmt::Debug for MappedByteBuffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MappedByteBuffer")
+            .field("capacity", &self.capacity())
+            .field("read_only", &self.is_read_only())
+            .finish()
+    }
+}
+
 /// `java.nio.channels.FileChannel`.
 pub trait FileChannel: SeekableByteChannel {
     /// `read(ByteBuffer[] dsts, offset, length)`: a scattering read into
@@ -1974,6 +2118,34 @@ pub trait FileChannel: SeekableByteChannel {
         let _ = (position, size);
         throw_unchecked("java.lang.UnsupportedOperationException", None)
     }
+
+    /// `map(MapMode mode, long position, long size)`: maps `size` bytes of
+    /// this channel's file, from `position`, into memory.
+    ///
+    /// Abstract in JDK 25's `FileChannel`, as here. The JDK's own channel
+    /// (`sun.nio.ch.FileChannelImpl`) checks, in this order: `size` above
+    /// `Integer.MAX_VALUE`, an open channel, `position` and `size` not
+    /// negative and their sum not overflowing, then the mode against the
+    /// channel (`NonWritableChannelException` for a mode other than
+    /// `READ_ONLY` on a channel not open for writing, then
+    /// `NonReadableChannelException`). It extends a file shorter than
+    /// `position + size` when the channel is writable, whatever the mode, and
+    /// maps nothing for a zero `size`. The buffer is read-only for
+    /// `READ_ONLY` or a channel not open for writing.
+    ///
+    /// # Errors
+    ///
+    /// `ClosedChannelException` once closed; `IOException("Channel not open
+    /// for writing - cannot extend file to required size")`; the failure of
+    /// the mapping.
+    ///
+    /// # Panics
+    ///
+    /// `IllegalArgumentException` ("Size exceeds Integer.MAX_VALUE",
+    /// "Negative position", "Negative size", "Position + size overflow"),
+    /// `NonWritableChannelException`, `NonReadableChannelException`.
+    #[cfg(feature = "mmap")]
+    fn map(&self, mode: MapMode, position: i64, size: i64) -> io::Result<MappedByteBuffer>;
 
     /// `lock(position, size, shared)`.
     ///

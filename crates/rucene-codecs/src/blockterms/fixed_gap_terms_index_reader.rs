@@ -27,9 +27,10 @@ use rucene::error::{LuceneError, Result};
 use rucene::index::index_file_names::segment_file_name;
 use rucene::index::FieldInfo;
 use rucene::store::IndexInput;
+use rucene::util::accountables::Accountables;
 use rucene::util::packed::MonotonicBlockPackedReader;
 use rucene::util::paged_bytes::{PagedBytes, PagedBytesReader};
-use rucene::util::{BytesRef, IOUtils, LongValues};
+use rucene::util::{Accountable, BytesRef, IOUtils, LongValues};
 
 use super::fixed_gap_terms_index_writer::{CODEC_NAME, TERMS_INDEX_EXTENSION, VERSION_CURRENT};
 use super::terms_index_reader_base::{FieldIndexEnum, TermsIndexReaderBase};
@@ -48,6 +49,41 @@ struct FieldIndexData {
 impl fmt::Display for FieldIndexData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "FixedGapTermIndex(indexterms={})", self.num_index_terms)
+    }
+}
+
+/// `FieldIndexData implements Accountable` (`FixedGapTermsIndexReader.java:240`).
+///
+/// Java tests `termOffsets` and `termsDictOffsets` against `null`; the
+/// constructor always sets both (`:279-284`), so the port holds them
+/// directly and takes the non-null branches.
+impl rucene::util::Accountable for FieldIndexData {
+    /// Port of `ramBytesUsed()` (`FixedGapTermsIndexReader.java:289-293`):
+    /// `termOffsets.ramBytesUsed() + termsDictOffsets.ramBytesUsed()`.
+    fn ram_bytes_used(&self) -> i64 {
+        self.term_offsets.ram_bytes_used() + self.terms_dict_offsets.ram_bytes_used()
+    }
+
+    /// Port of `getChildResources()` (`FixedGapTermsIndexReader.java:295-305`):
+    /// `namedAccountable("term lengths", termOffsets)` then
+    /// `namedAccountable("offsets", termsDictOffsets)`.
+    fn child_resources(&self) -> Vec<Box<dyn Accountable + '_>> {
+        vec![
+            Box::new(Accountables::named_accountable_of(
+                "term lengths",
+                &self.term_offsets,
+            )),
+            Box::new(Accountables::named_accountable_of(
+                "offsets",
+                &self.terms_dict_offsets,
+            )),
+        ]
+    }
+
+    /// `toString()` (the [`Display`](fmt::Display) impl), as `Accountables`
+    /// reads it.
+    fn accountable_to_string(&self) -> String {
+        self.to_string()
     }
 }
 
@@ -406,5 +442,82 @@ impl fmt::Display for FixedGapTermsIndexReader {
             self.shared.fields.len(),
             self.shared.index_interval
         )
+    }
+}
+
+#[cfg(test)]
+mod field_index_data_tests {
+    use rucene::store::{ByteArrayDataInput, ByteBuffersDataOutput};
+    use rucene::util::accountables::Accountables;
+    use rucene::util::packed::{
+        MonotonicBlockPackedReader, MonotonicBlockPackedWriter, PackedInts,
+    };
+    use rucene::util::Accountable;
+
+    use super::FieldIndexData;
+
+    fn reader(values: &[i64]) -> MonotonicBlockPackedReader {
+        let mut out = ByteBuffersDataOutput::new();
+        {
+            let mut w = MonotonicBlockPackedWriter::new(&mut out, 64).unwrap();
+            for v in values {
+                w.add(*v).unwrap();
+            }
+            w.finish().unwrap();
+        }
+        let bytes = out.to_array_copy().unwrap();
+        let mut input = ByteArrayDataInput::new(&bytes);
+        MonotonicBlockPackedReader::of(
+            &mut input,
+            PackedInts::VERSION_CURRENT,
+            64,
+            values.len() as i64,
+        )
+        .unwrap()
+    }
+
+    /// `ramBytesUsed()` and `getChildResources()` against Lucene 10.5.0 on
+    /// JDK 25: the same two sequences written with `MonotonicBlockPackedWriter`
+    /// (block size 64) read back as 51 bytes (`termsDictOffsets`) and 50 bytes
+    /// (`termOffsets`), and `Accountables.namedAccountable` names them
+    /// `offsets [MonotonicBlockPackedReader(blocksize=64,size=4,avgBPV=6)]`.
+    #[test]
+    fn ram_bytes_used_and_child_resources_match_lucene() {
+        let data = FieldIndexData {
+            term_bytes_start: 0,
+            term_offsets: reader(&[0, 3, 7, 12, 20]),
+            terms_dict_offsets: reader(&[0, 100, 250, 400]),
+            num_index_terms: 4,
+            terms_start: 0,
+        };
+        assert_eq!(data.terms_dict_offsets.ram_bytes_used(), 51);
+        assert_eq!(data.term_offsets.ram_bytes_used(), 50);
+        assert_eq!(data.ram_bytes_used(), 101);
+        let children = data.child_resources();
+        let described: Vec<(String, i64)> = children
+            .iter()
+            .map(|c| (c.accountable_to_string(), c.ram_bytes_used()))
+            .collect();
+        assert_eq!(
+            described,
+            [
+                (
+                    "term lengths [MonotonicBlockPackedReader(blocksize=64,size=5,avgBPV=2)]"
+                        .to_string(),
+                    50
+                ),
+                (
+                    "offsets [MonotonicBlockPackedReader(blocksize=64,size=4,avgBPV=6)]"
+                        .to_string(),
+                    51
+                ),
+            ]
+        );
+        assert_eq!(
+            Accountables::to_string(&data),
+            "FixedGapTermIndex(indexterms=4): 101 bytes\n\
+             |-- term lengths [MonotonicBlockPackedReader(blocksize=64,size=5,avgBPV=2)]: 50 bytes\n\
+             |-- offsets [MonotonicBlockPackedReader(blocksize=64,size=4,avgBPV=6)]: 51 bytes\n"
+        );
     }
 }

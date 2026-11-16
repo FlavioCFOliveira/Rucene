@@ -32,8 +32,10 @@
 //!   from `attributes.put("bogus", "bogus")` on the map `FieldInfo.attributes()`
 //!   returns. The port's `FieldInfo::attributes` returns a
 //!   `JavaStringMap`, which has no mutator at all, so the write cannot even
-//!   be expressed; the test checks instead that the attributes read back are
-//!   the ones written, which is what the unmodifiable map protects.
+//!   be expressed: the immutability Java checks at run time holds at compile
+//!   time, and the test makes no check in its place (a substitute assertion
+//!   would fail where Java's test passes, for example on a format that does
+//!   not keep the attributes).
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -391,12 +393,10 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
             Assert::assert_equals(1i64, infos2.size() as i64);
             let field = infos2.field_info("field");
             assert_not_null(field.is_some());
-            let attributes = field.expect("checked above").attributes();
-            // shouldn't be able to modify attributes: the map has no mutator, so
-            // what was written is what reads back.
-            Assert::assert_equals_str(None, Some("bar"), attributes.get("foo").map(String::as_str));
-            Assert::assert_equals_str(None, Some("baz"), attributes.get("bar").map(String::as_str));
-            Assert::assert_false(attributes.get("bogus").is_some());
+            let _attributes = field.expect("checked above").attributes();
+            // shouldn't be able to modify attributes: the map has no mutator,
+            // so `attributes.put("bogus", "bogus")` cannot be written (see the
+            // module docs).
         }
         dir.close()
     }
@@ -685,7 +685,8 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// individual fieldinfo objects.
     fn assert_field_info_equal(&self, expected: &FieldInfo, actual: &FieldInfo) {
         Assert::assert_equals(i64::from(expected.number), i64::from(actual.number));
-        Assert::assert_equals(expected.name.as_str(), actual.name.as_str());
+        // Two `String`s: JUnit's `ComparisonFailure`.
+        Assert::assert_equals_str(None, Some(&expected.name), Some(&actual.name));
         Assert::assert_equals(
             format!("{:?}", expected.get_doc_values_type()),
             format!("{:?}", actual.get_doc_values_type()),
@@ -703,5 +704,71 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
         Assert::assert_equals(expected.has_term_vectors(), actual.has_term_vectors());
         Assert::assert_equals(expected.omits_norms(), actual.omits_norms());
         Assert::assert_equals(expected.get_doc_values_gen(), actual.get_doc_values_gen());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use super::*;
+
+    /// A field infos test case over the default codec.
+    struct Probe;
+
+    impl BaseIndexFileFormatTestCase for Probe {
+        fn get_codec(&self) -> Arc<dyn Codec> {
+            rucene::codecs::get_default().expect("Codec.getDefault()")
+        }
+
+        fn add_random_fields(&self, doc: &mut Document) {
+            self.field_infos_add_random_fields(doc);
+        }
+
+        fn as_field_infos(&self) -> Option<&dyn BaseFieldInfoFormatTestCase> {
+            Some(self)
+        }
+    }
+
+    impl BaseFieldInfoFormatTestCase for Probe {}
+
+    /// `assertEquals(expected.name, actual.name)` compares two `String`s:
+    /// JUnit throws `org.junit.ComparisonFailure`, whose message brackets the
+    /// difference, not the plain `AssertionError` of two objects.
+    #[test]
+    fn field_names_compare_as_strings() {
+        let expected = create_field_info();
+        let actual = FieldInfo::new_full(
+            "fold",
+            -1,
+            false,
+            false,
+            false,
+            TextField::type_stored().index_options(),
+            DocValuesType::NONE,
+            DocValuesSkipIndexType::NONE,
+            -1,
+            JavaStringMap::default(),
+            0,
+            0,
+            0,
+            0,
+            VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::EUCLIDEAN,
+            false,
+            false,
+        )
+        .expect("a valid field info");
+        let thrown = Throwable::from_panic(
+            catch_unwind(AssertUnwindSafe(|| {
+                Probe.assert_field_info_equal(&expected, &actual)
+            }))
+            .expect_err("the names differ"),
+        );
+        assert_eq!(thrown.class_name(), "org.junit.ComparisonFailure");
+        assert_eq!(
+            thrown.message(),
+            Some("expected:<f[ie]ld> but was:<f[o]ld>")
+        );
     }
 }

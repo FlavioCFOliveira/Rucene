@@ -180,7 +180,8 @@ impl LeafCollector for AssertingLeafCollector<'_> {
             self.doc_buffer = Some(doc_buffer);
             result
         } else {
-            self.batch_collection_depth += 1;
+            // `batchCollectionDepth++; try { … } finally { batchCollectionDepth--; }`
+            let depth = BatchDepth::enter(&mut self.batch_collection_depth);
             let mut asserting = AssertingDocIdStream {
                 stream,
                 last_up_to: -1,
@@ -188,13 +189,10 @@ impl LeafCollector for AssertingLeafCollector<'_> {
                 min: self.min,
                 max: self.max,
             };
-            let depth = self.batch_collection_depth;
             let inner = &mut self.inner;
-            let result = with_wrapped(&mut self.scorer_state, scorer, depth, |s| {
+            with_wrapped(&mut self.scorer_state, scorer, depth.value(), |s| {
                 inner.collect_stream(&mut asserting, s)
-            });
-            self.batch_collection_depth -= 1;
-            result
+            })
         }
     }
 
@@ -208,13 +206,14 @@ impl LeafCollector for AssertingLeafCollector<'_> {
         java_assert!(max > min);
         java_assert!(min >= self.min, "Out of range: {} < {}", min, self.min);
         java_assert!(max <= self.max, "Out of range: {} >= {}", max - 1, self.max);
-        self.batch_collection_depth += 1;
-        let depth = self.batch_collection_depth;
-        let inner = &mut self.inner;
-        let result = with_wrapped(&mut self.scorer_state, scorer, depth, |s| {
-            inner.collect_range(min, max, s)
-        });
-        self.batch_collection_depth -= 1;
+        // `batchCollectionDepth++; try { … } finally { batchCollectionDepth--; }`
+        let result = {
+            let depth = BatchDepth::enter(&mut self.batch_collection_depth);
+            let inner = &mut self.inner;
+            with_wrapped(&mut self.scorer_state, scorer, depth.value(), |s| {
+                inner.collect_range(min, max, s)
+            })
+        };
         result?;
         self.last_collected = max - 1;
         Ok(())
@@ -239,6 +238,32 @@ impl LeafCollector for AssertingLeafCollector<'_> {
         java_assert!(!self.finish_called);
         self.finish_called = true;
         self.inner.finish()
+    }
+}
+
+/// Java's `batchCollectionDepth++` with its `finally { batchCollectionDepth--; }`:
+/// the decrement runs when the guard drops, also while an unchecked
+/// `AssertionError` (a panic) of the wrapped collector unwinds.
+struct BatchDepth<'d> {
+    depth: &'d mut i32,
+}
+
+impl<'d> BatchDepth<'d> {
+    /// `batchCollectionDepth++`.
+    fn enter(depth: &'d mut i32) -> Self {
+        *depth += 1;
+        BatchDepth { depth }
+    }
+
+    /// The depth during the batch call.
+    fn value(&self) -> i32 {
+        *self.depth
+    }
+}
+
+impl Drop for BatchDepth<'_> {
+    fn drop(&mut self) {
+        *self.depth -= 1;
     }
 }
 
@@ -522,5 +547,106 @@ impl DocIdStream for AssertingDocIdStream<'_> {
             java_assert_unchecked!(!may_have_remaining);
         }
         may_have_remaining
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use super::*;
+
+    /// A one-document iterator positioned on `doc`.
+    struct StubIterator {
+        doc: i32,
+    }
+
+    impl DocIdSetIterator for StubIterator {
+        fn doc_id(&self) -> i32 {
+            self.doc
+        }
+
+        fn next_doc(&mut self) -> Result<i32> {
+            self.doc = NO_MORE_DOCS;
+            Ok(self.doc)
+        }
+
+        fn advance(&mut self, _target: i32) -> Result<i32> {
+            self.next_doc()
+        }
+
+        fn cost(&self) -> i64 {
+            1
+        }
+    }
+
+    /// A scorer positioned on a document, so that `setScorer`'s wrapping
+    /// installs the batch-checking `FilterScorer`.
+    struct StubScorer {
+        iterator: StubIterator,
+    }
+
+    impl Scorable for StubScorer {
+        fn score(&mut self) -> Result<f32> {
+            Ok(1.0)
+        }
+
+        fn as_scorer(&mut self) -> Option<&mut dyn Scorer> {
+            Some(self)
+        }
+    }
+
+    impl Scorer for StubScorer {
+        fn doc_id(&self) -> i32 {
+            self.iterator.doc
+        }
+
+        fn iterator(&mut self) -> &mut dyn DocIdSetIterator {
+            &mut self.iterator
+        }
+
+        fn get_max_score(&mut self, _up_to: i32) -> Result<f32> {
+            Ok(f32::INFINITY)
+        }
+    }
+
+    /// A collector whose `collectRange` throws an unchecked error and whose
+    /// `collect` reads the score.
+    struct ThrowsInRange;
+
+    impl LeafCollector for ThrowsInRange {
+        fn set_scorer(&mut self, _scorer: &mut dyn Scorable) -> Result<()> {
+            Ok(())
+        }
+
+        fn collect(&mut self, _doc: i32, scorer: &mut dyn Scorable) -> CollectionResult<()> {
+            scorer.score()?;
+            Ok(())
+        }
+
+        fn collect_range(
+            &mut self,
+            _min: i32,
+            _max: i32,
+            _scorer: &mut dyn Scorable,
+        ) -> CollectionResult<()> {
+            randomizedtesting::jdk::exception::throw("java.lang.IllegalStateException", "boom")
+        }
+    }
+
+    /// Java decrements `batchCollectionDepth` in a `finally`: after the
+    /// wrapped `collectRange` throws, a later `collect` may read the score.
+    #[test]
+    fn batch_depth_is_restored_when_collect_range_throws() {
+        let mut leaf = AssertingLeafCollector::new(Box::new(ThrowsInRange), 0, 10);
+        let mut scorer = StubScorer {
+            iterator: StubIterator { doc: 3 },
+        };
+        let thrown = catch_unwind(AssertUnwindSafe(|| {
+            let _ = leaf.collect_range(1, 3, &mut scorer);
+        }));
+        assert!(thrown.is_err());
+        let result = leaf.collect(5, &mut scorer);
+        assert!(result.is_ok(), "score() was refused after the batch call");
     }
 }

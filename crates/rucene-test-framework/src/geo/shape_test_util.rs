@@ -29,6 +29,7 @@ use randomizedtesting::RandomizedContext;
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::geo::{GeoUtils, XYCircle, XYEncodingUtils, XYLine, XYPoint, XYPolygon, XYRectangle};
 
+use super::{java_min, java_min_f32};
 use crate::util::lucene_test_case::TEST_NIGHTLY;
 use crate::util::TestUtil;
 
@@ -183,14 +184,10 @@ fn surprise_me_polygon(random: &dyn Random) -> XYPolygon {
             break;
         }
         let mut len = radius * (1.0 - radius_delta + radius_delta * random.next_double());
-        let max_x = (f32::MAX - center_x)
-            .abs()
-            .min((-f32::MAX - center_x).abs());
-        let max_y = (f32::MAX - center_y)
-            .abs()
-            .min((-f32::MAX - center_y).abs());
+        let max_x = java_min_f32((f32::MAX - center_x).abs(), (-f32::MAX - center_x).abs());
+        let max_y = java_min_f32((f32::MAX - center_y).abs(), (-f32::MAX - center_y).abs());
 
-        len = len.min(f64::from(max_x.min(max_y)));
+        len = java_min(len, f64::from(java_min_f32(max_x, max_y)));
 
         let x = (f64::from(center_x) + len * angle.to_radians().cos()) as f32;
         let y = (f64::from(center_y) + len * angle.to_radians().sin()) as f32;
@@ -222,11 +219,25 @@ pub fn create_regular_polygon(
     gons: i32,
 ) -> Result<XYPolygon> {
     let max = f64::from(f32::MAX);
-    let max_x = (max - center_x).abs().min((-max - center_x).abs());
-    let max_y = (max - center_y).abs().min((-max - center_y).abs());
+    let max_x = java_min((max - center_x).abs(), (-max - center_x).abs());
+    let max_y = java_min((max - center_y).abs(), (-max - center_y).abs());
 
-    let radius = radius.min(max_x.min(max_y));
+    let radius = java_min(radius, java_min(max_x, max_y));
 
+    // `new float[gons + 1]` (`int` arithmetic), then `result[0][gons]`.
+    let length = gons.wrapping_add(1);
+    if length < 0 {
+        return Err(LuceneError::unchecked(
+            "java.lang.NegativeArraySizeException",
+            length.to_string(),
+        ));
+    }
+    if gons < 0 {
+        return Err(LuceneError::unchecked(
+            "java.lang.ArrayIndexOutOfBoundsException",
+            format!("Index {gons} out of bounds for length {length}"),
+        ));
+    }
     let gons = gons as usize;
     let mut result0 = vec![0f32; gons + 1];
     let mut result1 = vec![0f32; gons + 1];
@@ -305,4 +316,40 @@ pub fn contains_slowly(polygon: &XYPolygon, x: f64, y: f64) -> Result<bool> {
         j += 1;
     }
     Ok(c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `new float[gons + 1]` with a negative length, and `result[0][gons]`
+    /// with `gons == -1`, throw as Java does.
+    #[test]
+    fn negative_gons_throw_as_java_arrays_do() {
+        let class_and_message = |gons: i32| match create_regular_polygon(0.0, 0.0, 1.0, gons) {
+            Err(LuceneError {
+                kind: LuceneErrorKind::Unchecked { class, message, .. },
+                ..
+            }) => (class, message.unwrap_or_default()),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            class_and_message(-2),
+            ("java.lang.NegativeArraySizeException", "-1".to_string())
+        );
+        assert_eq!(
+            class_and_message(-1),
+            (
+                "java.lang.ArrayIndexOutOfBoundsException",
+                "Index -1 out of bounds for length 0".to_string()
+            )
+        );
+        assert_eq!(
+            class_and_message(i32::MAX),
+            (
+                "java.lang.NegativeArraySizeException",
+                "-2147483648".to_string()
+            )
+        );
+    }
 }

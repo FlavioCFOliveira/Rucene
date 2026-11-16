@@ -113,6 +113,27 @@ pub trait CharReader: Debug + Send + Sync {
     fn as_char_filter(&self) -> Option<&dyn CharFilter> {
         None
     }
+
+    /// Tells whether this stream supports the `mark()` operation.
+    ///
+    /// Equivalent to `Reader.markSupported()` of JDK 25, whose default
+    /// answers `false`; a reader that supports marking overrides it.
+    fn mark_supported(&self) -> bool {
+        false
+    }
+
+    /// Tells whether this stream is ready to be read: `true` guarantees that
+    /// the next read will not block for input.
+    ///
+    /// Equivalent to `Reader.ready()` of JDK 25, whose default answers
+    /// `false`; a reader that knows better overrides it.
+    ///
+    /// # Errors
+    ///
+    /// Java's `IOException`; the default never raises one.
+    fn ready(&mut self) -> Result<bool> {
+        Ok(false)
+    }
 }
 
 /// A [`CharReader`] backed by an in-memory string: `java.io.StringReader`.
@@ -120,6 +141,9 @@ pub trait CharReader: Debug + Send + Sync {
 pub struct StringCharReader {
     chars: Vec<u16>,
     position: usize,
+    /// Whether `close()` ran: JDK 25's `StringReader` then answers `ready()`
+    /// with `IOException("Stream closed")`.
+    closed: bool,
 }
 
 impl StringCharReader {
@@ -128,6 +152,7 @@ impl StringCharReader {
         Self {
             chars: text.into().encode_utf16().collect(),
             position: 0,
+            closed: false,
         }
     }
 
@@ -138,6 +163,7 @@ impl StringCharReader {
         Self {
             chars: units.into(),
             position: 0,
+            closed: false,
         }
     }
 }
@@ -152,6 +178,7 @@ impl CharReader for StringCharReader {
     }
 
     fn close(&mut self) -> Result<()> {
+        self.closed = true;
         Ok(())
     }
 
@@ -160,6 +187,26 @@ impl CharReader for StringCharReader {
     fn reset(&mut self) -> Result<()> {
         self.position = 0;
         Ok(())
+    }
+
+    /// `StringReader.markSupported()` of JDK 25: `true`, open or closed.
+    fn mark_supported(&self) -> bool {
+        true
+    }
+
+    /// `StringReader.ready()` of JDK 25: `true` while open, even at the end
+    /// of the string ("guaranteed not to block").
+    ///
+    /// # Errors
+    ///
+    /// `IOException("Stream closed")` once closed.
+    fn ready(&mut self) -> Result<bool> {
+        if self.closed {
+            return Err(LuceneError::from(crate::error::LuceneErrorKind::Io(
+                crate::store::java_nio_file::io_exception("Stream closed"),
+            )));
+        }
+        Ok(true)
     }
 }
 
@@ -2895,5 +2942,61 @@ mod tests {
         assert_eq!(collect_terms(title_stream)?, vec!["hello", "world"]);
         assert_eq!(collect_terms(body_stream)?, vec!["foo", "bar"]);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod reader_default_tests {
+    use super::{CharReader, Result};
+
+    /// A reader that overrides neither method: `java.io.Reader`'s defaults.
+    #[derive(Debug)]
+    struct Plain;
+
+    impl CharReader for Plain {
+        fn read(&mut self, _buf: &mut [u16]) -> Result<usize> {
+            Ok(0)
+        }
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// JDK 25 `Reader.markSupported()` and `Reader.ready()` both answer
+    /// `false` (verified on JDK 25.0.5 with an anonymous `Reader` subclass).
+    #[test]
+    fn mark_supported_and_ready_default_to_false() {
+        let mut r = Plain;
+        assert!(!r.mark_supported());
+        assert!(!r.ready().unwrap());
+        let mut boxed: Box<dyn CharReader> = Box::new(Plain);
+        assert!(!boxed.mark_supported());
+        assert!(!boxed.ready().unwrap());
+    }
+
+    /// JDK 25 `StringReader` (probe on 25.0.5): `markSupported()` is `true`,
+    /// open or closed; `ready()` is `true` while open, even empty or at its
+    /// end, and throws `IOException("Stream closed")` once closed.
+    #[test]
+    fn string_reader_overrides_match_jdk25() {
+        use super::StringCharReader;
+        use crate::error::LuceneErrorKind;
+
+        let mut r = StringCharReader::new("ab");
+        assert!(r.mark_supported());
+        assert!(r.ready().unwrap());
+        let mut buf = [0u16; 2];
+        assert_eq!(r.read(&mut buf).unwrap(), 2);
+        assert!(r.ready().unwrap());
+        assert!(StringCharReader::new("").ready().unwrap());
+        r.close().unwrap();
+        assert!(r.mark_supported());
+        match r.ready().unwrap_err().kind {
+            LuceneErrorKind::Io(e) => assert_eq!(
+                crate::store::java_nio_file::java_to_string(&e),
+                "java.io.IOException: Stream closed"
+            ),
+            other => panic!("expected an IOException, got {other:?}"),
+        }
     }
 }

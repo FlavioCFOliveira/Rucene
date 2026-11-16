@@ -69,7 +69,13 @@ impl FilterPath {
             Some(fs) => path.with_file_system(Arc::clone(fs.get_delegate())),
             None => rucene::store::java_nio_file::throw_unchecked(
                 "java.lang.ClassCastException",
-                Some("class sun.nio.fs.UnixPath cannot be cast to class org.apache.lucene.tests.mockfile.FilterPath"),
+                Some(
+                    "class sun.nio.fs.UnixPath cannot be cast to class \
+                     org.apache.lucene.tests.mockfile.FilterPath (sun.nio.fs.UnixPath is in \
+                     module java.base of loader 'bootstrap'; \
+                     org.apache.lucene.tests.mockfile.FilterPath is in unnamed module of loader \
+                     'app')",
+                ),
             ),
         }
     }
@@ -88,5 +94,34 @@ impl FilterPath {
     /// `ProviderMismatchException`, as `FilterPath.toDelegate`.
     pub fn to_delegate(file_system: &Arc<FilterFileSystem>, path: &Path) -> Path {
         to_delegate_of(file_system, path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use randomizedtesting::jdk::exception::Throwable;
+    use rucene::store::java_nio_file::default_file_system;
+
+    /// `((FilterPath) path)` of a default-filesystem path: the JDK 25
+    /// `ClassCastException` message names both classes' modules.
+    #[test]
+    fn delegate_of_a_plain_path_is_a_class_cast_exception() {
+        let path = default_file_system().get_path("/tmp", &[]);
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            FilterPath::get_delegate(&path)
+        }))
+        .unwrap_err();
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.ClassCastException");
+        assert_eq!(
+            t.message(),
+            Some(
+                "class sun.nio.fs.UnixPath cannot be cast to class \
+                 org.apache.lucene.tests.mockfile.FilterPath (sun.nio.fs.UnixPath is in module \
+                 java.base of loader 'bootstrap'; org.apache.lucene.tests.mockfile.FilterPath is \
+                 in unnamed module of loader 'app')"
+            )
+        );
     }
 }

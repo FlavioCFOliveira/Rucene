@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use rucene::codecs::{
     FieldsConsumer, FieldsProducer, Lucene104PostingsReader, Lucene104PostingsWriter,
-    PostingsFormat, SegmentReadState, SegmentWriteState,
+    PostingsFormat, PostingsReaderBase, PostingsWriterBase, SegmentReadState, SegmentWriteState,
 };
 use rucene::error::{LuceneError, Result};
 
@@ -198,6 +198,69 @@ impl UniformSplitPostingsFormat {
     }
 }
 
+impl UniformSplitPostingsFormat {
+    /// Port of the protected factory `createUniformSplitTermsWriter(
+    /// PostingsWriterBase, SegmentWriteState, int, int, BlockEncoder)`
+    /// (`UniformSplitPostingsFormat.java:147-156`): a new
+    /// `UniformSplitTermsWriter`.
+    ///
+    /// **Divergence from Lucene 10.5.0, in dispatch only.** Java's subclass
+    /// `STUniformSplitPostingsFormat` overrides this factory and inherits
+    /// `fieldsConsumer`; Rust has no subclassing, so
+    /// [`STUniformSplitPostingsFormat`](super::sharedterms::STUniformSplitPostingsFormat)
+    /// declares its own factory of the same name and its `fields_consumer`
+    /// calls it, as Java's virtual call reaches the override.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the writer's constructor, which closes `postings_writer`
+    /// when it fails.
+    pub fn create_uniform_split_terms_writer<'a>(
+        &self,
+        postings_writer: Box<dyn PostingsWriterBase>,
+        state: &SegmentWriteState<'a>,
+        target_num_block_lines: i32,
+        delta_num_lines: i32,
+        block_encoder: Option<Arc<dyn BlockEncoder>>,
+    ) -> Result<Box<dyn FieldsConsumer + 'a>> {
+        Ok(Box::new(UniformSplitTermsWriter::with_settings(
+            postings_writer,
+            state,
+            target_num_block_lines,
+            delta_num_lines,
+            block_encoder,
+        )?))
+    }
+
+    /// Port of the protected factory `createUniformSplitTermsReader(
+    /// PostingsReaderBase, SegmentReadState, BlockDecoder)`
+    /// (`UniformSplitPostingsFormat.java:158-162`): a new
+    /// `UniformSplitTermsReader` with `dictionaryOnHeap`.
+    ///
+    /// **Divergence from Lucene 10.5.0, in dispatch only**, as for
+    /// [`create_uniform_split_terms_writer`](Self::create_uniform_split_terms_writer):
+    /// the `sharedterms` format declares its own factory and its
+    /// `fields_producer` calls it.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the reader's constructor, which closes `postings_reader`
+    /// when it fails.
+    pub fn create_uniform_split_terms_reader(
+        &self,
+        postings_reader: Box<dyn PostingsReaderBase>,
+        state: &SegmentReadState<'_>,
+        block_decoder: Option<Arc<dyn BlockDecoder>>,
+    ) -> Result<Box<dyn FieldsProducer>> {
+        Ok(Box::new(UniformSplitTermsReader::new(
+            postings_reader,
+            state,
+            block_decoder,
+            self.dictionary_on_heap,
+        )?))
+    }
+}
+
 /// Port of `UniformSplitPostingsFormat.validateBlockEncoder(BlockEncoder,
 /// BlockDecoder)`.
 fn validate_block_encoder(
@@ -227,27 +290,22 @@ impl PostingsFormat for UniformSplitPostingsFormat {
         state: &SegmentWriteState<'a>,
     ) -> Result<Box<dyn FieldsConsumer + 'a>> {
         let postings_writer = Self::postings_writer(state)?;
-        // `UniformSplitTermsWriter::with_settings` closes the postings writer when it fails.
-        Ok(Box::new(UniformSplitTermsWriter::with_settings(
+        // The writer's constructor closes the postings writer when it fails.
+        self.create_uniform_split_terms_writer(
             postings_writer,
             state,
             self.target_num_block_lines,
             self.delta_num_lines,
             self.block_encoder.clone(),
-        )?))
+        )
     }
 
     /// Port of `UniformSplitPostingsFormat.fieldsProducer(SegmentReadState)`
     /// with `createUniformSplitTermsReader`.
     fn fields_producer<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn FieldsProducer>> {
         let postings_reader = Self::postings_reader(state)?;
-        // `UniformSplitTermsReader::new` closes the postings reader when it fails.
-        Ok(Box::new(UniformSplitTermsReader::new(
-            postings_reader,
-            state,
-            self.block_decoder.clone(),
-            self.dictionary_on_heap,
-        )?))
+        // The reader's constructor closes the postings reader when it fails.
+        self.create_uniform_split_terms_reader(postings_reader, state, self.block_decoder.clone())
     }
 }
 

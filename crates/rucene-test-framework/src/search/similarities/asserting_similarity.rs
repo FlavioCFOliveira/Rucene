@@ -36,10 +36,11 @@ use rucene::search::similarities::{
 /// [`Similarity::scorer`], …) fail by panicking with Java's
 /// `AssertionError`.
 ///
-/// **Adaptation.** Java's `toString()` renders the delegate's `toString()`;
-/// Rust's [`Similarity`] has no string form, so the constructor takes the
-/// delegate's rendering as a function (the delegate's [`fmt::Display`] for
-/// [`new`](Self::new)), read each time this similarity is rendered.
+/// Java's `toString()`, `"Asserting(" + delegate + ")"`, is
+/// [`Similarity::to_java_string`] (and [`fmt::Display`]). The delegate's
+/// part is rendered by a function read each time: the delegate's
+/// [`fmt::Display`] for [`new`](Self::new), the caller's for
+/// [`with_rendering`](Self::with_rendering).
 pub struct AssertingSimilarity {
     /// `delegate`.
     delegate: Arc<dyn Similarity>,
@@ -88,6 +89,11 @@ impl AssertingSimilarity {
 impl Similarity for AssertingSimilarity {
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.tests.search.similarities.AssertingSimilarity"
+    }
+
+    /// `toString()`: `"Asserting(" + delegate + ")"`.
+    fn to_java_string(&self) -> String {
+        self.to_string()
     }
 
     fn compute_norm(&self, state: &FieldInvertState) -> Result<i64> {
@@ -180,5 +186,21 @@ impl BulkSimScorer for AssertingBulkSimScorer<'_> {
             java_assert_unchecked!(score.is_finite());
             java_assert_unchecked!(score >= 0.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rucene::search::similarities::BM25Similarity;
+
+    use super::*;
+
+    /// Java's `toString()` is `Asserting(<delegate>)`, not `Object.toString()`.
+    #[test]
+    fn to_java_string_is_asserting_of_the_delegate() {
+        let delegate = Arc::new(BM25Similarity::default());
+        let expected = format!("Asserting({delegate})");
+        let sim = AssertingSimilarity::new(delegate);
+        assert_eq!(Similarity::to_java_string(&sim), expected);
     }
 }

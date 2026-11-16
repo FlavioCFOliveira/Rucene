@@ -199,6 +199,12 @@ impl CodecReader for MismatchedCodecReader {
 /// renumbered infos know `field` under its number, and returns the wrapped
 /// reader's info of the same name (`null` when it has none, which the wrapped
 /// producer then dereferences: the `NullPointerException`).
+///
+/// **Divergence (null `FieldInfo`).** Java hands the `null` info to the
+/// wrapped producer (`MismatchedCodecReader.java:132-136` and `:200-204`),
+/// whose own dereference names the codec's expression in its helpful
+/// message; the core producer traits take `&FieldInfo`, which cannot be
+/// `null`, so the `NullPointerException` is thrown here, without a message.
 fn remap_field_info<'o>(
     shuffled: &FieldInfos,
     orig: &'o FieldInfos,

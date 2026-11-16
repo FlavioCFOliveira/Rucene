@@ -132,14 +132,14 @@ port loaders named below.
 | `portScope` | `"in"`, `"nested"`, `"out"` — see below. |
 | `portScopeRule` | The mechanical rule that assigned `portScope`. |
 | `portState` | Top-level: `"ported"`, `"skeleton"`, `"candidate"`, `"notApplicable"`, `"unported"`. Nested: `"ported"`, `"skeleton"`, `"absorbed"`, `"unported"`. See below. |
-| `portStateEvidence` | On a nested type, the basis of its `portState`: `"doc-comment"`, `"skeleton-doc-comment"`, `"curated"`, `"not-nameable"`, `"verified-absorption"`, `"verified-absent"`, `"no-port-claim"`. On a top-level type, `"curated-not-applicable"`, together with `portState` `"notApplicable"`. |
+| `portStateEvidence` | On a nested type, the basis of its `portState`: `"doc-comment"`, `"skeleton-doc-comment"`, `"curated"`, `"not-nameable"`, `"verified-absorption"`, `"verified-absent"`, `"no-port-claim"`, and for a module beyond `lucene/core` also `"host-file-name"`, `"host-comment-mention"`, `"host-enum-variant"`. On a top-level type, `"curated-not-applicable"`, together with `portState` `"notApplicable"`. |
 | `portStateSources` | On a `notApplicable` type: every citation in its verdict (Lucene 10.5.0, JDK 25, Rucene precedent), joined with ` \| `. |
 | `portStateNote` | Why a hand verification overrode the mechanical `portState`. A type carrying it is skipped by the mechanical pass, so the verification survives the next sync. |
 | `javaVisibility` | Top-level: `"public"` or `"package"`, from the class file's `ACC_PUBLIC` flag (`lucene_calls_kg.py`). Nested: the effective visibility. |
 | `javaPublished` / `javaUsedAcrossFiles` | On a nested type: whether it and every enclosing type are `public`/`protected`; whether another `lucene/core` file names it as `Outer.Inner`. |
 | `nestedHost` / `nestedHostFiles` | On a nested type: the nearest enclosing type that has a port, and the crate files that port it. |
 | `portDestination` | On an `unported` nested type: the crate file its port belongs in (for a module beyond `lucene/core`, the crate directory mirroring its package below the module's package roots). |
-| `memberTotal` / `memberMatched` / `memberCoverage` | The depth floor: Java method names the type declares, those whose name maps to a function the port provides, and the ratio (`port_evidence_kg.py --phase depth`). |
+| `memberTotal` / `memberMatched` / `memberCoverage` | The depth floor: Java method names the type declares, those whose name maps to a function the port provides, and the ratio (`port_evidence_kg.py --phase depth`). Carried by an in-scope type with a port and by a nested type with a type-level `PORTS` of its own. |
 | `memberEvidence` | Always `"name-mapping"`: the basis of the floor. |
 | `memberAbsent` / `memberRenamed` / `memberNa` | The triage of the names the floor missed: really absent, present under another name, not applicable (`triage_load.py`). **`memberAbsent` is the number to plan from.** A measured type with nothing unmatched carries zeros, never null. |
 | `memberTriage` | `"rule-ladder"` once the triage has classified the type. |
@@ -179,10 +179,18 @@ enclosing type, and no other file names it — so nothing depends on it except t
 its host; its behaviour is measured by the host's depth, not per type);
 `verified-absorption` (nameable, and the crate shows where its work went);
 `verified-absent` (read and found missing, with destination); `skeleton-doc-comment`
-and `no-port-claim` (a nested type of a module beyond `lucene/core`:
-`nested_port_kg.py` measures `lucene/core`'s alone, so these carry the mechanical
-state — `ported` with a type-level `PORTS`, `skeleton` with a `SKELETON_OF`, else
-`unported` with the crate directory as `portDestination`).
+and `no-port-claim` (a skeleton declares itself the type's; no evidence at all, so
+`unported` with the crate directory as `portDestination`). A nested type of a module
+beyond `lucene/core` is classified by `port_coverage_kg.py --phase scope`
+(`classify_added_nested`), strongest evidence first: `doc-comment`;
+`skeleton-doc-comment`; `host-file-name` (`ported`: a Rust type of the nested type's
+own name is declared in a file porting an enclosing type, written as a `PORTS` edge
+with that evidence); `host-comment-mention` (`absorbed`: a comment of such a file names
+it in backticks, `portStateNote` gives `file:line`); `host-enum-variant` (`absorbed`: a
+subclass hierarchy of nested types became one enum, this type a variant);
+`verified-absorption` / `verified-absent` (the hand verdicts of
+`nested_port_verdicts.json`); `no-port-claim`. `nestedHost` names the enclosing type
+whose port the rule read.
 
 #### Depth
 
@@ -195,11 +203,38 @@ with a rule ladder — tiers `own` (the porting type, its traits), `super` (the 
 Java supertype), `file` (the porting files, the `X/` submodule, the sibling
 `macros.rs`); within a tier `exact` → `accessor-prefix` → `separator` → `doc-comment`
 → `name-extension`; and `contract-trait` / `derive` for `equals`, `hashCode`,
-`toString`, `clone`, `compareTo`, `iterator`, from the type's own impls only. Anything no
-rule settles is `absent` — an upper bound on real absence. `na` has three grounds: a
-`#[derive]` discharging an `Object` contract; a `private` Java method on a type whose
-reachable surface has no absence; a member `tools/kg/port_gaps_exclusions.json` marks
-`"triageClass": "na"`.
+`toString`, `clone`, `compareTo`, `iterator`, from the type's own impls only. A newtype
+of a porting file wrapping the port type (`struct RAMTerms(Arc<RAMField>)`) counts as
+the type itself, and a `#[test]` fn's doc is never a claim. Beyond the name rules, each
+`portTriageRule` names the shape of the port it read:
+`rust-keyword` (a raw identifier, `fn r#move`), `annotation-member` (an annotation's
+member kept as a field), `closure-hook` (an overridable method kept as a closure or `fn` pointer field),
+`debug-impl` (a hand-written `impl Debug` for `toString`; a derived one never counts),
+`doc-lead` (a doc that opens with the member, or says `(Java's `member`)` or
+`(`member`: …)`),
+`doc-comment[sibling]` (an explicit claim in a sibling file), `inlined-call` (a
+non-public helper the porting file calls), `inline-marker` (a `// member` comment over
+the inlined body), `reflective-method` (`Method::new("member")` in the class model),
+`default-factory` (a `newX()` factory answered by `Default`), `delegated[divergence]`
+(the type's declared divergence names the Rust type it delegates to, which has the
+member), `declared-divergence[file|super|delegate|trait]` (`na`: a divergence paragraph
+names the member), `curated` (a per-member verdict in
+`tools/kg/port_gaps_exclusions.json` under `memberVerdicts`). Anything no rule settles
+is `absent` — an upper bound on real absence. `na` has these grounds: a `#[derive]`
+discharging an `Object` contract; a `private` Java method on a type whose reachable
+surface has no absence; a declared divergence; a member
+`tools/kg/port_gaps_exclusions.json` marks `"triageClass": "na"`. The measured types
+are those `DEPTH_PAIRS` names (`port_evidence_kg.py`; `triage_dump.py` reads the same
+statements): every in-scope type with a port, and every nested type with a type-level
+port of its own; an `absorbed` nested type's members go with the type.
+
+```cypher
+MATCH (t)-[e:PORTS]->(c:Class) WHERE c.portScope = 'in' OR (c.portScope = 'nested' AND coalesce(e.claimLevel, 'type') = 'type') RETURN c.qualifiedName, t.name, t.file, e.claimLevel
+```
+
+```cypher
+MATCH (c:Class)-[:DECLARES]->(m:Method) WHERE c.portScope IN ['in', 'nested'] AND m.kind = 'method' RETURN c.qualifiedName, m.name
+```
 
 ### `Method`
 A member of a port module's type: method, constructor or field. Identity:
@@ -299,7 +334,10 @@ claim naming `pkg.Foo`, in a file that declares no type, lands on that file's
 
 ### `Divergence`
 A divergence from Lucene 10.5.0 that the crate **declares** (`CLAUDE.md` §14.5): one
-doc-comment paragraph led by `**Divergence…**` or `**Divergences…**`. Identity: `id`
+doc-comment paragraph led by `**Divergence…**` or `**Divergences…**` (the bold lead may
+wrap over several lines), a plain
+`Divergence:` lead, or a Markdown heading section (`# Divergences from Lucene 10.5.0`,
+the lines up to the next heading of the doc block). Identity: `id`
 (string, `"<file>:<line>"` of the lead line). Written whole by
 `tools/kg/divergences_kg.py`, which deletes the nodes the code no longer declares.
 
@@ -307,7 +345,7 @@ doc-comment paragraph led by `**Divergence…**` or `**Divergences…**`. Identi
 |---|---|
 | `id` | `"<file>:<line>"` (identity). |
 | `file` / `line` | Where the paragraph is. |
-| `title` | The bold lead, e.g. `"Divergence from Lucene 10.5.0"`. |
+| `title` | The bold lead or the heading, e.g. `"Divergence from Lucene 10.5.0"`; `"Divergence"` for a plain lead. |
 | `text` | The paragraph, whitespace-joined (truncated at 1500 characters). |
 | `itemKind` | What the doc comment documents: `"fn"`, `"struct"`, `"enum"`, `"trait"`, `"type"`, `"impl"`, `"member"` (field or variant), `"const"`, `"static"`, `"mod"`, `"macro"`, `"module"` (a `//!` block), `"unknown"`. |
 | `item` | The documented declaration's name; absent for a module. |
@@ -372,24 +410,40 @@ and the JPMS `module-info` descriptors. Identity: `name` (string). Properties: `
 `description`.
 
 ### `TestClass`
-A top-level type of a Lucene 10.5.0 test tree — `lucene/test-framework/src/java` or
-`lucene/core/src/test`. Identity: `qualifiedName` (string). Written by
-`lucene_tests_kg.py`.
+A top-level type of a test tree — `lucene/test-framework/src/java` (the framework),
+`lucene/core/src/test`, and the port modules' own tests `lucene/test-framework/src/test`
+and randomizedtesting's `randomized-runner/src/test/java`. Identity: `qualifiedName`
+(string). Written by `lucene_tests_kg.py`; the port modules' own tests by its `--phase
+framework`, which runs at every sync and prunes what those trees no longer declare.
 
 | Property | Purpose |
 |---|---|
 | `qualifiedName` | Fully qualified name (identity). |
 | `name` / `kind` / `package` / `file` | As for `Class`. |
-| `module` | `"lucene/test-framework"` or `"lucene/core"`. |
-| `testKind` | `"framework"` or `"unit-test"`. |
+| `module` | `"lucene/test-framework"`, `"lucene/core"` or `"randomizedtesting/randomized-runner"`. |
+| `testKind` | `"framework"` (a type of `lucene/test-framework/src/java`: machinery, not a test) or `"unit-test"`. |
 | `role` | From name and path only: `unit-test`, `framework-util`, `base-test-case`, `mock`, `asserting`, `mock-filesystem`, `test-codec`, `test-case-base`, `test-helper`, `fault-injection`, `annotation`. |
 | `isAbstract` | Whether the declaration is `abstract`. |
 | `testMethodCount` | Test methods of the file's top-level type that the runner runs: methods that are `public`, not `static`, take no parameters and have a name starting with `test` (`LuceneJUnit3MethodProvider.java:39-42`), plus methods annotated `@Test`. Counted after one left-to-right lexical pass (`javatext.strip_java`). |
-| `ruceneCoverage` | `"covered"` (the subject is ported and its Rust file declares a `#[test]`), `"uncovered"` (ported, no test there), `"subject-unported"`, `"no-subject-resolved"` (the name follows no test-naming convention). A file-level correspondence: it never means the Lucene test's cases were ported. |
+| `ruceneCoverage` | `"covered"` (core tests: the subject is ported and its Rust file declares a `#[test]`; the port modules' own tests: a crate file's comments name the test class), `"uncovered"` (neither), `"subject-unported"`, `"no-subject-resolved"` (the name follows no test-naming convention), `"not-applicable"` (a `testKind: "framework"` class: machinery whose port state is its `Class`'s `portState`, reached by `PORT_UNIT`). A file-level correspondence: it never means the Lucene test's cases were ported. |
 
 A `lucene/test-framework` `TestClass` is also a `Class` of that port module: its port
 state lives on the `Class`, reached by `PORT_UNIT`. The `TestClass` is kept because the
 core test corpus reaches the framework through `EXTENDS` between `TestClass` nodes.
+
+### `TestResource`
+A file of a port module's resource tree (`lucene/test-framework/src/resources`: the
+line-docs file, the geo fixtures, the `META-INF/services` registrations). Identity:
+`path` (string, relative to the module's clone). Written whole by `lucene_tests_kg.py
+--phase framework`, which deletes the nodes the tree no longer holds.
+
+| Property | Purpose |
+|---|---|
+| `path` | Relative to the clone (identity). |
+| `name` / `module` | The file name; the port module. |
+| `resource` | The resource name a class loader resolves (`path` below the resource root). |
+| `ruceneCounterpart` | The crate file that carries it, or null. |
+| `ruceneCounterpartEvidence` | `"same-file-name"` (the crate ships a file of that name) or `"named-by-source"` (a `.rs` file of the crate names the resource, as `spi.rs` reproduces the `META-INF/services` files). |
 
 ### `TestMethod`
 A test method of a `TestClass`: `public void testXxx()` or a `void` method carrying
@@ -409,7 +463,7 @@ A test method of a `TestClass`: `public void testXxx()` or a `void` method carry
 | `DEPENDS_ON` | Lucene `Package` → `Package` and `Class` → `Class` (imports plus same-package references, within and across the port modules); port `Module` → `Module` (`evidence: "module-info"`, `declaredAt`: the descriptor whose `requires` states it); crate `File` → `File` (`use`, across the workspace crates); curated Rust type → type (`note`); `Task` → `Task` (as `rmp` records); `Decision` → `Task` (a gap's follow-up). |
 | `EXTENDS` | `Class` → `Class`; `TestClass` → `TestClass` (how a test reaches `LuceneTestCase` or a `Base…TestCase`). |
 | `IMPLEMENTS` | Lucene `Class` → interface `Class`; Rust type → `RustTrait` (`impl Trait for Type`, crate traits only); legacy `Feature` → `File`/`Class`, and the reverse in a few early edges. |
-| `PORTS` | Rucene item (`RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn`/`Component`) → Lucene `Class`. **`evidence` is mandatory**: `"doc-comment"` (the item's doc says `Equivalent to \`org.apache.lucene.X\`` or a lead-in of that family, or the module's `\| Rucene \| Apache Lucene Core 10.5.0 \|` table names it) or `"curated"`. `declaredAt` gives `file:line`, or the file alone with `declarationSource: "macro-expansion"`. `claimLevel: "member"` and `declaredMember` mark a claim naming a member. Optional `note`: a partial port or adaptation. |
+| `PORTS` | Rucene item (`RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn`/`Component`) → Lucene `Class`. **`evidence` is mandatory**: `"doc-comment"` (the item's doc says `Equivalent to \`org.apache.lucene.X\`` or a lead-in of that family, or the module's `\| Rucene \| Apache Lucene Core 10.5.0 \|` table names it) or `"curated"`. `"host-file-name"` (a nested type of a module beyond `lucene/core`: a Rust type of its own name in a file porting an enclosing type; written whole by `port_coverage_kg.py --phase scope`). `declaredAt` gives `file:line`, or the file alone with `declarationSource: "macro-expansion"`. `claimLevel: "member"` and `declaredMember` mark a claim naming a member. Optional `note`: a partial port or adaptation. |
 | `PORTS_CANDIDATE` | Rust type → `Class`: exactly one Rust type has the same simple name; `evidence: "exact-name-match"`. Unverified; superseded by a `PORTS`. Never written to a `skeleton` type. |
 | `SKELETON_OF` | Rust item (`RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn`) → Lucene `Class` (top-level or nested): the item's doc holds the paragraph ``Skeleton of `<fully qualified Java type>`; ported by rmp task #N.``, so the item is where the type's port lives, and the port is not done. Not a port: it never yields `PORTS`. `evidence: "doc-comment"`; `declaredAt`: `file:line`; `task` (integer): `N`. Written whole by `port_evidence_kg.py --phase load`. |
 | `PLANS_PORT` | `Task` → `Class`: the task a skeleton names as the one that ports the type. `evidence: "skeleton-doc-comment"`; `declaredAt`: the skeleton's `file:line`. Written whole with `SKELETON_OF`, for a task the graph mirrors. |
@@ -420,14 +474,14 @@ A test method of a `TestClass`: `public void testXxx()` or a `void` method carry
 | `REQUIRES_PORT` | `Task` → `Class`: the task's text names the type (an unambiguous simple name of at least four characters). |
 | `CALLS` | Lucene `Method`/`Class` → `Method`, from the bytecode of `lucene-core-10.5.0.jar`. `kind`: `"invoke"`, `"field"`; `sites`; `resolution`: `"exact"`, `"synthetic"`, `"arity"`, `"name"`, `"ambiguous"`; `evidence: "bytecode"`. Written whole by `lucene_calls_kg.py`. |
 | `OVERRIDES` | `Method` → `Method`, transitively: the source overrides or implements the target. `evidence: "bytecode"`. |
-| `REFERENCES` (crate) | Rust item or `File` → Rust item: the source's code names the target. `evidence`: `"rust-analyzer-scip"` (resolved by rust-analyzer) or `"macro-body-lexical"` (a `macro_rules!` body names it; weaker). `prodRefs` / `testRefs`: occurrences at production and test sites. Written whole by `rust_refs_kg.py`. |
+| `REFERENCES` (crate) | Rust item or `File` → Rust item: the source's code names the target. Every workspace crate's symbols are read, not only the root crate's. `evidence`: `"rust-analyzer-scip"` (resolved by rust-analyzer) or `"macro-body-lexical"` (a `macro_rules!` body names it; weaker). `prodRefs` / `testRefs`: occurrences at production and test sites. Written whole by `rust_refs_kg.py`. |
 | `REFERENCES` | `Project` → `Project` / `Feature`; `Feature` → `Package`. Not a port relation. |
 | `AWAITS_CALLER` | Rust item → Lucene `Class`: a `W-blocked` #269 item, and each Java class whose code calls its counterpart (the `callerClasses` of the commit's no-caller list). The class may be `ported` while the calling member is not; the item's `noCallerEvidence` names the unported caller. Written whole by `no_caller_verdicts_kg.py`. |
 | `DECLARED_IN` | `Divergence` → `File` that declares it. |
 | `CONCERNS` | `Divergence` → the Rust type or `RustFn` its doc comment documents, when the declaration resolves to exactly one node (a method of an `impl Trait for Type` block resolves to none). |
 | `DIVERGES_FROM` | `Divergence` → a Lucene `Class` whose source file the paragraph cites, when one top-level type is declared by a file of that name; `lines` holds the cited lines. The Lucene type of a divergence is also reached through `CONCERNS` → `PORTS`. |
 | `TESTS` | `File`/`Class` → `Feature`/`Class`/Rust type/`Component`/`Defect`: a test file and what it pins down; `TestClass` → `Class` with `evidence: "name-convention"` (`TestFoo` → `Foo`). |
-| `COVERED_BY` | `TestClass` → `File`: the Rust file porting the test's subject, which declares a `#[test]`; `evidence: "ported-type-file-has-tests"`. |
+| `COVERED_BY` | `TestClass` → `File`: the Rust file porting the test's subject, which declares a `#[test]`, `evidence: "ported-type-file-has-tests"` (never from a framework class); or, for the port modules' own tests, a crate file whose comments name the test class, `evidence: "names-the-test-class"`. |
 | `EXPORTS` / `OPENS` / `REQUIRES` / `USES` / `PROVIDES` | `Feature` (`module-info`) → `Package`/`Feature`/`Class`. |
 | `PROVIDED_BY` | SPI interface `Class` → implementation `Class`. |
 | `SPECIFIED_IN` | `Feature` → specification `File`. |
@@ -483,6 +537,27 @@ Members ported early under the cycle rule (`ask.py early`):
 MATCH (t:Task)-[e:PORTS_EARLY]->(m:Method)<-[:DECLARES]-(c:Class) RETURN c.module AS module, c.qualifiedName AS class, m.qualifiedName AS member, t.id AS task, e.ownerTask AS ownerTask, e.rustItem AS rustItem ORDER BY module, class, member
 ```
 
+The other half of a module, its nested types per `portState` (`ported` and `absorbed`
+count as done), and the member work still open (`ask.py coverage` prints all three and a
+`fullyPorted` verdict per module: every in-scope class `ported` or `notApplicable`,
+every nested type `ported` or `absorbed`, no `absent` member):
+
+```cypher
+MATCH (c:Class) WHERE c.portScope = 'nested' RETURN c.module AS module, coalesce(c.portState, 'unstated') AS status, count(c) AS classes ORDER BY module, status
+```
+
+```cypher
+MATCH (c:Class) WHERE c.portScope IN ['in', 'nested'] AND c.memberAbsent > 0 RETURN c.module AS module, count(c) AS classes, sum(c.memberAbsent) AS absent ORDER BY module
+```
+
+A Java type by its fully qualified name, nested types included (`ask.py item
+pkg.Outer.Inner` or `pkg.Outer$Inner`; `ask.class_keys` maps the dotted spelling to the
+`$` key), and every Rust item that ports it:
+
+```cypher
+MATCH (c:Class) WHERE c.qualifiedName IN $keys OPTIONAL MATCH (t)-[e:PORTS]->(c) RETURN coalesce(t.file, c.file), coalesce(labels(t)[0], 'Class'), coalesce(t.qualifiedName, c.qualifiedName), c.qualifiedName, coalesce(e.evidence, c.portStateEvidence), coalesce(e.note, c.portStateNote)
+```
+
 How the modules depend on one another:
 
 ```cypher
@@ -516,7 +591,7 @@ Plan from `memberAbsent`; audit with `memberMatched`. By package:
 
 ```cypher
 MATCH (c:Class)
-WHERE c.portScope = 'in' AND c.memberTriage IS NOT NULL
+WHERE c.portScope IN ['in', 'nested'] AND c.memberTriage IS NOT NULL
 RETURN c.package AS package, count(c) AS types,
        sum(c.memberTotal) AS members,
        sum(c.memberTotal) - sum(c.memberMatched) AS unmatched,
@@ -525,10 +600,16 @@ RETURN c.package AS package, count(c) AS types,
 ORDER BY absent DESC
 ```
 
-The types to work on, and the members each lacks:
+The types to work on, top-level or nested, and the members each lacks (`ask.py absent`):
 
 ```cypher
-MATCH (c:Class) WHERE c.portScope = 'in' AND c.memberAbsent > 0
+MATCH (c:Class) WHERE c.portScope IN ['in', 'nested'] AND c.memberAbsent > 0 OPTIONAL MATCH (c)-[:DECLARES]->(m:Method) WHERE m.portTriage = 'absent' RETURN c.qualifiedName, c.memberAbsent, collect(DISTINCT m.name) ORDER BY c.memberAbsent DESC
+```
+
+The same, laid out:
+
+```cypher
+MATCH (c:Class) WHERE c.portScope IN ['in', 'nested'] AND c.memberAbsent > 0
 OPTIONAL MATCH (c)-[:DECLARES]->(m:Method) WHERE m.portTriage = 'absent'
 RETURN c.qualifiedName AS type, c.memberAbsent AS absent,
        collect(DISTINCT m.name) AS members
@@ -823,6 +904,7 @@ label for every row of a batch.
 | `idx_rustenum_name` | `RustEnum` | `name` |
 | `idx_rustalias_name` | `RustAlias` | `name` |
 | `idx_divergence_id` | `Divergence` | `id` |
+| `idx_testresource_path` | `TestResource` | `path` |
 
 The Rust type labels' identity is `{name, file}`; the engine rejects composite indexes,
 so the index covers `name`, the selective half. `divergences_kg.py` creates
@@ -913,18 +995,20 @@ what each step reads:
    `PORTS_CANDIDATE`, the `Task` mirror and its prune, `REQUIRES_PORT`.
 3. `port_evidence_kg.py --phase extract`, `--phase load` — the declared `PORTS`, then
    `SKELETON_OF` and `PLANS_PORT` (after the `Task` mirror of step 2);
-   `expanded_evidence_kg.py` — the same for macro-generated items;
-   `port_evidence_kg.py --phase depth` — the depth floor (needs both).
-4. `nested_port_kg.py` — the nested types' `portState` (needs step 3).
-5. `port_coverage_kg.py --phase scope`, then `--phase candidates` (separate
-   invocations).
+   `expanded_evidence_kg.py` — the same for macro-generated items.
+4. `nested_port_kg.py` — `lucene/core`'s nested types' `portState` (needs step 3).
+5. `port_coverage_kg.py --phase scope --source-root <export>` (the added modules'
+   nested types and their `host-file-name` `PORTS`), then `port_evidence_kg.py --phase
+   depth` — the depth floor, nested types with a type-level port included (needs the
+   scope phase) — then `port_coverage_kg.py --phase candidates` (separate invocations).
    `port_modules_kg.py --phase coverage` prints the per-module coverage.
 6. `triage_dump.py` → `triage_repro.py` (fails unless it reproduces the graph's
    `memberMatched`) → `triage_members.py` → `triage_load.py` — the member triage.
 7. `rmp_closings.py` → `commits_kg.py --closings` — the commit history and task edges.
 8. `rust_refs_kg.py` → `no_caller_kg.py` → `no_caller_verdicts_kg.py` — crate
    references, `PORTS_MEMBER`, the no-caller list and the #269 verdicts.
-9. `divergences_kg.py` — the declared divergences.
+9. `divergences_kg.py` — the declared divergences; `lucene_tests_kg.py --phase
+   framework` — the port modules' own tests and resources and their counterparts.
 10. `audit_kg.py --commit <commit>` — `problems: 0`.
 
 **From an empty store:** the Lucene half first (`lucene_modules_kg.py`,

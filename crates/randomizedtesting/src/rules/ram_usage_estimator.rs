@@ -40,18 +40,36 @@ pub enum JvmFeature {
 }
 
 impl JvmFeature {
-    /// `description`.
+    /// `description` (`RamUsageEstimator.java:49-54`).
     pub fn description(&self) -> &'static str {
         match self {
             JvmFeature::ObjectReferenceSize => {
-                "Object reference size estimated using array index scale"
+                "Object reference size estimated using array index scale."
             }
-            JvmFeature::ArrayHeaderSize => "Array header size estimated using array based offset",
-            JvmFeature::FieldOffsets => "Shallow instance size based on field offsets",
+            JvmFeature::ArrayHeaderSize => "Array header size estimated using array based offset.",
+            JvmFeature::FieldOffsets => "Shallow instance size based on field offsets.",
             JvmFeature::ObjectAlignment => {
-                "Object alignment retrieved from HotSpotDiagnostic MX bean"
+                "Object alignment retrieved from HotSpotDiagnostic MX bean."
             }
         }
+    }
+
+    /// `name()`: the constant's Java name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            JvmFeature::ObjectReferenceSize => "OBJECT_REFERENCE_SIZE",
+            JvmFeature::ArrayHeaderSize => "ARRAY_HEADER_SIZE",
+            JvmFeature::FieldOffsets => "FIELD_OFFSETS",
+            JvmFeature::ObjectAlignment => "OBJECT_ALIGNMENT",
+        }
+    }
+}
+
+impl std::fmt::Display for JvmFeature {
+    /// `JvmFeature.toString()` (`RamUsageEstimator.java:60-63`):
+    /// `super.name() + " (" + description + ")"`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.name(), self.description())
     }
 }
 
@@ -653,6 +671,28 @@ impl Constants {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `JvmFeature.toString()`: `name() + " (" + description + ")"`, with
+    /// Java's descriptions, trailing period included.
+    #[test]
+    fn jvm_feature_to_string_matches_java() {
+        assert_eq!(
+            JvmFeature::ObjectReferenceSize.to_string(),
+            "OBJECT_REFERENCE_SIZE (Object reference size estimated using array index scale.)"
+        );
+        assert_eq!(
+            JvmFeature::ArrayHeaderSize.to_string(),
+            "ARRAY_HEADER_SIZE (Array header size estimated using array based offset.)"
+        );
+        assert_eq!(
+            JvmFeature::FieldOffsets.to_string(),
+            "FIELD_OFFSETS (Shallow instance size based on field offsets.)"
+        );
+        assert_eq!(
+            JvmFeature::ObjectAlignment.to_string(),
+            "OBJECT_ALIGNMENT (Object alignment retrieved from HotSpotDiagnostic MX bean.)"
+        );
+    }
 
     /// `IdentityHashSet`: identity membership, growth past the resize
     /// threshold with every key rehashed, `clear`, and Java's capacity rules.

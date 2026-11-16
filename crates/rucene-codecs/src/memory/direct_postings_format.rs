@@ -240,6 +240,11 @@ impl Fields for DirectFields {
 }
 
 impl FieldsProducer for DirectFields {
+    /// `DirectPostingsFormat.DirectFields.toString()`: this producer's [`Display`](std::fmt::Display).
+    fn to_java_string(&self) -> String {
+        format!("{self}")
+    }
+
     fn check_integrity(&self) -> Result<()> {
         // if we read entirely into ram, we already validated.
         // otherwise returned the raw postings reader
@@ -274,12 +279,37 @@ impl Accountable for LowFreqTerm {
     fn ram_bytes_used(&self) -> i64 {
         // Java's `BASE_RAM_BYTES_USED` of `LowFreqTerm` measures
         // `HighFreqTerm.class`.
-        RamUsageEstimator::shallow_size_of_instance::<HighFreqTerm>()
+        high_freq_term_base_ram_bytes_used()
             + RamUsageEstimator::shallow_size_of_array::<i32>(self.postings.len())
             + self.payloads.as_ref().map_or(0, |p| {
                 RamUsageEstimator::shallow_size_of_array::<u8>(p.len())
             })
     }
+}
+
+/// `RamUsageEstimator.shallowSizeOfInstance(HighFreqTerm.class)`
+/// (`DirectPostingsFormat.java`, `HighFreqTerm.BASE_RAM_BYTES_USED` and
+/// `LowFreqTerm.BASE_RAM_BYTES_USED`), over Java's fields: the inherited
+/// `int[] skips`, then `long totalTermFreq`, `int[] docIDs`, `int[] freqs`,
+/// `int[][] positions`, `byte[][][] payloads`. 40 bytes on JDK 25 (64-bit,
+/// compressed oops), as Lucene 10.5.0 reports.
+fn high_freq_term_base_ram_bytes_used() -> i64 {
+    const REF: i64 = RamUsageEstimator::NUM_BYTES_OBJECT_REF;
+    RamUsageEstimator::shallow_size_of_declared_instance(&[REF, 8, REF, REF, REF, REF])
+}
+
+/// `RamUsageEstimator.shallowSizeOfInstance(DirectField.class)`
+/// (`DirectField.BASE_RAM_BYTES_USED`), over Java's instance fields in
+/// declaration order (`Terms` has none): `termBytes`, `termOffsets`, `skips`,
+/// `skipOffsets`, `terms`, four booleans, `long sumTotalTermFreq`, `int
+/// docCount`, `long sumDocFreq`, `int skipCount`, `int count`, `int[]
+/// sameCounts`, `int minSkipCount`. 72 bytes on JDK 25, as Lucene 10.5.0
+/// reports.
+fn direct_field_base_ram_bytes_used() -> i64 {
+    const REF: i64 = RamUsageEstimator::NUM_BYTES_OBJECT_REF;
+    RamUsageEstimator::shallow_size_of_declared_instance(&[
+        REF, REF, REF, REF, REF, 1, 1, 1, 1, 8, 4, 8, 4, 4, REF, 4,
+    ])
 }
 
 /// Port of `DirectField.HighFreqTerm`: the postings of a term with `docFreq
@@ -295,7 +325,7 @@ struct HighFreqTerm {
 
 impl Accountable for HighFreqTerm {
     fn ram_bytes_used(&self) -> i64 {
-        let mut size_in_bytes = RamUsageEstimator::shallow_size_of_instance::<HighFreqTerm>();
+        let mut size_in_bytes = high_freq_term_base_ram_bytes_used();
         size_in_bytes += RamUsageEstimator::shallow_size_of_array::<i32>(self.doc_ids.len());
         size_in_bytes += self.freqs.as_ref().map_or(0, |f| {
             RamUsageEstimator::shallow_size_of_array::<i32>(f.len())
@@ -779,7 +809,7 @@ impl DirectField {
 
 impl Accountable for DirectField {
     fn ram_bytes_used(&self) -> i64 {
-        let mut size_in_bytes = RamUsageEstimator::shallow_size_of_instance::<DirectField>();
+        let mut size_in_bytes = direct_field_base_ram_bytes_used();
         size_in_bytes += RamUsageEstimator::shallow_size_of_array::<u8>(self.term_bytes.len());
         size_in_bytes += RamUsageEstimator::shallow_size_of_array::<i32>(self.term_offsets.len());
         size_in_bytes += RamUsageEstimator::shallow_size_of_array::<i32>(self.skips.len());
@@ -2477,5 +2507,52 @@ impl PostingsEnum for HighFreqPostingsEnum {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
         Some(self)
+    }
+}
+
+#[cfg(test)]
+mod ram_tests {
+    use super::*;
+
+    /// Regression (rmp #528): the shallow sizes are Java's, measured with
+    /// `RamUsageEstimator.shallowSizeOfInstance` on Lucene 10.5.0 / JDK 25
+    /// (`DirectField` 72, `HighFreqTerm` 40, which `LowFreqTerm` also
+    /// charges), not the sizes of the Rust structs; the arrays add
+    /// `RamUsageEstimator.sizeOf` (`int[0]`, `byte[0]`, `Object[0]` 16,
+    /// `int[1]` 24, `int[10]` 56).
+    #[test]
+    fn ram_bytes_used_matches_lucene() {
+        let low = LowFreqTerm {
+            postings: Vec::new(),
+            payloads: None,
+            doc_freq: 0,
+            total_term_freq: 0,
+        };
+        assert_eq!(low.ram_bytes_used(), 40 + 16);
+        let high = HighFreqTerm {
+            total_term_freq: 0,
+            doc_ids: Vec::new(),
+            freqs: None,
+            positions: None,
+            payloads: None,
+        };
+        assert_eq!(high.ram_bytes_used(), 40 + 16);
+        let field = DirectField {
+            term_bytes: Vec::new(),
+            term_offsets: vec![0],
+            skips: Vec::new(),
+            skip_offsets: vec![0],
+            terms: Vec::new(),
+            has_freq: false,
+            has_pos: false,
+            has_offsets: false,
+            has_payloads: false,
+            sum_total_term_freq: 0,
+            doc_count: 0,
+            sum_doc_freq: 0,
+            same_counts_len: 10,
+            min_skip_count: 8,
+        };
+        assert_eq!(field.ram_bytes_used(), 72 + 16 + 24 + 16 + 24 + 56 + 16);
     }
 }

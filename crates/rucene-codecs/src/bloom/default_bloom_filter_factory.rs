@@ -42,7 +42,7 @@ impl BloomFilterFactory for DefaultBloomFilterFactory {
     fn get_set_for_field(
         &self,
         state: &SegmentWriteState<'_>,
-        _info: &FieldInfo,
+        _info: Option<&FieldInfo>,
     ) -> Result<Option<FuzzySet>> {
         // Initially assume all the docs have a unique term (e.g., a primary key) and target a
         // false-positive rate of 10%. If the "all docs have a unique term" assumptions ends up false,
@@ -54,7 +54,7 @@ impl BloomFilterFactory for DefaultBloomFilterFactory {
         )))
     }
 
-    fn is_saturated(&self, bloom_filter: &FuzzySet, _field_info: &FieldInfo) -> bool {
+    fn is_saturated(&self, bloom_filter: &FuzzySet, _field_info: Option<&FieldInfo>) -> bool {
         // Don't bother saving bitsets if >90% of bits are set - we don't want to
         // throw any more memory at this problem.
         bloom_filter.get_saturation() > 0.9

@@ -281,6 +281,17 @@ fn with_filter(q: Arc<dyn Query>, filter: Arc<dyn Query>) -> Result<Arc<dyn Quer
     Ok(Arc::new(b.build()))
 }
 
+/// The `NullPointerException` of `reader.maxDoc()`, the first dereference of
+/// the class state in both `assertSubsetOf` and `assertSameScores`, before
+/// `beforeClass()` ran (or after `afterClass()`): the JVM's helpful message
+/// for a static field (JDK 25 form).
+fn no_reader() -> ! {
+    randomizedtesting::jdk::exception::throw(
+        "java.lang.NullPointerException",
+        "Cannot invoke \"org.apache.lucene.index.IndexReader.maxDoc()\" because \"org.apache.lucene.tests.search.SearchEquivalenceTestBase.reader\" is null",
+    )
+}
+
 /// `assertSameSet(Query q1, Query q2)`: asserts that the documents returned
 /// by `q1` are the same as of those returned by `q2`.
 pub fn assert_same_set(q1: Arc<dyn Query>, q2: Arc<dyn Query>) -> Result<()> {
@@ -331,9 +342,7 @@ pub fn assert_subset_of_filtered(
         None => (q1, q2),
     };
     let state = state();
-    let state = state.as_ref().unwrap_or_else(|| {
-        randomizedtesting::jdk::exception::throw_without_message("java.lang.NullPointerException")
-    });
+    let state = state.as_ref().unwrap_or_else(|| no_reader());
     let max_doc = state.reader.max_doc();
     // we test both INDEXORDER and RELEVANCE because we want to test needsScores=true/false
     let index_order = Sort::new_fields(vec![SortField::FIELD_DOC.clone()])?;
@@ -401,9 +410,7 @@ pub fn assert_same_scores_filtered(
         None => (q1, q2),
     };
     let state = state();
-    let state = state.as_ref().unwrap_or_else(|| {
-        randomizedtesting::jdk::exception::throw_without_message("java.lang.NullPointerException")
-    });
+    let state = state.as_ref().unwrap_or_else(|| no_reader());
     let max_doc = state.reader.max_doc();
     let td1 = state.s1.search(q1, max_doc)?;
     let td2 = state.s2.search(q2, max_doc)?;
@@ -413,7 +420,16 @@ pub fn assert_same_scores_filtered(
     // `double`, so the overload is `assertEquals(double, double, double)`
     // over the widened scores.
     for i in 0..td1.score_docs.len() {
-        let (a, b) = (&td1.score_docs[i], &td2.score_docs[i]);
+        let a = &td1.score_docs[i];
+        let b = td2.score_docs.get(i).unwrap_or_else(|| {
+            randomizedtesting::jdk::exception::throw(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!(
+                    "Index {i} out of bounds for length {}",
+                    td2.score_docs.len()
+                ),
+            )
+        });
         Assert::assert_equals(a.doc, b.doc);
         Assert::assert_equals_double_msg(None, f64::from(a.score), f64::from(b.score), 10e-5);
     }
@@ -423,4 +439,34 @@ pub fn assert_same_scores_filtered(
 /// `filteredQuery(Query query, Query filter)`.
 pub fn filtered_query(query: Arc<dyn Query>, filter: Arc<dyn Query>) -> Result<Arc<dyn Query>> {
     with_filter(query, filter)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use randomizedtesting::jdk::exception::Throwable;
+    use rucene::search::match_all_docs_query::MatchAllDocsQuery;
+
+    use super::*;
+
+    /// Without the class state, Java's first dereference is
+    /// `reader.maxDoc()` on the `null` static field.
+    #[test]
+    fn subset_check_without_state_is_the_helpful_npe() {
+        assert!(state().is_none(), "no lib test sets the class state");
+        let q: Arc<dyn Query> = Arc::new(MatchAllDocsQuery);
+        let payload = catch_unwind(AssertUnwindSafe(|| {
+            let _ = assert_subset_of_filtered(Arc::clone(&q), Arc::clone(&q), None);
+        }))
+        .expect_err("the NPE");
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.NullPointerException");
+        assert_eq!(
+            t.message(),
+            Some(
+                "Cannot invoke \"org.apache.lucene.index.IndexReader.maxDoc()\" because \"org.apache.lucene.tests.search.SearchEquivalenceTestBase.reader\" is null"
+            )
+        );
+    }
 }

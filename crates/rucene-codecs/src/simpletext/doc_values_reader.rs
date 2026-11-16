@@ -39,7 +39,9 @@ use super::doc_values_writer::{
     SKIP_MAX_DOC_ID, SKIP_MAX_VALUE, SKIP_MIN_DOC_ID, SKIP_MIN_VALUE, TYPE,
 };
 use super::field_infos_format::SimpleTextFieldInfosFormat;
-use super::util::{self, java_split, parse_int, parse_long, read_line, CHECKSUM};
+use super::java_decimal_format::{DecimalFormat, ParsedNumber};
+use super::util::{self, java_split, parse_int, parse_long, read_line, JavaScratch, CHECKSUM};
+use rucene::util::extra::ParseException;
 
 /// Port of `org.apache.lucene.codecs.simpletext.SimpleTextDocValuesReader.OneField`.
 #[derive(Debug, Clone, Default)]
@@ -55,6 +57,52 @@ pub(crate) struct OneField {
     max_value_count: i32,
     num_values: i64,
     skip_intervals: Arc<Vec<SkipInterval>>,
+}
+
+impl OneField {
+    /// `pattern.length()`, in UTF-16 units.
+    fn pattern_len(&self) -> i32 {
+        self.pattern.encode_utf16().count() as i32
+    }
+
+    /// `(1 + pattern.length() + 2)`, an `int`: the bytes of one numeric
+    /// document.
+    fn numeric_stride(&self) -> i64 {
+        i64::from(1i32.wrapping_add(self.pattern_len()).wrapping_add(2))
+    }
+
+    /// `(9 + pattern.length() + maxLength + 2)`, an `int`: the bytes of one
+    /// binary document.
+    fn binary_stride(&self) -> i64 {
+        i64::from(
+            9i32.wrapping_add(self.pattern_len())
+                .wrapping_add(self.max_length)
+                .wrapping_add(2),
+        )
+    }
+
+    /// `(9 + pattern.length() + maxLength)`, an `int`: the bytes of one
+    /// sorted value.
+    fn value_stride(&self) -> i64 {
+        i64::from(
+            9i32.wrapping_add(self.pattern_len())
+                .wrapping_add(self.max_length),
+        )
+    }
+
+    /// `(1 + ordPattern.length())`, an `int`: the bytes of one document's
+    /// ords.
+    fn ord_stride(&self) -> i64 {
+        i64::from(1i32.wrapping_add(self.ord_pattern.encode_utf16().count() as i32))
+    }
+
+    /// `dataStartFilePointer + numValues * valueStride + i * ordStride`, in
+    /// Java's wrapping `long` arithmetic.
+    fn ord_position(&self, i: i32) -> i64 {
+        self.data_start_file_pointer
+            .wrapping_add(self.num_values.wrapping_mul(self.value_stride()))
+            .wrapping_add(i64::from(i).wrapping_mul(self.ord_stride()))
+    }
 }
 
 /// The reader's `data`: every iterator clones it, and `close` closes it.
@@ -101,30 +149,30 @@ impl std::fmt::Display for SimpleTextDocValuesReader {
 }
 
 /// `new String(scratch.bytes(), prefix.length, ..., UTF_8)`.
-fn strip_prefix(scratch: &[u8], prefix: &[u8]) -> String {
-    util::read_string(scratch, prefix.len())
+fn strip_prefix(scratch: &JavaScratch, prefix: &[u8]) -> Result<String> {
+    scratch.new_string(prefix.len())
 }
 
-/// `DecimalFormat.parse(String)` with a pattern of zeros (or `X`s): the
-/// longest number at the start of the text, an optional leading `-`, and the
-/// `ParseException` Java throws when there is none.
-fn decimal_parse(s: &str) -> Option<i128> {
-    let bytes = s.as_bytes();
-    let (negative, digits) = match bytes.first() {
-        Some(b'-') => (true, &bytes[1..]),
-        _ => (false, bytes),
-    };
-    let count = digits.iter().take_while(|b| b.is_ascii_digit()).count();
-    if count == 0 {
-        return None;
-    }
-    let mut value: i128 = 0;
-    for &d in &digits[..count] {
-        value = value
-            .saturating_mul(10)
-            .saturating_add(i128::from(d - b'0'));
-    }
-    Some(if negative { -value } else { value })
+/// `decoder.parse(text)`, a `ParseException` becoming the cause of a
+/// `CorruptIndexException(message, in, pe)`; any other exception passes.
+fn decimal_parse(
+    decoder: &DecimalFormat,
+    text: &str,
+    message: &str,
+    resource: &str,
+) -> Result<ParsedNumber> {
+    decoder.parse(text).map_err(|e| {
+        if ParseException::of(&e).is_some() {
+            LuceneError::corrupt_index_with_cause(message, resource, e)
+        } else {
+            e
+        }
+    })
+}
+
+/// `new DecimalFormat(pattern, new DecimalFormatSymbols(Locale.ROOT))`.
+fn decoder(pattern: &str) -> Result<DecimalFormat> {
+    DecimalFormat::new(pattern)
 }
 
 impl SimpleTextDocValuesReader {
@@ -140,11 +188,11 @@ impl SimpleTextDocValuesReader {
         )?;
         let max_doc = state.segment_info.max_doc()?;
         let mut fields: HashMap<String, OneField> = HashMap::new();
-        let mut scratch = Vec::new();
+        let mut scratch = JavaScratch::new();
         let enums = SimpleTextFieldInfosFormat::new();
         loop {
-            read_line(data.as_mut(), &mut scratch)?;
-            if scratch.as_slice() == END {
+            scratch.read_line(data.as_mut())?;
+            if &*scratch == END {
                 break;
             }
             debug_assert!(
@@ -152,37 +200,37 @@ impl SimpleTextDocValuesReader {
                 "{}",
                 java_utf8_to_string(&scratch)
             );
-            let field_name = strip_prefix(&scratch, FIELD);
+            let field_name = strip_prefix(&scratch, FIELD)?;
 
             let mut field = OneField::default();
 
-            read_line(data.as_mut(), &mut scratch)?;
+            scratch.read_line(data.as_mut())?;
             debug_assert!(
                 scratch.starts_with(TYPE),
                 "{}",
                 java_utf8_to_string(&scratch)
             );
 
-            let dv_type = enums.doc_values_type(&strip_prefix(&scratch, TYPE))?;
+            let dv_type = enums.doc_values_type(&strip_prefix(&scratch, TYPE)?)?;
             debug_assert_ne!(dv_type, DocValuesType::NONE);
 
             if dv_type == DocValuesType::NUMERIC || dv_type == DocValuesType::SORTED_NUMERIC {
-                read_line(data.as_mut(), &mut scratch)?;
+                scratch.read_line(data.as_mut())?;
                 debug_assert!(scratch.starts_with(MINVALUE));
-                field.min_value = parse_long(&strip_prefix(&scratch, MINVALUE))?;
-                read_line(data.as_mut(), &mut scratch)?;
+                field.min_value = parse_long(&strip_prefix(&scratch, MINVALUE)?)?;
+                scratch.read_line(data.as_mut())?;
                 debug_assert!(scratch.starts_with(MAXVALUE));
-                field.max_value = parse_long(&strip_prefix(&scratch, MAXVALUE))?;
+                field.max_value = parse_long(&strip_prefix(&scratch, MAXVALUE)?)?;
             }
 
-            read_line(data.as_mut(), &mut scratch)?;
+            scratch.read_line(data.as_mut())?;
             debug_assert!(scratch.starts_with(DOCCOUNT));
-            field.doc_count = parse_int(&strip_prefix(&scratch, DOCCOUNT))?;
+            field.doc_count = parse_int(&strip_prefix(&scratch, DOCCOUNT)?)?;
 
-            read_line(data.as_mut(), &mut scratch)?;
+            scratch.read_line(data.as_mut())?;
             if scratch.starts_with(MAXVALUECOUNT) {
-                field.max_value_count = parse_int(&strip_prefix(&scratch, MAXVALUECOUNT))?;
-                read_line(data.as_mut(), &mut scratch)?;
+                field.max_value_count = parse_int(&strip_prefix(&scratch, MAXVALUECOUNT)?)?;
+                scratch.read_line(data.as_mut())?;
             } else if field.doc_count == 0 {
                 field.max_value_count = 0;
             } else if dv_type == DocValuesType::NUMERIC || dv_type == DocValuesType::SORTED {
@@ -193,49 +241,47 @@ impl SimpleTextDocValuesReader {
 
             if dv_type == DocValuesType::NUMERIC {
                 debug_assert!(scratch.starts_with(ORIGIN));
-                field.origin = parse_long(&strip_prefix(&scratch, ORIGIN))?;
-                read_line(data.as_mut(), &mut scratch)?;
+                field.origin = parse_long(&strip_prefix(&scratch, ORIGIN)?)?;
+                scratch.read_line(data.as_mut())?;
                 debug_assert!(scratch.starts_with(PATTERN));
-                field.pattern = strip_prefix(&scratch, PATTERN);
+                field.pattern = strip_prefix(&scratch, PATTERN)?;
                 field.data_start_file_pointer = data.file_pointer()?;
-                let fp = data.file_pointer()?
-                    + (1 + field.pattern.encode_utf16().count() as i64 + 2) * i64::from(max_doc);
+                let fp = data
+                    .file_pointer()?
+                    .wrapping_add(field.numeric_stride().wrapping_mul(i64::from(max_doc)));
                 data.seek(fp)?;
                 field.skip_intervals = Arc::new(read_skip_data(data.as_mut(), &mut scratch)?);
             } else if dv_type == DocValuesType::BINARY || dv_type == DocValuesType::SORTED_NUMERIC {
                 debug_assert!(scratch.starts_with(MAXLENGTH));
-                field.max_length = parse_int(&strip_prefix(&scratch, MAXLENGTH))?;
-                read_line(data.as_mut(), &mut scratch)?;
+                field.max_length = parse_int(&strip_prefix(&scratch, MAXLENGTH)?)?;
+                scratch.read_line(data.as_mut())?;
                 debug_assert!(scratch.starts_with(PATTERN));
-                field.pattern = strip_prefix(&scratch, PATTERN);
+                field.pattern = strip_prefix(&scratch, PATTERN)?;
                 field.data_start_file_pointer = data.file_pointer()?;
-                let fp = data.file_pointer()?
-                    + (9 + field.pattern.encode_utf16().count() as i64
-                        + i64::from(field.max_length)
-                        + 2)
-                        * i64::from(max_doc);
+                let fp = data
+                    .file_pointer()?
+                    .wrapping_add(field.binary_stride().wrapping_mul(i64::from(max_doc)));
                 data.seek(fp)?;
                 if dv_type == DocValuesType::SORTED_NUMERIC {
                     field.skip_intervals = Arc::new(read_skip_data(data.as_mut(), &mut scratch)?);
                 }
             } else if dv_type == DocValuesType::SORTED || dv_type == DocValuesType::SORTED_SET {
                 debug_assert!(scratch.starts_with(NUMVALUES));
-                field.num_values = parse_long(&strip_prefix(&scratch, NUMVALUES))?;
-                read_line(data.as_mut(), &mut scratch)?;
+                field.num_values = parse_long(&strip_prefix(&scratch, NUMVALUES)?)?;
+                scratch.read_line(data.as_mut())?;
                 debug_assert!(scratch.starts_with(MAXLENGTH));
-                field.max_length = parse_int(&strip_prefix(&scratch, MAXLENGTH))?;
-                read_line(data.as_mut(), &mut scratch)?;
+                field.max_length = parse_int(&strip_prefix(&scratch, MAXLENGTH)?)?;
+                scratch.read_line(data.as_mut())?;
                 debug_assert!(scratch.starts_with(PATTERN));
-                field.pattern = strip_prefix(&scratch, PATTERN);
-                read_line(data.as_mut(), &mut scratch)?;
+                field.pattern = strip_prefix(&scratch, PATTERN)?;
+                scratch.read_line(data.as_mut())?;
                 debug_assert!(scratch.starts_with(ORDPATTERN));
-                field.ord_pattern = strip_prefix(&scratch, ORDPATTERN);
+                field.ord_pattern = strip_prefix(&scratch, ORDPATTERN)?;
                 field.data_start_file_pointer = data.file_pointer()?;
-                let fp = data.file_pointer()?
-                    + (9 + field.pattern.encode_utf16().count() as i64
-                        + i64::from(field.max_length))
-                        * field.num_values
-                    + (1 + field.ord_pattern.encode_utf16().count() as i64) * i64::from(max_doc);
+                let fp = data
+                    .file_pointer()?
+                    .wrapping_add(field.value_stride().wrapping_mul(field.num_values))
+                    .wrapping_add(field.ord_stride().wrapping_mul(i64::from(max_doc)));
                 data.seek(fp)?;
                 field.skip_intervals = Arc::new(read_skip_data(data.as_mut(), &mut scratch)?);
             } else {
@@ -257,22 +303,31 @@ impl SimpleTextDocValuesReader {
         })
     }
 
-    fn field(&self, field_info: &FieldInfo) -> Result<&OneField> {
+    /// `fields.get(fieldInfo.name)` followed by `assert field != null;`
+    /// (null message) and, without `-ea`, the `NullPointerException` of the
+    /// first read of `field.<member>`.
+    fn field(&self, field_info: &FieldInfo, member: &str) -> Result<&OneField> {
         // SegmentCoreReaders already verifies this field is valid:
         self.fields.get(&field_info.name).ok_or_else(|| {
-            LuceneError::from(LuceneErrorKind::AssertionError(format!(
-                "field={} fields={}",
-                field_info.name,
-                self.fields.len()
-            )))
+            if cfg!(debug_assertions) {
+                LuceneError::from(LuceneErrorKind::AssertionError(String::new()))
+            } else {
+                util::null_pointer(format!(
+                    "Cannot read field \"{member}\" because \"field\" is null"
+                ))
+            }
         })
     }
 
     /// Port of `SimpleTextDocValuesReader.getNumericNonIterator`.
     fn get_numeric_non_iterator(&self, field_info: &FieldInfo) -> Result<NumericValues> {
-        let field = self.field(field_info)?.clone();
+        let field = self.field(field_info, "pattern")?.clone();
+        let input = RefCell::new(self.data.clone_input()?);
+        let mut decoder = decoder(&field.pattern)?;
+        decoder.set_parse_big_decimal(true);
         Ok(NumericValues {
-            input: RefCell::new(self.data.clone_input()?),
+            input,
+            decoder,
             field,
             max_doc: self.max_doc,
         })
@@ -280,12 +335,12 @@ impl SimpleTextDocValuesReader {
 
     /// Port of the private `getNumericDocsWithField`.
     fn get_numeric_docs_with_field(&self, field_info: &FieldInfo) -> Result<DocsWithField> {
-        let field = self.field(field_info)?.clone();
+        let field = self.field(field_info, "pattern")?.clone();
         Ok(DocsWithField {
             input: self.data.clone_input()?,
-            scratch: Vec::new(),
-            stride: 1 + field.pattern.encode_utf16().count() as i64 + 2,
-            binary: false,
+            scratch: JavaScratch::new(),
+            stride: field.numeric_stride(),
+            decoder: None,
             field,
             max_doc: self.max_doc,
             doc: -1,
@@ -294,15 +349,14 @@ impl SimpleTextDocValuesReader {
 
     /// Port of the private `getBinaryDocsWithField`.
     fn get_binary_docs_with_field(&self, field_info: &FieldInfo) -> Result<DocsWithField> {
-        let field = self.field(field_info)?.clone();
+        let field = self.field(field_info, "pattern")?.clone();
+        let input = self.data.clone_input()?;
+        let decoder = decoder(&field.pattern)?;
         Ok(DocsWithField {
-            input: self.data.clone_input()?,
-            scratch: Vec::new(),
-            stride: 9
-                + field.pattern.encode_utf16().count() as i64
-                + i64::from(field.max_length)
-                + 2,
-            binary: true,
+            input,
+            scratch: JavaScratch::new(),
+            stride: field.binary_stride(),
+            decoder: Some(decoder),
             field,
             max_doc: self.max_doc,
             doc: -1,
@@ -311,11 +365,15 @@ impl SimpleTextDocValuesReader {
 
     /// Port of `getBinary`, typed.
     fn get_binary_impl(&self, field_info: &FieldInfo) -> Result<TextBinaryDocValues> {
-        let field = self.field(field_info)?.clone();
+        let field = self.field(field_info, "pattern")?.clone();
+        let input = RefCell::new(self.data.clone_input()?);
+        let values_decoder = decoder(&field.pattern)?;
         let docs_with_field = self.get_binary_docs_with_field(field_info)?;
         Ok(TextBinaryDocValues {
             values: BinaryValues {
-                input: RefCell::new(self.data.clone_input()?),
+                input,
+                scratch: RefCell::new(JavaScratch::new()),
+                decoder: values_decoder,
                 field,
                 max_doc: self.max_doc,
             },
@@ -325,39 +383,42 @@ impl SimpleTextDocValuesReader {
 }
 
 /// Port of the private `readSkipData`.
-fn read_skip_data(data: &mut dyn IndexInput, scratch: &mut Vec<u8>) -> Result<Vec<SkipInterval>> {
-    read_line(data, scratch)?;
+fn read_skip_data(
+    data: &mut dyn IndexInput,
+    scratch: &mut JavaScratch,
+) -> Result<Vec<SkipInterval>> {
+    scratch.read_line(data)?;
     debug_assert!(
         scratch.starts_with(SKIP_DATA),
         "got {}",
-        java_utf8_to_string(scratch)
+        java_utf8_to_string(&scratch[..])
     );
     let mut intervals = Vec::new();
     loop {
-        read_line(data, scratch)?;
+        scratch.read_line(data)?;
         if scratch.starts_with(SKIP_END) {
             break;
         }
         debug_assert!(
             scratch.starts_with(SKIP_INTERVAL),
             "got {}",
-            java_utf8_to_string(scratch)
+            java_utf8_to_string(&scratch[..])
         );
-        read_line(data, scratch)?;
+        scratch.read_line(data)?;
         debug_assert!(scratch.starts_with(SKIP_MIN_DOC_ID));
-        let min_doc_id = parse_int(&strip_prefix(scratch, SKIP_MIN_DOC_ID))?;
-        read_line(data, scratch)?;
+        let min_doc_id = parse_int(&strip_prefix(scratch, SKIP_MIN_DOC_ID)?)?;
+        scratch.read_line(data)?;
         debug_assert!(scratch.starts_with(SKIP_MAX_DOC_ID));
-        let max_doc_id = parse_int(&strip_prefix(scratch, SKIP_MAX_DOC_ID))?;
-        read_line(data, scratch)?;
+        let max_doc_id = parse_int(&strip_prefix(scratch, SKIP_MAX_DOC_ID)?)?;
+        scratch.read_line(data)?;
         debug_assert!(scratch.starts_with(SKIP_MIN_VALUE));
-        let min_value = parse_long(&strip_prefix(scratch, SKIP_MIN_VALUE))?;
-        read_line(data, scratch)?;
+        let min_value = parse_long(&strip_prefix(scratch, SKIP_MIN_VALUE)?)?;
+        scratch.read_line(data)?;
         debug_assert!(scratch.starts_with(SKIP_MAX_VALUE));
-        let max_value = parse_long(&strip_prefix(scratch, SKIP_MAX_VALUE))?;
-        read_line(data, scratch)?;
+        let max_value = parse_long(&strip_prefix(scratch, SKIP_MAX_VALUE)?)?;
+        scratch.read_line(data)?;
         debug_assert!(scratch.starts_with(SKIP_DOC_COUNT));
-        let doc_count = parse_int(&strip_prefix(scratch, SKIP_DOC_COUNT))?;
+        let doc_count = parse_int(&strip_prefix(scratch, SKIP_DOC_COUNT)?)?;
         intervals.push(SkipInterval {
             min_doc_id,
             max_doc_id,
@@ -411,6 +472,7 @@ fn wrap_io_exception(error: LuceneError) -> LuceneError {
 /// The `IntFunction<Long>` of `getNumericNonIterator`.
 struct NumericValues {
     input: RefCell<Box<dyn IndexInput>>,
+    decoder: DecimalFormat,
     field: OneField,
     max_doc: i32,
 }
@@ -428,25 +490,28 @@ impl NumericValues {
         let mut input = self.input.borrow_mut();
         let mut scratch = Vec::new();
         input.seek(
-            self.field.data_start_file_pointer
-                + (1 + self.field.pattern.encode_utf16().count() as i64 + 2) * i64::from(doc_id),
+            self.field
+                .data_start_file_pointer
+                .wrapping_add(self.field.numeric_stride().wrapping_mul(i64::from(doc_id))),
         )?;
         read_line(input.as_mut(), &mut scratch)?;
-        let bd = decimal_parse(&java_utf8_to_string(&scratch)).ok_or_else(|| {
-            LuceneError::corrupt_index(
-                "failed to parse BigDecimal value",
-                input.resource_description(),
-            )
-        })?;
+        let bd = decimal_parse(
+            &self.decoder,
+            &java_utf8_to_string(&scratch),
+            "failed to parse BigDecimal value",
+            input.resource_description(),
+        )?;
         read_line(input.as_mut(), &mut scratch)?; // read the line telling us if it's real or not
                                                   // `BigInteger.valueOf(origin).add(bd.toBigIntegerExact()).longValue()`.
-        Ok((i128::from(self.field.origin) + bd) as i64)
+        bd.add_big_integer_exact(self.field.origin)
     }
 }
 
 /// The `IntFunction<BytesRef>` of `getBinary`.
 struct BinaryValues {
     input: RefCell<Box<dyn IndexInput>>,
+    scratch: RefCell<JavaScratch>,
+    decoder: DecimalFormat,
     field: OneField,
     max_doc: i32,
 }
@@ -462,17 +527,19 @@ impl BinaryValues {
     /// The part of `apply` inside its `try`, after the bounds check.
     fn read(&self, doc_id: i32) -> Result<BytesRef> {
         let mut input = self.input.borrow_mut();
-        let mut scratch = Vec::new();
+        let mut scratch = self.scratch.borrow_mut();
         input.seek(
-            self.field.data_start_file_pointer
-                + (9 + self.field.pattern.encode_utf16().count() as i64
-                    + i64::from(self.field.max_length)
-                    + 2)
-                    * i64::from(doc_id),
+            self.field
+                .data_start_file_pointer
+                .wrapping_add(self.field.binary_stride().wrapping_mul(i64::from(doc_id))),
         )?;
-        read_line(input.as_mut(), &mut scratch)?;
+        scratch.read_line(input.as_mut())?;
         debug_assert!(scratch.starts_with(LENGTH));
-        let len = parse_length(&scratch, input.resource_description())?;
+        let len = grow_no_copy_length(parse_length(
+            &self.decoder,
+            &scratch,
+            input.resource_description(),
+        )?)?;
         let mut term_byte_array = vec![0u8; len];
         input.read_bytes(Some(&mut term_byte_array), 0, len)?;
         util::from_bytes_ref_string(&java_utf8_to_string(&term_byte_array))
@@ -480,24 +547,44 @@ impl BinaryValues {
 }
 
 /// `decoder.parse(new String(scratch, LENGTH.length, ...)).intValue()`.
-fn parse_length(scratch: &[u8], resource: &str) -> Result<usize> {
-    let value = decimal_parse(&strip_prefix(scratch, LENGTH))
-        .ok_or_else(|| LuceneError::corrupt_index("failed to parse int length", resource))?;
-    let len = value as i32;
-    usize::try_from(len).map_err(|_| LuceneError::illegal_state(format!("negative length {len}")))
+fn parse_length(decoder: &DecimalFormat, scratch: &JavaScratch, resource: &str) -> Result<i32> {
+    decimal_parse(
+        decoder,
+        &strip_prefix(scratch, LENGTH)?,
+        "failed to parse int length",
+        resource,
+    )?
+    .int_value()
+}
+
+/// `term.growNoCopy(len); term.setLength(len); in.readBytes(..., len)` for
+/// a parsed length: `ArrayUtil.growNoCopy` asserts it is not negative
+/// (`ArrayUtil.java:458`), which a debug build reproduces.
+///
+/// **Divergence.** Without `-ea`, Java goes on with a negative length:
+/// `setLength(len)` gives the builder a negative-length `BytesRef`, which
+/// `getBinary` turns into a `NegativeArraySizeException` in `utf8ToString()`
+/// (after a `readBytes(..., len)` whose outcome depends on the `IndexInput`)
+/// and `lookupOrd` of `getSorted`/`getSortedSet` returns as is
+/// (`SimpleTextDocValuesReader.java:416-419`, `:657-660`, `:844-847`). A Rust
+/// `BytesRef` cannot have a negative length, so every one of these paths
+/// raises `NegativeArraySizeException` with the length.
+fn grow_no_copy_length(len: i32) -> Result<usize> {
+    debug_assert!(len >= 0, "{}", util::negative_grow_message(i64::from(len)));
+    usize::try_from(len).map_err(|_| util::negative_array_size(len))
 }
 
 /// The `DocValuesIterator`s of `getNumericDocsWithField` and
 /// `getBinaryDocsWithField`.
 struct DocsWithField {
     input: Box<dyn IndexInput>,
-    scratch: Vec<u8>,
+    scratch: JavaScratch,
     field: OneField,
     /// The bytes one document takes.
     stride: i64,
-    /// Whether this is the binary flavour, whose documents start with a
+    /// The binary flavour's length decoder: its documents start with a
     /// length line and hold that many bytes.
-    binary: bool,
+    decoder: Option<DecimalFormat>,
     max_doc: i32,
     doc: i32,
 }
@@ -505,19 +592,25 @@ struct DocsWithField {
 impl DocsWithField {
     /// Reads document `i`'s entry and returns whether it has a value.
     fn read_entry(&mut self, i: i32) -> Result<bool> {
-        self.input
-            .seek(self.field.data_start_file_pointer + self.stride * i64::from(i))?;
-        read_line(self.input.as_mut(), &mut self.scratch)?; // data
-        if self.binary {
+        self.input.seek(
+            self.field
+                .data_start_file_pointer
+                .wrapping_add(self.stride.wrapping_mul(i64::from(i))),
+        )?;
+        self.scratch.read_line(self.input.as_mut())?; // data
+        if let Some(decoder) = &self.decoder {
             debug_assert!(self.scratch.starts_with(LENGTH));
-            let len = parse_length(&self.scratch, self.input.resource_description())?;
-            // skip past bytes
+            let len = parse_length(decoder, &self.scratch, self.input.resource_description())?;
+            // skip past bytes: `new byte[len]`
+            let len = usize::try_from(len).map_err(|_| util::negative_array_size(len))?;
             let mut bytes = vec![0u8; len];
             self.input.read_bytes(Some(&mut bytes), 0, len)?;
-            read_line(self.input.as_mut(), &mut self.scratch)?; // newline
+            self.scratch.read_line(self.input.as_mut())?; // newline
         }
-        read_line(self.input.as_mut(), &mut self.scratch)?; // 'T' or 'F'
-        Ok(self.scratch.first() == Some(&b'T'))
+        self.scratch.read_line(self.input.as_mut())?; // 'T' or 'F'
+                                                      // `scratch.byteAt(0) == (byte) 'T'`, which reads the array's first
+                                                      // byte whatever the line's length.
+        Ok(self.scratch.byte_at(0)? == b'T')
     }
 }
 
@@ -527,7 +620,8 @@ impl DocIdSetIterator for DocsWithField {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        self.advance(self.doc + 1)
+        // `advance(docID() + 1)`, wrapping past `NO_MORE_DOCS` as Java does.
+        self.advance(self.doc.wrapping_add(1))
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
@@ -628,6 +722,9 @@ impl BinaryDocValues for TextBinaryDocValues {
 /// The anonymous `SortedDocValues` of `getSorted`.
 struct TextSortedDocValues {
     input: RefCell<Box<dyn IndexInput>>,
+    scratch: RefCell<JavaScratch>,
+    decoder: DecimalFormat,
+    ord_decoder: DecimalFormat,
     field: OneField,
     max_doc: i32,
     doc: i32,
@@ -635,23 +732,20 @@ struct TextSortedDocValues {
 }
 
 impl TextSortedDocValues {
-    fn value_stride(&self) -> i64 {
-        9 + self.field.pattern.encode_utf16().count() as i64 + i64::from(self.field.max_length)
-    }
-
     fn read_ord(&mut self, i: i32) -> Result<i32> {
-        let pos = self.field.data_start_file_pointer
-            + self.field.num_values * self.value_stride()
-            + i64::from(i) * (1 + self.field.ord_pattern.encode_utf16().count() as i64);
+        let pos = self.field.ord_position(i);
         let input = self.input.get_mut();
         input.seek(pos)?;
-        let mut scratch = Vec::new();
-        read_line(input.as_mut(), &mut scratch)?;
-        let parsed = decimal_parse(&java_utf8_to_string(&scratch)).ok_or_else(|| {
-            LuceneError::corrupt_index("failed to parse ord", input.resource_description())
-        })?;
+        let scratch = self.scratch.get_mut();
+        scratch.read_line(input.as_mut())?;
+        let parsed = decimal_parse(
+            &self.ord_decoder,
+            &java_utf8_to_string(scratch),
+            "failed to parse ord",
+            input.resource_description(),
+        )?;
         // `(int) ordDecoder.parse(...).longValue() - 1`.
-        Ok((parsed as i64 as i32).wrapping_sub(1))
+        Ok((parsed.long_value()? as i32).wrapping_sub(1))
     }
 }
 
@@ -661,7 +755,8 @@ impl DocIdSetIterator for TextSortedDocValues {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        self.advance(self.doc + 1)
+        // `advance(docID() + 1)`, wrapping past `NO_MORE_DOCS` as Java does.
+        self.advance(self.doc.wrapping_add(1))
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
@@ -703,16 +798,25 @@ impl SortedDocValues for TextSortedDocValues {
             return Err(ord_out_of_bounds(self.field.num_values, i64::from(ord)));
         }
         let mut input = self.input.borrow_mut();
-        input.seek(self.field.data_start_file_pointer + i64::from(ord) * self.value_stride())?;
-        let mut scratch = Vec::new();
-        read_line(input.as_mut(), &mut scratch)?;
+        // `ord * (long) (9 + pattern.length() + maxLength)`.
+        input.seek(
+            self.field
+                .data_start_file_pointer
+                .wrapping_add(i64::from(ord).wrapping_mul(self.field.value_stride())),
+        )?;
+        let mut scratch = self.scratch.borrow_mut();
+        scratch.read_line(input.as_mut())?;
         debug_assert!(
             scratch.starts_with(LENGTH),
             "got {} in={}",
             java_utf8_to_string(&scratch),
             input.resource_description()
         );
-        let len = parse_length(&scratch, input.resource_description())?;
+        let len = grow_no_copy_length(parse_length(
+            &self.decoder,
+            &scratch,
+            input.resource_description(),
+        )?)?;
         let mut term = vec![0u8; len];
         input.read_bytes(Some(&mut term), 0, len)?;
         Ok(BytesRef::new(term))
@@ -797,6 +901,8 @@ impl SortedNumericDocValues for TextSortedNumericDocValues {
 /// The anonymous `SortedSetDocValues` of `getSortedSet`.
 struct TextSortedSetDocValues {
     input: RefCell<Box<dyn IndexInput>>,
+    scratch: RefCell<JavaScratch>,
+    decoder: DecimalFormat,
     field: OneField,
     max_doc: i32,
     current_ords: Vec<String>,
@@ -805,21 +911,15 @@ struct TextSortedSetDocValues {
 }
 
 impl TextSortedSetDocValues {
-    fn value_stride(&self) -> i64 {
-        9 + self.field.pattern.encode_utf16().count() as i64 + i64::from(self.field.max_length)
-    }
-
     /// Reads document `i`'s ord list, trimmed.
     fn read_ord_list(&mut self, i: i32) -> Result<String> {
-        let pos = self.field.data_start_file_pointer
-            + self.field.num_values * self.value_stride()
-            + i64::from(i) * (1 + self.field.ord_pattern.encode_utf16().count() as i64);
+        let pos = self.field.ord_position(i);
         let input = self.input.get_mut();
         input.seek(pos)?;
-        let mut scratch = Vec::new();
-        read_line(input.as_mut(), &mut scratch)?;
+        let scratch = self.scratch.get_mut();
+        scratch.read_line(input.as_mut())?;
         // `String.trim()`.
-        Ok(java_utf8_to_string(&scratch)
+        Ok(java_utf8_to_string(scratch)
             .trim_matches(|c: char| c <= '\u{20}')
             .to_string())
     }
@@ -831,7 +931,8 @@ impl DocIdSetIterator for TextSortedSetDocValues {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        self.advance(self.doc + 1)
+        // `advance(docID() + 1)`, wrapping past `NO_MORE_DOCS` as Java does.
+        self.advance(self.doc.wrapping_add(1))
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
@@ -894,16 +995,25 @@ impl SortedSetDocValues for TextSortedSetDocValues {
             return Err(ord_out_of_bounds(self.field.num_values, ord));
         }
         let mut input = self.input.borrow_mut();
-        input.seek(self.field.data_start_file_pointer + ord * self.value_stride())?;
-        let mut scratch = Vec::new();
-        read_line(input.as_mut(), &mut scratch)?;
+        // `ord * (9 + pattern.length() + maxLength)`.
+        input.seek(
+            self.field
+                .data_start_file_pointer
+                .wrapping_add(ord.wrapping_mul(self.field.value_stride())),
+        )?;
+        let mut scratch = self.scratch.borrow_mut();
+        scratch.read_line(input.as_mut())?;
         debug_assert!(
             scratch.starts_with(LENGTH),
             "got {} in={}",
             java_utf8_to_string(&scratch),
             input.resource_description()
         );
-        let len = parse_length(&scratch, input.resource_description())?;
+        let len = grow_no_copy_length(parse_length(
+            &self.decoder,
+            &scratch,
+            input.resource_description(),
+        )?)?;
         let mut term = vec![0u8; len];
         input.read_bytes(Some(&mut term), 0, len)?;
         Ok(BytesRef::new(term))
@@ -1027,9 +1137,15 @@ impl DocValuesProducer for SimpleTextDocValuesReader {
 
     /// Port of `SimpleTextDocValuesReader.getSorted`.
     fn get_sorted(&self, field_info: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
-        let field = self.field(field_info)?.clone();
+        let field = self.field(field_info, "pattern")?.clone();
+        let input = RefCell::new(self.data.clone_input()?);
+        let decoder = decoder(&field.pattern)?;
+        let ord_decoder = self::decoder(&field.ord_pattern)?;
         Ok(Some(Box::new(TextSortedDocValues {
-            input: RefCell::new(self.data.clone_input()?),
+            input,
+            scratch: RefCell::new(JavaScratch::new()),
+            decoder,
+            ord_decoder,
             field,
             max_doc: self.max_doc,
             doc: -1,
@@ -1055,9 +1171,13 @@ impl DocValuesProducer for SimpleTextDocValuesReader {
         &self,
         field_info: &FieldInfo,
     ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
-        let field = self.field(field_info)?.clone();
+        let field = self.field(field_info, "pattern")?.clone();
+        let input = RefCell::new(self.data.clone_input()?);
+        let decoder = decoder(&field.pattern)?;
         Ok(Some(Box::new(TextSortedSetDocValues {
-            input: RefCell::new(self.data.clone_input()?),
+            input,
+            scratch: RefCell::new(JavaScratch::new()),
+            decoder,
             field,
             max_doc: self.max_doc,
             current_ords: Vec::new(),
@@ -1070,7 +1190,7 @@ impl DocValuesProducer for SimpleTextDocValuesReader {
     fn get_skipper(&self, field_info: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
         let numeric = field_info.get_doc_values_type() == DocValuesType::NUMERIC
             || field_info.get_doc_values_type() == DocValuesType::SORTED_NUMERIC;
-        let field = self.field(field_info)?.clone();
+        let field = self.field(field_info, "skipIntervals")?.clone();
         Ok(Some(Box::new(TextDocValuesSkipper {
             numeric,
             field,
@@ -1125,5 +1245,158 @@ impl DocValuesProducer for SimpleTextDocValuesReader {
             Some(mut data) => data.close(),
             None => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, segment_info, unchecked, write_file};
+    use rucene::index::FieldInfos;
+    use rucene::store::DEFAULT_IO_CONTEXT;
+
+    /// A `.dat` file with one numeric field `f` over one document whose
+    /// value line is `value` (3 chars, pattern `000`).
+    fn numeric_reader(value: &str) -> SimpleTextDocValuesReader {
+        let dir = directory();
+        write_file(
+            dir.as_ref(),
+            "_0.dat",
+            &[
+                "field f",
+                "  type NUMERIC",
+                "  minalue 0",
+                "  maxvalue 9",
+                "  doccount 1",
+                "  maxvaluecount 1",
+                "  origin 0",
+                "  pattern 000",
+                value,
+                "T",
+                "  skipdata",
+                "  skipend",
+                "END",
+            ],
+            true,
+        );
+        let si = segment_info(&dir, "_0", 1);
+        let infos = FieldInfos::new(Vec::new()).unwrap();
+        let state = SegmentReadState::new(dir.as_ref(), &si, &infos, &*DEFAULT_IO_CONTEXT);
+        SimpleTextDocValuesReader::new(&state, "dat").unwrap()
+    }
+
+    /// Regression (rmp #526): numeric values go through a `BigDecimal`
+    /// decoder and `toBigIntegerExact()`, so `1.5` is `ArithmeticException:
+    /// Rounding necessary` (`SimpleTextDocValuesReader.java:303-311`); the
+    /// port read the digits before the `.`.
+    #[test]
+    fn fractional_numeric_value_needs_rounding() {
+        let reader = numeric_reader("1.5");
+        let mut values = reader
+            .get_numeric(&FieldInfo::new("f", 0))
+            .unwrap()
+            .expect("values");
+        assert_eq!(values.next_doc().unwrap(), 0);
+        let error = values.long_value().unwrap_err();
+        assert_eq!(
+            unchecked(&error),
+            (
+                "java.lang.ArithmeticException",
+                "Rounding necessary".to_string()
+            )
+        );
+        let reader = numeric_reader("2E1");
+        let mut values = reader
+            .get_numeric(&FieldInfo::new("f", 0))
+            .unwrap()
+            .expect("values");
+        values.next_doc().unwrap();
+        assert_eq!(values.long_value().unwrap(), 20);
+    }
+
+    /// Regression (rmp #526): the decoder is `new DecimalFormat(pattern, ...)`
+    /// over the header's pattern, so a malformed pattern fails `getNumeric`
+    /// with `applyPattern`'s `IllegalArgumentException`, and a `#,##0`
+    /// pattern parses grouped values (`SimpleTextDocValuesReader.java:286-311`).
+    #[test]
+    fn decoder_is_built_from_the_header_pattern() {
+        let open = |pattern: &str, value: &str| {
+            let dir = directory();
+            let pattern = format!("  pattern {pattern}");
+            write_file(
+                dir.as_ref(),
+                "_0.dat",
+                &[
+                    "field f",
+                    "  type NUMERIC",
+                    "  minalue 0",
+                    "  maxvalue 9",
+                    "  doccount 1",
+                    "  maxvaluecount 1",
+                    "  origin 1",
+                    &pattern,
+                    value,
+                    "T",
+                    "  skipdata",
+                    "  skipend",
+                    "END",
+                ],
+                true,
+            );
+            let si = segment_info(&dir, "_0", 1);
+            let infos = FieldInfos::new(Vec::new()).unwrap();
+            let state = SegmentReadState::new(dir.as_ref(), &si, &infos, &*DEFAULT_IO_CONTEXT);
+            SimpleTextDocValuesReader::new(&state, "dat").unwrap()
+        };
+        let reader = open("0,", "12");
+        let error = reader
+            .get_numeric(&FieldInfo::new("f", 0))
+            .err()
+            .expect("an error");
+        match &error.kind {
+            LuceneErrorKind::IllegalArgument { message, .. } => {
+                assert_eq!(message, "Malformed pattern \"0,\"")
+            }
+            other => panic!("{other:?}"),
+        }
+        let reader = open("#,##0", "1,234");
+        let mut values = reader
+            .get_numeric(&FieldInfo::new("f", 0))
+            .unwrap()
+            .expect("values");
+        assert_eq!(values.next_doc().unwrap(), 0);
+        assert_eq!(values.long_value().unwrap(), 1235);
+    }
+
+    /// Regression (rmp #526): `assert field != null;` carries no message
+    /// (`SimpleTextDocValuesReader.java:283-285`); the port's error named
+    /// the field and the map size.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn missing_field_is_a_bare_assertion() {
+        let reader = numeric_reader("001");
+        let error = reader
+            .get_numeric(&FieldInfo::new("g", 1))
+            .err()
+            .expect("an error");
+        match &error.kind {
+            LuceneErrorKind::AssertionError(message) => assert_eq!(message, ""),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Regression (rmp #526): `nextDoc()` past `NO_MORE_DOCS` is
+    /// `advance(Integer.MIN_VALUE)` in Java's wrapping arithmetic, whose
+    /// negative seek fails; the port overflowed (a panic in debug builds).
+    #[test]
+    fn next_doc_after_exhaustion_wraps() {
+        let reader = numeric_reader("001");
+        let mut values = reader
+            .get_numeric(&FieldInfo::new("f", 0))
+            .unwrap()
+            .expect("values");
+        assert_eq!(values.next_doc().unwrap(), 0);
+        assert_eq!(values.next_doc().unwrap(), NO_MORE_DOCS);
+        assert!(values.next_doc().is_err());
     }
 }

@@ -115,6 +115,14 @@ impl fmt::Debug for TermData {
     }
 }
 
+impl rucene::util::fst::OutputToString for TermData {
+    /// `TermData.toString()`, the form `FST.Arc.toString()` appends for an
+    /// output.
+    fn output_to_java_string(&self) -> String {
+        self.to_string()
+    }
+}
+
 impl fmt::Display for TermData {
     /// Port of `TermData.toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -279,9 +287,10 @@ impl Outputs for FSTTermOutputs {
             bytes_size = input.read_v_int()?;
         }
         if bit0 > 0 {
-            // bytes exists
-            let mut b = vec![0u8; bytes_size as usize];
-            input.read_bytes(Some(&mut b), 0, bytes_size as usize)?;
+            // bytes exists: `new byte[bytesSize]`
+            let len = crate::java_util::array_len(bytes_size)?;
+            let mut b = vec![0u8; len];
+            input.read_bytes(Some(&mut b), 0, len)?;
             bytes = Some(Arc::from(b));
         }
         if bit1 > 0 {
@@ -291,7 +300,8 @@ impl Outputs for FSTTermOutputs {
                 doc_freq = (code as u32 >> 1) as i32;
                 total_term_freq = i64::from(doc_freq);
                 if (code & 1) == 0 {
-                    total_term_freq += input.read_v_long()?;
+                    // Java's `long` arithmetic wraps.
+                    total_term_freq = total_term_freq.wrapping_add(input.read_v_long()?);
                 }
             } else {
                 doc_freq = code;
@@ -465,5 +475,22 @@ mod tests {
                 assert_eq!(skip.position(), bytes.len());
             }
         }
+    }
+
+    /// Regression (rmp #528): a negative byte count read from a file
+    /// is Java's `new byte[bytesSize]` `NegativeArraySizeException`, not a
+    /// huge allocation.
+    #[test]
+    fn negative_bytes_size_is_a_negative_array_size_exception() {
+        use rucene::store::ByteArrayDataInput;
+        // bits = 1 (bytes present, size follows), vInt -1.
+        let data = [0x01u8, 0xff, 0xff, 0xff, 0xff, 0x0f];
+        let mut input = ByteArrayDataInput::new(&data);
+        let err = outputs(true).read(&mut input).unwrap_err().to_string();
+        assert!(
+            err.contains("java.lang.NegativeArraySizeException"),
+            "{err}"
+        );
+        assert!(err.contains("-1"), "{err}");
     }
 }

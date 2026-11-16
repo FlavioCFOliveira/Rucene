@@ -136,6 +136,11 @@ pub struct BlockReader {
     /// pointers to the postings file.
     pub(crate) forced_term: Option<Vec<u8>>,
 
+    /// The length of `forcedTerm`'s byte array: `copyBytes` grows it with
+    /// `growNoCopy` to `ArrayUtil.oversize(length, 1)` when too short, and
+    /// `ramBytesUsed()` measures it.
+    pub(crate) forced_term_capacity: usize,
+
     pub(crate) scratch_term_state: BlockTermState,
 
     pub(crate) shared_terms: Option<SharedTermsHooks>,
@@ -265,6 +270,7 @@ impl BlockReader {
             line_index_in_block: 0,
             term_state_forced: false,
             forced_term: None,
+            forced_term_capacity: 0,
             scratch_term_state,
             shared_terms: None,
             overrides: None,
@@ -624,11 +630,31 @@ impl BlockReader {
     /// read.
     ///
     /// Port of `BlockReader.seekExact(BytesRef, TermState)`.
-    pub fn seek_exact_state(&mut self, term: &BytesRef, state: &dyn TermState) {
+    ///
+    /// # Errors
+    ///
+    /// `ClassCastException` (an `AssertionError` panic under `-ea`) for a
+    /// state that is not a `BlockTermState`: `termState.copyFrom(state)`
+    /// casts it.
+    pub fn seek_exact_state(&mut self, term: &BytesRef, state: &dyn TermState) -> Result<()> {
         self.term_state_forced = true;
         self.term_state_set = true;
-        TermState::copy_from(&mut self.scratch_term_state, state);
+        let other = state.as_any().downcast_ref::<BlockTermState>();
+        debug_assert!(other.is_some(), "can not copy from a foreign TermState");
+        let other = other.ok_or_else(|| {
+            LuceneError::unchecked(
+                "java.lang.ClassCastException",
+                "class cannot be cast to class org.apache.lucene.codecs.BlockTermState",
+            )
+        })?;
+        self.scratch_term_state.copy_from(other);
+        // `forcedTerm.copyBytes(term)`: `growNoCopy(length)`.
+        let length = term.slice().len();
+        if self.forced_term_capacity < length {
+            self.forced_term_capacity = rucene::util::ArrayUtil::oversize(length, 1);
+        }
         self.forced_term = Some(term.slice().to_vec());
+        Ok(())
     }
 
     /// Port of `BlockReader.next()`.
@@ -791,6 +817,20 @@ impl BlockReader {
 
     /// Port of `BlockReader.initializeBlockReadLazily()`.
     ///
+    /// **Divergence from Lucene 10.5.0: the serializer factories are
+    /// inlined.** Java calls the protected factories
+    /// `createBlockHeaderSerializer()`, `createBlockLineSerializer()` and
+    /// `createDeltaBaseTermStateSerializer()` here (`BlockReader.java:415-419`,
+    /// declared at `:425-435`), and `STBlockReader` and
+    /// `STIntersectBlockReader` override the second to return an
+    /// `STBlockLine.Serializer` (`STBlockReader.java:122-125`,
+    /// `STIntersectBlockReader.java:98-101`). The port's serializers are
+    /// concrete types, not a class hierarchy: the base serializers are built
+    /// directly, and the `sharedterms` readers reach `STBlockLine.Serializer`'s
+    /// added methods through `SharedTermsHooks` and the free functions of
+    /// [`st_block_line`], not through
+    /// [`BlockReaderOverrides`]. The bytes read are Java's either way.
+    ///
     /// # Errors
     ///
     /// The I/O errors of cloning the block input.
@@ -857,9 +897,27 @@ impl BlockReader {
     ///
     /// The I/O errors of the input and the errors of the decoder.
     pub fn decode_block_bytes_if_needed(&mut self, num_block_bytes: i32) -> Result<()> {
-        let n = array_len(num_block_bytes)?;
+        // `scratchBlockBytes.bytes = ArrayUtil.grow(scratchBlockBytes.bytes,
+        // numBlockBytes)`: a negative count (a corrupt block file) fails its
+        // assertion under `-ea`; without it `blockInput.readBytes(bytes, 0,
+        // numBlockBytes)` rejects it.
+        if num_block_bytes < 0 {
+            java_assert!(
+                false,
+                "{}",
+                crate::java_util::negative_grow_message(i64::from(num_block_bytes))
+            );
+            let mut scratch = std::mem::take(&mut self.scratch_block_bytes);
+            let read = self
+                .input()?
+                .read_bytes_out_of_range(&mut scratch, 0, num_block_bytes);
+            self.scratch_block_bytes = scratch;
+            return read;
+        }
+        let n = num_block_bytes as usize;
         if self.scratch_block_bytes.len() < n {
-            self.scratch_block_bytes.resize(n, 0);
+            self.scratch_block_bytes
+                .resize(rucene::util::ArrayUtil::oversize(n, 1), 0);
         }
         let mut scratch = std::mem::take(&mut self.scratch_block_bytes);
         let read = self.input()?.read_bytes(Some(&mut scratch), 0, n);
@@ -1103,13 +1161,27 @@ impl BlockReader {
     }
 }
 
+/// `BlockReader.BASE_RAM_USAGE`: `shallowSizeOfInstance(BlockReader.class)`
+/// (`BaseTermsEnum.atts`, then 18 references, `long blockStartFP`, `int
+/// blockFirstLineStart`, `int lineIndexInBlock`, `boolean
+/// termStateForced`: 112 bytes on JDK 25) plus
+/// `shallowSizeOfInstance(IndexInput.class)` (`resourceDescription`: 16)
+/// and twice `shallowSizeOfInstance(ByteArrayDataInput.class)` (`bytes`,
+/// `pos`, `limit`: 24), as Lucene 10.5.0 reports.
+pub(crate) fn block_reader_base_ram_usage() -> i64 {
+    const REF: i64 = RamUsageEstimator::NUM_BYTES_OBJECT_REF;
+    let mut fields = vec![REF; 19];
+    fields.extend_from_slice(&[8, 4, 4, 1]);
+    RamUsageEstimator::shallow_size_of_declared_instance(&fields)
+        + RamUsageEstimator::shallow_size_of_declared_instance(&[REF])
+        + RamUsageEstimator::shallow_size_of_declared_instance(&[REF, 4, 4]) * 2
+}
+
 impl Accountable for BlockReader {
     /// Port of `BlockReader.ramBytesUsed()`.
     fn ram_bytes_used(&self) -> i64 {
         let initialized = self.block_input.is_some();
-        RamUsageEstimator::shallow_size_of_instance::<BlockReader>()
-            + RamUsageEstimator::shallow_size_of_instance::<Box<dyn IndexInput>>()
-            + RamUsageEstimator::shallow_size_of_instance::<ByteArrayDataInput<'_>>() * 2
+        block_reader_base_ram_usage()
             + if initialized {
                 self.block_line_reader.ram_bytes_used()
                     + ram_usage_util::ram_bytes_used_by_byte_array_of_length(
@@ -1121,15 +1193,20 @@ impl Accountable for BlockReader {
             }
             + self
                 .forced_term
-                .as_deref()
-                .map_or(0, ram_usage_util::ram_bytes_used_bytes_ref_builder)
+                .as_ref()
+                .map_or(0, |_| {
+                    ram_usage_util::ram_bytes_used_bytes_ref_builder(self.forced_term_capacity)
+                })
             + self
                 .block_header
                 .as_ref()
                 .map_or(0, Accountable::ram_bytes_used)
+            // `blockLine.ramBytesUsed()`: its `TermBytes` holds the line
+            // reader's `currentTerm`, and a read line has no term state.
             + self.block_line.map_or(0, |_| {
-                RamUsageEstimator::shallow_size_of_instance::<super::BlockLine>()
-                    + RamUsageEstimator::shallow_size_of_instance::<super::TermBytes>()
+                block_line::block_line_base_ram_usage()
+                    + super::term_bytes::term_bytes_base_ram_usage()
+                    + ram_usage_util::ram_bytes_used_bytes_ref(&self.block_line_reader.current_term)
             })
             + if self.term_state_set {
                 ram_usage_util::ram_bytes_used_term_state(&self.scratch_term_state)
@@ -1171,8 +1248,7 @@ impl TermsEnum for BlockReader {
     }
 
     fn seek_term_state(&mut self, text: &BytesRef, state: &dyn TermState) -> Result<()> {
-        self.seek_exact_state(text, state);
-        Ok(())
+        self.seek_exact_state(text, state)
     }
 
     fn term(&self) -> Result<Option<BytesRef>> {
@@ -1210,5 +1286,109 @@ impl TermsEnum for BlockReader {
 
     fn next(&mut self) -> Result<Option<BytesRef>> {
         self.next_impl()
+    }
+}
+
+#[cfg(test)]
+mod negative_block_size_tests {
+    use super::*;
+    use rucene::index::FieldInfo;
+    use rucene::store::{ByteBuffersDataOutput, ByteBuffersIndexInput, DataInput, DataOutput};
+
+    struct NoBrowser;
+
+    impl BrowserSupplier for NoBrowser {
+        fn get(&self) -> Result<Box<dyn Browser>> {
+            unreachable!("not reached by the test")
+        }
+    }
+
+    struct NoopPostings;
+
+    impl fmt::Display for NoopPostings {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("NoopPostings")
+        }
+    }
+
+    impl PostingsReaderBase for NoopPostings {
+        fn init(
+            &mut self,
+            _: &mut dyn IndexInput,
+            _: &rucene::codecs::SegmentReadState,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn new_term_state(&self) -> Result<BlockTermState> {
+            Ok(BlockTermState::default())
+        }
+        fn decode_term(
+            &self,
+            _: &mut dyn DataInput,
+            _: &FieldInfo,
+            _: &mut BlockTermState,
+            _: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn postings(
+            &self,
+            _: &FieldInfo,
+            _: &BlockTermState,
+            _: Option<Box<dyn PostingsEnum>>,
+            _: i32,
+        ) -> Result<Box<dyn PostingsEnum>> {
+            unreachable!("not reached by the test")
+        }
+        fn impacts(
+            &self,
+            _: &FieldInfo,
+            _: &BlockTermState,
+            _: i32,
+        ) -> Result<Box<dyn ImpactsEnum>> {
+            unreachable!("not reached by the test")
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Regression (rmp #528): a negative block byte count (a corrupt block
+    /// file) fails `ArrayUtil.grow`'s assertion in `decodeBlockBytesIfNeeded`
+    /// under `-ea`, and without it the input's `readBytes(bytes, 0, n)`;
+    /// the port raised `NegativeArraySizeException`.
+    #[test]
+    fn negative_block_size_fails_like_java() {
+        let mut out = ByteBuffersDataOutput::new();
+        out.write_v_int(-1).unwrap();
+        let input = ByteBuffersIndexInput::new(out.to_data_input().unwrap(), "block");
+        let mut metadata = FieldMetadata::new(FieldInfo::new("f", 0), 1);
+        metadata.set_first_block_start_fp(0);
+        metadata.set_last_block_start_fp(0);
+        let mut reader = BlockReader::new(
+            Arc::new(NoBrowser),
+            Arc::new(rucene::store::SharedIndexInput::new(Box::new(input))),
+            Arc::new(NoopPostings),
+            Arc::new(metadata),
+            None,
+        )
+        .unwrap();
+        let result = reader.initialize_header(None, 0);
+        if cfg!(debug_assertions) {
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("size must be positive (got -1): likely integer overflow?"),
+                "{err}"
+            );
+        } else if let Err(err) = result {
+            // Without `-ea` the outcome is the input's `readBytes` on a
+            // negative length (core's `read_bytes_out_of_range`), never the
+            // port's former `new byte[n]` failure.
+            let err = err.to_string();
+            assert!(!err.contains("NegativeArraySizeException"), "{err}");
+        }
     }
 }

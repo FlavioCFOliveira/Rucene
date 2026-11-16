@@ -15,8 +15,7 @@ use randomizedtesting::jdk::reflect::{Class, Method};
 use randomizedtesting::junit::Assert;
 use rucene::codecs::hnsw::graph_provider::HnswGraphProvider;
 use rucene::codecs::lucene99::hnsw_vectors_format::{
-    Lucene99HnswVectorsFormat, Lucene99HnswVectorsReader, DEFAULT_BEAM_WIDTH, DEFAULT_MAX_CONN,
-    DEFAULT_NUM_MERGE_WORKER,
+    Lucene99HnswVectorsFormat, DEFAULT_BEAM_WIDTH, DEFAULT_MAX_CONN, DEFAULT_NUM_MERGE_WORKER,
 };
 use rucene::document::{Document, IntField, Store};
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
@@ -609,9 +608,9 @@ fn hnsw_graph_of_leaf(ctx: &LeafReaderContext, vector_field: &str) -> Result<Box
     let field_reader = vectors_reader
         .get_field_reader(vector_field)
         .ok_or_else(|| class_cast("not a PerFieldKnnVectorsFormat.FieldsReader"))?;
+    // `(HnswGraphProvider) ...getFieldReader(vectorField)` (`HnswUtil.java:212-215`).
     let provider = field_reader
-        .as_any()
-        .and_then(|a| a.downcast_ref::<Lucene99HnswVectorsReader>())
+        .as_hnsw_graph_provider()
         .ok_or_else(|| class_cast("not a HnswGraphProvider"))?;
     HnswGraphProvider::get_graph(provider, vector_field)
 }

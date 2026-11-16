@@ -35,6 +35,11 @@
 //!   (`files()`, `get_attributes()`) or a shared reference with no mutator
 //!   (`get_diagnostics()`), so the write cannot reach the `SegmentInfo`; the
 //!   tests check instead that the segment still answers what was written.
+//! * `assertEquals(SegmentInfo, SegmentInfo)`'s `assertSame(expected.dir,
+//!   actual.dir)`: the port's `Directory` trait has no `toString()`, so the
+//!   failure message (`expected same:<x> was not:<y>`) renders each directory
+//!   as `Object.toString()` of `org.apache.lucene.store.Directory` with the
+//!   address stand-in of `java_object_to_string`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
@@ -43,6 +48,7 @@ use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::random::Random;
 use randomizedtesting::jdk::reflect::{modifier, Class};
 use randomizedtesting::junit::Assert;
+use rucene::codecs::Codec;
 use rucene::document::{Document, StoredField};
 use rucene::error::Result;
 use rucene::index::documents_writer::MAX_DOCS;
@@ -53,12 +59,14 @@ use rucene::search::{
     SortedNumericSortField, SortedSetSelectorType, SortedSetSortField,
 };
 use rucene::store::{Directory, DEFAULT_IO_CONTEXT};
+use rucene::util::java_collections::{JavaHashMap, JavaStringMap};
 use rucene::util::string_helper::{StringHelper, ID_LENGTH};
 use rucene::util::Version;
 
 use super::base_field_info_format_test_case::{expect_fake_io_exception, CallStackFailure};
 use super::base_index_file_format_test_case::{
-    assert_array_equals, assert_equals_debug, format_test, rethrow, BaseIndexFileFormatTestCase,
+    assert_array_equals, assert_equals_object, format_test, java_hash_set_to_string, rethrow,
+    BaseIndexFileFormatTestCase,
 };
 use crate::store::mock_directory_wrapper::Failure;
 use crate::store::MockDirectoryWrapper;
@@ -139,6 +147,51 @@ fn set_no_files(info: &SegmentInfo) {
         .unwrap_or_else(|e| rethrow(e));
 }
 
+/// The class of `SegmentInfo.files()`, `Collections.unmodifiableSet(setFiles)`.
+const UNMODIFIABLE_SET: &str = "java.util.Collections$UnmodifiableSet";
+
+/// The class of a `SegmentInfo`'s diagnostics or attributes map,
+/// `Map.copyOf(map)`: `ImmutableCollections.Map1` for one entry, `MapN`
+/// otherwise (`MapN` is also the class of the empty map).
+fn immutable_map_class(map: &JavaStringMap) -> &'static str {
+    if map.len() == 1 {
+        "java.util.ImmutableCollections$Map1"
+    } else {
+        "java.util.ImmutableCollections$MapN"
+    }
+}
+
+/// `assertEquals(expected.files(), actual.files())`.
+fn assert_files_equal(expected: &SegmentInfo, actual: &SegmentInfo) -> Result<()> {
+    let (e, a) = (expected.files_ordered()?, actual.files_ordered()?);
+    assert_equals_object(
+        e == a,
+        Some((UNMODIFIABLE_SET, java_hash_set_to_string(&e))),
+        Some((UNMODIFIABLE_SET, java_hash_set_to_string(&a))),
+    );
+    Ok(())
+}
+
+/// `assertEquals(expected, actual)` of two `Map<String, String>`s, the
+/// expected one given with its class: `AbstractMap.equals` and
+/// `AbstractMap.toString()`, each map in its own iteration order.
+fn assert_maps_equal(expected: (&str, &JavaStringMap), actual: &JavaStringMap) {
+    assert_equals_object(
+        expected.1 == actual,
+        Some((expected.0, expected.1.to_string())),
+        Some((immutable_map_class(actual), actual.to_string())),
+    );
+}
+
+/// A `new HashMap<>()` filled by `put(key, value)` in `entries` order.
+fn java_hash_map(entries: &[(&str, &str)]) -> JavaStringMap {
+    let map: JavaHashMap<String> = entries
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    JavaStringMap::from(map)
+}
+
 /// Port of the members of `BaseSegmentInfoFormatTestCase`.
 pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// `getVersions()`: returns the versions this SI should test.
@@ -170,11 +223,12 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `new SegmentInfo(dir, getVersions()[0], getVersions()[0], "_123", 1,
     /// false, hasBlocks, codec, diagnostics, id, attributes, indexSort)`, the
-    /// segment most tests write.
+    /// segment most tests write, with the `codec` the test obtained once.
     #[allow(clippy::too_many_arguments)]
     fn new_info(
         &self,
         dir: Arc<dyn Directory>,
+        codec: &Arc<dyn Codec>,
         has_blocks: bool,
         diagnostics: HashMap<String, String>,
         id: [u8; ID_LENGTH],
@@ -190,7 +244,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             1,
             false,
             has_blocks,
-            self.get_codec(),
+            Arc::clone(codec),
             diagnostics,
             id,
             attributes,
@@ -207,6 +261,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             let id = StringHelper::random_id();
             let info = self.new_info(
                 dir.as_directory(),
+                &codec,
                 false,
                 HashMap::new(),
                 id,
@@ -223,7 +278,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                 &id,
                 &*DEFAULT_IO_CONTEXT,
             )?;
-            assert_equals_debug(&info.files()?, &info2.files()?);
+            assert_files_equal(&info, &info2)?;
         }
         dir.close()
     }
@@ -241,6 +296,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             let id = StringHelper::random_id();
             let info = self.new_info(
                 dir.as_directory(),
+                &codec,
                 random().next_boolean(),
                 HashMap::new(),
                 id,
@@ -270,6 +326,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             let id = StringHelper::random_id();
             let info = self.new_info(
                 dir.as_directory(),
+                &codec,
                 false,
                 HashMap::new(),
                 id,
@@ -295,7 +352,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                 &id,
                 &*DEFAULT_IO_CONTEXT,
             )?;
-            assert_equals_debug(&info.files()?, &info2.files()?);
+            assert_files_equal(&info, &info2)?;
 
             // files set should be immutable: `files()` hands out a copy, so the
             // segment keeps its files.
@@ -317,6 +374,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             diagnostics.insert("key2".to_string(), "value2".to_string());
             let info = self.new_info(
                 dir.as_directory(),
+                &codec,
                 false,
                 diagnostics.clone(),
                 id,
@@ -333,7 +391,13 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                 &id,
                 &*DEFAULT_IO_CONTEXT,
             )?;
-            assert_equals_debug(&diagnostics, &info2.get_diagnostics().to_std());
+            assert_maps_equal(
+                (
+                    "java.util.HashMap",
+                    &java_hash_map(&[("key1", "value1"), ("key2", "value2")]),
+                ),
+                info2.get_diagnostics(),
+            );
 
             // diagnostics map should be immutable: the reference has no mutator.
             Assert::assert_false(info2.get_diagnostics().get("bogus").is_some());
@@ -352,6 +416,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             attributes.insert("key2".to_string(), "value2".to_string());
             let info = self.new_info(
                 dir.as_directory(),
+                &codec,
                 false,
                 HashMap::new(),
                 id,
@@ -368,7 +433,13 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                 &id,
                 &*DEFAULT_IO_CONTEXT,
             )?;
-            assert_equals_debug(&attributes, &info2.get_attributes());
+            assert_maps_equal(
+                (
+                    "java.util.HashMap",
+                    &java_hash_map(&[("key1", "value1"), ("key2", "value2")]),
+                ),
+                &info2.get_attributes_ordered(),
+            );
 
             // attributes map should be immutable: `get_attributes()` hands out a
             // copy, so the segment keeps its attributes.
@@ -387,6 +458,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             let id = StringHelper::random_id();
             let info = self.new_info(
                 dir.as_directory(),
+                &codec,
                 false,
                 HashMap::new(),
                 id,
@@ -444,9 +516,9 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                     )?;
                     Assert::assert_equals(info2.version(), v);
                     if self.supports_min_version() {
-                        assert_equals_debug(&info2.min_version(), &min_v);
+                        Assert::assert_equals_nullable(info2.min_version(), min_v);
                     } else {
-                        assert_equals_debug(&info2.min_version(), &None);
+                        Assert::assert_equals_nullable(info2.min_version(), None);
                     }
                 }
                 dir.close()?;
@@ -607,6 +679,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                 let id = StringHelper::random_id();
                 let info = self.new_info(
                     dir.as_directory(),
+                    &codec,
                     false,
                     HashMap::new(),
                     id,
@@ -625,7 +698,13 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                     &id,
                     &*DEFAULT_IO_CONTEXT,
                 )?;
-                assert_equals_debug(&sort.as_ref(), &info2.index_sort());
+                let sort_object =
+                    |s: Option<&Sort>| s.map(|s| ("org.apache.lucene.search.Sort", s.to_string()));
+                assert_equals_object(
+                    sort.as_ref() == info2.index_sort(),
+                    sort_object(sort.as_ref()),
+                    sort_object(info2.index_sort()),
+                );
             }
             dir.close()?;
         }
@@ -634,21 +713,25 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// The exception tests' shared preamble: a mock directory failing on
     /// `method`, and the segment `_123` of the first version.
+    #[allow(clippy::type_complexity)]
     fn exception_fixture(
         &self,
         method: &'static str,
     ) -> (
         MockDirectoryWrapper,
         Arc<CallStackFailure>,
+        Arc<dyn Codec>,
         SegmentInfo,
         [u8; ID_LENGTH],
     ) {
         let fail = CallStackFailure::new(method);
         let dir = LuceneTestCase::new_mock_directory();
         dir.fail_on(Arc::clone(&fail) as Arc<dyn Failure>);
+        let codec = self.get_codec();
         let id = StringHelper::random_id();
         let info = self.new_info(
             dir.as_directory(),
+            &codec,
             false,
             HashMap::new(),
             id,
@@ -656,17 +739,15 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             None,
         );
         set_no_files(&info);
-        (dir, fail, info, id)
+        (dir, fail, codec, info, id)
     }
 
     /// `testExceptionOnCreateOutput()`: test segment infos write that hits
     /// exception immediately on open. make sure we get our exception back, no
     /// file handle leaks, etc.
     fn test_exception_on_create_output(&self) -> Result<()> {
-        let (dir, fail, info, _id) = self.exception_fixture("create_output");
+        let (dir, fail, codec, info, _id) = self.exception_fixture("create_output");
         {
-            let codec = self.get_codec();
-
             fail.set_do_fail();
             expect_fake_io_exception(|| {
                 codec
@@ -675,7 +756,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             });
             fail.clear_do_fail();
         }
-        drop((fail, info, _id));
+        drop((fail, codec, info, _id));
         dir.close()
     }
 
@@ -683,10 +764,8 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// exception on close. make sure we get our exception back, no file handle
     /// leaks, etc.
     fn test_exception_on_close_output(&self) -> Result<()> {
-        let (dir, fail, info, _id) = self.exception_fixture("close");
+        let (dir, fail, codec, info, _id) = self.exception_fixture("close");
         {
-            let codec = self.get_codec();
-
             fail.set_do_fail();
             expect_fake_io_exception(|| {
                 codec
@@ -695,7 +774,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             });
             fail.clear_do_fail();
         }
-        drop((fail, info, _id));
+        drop((fail, codec, info, _id));
         dir.close()
     }
 
@@ -703,9 +782,8 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// exception immediately on open. make sure we get our exception back, no
     /// file handle leaks, etc.
     fn test_exception_on_open_input(&self) -> Result<()> {
-        let (dir, fail, info, id) = self.exception_fixture("open_input");
+        let (dir, fail, codec, info, id) = self.exception_fixture("open_input");
         {
-            let codec = self.get_codec();
             codec
                 .segment_info_format()
                 .write(&dir, &info, &*DEFAULT_IO_CONTEXT)?;
@@ -721,7 +799,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             });
             fail.clear_do_fail();
         }
-        drop((fail, info, id));
+        drop((fail, codec, info, id));
         dir.close()
     }
 
@@ -729,9 +807,8 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// exception on close make sure we get our exception back, no file handle
     /// leaks, etc.
     fn test_exception_on_close_input(&self) -> Result<()> {
-        let (dir, fail, info, id) = self.exception_fixture("close");
+        let (dir, fail, codec, info, id) = self.exception_fixture("close");
         {
-            let codec = self.get_codec();
             codec
                 .segment_info_format()
                 .write(&dir, &info, &*DEFAULT_IO_CONTEXT)?;
@@ -747,7 +824,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             });
             fail.clear_do_fail();
         }
-        drop((fail, info, id));
+        drop((fail, codec, info, id));
         dir.close()
     }
 
@@ -843,15 +920,37 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
         expected: &SegmentInfo,
         actual: &SegmentInfo,
     ) -> Result<()> {
-        // `assertSame(expected.dir, actual.dir)`
-        Assert::assert_true(Arc::ptr_eq(&expected.directory, &actual.directory));
+        // `assertSame(expected.dir, actual.dir)`: JUnit's `expected same:<x>
+        // was not:<y>`; a `dyn Directory` has no `toString()` in the port, so
+        // each side renders as `Object.toString()` with the address stand-in
+        // (declared in the module docs).
+        if !Arc::ptr_eq(&expected.directory, &actual.directory) {
+            let show = |d: &Arc<dyn Directory>| {
+                rucene::index::index_reader::java_object_to_string(
+                    "org.apache.lucene.store.Directory",
+                    &**d,
+                )
+            };
+            Throwable::new(
+                "java.lang.AssertionError",
+                format!(
+                    "expected same:<{}> was not:<{}>",
+                    show(&expected.directory),
+                    show(&actual.directory)
+                ),
+            )
+            .throw()
+        }
         Assert::assert_equals_str(None, Some(&expected.name), Some(&actual.name));
-        assert_equals_debug(&expected.files()?, &actual.files()?);
+        assert_files_equal(expected, actual)?;
         // we don't assert this, because SI format has nothing to do with it... set by SIS
         // assertSame(expected.getCodec(), actual.getCodec());
-        assert_equals_debug(
-            &expected.get_diagnostics().to_std(),
-            &actual.get_diagnostics().to_std(),
+        assert_maps_equal(
+            (
+                immutable_map_class(expected.get_diagnostics()),
+                expected.get_diagnostics(),
+            ),
+            actual.get_diagnostics(),
         );
         Assert::assert_equals(i64::from(expected.max_doc()?), i64::from(actual.max_doc()?));
         assert_array_equals(&expected.id(), &actual.id());
@@ -860,7 +959,66 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             actual.get_use_compound_file(),
         );
         Assert::assert_equals(expected.version(), actual.version());
-        assert_equals_debug(&expected.get_attributes(), &actual.get_attributes());
+        let (expected_attributes, actual_attributes) = (
+            expected.get_attributes_ordered(),
+            actual.get_attributes_ordered(),
+        );
+        assert_maps_equal(
+            (
+                immutable_map_class(&expected_attributes),
+                &expected_attributes,
+            ),
+            &actual_attributes,
+        );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use super::*;
+
+    fn failure(f: impl FnOnce()) -> String {
+        let t = Throwable::from_panic(catch_unwind(AssertUnwindSafe(f)).expect_err("must fail"));
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+        t.message().unwrap_or_default().to_string()
+    }
+
+    /// `assertEquals(diagnostics, info2.getDiagnostics())` fails with
+    /// `AbstractMap.toString()` of each map (`{k=v, ...}`), not Rust's
+    /// `Debug` (`{"k": "v"}`).
+    #[test]
+    fn map_assertion_renders_java_maps() {
+        let expected = java_hash_map(&[("key1", "value1"), ("key2", "value2")]);
+        let actual = JavaStringMap::immutable_copy_of([("key1".to_string(), "other".to_string())]);
+        assert_eq!(
+            failure(|| assert_maps_equal(("java.util.HashMap", &expected), &actual)),
+            "expected:<{key1=value1, key2=value2}> but was:<{key1=other}>"
+        );
+        assert_maps_equal(
+            ("java.util.HashMap", &expected),
+            &JavaStringMap::immutable_copy_of([
+                ("key2".to_string(), "value2".to_string()),
+                ("key1".to_string(), "value1".to_string()),
+            ]),
+        );
+    }
+
+    /// `Map.copyOf` classes, shown when two maps print the same but differ.
+    #[test]
+    fn immutable_map_classes() {
+        assert_eq!(
+            immutable_map_class(&JavaStringMap::default()),
+            "java.util.ImmutableCollections$MapN"
+        );
+        assert_eq!(
+            immutable_map_class(&JavaStringMap::immutable_copy_of([(
+                "a".to_string(),
+                "b".to_string()
+            )])),
+            "java.util.ImmutableCollections$Map1"
+        );
     }
 }

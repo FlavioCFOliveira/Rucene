@@ -31,9 +31,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use randomizedtesting::generators::{RandomNumbers, RandomPicks};
-use randomizedtesting::jdk::exception::Throwable;
+use randomizedtesting::jdk::exception::{self, Throwable};
 use randomizedtesting::jdk::lang::double_to_string;
 use randomizedtesting::jdk::random::Random;
+use randomizedtesting::jdk::system;
 use randomizedtesting::junit::Assert;
 use randomizedtesting::RandomizedTest;
 use rucene::analysis::factories::AbstractAnalysisFactory;
@@ -462,7 +463,11 @@ impl TestUtil {
     /// (contains lots of operators typically found in regular expressions);
     /// `maxLength` is a hint that a few characters may exceed.
     pub fn random_regexpish_string_with<R: Random + ?Sized>(r: &R, max_length: i32) -> String {
-        let mut regexp = String::with_capacity(max_length.max(0) as usize);
+        // `new StringBuilder(maxLength)`.
+        if max_length < 0 {
+            exception::throw(exception::NEGATIVE_ARRAY_SIZE_EXCEPTION, max_length)
+        }
+        let mut regexp = String::with_capacity(max_length as usize);
         let mut i = Self::next_int(r, 0, max_length);
         while i > 0 {
             if r.next_boolean() {
@@ -651,7 +656,12 @@ impl TestUtil {
         r: &R,
         length: i32,
     ) -> String {
-        let mut buffer = vec![0u16; length as usize * 3];
+        // `new char[length * 3]`, Java `int` arithmetic.
+        let capacity = length.wrapping_mul(3);
+        if capacity < 0 {
+            exception::throw(exception::NEGATIVE_ARRAY_SIZE_EXCEPTION, capacity)
+        }
+        let mut buffer = vec![0u16; capacity as usize];
         let mut bytes = length;
         let mut i = 0;
         while i < buffer.len() && bytes != 0 {
@@ -699,6 +709,10 @@ impl TestUtil {
     /// `randomBinaryTerm(r, length)`: `new BytesRef(length)` whose whole
     /// array `r.nextBytes` fills.
     pub fn random_binary_term_with<R: Random + ?Sized>(r: &R, length: i32) -> BytesRef {
+        // `new BytesRef(length)`: `new byte[length]`.
+        if length < 0 {
+            exception::throw(exception::NEGATIVE_ARRAY_SIZE_EXCEPTION, length)
+        }
         let mut bytes = vec![0u8; length as usize];
         r.next_bytes(&mut bytes);
         BytesRef::new(bytes)
@@ -942,38 +956,51 @@ impl TestUtil {
         // TODO: actually use the dir's locking, unless test uses a special method?
         // some tests e.g. exception tests become much more complicated if they have to close the writer
         let lock = NoLockFactory::instance().obtain_lock(&*dir, "bogus")?;
-        let mut checker = CheckIndex::with_write_lock(dir, Some(lock));
-        checker.set_level(level)?;
-        checker.set_fail_fast(fail_fast);
-        checker
-            .set_info_stream_verbose(Some(Arc::new(PrintStreamLines(Arc::clone(&buffer)))), false);
-        if concurrent {
-            checker.set_thread_count(RandomizedTest::random_int_between(2, 5))?;
-        } else {
-            checker.set_thread_count(1)?;
-        }
-        let index_status = checker.check_index();
-        checker.close()?;
-        let index_status = index_status?;
-        let text = buffer.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if let Some(output) = output {
-            output.extend_from_slice(&text);
-        }
-
-        if !index_status.clean {
-            println!("CheckIndex failed");
-            println!("{}", String::from_utf8_lossy(&text));
-            Err(LuceneError::from(LuceneErrorKind::Unchecked {
-                class: "java.lang.RuntimeException",
-                message: Some("CheckIndex failed".to_string()),
-                cause: None,
-            }))
-        } else {
-            if *crate::util::lucene_test_case::INFOSTREAM {
-                println!("{}", String::from_utf8_lossy(&text));
-            }
-            Ok(index_status)
-        }
+        let checker = CheckIndex::with_write_lock(dir, Some(lock));
+        // `try (CheckIndex checker = ...)`: the body (setup included) runs,
+        // and prints and throws on an unclean index, before `checker.close()`,
+        // which runs on every exit; a close failure is suppressed into the
+        // body's exception, or thrown when the body completed
+        // (`TestUtil.java:337-359`).
+        crate::util::java_exceptions::try_with(
+            checker,
+            |checker| checker.close(),
+            |checker| -> Result<Status> {
+                checker.set_level(level)?;
+                checker.set_fail_fast(fail_fast);
+                checker.set_info_stream_verbose(
+                    Some(Arc::new(PrintStreamLines(Arc::clone(&buffer)))),
+                    false,
+                );
+                if concurrent {
+                    checker.set_thread_count(RandomizedTest::random_int_between(2, 5))?;
+                } else {
+                    checker.set_thread_count(1)?;
+                }
+                let index_status = checker.check_index();
+                // `output` is the stream CheckIndex writes to: it holds what was
+                // written even when `checkIndex` throws.
+                let text = buffer.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                if let Some(output) = output {
+                    output.extend_from_slice(&text);
+                }
+                let index_status = index_status?;
+                if !index_status.clean {
+                    system::out_println("CheckIndex failed");
+                    system::out_println(&String::from_utf8_lossy(&text));
+                    Err(LuceneError::from(LuceneErrorKind::Unchecked {
+                        class: "java.lang.RuntimeException",
+                        message: Some("CheckIndex failed".to_string()),
+                        cause: None,
+                    }))
+                } else {
+                    if *crate::util::lucene_test_case::INFOSTREAM {
+                        system::out_println(&String::from_utf8_lossy(&text));
+                    }
+                    Ok(index_status)
+                }
+            },
+        )
     }
 
     /// `alwaysPostingsFormat(format)`: a codec that can read any of the
@@ -981,7 +1008,10 @@ impl TestUtil {
     /// `AssertingCodec` whose `getPostingsFormatForField` returns `format`.
     pub fn always_postings_format(format: Arc<dyn PostingsFormat>) -> Arc<dyn Codec> {
         if *crate::util::lucene_test_case::VERBOSE {
-            println!("forcing postings format to:{}", format.name());
+            system::out_println(&format!(
+                "forcing postings format to:{}",
+                format.to_java_string()
+            ));
         }
         Arc::new(AssertingCodec::with_formats_for_field(
             Some(Arc::new(move |_field: &str| Arc::clone(&format))),
@@ -994,7 +1024,10 @@ impl TestUtil {
     /// `getDocValuesFormatForField` returns `format`.
     pub fn always_doc_values_format(format: Arc<dyn DocValuesFormat>) -> Arc<dyn Codec> {
         if *crate::util::lucene_test_case::VERBOSE {
-            println!("TestUtil: forcing docvalues format to:{}", format.name());
+            system::out_println(&format!(
+                "TestUtil: forcing docvalues format to:{}",
+                &*format
+            ));
         }
         Arc::new(AssertingCodec::with_formats_for_field(
             None,
@@ -1007,7 +1040,10 @@ impl TestUtil {
     /// `getKnnVectorsFormatForField` returns `format`.
     pub fn always_knn_vectors_format(format: Arc<dyn KnnVectorsFormat>) -> Arc<dyn Codec> {
         if *crate::util::lucene_test_case::VERBOSE {
-            println!("TestUtil: forcing knn vectors format to:{}", format.name());
+            system::out_println(&format!(
+                "TestUtil: forcing knn vectors format to:{}",
+                format.name()
+            ));
         }
         Arc::new(AssertingCodec::with_formats_for_field(
             None,
@@ -1119,26 +1155,43 @@ impl TestUtil {
     /// and, unless `allowNull`, that no element is `null`; a Rust
     /// [`Iterator`] has no `remove` and no `null` element, so those checks
     /// hold by type. The `NoSuchElementException` of `next()` past the end is
-    /// `None`, which a second call must return again.
+    /// `None`. A Rust iterator has no `toString()`: the broken-iterator
+    /// message names its Rust type instead.
     ///
     /// # Panics
     ///
     /// The `AssertionError` of a broken iterator.
     pub fn check_iterator<I: Iterator>(mut iterator: I, expected_size: i64, _allow_null: bool) {
         for _ in 0..expected_size {
-            assert!(iterator.next().is_some());
+            let v = iterator.next();
+            // `assert hasNext;`, then `iterator.next()`, which throws
+            // `NoSuchElementException` past the end.
+            java_assert_unchecked!(v.is_some());
+            if v.is_none() {
+                exception::throw_without_message("java.util.NoSuchElementException")
+            }
         }
-        assert!(iterator.next().is_none());
-        assert!(
-            iterator.next().is_none(),
-            "broken iterator (allows next() when hasNext==false)"
-        );
+        // `assert !iterator.hasNext();`, then `next()` must throw.
+        let extra = iterator.next();
+        java_assert_unchecked!(extra.is_none());
+        if extra.is_some() {
+            Throwable::new(
+                exception::ASSERTION_ERROR,
+                format!(
+                    "broken iterator (allows next() when hasNext==false) {}",
+                    std::any::type_name::<I>()
+                ),
+            )
+            .throw();
+        }
     }
 
     /// `checkReadOnly(coll)`: the collection's size is the number of elements
     /// its iterator returns. Java also checks that `remove`, `add` and
     /// `addAll` throw `UnsupportedOperationException`; a collection behind a
-    /// shared reference cannot be modified, which holds by type.
+    /// shared reference cannot be modified, which holds by type. A Rust
+    /// collection has no `toString()`: the broken-collection message names
+    /// its Rust type instead.
     ///
     /// # Panics
     ///
@@ -1148,10 +1201,17 @@ impl TestUtil {
         &'c C: IntoIterator<Item = &'c T>,
     {
         let size = coll.into_iter().count();
-        assert_eq!(
-            size, reported_size,
-            "broken collection, reported size is {reported_size} but iterator has {size} elements"
-        );
+        if size != reported_size {
+            Throwable::new(
+                exception::ASSERTION_ERROR,
+                format!(
+                    "broken collection, reported size is {reported_size} but iterator has {size} \
+                     elements: {}",
+                    std::any::type_name::<C>()
+                ),
+            )
+            .throw();
+        }
         Self::check_iterator(coll.into_iter(), size as i64, false);
     }
 
@@ -1168,78 +1228,228 @@ impl TestUtil {
     /// The I/O errors of writing the files; `ZipException` for an entry
     /// `ZipInputStream` refuses.
     pub fn unzip(input: &[u8], dest_dir: &std::path::Path) -> std::io::Result<()> {
-        let mut pos = 0;
-        let u16_at = |p: usize| -> std::io::Result<usize> {
-            input
-                .get(p..p + 2)
-                .map(|b| usize::from(u16::from_le_bytes([b[0], b[1]])))
-                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
+        use rucene::store::java_nio_file::JavaIoException;
+        use rucene::store::BufferedChecksum;
+
+        let zip_exception = |message: String| {
+            JavaIoException::new("java.util.zip.ZipException", Some(message)).into_io_error()
         };
-        let u32_at = |p: usize| -> std::io::Result<usize> {
-            input
-                .get(p..p + 4)
-                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
-                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
+        // `readFully` past the end: `EOFException` without a message.
+        let eof = || JavaIoException::new("java.io.EOFException", None).into_io_error();
+        let u16_at =
+            |p: usize| -> usize { usize::from(u16::from_le_bytes([input[p], input[p + 1]])) };
+        let u32_at = |p: usize| -> u32 {
+            u32::from_le_bytes([input[p], input[p + 1], input[p + 2], input[p + 3]])
         };
-        // Local file headers (PK\x03\x04); anything else ends the entries.
-        while input.get(pos..pos + 4) == Some(&b"PK\x03\x04"[..]) {
-            let flags = u16_at(pos + 6)?;
-            let method = u16_at(pos + 8)?;
-            let compressed_size = u32_at(pos + 18)?;
-            let name_len = u16_at(pos + 26)?;
-            let extra_len = u16_at(pos + 28)?;
-            let name_bytes = input
-                .get(pos + 30..pos + 30 + name_len)
-                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
-            let name = String::from_utf8_lossy(name_bytes).into_owned();
-            let data_start = pos + 30 + name_len + extra_len;
-            let has_descriptor = flags & 8 != 0;
-            let (data, used) = match method {
-                0 => {
-                    if has_descriptor {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "only DEFLATED entries can have EXT descriptor",
-                        ));
-                    }
-                    let data = input
-                        .get(data_start..data_start + compressed_size)
-                        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
-                    (data.to_vec(), compressed_size)
-                }
-                8 => crate::jdk::gzip::inflate_raw(&input[data_start.min(input.len())..])?,
-                _ => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("invalid compression method {method}"),
-                    ))
-                }
-            };
-            let mut next = data_start
-                + if has_descriptor {
-                    used
-                } else {
-                    compressed_size
-                };
-            if has_descriptor {
-                // Optional signature, then CRC-32 and the two sizes.
-                if input.get(next..next + 4) == Some(&b"PK\x07\x08"[..]) {
-                    next += 4;
-                }
-                next += 12;
+        let crc_of = |data: &[u8]| -> i64 {
+            let mut crc = BufferedChecksum::new();
+            for &b in data {
+                crc.update(b);
             }
+            crc.get_value()
+        };
+        // `ZipConstants64.ZIP64_MAGICVAL`.
+        const ZIP64_MAGICVAL: i64 = 0xFFFF_FFFF;
+        let mut pos = 0;
+        loop {
+            // `readLOC()`: a short header or another signature ends the entries.
+            if input.len() < pos + 30 || u32_at(pos) != 0x0403_4b50 {
+                return Ok(());
+            }
+            let flag = u16_at(pos + 6);
+            let name_len = u16_at(pos + 26);
+            let name_bytes = input.get(pos + 30..pos + 30 + name_len).ok_or_else(eof)?;
+            // `ZipCoder` UTF-8 (the default and the `USE_UTF8` flag alike) is strict.
+            let name = std::str::from_utf8(name_bytes)
+                .map_err(|_| zip_exception("invalid LOC header (bad entry name)".to_string()))?
+                .to_string();
+            // `new ZipEntry(name)`: `isCENHeaderValid(name, null, null)`, the
+            // CEN header (46 bytes) plus the name's UTF-16 length within 0xFFFF.
+            let name_length = name.encode_utf16().count();
+            if 46 + name_length > 0xFFFF {
+                randomizedtesting::jdk::exception::illegal_argument("entry name too long");
+            }
+            if flag & 1 == 1 {
+                return Err(zip_exception(
+                    "encrypted ZIP entry not supported".to_string(),
+                ));
+            }
+            let method = u16_at(pos + 8);
+            let has_descriptor = flag & 8 == 8;
+            let (mut crc, mut csize, mut size) = (
+                i64::from(u32_at(pos + 14)),
+                i64::from(u32_at(pos + 18)),
+                i64::from(u32_at(pos + 22)),
+            );
+            if has_descriptor && method != 8 {
+                return Err(zip_exception(
+                    "only DEFLATED entries can have EXT descriptor".to_string(),
+                ));
+            }
+            let extra_len = u16_at(pos + 28);
+            let data_start = pos + 30 + name_len + extra_len;
+            if input.len() < data_start {
+                return Err(eof());
+            }
+            // `ZipEntry.setExtra0(extra, doZIP64, true)` and
+            // `expect64BitDataDescriptor(extra, flag, csize, size)` of
+            // `readLOC()`, for a non-empty extra field.
+            let mut expect_64_bit_data_descriptor = false;
+            if extra_len > 0 {
+                let extra = &input[pos + 30 + name_len..data_start];
+                if 46 + name_length + extra_len > 0xFFFF {
+                    randomizedtesting::jdk::exception::illegal_argument(
+                        "invalid extra field length",
+                    );
+                }
+                let get16 = |o: usize| usize::from(u16::from_le_bytes([extra[o], extra[o + 1]]));
+                let get64s =
+                    |o: usize| i64::from_le_bytes(extra[o..o + 8].try_into().expect("8 bytes"));
+                // A descriptor entry keeps the sizes unset (`-1`), so only an
+                // entry without one reads the ZIP64 sizes from its LOC.
+                if !has_descriptor && (csize == ZIP64_MAGICVAL || size == ZIP64_MAGICVAL) {
+                    let mut off = 0;
+                    while off + 4 < extra_len {
+                        let (tag, sz) = (get16(off), get16(off + 2));
+                        off += 4;
+                        if off + sz > extra_len {
+                            break;
+                        }
+                        if tag == 0x0001 && sz >= 16 {
+                            size = get64s(off);
+                            csize = get64s(off + 8);
+                        }
+                        off += sz;
+                    }
+                }
+                let loc_csize = i64::from(u32_at(pos + 18));
+                let loc_size = i64::from(u32_at(pos + 22));
+                if has_descriptor && (loc_csize == ZIP64_MAGICVAL || loc_size == ZIP64_MAGICVAL) {
+                    let mut i = 0;
+                    while i + 4 < extra_len {
+                        let (id, dsize) = (get16(i), get16(i + 2));
+                        if i + 4 + dsize > extra_len {
+                            break;
+                        }
+                        if id == 0x0001 {
+                            expect_64_bit_data_descriptor = true;
+                            break;
+                        }
+                        i += 4 + dsize;
+                    }
+                }
+            }
+
             let target_file = dest_dir.join(&name);
             // be on the safe side: do not rely on that directories are always extracted
             // before their children (although this makes sense, but is it guaranteed?)
             if let Some(parent) = target_file.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            if !name.ends_with('/') {
+            let is_directory = name.ends_with('/');
+            if !is_directory {
+                // `Files.newOutputStream(targetFile)` creates the file before
+                // the entry is read.
+                std::fs::write(&target_file, b"")?;
+            }
+            // Reading the entry (`zipInput.read`, then `closeEntry()`).
+            let (data, next) = match method {
+                // STORED: `remaining = entry.size` bytes, CRC-checked at the end.
+                0 => {
+                    let available = (input.len() - data_start) as i64;
+                    if available < size {
+                        // `in.read` returns -1 before `remaining` is consumed.
+                        let data = &input[data_start..];
+                        if !is_directory {
+                            std::fs::write(&target_file, data)?;
+                        }
+                        return Err(zip_exception("unexpected EOF".to_string()));
+                    }
+                    let data = &input[data_start..data_start + size as usize];
+                    let actual = crc_of(data);
+                    if size > 0 && actual != crc {
+                        // The last read throws before its bytes are written.
+                        let written = ((size as usize - 1) / 8192) * 8192;
+                        if !is_directory {
+                            std::fs::write(&target_file, &data[..written])?;
+                        }
+                        return Err(zip_exception(format!(
+                            "invalid entry CRC (expected 0x{crc:x} but got 0x{actual:x})"
+                        )));
+                    }
+                    (data.to_vec(), data_start + size as usize)
+                }
+                8 => {
+                    let (data, used) = crate::jdk::gzip::inflate_raw(&input[data_start..])?;
+                    // `readEnd(entry)`: all the data reached the file first.
+                    if !is_directory {
+                        std::fs::write(&target_file, &data)?;
+                    }
+                    let mut next = data_start + used;
+                    if has_descriptor {
+                        let zip64 = data.len() as i64 > ZIP64_MAGICVAL
+                            || used as i64 > ZIP64_MAGICVAL
+                            || expect_64_bit_data_descriptor;
+                        if zip64 {
+                            // `ZIP64_EXTHDR` (24) bytes with 64-bit sizes, the
+                            // `EXTSIG` optional.
+                            let d = input.get(next..next + 24).ok_or_else(eof)?;
+                            let sig = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
+                            let field32 = |o: usize| {
+                                i64::from(u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]))
+                            };
+                            let field64 = |o: usize| {
+                                i64::from_le_bytes(d[o..o + 8].try_into().expect("8 bytes"))
+                            };
+                            if sig != 0x0807_4b50 {
+                                (crc, csize, size) = (i64::from(sig), field64(4), field64(12));
+                                next += 20;
+                            } else {
+                                (crc, csize, size) = (field32(4), field64(8), field64(16));
+                                next += 24;
+                            }
+                        } else {
+                            // `EXTHDR` (16) bytes, the `EXTSIG` optional.
+                            let d = input.get(next..next + 16).ok_or_else(eof)?;
+                            let sig = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
+                            let field = |o: usize| {
+                                i64::from(u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]))
+                            };
+                            if sig != 0x0807_4b50 {
+                                (crc, csize, size) = (i64::from(sig), field(4), field(8));
+                                next += 12;
+                            } else {
+                                (crc, csize, size) = (field(4), field(8), field(12));
+                                next += 16;
+                            }
+                        }
+                    }
+                    if size != data.len() as i64 {
+                        return Err(zip_exception(format!(
+                            "invalid entry size (expected {size} but got {} bytes)",
+                            data.len()
+                        )));
+                    }
+                    if csize != used as i64 {
+                        return Err(zip_exception(format!(
+                            "invalid entry compressed size (expected {csize} but got {used} bytes)"
+                        )));
+                    }
+                    let actual = crc_of(&data);
+                    if crc != actual {
+                        return Err(zip_exception(format!(
+                            "invalid entry CRC (expected 0x{crc:x} but got 0x{actual:x})"
+                        )));
+                    }
+                    (data, next)
+                }
+                _ => return Err(zip_exception("invalid compression method".to_string())),
+            };
+            if !is_directory {
                 std::fs::write(&target_file, &data)?;
             }
             pos = next;
         }
-        Ok(())
     }
 
     /// `syncConcurrentMerges(writer)`: `syncConcurrentMerges` of the
@@ -1320,7 +1530,7 @@ impl TestUtil {
 
         if *crate::util::lucene_test_case::INFOSTREAM {
             let text = buffer.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            println!("{}", String::from_utf8_lossy(&text));
+            system::out_println(&String::from_utf8_lossy(&text));
         }
 
         // FieldInfos should be cached at the reader and always return the same instance
@@ -1750,8 +1960,8 @@ impl TestUtil {
             ex.shutdown();
             if let Err(e) = ex.await_termination(Duration::from_secs(1)) {
                 // Just report it on the syserr.
-                eprintln!("Could not properly close executor service.");
-                eprintln!("{e}");
+                system::err_println("Could not properly close executor service.");
+                system::err_println(&format!("{e}"));
             }
         }
     }
@@ -2288,5 +2498,159 @@ impl rucene::util::PrintStream for PrintStreamLines {
     fn print(&self, s: &str) {
         let mut buffer = self.0.lock().unwrap_or_else(|e| e.into_inner());
         buffer.extend_from_slice(s.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use randomizedtesting::jdk::exception::Throwable;
+    use randomizedtesting::jdk::random::JdkRandom;
+
+    use super::TestUtil;
+
+    fn thrown(f: impl FnOnce()) -> Throwable {
+        Throwable::from_panic(catch_unwind(AssertUnwindSafe(f)).expect_err("must throw"))
+    }
+
+    /// `new StringBuilder(maxLength)`, `new char[length * 3]` and
+    /// `new BytesRef(length)` refuse a negative size with
+    /// `NegativeArraySizeException(<size>)` before any random draw
+    /// (`TestUtil.java:707, 1233, 1278`; JDK 25 probe).
+    #[test]
+    fn negative_sizes_are_negative_array_size_exceptions() {
+        let r = JdkRandom::new(0);
+        let t = thrown(|| {
+            TestUtil::random_regexpish_string_with(&r, -1);
+        });
+        assert_eq!(t.class_name(), "java.lang.NegativeArraySizeException");
+        assert_eq!(t.message(), Some("-1"));
+        let t = thrown(|| {
+            TestUtil::random_fixed_byte_length_unicode_string(&r, -1);
+        });
+        assert_eq!(t.class_name(), "java.lang.NegativeArraySizeException");
+        assert_eq!(t.message(), Some("-3"));
+        let t = thrown(|| {
+            TestUtil::random_binary_term_with(&r, -2);
+        });
+        assert_eq!(t.class_name(), "java.lang.NegativeArraySizeException");
+        assert_eq!(t.message(), Some("-2"));
+    }
+
+    /// `checkIterator`: `assert !iterator.hasNext()` is a Java `assert`
+    /// (an `AssertionError` without a message under `-ea`).
+    #[cfg(debug_assertions)]
+    #[test]
+    fn check_iterator_extra_element_is_a_java_assertion() {
+        let t = thrown(|| TestUtil::check_iterator([1, 2].iter(), 1, false));
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+        assert_eq!(t.message(), None);
+    }
+
+    /// A local file header of a zip entry.
+    fn local_header(flag: u16, method: u16, crc: u32, size: u32, name: &str) -> Vec<u8> {
+        let mut h = Vec::new();
+        h.extend_from_slice(b"PK\x03\x04");
+        h.extend_from_slice(&20u16.to_le_bytes());
+        h.extend_from_slice(&flag.to_le_bytes());
+        h.extend_from_slice(&method.to_le_bytes());
+        h.extend_from_slice(&[0; 4]); // time, date
+        h.extend_from_slice(&crc.to_le_bytes());
+        h.extend_from_slice(&size.to_le_bytes()); // compressed size
+        h.extend_from_slice(&size.to_le_bytes()); // size
+        h.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        h.extend_from_slice(&0u16.to_le_bytes());
+        h.extend_from_slice(name.as_bytes());
+        h
+    }
+
+    fn unzip_error(zip: &[u8], name: &str) -> (String, Option<String>) {
+        let dir = std::env::temp_dir().join(format!(
+            "rucene-test-util-unzip-{name}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let e = TestUtil::unzip(zip, &dir).expect_err("ZipInputStream refuses the entry");
+        std::fs::remove_dir_all(&dir).ok();
+        (
+            rucene::store::java_nio_file::java_class_of(&e).to_string(),
+            rucene::store::java_nio_file::java_message_of(&e),
+        )
+    }
+
+    /// `ZipInputStream.readEnd` (JDK 25): a LOC with ZIP64 size markers and a
+    /// ZIP64 extra field announces a 24-byte data descriptor with 64-bit
+    /// sizes (`expect64BitDataDescriptor`), read in full even without its
+    /// signature. Vectors and outcomes from a JDK 25 probe: with the
+    /// signature the entry extracts; without it (20 bytes left) and with a
+    /// 32-bit descriptor (16 bytes left) `readFully` hits the end.
+    #[test]
+    fn unzip_reads_zip64_data_descriptors_as_zip_input_stream_does() {
+        let hex = |s: &str| -> Vec<u8> {
+            (0..s.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+                .collect()
+        };
+        let head = "504b03042d00080008000000000000000000ffffffffffffffff050014007a2e74787401001000\
+                    00000000000000000000000000000000cb48cdc9c957a8ca2c30330100";
+        let sig64 = hex(&format!(
+            "{head}504b0708acba0af80d000000000000000b00000000000000"
+        ));
+        let dir = std::env::temp_dir().join(format!(
+            "rucene-test-util-unzip-zip64-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        TestUtil::unzip(&sig64, &dir).unwrap();
+        assert_eq!(std::fs::read(dir.join("z.txt")).unwrap(), b"hello zip64");
+        std::fs::remove_dir_all(&dir).ok();
+
+        let nosig64 = hex(&format!("{head}acba0af80d000000000000000b00000000000000"));
+        assert_eq!(
+            unzip_error(&nosig64, "zip64-nosig"),
+            ("java.io.EOFException".to_string(), None)
+        );
+        let sig32 = hex(&format!("{head}504b0708acba0af80d0000000b000000"));
+        assert_eq!(
+            unzip_error(&sig32, "zip64-sig32"),
+            ("java.io.EOFException".to_string(), None)
+        );
+    }
+
+    /// `ZipInputStream` (JDK 25): a STORED entry is CRC-checked
+    /// (`invalid entry CRC (expected 0x… but got 0x…)`), an encrypted entry
+    /// and an unknown method are refused with the JDK's messages.
+    #[test]
+    fn unzip_refuses_entries_as_zip_input_stream_does() {
+        // crc32("abc") = 0x352441c2.
+        let mut stored = local_header(0, 0, 0x1234_5678, 3, "a.txt");
+        stored.extend_from_slice(b"abc");
+        assert_eq!(
+            unzip_error(&stored, "crc"),
+            (
+                "java.util.zip.ZipException".to_string(),
+                Some("invalid entry CRC (expected 0x12345678 but got 0x352441c2)".to_string())
+            )
+        );
+        let mut encrypted = local_header(1, 0, 0x3524_41c2, 3, "b.txt");
+        encrypted.extend_from_slice(b"abc");
+        assert_eq!(
+            unzip_error(&encrypted, "encrypted"),
+            (
+                "java.util.zip.ZipException".to_string(),
+                Some("encrypted ZIP entry not supported".to_string())
+            )
+        );
+        let mut method = local_header(0, 99, 0x3524_41c2, 3, "c.txt");
+        method.extend_from_slice(b"abc");
+        assert_eq!(
+            unzip_error(&method, "method"),
+            (
+                "java.util.zip.ZipException".to_string(),
+                Some("invalid compression method".to_string())
+            )
+        );
     }
 }

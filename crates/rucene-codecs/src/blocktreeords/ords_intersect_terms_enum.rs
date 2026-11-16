@@ -26,7 +26,8 @@ use rucene::store::IndexInput;
 use rucene::util::attribute::AttributeSource;
 use rucene::util::automaton::CompiledAutomaton;
 use rucene::util::fst::{Arc as FstArc, BytesReader, Outputs, FST};
-use rucene::util::BytesRef;
+use rucene::util::java_fmt::java_utf8_to_string;
+use rucene::util::{ArrayUtil, BytesRef};
 
 use super::fst_ords_outputs::FSTOrdsOutputs;
 use super::fst_ords_outputs::Output;
@@ -223,10 +224,10 @@ impl OrdsIntersectTermsEnum {
             let (f, ctx) = self.split(ord);
             f.fp = cur_last_sub_fp;
             f.fp_orig = cur_last_sub_fp;
-            f.prefix = cur_prefix + cur_suffix;
+            f.prefix = cur_prefix + cur_suffix as usize;
             f.set_state(state, ctx.transition_accessor);
         }
-        let f_prefix = cur_prefix + cur_suffix;
+        let f_prefix = cur_prefix + cur_suffix as usize;
 
         // Walk the arc through the index -- we only
         // "bother" with this so we can get the floor data
@@ -285,22 +286,26 @@ impl OrdsIntersectTermsEnum {
         for idx in 0..cur.suffix {
             state = byte_runnable.step(
                 state,
-                i32::from(cur.suffixes.bytes[cur.start_byte_pos + idx]),
+                i32::from(cur.suffixes.byte_at(cur.start_byte_pos.wrapping_add(idx))?),
             );
             java_assert!(state != -1);
         }
         Ok(state)
     }
 
-    /// `term.bytes = ArrayUtil.grow(term.bytes, len)`.
-    fn grow_term(&mut self, len: usize) {
-        if self.term_bytes.len() < len {
-            self.term_bytes.resize(len, 0);
+    /// `if (term.bytes.length < len) term.bytes = ArrayUtil.grow(term.bytes,
+    /// len)`: a copy into an array of `ArrayUtil.oversize(len, 1)` bytes. A
+    /// negative `len` (a corrupt block) never grows.
+    fn grow_term(&mut self, len: i32) {
+        if len > 0 && self.term_bytes.len() < len as usize {
+            self.term_bytes
+                .resize(ArrayUtil::oversize(len as usize, 1), 0);
         }
     }
 
-    /// The current entry's suffix into `term.bytes[prefix ..]`.
-    fn copy_suffix_into_term(&mut self) {
+    /// `System.arraycopy(currentFrame.suffixBytes, currentFrame.startBytePos,
+    /// term.bytes, currentFrame.prefix, currentFrame.suffix)`.
+    fn copy_suffix_into_term(&mut self) -> Result<()> {
         let Self {
             stack,
             current_frame,
@@ -308,9 +313,17 @@ impl OrdsIntersectTermsEnum {
             ..
         } = self;
         let cur = &stack[*current_frame];
-        term_bytes[cur.prefix..cur.prefix + cur.suffix].copy_from_slice(
-            &cur.suffixes.bytes[cur.start_byte_pos..cur.start_byte_pos + cur.suffix],
-        );
+        cur.suffixes.copy_to(
+            cur.start_byte_pos,
+            term_bytes,
+            cur.prefix as i32,
+            cur.suffix,
+        )
+    }
+
+    /// `currentFrame.prefix + currentFrame.suffix` in Java's `int`.
+    fn cur_term_len(&self) -> i32 {
+        (self.cur().prefix as i32).wrapping_add(self.cur().suffix)
     }
 
     /// The current term, `term.bytes[0 .. term.length]`.
@@ -326,7 +339,7 @@ impl OrdsIntersectTermsEnum {
     fn seek_to_start_term(&mut self, target: &[u8]) -> Result<()> {
         java_assert!(self.cur().ord == 0);
         if self.term_length < target.len() {
-            self.grow_term(target.len());
+            self.grow_term(target.len() as i32);
         }
 
         for _idx in 0..=target.len() {
@@ -344,9 +357,10 @@ impl OrdsIntersectTermsEnum {
 
                 let is_sub_block = self.cur_mut().next()?;
 
-                self.term_length = self.cur().prefix + self.cur().suffix;
-                self.grow_term(self.term_length);
-                self.copy_suffix_into_term();
+                let len = self.cur_term_len();
+                self.grow_term(len);
+                self.copy_suffix_into_term()?;
+                self.term_length = len as usize;
 
                 if is_sub_block && target.starts_with(self.term_slice()) {
                     // Recurse
@@ -381,8 +395,8 @@ impl OrdsIntersectTermsEnum {
                         cur.suffix = save_suffix;
                         cur.suffixes.set_position(save_pos);
                         cur.term_state.term_block_ord = save_tbo;
-                        self.copy_suffix_into_term();
-                        self.term_length = self.cur().prefix + self.cur().suffix;
+                        self.copy_suffix_into_term()?;
+                        self.term_length = self.cur_term_len() as usize;
                         // If the last entry was a block we don't
                         // need to bother recursing and pushing to
                         // the last term under it because the first
@@ -398,27 +412,26 @@ impl OrdsIntersectTermsEnum {
     }
 
     /// Port of `copyTerm()`.
-    fn copy_term(&mut self) {
-        let len = self.cur().prefix + self.cur().suffix;
+    fn copy_term(&mut self) -> Result<()> {
+        let len = self.cur_term_len();
         self.grow_term(len);
-        self.copy_suffix_into_term();
-        self.term_length = len;
+        self.copy_suffix_into_term()?;
+        self.term_length = len as usize;
+        Ok(())
     }
 
     /// The common-suffix test of `next()`: whether the current entry ends
     /// with `commonSuffixRef`.
     fn matches_common_suffix(&self, common_suffix: &BytesRef) -> Result<bool> {
         let cur = self.cur();
-        let term_len = cur.prefix + cur.suffix;
+        let term_len = self.cur_term_len();
         let common_suffix_bytes = common_suffix.slice();
-        if term_len < common_suffix_bytes.len() {
+        if term_len < common_suffix_bytes.len() as i32 {
             // No match
             return Ok(false);
         }
 
-        let suffix_bytes = &cur.suffixes.bytes;
-
-        let len_in_prefix = common_suffix_bytes.len() as i64 - cur.suffix as i64;
+        let len_in_prefix = (common_suffix_bytes.len() as i32).wrapping_sub(cur.suffix);
         java_assert!(common_suffix.offset == 0);
         let mut suffix_bytes_pos;
         let mut common_suffix_bytes_pos = 0usize;
@@ -427,13 +440,17 @@ impl OrdsIntersectTermsEnum {
             // A prefix of the common suffix overlaps with
             // the suffix of the block prefix so we first
             // test whether the prefix part matches:
-            let mut term_bytes_pos = cur.prefix as i64 - len_in_prefix;
+            let mut term_bytes_pos = cur.prefix as i32 - len_in_prefix;
             java_assert!(term_bytes_pos >= 0);
-            let term_bytes_pos_end = cur.prefix as i64;
+            let term_bytes_pos_end = cur.prefix as i32;
             while term_bytes_pos < term_bytes_pos_end {
-                if self.term_bytes[term_bytes_pos as usize]
-                    != common_suffix_bytes[common_suffix_bytes_pos]
-                {
+                let term_byte = usize::try_from(term_bytes_pos)
+                    .ok()
+                    .and_then(|i| self.term_bytes.get(i).copied())
+                    .ok_or_else(|| {
+                        super::out_of_bounds_i32(term_bytes_pos, self.term_bytes.len())
+                    })?;
+                if term_byte != common_suffix_bytes[common_suffix_bytes_pos] {
                     return Ok(false);
                 }
                 term_bytes_pos += 1;
@@ -441,13 +458,18 @@ impl OrdsIntersectTermsEnum {
             }
             suffix_bytes_pos = cur.start_byte_pos;
         } else {
-            suffix_bytes_pos = cur.start_byte_pos + cur.suffix - common_suffix_bytes.len();
+            suffix_bytes_pos = cur
+                .start_byte_pos
+                .wrapping_add(cur.suffix)
+                .wrapping_sub(common_suffix_bytes.len() as i32);
         }
 
         // Test overlapping suffix part:
         let common_suffix_bytes_pos_end = common_suffix_bytes.len();
         while common_suffix_bytes_pos < common_suffix_bytes_pos_end {
-            if suffix_bytes[suffix_bytes_pos] != common_suffix_bytes[common_suffix_bytes_pos] {
+            if cur.suffixes.byte_at(suffix_bytes_pos)?
+                != common_suffix_bytes[common_suffix_bytes_pos]
+            {
                 return Ok(false);
             }
             suffix_bytes_pos += 1;
@@ -549,7 +571,7 @@ impl TermsEnum for OrdsIntersectTermsEnum {
             if self.cur().suffix != 0 {
                 let label = {
                     let cur = self.cur();
-                    i32::from(cur.suffixes.bytes[cur.start_byte_pos])
+                    i32::from(cur.suffixes.byte_at(cur.start_byte_pos)?)
                 };
                 while label > self.cur().cur_transition_max {
                     if self.cur().transition_index >= self.cur().transition_count - 1 {
@@ -597,7 +619,7 @@ impl TermsEnum for OrdsIntersectTermsEnum {
                 for idx in 0..cur.suffix {
                     state = byte_runnable.step(
                         state,
-                        i32::from(cur.suffixes.bytes[cur.start_byte_pos + idx]),
+                        i32::from(cur.suffixes.byte_at(cur.start_byte_pos.wrapping_add(idx))?),
                     );
                     if state == -1 {
                         // No match
@@ -613,7 +635,7 @@ impl TermsEnum for OrdsIntersectTermsEnum {
 
             if is_sub_block {
                 // Match!  Recurse:
-                self.copy_term();
+                self.copy_term()?;
                 self.current_frame = self.push_frame(state)?;
             } else if self
                 .compiled
@@ -621,14 +643,14 @@ impl TermsEnum for OrdsIntersectTermsEnum {
                 .expect("INVARIANT: the constructor checked the byte runnable")
                 .is_accept(state)
             {
-                self.copy_term();
+                self.copy_term()?;
                 java_assert!(
                     self.saved_start_term
                         .as_deref()
                         .is_none_or(|saved| self.term_slice() > saved),
-                    "saveStartTerm={:?} term={:?}",
-                    self.saved_start_term,
-                    self.term_slice()
+                    "saveStartTerm={} term={}",
+                    java_utf8_to_string(self.saved_start_term.as_deref().unwrap_or_default()),
+                    java_utf8_to_string(self.term_slice())
                 );
                 return Ok(Some(BytesRef::new(self.term_slice().to_vec())));
             }

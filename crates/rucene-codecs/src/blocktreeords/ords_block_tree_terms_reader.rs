@@ -46,9 +46,9 @@ pub(crate) struct Shared {
     /// Reads the terms dict entries, to gather state to produce `DocsEnum`
     /// on demand.
     pub(crate) postings_reader: Arc<dyn PostingsReaderBase>,
-    /// The number of fields, for `OrdsSegmentTermsEnum.toString()`, which
-    /// prints the reader (`seg=` + `fr.parent`).
-    pub(crate) description: String,
+    /// The number of fields read, for `OrdsSegmentTermsEnum.toString()`,
+    /// which prints the reader (`seg=` + `fr.parent`).
+    pub(crate) num_fields: usize,
     /// Java's `fields.clear()` in `close()`, seen by the reader and its merge
     /// instances (Java's `getMergeInstance()` is `this`).
     pub(crate) fields_cleared: AtomicBool,
@@ -110,12 +110,12 @@ impl OrdsBlockTreeTermsReader {
             Ok(fields) => {
                 let mut field_names: Vec<String> = fields.keys().cloned().collect();
                 field_names.sort_by(|a, b| java_compare_to(a, b));
-                let description = format!("fields={}", fields.len());
+                let num_fields = fields.len();
                 Ok(Self {
                     shared: Some(Arc::new(Shared {
                         input: SharedIndexInput::new(input),
                         postings_reader: Arc::from(postings_reader),
-                        description,
+                        num_fields,
                         fields_cleared: AtomicBool::new(false),
                     })),
                     fields,
@@ -298,6 +298,18 @@ fn read_bytes_ref(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+impl Shared {
+    /// `fields.size()` of the reader: `0` once its `close()` cleared the
+    /// map.
+    pub(crate) fn fields_size(&self) -> usize {
+        if self.fields_cleared.load(Ordering::SeqCst) {
+            0
+        } else {
+            self.num_fields
+        }
+    }
+}
+
 impl OrdsBlockTreeTermsReader {
     /// Whether `close()` cleared `fields`.
     fn fields_cleared(&self) -> bool {
@@ -362,6 +374,11 @@ impl Fields for OrdsBlockTreeTermsReader {
 }
 
 impl FieldsProducer for OrdsBlockTreeTermsReader {
+    /// `OrdsBlockTreeTermsReader.toString()`: this producer's [`Display`](std::fmt::Display).
+    fn to_java_string(&self) -> String {
+        format!("{self}")
+    }
+
     fn check_integrity(&self) -> Result<()> {
         let shared = self.shared()?;
         // term dictionary

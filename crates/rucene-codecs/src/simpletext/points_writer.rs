@@ -105,7 +105,7 @@ impl SimpleTextPointsWriter {
     fn data_out(&mut self) -> Result<&mut dyn IndexOutput> {
         match self.data_out.as_deref_mut() {
             Some(out) => Ok(out),
-            None => Err(LuceneError::already_closed("this writer is closed")),
+            None => Err(util::null_pointer(util::WRITE_AFTER_CLOSE_NPE)),
         }
     }
 }
@@ -149,7 +149,14 @@ impl PointsWriter for SimpleTextPointsWriter {
             // We could have 0 points on merge since all docs with points may
             // be deleted:
             if writer.get_point_count() > 0 {
-                let data_out = self.data_out()?;
+                // `writer.finish(dataOut)` with a `null` `dataOut` fails at
+                // the first leaf's `out.getFilePointer()`.
+                let data_out = self.data_out.as_deref_mut().ok_or_else(|| {
+                    util::null_pointer(
+                        "Cannot invoke \"org.apache.lucene.store.IndexOutput.getFilePointer()\" \
+                         because \"out\" is null",
+                    )
+                })?;
                 let fp = writer.finish(data_out)?;
                 self.index_fps.insert(field_info.name.clone(), fp);
             }
@@ -170,8 +177,11 @@ impl PointsWriter for SimpleTextPointsWriter {
 
     /// Port of `SimpleTextPointsWriter.close`.
     fn close(&mut self) -> Result<()> {
-        if let Some(mut data_out) = self.data_out.take() {
+        if let Some(data_out) = self.data_out.as_mut() {
+            // `dataOut.close(); dataOut = null;`: a failed close leaves the
+            // output in place (`SimpleTextPointsWriter.java:130-133`).
             data_out.close()?;
+            self.data_out = None;
 
             // Write index file
             let file_name = segment_file_name(
@@ -246,6 +256,48 @@ mod tests {
     use rucene::util::{NoOutputInfoStream, Version};
     use rucene_test_framework::store::MockDirectoryWrapper;
     use std::collections::HashMap;
+
+    /// Regression (rmp #526): `dataOut = null` follows a successful
+    /// `dataOut.close()` only (`SimpleTextPointsWriter.java:130-133`), so a
+    /// failed close is retried by the next `close()`; the port dropped the
+    /// output first and the second call succeeded.
+    #[test]
+    fn a_failed_data_close_is_retried() {
+        use crate::simpletext::test_support::FailingOutput;
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let segment_info = SegmentInfo::new_without_codec(
+            Arc::clone(&directory),
+            Version::LUCENE_10_5_0,
+            None,
+            "_0".to_string(),
+            1,
+            false,
+            false,
+            HashMap::new(),
+            [0u8; 16],
+            HashMap::new(),
+            None,
+        )
+        .unwrap();
+        let field_infos = FieldInfos::new(Vec::new()).unwrap();
+        let seg_updates = BufferedUpdates::default();
+        let context = DefaultIOContext::default();
+        let state = SegmentWriteState::new(
+            &NoOutputInfoStream,
+            directory,
+            &segment_info,
+            &field_infos,
+            &seg_updates,
+            &context,
+        );
+        let mut writer = SimpleTextPointsWriter::new(&state).unwrap();
+        let mut real = writer.data_out.replace(Box::new(FailingOutput)).unwrap();
+        real.close().unwrap();
+        for _ in 0..2 {
+            let error = writer.close().unwrap_err();
+            assert!(error.to_string().contains("close failed"), "{error}");
+        }
+    }
 
     /// `close()` writes the index file in a try-with-resources
     /// (`SimpleTextPointsWriter.java:139-152`): when a write to it fails, the

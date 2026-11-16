@@ -66,6 +66,12 @@ use super::exception::{self, Throwable};
 pub trait UncaughtExceptionHandler: Send + Sync {
     /// `uncaughtException(Thread t, Throwable e)`.
     fn uncaught_exception(&self, t: &Thread, e: Throwable);
+
+    /// `getClass().getName()`: the binary name of the Java class the
+    /// handler stands for (a declaration, as [`crate::jdk::reflect`]
+    /// declares a class), which messages that print the handler's class
+    /// show.
+    fn class_name(&self) -> String;
 }
 
 /// The override of `ThreadGroup.uncaughtException` a `ThreadGroup`

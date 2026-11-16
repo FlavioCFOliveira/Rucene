@@ -250,6 +250,14 @@ impl MemorySegmentByteScorer {
     }
 }
 
+impl crate::util::hnsw::HasKnnVectorValues for MemorySegmentByteScorer {
+    /// Equivalent to `AbstractUpdateableRandomVectorScorer.values()` (`UpdateableRandomVectorScorer.java:68-71`), inherited by
+    /// the anonymous scorers of `Lucene99MemorySegmentByteVectorScorerSupplier`, built over `values`: the values the scorer reads.
+    fn values(&self) -> Option<&dyn crate::index::vector_values::KnnVectorValues> {
+        Some(&*self.values)
+    }
+}
+
 impl RandomVectorScorer for MemorySegmentByteScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
         self.check_ordinal(node)?;

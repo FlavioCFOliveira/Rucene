@@ -20,7 +20,8 @@
 use std::sync::Arc;
 
 use rucene::codecs::{
-    FieldsConsumer, FieldsProducer, PostingsFormat, SegmentReadState, SegmentWriteState,
+    FieldsConsumer, FieldsProducer, PostingsFormat, PostingsReaderBase, PostingsWriterBase,
+    SegmentReadState, SegmentWriteState,
 };
 use rucene::error::Result;
 
@@ -136,6 +137,61 @@ impl STUniformSplitPostingsFormat {
     }
 }
 
+impl STUniformSplitPostingsFormat {
+    /// Port of the override `createUniformSplitTermsWriter(
+    /// PostingsWriterBase, SegmentWriteState, int, int, BlockEncoder)`
+    /// (`STUniformSplitPostingsFormat.java:88-98`): a new
+    /// `STUniformSplitTermsWriter`. This format's `fields_consumer` calls it,
+    /// as Java's inherited `fieldsConsumer` reaches the override (see
+    /// [`UniformSplitPostingsFormat::create_uniform_split_terms_writer`]).
+    ///
+    /// # Errors
+    ///
+    /// The errors of the writer's constructor, which closes `postings_writer`
+    /// when it fails.
+    pub fn create_uniform_split_terms_writer<'a>(
+        &self,
+        postings_writer: Box<dyn PostingsWriterBase>,
+        state: &SegmentWriteState<'a>,
+        target_num_block_lines: i32,
+        delta_num_lines: i32,
+        block_encoder: Option<Arc<dyn BlockEncoder>>,
+    ) -> Result<Box<dyn FieldsConsumer + 'a>> {
+        Ok(Box::new(STUniformSplitTermsWriter::with_settings(
+            postings_writer,
+            state,
+            target_num_block_lines,
+            delta_num_lines,
+            block_encoder,
+        )?))
+    }
+
+    /// Port of the override `createUniformSplitTermsReader(
+    /// PostingsReaderBase, SegmentReadState, BlockDecoder)`
+    /// (`STUniformSplitPostingsFormat.java:100-105`): a new
+    /// `STUniformSplitTermsReader` with `dictionaryOnHeap`. This format's
+    /// `fields_producer` calls it (see
+    /// [`UniformSplitPostingsFormat::create_uniform_split_terms_reader`]).
+    ///
+    /// # Errors
+    ///
+    /// The errors of the reader's constructor, which closes `postings_reader`
+    /// when it fails.
+    pub fn create_uniform_split_terms_reader(
+        &self,
+        postings_reader: Box<dyn PostingsReaderBase>,
+        state: &SegmentReadState<'_>,
+        block_decoder: Option<Arc<dyn BlockDecoder>>,
+    ) -> Result<Box<dyn FieldsProducer>> {
+        Ok(Box::new(st_uniform_split_terms_reader::new(
+            postings_reader,
+            state,
+            block_decoder,
+            self.base.dictionary_on_heap,
+        )?))
+    }
+}
+
 impl PostingsFormat for STUniformSplitPostingsFormat {
     fn name(&self) -> &str {
         self.base.name
@@ -148,14 +204,14 @@ impl PostingsFormat for STUniformSplitPostingsFormat {
         state: &SegmentWriteState<'a>,
     ) -> Result<Box<dyn FieldsConsumer + 'a>> {
         let postings_writer = UniformSplitPostingsFormat::postings_writer(state)?;
-        // `STUniformSplitTermsWriter::with_settings` closes the postings writer when it fails.
-        Ok(Box::new(STUniformSplitTermsWriter::with_settings(
+        // The writer's constructor closes the postings writer when it fails.
+        self.create_uniform_split_terms_writer(
             postings_writer,
             state,
             self.base.target_num_block_lines,
             self.base.delta_num_lines,
             self.base.block_encoder.clone(),
-        )?))
+        )
     }
 
     /// Port of `UniformSplitPostingsFormat.fieldsProducer(SegmentReadState)`
@@ -163,11 +219,10 @@ impl PostingsFormat for STUniformSplitPostingsFormat {
     fn fields_producer<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn FieldsProducer>> {
         let postings_reader = UniformSplitPostingsFormat::postings_reader(state)?;
         // The reader's constructor closes the postings reader when it fails.
-        Ok(Box::new(st_uniform_split_terms_reader::new(
+        self.create_uniform_split_terms_reader(
             postings_reader,
             state,
             self.base.block_decoder.clone(),
-            self.base.dictionary_on_heap,
-        )?))
+        )
     }
 }

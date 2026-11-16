@@ -35,10 +35,9 @@ const DELETE_PCT_THRESHOLD: i32 = 40;
 /// Equivalent to the `IncrementalHnswGraphMerger.GraphReader` record.
 #[derive(Clone)]
 pub struct GraphReader {
-    /// The reader the vectors come from.
+    /// The reader the vectors come from; always an `HnswGraphProvider`
+    /// ([`GraphReader::graph_provider`]).
     pub reader: Arc<dyn KnnVectorsReader>,
-    /// The graph the reader stores for the merged field.
-    pub graph_provider: Arc<dyn HnswGraphProvider>,
     /// Maps this reader's doc ids into the merged segment.
     pub init_doc_map: Arc<DocMap>,
     /// How many nodes the reader's graph holds.
@@ -48,19 +47,21 @@ pub struct GraphReader {
     id: usize,
 }
 
+impl GraphReader {
+    /// `(HnswGraphProvider) reader`: the cast Java applies before each
+    /// `getGraph` (`IncrementalHnswGraphMerger.java:151`,
+    /// `ConcurrentHnswMerger.java:66`). It cannot fail, because
+    /// [`HnswGraphMerger::add_reader`] only records readers that are providers.
+    pub fn graph_provider(&self) -> &dyn HnswGraphProvider {
+        self.reader
+            .as_hnsw_graph_provider()
+            .expect("INVARIANT: add_reader records only HnswGraphProvider readers")
+    }
+}
+
 /// Merges multiple graphs in a single thread, in an incremental fashion.
 ///
 /// Equivalent to `org.apache.lucene.util.hnsw.IncrementalHnswGraphMerger`.
-///
-/// # Divergences from Lucene 10.5.0
-///
-/// * Java recovers the graph from a reader with
-///   `reader instanceof HnswGraphProvider` (unwrapping a
-///   `PerFieldKnnVectorsFormat.FieldsReader` first). Rust cannot cast a `dyn
-///   KnnVectorsReader` to a `dyn HnswGraphProvider`, so [`HnswGraphMerger::add_reader`]
-///   takes the provider explicitly; passing `None` is the counterpart of a reader
-///   that is not an `HnswGraphProvider`, and the reader is then skipped exactly as
-///   Java skips it.
 pub struct IncrementalHnswGraphMerger {
     field_info: FieldInfo,
     scorer_supplier: Arc<dyn RandomVectorScorerSupplier>,
@@ -170,8 +171,10 @@ impl IncrementalHnswGraphMerger {
             self.get_new_ord_mapping(merged_vector_values, initialized_nodes.as_mut())?;
         let mut graphs: Vec<Box<dyn HnswGraph>> = Vec::with_capacity(self.graph_readers.len());
         for graph_reader in &self.graph_readers {
+            // `((HnswGraphProvider) graphReaders.get(i).reader).getGraph(..)`
+            // (`IncrementalHnswGraphMerger.java:151`).
             let graph = graph_reader
-                .graph_provider
+                .graph_provider()
                 .get_graph(&self.field_info.name)?;
             if graph.size() == 0 {
                 return Err(LuceneError::illegal_state(
@@ -286,13 +289,22 @@ impl HnswGraphMerger for IncrementalHnswGraphMerger {
     fn add_reader(
         &mut self,
         reader: Arc<dyn KnnVectorsReader>,
-        graph_provider: Option<Arc<dyn HnswGraphProvider>>,
         doc_map: Arc<DocMap>,
         live_docs: Option<&dyn Bits>,
     ) -> Result<()> {
         let id = self.num_readers;
         self.num_readers += 1;
-        let Some(graph_provider) = graph_provider else {
+        // `IncrementalHnswGraphMerger.java:89-96`: Java narrows a
+        // `PerFieldKnnVectorsFormat.FieldsReader` to its field's reader
+        // (`currKnnVectorsReader`), but then tests `reader instanceof
+        // HnswGraphProvider` on the reader it was handed and returns when that
+        // reader is not a provider. A per-field reader is never a provider, so
+        // a merge whose readers are per-field rebuilds the graph — measured on
+        // Lucene 10.5.0, where `AssertingCodec` (a `PerFieldKnnVectorsFormat`)
+        // logs `build graph from N vectors` — and `currKnnVectorsReader` is
+        // only reached when it is the reader itself. The test and the
+        // `getGraph` call are therefore both made on `reader`.
+        let Some(graph_provider) = reader.as_hnsw_graph_provider() else {
             return Ok(());
         };
         let graph = graph_provider.get_graph(&self.field_info.name)?;
@@ -321,7 +333,6 @@ impl HnswGraphMerger for IncrementalHnswGraphMerger {
 
         let graph_reader = GraphReader {
             reader,
-            graph_provider,
             init_doc_map: doc_map,
             graph_size,
             id,

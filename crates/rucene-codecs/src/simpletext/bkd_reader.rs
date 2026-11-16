@@ -27,7 +27,7 @@ use rucene::util::MathUtil;
 
 use super::bkd_writer::VERSION_CURRENT;
 use super::points_writer::{BLOCK_COUNT, BLOCK_DOC_ID, BLOCK_VALUE};
-use super::util::{self, parse_int, read_line};
+use super::util::{self, parse_int, JavaScratch};
 
 /// The `IndexInput` the BKD readers of one points reader share: Java's
 /// `dataIn`, which `SimpleTextPointsReader.close` closes.
@@ -241,65 +241,132 @@ impl SimpleTextPointTree {
         self.node_id >= self.reader.leaf_node_offset
     }
 
-    fn push_left(&mut self) {
-        let config = &self.reader.config;
-        let bytes_per_dim = config.bytes_per_dim as usize;
-        let mut address = self.node_id as usize * self.reader.bytes_per_index_entry;
-        if config.num_index_dims == 1 {
+    /// The split dimension and value address of the current node:
+    /// `splitPackedValues[address++] & 0xff` for multi-dimensional points.
+    fn read_split_dim(&mut self) -> Result<i64> {
+        let reader = &self.reader;
+        let mut address = i64::from(self.node_id) * reader.bytes_per_index_entry as i64;
+        if reader.config.num_index_dims == 1 {
             self.split_dims[self.level] = 0;
         } else {
-            self.split_dims[self.level] = usize::from(self.reader.split_packed_values[address]);
+            let length = reader.split_packed_values.len();
+            let byte = usize::try_from(address)
+                .ok()
+                .and_then(|a| reader.split_packed_values.get(a))
+                .ok_or_else(|| util::array_index_out_of_bounds(address, length))?;
+            self.split_dims[self.level] = usize::from(*byte);
             address += 1;
         }
-        let split_dim_pos = self.split_dims[self.level] * bytes_per_dim;
+        Ok(address)
+    }
+
+    /// The message of `pushLeft`'s and `pushRight`'s assertions.
+    fn split_assert_message(&self) -> String {
+        let config = &self.reader.config;
+        format!(
+            "config.bytesPerDim()={} splitDim={} config.numIndexDims()={} config.numDims={}",
+            config.bytes_per_dim,
+            self.split_dims[self.level],
+            config.num_index_dims,
+            config.num_dims
+        )
+    }
+
+    /// Port of `pushLeft()` (`SimpleTextBKDReader.java:139-172`), with the
+    /// `System.arraycopy` bounds checks and the ordering assertion.
+    fn push_left(&mut self) -> Result<()> {
+        let bytes_per_dim = self.reader.config.bytes_per_dim;
+        let address = self.read_split_dim()?;
+        let split_dim_pos = self.split_dims[self.level] as i64 * i64::from(bytes_per_dim);
         // save the dimension we are going to change
-        let saved =
-            self.split_dim_value_stack[self.level].get_or_insert_with(|| vec![0; bytes_per_dim]);
-        saved.copy_from_slice(&self.max_packed_value[split_dim_pos..split_dim_pos + bytes_per_dim]);
+        let saved = self.split_dim_value_stack[self.level]
+            .get_or_insert_with(|| vec![0; bytes_per_dim.max(0) as usize]);
+        util::arraycopy(
+            &self.max_packed_value,
+            split_dim_pos,
+            saved,
+            0,
+            i64::from(bytes_per_dim),
+        )?;
+        debug_assert!(
+            {
+                let (p, a, n) = (
+                    split_dim_pos as usize,
+                    address as usize,
+                    bytes_per_dim as usize,
+                );
+                self.max_packed_value[p..p + n] >= self.reader.split_packed_values[a..a + n]
+            },
+            "{}",
+            self.split_assert_message()
+        );
         self.node_id *= 2;
         self.level += 1;
         // add the split dim value:
-        self.max_packed_value[split_dim_pos..split_dim_pos + bytes_per_dim]
-            .copy_from_slice(&self.reader.split_packed_values[address..address + bytes_per_dim]);
+        util::arraycopy(
+            &self.reader.split_packed_values,
+            address,
+            &mut self.max_packed_value,
+            split_dim_pos,
+            i64::from(bytes_per_dim),
+        )
     }
 
-    fn push_right(&mut self) {
-        let config = &self.reader.config;
-        let bytes_per_dim = config.bytes_per_dim as usize;
-        let mut address = self.node_id as usize * self.reader.bytes_per_index_entry;
-        if config.num_index_dims == 1 {
-            self.split_dims[self.level] = 0;
-        } else {
-            self.split_dims[self.level] = usize::from(self.reader.split_packed_values[address]);
-            address += 1;
-        }
-        let split_dim_pos = self.split_dims[self.level] * bytes_per_dim;
+    /// Port of `pushRight()` (`SimpleTextBKDReader.java:183-217`).
+    fn push_right(&mut self) -> Result<()> {
+        let bytes_per_dim = self.reader.config.bytes_per_dim;
+        let address = self.read_split_dim()?;
+        let split_dim_pos = self.split_dims[self.level] as i64 * i64::from(bytes_per_dim);
         // we should have already visit the left node
         debug_assert!(self.split_dim_value_stack[self.level].is_some());
         // save the dimension we are going to change
-        let saved =
-            self.split_dim_value_stack[self.level].get_or_insert_with(|| vec![0; bytes_per_dim]);
-        saved.copy_from_slice(&self.min_packed_value[split_dim_pos..split_dim_pos + bytes_per_dim]);
+        let saved = self.split_dim_value_stack[self.level]
+            .get_or_insert_with(|| vec![0; bytes_per_dim.max(0) as usize]);
+        util::arraycopy(
+            &self.min_packed_value,
+            split_dim_pos,
+            saved,
+            0,
+            i64::from(bytes_per_dim),
+        )?;
+        debug_assert!(
+            {
+                let (p, a, n) = (
+                    split_dim_pos as usize,
+                    address as usize,
+                    bytes_per_dim as usize,
+                );
+                self.min_packed_value[p..p + n] <= self.reader.split_packed_values[a..a + n]
+            },
+            "{}",
+            self.split_assert_message()
+        );
         self.node_id = 2 * self.node_id + 1;
         self.level += 1;
         // add the split dim value:
-        self.min_packed_value[split_dim_pos..split_dim_pos + bytes_per_dim]
-            .copy_from_slice(&self.reader.split_packed_values[address..address + bytes_per_dim]);
+        util::arraycopy(
+            &self.reader.split_packed_values,
+            address,
+            &mut self.min_packed_value,
+            split_dim_pos,
+            i64::from(bytes_per_dim),
+        )
     }
 
-    fn pop(&mut self, is_left: bool) {
-        let bytes_per_dim = self.reader.config.bytes_per_dim as usize;
+    /// Port of `pop(boolean)` (`SimpleTextBKDReader.java:229-249`).
+    fn pop(&mut self, is_left: bool) -> Result<()> {
+        let bytes_per_dim = i64::from(self.reader.config.bytes_per_dim);
         self.node_id /= 2;
         self.level -= 1;
         // restore the split dimension
-        let pos = self.split_dims[self.level] * bytes_per_dim;
+        let pos = self.split_dims[self.level] as i64 * bytes_per_dim;
         let saved = self.split_dim_value_stack[self.level]
             .as_ref()
             .expect("INVARIANT: pushed before popped");
         if is_left {
-            self.max_packed_value[pos..pos + bytes_per_dim].copy_from_slice(saved);
+            util::arraycopy(saved, 0, &mut self.max_packed_value, pos, bytes_per_dim)
         } else {
-            self.min_packed_value[pos..pos + bytes_per_dim].copy_from_slice(saved);
+            util::arraycopy(saved, 0, &mut self.min_packed_value, pos, bytes_per_dim)
         }
     }
 
@@ -389,35 +456,37 @@ impl SimpleTextPointTree {
         }
         if self.is_leaf_node() {
             // Leaf node
-            let mut scratch = Vec::new();
+            let mut scratch = JavaScratch::new();
             let fp =
                 self.reader.leaf_block_fps[(self.node_id - self.reader.leaf_node_offset) as usize];
             self.input.seek(fp)?;
-            read_line(self.input.as_mut(), &mut scratch)?;
+            scratch.read_line(self.input.as_mut())?;
             let count = parse_int_prefix(&scratch, BLOCK_COUNT)?;
             for _ in 0..count {
-                read_line(self.input.as_mut(), &mut scratch)?;
+                scratch.read_line(self.input.as_mut())?;
                 visitor.visit(parse_int_prefix(&scratch, BLOCK_DOC_ID)?)?;
             }
         } else {
-            self.push_left();
+            self.push_left()?;
             self.add_all(visitor, grown)?;
-            self.pop(true);
-            self.push_right();
+            self.pop(true)?;
+            self.push_right()?;
             self.add_all(visitor, grown)?;
-            self.pop(false);
+            self.pop(false)?;
         }
         Ok(())
     }
 
     /// Port of `readDocIDs`.
-    fn read_doc_ids(&mut self, block_fp: i64) -> Result<usize> {
-        let mut scratch = Vec::new();
+    fn read_doc_ids(&mut self, block_fp: i64) -> Result<i32> {
+        let mut scratch = JavaScratch::new();
         self.input.seek(block_fp)?;
-        read_line(self.input.as_mut(), &mut scratch)?;
+        scratch.read_line(self.input.as_mut())?;
         let count = parse_int_prefix(&scratch, BLOCK_COUNT)?;
-        for i in 0..count as usize {
-            read_line(self.input.as_mut(), &mut scratch)?;
+        // `for (int i = 0; i < count; i++)`: no iteration for a negative
+        // count, which is returned as is.
+        for i in 0..count.max(0) as usize {
+            scratch.read_line(self.input.as_mut())?;
             let doc = parse_int_prefix(&scratch, BLOCK_DOC_ID)?;
             let length = self.scratch_doc_ids.len();
             *self.scratch_doc_ids.get_mut(i).ok_or_else(|| {
@@ -427,14 +496,14 @@ impl SimpleTextPointTree {
                 )
             })? = doc;
         }
-        Ok(count.max(0) as usize)
+        Ok(count)
     }
 }
 
 /// `parseInt(scratch, prefix)`: `Integer.parseInt(stripPrefix(...))`.
-fn parse_int_prefix(scratch: &[u8], prefix: &[u8]) -> Result<i32> {
+fn parse_int_prefix(scratch: &JavaScratch, prefix: &[u8]) -> Result<i32> {
     debug_assert!(scratch.starts_with(prefix));
-    parse_int(&util::read_string(scratch, prefix.len()))
+    parse_int(&scratch.new_string(prefix.len())?)
 }
 
 impl PointTree for SimpleTextPointTree {
@@ -460,14 +529,14 @@ impl PointTree for SimpleTextPointTree {
         if self.is_leaf_node() {
             return Ok(false);
         }
-        self.push_left();
+        self.push_left()?;
         Ok(true)
     }
 
     fn move_to_sibling(&mut self) -> Result<bool> {
         if self.node_id != self.root_node && (self.node_id & 1) == 0 {
-            self.pop(true);
-            self.push_right();
+            self.pop(true)?;
+            self.push_right()?;
             return Ok(true);
         }
         Ok(false)
@@ -477,7 +546,7 @@ impl PointTree for SimpleTextPointTree {
         if self.node_id == self.root_node {
             return Ok(false);
         }
-        self.pop((self.node_id & 1) == 0);
+        self.pop((self.node_id & 1) == 0)?;
         Ok(true)
     }
 
@@ -523,30 +592,138 @@ impl PointTree for SimpleTextPointTree {
             let count = self.read_doc_ids(self.reader.leaf_block_fps[leaf_id])?;
 
             // Again, this time reading values and checking with the visitor
-            visitor.grow(count as i32)?;
+            visitor.grow(count)?;
             // NOTE: we don't do prefix coding, so we ignore commonPrefixLengths
             let packed_len = self.reader.config.packed_bytes_length() as usize;
             debug_assert_eq!(self.scratch_packed_value.len(), packed_len);
-            let mut scratch = Vec::new();
-            for i in 0..count {
-                read_line(self.input.as_mut(), &mut scratch)?;
+            let mut scratch = JavaScratch::new();
+            for i in 0..count.max(0) as usize {
+                scratch.read_line(self.input.as_mut())?;
                 debug_assert!(scratch.starts_with(BLOCK_VALUE));
-                let br =
-                    util::from_bytes_ref_string(&util::read_string(&scratch, BLOCK_VALUE.len()))?;
+                let br = util::from_bytes_ref_string(&scratch.new_string(BLOCK_VALUE.len())?)?;
                 debug_assert_eq!(br.length, packed_len);
-                self.scratch_packed_value
-                    .copy_from_slice(&br.slice()[..packed_len]);
+                util::arraycopy(
+                    br.slice(),
+                    0,
+                    &mut self.scratch_packed_value,
+                    0,
+                    packed_len as i64,
+                )?;
                 let doc = self.scratch_doc_ids[i];
                 visitor.visit_with_value(doc, &self.scratch_packed_value)?;
             }
         } else {
-            self.push_left();
+            self.push_left()?;
             self.visit_doc_values(visitor)?;
-            self.pop(true);
-            self.push_right();
+            self.pop(true)?;
+            self.push_right()?;
             self.visit_doc_values(visitor)?;
-            self.pop(false);
+            self.pop(false)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simpletext::test_support::unchecked;
+    use rucene::index::Relation;
+    use rucene::store::{ByteBuffersDataInput, ByteBuffersIndexInput};
+
+    /// A reader over `data` with the given geometry.
+    fn reader(
+        num_index_dims: i32,
+        leaf_count: usize,
+        split_packed_values: Vec<u8>,
+        min: Vec<u8>,
+        max: Vec<u8>,
+        data: &str,
+    ) -> SimpleTextBKDReader {
+        let input = ByteBuffersIndexInput::new(
+            ByteBuffersDataInput::new(vec![data.as_bytes().to_vec()]).unwrap(),
+            "dim",
+        );
+        let shared = Arc::new(SharedDataIn {
+            input: Mutex::new(Some(Box::new(input))),
+        });
+        SimpleTextBKDReader::new(
+            shared,
+            num_index_dims,
+            num_index_dims,
+            4,
+            1,
+            vec![0; leaf_count],
+            split_packed_values,
+            min,
+            max,
+            1,
+            1,
+        )
+        .unwrap()
+    }
+
+    #[derive(Default)]
+    struct Recorder {
+        grown: Vec<i32>,
+    }
+
+    impl IntersectVisitor for Recorder {
+        fn visit(&mut self, _doc_id: i32) -> Result<()> {
+            Ok(())
+        }
+        fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn compare(&self, _min: &[u8], _max: &[u8]) -> Result<Relation> {
+            Ok(Relation::CellCrossesQuery)
+        }
+        fn grow(&mut self, count: i32) -> Result<()> {
+            self.grown.push(count);
+            Ok(())
+        }
+    }
+
+    /// Regression (rmp #526): `readDocIDs` loops `i < count` (no iteration
+    /// for a negative count) and returns the count, which `visitDocValues`
+    /// hands to `grow` (`SimpleTextBKDReader.java:324-358`); the port read
+    /// `count as usize` lines.
+    #[test]
+    fn negative_block_count_reads_nothing() {
+        let reader = reader(1, 1, vec![0], vec![0], vec![9], "block count -2\n");
+        let mut tree = reader.point_tree().unwrap();
+        let mut visitor = Recorder::default();
+        tree.visit_doc_values(&mut visitor).unwrap();
+        assert_eq!(visitor.grown, vec![-2]);
+    }
+
+    /// Regression (rmp #526): `pushLeft` asserts that the split value is
+    /// not above the cell's max (`SimpleTextBKDReader.java:154-167`); the
+    /// port omitted the assertion.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(
+        expected = "config.bytesPerDim()=1 splitDim=0 config.numIndexDims()=1 config.numDims=1"
+    )]
+    fn push_left_asserts_split_value_within_the_cell() {
+        let reader = reader(1, 2, vec![0, 5], vec![0], vec![3], "");
+        let mut tree = reader.point_tree().unwrap();
+        let _ = tree.move_to_child();
+    }
+
+    /// Regression (rmp #526): a split dimension past the packed value fails
+    /// in `System.arraycopy` (the port panicked on the slice).
+    #[test]
+    fn corrupt_split_dimension_fails_in_arraycopy() {
+        let reader = reader(2, 2, vec![0, 0, 9, 0], vec![0, 0], vec![9, 9], "");
+        let mut tree = reader.point_tree().unwrap();
+        let error = tree.move_to_child().unwrap_err();
+        assert_eq!(
+            unchecked(&error),
+            (
+                "java.lang.ArrayIndexOutOfBoundsException",
+                "arraycopy: last source index 10 out of bounds for byte[2]".to_string()
+            )
+        );
     }
 }

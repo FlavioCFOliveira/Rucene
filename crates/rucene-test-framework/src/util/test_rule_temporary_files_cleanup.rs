@@ -78,6 +78,30 @@ fn throw_io(error: &io::Error) -> ! {
     .throw()
 }
 
+/// `name.replaceFirst("^org.apache.lucene.", "lucene.")`
+/// (`TestRuleTemporaryFilesCleanup.java:233`): a regular expression, whose
+/// three `.` match any character but a line terminator.
+pub(crate) fn replace_lucene_package_prefix(name: &str) -> String {
+    const PATTERN: &str = "org.apache.lucene.";
+    let chars: Vec<char> = name.chars().collect();
+    let is_line_terminator =
+        |c: char| matches!(c, '\n' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}');
+    let matches = chars.len() >= PATTERN.len()
+        && PATTERN.chars().zip(&chars).all(|(p, &c)| {
+            if p == '.' {
+                !is_line_terminator(c)
+            } else {
+                p == c
+            }
+        });
+    if matches {
+        let rest: String = chars[PATTERN.len()..].iter().collect();
+        format!("lucene.{rest}")
+    } else {
+        name.to_string()
+    }
+}
+
 /// `String.format(Locale.ENGLISH, "%03d", attempt)`.
 fn three_digits(attempt: i32) -> String {
     format!("{attempt:03}")
@@ -197,9 +221,14 @@ impl TestRuleTemporaryFilesCleanup {
     /// `initializeJavaTempDir()`: `tempDir` (or `java.io.tmpdir`) as a path of
     /// the suite filesystem, created, and resolved to its real path.
     fn initialize_java_temp_dir(file_system: &Arc<dyn FileSystem>) -> io::Result<Path> {
-        let dir = system::get_property("tempDir")
-            .or_else(|| system::get_property("java.io.tmpdir"))
-            .unwrap_or_default();
+        // `getPath(null)` throws `NullPointerException` when neither property is set.
+        let Some(dir) =
+            system::get_property("tempDir").or_else(|| system::get_property("java.io.tmpdir"))
+        else {
+            randomizedtesting::jdk::exception::throw_without_message(
+                randomizedtesting::jdk::exception::NULL_POINTER_EXCEPTION,
+            )
+        };
         let java_temp_dir = Arc::clone(file_system).get_path(&dir, &[]);
         Files::create_directories(&java_temp_dir)?;
         randomizedtesting::jdk::exception::java_assert(
@@ -223,10 +252,7 @@ impl TestRuleTemporaryFilesCleanup {
         }
         let ctx = RandomizedContext::current();
         let class_name = ctx.get_target_class().to_string();
-        let prefix = match class_name.strip_prefix("org.apache.lucene.") {
-            Some(rest) => format!("lucene.{rest}"),
-            None => class_name,
-        };
+        let prefix = replace_lucene_package_prefix(&class_name);
         let Some(java_temp_dir) = self.lock().java_temp_dir.clone() else {
             randomizedtesting::jdk::exception::throw_without_message(
                 randomizedtesting::jdk::exception::NULL_POINTER_EXCEPTION,
@@ -407,5 +433,33 @@ impl TestRuleAdapter for TestRuleTemporaryFilesCleanup {
         } else if let Some(path) = temp_dir_base_path {
             system::err_println(&format!("NOTE: leaving temporary files on disk at: {path}"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replace_lucene_package_prefix;
+
+    /// `TestRuleTemporaryFilesCleanup.java:233`: `replaceFirst` takes a
+    /// regular expression, so each `.` of `^org.apache.lucene.` matches any
+    /// character but a line terminator.
+    #[test]
+    fn package_prefix_is_a_regex_with_wildcard_dots() {
+        assert_eq!(
+            replace_lucene_package_prefix("org.apache.lucene.index.TestFoo"),
+            "lucene.index.TestFoo"
+        );
+        assert_eq!(
+            replace_lucene_package_prefix("org_apache_lucene_TestFoo"),
+            "lucene.TestFoo"
+        );
+        assert_eq!(
+            replace_lucene_package_prefix("org\napache.lucene.TestFoo"),
+            "org\napache.lucene.TestFoo"
+        );
+        assert_eq!(
+            replace_lucene_package_prefix("com.example.TestFoo"),
+            "com.example.TestFoo"
+        );
     }
 }

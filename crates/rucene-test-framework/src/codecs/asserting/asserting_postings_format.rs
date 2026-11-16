@@ -92,7 +92,7 @@ impl PostingsFormat for AssertingPostingsFormat {
 /// Port of `AssertingPostingsFormat.AssertingFieldsProducer`.
 ///
 /// Java's constructor asserts `toString() != null`, which a Rust value
-/// cannot fail; [`FieldsProducer`] carries no `toString()` in this port.
+/// cannot fail.
 struct AssertingFieldsProducer {
     r#in: Box<dyn FieldsProducer>,
 }
@@ -120,7 +120,20 @@ impl Fields for AssertingFieldsProducer {
     }
 }
 
+impl fmt::Display for AssertingFieldsProducer {
+    /// `AssertingFieldsProducer.toString()` (`AssertingPostingsFormat.java:100-103`):
+    /// `getClass().getSimpleName() + "(" + in.toString() + ")"`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "AssertingFieldsProducer({})", self.r#in.to_java_string())
+    }
+}
+
 impl FieldsProducer for AssertingFieldsProducer {
+    /// `toString()`: this producer's [`Display`](fmt::Display).
+    fn to_java_string(&self) -> String {
+        format!("{self}")
+    }
+
     fn check_integrity(&self) -> Result<()> {
         self.r#in.check_integrity()
     }
@@ -176,12 +189,9 @@ impl FieldsConsumer for AssertingFieldsConsumer<'_> {
             let Some(field_info) = field_info else {
                 // Only reachable with assertions disabled: Java's next line
                 // dereferences the null field info.
-                return Err(rucene::error::LuceneError::from(
-                    rucene::error::LuceneErrorKind::Unchecked {
-                        class: "java.lang.NullPointerException",
-                        message: None,
-                        cause: None,
-                    },
+                return Err(rucene::error::LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"org.apache.lucene.index.FieldInfo.getIndexOptions()\" \
+                     because \"fieldInfo\" is null",
                 ));
             };
 
@@ -224,8 +234,13 @@ impl FieldsConsumer for AssertingFieldsConsumer<'_> {
                     postings.is_some(),
                     "termsEnum={terms_enum} hasPositions={has_positions}"
                 );
-                let postings = postings_enum
-                    .insert(postings.ok_or_else(rucene::error::LuceneError::null_pointer)?);
+                let postings = postings_enum.insert(postings.ok_or_else(|| {
+                    // Assertions disabled: `postingsEnum.nextDoc()`.
+                    rucene::error::LuceneError::null_pointer_with_message(
+                        "Cannot invoke \"org.apache.lucene.index.PostingsEnum.nextDoc()\" \
+                         because \"postingsEnum\" is null",
+                    )
+                })?);
 
                 let mut last_doc_id = -1;
 
@@ -280,5 +295,83 @@ impl FieldsConsumer for AssertingFieldsConsumer<'_> {
     fn close(&mut self) -> Result<()> {
         self.r#in.close()?;
         self.r#in.close() // close again
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A delegate whose class overrides `toString()`.
+    struct Named;
+
+    /// A delegate that inherits `Object.toString()`.
+    struct Plain;
+
+    macro_rules! empty_producer {
+        ($t:ty) => {
+            impl Fields for $t {
+                fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+                    Box::new(std::iter::empty())
+                }
+                fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+                    Ok(None)
+                }
+                fn size(&self) -> i32 {
+                    0
+                }
+            }
+        };
+    }
+    empty_producer!(Named);
+    empty_producer!(Plain);
+
+    impl FieldsProducer for Named {
+        fn to_java_string(&self) -> String {
+            "Named(fields=0)".to_string()
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
+            Ok(Box::new(Named))
+        }
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    impl FieldsProducer for Plain {
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
+            Ok(Box::new(Plain))
+        }
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `getClass().getSimpleName() + "(" + in.toString() + ")"`, with the
+    /// delegate's own `toString()` or the inherited `Object.toString()`.
+    #[test]
+    fn to_string_wraps_the_delegate_string() {
+        let named = AssertingFieldsProducer::new(Box::new(Named));
+        assert_eq!(
+            named.to_string(),
+            "AssertingFieldsProducer(Named(fields=0))"
+        );
+        assert_eq!(named.to_java_string(), named.to_string());
+
+        let plain = AssertingFieldsProducer::new(Box::new(Plain));
+        let inner = plain.r#in.to_java_string();
+        let (class, hex) = inner.rsplit_once('@').expect("Object.toString shape");
+        assert!(class.ends_with("Plain"), "{inner}");
+        assert!(u64::from_str_radix(hex, 16).is_ok(), "{inner}");
+        assert_eq!(
+            plain.to_string(),
+            format!("AssertingFieldsProducer({inner})")
+        );
     }
 }

@@ -53,9 +53,9 @@ impl Thrown {
     fn to_java_string(&self) -> String {
         match self {
             Thrown::Io(error) => java_to_string(error),
-            Thrown::Unchecked(payload) => {
-                randomizedtesting::jdk::exception::panic_message(payload.as_ref())
-            }
+            // The throwable the panic stands for: a Rust panic text is an
+            // `AssertionError` in this port, so it prints with that class.
+            Thrown::Unchecked(payload) => super::panic_throwable(payload.as_ref()).to_string(),
         }
     }
 }
@@ -136,6 +136,12 @@ impl VerboseFS {
 
     /// The `finally` of the channel-opening methods: destructive options are
     /// recorded; otherwise only the exception is rethrown.
+    ///
+    /// **Divergence.** Java prints `options`, a `Set`, in its own iteration
+    /// order: for the `HashSet` that `Files`/`FileChannel.open` build, an
+    /// order decided by the options' identity hash codes, different on every
+    /// run (`VerboseFS.java:168, 192, 212`); here the options print in the
+    /// order of the caller's slice.
     fn channel_sop<T>(
         &self,
         method: &str,
@@ -290,3 +296,74 @@ impl FilterFileSystemProvider for VerboseFS {
 }
 
 crate::impl_file_system_provider!(VerboseFS);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rucene::store::java_nio_file::default_file_system;
+    use std::sync::Mutex;
+
+    /// An info stream that keeps its `FS` messages.
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<String>>);
+
+    impl InfoStream for Recorder {
+        fn java_class_name(&self) -> &'static str {
+            "Recorder"
+        }
+        fn message(&self, _component: &str, message: &str) {
+            self.0.lock().unwrap().push(message.to_string());
+        }
+        fn is_enabled(&self, component: &str) -> bool {
+            component == "FS"
+        }
+        fn close(&self) {}
+    }
+
+    /// A filter whose `delete` panics with a plain Rust panic text.
+    struct PanickingDelete {
+        filter: FilterState,
+    }
+
+    impl FilterFileSystemProvider for PanickingDelete {
+        fn filter(&self) -> &FilterState {
+            &self.filter
+        }
+        fn class_name(&self) -> &'static str {
+            "PanickingDelete"
+        }
+        fn delete(&self, _path: &Path) -> io::Result<()> {
+            panic!("boom")
+        }
+    }
+
+    crate::impl_file_system_provider!(PanickingDelete);
+
+    /// `text + " (FAILED: " + exception + ")"` (`VerboseFS.java:63`) prints
+    /// `Throwable.toString()`: a Rust panic text is this port's
+    /// `AssertionError`, so it prints with that class.
+    #[test]
+    fn a_panic_text_prints_as_the_assertion_error_it_stands_for() {
+        let default = default_file_system();
+        let inner = Arc::new(PanickingDelete {
+            filter: FilterState::new("panicking://", &default),
+        });
+        install(&inner, default);
+        let recorder = Arc::new(Recorder::default());
+        let fs = VerboseFS::new(
+            FilterFileSystemProvider::get_file_system(&*inner),
+            Arc::clone(&recorder) as Arc<dyn InfoStream>,
+        );
+        let path = FilterFileSystemProvider::get_file_system(&*fs).get_path("victim", &[]);
+        let quiet = randomizedtesting::jdk::exception::QuietPanics::new();
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            let _ = FilterFileSystemProvider::delete(&*fs, &path);
+        }));
+        drop(quiet);
+        assert!(caught.is_err());
+        assert_eq!(
+            recorder.0.lock().unwrap().as_slice(),
+            ["delete: victim (FAILED: java.lang.AssertionError: boom)"]
+        );
+    }
+}

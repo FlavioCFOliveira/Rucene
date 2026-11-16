@@ -1732,6 +1732,84 @@ impl FileChannel for DefaultFileChannel {
         }
     }
 
+    /// `FileChannelImpl.map(MapMode, long, long)` of JDK 25, behaviour
+    /// verified on JDK 25.0.5 (see the trait method for the order of the
+    /// checks). The mapping goes through [`crate::store::mmap`], the one place
+    /// that maps files.
+    #[cfg(feature = "mmap")]
+    fn map(
+        &self,
+        mode: super::MapMode,
+        position: i64,
+        size: i64,
+    ) -> io::Result<super::MappedByteBuffer> {
+        use super::{MapMode, MappedByteBuffer};
+        if size > i64::from(i32::MAX) {
+            throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some("Size exceeds Integer.MAX_VALUE"),
+            )
+        }
+        if !self.is_open() {
+            return Err(closed_channel_exception());
+        }
+        if position < 0 {
+            throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some("Negative position"),
+            )
+        }
+        if size < 0 {
+            throw_unchecked("java.lang.IllegalArgumentException", Some("Negative size"))
+        }
+        let Some(end) = position.checked_add(size) else {
+            throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some("Position + size overflow"),
+            )
+        };
+        if mode != MapMode::ReadOnly {
+            self.ensure_writable();
+        }
+        self.ensure_readable();
+        let read_only = !self.writable || mode == MapMode::ReadOnly;
+        let _position = self
+            .position_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .inner
+            .file
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(file) = guard.as_ref() else {
+            return Err(closed_channel_exception());
+        };
+        if (file.metadata().map_err(channel_error)?.len() as i64) < end {
+            if !self.writable {
+                return Err(super::io_exception(
+                    "Channel not open for writing - cannot extend file to required size",
+                ));
+            }
+            file.set_len(end as u64).map_err(channel_error)?;
+        }
+        if size == 0 {
+            return Ok(MappedByteBuffer::empty(read_only));
+        }
+        let (offset, len) = (position as u64, size as usize);
+        Ok(match mode {
+            MapMode::ReadOnly => MappedByteBuffer::read_only(
+                crate::store::mmap::map_read_only(file, offset, len).map_err(channel_error)?,
+            ),
+            MapMode::ReadWrite => MappedByteBuffer::writable(
+                crate::store::mmap::map_read_write(file, offset, len).map_err(channel_error)?,
+            ),
+            MapMode::Private => MappedByteBuffer::writable(
+                crate::store::mmap::map_private(file, offset, len).map_err(channel_error)?,
+            ),
+        })
+    }
+
     fn lock(&self, position: i64, size: i64, shared: bool) -> io::Result<Box<dyn FileLock>> {
         Self::check_lock_range(position, size, shared);
         self.ensure_writable();

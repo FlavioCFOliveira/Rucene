@@ -40,8 +40,12 @@
 //! * `LineFileDocs.nextDoc()` never returns `null` in the port (nor in
 //!   Lucene's implementation); the `doc == null` checks are kept as the
 //!   loop structure only.
+//! * `(SegmentReader) sub.reader()` (`ThreadedIndexingAndSearchingTestCase.java:420`
+//!   and the merged-segment warmer, `:543`): a leaf that is not a segment
+//!   reader fails the cast with `ClassCastException` without Java's message,
+//!   which names run-time classes the port does not have.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock, Weak};
@@ -67,6 +71,7 @@ use rucene::search::{
 };
 use rucene::store::{Directory, NRTCachingDirectory};
 use rucene::util::concurrent::NamedThreadFactory;
+use rucene::util::java_collections::JavaHashSet;
 use rucene::util::{BytesRef, InfoStream, PrintStreamInfoStream};
 
 use super::base_index_file_format_test_case::{assert_not_null, rethrow};
@@ -369,10 +374,30 @@ impl ThreadedState {
     }
 }
 
-/// A Rucene error as the `Throwable` Java's `catch (Throwable t)` holds.
+/// A Rucene error as the `Throwable` Java's `catch (Throwable t)` holds:
+/// its class, message, cause and suppressed exceptions.
 fn throwable_of(e: &LuceneError) -> Throwable {
-    let (class, message) = crate::analysis::base_token_stream_test_case::java_class_and_message(e);
-    Throwable::new(class, message)
+    crate::util::java_exceptions::java_throwable(e)
+}
+
+/// `AbstractCollection.toString()` of a list of strings: `[a, b]`.
+fn java_list_to_string<'a>(items: impl IntoIterator<Item = &'a String>) -> String {
+    let items: Vec<&str> = items.into_iter().map(String::as_str).collect();
+    format!("[{}]", items.join(", "))
+}
+
+/// `(SegmentReader) reader`: a leaf that is not a segment reader fails the
+/// cast with `ClassCastException`.
+///
+/// **Divergence (cast message).** Java's message (`class X cannot be cast to
+/// class org.apache.lucene.index.SegmentReader (...)`) names run-time classes
+/// this port does not have; the exception is thrown without it.
+fn as_segment_reader(
+    reader: &Arc<dyn LeafReader>,
+) -> &rucene::index::segment_reader::SegmentReader {
+    reader.as_segment_reader().unwrap_or_else(|| {
+        randomizedtesting::jdk::exception::throw_without_message("java.lang.ClassCastException")
+    })
 }
 
 /// `Thread.currentThread().getName()`.
@@ -524,8 +549,8 @@ fn indexing_thread_body(
     case: &Arc<dyn ThreadedIndexingAndSearchingTestCase>,
     docs: &LineFileDocs,
     max_iterations: i32,
-    del_ids: &Mutex<HashSet<String>>,
-    del_pack_ids: &Mutex<HashSet<String>>,
+    del_ids: &Mutex<JavaHashSet>,
+    del_pack_ids: &Mutex<JavaHashSet>,
     all_sub_docs: &Mutex<Vec<Arc<SubDocs>>>,
 ) -> Result<()> {
     let state = Arc::clone(case.state());
@@ -543,7 +568,10 @@ fn indexing_thread_body(
         // nightly
         if *TEST_NIGHTLY && random().next_int_bound(6) == 3 {
             if *VERBOSE {
-                println!("{}: now long sleep", thread_name());
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "{}: now long sleep",
+                    thread_name()
+                ));
             }
             sleep_millis(TestUtil::next_int(&*random(), 50, 500));
         }
@@ -552,7 +580,10 @@ fn indexing_thread_body(
         if random().next_int_bound(7) == 5 {
             sleep_millis(TestUtil::next_int(&*random(), 1, 10));
             if *VERBOSE {
-                println!("{}: done sleep", thread_name());
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "{}: done sleep",
+                    thread_name()
+                ));
             }
         }
 
@@ -579,10 +610,10 @@ fn indexing_thread_body(
             let new_segment_counter = writer.get_segment_infos_counter()? + 100;
             writer.advance_segment_infos_counter(new_segment_counter)?;
             if *VERBOSE {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "{} advance segment counter to {new_segment_counter}",
                     thread_name()
-                );
+                ));
             }
             state
                 .max_advanced_segment_counter
@@ -599,7 +630,7 @@ fn indexing_thread_body(
                         &to_delete_sub_docs
                             [random().next_int_bound(to_delete_sub_docs.len() as i32) as usize],
                     );
-                    debug_assert!(!d.deleted.load(Ordering::SeqCst));
+                    java_assert!(!d.deleted.load(Ordering::SeqCst));
                     to_delete_sub_docs.retain(|s| !Arc::ptr_eq(s, &d));
                     // Update doc block, replacing prior packID
                     pack_id = d.pack_id.clone();
@@ -650,21 +681,23 @@ fn indexing_thread_body(
                         .del_count
                         .fetch_add(del_sub_docs.sub_ids.len() as i32, Ordering::SeqCst);
                     if *VERBOSE {
-                        println!(
-                            "{}: update pack packID={} count={} docs={doc_ids:?}",
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "{}: update pack packID={} count={} docs={}",
                             thread_name(),
                             del_sub_docs.pack_id,
-                            docs_list.len()
-                        );
+                            docs_list.len(),
+                            java_list_to_string(&doc_ids)
+                        ));
                     }
                     case.update_documents(pack_id_term, &docs_list)?;
                 } else {
                     if *VERBOSE {
-                        println!(
-                            "{}: add pack packID={pack_id} count={} docs={doc_ids:?}",
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "{}: add pack packID={pack_id} count={} docs={}",
                             thread_name(),
-                            docs_list.len()
-                        );
+                            docs_list.len(),
+                            java_list_to_string(&doc_ids)
+                        ));
                     }
                     case.add_documents(pack_id_term, &docs_list)?;
                 }
@@ -672,7 +705,10 @@ fn indexing_thread_body(
 
                 if random().next_int_bound(5) == 2 {
                     if *VERBOSE {
-                        println!("{}: buffer del id:{pack_id}", thread_name());
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "{}: buffer del id:{pack_id}",
+                            thread_name()
+                        ));
                     }
                     to_delete_sub_docs.push(sub_docs);
                 }
@@ -680,14 +716,20 @@ fn indexing_thread_body(
                 // Add single doc
                 let docid = doc_get(&doc.borrow(), "docid").unwrap_or_default();
                 if *VERBOSE {
-                    println!("{}: add doc docid:{docid}", thread_name());
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "{}: add doc docid:{docid}",
+                        thread_name()
+                    ));
                 }
                 case.add_document(term("docid", &docid), &doc.borrow())?;
                 state.add_count.fetch_add(1, Ordering::SeqCst);
 
                 if random().next_int_bound(5) == 3 {
                     if *VERBOSE {
-                        println!("{}: buffer del id:{docid}", thread_name());
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "{}: buffer del id:{docid}",
+                            thread_name()
+                        ));
                     }
                     to_delete_ids.push(docid);
                 }
@@ -698,14 +740,20 @@ fn indexing_thread_body(
             // actually happen:
             let docid = doc_get(&doc.borrow(), "docid").unwrap_or_default();
             if *VERBOSE {
-                println!("{}: update doc id:{docid}", thread_name());
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "{}: update doc id:{docid}",
+                    thread_name()
+                ));
             }
             case.update_document(term("docid", &docid), &doc.borrow())?;
             state.add_count.fetch_add(1, Ordering::SeqCst);
 
             if random().next_int_bound(5) == 3 {
                 if *VERBOSE {
-                    println!("{}: buffer del id:{docid}", thread_name());
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "{}: buffer del id:{docid}",
+                        thread_name()
+                    ));
                 }
                 to_delete_ids.push(docid);
             }
@@ -713,20 +761,31 @@ fn indexing_thread_body(
 
         if random().next_int_bound(30) == 17 {
             if *VERBOSE {
-                println!("{}: apply {} deletes", thread_name(), to_delete_ids.len());
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "{}: apply {} deletes",
+                    thread_name(),
+                    to_delete_ids.len()
+                ));
             }
             for id in &to_delete_ids {
                 if *VERBOSE {
-                    println!("{}: del term=id:{id}", thread_name());
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "{}: del term=id:{id}",
+                        thread_name()
+                    ));
                 }
                 case.delete_documents(term("docid", id))?;
             }
+            // `delCount.addAndGet(...)`: Java's `int` arithmetic wraps.
             let count = state
                 .del_count
                 .fetch_add(to_delete_ids.len() as i32, Ordering::SeqCst)
-                + to_delete_ids.len() as i32;
+                .wrapping_add(to_delete_ids.len() as i32);
             if *VERBOSE {
-                println!("{}: tot {count} deletes", thread_name());
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "{}: tot {count} deletes",
+                    thread_name()
+                ));
             }
             del_ids
                 .lock()
@@ -734,7 +793,7 @@ fn indexing_thread_body(
                 .extend(to_delete_ids.drain(..));
 
             for sub_docs in to_delete_sub_docs.drain(..) {
-                debug_assert!(!sub_docs.deleted.load(Ordering::SeqCst));
+                java_assert!(!sub_docs.deleted.load(Ordering::SeqCst));
                 del_pack_ids
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -742,12 +801,12 @@ fn indexing_thread_body(
                 case.delete_documents(term("packID", &sub_docs.pack_id))?;
                 sub_docs.deleted.store(true, Ordering::SeqCst);
                 if *VERBOSE {
-                    println!(
-                        "{}: del subs: {:?} packID={}",
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "{}: del subs: {} packID={}",
                         thread_name(),
-                        sub_docs.sub_ids,
+                        java_list_to_string(&sub_docs.sub_ids),
                         sub_docs.pack_id
-                    );
+                    ));
                 }
                 del_ids
                     .lock()
@@ -772,8 +831,8 @@ fn launch_indexing_threads(
     docs: &Arc<LineFileDocs>,
     num_threads: i32,
     max_iterations: i32,
-    del_ids: &Arc<Mutex<HashSet<String>>>,
-    del_pack_ids: &Arc<Mutex<HashSet<String>>>,
+    del_ids: &Arc<Mutex<JavaHashSet>>,
+    del_pack_ids: &Arc<Mutex<JavaHashSet>>,
     all_sub_docs: &Arc<Mutex<Vec<Arc<SubDocs>>>>,
 ) -> Vec<Thread> {
     let mut threads = Vec::with_capacity(num_threads as usize);
@@ -800,13 +859,19 @@ fn launch_indexing_threads(
                 Err(payload) => Some(Throwable::from_panic(payload)),
             };
             if let Some(t) = failure {
-                println!("{}: hit exc", thread_name());
-                eprintln!("{t:?}");
+                randomizedtesting::jdk::system::out_println(&format!("{}: hit exc", thread_name()));
+                // `t.printStackTrace()`: to `System.err`.
+                randomizedtesting::jdk::system::err_println(
+                    &randomizedtesting::jdk::system::format_stack_trace(&t),
+                );
                 case.state().failed.store(true, Ordering::SeqCst);
                 Throwable::from_cause("java.lang.RuntimeException", t).throw();
             }
             if *VERBOSE {
-                println!("{}: indexing done", thread_name());
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "{}: indexing done",
+                    thread_name()
+                ));
             }
 
             case.do_after_indexing_thread_done();
@@ -845,7 +910,10 @@ pub fn run_search_threads(
         let tot_term_count = Arc::clone(&tot_term_count);
         let thread = Thread::unnamed(move || {
             if *VERBOSE {
-                println!("{}: launch search thread", thread_name());
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "{}: launch search thread",
+                    thread_name()
+                ));
             }
             let state = Arc::clone(case.state());
             let mut iterations = 0;
@@ -863,9 +931,15 @@ pub fn run_search_threads(
                     Err(payload) => Some(Throwable::from_panic(payload)),
                 };
                 if let Some(t) = failure {
-                    println!("{}: hit exc", thread_name());
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "{}: hit exc",
+                        thread_name()
+                    ));
                     state.failed.store(true, Ordering::SeqCst);
-                    println!("{t:?}");
+                    // `t.printStackTrace(System.out)`
+                    randomizedtesting::jdk::system::out_println(
+                        &randomizedtesting::jdk::system::format_stack_trace(&t),
+                    );
                     Throwable::from_cause("java.lang.RuntimeException", t).throw();
                 }
             }
@@ -874,17 +948,17 @@ pub fn run_search_threads(
         search_threads.push(thread);
     }
 
+    // `thread.join()` returns normally whatever the thread threw (its
+    // uncaught exception went to the thread's handler).
     for thread in &search_threads {
-        if let Err(payload) = thread.join() {
-            std::panic::resume_unwind(payload);
-        }
+        let _ = thread.join();
     }
 
     if *VERBOSE {
-        println!(
+        randomizedtesting::jdk::system::out_println(&format!(
             "TEST: DONE search: totHits={}",
             tot_hits.load(Ordering::SeqCst)
-        );
+        ));
     }
     Ok(())
 }
@@ -905,9 +979,7 @@ fn search_once(
         // merged segments is actually happening:
         for sub in Arc::clone(searcher.get_index_reader()).leaves()? {
             let reader = sub.leaf_reader();
-            let seg_reader = reader.as_segment_reader().unwrap_or_else(|| {
-                Throwable::new("java.lang.ClassCastException", "not a SegmentReader").throw()
-            });
+            let seg_reader = as_segment_reader(&reader);
             let diagnostics = seg_reader.get_segment_info().info.get_diagnostics();
             let source = diagnostics.get("source");
             assert_not_null(source.is_some());
@@ -1014,37 +1086,41 @@ impl std::fmt::Display for WarmedRecorder {
 impl MergedSegmentWarmer for WarmedRecorder {
     fn warm(&self, reader: &Arc<dyn LeafReader>) -> Result<()> {
         if *VERBOSE {
-            println!("TEST: now warm merged reader={reader}");
+            randomizedtesting::jdk::system::out_println(&format!(
+                "TEST: now warm merged reader={reader}"
+            ));
         }
-        let seg_reader = reader.as_segment_reader().unwrap_or_else(|| {
-            Throwable::new("java.lang.ClassCastException", "not a SegmentReader").throw()
-        });
+        let seg_reader = as_segment_reader(reader);
         let core = TestSecrets::get_segment_reader_access()?.get_core(seg_reader);
         if let Some(state) = self.state.upgrade() {
             state.put_warmed(&core);
         }
         let max_doc = reader.max_doc();
         let live_docs = reader.get_live_docs();
-        let mut sum = 0i64;
+        // Java's `int sum`; `sum += long` narrows (`(int) (sum + value)`).
+        let mut sum = 0i32;
         let inc = 1.max(max_doc / 50);
         let stored_fields = reader.stored_fields()?;
         let mut doc_id = 0;
         while doc_id < max_doc {
             if live_docs.as_ref().is_none_or(|l| l.get(doc_id as usize)) {
                 let doc = stored_fields.document(doc_id)?;
-                sum += doc.get_fields().len() as i64;
+                sum = sum.wrapping_add(doc.get_fields().len() as i32);
             }
             doc_id += inc;
         }
 
         let searcher = LuceneTestCase::new_searcher_wrap(Arc::clone(reader), false);
-        sum += searcher
-            .search(term_query("body", "united"), 10)?
-            .total_hits
-            .value();
+        sum = (i64::from(sum)
+            + searcher
+                .search(term_query("body", "united"), 10)?
+                .total_hits
+                .value()) as i32;
 
         if *VERBOSE {
-            println!("TEST: warm visited {sum} fields");
+            randomizedtesting::jdk::system::out_println(&format!(
+                "TEST: warm visited {sum} fields"
+            ));
         }
         Ok(())
     }
@@ -1127,7 +1203,11 @@ pub fn run_test(
 
     if *VERBOSE {
         conf.set_info_stream(Arc::new(NoTestPointsInfoStream(
-            PrintStreamInfoStream::new(Box::new(std::io::stdout())),
+            PrintStreamInfoStream::new(Box::new(
+                crate::search::shard_searching_test_base::SystemOut(
+                    randomizedtesting::jdk::system::out(),
+                ),
+            )),
         )))?;
     }
     let writer = IndexWriter::new(state.dir(), conf)?;
@@ -1150,8 +1230,10 @@ pub fn run_test(
         10 * *RANDOM_MULTIPLIER
     };
 
-    let del_ids = Arc::new(Mutex::new(HashSet::<String>::new()));
-    let del_pack_ids = Arc::new(Mutex::new(HashSet::<String>::new()));
+    // `Collections.synchronizedSet(new HashSet<String>())`: Java's iteration
+    // order shows in the verification output.
+    let del_ids = Arc::new(Mutex::new(JavaHashSet::new()));
+    let del_pack_ids = Arc::new(Mutex::new(JavaHashSet::new()));
     let all_sub_docs = Arc::new(Mutex::new(Vec::<Arc<SubDocs>>::new()));
 
     let index_threads = launch_indexing_threads(
@@ -1165,10 +1247,10 @@ pub fn run_test(
     );
 
     if *VERBOSE {
-        println!(
+        randomizedtesting::jdk::system::out_println(&format!(
             "TEST: DONE start {num_index_threads} indexing threads [{} ms]",
             t0.elapsed().as_millis()
-        );
+        ));
     }
 
     // Let index build up a bit
@@ -1177,13 +1259,16 @@ pub fn run_test(
     case.do_searching(es.clone(), max_iterations)?;
 
     if *VERBOSE {
-        println!("TEST: all searching done [{} ms]", t0.elapsed().as_millis());
+        randomizedtesting::jdk::system::out_println(&format!(
+            "TEST: all searching done [{} ms]",
+            t0.elapsed().as_millis()
+        ));
     }
 
+    // `thread.join()` returns normally whatever the thread threw (its
+    // uncaught exception went to the thread's handler).
     for thread in &index_threads {
-        if let Err(payload) = thread.join() {
-            std::panic::resume_unwind(payload);
-        }
+        let _ = thread.join();
     }
 
     Assert::assert_true(
@@ -1192,18 +1277,21 @@ pub fn run_test(
     );
 
     if *VERBOSE {
-        println!(
+        randomizedtesting::jdk::system::out_println(&format!(
             "TEST: done join indexing threads [{} ms]; addCount={} delCount={} segmentCounter={}",
             t0.elapsed().as_millis(),
             state.add_count.load(Ordering::SeqCst),
             state.del_count.load(Ordering::SeqCst),
             writer.get_segment_infos_counter()?
-        );
+        ));
     }
 
     let s = case.get_final_searcher()?;
     if *VERBOSE {
-        println!("TEST: finalSearcher={:?}", s.searcher());
+        randomizedtesting::jdk::system::out_println(&format!(
+            "TEST: finalSearcher={:?}",
+            s.searcher()
+        ));
     }
 
     Assert::assert_false(state.failed.load(Ordering::SeqCst));
@@ -1221,11 +1309,11 @@ pub fn run_test(
     for id in &del_ids_now {
         let hits = searcher.search(term_query("docid", id), 1)?;
         if hits.total_hits.value() != 0 {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "doc id={id} is supposed to be deleted, but got {} hits; first docID={}",
                 hits.total_hits.value(),
                 hits.score_docs[0].doc
-            );
+            ));
             do_fail = true;
         }
     }
@@ -1240,10 +1328,10 @@ pub fn run_test(
     for id in &del_pack_ids_now {
         let hits = searcher.search(term_query("packID", id), 1)?;
         if hits.total_hits.value() != 0 {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "packID={id} is supposed to be deleted, but got {} matches",
                 hits.total_hits.value()
-            );
+            ));
             do_fail = true;
         }
     }
@@ -1260,12 +1348,12 @@ pub fn run_test(
             // We sort by relevance but the scores should be identical so sort falls back to by
             // docID:
             if hits.total_hits.value() != sub_docs.sub_ids.len() as i64 {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "packID={}: expected {} hits but got {}",
                     sub_docs.pack_id,
                     sub_docs.sub_ids.len(),
                     hits.total_hits.value()
-                );
+                ));
                 do_fail = true;
             } else {
                 let mut last_doc_id = -1;
@@ -1315,22 +1403,31 @@ pub fn run_test(
 
     // Verify: make sure all not-deleted docs are in fact
     // not deleted:
-    let end_id: i32 = doc_get(&docs.next_doc()?.borrow(), "docid")
-        .unwrap_or_default()
-        .parse()
-        .unwrap_or_else(|_| Throwable::new("java.lang.NumberFormatException", "docid").throw());
+    // `Integer.parseInt(docs.nextDoc().get("docid"))`
+    let end_id: i32 = match doc_get(&docs.next_doc()?.borrow(), "docid") {
+        None => {
+            return Err(LuceneError::number_format("Cannot parse null string"));
+        }
+        Some(docid) => docid
+            .parse()
+            .map_err(|_| LuceneError::number_format_for_input_string(&docid, 10))?,
+    };
     docs.close();
 
-    let del_ids_set: HashSet<String> = del_ids_now.iter().cloned().collect();
     for id in 0..end_id {
         let string_id = id.to_string();
-        if !del_ids_set.contains(&string_id) {
+        if !del_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&string_id)
+        {
             let hits = searcher.search(term_query("docid", &string_id), 1)?;
             if hits.total_hits.value() != 1 {
-                println!(
-                    "doc id={string_id} is not supposed to be deleted, but got hitCount={}; delIDs={del_ids_now:?}",
-                    hits.total_hits.value()
-                );
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "doc id={string_id} is not supposed to be deleted, but got hitCount={}; delIDs={}",
+                    hits.total_hits.value(),
+                    java_list_to_string(del_ids.lock().unwrap_or_else(|e| e.into_inner()).iter())
+                ));
                 do_fail = true;
             }
         }
@@ -1345,7 +1442,12 @@ pub fn run_test(
             state.add_count.load(Ordering::SeqCst),
             state.del_count.load(Ordering::SeqCst)
         )),
-        i64::from(state.add_count.load(Ordering::SeqCst) - state.del_count.load(Ordering::SeqCst)),
+        i64::from(
+            state
+                .add_count
+                .load(Ordering::SeqCst)
+                .wrapping_sub(state.del_count.load(Ordering::SeqCst)),
+        ),
         i64::from(searcher.get_index_reader().num_docs()),
     );
     case.release_searcher(s)?;
@@ -1359,16 +1461,28 @@ pub fn run_test(
             state.add_count.load(Ordering::SeqCst),
             state.del_count.load(Ordering::SeqCst)
         )),
-        i64::from(state.add_count.load(Ordering::SeqCst) - state.del_count.load(Ordering::SeqCst)),
+        i64::from(
+            state
+                .add_count
+                .load(Ordering::SeqCst)
+                .wrapping_sub(state.del_count.load(Ordering::SeqCst)),
+        ),
         i64::from(writer.get_doc_stats()?.num_docs),
     );
 
     case.do_close()?;
 
-    let committed = writer.commit();
-    let closed = writer.close();
-    committed?;
-    closed?;
+    // `try { writer.commit(); } finally { writer.close(); }`: the writer is
+    // closed on every exit of the commit, and a close failure replaces the
+    // commit's.
+    let committed = catch_unwind(AssertUnwindSafe(|| writer.commit()));
+    writer.close()?;
+    match committed {
+        Ok(committed) => {
+            committed?;
+        }
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 
     // Cannot close until after writer is closed because
     // writer has merged segment warmer that uses IS to run
@@ -1391,7 +1505,10 @@ pub fn run_test(
     dir.close()?;
 
     if *VERBOSE {
-        println!("TEST: done [{} ms]", t0.elapsed().as_millis());
+        randomizedtesting::jdk::system::out_println(&format!(
+            "TEST: done [{} ms]",
+            t0.elapsed().as_millis()
+        ));
     }
     Ok(())
 }
@@ -1405,4 +1522,31 @@ pub fn this(state: &ThreadedState) -> Arc<dyn ThreadedIndexingAndSearchingTestCa
 /// `IndexReader` handle of a searcher, for subclasses.
 pub fn reader_of(s: &TestSearcher) -> &Arc<dyn IndexReader> {
     s.searcher().get_index_reader()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `"; delIDs=" + delIDs` renders the synchronized `HashSet` in Java's
+    /// iteration order, as `AbstractCollection.toString()` (JDK 25 probe:
+    /// `new HashSet<>(List.of("10","3","22","7","100"))` prints
+    /// `[22, 100, 3, 7, 10]`).
+    #[test]
+    fn del_ids_render_in_java_hash_set_order() {
+        let mut del_ids = JavaHashSet::new();
+        for id in ["10", "3", "22", "7", "100"] {
+            del_ids.insert(id.to_string());
+        }
+        assert_eq!(java_list_to_string(del_ids.iter()), "[22, 100, 3, 7, 10]");
+    }
+
+    /// `"docs=" + docIDs` renders the `ArrayList` as `[a, b]`, not Rust's
+    /// `Debug` form.
+    #[test]
+    fn doc_ids_render_as_a_java_list() {
+        let doc_ids = vec!["4".to_string(), "5".to_string()];
+        assert_eq!(java_list_to_string(&doc_ids), "[4, 5]");
+        assert_eq!(java_list_to_string(&Vec::<String>::new()), "[]");
+    }
 }

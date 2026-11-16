@@ -299,7 +299,7 @@ def stamp_of(commit, date):
     return f"c.gitCommit = {esc(commit)}, c.gitDate = {esc(date)}"
 
 
-def phase_classes(roadmap, survey, commit, date, batch_size):
+def phase_classes(roadmap, survey, commit, date, batch_size, create=True):
     print("phase: classes", file=sys.stderr)
     rows = [
         {
@@ -319,14 +319,15 @@ def phase_classes(roadmap, survey, commit, date, batch_size):
     # Cada no entra em duas passagens, primeiro a identidade e depois as
     # propriedades. A forma vem do rmp anterior ao 1.17, cujo `graph create`
     # recusava SET; com `graph client` ja nao e obrigatoria, mas mantem-se.
-    run_unwind(
-        "create",
-        roadmap,
-        rows,
-        "MERGE (c:TestClass {qualifiedName: row.qn})",
-        batch_size,
-        "TestClass create",
-    )
+    if create:
+        run_unwind(
+            "create",
+            roadmap,
+            rows,
+            "MERGE (c:TestClass {qualifiedName: row.qn})",
+            batch_size,
+            "TestClass create",
+        )
     run_unwind(
         "update",
         roadmap,
@@ -511,9 +512,14 @@ def phase_coverage(roadmap, commit, date, batch_size):
         if r["f"]
     }
 
+    # A framework class is machinery, not a test (`mark_framework_not_applicable`).
+    framework = {r["t"] for r in read(roadmap, "MATCH (t:TestClass) WHERE t.testKind = 'framework' "
+                                               "RETURN t.qualifiedName AS t")}
     covered, uncovered, unported = [], [], []
     cover_edges = []
     for p in pairs:
+        if p["t"] in framework:
+            continue
         files = rust_files.get(p["c"], set())
         if not files:
             unported.append(p["t"])
@@ -560,6 +566,7 @@ def phase_coverage(roadmap, commit, date, batch_size):
 
     # Tudo o que nao tem sujeito resolvido fica explicitamente sem cobertura
     # conhecida, em vez de ficar sem propriedade nenhuma.
+    mark_framework_not_applicable(roadmap, batch_size)
     rmp(
         "update",
         roadmap,
@@ -572,6 +579,233 @@ def phase_coverage(roadmap, commit, date, batch_size):
         f"subject-unported={len(unported)}",
         file=sys.stderr,
     )
+
+
+# ---------------------------------------------------------------------------
+# The port modules' own test trees and resources (`--phase framework`)
+# ---------------------------------------------------------------------------
+#
+# `lucene/test-framework` and randomizedtesting's `randomized-runner` are port
+# modules (`port_modules_kg.PORT_MODULES`), and each ships more than its main
+# sources: its own tests (`lucene/test-framework/src/test`,
+# `randomized-runner/src/test/java`) and the resources the framework reads at
+# run time (`lucene/test-framework/src/resources`: the line-docs file, the geo
+# fixtures, the `META-INF/services` registrations). Without nodes for them the
+# graph cannot say whether they were carried over. This phase loads them and
+# their Rust counterparts, and it owns those nodes: it prunes what the trees no
+# longer declare. It runs at every sync, since the counterparts are Rust facts.
+
+# (module, repo, tree relative to the repo's clone, testKind)
+FRAMEWORK_TEST_TREES = (
+    ("lucene/test-framework", "lucene", "lucene/test-framework/src/test", "unit-test"),
+    ("randomizedtesting/randomized-runner", "randomizedtesting",
+     "randomized-runner/src/test/java", "unit-test"),
+)
+FRAMEWORK_RESOURCE_TREES = (
+    ("lucene/test-framework", "lucene", "lucene/test-framework/src/resources"),
+)
+# The Rust trees where a module's counterparts live.
+FRAMEWORK_CRATES = {
+    "lucene/test-framework": "crates/rucene-test-framework",
+    "randomizedtesting/randomized-runner": "crates/randomizedtesting",
+}
+COVERED_BY_TEST_NAME = "names-the-test-class"
+NOT_APPLICABLE = "not-applicable"
+
+
+def scan_resources(clone_root: str, tree: str, module: str):
+    """`TestResource` rows: every file of a resource tree."""
+    out = []
+    base = os.path.join(clone_root, tree)
+    for dirpath, _d, names in os.walk(base):
+        for fn in sorted(names):
+            rel = os.path.relpath(os.path.join(dirpath, fn), clone_root).replace(os.sep, "/")
+            out.append({"path": rel, "name": fn, "module": module,
+                        "resource": os.path.relpath(os.path.join(dirpath, fn), base)
+                        .replace(os.sep, "/")})
+    return out
+
+
+def rust_files_of(source_root: str, crate_dir: str):
+    """`{relative path: text}` of a crate's `.rs` files and `{file name: [path]}`
+    of every file under it, from the commit's export."""
+    texts, names = {}, {}
+    base = os.path.join(source_root, crate_dir)
+    for dirpath, _d, fns in os.walk(base):
+        for fn in sorted(fns):
+            ab = os.path.join(dirpath, fn)
+            rel = os.path.relpath(ab, source_root).replace(os.sep, "/")
+            names.setdefault(fn, []).append(rel)
+            if fn.endswith(".rs"):
+                texts[rel] = open(ab, encoding="utf-8", errors="replace").read()
+    return texts, names
+
+
+def resource_counterpart(res, names, texts):
+    """`(path, evidence)` of a resource's Rust counterpart, or `(None, None)`.
+
+    `same-file-name`: the crate ships a file of that name (the fixture is
+    copied). `named-by-source`: a `.rs` file of the crate names the resource's
+    path (a `META-INF/services` registration the crate reproduces in code)."""
+    hits = names.get(res["name"], [])
+    if hits:
+        return sorted(hits)[0], "same-file-name"
+    needle = res["resource"]
+    for rel, text in sorted(texts.items()):
+        if needle in text:
+            return rel, "named-by-source"
+    return None, None
+
+
+def test_class_counterparts(simple, texts):
+    """The crate `.rs` files whose comments name a Java test class.
+
+    The crate cites the Java test a Rust test file ports in its comments: a
+    module doc (`//! Port of `...TestBiasedNumbers``), a list of the classes a
+    file gathers (`//! `TestMockAnalyzer`, `TestMockCharFilter`, ...`) or a
+    section marker (`// TestLeakFS`), bare or fully qualified. The name must
+    stand alone as a word."""
+    word = re.compile(r"(?<![\w$.])(?:[a-z_][\w]*\.)*" + re.escape(simple) + r"(?![\w$])")
+    out = []
+    for rel, text in sorted(texts.items()):
+        for line in text.splitlines():
+            pos = line.find("//")
+            if pos >= 0 and word.search(line[pos:]):
+                out.append(rel)
+                break
+    return out
+
+
+def phase_framework(roadmap, roots, source_root, commit, date, batch_size):
+    """The port modules' test classes, test methods and resources, with their
+    Rust counterparts (see the section comment above), and the framework
+    classes' `ruceneCoverage` (`not-applicable`)."""
+    print("phase: framework", file=sys.stderr)
+    classes, methods, resources = [], [], []
+    for module, repo, tree, kind in FRAMEWORK_TEST_TREES:
+        clone = roots[repo]
+        base = os.path.join(clone, tree)
+        if not os.path.isdir(base):
+            print(f"  nao encontrado: {base}", file=sys.stderr)
+            sys.exit(2)
+        _f, cls, mth, _p = scan_tree(base, clone, module, kind)
+        classes += cls
+        methods += mth
+    for module, repo, tree in FRAMEWORK_RESOURCE_TREES:
+        resources += scan_resources(roots[repo], tree, module)
+
+    crate_texts, crate_names = {}, {}
+    for module, crate in FRAMEWORK_CRATES.items():
+        crate_texts[module], crate_names[module] = rust_files_of(source_root, crate)
+
+    files = {r["path"] for r in read(roadmap, "MATCH (f:File) WHERE f.language = 'Rust' "
+                                              "RETURN f.path AS path")}
+    stamp = stamp_of(commit, date)
+    trees = [t for _m, _r, t, _k in FRAMEWORK_TEST_TREES]
+
+    # TestClass / TestMethod: create the missing (one labelled read, then
+    # CREATE), set every property, prune what the trees no longer declare.
+    def owned(label):
+        return {r["qn"]: r["f"] for r in read(
+            roadmap, f"MATCH (c:{label}) WHERE c.file IS NOT NULL "
+                     "RETURN c.qualifiedName AS qn, c.file AS f")}
+    have_c, have_m = owned("TestClass"), owned("TestMethod")
+    in_trees = lambda f: any((f or "").startswith(t + "/") for t in trees)
+    run_unwind("create", roadmap,
+               [{"qn": c["qualifiedName"]} for c in classes if c["qualifiedName"] not in have_c],
+               "CREATE (c:TestClass {qualifiedName: row.qn})", batch_size, "TestClass create")
+    run_unwind("create", roadmap,
+               [{"qn": m["qualifiedName"]} for m in methods if m["qualifiedName"] not in have_m],
+               "CREATE (c:TestMethod {qualifiedName: row.qn})", batch_size, "TestMethod create")
+    keep_c = {c["qualifiedName"] for c in classes}
+    keep_m = {m["qualifiedName"] for m in methods}
+    if classes:
+        run_unwind("update", roadmap,
+                   [{"qn": q} for q, f in have_c.items() if in_trees(f) and q not in keep_c],
+                   "MATCH (c:TestClass {qualifiedName: row.qn}) DETACH DELETE c",
+                   batch_size, "TestClass prune")
+        run_unwind("update", roadmap,
+                   [{"qn": q} for q, f in have_m.items() if in_trees(f) and q not in keep_m],
+                   "MATCH (c:TestMethod {qualifiedName: row.qn}) DETACH DELETE c",
+                   batch_size, "TestMethod prune")
+    phase_classes(roadmap, {"classes": classes}, commit, date, batch_size, create=False)
+    run_unwind("update", roadmap,
+               [{"qn": m["qualifiedName"], "n": m["name"], "pq": m["parentQualifiedName"],
+                 "f": m["file"], "mo": m["module"]} for m in methods],
+               "MATCH (c:TestMethod {qualifiedName: row.qn}) "
+               "SET c.name = row.n, c.parentQualifiedName = row.pq, c.file = row.f, "
+               f"c.module = row.mo, {stamp}", batch_size, "TestMethod update")
+    run_unwind("create", roadmap,
+               [{"c": m["parentQualifiedName"], "m": m["qualifiedName"]} for m in methods],
+               "MATCH (c:TestClass {qualifiedName: row.c}) "
+               "MATCH (m:TestMethod {qualifiedName: row.m}) MERGE (c)-[:DECLARES]->(m)",
+               batch_size, "TestClass DECLARES TestMethod")
+
+    # The Rust counterparts of the test classes: `COVERED_BY` the crate files
+    # that name them, rewritten whole.
+    rmp("update", roadmap,
+        f"MATCH (:TestClass)-[e:COVERED_BY]->(:File) WHERE e.evidence = '{COVERED_BY_TEST_NAME}' "
+        "DELETE e", "retire names-the-test-class COVERED_BY")
+    edges, state = [], {}
+    for c in classes:
+        hits = [f for f in test_class_counterparts(c["name"], crate_texts[c["module"]])
+                if f in files]
+        state[c["qualifiedName"]] = "covered" if hits else "uncovered"
+        edges += [{"t": c["qualifiedName"], "f": f, "commit": commit, "date": date}
+                  for f in hits]
+    run_unwind("create", roadmap, edges,
+               "MATCH (t:TestClass {qualifiedName: row.t}) MATCH (f:File {path: row.f}) "
+               f"CREATE (t)-[:COVERED_BY {{evidence: '{COVERED_BY_TEST_NAME}', "
+               "gitCommit: row.commit, gitDate: row.date}]->(f)",
+               batch_size, "TestClass COVERED_BY File (names the test class)")
+    for st in ("covered", "uncovered"):
+        run_unwind("update", roadmap,
+                   [{"t": q} for q, v in state.items() if v == st],
+                   f"MATCH (c:TestClass {{qualifiedName: row.t}}) SET c.ruceneCoverage = {esc(st)}",
+                   batch_size, f"ruceneCoverage = {st}")
+
+    # TestResource: one node per resource file, with its counterpart.
+    have_r = {r["p"] for r in read(roadmap, "MATCH (r:TestResource) RETURN r.path AS p")}
+    run_unwind("create", roadmap,
+               [{"p": r["path"]} for r in resources if r["path"] not in have_r],
+               "CREATE (r:TestResource {path: row.p})", batch_size, "TestResource create")
+    run_unwind("update", roadmap,
+               [{"p": p} for p in sorted(have_r - {r["path"] for r in resources})],
+               "MATCH (r:TestResource {path: row.p}) DETACH DELETE r",
+               batch_size, "TestResource prune")
+    rows = []
+    for r in resources:
+        cp, ev = resource_counterpart(r, crate_names[r["module"]], crate_texts[r["module"]])
+        rows.append({"p": r["path"], "n": r["name"], "m": r["module"], "res": r["resource"],
+                     "cp": cp, "ev": ev, "commit": commit, "date": date})
+    run_unwind("update", roadmap, rows,
+               "MATCH (r:TestResource {path: row.p}) SET r.name = row.n, r.module = row.m, "
+               "r.resource = row.res, r.ruceneCounterpart = row.cp, "
+               "r.ruceneCounterpartEvidence = row.ev, r.gitCommit = row.commit, "
+               "r.gitDate = row.date", batch_size, "TestResource update")
+
+    mark_framework_not_applicable(roadmap, batch_size)
+    print(f"  framework tests: classes={len(classes)} methods={len(methods)} "
+          f"covered={sum(1 for v in state.values() if v == 'covered')} "
+          f"uncovered={sum(1 for v in state.values() if v == 'uncovered')}; "
+          f"resources={len(resources)} with a counterpart="
+          f"{sum(1 for r in rows if r['cp'])}", file=sys.stderr)
+
+
+def mark_framework_not_applicable(roadmap, batch_size):
+    """`ruceneCoverage = 'not-applicable'` on every framework class.
+
+    A `testKind: "framework"` `TestClass` is machinery, not a test: whether it
+    is ported is its `Class`'s `portState` (`PORT_UNIT`), and "is there a Rust
+    test of its subject" says nothing about it. Its `COVERED_BY` edges of that
+    rule go with it."""
+    rmp("update", roadmap,
+        "MATCH (c:TestClass) WHERE c.testKind = 'framework' "
+        f"SET c.ruceneCoverage = '{NOT_APPLICABLE}'", "ruceneCoverage = not-applicable")
+    rmp("update", roadmap,
+        "MATCH (c:TestClass)-[e:COVERED_BY]->(:File) WHERE c.testKind = 'framework' "
+        "AND e.evidence = 'ported-type-file-has-tests' DELETE e",
+        "framework COVERED_BY retired")
 
 
 def scan_rucene_tests(repo_root: str):
@@ -811,9 +1045,21 @@ def main():
             "coverage",
             "rucene",
             "decision",
+            "framework",
         ],
     )
+    ap.add_argument("--rt-root", help="randomizedtesting 2.8.1 clone (framework phase; "
+                    "else $RANDOMIZEDTESTING_ROOT, else /tmp/randomizedtesting281)")
+    ap.add_argument("--source-root", help="the commit's `git archive` export (framework "
+                    "phase: the crates the counterparts are read from)")
     args = ap.parse_args()
+
+    if args.phase == "framework":
+        import port_modules_kg as pm
+        roots = {k: str(v) for k, v in pm.repo_roots(args.lucene_root, args.rt_root).items()}
+        phase_framework(args.roadmap, roots, args.source_root or args.repo_root,
+                        args.commit, args.date, args.batch_size)
+        return
 
     if args.phase in ("all", "scan") or not os.path.exists(args.out):
         print("phase: scan", file=sys.stderr)

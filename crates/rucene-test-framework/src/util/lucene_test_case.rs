@@ -1646,6 +1646,31 @@ impl LuceneTestCase {
     }
 }
 
+/// A `java.util.function.Consumer` that can throw any checked exception.
+///
+/// Port of the functional interface `LuceneTestCase.ThrowingConsumer<T>`
+/// (`LuceneTestCase.java:2906-2910`): one method, `void accept(T t) throws
+/// Exception`. As for Java's lambdas, every closure `FnMut(T) -> Result<(),
+/// Throwable>` is one; an `Err` is the exception `accept` throws. The error
+/// type is the crate's [`Throwable`], as the other `Throwing…` callbacks of
+/// this class (`ThrowingRunnable`, taken by
+/// [`expect_throws`](LuceneTestCase::expect_throws)) use: Rust has no checked
+/// exceptions to narrow it to `Exception`.
+pub trait ThrowingConsumer<T> {
+    /// `void accept(T t) throws Exception`.
+    ///
+    /// # Errors
+    ///
+    /// The exception the consumer throws.
+    fn accept(&mut self, t: T) -> Result<(), Throwable>;
+}
+
+impl<T, F: FnMut(T) -> Result<(), Throwable>> ThrowingConsumer<T> for F {
+    fn accept(&mut self, t: T) -> Result<(), Throwable> {
+        self(t)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The searcher factory (`newSearcher`) and what it calls (`maybeWrapReader`,
 // `wrapReader`, `Concurrency`, the shared executor, the `slices` override),
@@ -2038,7 +2063,9 @@ impl LuceneTestCase {
         let threads = TestUtil::next_int(&*Self::random(), 1, 2);
         let executor = Arc::new(LuceneTestCaseExecutor::new(threads as usize));
         if *VERBOSE {
-            println!("NOTE: Created shared ExecutorService with {threads} threads");
+            system::out_println(&format!(
+                "NOTE: Created shared ExecutorService with {threads} threads"
+            ));
         }
         *EXECUTOR
             .lock()
@@ -2115,10 +2142,10 @@ impl LuceneTestCase {
                     // will create no FC insanity in atomic case, as ParallelLeafReader has own
                     // cache key:
                     if *VERBOSE {
-                        println!(
+                        system::out_println(&format!(
                             "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
                              with ParallelLeaf/CompositeReader"
-                        );
+                        ));
                     }
                     r =
                         match r.composite() {
@@ -2149,10 +2176,10 @@ impl LuceneTestCase {
                         let fields: HashSet<String> = all_fields[..end].iter().cloned().collect();
                         // will create no FC insanity as ParallelLeafReader has own cache key:
                         if *VERBOSE {
-                            println!(
+                            system::out_println(&format!(
                                 "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
                                  with ParallelLeafReader"
-                            );
+                            ));
                         }
                         let kept: Arc<dyn LeafReader> = Arc::new(FieldFilterLeafReader::new(
                             Arc::clone(ar),
@@ -2174,10 +2201,10 @@ impl LuceneTestCase {
                     // QueryUtils' reader with a fake cache key, so insanity checker cannot walk
                     // along our reader:
                     if *VERBOSE {
-                        println!(
+                        system::out_println(&format!(
                             "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
                              with AssertingLeaf/DirectoryReader"
-                        );
+                        ));
                     }
                     match &r {
                         TestReader::Leaf(leaf) => {
@@ -2195,10 +2222,10 @@ impl LuceneTestCase {
                 }
                 3 => {
                     if *VERBOSE {
-                        println!(
+                        system::out_println(&format!(
                             "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
                              with MismatchedLeaf/Directory/CodecReader"
-                        );
+                        ));
                     }
                     // `r instanceof CodecReader` is never reached: a CodecReader is a
                     // LeafReader, which the first branch takes.
@@ -2220,10 +2247,10 @@ impl LuceneTestCase {
                 }
                 4 => {
                     if *VERBOSE {
-                        println!(
+                        system::out_println(&format!(
                             "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
                              with MergingCodecReader"
-                        );
+                        ));
                     }
                     match &r {
                         TestReader::Leaf(leaf) => {
@@ -2253,7 +2280,7 @@ impl LuceneTestCase {
         }
 
         if *VERBOSE {
-            println!("wrapReader wrapped: {r:?}");
+            system::out_println(&format!("wrapReader wrapped: {r:?}"));
         }
 
         Ok(r)
@@ -2332,9 +2359,8 @@ impl LuceneTestCase {
     ) -> IndexSearcher {
         let random = Self::random();
         let mut r: TestReader = r.into();
-        let rethrow = |e: rucene::error::LuceneError| -> ! {
-            panic!("{e}");
-        };
+        // `Rethrow.rethrow(e)`: the exception itself, as a Java throwable.
+        let rethrow = |e: rucene::error::LuceneError| -> ! { rethrow_lucene_error(&e) };
         if concurrency == Concurrency::None {
             if maybe_wrap {
                 r = Self::maybe_wrap_reader(r).unwrap_or_else(|e| rethrow(e));
@@ -2371,7 +2397,7 @@ impl LuceneTestCase {
                 None
             } else {
                 if *VERBOSE {
-                    println!("NOTE: newSearcher using shared ExecutorService");
+                    system::out_println("NOTE: newSearcher using shared ExecutorService");
                 }
                 Self::executor().map(|e| e as Arc<dyn rucene::search::Executor>)
             };
@@ -2981,9 +3007,13 @@ impl LuceneTestCase {
         } else if Self::rarely_with(r) {
             Arc::new(Self::new_alcoholic_merge_policy_with(
                 r,
-                Self::get_default_time_zone().unwrap_or_else(|| {
-                    exception::throw_without_message(exception::NULL_POINTER_EXCEPTION)
-                }),
+                // `classEnvRule.timeZone`, the rule's field.
+                crate::util::lucene_test_case_rules::CLASS_ENV_RULE
+                    .env()
+                    .time_zone
+                    .unwrap_or_else(|| {
+                        exception::throw_without_message(exception::NULL_POINTER_EXCEPTION)
+                    }),
             ))
         } else {
             Arc::new(Self::new_log_merge_policy_with(r))
@@ -3264,8 +3294,16 @@ impl LuceneTestCase {
         }
         if *VERBOSE && did_change {
             let current = c.to_string();
-            let previous_lines: Vec<&str> = previous.split('\n').collect();
-            let current_lines: Vec<&str> = current.split('\n').collect();
+            // `String.split("\n")` drops the trailing empty strings.
+            let java_split = |text: &str| {
+                let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+                while lines.last().is_some_and(String::is_empty) {
+                    lines.pop();
+                }
+                lines
+            };
+            let previous_lines = java_split(&previous);
+            let current_lines = java_split(&current);
             let mut diff = String::new();
 
             // this should always be the case, diff each line
@@ -3283,8 +3321,8 @@ impl LuceneTestCase {
 
             // its possible to be empty, if we "change" a value to what it had before.
             if !diff.is_empty() {
-                println!("NOTE: LuceneTestCase: randomly changed IWC's live settings:");
-                println!("{diff}");
+                system::out_println("NOTE: LuceneTestCase: randomly changed IWC's live settings:");
+                system::out_println(&diff);
             }
         }
     }
@@ -3570,29 +3608,11 @@ fn java_default_table_length(size: usize) -> usize {
     n
 }
 
-/// The table length of `new HashSet<>(collection)` over `size` elements:
-/// `tableSizeFor(max((int) (size / .75f) + 1, 16))`.
-fn java_copy_table_length(size: usize) -> usize {
-    let cap = std::cmp::max((size as f32 / 0.75f32) as usize + 1, 16);
-    cap.next_power_of_two()
-}
-
-/// `AbstractCollection.toString()` of a `HashSet<String>` built as
-/// `new HashSet<>(collection)`: `[a, b]` in Java's iteration order.
-fn java_copied_string_set_to_string(set: &HashSet<String>) -> String {
-    let mut names: Vec<&String> = set.iter().collect();
-    names.sort();
-    let entries = names
-        .into_iter()
-        .map(|n| {
-            (
-                randomizedtesting::jdk::lang::string_hash_code(n),
-                n.as_str(),
-            )
-        })
-        .collect();
-    let ordered = java_hash_order(entries, java_copy_table_length(set.len()));
-    format!("[{}]", ordered.join(", "))
+/// `AbstractCollection.toString()` of a `HashSet<String>`: `[a, b]` in the
+/// set's own iteration order.
+fn java_string_set_to_string(set: &rucene::util::java_collections::JavaHashSet) -> String {
+    let names: Vec<&str> = set.iter().map(String::as_str).collect();
+    format!("[{}]", names.join(", "))
 }
 
 /// `new HashSet<>(set)`: a copy of `set` filled in its iteration order.
@@ -3606,15 +3626,30 @@ fn java_hash_set_copy(
 
 /// JUnit's `assertEquals(message, Object, Object)` for two `HashSet<String>`
 /// that `assertTermsEquals`, `assertNormsEquals` and `assertDocValuesEquals`
-/// compare.
-fn assert_string_sets_equal(info: &str, left: &HashSet<String>, right: &HashSet<String>) {
-    if left != right {
-        Assert::fail(&format!(
-            "{} expected:<{}> but was:<{}>",
-            info,
-            java_copied_string_set_to_string(left),
-            java_copied_string_set_to_string(right)
-        ));
+/// compare: `Set.equals`, then `Assert.format` (the message and a space only
+/// when the message is not empty; `java.util.HashSet<…>` around each side
+/// when both print the same).
+fn assert_string_sets_equal(
+    info: &str,
+    left: &rucene::util::java_collections::JavaHashSet,
+    right: &rucene::util::java_collections::JavaHashSet,
+) {
+    if left.to_std() != right.to_std() {
+        let prefix = if info.is_empty() {
+            String::new()
+        } else {
+            format!("{info} ")
+        };
+        let (expected, actual) = (
+            java_string_set_to_string(left),
+            java_string_set_to_string(right),
+        );
+        if expected == actual {
+            Assert::fail(&format!(
+                "{prefix}expected: java.util.HashSet<{expected}> but was: java.util.HashSet<{actual}>"
+            ));
+        }
+        Assert::fail(&format!("{prefix}expected:<{expected}> but was:<{actual}>"));
     }
 }
 
@@ -3663,6 +3698,18 @@ fn assert_not_null(message: Option<&str>, present: bool) {
     }
 }
 
+/// `rightDocs.<method>` on a `null` right enum in `assertDocsEnumEquals` and
+/// `assertDocsSkippingEquals`: the JVM's helpful message (the jar carries a
+/// `LocalVariableTable`).
+fn null_right_docs(method: &str) -> ! {
+    exception::throw(
+        exception::NULL_POINTER_EXCEPTION,
+        format!(
+            "Cannot invoke \"org.apache.lucene.index.PostingsEnum.{method}\" because \"rightDocs\" is null"
+        ),
+    )
+}
+
 /// Unwraps a `Result` the way a Java method declared `throws IOException`
 /// lets the exception propagate: the error is thrown.
 fn io<T>(result: rucene::error::Result<T>) -> T {
@@ -3709,9 +3756,13 @@ impl LuceneTestCase {
     /// `newAlcoholicMergePolicy()`: `newAlcoholicMergePolicy(random(),
     /// classEnvRule.timeZone)`.
     pub fn new_alcoholic_merge_policy() -> rucene::index::merge_policy::LogMergePolicy {
-        let tz = Self::get_default_time_zone()
+        // `newAlcoholicMergePolicy(random(), classEnvRule.timeZone)`.
+        let random = Self::random();
+        let tz = crate::util::lucene_test_case_rules::CLASS_ENV_RULE
+            .env()
+            .time_zone
             .unwrap_or_else(|| exception::throw_without_message(exception::NULL_POINTER_EXCEPTION));
-        Self::new_alcoholic_merge_policy_with(&*Self::random(), tz)
+        Self::new_alcoholic_merge_policy_with(&*random, tz)
     }
 
     /// `newLogMergePolicy(useCFS)`: `newLogMergePolicy()` with
@@ -4187,7 +4238,9 @@ impl LuceneTestCase {
                     .expect(INVARIANT);
             }
             if *VERBOSE {
-                println!("NOTE: LuceneTestCase: upgrade name={name} type={new_type}");
+                system::out_println(&format!(
+                    "NOTE: LuceneTestCase: upgrade name={name} type={new_type}"
+                ));
             }
         }
         new_type.freeze();
@@ -4523,7 +4576,7 @@ impl LuceneTestCase {
         let right_fields = java_hash_set_copy(io(rucene::index::FieldInfos::get_indexed_fields(
             Arc::clone(right_reader),
         )));
-        assert_string_sets_equal(info, &left_fields.to_std(), &right_fields.to_std());
+        assert_string_sets_equal(info, &left_fields, &right_fields);
 
         for field in left_fields.iter().cloned().collect::<Vec<String>>() {
             Self::assert_terms_equals_terms(
@@ -4806,10 +4859,9 @@ impl LuceneTestCase {
             assert_null(None, right_docs.map(|d| d.to_string()).as_ref());
             return;
         };
-        let right_docs = right_docs
-            .unwrap_or_else(|| exception::throw_without_message(exception::NULL_POINTER_EXCEPTION));
         let i = Some(info);
         assert_long_equals(i, -1, left_docs.doc_id().into());
+        let right_docs = right_docs.unwrap_or_else(|| null_right_docs("docID()"));
         assert_long_equals(i, -1, right_docs.doc_id().into());
         loop {
             let docid = io(left_docs.next_doc());
@@ -4851,8 +4903,9 @@ impl LuceneTestCase {
             assert_null(None, right_docs.map(|d| d.to_string()).as_ref());
             return;
         };
-        let right_docs = right_docs
-            .unwrap_or_else(|| exception::throw_without_message(exception::NULL_POINTER_EXCEPTION));
+        // A `null` right enum is dereferenced at its first use, after the
+        // left side moved (and the random draws were taken), as in Java.
+        let mut right_docs = right_docs;
         let i = Some(info);
         let mut docid;
         let average_gap = left_reader.max_doc() / (1 + doc_freq);
@@ -4861,19 +4914,28 @@ impl LuceneTestCase {
             if Self::random().next_boolean() {
                 // nextDoc()
                 docid = io(left_docs.next_doc());
-                assert_long_equals(i, docid.into(), io(right_docs.next_doc()).into());
+                let right = right_docs
+                    .as_deref_mut()
+                    .unwrap_or_else(|| null_right_docs("nextDoc()"));
+                assert_long_equals(i, docid.into(), io(right.next_doc()).into());
             } else {
                 // advance()
                 let skip = Self::skip_target(docid, average_gap);
                 docid = io(left_docs.advance(skip));
-                assert_long_equals(i, docid.into(), io(right_docs.advance(skip)).into());
+                let right = right_docs
+                    .as_deref_mut()
+                    .unwrap_or_else(|| null_right_docs("advance(int)"));
+                assert_long_equals(i, docid.into(), io(right.advance(skip)).into());
             }
 
             if docid == NO_MORE_DOCS {
                 return;
             }
             if has_freqs {
-                assert_long_equals(i, io(left_docs.freq()).into(), io(right_docs.freq()).into());
+                let right = right_docs
+                    .as_deref_mut()
+                    .expect("INVARIANT: dereferenced above");
+                assert_long_equals(i, io(left_docs.freq()).into(), io(right.freq()).into());
             }
         }
     }
@@ -4887,10 +4949,15 @@ impl LuceneTestCase {
         right_docs: Option<&mut dyn rucene::index::postings_enum::PostingsEnum>,
     ) {
         use rucene::search::NO_MORE_DOCS;
-        let (Some(left_docs), Some(right_docs)) = (left_docs, right_docs) else {
-            // `assertNull(leftDocs); assertNull(rightDocs);`: one side is
-            // null, so at most one of them fails.
-            Assert::fail("expected null, but was:<PostingsEnum>")
+        let (left_docs, right_docs) = match (left_docs, right_docs) {
+            (Some(left), Some(right)) => (left, right),
+            (left, right) => {
+                // `assertNull(leftDocs); assertNull(rightDocs); return;`: both
+                // pass when both are null.
+                assert_null(None, left.map(|d| d.to_string()).as_ref());
+                assert_null(None, right.map(|d| d.to_string()).as_ref());
+                return;
+            }
         };
         let i = Some(info);
         let mut docid = -1;
@@ -5076,7 +5143,7 @@ impl LuceneTestCase {
         let right_fields = java_hash_set_copy(io(rucene::index::FieldInfos::get_indexed_fields(
             Arc::clone(right_reader),
         )));
-        assert_string_sets_equal(info, &left_fields.to_std(), &right_fields.to_std());
+        assert_string_sets_equal(info, &left_fields, &right_fields);
 
         for field in left_fields.iter().cloned().collect::<Vec<String>>() {
             let left_norms = io(MultiDocValues::get_norm_values(left_reader, &field));
@@ -5211,9 +5278,9 @@ impl LuceneTestCase {
     }
 
     /// `getDVFields(reader)` (private): the fields with doc values, as a
-    /// `new HashSet<>()` filled in field-info order.
-    fn get_dv_fields(reader: &Arc<dyn IndexReader>) -> HashSet<String> {
-        let mut fields = HashSet::new();
+    /// `new HashSet<>()` filled with `add` in the merged `FieldInfos`' order.
+    fn get_dv_fields(reader: &Arc<dyn IndexReader>) -> rucene::util::java_collections::JavaHashSet {
+        let mut fields = rucene::util::java_collections::JavaHashSet::new();
         for fi in io(rucene::index::FieldInfos::get_merged_field_infos(
             Arc::clone(reader),
         ))
@@ -5240,17 +5307,8 @@ impl LuceneTestCase {
         assert_string_sets_equal(info, &left_fields, &right_fields);
         let i = Some(info);
 
-        let entries: Vec<(i32, String)> = {
-            // `getDVFields` fills a `new HashSet<>()` element by element.
-            let mut names: Vec<&String> = left_fields.iter().collect();
-            names.sort();
-            names
-                .into_iter()
-                .map(|n| (randomizedtesting::jdk::lang::string_hash_code(n), n.clone()))
-                .collect()
-        };
-        let len = entries.len();
-        for field in java_hash_order(entries, java_default_table_length(len)) {
+        // `for (String field : leftFields)`: the `HashSet`'s iteration order.
+        for field in left_fields.iter().cloned().collect::<Vec<String>>() {
             // TODO: clean this up... very messy
             {
                 let left_values = io(MultiDocValues::get_numeric_values(left_reader, &field));
@@ -5483,10 +5541,21 @@ impl LuceneTestCase {
         let left = tree_set(&left_infos);
         let right = tree_set(&right_infos);
         if left != right {
+            // `Assert.format`: the message and a space only when the message
+            // is not empty.
+            let prefix = if info.is_empty() {
+                String::new()
+            } else {
+                format!("{info} ")
+            };
+            let (expected, actual) = (left.join(", "), right.join(", "));
+            if expected == actual {
+                Assert::fail(&format!(
+                    "{prefix}expected: java.util.TreeSet<[{expected}]> but was: java.util.TreeSet<[{actual}]>"
+                ));
+            }
             Assert::fail(&format!(
-                "{info} expected:<[{}]> but was:<[{}]>",
-                left.join(", "),
-                right.join(", ")
+                "{prefix}expected:<[{expected}]> but was:<[{actual}]>"
             ));
         }
     }
@@ -5524,14 +5593,21 @@ impl LuceneTestCase {
             Arc::clone(right_reader),
         ));
         let i = Some(info);
-        let npe = || -> &rucene::index::FieldInfo {
-            exception::throw_without_message(exception::NULL_POINTER_EXCEPTION)
+        // `fieldInfoN.getPointDimensionCount()` on a missing field: the JVM's
+        // helpful message names the local.
+        let npe = |variable: &str| -> ! {
+            exception::throw(
+                exception::NULL_POINTER_EXCEPTION,
+                format!(
+                    "Cannot invoke \"org.apache.lucene.index.FieldInfo.getPointDimensionCount()\" because \"{variable}\" is null"
+                ),
+            )
         };
         for field_info1 in field_infos1.iter() {
             if field_info1.get_point_dimension_count() != 0 {
                 let field_info2 = field_infos2
                     .field_info(&field_info1.name)
-                    .unwrap_or_else(npe);
+                    .unwrap_or_else(|| npe("fieldInfo2"));
                 // same data dimension count?
                 assert_long_equals(
                     i,
@@ -5569,7 +5645,7 @@ impl LuceneTestCase {
             if field_info2.get_point_dimension_count() != 0 {
                 let field_info1 = field_infos1
                     .field_info(&field_info2.name)
-                    .unwrap_or_else(npe);
+                    .unwrap_or_else(|| npe("fieldInfo1"));
                 // same data dimension count?
                 assert_long_equals(
                     i,
@@ -5592,5 +5668,83 @@ impl LuceneTestCase {
                 // we don't need to uninvert and compare here ... we did that in the first loop above
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod throwing_consumer_tests {
+    use randomizedtesting::jdk::exception::Throwable;
+
+    use super::ThrowingConsumer;
+
+    /// Java's contract: `accept` runs the consumer on its argument, and an
+    /// exception it throws reaches the caller unchanged.
+    #[test]
+    fn accept_invokes_the_consumer_and_propagates_its_exception() {
+        let mut seen = Vec::new();
+        let mut consumer = |t: i32| {
+            seen.push(t);
+            if t < 0 {
+                Err(Throwable::new("java.io.IOException", "negative"))
+            } else {
+                Ok(())
+            }
+        };
+        assert!(ThrowingConsumer::accept(&mut consumer, 1).is_ok());
+        let e = ThrowingConsumer::accept(&mut consumer, -2).unwrap_err();
+        assert_eq!(e.class_name(), "java.io.IOException");
+        assert_eq!(e.message(), Some("negative"));
+        assert_eq!(seen, [1, -2]);
+
+        // A trait object, as a Java caller holds the interface type.
+        let mut count = 0;
+        {
+            let mut boxed: Box<dyn ThrowingConsumer<&str> + '_> = Box::new(|s: &str| {
+                count += s.len();
+                Ok(())
+            });
+            boxed.accept("abc").unwrap();
+        }
+        assert_eq!(count, 3);
+    }
+}
+
+#[cfg(test)]
+mod assertion_helper_tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::Arc;
+
+    use randomizedtesting::jdk::exception::Throwable;
+    use rucene::index::{IndexReader, MultiReader};
+    use rucene::util::java_collections::JavaHashSet;
+
+    use super::{assert_string_sets_equal, LuceneTestCase};
+
+    /// `assertPositionsSkippingEquals(info, r, docFreq, null, null)`: both
+    /// `assertNull`s pass and the method returns.
+    #[test]
+    fn positions_skipping_of_two_null_enums_passes() {
+        let reader: Arc<dyn IndexReader> =
+            Arc::new(MultiReader::new_closing(Vec::new()).expect("an empty reader"));
+        LuceneTestCase::assert_positions_skipping_equals("info", &reader, 1, None, None);
+    }
+
+    /// The sets print in their own `HashSet` order: `"BB"` and `"Aa"` share a
+    /// hash code, so the one added first comes first; an empty message adds
+    /// no leading space.
+    #[test]
+    fn string_set_mismatch_prints_java_hash_set_order() {
+        let mut left = JavaHashSet::new();
+        left.insert("BB".to_string());
+        left.insert("Aa".to_string());
+        let mut right = JavaHashSet::new();
+        right.insert("x".to_string());
+        let payload = catch_unwind(AssertUnwindSafe(|| {
+            assert_string_sets_equal("", &left, &right);
+        }))
+        .expect_err("the AssertionError");
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+        assert_eq!(t.message(), Some("expected:<[BB, Aa]> but was:<[x]>"));
     }
 }

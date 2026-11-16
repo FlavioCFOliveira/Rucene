@@ -20,7 +20,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use rucene::error::Result;
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::LeafReaderContext;
 use rucene::search::similarities::Explanation;
 use rucene::search::{
@@ -179,44 +179,83 @@ fn java_math_max(a: f32, b: f32) -> f32 {
 }
 
 /// The anonymous `Scorer` of `scorerSupplier`, its own iterator view.
+///
+/// Its index arithmetic is Java's `int` arithmetic: `startOfBlock` keeps the
+/// sign rule of `%` for a negative `blockLength`, throws
+/// `ArithmeticException: / by zero` for a zero one, and an index out of the
+/// arrays is the JVM's `ArrayIndexOutOfBoundsException`.
 struct BlockScorer {
     docs: Vec<i32>,
     scores: Vec<f32>,
-    i: usize,
+    /// `i`.
+    i: i32,
     block_length: i32,
     /// `lastShallowTarget`.
     last_shallow_target: i32,
 }
 
+/// The JVM's `ArrayIndexOutOfBoundsException` for `array[index]` (JDK 25
+/// text).
+fn index_out_of_bounds(index: i32, length: usize) -> LuceneError {
+    LuceneError::unchecked(
+        "java.lang.ArrayIndexOutOfBoundsException",
+        format!("Index {index} out of bounds for length {length}"),
+    )
+}
+
+/// `array[index]`.
+fn element<T: Copy>(array: &[T], index: i32) -> Result<T> {
+    usize::try_from(index)
+        .ok()
+        .and_then(|i| array.get(i).copied())
+        .ok_or_else(|| index_out_of_bounds(index, array.len()))
+}
+
 impl BlockScorer {
     /// `Arrays.binarySearch(docs, target)` mapped to its insertion point.
-    fn search(&self, target: i32) -> usize {
+    fn search(&self, target: i32) -> i32 {
         match self.docs.binary_search(&target) {
-            Ok(i) | Err(i) => i,
+            Ok(i) | Err(i) => i as i32,
         }
     }
 
-    /// `startOfBlock(target)`.
-    fn start_of_block(&self, target: i32) -> usize {
+    /// `startOfBlock(target)`: `i - i % blockLength`.
+    fn start_of_block(&self, target: i32) -> Result<i32> {
         let i = self.search(target);
-        i - i % self.block_length as usize
+        if self.block_length == 0 {
+            return Err(LuceneError::from(LuceneErrorKind::Arithmetic(
+                "/ by zero".to_string(),
+            )));
+        }
+        Ok(i.wrapping_sub(i.wrapping_rem(self.block_length)))
     }
 
-    /// `endOfBlock(target)`.
-    fn end_of_block(&self, target: i32) -> usize {
-        (self.start_of_block(target) + self.block_length as usize).min(self.docs.len() - 1)
+    /// `endOfBlock(target)`: `Math.min(startOfBlock(target) + blockLength,
+    /// docs.length - 1)`.
+    fn end_of_block(&self, target: i32) -> Result<i32> {
+        Ok(self
+            .start_of_block(target)?
+            .wrapping_add(self.block_length)
+            .min(self.docs.len() as i32 - 1))
+    }
+
+    /// `docs[i]` where Java's accessor cannot declare an exception: the
+    /// JVM's `ArrayIndexOutOfBoundsException` is thrown.
+    fn current_doc(&self) -> i32 {
+        element(&self.docs, self.i)
+            .unwrap_or_else(|e| crate::util::java_exceptions::rethrow_java(e))
     }
 }
 
 impl Scorable for BlockScorer {
     fn score(&mut self) -> Result<f32> {
-        Ok(self.scores[self.i])
+        element(&self.scores, self.i)
     }
 }
 
 impl Scorer for BlockScorer {
     fn doc_id(&self) -> i32 {
-        self.docs[self.i]
+        self.current_doc()
     }
 
     fn iterator(&mut self) -> &mut dyn DocIdSetIterator {
@@ -228,21 +267,22 @@ impl Scorer for BlockScorer {
         if target == NO_MORE_DOCS {
             return Ok(NO_MORE_DOCS);
         }
-        Ok(self.docs[self.end_of_block(target)] - 1)
+        Ok(element(&self.docs, self.end_of_block(target)?)?.wrapping_sub(1))
     }
 
     fn get_max_score(&mut self, up_to: i32) -> Result<f32> {
         let mut max = 0.0f32;
-        let mut j = self.start_of_block(self.docs[self.i].max(self.last_shallow_target));
+        let mut j =
+            self.start_of_block(element(&self.docs, self.i)?.max(self.last_shallow_target))?;
         loop {
-            if self.docs[j] > up_to {
+            if element(&self.docs, j)? > up_to {
                 break;
             }
-            max = java_math_max(max, self.scores[j]);
-            if j == self.docs.len() - 1 {
+            max = java_math_max(max, element(&self.scores, j)?);
+            if j == self.docs.len() as i32 - 1 {
                 break;
             }
-            j += 1;
+            j = j.wrapping_add(1);
         }
         Ok(max)
     }
@@ -250,22 +290,60 @@ impl Scorer for BlockScorer {
 
 impl DocIdSetIterator for BlockScorer {
     fn doc_id(&self) -> i32 {
-        self.docs[self.i]
+        self.current_doc()
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        java_assert!(self.docs[self.i] != NO_MORE_DOCS);
-        self.i += 1;
-        Ok(self.docs[self.i])
+        java_assert!(element(&self.docs, self.i)? != NO_MORE_DOCS);
+        // `docs[++i]`
+        self.i = self.i.wrapping_add(1);
+        element(&self.docs, self.i)
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
         self.i = self.search(target);
-        java_assert!(self.docs[self.i] >= target);
-        Ok(self.docs[self.i])
+        java_assert!(element(&self.docs, self.i)? >= target);
+        element(&self.docs, self.i)
     }
 
     fn cost(&self) -> i64 {
-        self.docs.len() as i64 - 2
+        // `docs.length - 2`: an `int`.
+        i64::from(self.docs.len() as i32 - 2)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scorer(docs: Vec<i32>, block_length: i32) -> BlockScorer {
+        let scores = vec![1.0; docs.len()];
+        BlockScorer {
+            docs,
+            scores,
+            i: 0,
+            block_length,
+            last_shallow_target: -1,
+        }
+    }
+
+    /// `startOfBlock` is `int` arithmetic: with a negative `blockLength`,
+    /// `2 - 2 % -2` is 2 and `endOfBlock` is `min(2 + -2, 3)` = 0, so
+    /// `advanceShallow(5)` answers `docs[0] - 1`.
+    #[test]
+    fn negative_block_length_follows_java_int_remainder() {
+        let mut s = scorer(vec![-1, 0, 5, NO_MORE_DOCS], -2);
+        assert_eq!(s.advance_shallow(5).expect("advanceShallow"), -2);
+    }
+
+    /// A zero `blockLength` is Java's `ArithmeticException: / by zero`.
+    #[test]
+    fn zero_block_length_is_an_arithmetic_exception() {
+        let mut s = scorer(vec![-1, 0, 5, NO_MORE_DOCS], 0);
+        let e = s.advance_shallow(5).expect_err("/ by zero");
+        assert!(
+            matches!(e.kind(), LuceneErrorKind::Arithmetic(m) if m == "/ by zero"),
+            "{e:?}"
+        );
     }
 }

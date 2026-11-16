@@ -230,7 +230,11 @@ pub(crate) fn java_split(s: &str, separator: char) -> Vec<&str> {
     parts
 }
 
-/// `new String(scratch.bytes(), offset, scratch.length() - offset, UTF_8)`.
+/// `scratchUTF16.copyUTF8Bytes(scratch.bytes(), offset, scratch.length() -
+/// offset)` then `toString()`: a negative length copies nothing (without
+/// `-ea`; `ArrayUtil.grow` asserts it under `-ea`). Readers that build the
+/// string with `new String(bytes, offset, length, UTF_8)` use
+/// [`JavaScratch::new_string`] instead.
 pub(crate) fn read_string(scratch: &[u8], offset: usize) -> String {
     java_utf8_to_string(&scratch[offset.min(scratch.len())..])
 }
@@ -358,4 +362,191 @@ pub(crate) fn java_message(e: &LuceneError) -> String {
 /// `(int) Math.ceil(numMappings / 0.75)`.
 pub(crate) fn hash_map_capacity(num_mappings: i32) -> i32 {
     (f64::from(num_mappings) / 0.75).ceil() as i32
+}
+
+/// The message of the `NullPointerException` the first `SimpleTextUtil.write`
+/// of a writer raises once `close()` has set its output to `null`:
+/// `out.writeByte(bx)` on the `null` parameter `out`.
+pub(crate) const WRITE_AFTER_CLOSE_NPE: &str =
+    "Cannot invoke \"org.apache.lucene.store.DataOutput.writeByte(byte)\" because \"out\" is null";
+
+pub(crate) use crate::java_util::{
+    array_index_out_of_bounds, arraycopy, negative_array_size, null_pointer,
+};
+
+/// `FixedBitSet.set(int index)` on a set of `num_bits` bits
+/// (`FixedBitSet.java:297-302`): the range is only asserted, so without
+/// `-ea` an index inside the last word sets a ghost bit (which
+/// `cardinality()` counts) and one outside the word array throws
+/// `ArrayIndexOutOfBoundsException` on `bits[index >> 6]`.
+///
+/// # Errors
+///
+/// `ArrayIndexOutOfBoundsException` for a word index outside the array.
+pub(crate) fn java_fixed_bit_set_set(
+    bits: &rucene::util::FixedBitSet,
+    num_bits: i32,
+    index: i32,
+) -> Result<()> {
+    debug_assert!(
+        index >= 0 && index < num_bits,
+        "index={index}, numBits={num_bits}"
+    );
+    let words = bits.get_bits();
+    let word_num = index >> 6;
+    let word = usize::try_from(word_num)
+        .ok()
+        .and_then(|w| words.get(w))
+        .ok_or_else(|| array_index_out_of_bounds(i64::from(word_num), words.len()))?;
+    // `1L << index` shifts by `index & 63`.
+    word.fetch_or(1u64 << (index & 63), std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+pub(crate) use crate::java_util::negative_grow_message;
+
+/// The `BytesRefBuilder scratch` a reader fills with
+/// `SimpleTextUtil.readLine`, with the capacity of its byte array as Java
+/// grows it: `readLine` calls `scratch.grow(1 + upto)` for every byte it
+/// reads (`SimpleTextUtil.java:57-73`), and `ArrayUtil.grow` reallocates to
+/// `ArrayUtil.oversize(minSize, 1)` when the array is too short. The
+/// capacity is what `new String(scratch.bytes(), offset, length)` reports
+/// when `length` is negative.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct JavaScratch {
+    /// `scratch.bytes()`: the whole array, stale bytes past the length
+    /// included, as `ArrayUtil.grow` copies them.
+    buf: Vec<u8>,
+    /// `scratch.length()`.
+    length: usize,
+}
+
+impl std::ops::Deref for JavaScratch {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.buf[..self.length]
+    }
+}
+
+impl JavaScratch {
+    /// `new BytesRefBuilder()`: an empty array.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// `scratch.grow(min_size)`: `ArrayUtil.grow` keeps the old bytes.
+    fn grow(&mut self, min_size: usize) {
+        if self.buf.len() < min_size {
+            self.buf.resize(ArrayUtil::oversize(min_size, 1), 0);
+        }
+    }
+
+    /// `SimpleTextUtil.readLine(in, scratch)`, growing the array exactly as
+    /// Java does, the bytes read before a failure included.
+    ///
+    /// # Errors
+    ///
+    /// The input's errors (an `EOFException` before the newline).
+    pub(crate) fn read_line(&mut self, input: &mut dyn DataInput) -> Result<()> {
+        let mut upto = 0usize;
+        loop {
+            let b = input.read_byte()?;
+            self.grow(1 + upto);
+            if b == ESCAPE {
+                self.buf[upto] = input.read_byte()?;
+                upto += 1;
+            } else if b == NEWLINE {
+                break;
+            } else {
+                self.buf[upto] = b;
+                upto += 1;
+            }
+        }
+        self.length = upto;
+        Ok(())
+    }
+
+    /// `scratch.bytes().length`.
+    #[cfg(test)]
+    pub(crate) fn capacity(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// `scratch.byteAt(offset)`: `bytes[offset]`, which reads past the
+    /// length into the array's stale bytes.
+    ///
+    /// # Errors
+    ///
+    /// `ArrayIndexOutOfBoundsException` past the array.
+    pub(crate) fn byte_at(&self, offset: usize) -> Result<u8> {
+        self.buf
+            .get(offset)
+            .copied()
+            .ok_or_else(|| array_index_out_of_bounds(offset as i64, self.buf.len()))
+    }
+
+    /// `new String(scratch.bytes(), offset, scratch.length() - offset,
+    /// UTF_8)`.
+    ///
+    /// # Errors
+    ///
+    /// `StringIndexOutOfBoundsException("Range [offset, offset + length)
+    /// out of bounds for length capacity")` when the line is shorter than
+    /// `offset` (`String.checkBoundsOffCount`, message observed on the JDK
+    /// 25 oracle).
+    pub(crate) fn new_string(&self, offset: usize) -> Result<String> {
+        let length = self.length as i64 - offset as i64;
+        if length < 0 {
+            return Err(LuceneError::unchecked(
+                "java.lang.StringIndexOutOfBoundsException",
+                format!(
+                    "Range [{offset}, {offset} + {length}) out of bounds for length {}",
+                    self.buf.len()
+                ),
+            ));
+        }
+        Ok(java_utf8_to_string(&self.buf[offset..self.length]))
+    }
+}
+
+#[cfg(test)]
+mod java_scratch_tests {
+    use super::*;
+    use rucene::store::ByteArrayDataInput;
+
+    /// Regression (rmp #526): the scratch's capacity follows
+    /// `ArrayUtil.oversize` growth one byte at a time (`1` → 8, `9` → 16,
+    /// …), and a short line reports Java's
+    /// `StringIndexOutOfBoundsException` message with that capacity.
+    #[test]
+    fn capacity_and_short_line_message_follow_java() {
+        let data = b"ab\ncdefghijklmnopq\nx\n";
+        let mut input = ByteArrayDataInput::new(data);
+        let mut scratch = JavaScratch::new();
+        scratch.read_line(&mut input).unwrap();
+        assert_eq!(scratch.capacity(), 8);
+        scratch.read_line(&mut input).unwrap();
+        // 15 bytes: grow(9) reallocates to oversize(9, 1) = 16.
+        assert_eq!(scratch.capacity(), 16);
+        let capacity = scratch.capacity();
+        scratch.read_line(&mut input).unwrap();
+        assert_eq!(scratch.capacity(), capacity);
+        let error = scratch.new_string(5).unwrap_err();
+        match &error.kind {
+            LuceneErrorKind::Unchecked { class, message, .. } => {
+                assert_eq!(*class, "java.lang.StringIndexOutOfBoundsException");
+                assert_eq!(
+                    message.as_deref(),
+                    Some(format!("Range [5, 5 + -4) out of bounds for length {capacity}").as_str())
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(scratch.new_string(1).unwrap(), "");
+        // `byteAt(1)` reads the stale `d` of the previous line.
+        assert_eq!(scratch.byte_at(1).unwrap(), b'd');
+        let empty = JavaScratch::new();
+        assert!(empty.byte_at(0).is_err());
+    }
 }

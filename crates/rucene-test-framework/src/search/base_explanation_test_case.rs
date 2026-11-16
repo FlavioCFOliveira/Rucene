@@ -166,18 +166,26 @@ pub fn before_class_test_explanations() -> Result<()> {
         directory.as_directory(),
         config,
     )?;
-    let result = (|| -> Result<(Arc<dyn DirectoryReader>, IndexSearcher)> {
-        for i in 0..DOC_FIELDS.len() {
-            writer.add_document(&create_doc(i))?;
-        }
-        let reader = writer.get_reader()?;
-        let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
-        Ok((reader, searcher))
-    })();
-    let closed = writer.close();
-    drop(writer);
-    let (reader, searcher) = result?;
-    closed?;
+    // `try (RandomIndexWriter writer = ...)`: closed (and dropped, releasing
+    // its handle on the directory) on every exit, a close failure suppressed
+    // into the body's.
+    let (reader, searcher) = crate::util::java_exceptions::try_with(
+        Some(writer),
+        |writer| {
+            let closed = writer.as_ref().map_or(Ok(()), |w| w.close());
+            *writer = None;
+            closed
+        },
+        |writer| -> Result<(Arc<dyn DirectoryReader>, IndexSearcher)> {
+            let writer = writer.as_ref().expect("INVARIANT: open until closed");
+            for i in 0..DOC_FIELDS.len() {
+                writer.add_document(&create_doc(i))?;
+            }
+            let reader = writer.get_reader()?;
+            let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
+            Ok((reader, searcher))
+        },
+    )?;
     *state() = Some(ExplanationState {
         searcher,
         reader,

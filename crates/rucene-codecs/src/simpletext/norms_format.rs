@@ -164,8 +164,11 @@ impl std::fmt::Debug for NormsAsDocValues<'_> {
     }
 }
 
+/// `throw new UnsupportedOperationException()`, whose message is `null`
+/// (`EmptyDocValuesProducer.java:31-67`); `method` names the Java method.
 fn unsupported(method: &str) -> LuceneError {
-    LuceneError::unsupported_operation(format!("EmptyDocValuesProducer.{method}"))
+    let _ = method;
+    LuceneError::unsupported_operation(String::new())
 }
 
 impl DocValuesProducer for NormsAsDocValues<'_> {
@@ -200,11 +203,56 @@ impl DocValuesProducer for NormsAsDocValues<'_> {
         Err(unsupported("checkIntegrity"))
     }
 
+    /// `DocValuesProducer.getMergeInstance()` returns `this`, which this
+    /// borrowing adapter cannot hand out as an owned producer; nothing calls
+    /// it (`SimpleTextDocValuesWriter.addNumericField` calls only
+    /// `getNumeric`).
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
         Err(unsupported("getMergeInstance"))
     }
 
     fn close(&self) -> Result<()> {
         Err(unsupported("close"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct NoNorms;
+
+    impl NormsProducer for NoNorms {
+        fn get_norms(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+            Ok(None)
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>> {
+            Ok(Box::new(NoNorms))
+        }
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Regression (rmp #526): `EmptyDocValuesProducer` throws
+    /// `new UnsupportedOperationException()`, a `null` message; the port
+    /// named the method.
+    #[test]
+    fn unsupported_methods_have_no_message() {
+        let adapter = NormsAsDocValues {
+            norms_producer: &NoNorms,
+        };
+        let field = FieldInfo::new("f", 0);
+        let message = |error: LuceneError| match error.kind {
+            rucene::error::LuceneErrorKind::UnsupportedOperation { message, .. } => message,
+            other => panic!("{other:?}"),
+        };
+        let error = adapter.get_binary(&field).err().expect("unsupported");
+        assert_eq!(message(error), "");
+        assert_eq!(message(adapter.close().unwrap_err()), "");
     }
 }

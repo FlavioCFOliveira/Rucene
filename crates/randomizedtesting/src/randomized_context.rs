@@ -157,13 +157,9 @@ impl RandomizedContext {
     }
 
     /// `getRunner()`: the runner of this context (`None` for a context made
-    /// without one).
-    ///
-    /// # Panics
-    ///
-    /// `IllegalStateException` once the context is disposed.
+    /// without one). Like Java's, it does not check whether the context is
+    /// disposed.
     pub fn get_runner(&self) -> Option<RandomizedRunner> {
-        self.check_disposed();
         self.runner.clone()
     }
 
@@ -267,20 +263,22 @@ impl RandomizedContext {
     /// `runWithPrivateRandomness(Randomness, Callable)`: pushes
     /// `randomness`, runs `callable` and pops and destroys `randomness`
     /// before returning, also when `callable` panics.
+    ///
+    /// The pop is Java's `finally` block: a throwable it raises (the context
+    /// was disposed, say) replaces the one `callable` threw, as a Java
+    /// `finally` that throws does.
     pub fn run_with_private_randomness<T>(
         &self,
         randomness: Randomness,
         callable: impl FnOnce() -> T,
     ) -> T {
         self.push(randomness);
-        struct PopOnExit<'a>(&'a RandomizedContext);
-        impl Drop for PopOnExit<'_> {
-            fn drop(&mut self) {
-                self.0.pop_and_destroy();
-            }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(callable));
+        self.pop_and_destroy();
+        match result {
+            Ok(v) => v,
+            Err(payload) => std::panic::resume_unwind(payload),
         }
-        let _pop = PopOnExit(self);
-        callable()
     }
 
     /// `runWithPrivateRandomness(long seed, Callable)`: as

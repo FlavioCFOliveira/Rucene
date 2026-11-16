@@ -173,7 +173,7 @@ impl<C: BaseBitSetTestCase> BitSetTests for C {
 /// `randomSet(numBits, numBitsSet)` (package-private `static`): creates a
 /// random set which has `numBitsSet` of its `numBits` bits set.
 pub fn random_set(num_bits: i32, num_bits_set: i32) -> JavaBitSet {
-    assert!(num_bits_set <= num_bits);
+    java_assert_unchecked!(num_bits_set <= num_bits);
     let mut set = JavaBitSet::with_capacity(num_bits as usize);
     if num_bits_set == num_bits {
         set.set_range(0, num_bits as usize);
@@ -559,5 +559,26 @@ impl BitSet for JavaUtilBitSet {
             next = NO_MORE_DOCS;
         }
         next
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use randomizedtesting::jdk::exception::Throwable;
+
+    /// `BaseBitSetTestCase.java:44`: `assert numBitsSet <= numBits` is a Java
+    /// `assert` — an `AssertionError` (with `-ea`), not a Rust assertion
+    /// panic.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn random_set_overfull_is_a_java_assertion_error() {
+        let payload = catch_unwind(AssertUnwindSafe(|| super::random_set(1, 2)))
+            .expect_err("numBitsSet > numBits must fail the assertion");
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+        // `assert numBitsSet <= numBits;` has no message.
+        assert_eq!(t.message(), None);
     }
 }

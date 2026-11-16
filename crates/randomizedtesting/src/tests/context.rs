@@ -306,3 +306,59 @@ fn threads_of_the_group_get_the_runner_randomness_and_clone_for_copies_the_stack
         ctx.pop_and_destroy();
     });
 }
+
+/// Runs `body` on a thread of a fresh group with a runner-less context
+/// whose class randomness is pushed; `body` owns the context's disposal.
+fn in_bare_context(body: impl FnOnce(Arc<RandomizedContext>) + Send + 'static) {
+    let group = ThreadGroup::new(ThreadGroup::main(), "TGRP-bare");
+    let t = Thread::with_group(&group, "SUITE", move || {
+        let runner = Randomness::new(0xDEAD_BEEF, default_supplier(), vec![]);
+        let me = Thread::current();
+        let ctx = RandomizedContext::create(
+            &me.thread_group().unwrap(),
+            "com.example.Bare",
+            runner.clone(),
+            GroupEvaluator::new(),
+        );
+        ctx.push(runner.clone_for(&me));
+        body(ctx);
+    });
+    t.start();
+    if let Err(p) = t.join() {
+        std::panic::resume_unwind(p);
+    }
+}
+
+/// `getRunner()` does not call `checkDisposed()`
+/// (`RandomizedContext.java:140`): it answers after `dispose()`.
+#[test]
+fn get_runner_does_not_check_disposal() {
+    in_bare_context(|ctx| {
+        ctx.dispose();
+        assert!(matches!(catch(|| ctx.get_runner()), Ok(None)));
+        // The members that do check still throw.
+        assert!(catch(|| ctx.get_runner_seed_as_string()).is_err());
+    });
+}
+
+/// `runWithPrivateRandomness` pops in a `finally` block
+/// (`RandomizedContext.java:184-191`): when the callable throws and the pop
+/// throws too (the context was disposed meanwhile), the pop's
+/// `IllegalStateException` replaces the callable's exception.
+#[test]
+fn private_randomness_pop_failure_replaces_the_callable_failure() {
+    in_bare_context(|ctx| {
+        let c2 = ctx.clone();
+        let got = catch(|| {
+            ctx.run_with_private_randomness_seed(1, move || {
+                c2.dispose();
+                crate::jdk::exception::runtime("from callable")
+            })
+        });
+        let got = java_error(&got.expect_err("the pop throws"));
+        assert!(
+            got.starts_with("java.lang.IllegalStateException\tContext disposed: "),
+            "{got}"
+        );
+    });
+}

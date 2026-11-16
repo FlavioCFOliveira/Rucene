@@ -90,7 +90,7 @@ impl SimpleTextTermVectorsWriter {
     fn out(&mut self) -> Result<&mut dyn IndexOutput> {
         match self.out.as_deref_mut() {
             Some(out) => Ok(out),
-            None => Err(LuceneError::already_closed("this writer is closed")),
+            None => Err(util::null_pointer(util::WRITE_AFTER_CLOSE_NPE)),
         }
     }
 
@@ -226,10 +226,18 @@ impl TermVectorsWriter for SimpleTextTermVectorsWriter {
 
     fn finish(&mut self, num_docs: i32) -> Result<()> {
         if self.num_docs_written != num_docs {
-            let description = self.out.as_deref().map_or_else(
-                || "null".to_string(),
-                |o| o.resource_description().to_string(),
-            );
+            // `+ out.toString()`, a `NullPointerException` once `close()`
+            // set `out` to `null`.
+            let description = self
+                .out
+                .as_deref()
+                .map(|o| o.resource_description().to_string())
+                .ok_or_else(|| {
+                    util::null_pointer(
+                        "Cannot invoke \"org.apache.lucene.store.IndexOutput.toString()\" \
+                         because \"this.out\" is null",
+                    )
+                })?;
             return Err(LuceneError::unchecked(
                 "java.lang.RuntimeException",
                 format!(
@@ -242,6 +250,9 @@ impl TermVectorsWriter for SimpleTextTermVectorsWriter {
         }
         self.write_bytes(END)?;
         self.new_line()?;
+        // `SimpleTextUtil.writeChecksum(out, scratch)` copies the 20-digit
+        // checksum through `scratch` (`SimpleTextUtil.java:83-88`).
+        self.grow_scratch(20);
         util::write_checksum(self.out()?)
     }
 
@@ -250,5 +261,52 @@ impl TermVectorsWriter for SimpleTextTermVectorsWriter {
             Some(mut out) => out.close(),
             None => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, unchecked};
+    use rucene::store::DEFAULT_IO_CONTEXT;
+
+    /// Regression (rmp #526): `writeChecksum` grows the shared `scratch` to
+    /// hold the 20-char checksum, which `ramBytesUsed()` reports
+    /// (`SimpleTextTermVectorsWriter.java:203-206`): `oversize(60, 1)` = 72.
+    #[test]
+    fn finish_grows_the_scratch_for_the_checksum() {
+        let dir = directory();
+        let mut writer =
+            SimpleTextTermVectorsWriter::new(dir.as_ref(), "_0", &*DEFAULT_IO_CONTEXT).unwrap();
+        writer.start_document(0).unwrap();
+        assert_eq!(writer.ram_bytes_used(), 8);
+        writer.finish(1).unwrap();
+        assert_eq!(writer.ram_bytes_used(), 72);
+        writer.close().unwrap();
+    }
+
+    /// Regression (rmp #526): once `close()` set `out` to `null`, writing
+    /// fails in `SimpleTextUtil.write` and `finish` with a wrong count fails
+    /// on `out.toString()`, both `NullPointerException`s.
+    #[test]
+    fn use_after_close_is_a_null_pointer() {
+        let dir = directory();
+        let mut writer =
+            SimpleTextTermVectorsWriter::new(dir.as_ref(), "_0", &*DEFAULT_IO_CONTEXT).unwrap();
+        writer.close().unwrap();
+        let error = writer.start_document(0).unwrap_err();
+        assert_eq!(
+            unchecked(&error),
+            (
+                "java.lang.NullPointerException",
+                util::WRITE_AFTER_CLOSE_NPE.to_string()
+            )
+        );
+        let error = writer.finish(3).unwrap_err();
+        assert_eq!(
+            unchecked(&error).1,
+            "Cannot invoke \"org.apache.lucene.store.IndexOutput.toString()\" because \
+             \"this.out\" is null"
+        );
     }
 }

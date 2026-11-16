@@ -38,7 +38,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -63,7 +62,7 @@ use rucene::store::{
 use rucene::util::string_helper::{StringHelper, ID_LENGTH};
 use rucene::util::{InfoStream, NoOutputInfoStream, SameThreadExecutorService, Version};
 
-use super::base_index_file_format_test_case::rethrow;
+use super::base_index_file_format_test_case::{rethrow, try_with};
 use super::mock_random_merge_policy::MockRandomMergePolicy;
 use crate::analysis::MockAnalyzer;
 use crate::util::lucene_test_case::{LuceneTestCase, VERBOSE};
@@ -199,8 +198,13 @@ fn add_double(a: i64, b: f64) -> i64 {
 /// on its name; every other operation is unsupported.
 struct FakeDirectory;
 
+/// `throw new UnsupportedOperationException()`: no message.
 fn unsupported<T>() -> Result<T> {
-    Err(LuceneError::unsupported_operation(String::new()))
+    Err(LuceneError::from(LuceneErrorKind::Unchecked {
+        class: "java.lang.UnsupportedOperationException",
+        message: None,
+        cause: None,
+    }))
 }
 
 impl Directory for FakeDirectory {
@@ -219,15 +223,31 @@ impl Directory for FakeDirectory {
         if !name.ends_with(".fake") {
             return Err(LuceneError::illegal_argument(name.to_string()));
         }
-        let start_index = name.find("_size=").unwrap_or(0) + "_size=".len();
-        let end_index = name.len() - ".fake".len();
-        name[start_index..end_index].parse::<i64>().map_err(|_| {
+        // `String` indices count UTF-16 units; `indexOf` answers -1 when
+        // the name has no `_size=`.
+        let units: Vec<u16> = name.encode_utf16().collect();
+        let pattern: Vec<u16> = "_size=".encode_utf16().collect();
+        let found = units
+            .windows(pattern.len())
+            .position(|w| w == pattern.as_slice())
+            .map_or(-1, |i| i as i32);
+        let start_index = found + pattern.len() as i32;
+        let end_index = units.len() as i32 - ".fake".len() as i32;
+        // `name.substring(startIndex, endIndex)`
+        if start_index < 0 || end_index > units.len() as i32 || start_index > end_index {
+            return Err(LuceneError::from(LuceneErrorKind::StringIndexOutOfBounds(
+                format!(
+                    "begin {start_index}, end {end_index}, length {}",
+                    units.len()
+                ),
+            )));
+        }
+        let digits = String::from_utf16_lossy(&units[start_index as usize..end_index as usize]);
+        // `Long.parseLong(digits)`
+        digits.parse::<i64>().map_err(|_| {
             LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.lang.NumberFormatException",
-                message: Some(format!(
-                    "For input string: \"{}\"",
-                    &name[start_index..end_index]
-                )),
+                message: Some(format!("For input string: \"{digits}\"")),
                 cause: None,
             })
         })
@@ -354,12 +374,12 @@ pub fn apply_merge(
     let mut new_max_doc = 0i32;
     let mut new_size = 0f64;
     for sci in &merge.segments {
-        let num_live_docs = sci.info.max_doc()? - sci.get_del_count();
+        let num_live_docs = sci.info.max_doc()?.wrapping_sub(sci.get_del_count());
         new_size += sci.size_in_bytes_uncached()? as f64 * f64::from(num_live_docs)
             / f64::from(sci.info.max_doc()?)
             / 1024.0
             / 1024.0;
-        new_max_doc += num_live_docs;
+        new_max_doc = new_max_doc.wrapping_add(num_live_docs);
     }
     let merged_info =
         make_segment_commit_info(merged_segment_name, new_max_doc, 0, new_size, SOURCE_MERGE)?;
@@ -396,7 +416,9 @@ pub fn apply_deletes(infos: &SegmentInfos, mut num_deletes: i32) -> Result<Segme
     let info_list = infos.as_list();
     let mut total_num_docs = 0i32;
     for s in info_list {
-        total_num_docs += s.info.max_doc()? - s.get_del_count();
+        // `IntStream.sum()`: `int` arithmetic.
+        total_num_docs =
+            total_num_docs.wrapping_add(s.info.max_doc()?.wrapping_sub(s.get_del_count()));
     }
     if num_deletes > total_num_docs {
         return Err(LuceneError::illegal_argument(
@@ -406,7 +428,7 @@ pub fn apply_deletes(infos: &SegmentInfos, mut num_deletes: i32) -> Result<Segme
     let w = f64::from(num_deletes) / f64::from(total_num_docs);
     let mut new_info_list = Vec::new();
     for (i, sci) in info_list.iter().enumerate() {
-        debug_assert!(num_deletes >= 0);
+        java_assert!(num_deletes >= 0);
         let seg_deletes = if i == info_list.len() - 1 {
             num_deletes
         } else {
@@ -414,7 +436,7 @@ pub fn apply_deletes(infos: &SegmentInfos, mut num_deletes: i32) -> Result<Segme
                 .min((w * f64::from(sci.info.max_doc()? - sci.get_del_count())).ceil() as i32)
         };
         let new_del_count = sci.get_del_count() + seg_deletes;
-        debug_assert!(new_del_count <= sci.info.max_doc()?);
+        java_assert!(new_del_count <= sci.info.max_doc()?);
         if new_del_count < sci.info.max_doc()? {
             // drop fully deleted segments
             let new_info = SegmentCommitInfo::new(
@@ -430,7 +452,7 @@ pub fn apply_deletes(infos: &SegmentInfos, mut num_deletes: i32) -> Result<Segme
         }
         num_deletes -= seg_deletes;
     }
-    debug_assert!(num_deletes == 0);
+    java_assert!(num_deletes == 0);
     let mut new_infos = SegmentInfos::new(i32::from(Version::LATEST.major))?;
     new_infos.add_all(new_info_list)?;
     Ok(new_infos)
@@ -456,8 +478,14 @@ struct NotNeededMergeScheduler {
 }
 
 impl fmt::Display for NotNeededMergeScheduler {
+    /// `Object.toString()` of the anonymous subclass
+    /// (`BaseMergePolicyTestCase$1`, the jar's numbering): neither it nor
+    /// `SerialMergeScheduler` declares `toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.serial, f)
+        f.write_str(&rucene::index::index_reader::java_object_to_string(
+            "org.apache.lucene.tests.index.BaseMergePolicyTestCase$1",
+            self,
+        ))
     }
 }
 
@@ -467,10 +495,14 @@ impl MergeScheduler for NotNeededMergeScheduler {
         if !self.may_merge.load(Ordering::SeqCst) {
             let merge = merge_source.get_next_merge()?;
             if let Some(merge) = merge {
-                println!(
+                // `"... merge " + merge`: `OneMerge` declares no `toString()`.
+                randomizedtesting::jdk::system::out_println(&format!(
                     "TEST: we should not need any merging, yet merge policy returned merge {}",
-                    merge.seg_string()
-                );
+                    rucene::index::index_reader::java_object_to_string(
+                        "org.apache.lucene.index.MergePolicy$OneMerge",
+                        &merge,
+                    )
+                ));
                 randomizedtesting::jdk::exception::throw_without_message(
                     "java.lang.AssertionError",
                 );
@@ -526,68 +558,66 @@ pub trait BaseMergePolicyTestCase: Send + Sync + 'static {
 
     /// `testForceMergeNotNeeded()`.
     fn test_force_merge_not_needed(&self) -> Result<()> {
-        let dir = LuceneTestCase::new_directory();
         // `try (Directory dir = newDirectory())`: `dir` is closed on every
         // exit, the `assumeFalse` unwind included, then the throwable
         // propagates.
-        let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
-            let may_merge = Arc::new(AtomicBool::new(true));
-            let merge_scheduler = Arc::new(NotNeededMergeScheduler {
-                may_merge: Arc::clone(&may_merge),
-                lock: Mutex::new(()),
-                serial: SerialMergeScheduler::default(),
-            });
+        try_with(
+            LuceneTestCase::new_directory(),
+            |d| d.close(),
+            |dir| {
+                let may_merge = Arc::new(AtomicBool::new(true));
+                let merge_scheduler = Arc::new(NotNeededMergeScheduler {
+                    may_merge: Arc::clone(&may_merge),
+                    lock: Mutex::new(()),
+                    serial: SerialMergeScheduler::default(),
+                });
 
-            let mp = self.merge_policy();
-            LuceneTestCase::assume_false(
-                "this test cannot tolerate random forceMerges",
-                mp.to_string().contains("MockRandomMergePolicy"),
-            );
-            mp.set_no_cfs_ratio(if LuceneTestCase::random().next_boolean() {
-                0.0
-            } else {
-                1.0
-            })?;
-
-            let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
-                MockAnalyzer::new(&*LuceneTestCase::random()),
-            )));
-            iwc.set_merge_scheduler(Some(merge_scheduler))?;
-            iwc.set_merge_policy(Some(Arc::clone(&mp)))?;
-
-            let writer = IndexWriter::new(dir.as_directory(), iwc)?;
-            let num_segments = TestUtil::next_int(&*LuceneTestCase::random(), 2, 20);
-            for _ in 0..num_segments {
-                let num_docs = TestUtil::next_int(&*LuceneTestCase::random(), 1, 5);
-                for _ in 0..num_docs {
-                    writer.add_document(&Document::new())?;
-                }
-                directory_reader::open_with_writer(&*writer)?.close()?;
-            }
-            for i in (0..=5).rev() {
-                let segment_count =
-                    TestSecrets::get_index_writer_access()?.get_segment_count(&writer)?;
-                let max_num_segments = if i == 0 {
-                    1
-                } else {
-                    TestUtil::next_int(&*LuceneTestCase::random(), 1, 10)
-                };
-                may_merge.store(segment_count > max_num_segments, Ordering::SeqCst);
-                if *VERBOSE {
-                    println!(
-                    "TEST: now forceMerge(maxNumSegments={max_num_segments}) vs segmentCount={segment_count}"
+                let mp = self.merge_policy();
+                LuceneTestCase::assume_false(
+                    "this test cannot tolerate random forceMerges",
+                    mp.to_string().contains("MockRandomMergePolicy"),
                 );
+                mp.set_no_cfs_ratio(if LuceneTestCase::random().next_boolean() {
+                    0.0
+                } else {
+                    1.0
+                })?;
+
+                let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+                    MockAnalyzer::new(&*LuceneTestCase::random()),
+                )));
+                iwc.set_merge_scheduler(Some(merge_scheduler))?;
+                iwc.set_merge_policy(Some(Arc::clone(&mp)))?;
+
+                let writer = IndexWriter::new(dir.as_directory(), iwc)?;
+                let num_segments = TestUtil::next_int(&*LuceneTestCase::random(), 2, 20);
+                for _ in 0..num_segments {
+                    let num_docs = TestUtil::next_int(&*LuceneTestCase::random(), 1, 5);
+                    for _ in 0..num_docs {
+                        writer.add_document(&Document::new())?;
+                    }
+                    directory_reader::open_with_writer(&*writer)?.close()?;
                 }
-                writer.force_merge(max_num_segments)?;
-            }
-            writer.close()?;
-            Ok(())
-        }));
-        let closed = dir.close();
-        match result {
-            Ok(result) => result.and(closed),
-            Err(payload) => resume_unwind(payload),
-        }
+                for i in (0..=5).rev() {
+                    let segment_count =
+                        TestSecrets::get_index_writer_access()?.get_segment_count(&writer)?;
+                    let max_num_segments = if i == 0 {
+                        1
+                    } else {
+                        TestUtil::next_int(&*LuceneTestCase::random(), 1, 10)
+                    };
+                    may_merge.store(segment_count > max_num_segments, Ordering::SeqCst);
+                    if *VERBOSE {
+                        randomizedtesting::jdk::system::out_println(&format!(
+                        "TEST: now forceMerge(maxNumSegments={max_num_segments}) vs segmentCount={segment_count}"
+                    ));
+                    }
+                    writer.force_merge(max_num_segments)?;
+                }
+                writer.close()?;
+                Ok(())
+            },
+        )
     }
 
     /// `testFindForcedDeletesMerges()`.
@@ -602,49 +632,58 @@ pub trait BaseMergePolicyTestCase: Send + Sync + 'static {
             );
         }
         let mut infos = SegmentInfos::new(i32::from(Version::LATEST.major))?;
-        let directory = LuceneTestCase::new_directory();
-        {
-            let context = MockMergeContext::new(|_| 0);
-            let num_segs = LuceneTestCase::random().next_int_bound(10);
-            for _ in 0..num_segs {
-                let random = LuceneTestCase::random();
-                let name = TestUtil::random_simple_string(&*random); // name
-                let max_doc = random.next_int_bound(i32::MAX); // maxDoc
-                let is_compound_file = random.next_boolean(); // isCompoundFile
-                let id = random_ascii_id(); // id
-                let info = SegmentInfo::new_without_codec(
-                    directory.as_directory(), // dir
-                    Version::LATEST,          // version
-                    Some(Version::LATEST),    // min version
-                    name,
-                    max_doc,
-                    is_compound_file,
-                    false,
-                    HashMap::new(), // diagnostics
-                    id,
-                    HashMap::new(), // attributes
-                    None,           // indexSort
-                )?;
-                info.set_files(std::iter::empty::<String>())?;
-                let del_count = random.next_int_bound(1);
-                infos.add(SegmentCommitInfo::new(
-                    info,
-                    del_count,
-                    0,
-                    -1,
-                    -1,
-                    -1,
-                    StringHelper::random_id(),
-                )?)?;
-            }
-            let forced_deletes_merges = mp.find_forced_deletes_merges(&infos, &context)?;
-            if let Some(forced_deletes_merges) = forced_deletes_merges {
-                Assert::assert_equals(0i64, forced_deletes_merges.merges.len() as i64);
-            }
-            // The segment infos hold the directory (`SegmentInfo.dir`).
-            drop(infos);
-        }
-        directory.close()
+        // `try (Directory directory = newDirectory())`
+        try_with(
+            LuceneTestCase::new_directory(),
+            |d| d.close(),
+            |directory| {
+                let context = MockMergeContext::new(|_| 0);
+                let num_segs = LuceneTestCase::random().next_int_bound(10);
+                for _ in 0..num_segs {
+                    let random = LuceneTestCase::random();
+                    let name = TestUtil::random_simple_string(&*random); // name
+                    let max_doc = random.next_int_bound(i32::MAX); // maxDoc
+                    let is_compound_file = random.next_boolean(); // isCompoundFile
+                    let id = random_ascii_id(); // id
+                    let info = SegmentInfo::new_without_codec(
+                        directory.as_directory(), // dir
+                        Version::LATEST,          // version
+                        Some(Version::LATEST),    // min version
+                        name,
+                        max_doc,
+                        is_compound_file,
+                        false,
+                        HashMap::new(), // diagnostics
+                        id,
+                        HashMap::new(), // attributes
+                        None,           // indexSort
+                    )?;
+                    info.set_files(std::iter::empty::<String>())?;
+                    let del_count = random.next_int_bound(1);
+                    infos.add(SegmentCommitInfo::new(
+                        info,
+                        del_count,
+                        0,
+                        -1,
+                        -1,
+                        -1,
+                        StringHelper::random_id(),
+                    )?)?;
+                }
+                let forced_deletes_merges = mp.find_forced_deletes_merges(&infos, &context)?;
+                if let Some(forced_deletes_merges) = forced_deletes_merges {
+                    Assert::assert_equals(0i64, forced_deletes_merges.merges.len() as i64);
+                }
+                // The segment infos hold the directory (`SegmentInfo.dir`):
+                // released before the directory closes. Java keeps `infos`
+                // alive, but nothing reads it after the `try`.
+                drop(std::mem::replace(
+                    &mut infos,
+                    SegmentInfos::new(i32::from(Version::LATEST.major))?,
+                ));
+                Ok(())
+            },
+        )
     }
 
     /// `testSimulateAppendOnly()`: simulate an append-only use-case, ie.
@@ -717,13 +756,13 @@ pub trait BaseMergePolicyTestCase: Send + Sync + 'static {
         }
 
         if *VERBOSE {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "Write amplification for append-only: {}",
                 rucene::util::java_fmt::double_to_string(
                     (stats.flush_bytes_written + stats.merge_bytes_written) as f64
                         / stats.flush_bytes_written as f64
                 )
-            );
+            ));
         }
         Ok(())
     }
@@ -810,24 +849,27 @@ pub trait BaseMergePolicyTestCase: Send + Sync + 'static {
         }
 
         if *VERBOSE {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "Write amplification for update: {}",
                 rucene::util::java_fmt::double_to_string(
                     (stats.flush_bytes_written + stats.merge_bytes_written) as f64
                         / stats.flush_bytes_written as f64
                 )
-            );
-            let total_del_count: i32 = segment_infos.iter().map(|s| s.get_del_count()).sum();
+            ));
+            // `IntStream.sum()`: `int` arithmetic.
+            let total_del_count: i32 = segment_infos
+                .iter()
+                .fold(0i32, |sum, s| sum.wrapping_add(s.get_del_count()));
             let mut total_max_doc = 0i32;
             for s in segment_infos.iter() {
-                total_max_doc += s.info.max_doc()?;
+                total_max_doc = total_max_doc.wrapping_add(s.info.max_doc()?);
             }
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "Final live ratio: {}",
                 rucene::util::java_fmt::double_to_string(
                     1.0 - f64::from(total_del_count) / f64::from(total_max_doc)
                 )
-            );
+            ));
         }
         Ok(())
     }
@@ -902,4 +944,60 @@ pub trait BaseMergePolicyTestCase: Send + Sync + 'static {
 /// Throws Java's `AssertionError` with `message` (`fail(message)`).
 pub fn fail(message: &str) -> ! {
     Throwable::new("java.lang.AssertionError", message).throw()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `FAKE_DIRECTORY.fileLength`: without `_size=`, `indexOf` answers -1,
+    /// so the start index is 5, and `substring(5, 3)` of `"abc.fake"` throws
+    /// `StringIndexOutOfBoundsException` (not a Rust slice panic).
+    #[test]
+    fn fake_directory_length_of_a_name_without_size() {
+        let err = FakeDirectory
+            .file_length("abc.fake")
+            .expect_err("substring(5, 3)");
+        assert!(matches!(
+            err.kind(),
+            LuceneErrorKind::StringIndexOutOfBounds(m) if m == "begin 5, end 3, length 8"
+        ));
+        assert_eq!(
+            FakeDirectory
+                .file_length("_0_size=1048576.fake")
+                .expect("a size"),
+            1_048_576
+        );
+        assert_eq!(FakeDirectory.file_length("_0.liv").expect("live docs"), 0);
+    }
+
+    /// The anonymous `SerialMergeScheduler` of `testForceMergeNotNeeded`
+    /// renders `Object.toString()` of its own class
+    /// (`BaseMergePolicyTestCase$1`), not `SerialMergeScheduler`'s.
+    #[test]
+    fn not_needed_scheduler_renders_its_anonymous_class() {
+        let scheduler = NotNeededMergeScheduler {
+            may_merge: Arc::new(AtomicBool::new(true)),
+            lock: Mutex::new(()),
+            serial: SerialMergeScheduler::default(),
+        };
+        assert!(scheduler
+            .to_string()
+            .starts_with("org.apache.lucene.tests.index.BaseMergePolicyTestCase$1@"));
+    }
+
+    /// `FAKE_DIRECTORY`'s other operations throw `new
+    /// UnsupportedOperationException()`, whose message is `null`.
+    #[test]
+    fn fake_directory_refuses_without_a_message() {
+        let err = FakeDirectory.list_all().expect_err("unsupported");
+        assert!(matches!(
+            err.kind(),
+            LuceneErrorKind::Unchecked {
+                class: "java.lang.UnsupportedOperationException",
+                message: None,
+                ..
+            }
+        ));
+    }
 }

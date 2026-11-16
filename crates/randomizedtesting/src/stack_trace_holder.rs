@@ -1,41 +1,27 @@
 //! Port of `com.carrotsearch.randomizedtesting.StackTraceHolder`
 //! (randomizedtesting 2.8.1, `StackTraceHolder.java`).
 
-use std::backtrace::Backtrace;
-use std::fmt;
-use std::sync::Arc;
+use crate::jdk::exception::{StackTraceElement, Throwable};
 
 /// Never thrown: carries a chained stack trace for information
-/// (`StackTraceHolder extends Throwable`, package-private).
+/// (`StackTraceHolder extends Throwable`, package-private). The port's
+/// throwables are [`Throwable`] values, so this type only names the class
+/// and builds the value.
 ///
-/// **Divergence.** Java sets the holder's stack to an
-/// arbitrary `StackTraceElement[]`; the port carries a captured
-/// `std::backtrace::Backtrace`, which is empty unless `RUST_BACKTRACE` (or
-/// `RUST_LIB_BACKTRACE`) enables capture.
-#[derive(Debug, Clone)]
-pub(crate) struct StackTraceHolder {
-    message: String,
-    stack: Arc<Backtrace>,
-}
+/// The stack trace it carries is the one the caller sets
+/// (`setStackTrace`); a thread's stack trace is empty in the port (see
+/// [`crate::jdk::thread`]).
+pub(crate) struct StackTraceHolder;
 
 impl StackTraceHolder {
-    /// `new StackTraceHolder(message)` followed by `setStackTrace(stack)`.
-    pub(crate) fn new(message: String, stack: Arc<Backtrace>) -> StackTraceHolder {
-        StackTraceHolder { message, stack }
-    }
-}
+    /// The binary name of `StackTraceHolder`.
+    pub(crate) const CLASS: &'static str = "com.carrotsearch.randomizedtesting.StackTraceHolder";
 
-impl fmt::Display for StackTraceHolder {
-    /// `Throwable.toString()`, then the stack when one was captured.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "com.carrotsearch.randomizedtesting.StackTraceHolder: {}",
-            self.message
-        )?;
-        if self.stack.status() == std::backtrace::BacktraceStatus::Captured {
-            write!(f, "\n{}", self.stack)?;
-        }
-        Ok(())
+    /// `new StackTraceHolder(message)` followed by `setStackTrace(stack)`.
+    #[allow(clippy::new_ret_no_self)] // Java's constructor; the port's throwables are `Throwable` values.
+    pub(crate) fn new(message: impl Into<String>, stack: Vec<StackTraceElement>) -> Throwable {
+        let mut t = Throwable::new(Self::CLASS, message);
+        t.set_stack_trace(stack);
+        t
     }
 }

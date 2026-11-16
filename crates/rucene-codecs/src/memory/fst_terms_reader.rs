@@ -45,7 +45,7 @@ use super::fst_term_outputs::{FSTTermOutputs, TermData};
 use super::fst_terms_writer::{
     TERMS_CODEC_NAME, TERMS_EXTENSION, TERMS_VERSION_CURRENT, TERMS_VERSION_START,
 };
-use crate::blockterms::fixed_gap_terms_index_reader::{field_info_by_number, seek_dir};
+use crate::blockterms::fixed_gap_terms_index_reader::seek_dir;
 
 /// FST-based terms dictionary reader.
 ///
@@ -158,9 +158,18 @@ impl FSTTermsReader {
         let num_fields = input.read_v_int()?;
         for _ in 0..num_fields {
             let field_number = input.read_v_int()?;
-            let field_info = field_info_by_number(state, field_number)?;
+            let field_info = state.field_infos.field_info_by_number(field_number);
             let num_terms = input.read_v_long()?;
             let sum_total_term_freq = input.read_v_long()?;
+            // `fieldInfo.getIndexOptions()` is the first dereference of a
+            // missing field's `null`.
+            let field_info = field_info.ok_or_else(|| {
+                LuceneError::unchecked(
+                    "java.lang.NullPointerException",
+                    "Cannot invoke \"org.apache.lucene.index.FieldInfo.getIndexOptions()\" \
+                     because \"fieldInfo\" is null",
+                )
+            })?;
             // if frequencies are omitted, sumTotalTermFreq=sumDocFreq and we only write one value
             let sum_doc_freq = if field_info.get_index_options() == IndexOptions::DOCS {
                 sum_total_term_freq
@@ -285,6 +294,11 @@ impl Fields for FSTTermsReader {
 }
 
 impl FieldsProducer for FSTTermsReader {
+    /// `FSTTermsReader.toString()`: this producer's [`Display`](std::fmt::Display).
+    fn to_java_string(&self) -> String {
+        format!("{self}")
+    }
+
     fn check_integrity(&self) -> Result<()> {
         match &self.postings_reader {
             Some(p) => p.check_integrity(),
@@ -646,7 +660,18 @@ impl TermsEnum for SegmentTermsEnum {
 
     fn seek_term_state(&mut self, target: &BytesRef, other_state: &dyn TermState) -> Result<()> {
         if self.term.as_ref() != Some(target) {
-            TermState::copy_from(&mut self.base.state, other_state);
+            // `state.copyFrom(otherState)`: `BlockTermState.copyFrom` asserts
+            // the kind under `-ea` and casts it without, which throws for
+            // another kind.
+            let other = other_state.as_any().downcast_ref::<BlockTermState>();
+            debug_assert!(other.is_some(), "can not copy from a foreign TermState");
+            let other = other.ok_or_else(|| {
+                LuceneError::unchecked(
+                    "java.lang.ClassCastException",
+                    "class cannot be cast to class org.apache.lucene.codecs.BlockTermState",
+                )
+            })?;
+            self.base.state.copy_from(other);
             self.term = Some(BytesRef::deep_copy_of(target));
             self.seek_pending = true;
         }
@@ -697,6 +722,14 @@ struct Frame {
     output: TermData,
     /// automaton stats
     fsa_state: i32,
+}
+
+impl fmt::Display for Frame {
+    /// `Frame.toString()` (`FSTTermsReader.java:463-466`):
+    /// `"arc=" + fstArc + " state=" + fsaState`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "arc={} state={}", self.fst_arc, self.fsa_state)
+    }
 }
 
 impl Frame {
@@ -1184,4 +1217,124 @@ pub(crate) fn walk<O: Outputs>(fst: &FST<O>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+    use rucene::util::fst::OutputToString;
+
+    /// `"arc=" + fstArc + " state=" + fsaState`, where a fresh `FST.Arc`
+    /// renders as `" target=0 label=0x0"`.
+    #[test]
+    fn frame_to_string_matches_java() {
+        let frame = Frame::new();
+        assert_eq!(frame.to_string(), "arc= target=0 label=0x0 state=-1");
+        let mut frame = Frame::new();
+        frame.fsa_state = 3;
+        assert_eq!(frame.to_string(), "arc= target=0 label=0x0 state=3");
+        // The output form `Arc.toString()` appends is `TermData.toString()`.
+        let data = TermData::default();
+        assert_eq!(data.output_to_java_string(), data.to_string());
+    }
+}
+
+#[cfg(test)]
+mod missing_field_tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, segment_info};
+    use rucene::codecs::codec_util::{write_footer, write_index_header};
+    use rucene::index::FieldInfos;
+    use rucene::store::{DataInput, DEFAULT_IO_CONTEXT};
+
+    /// A postings reader with no header of its own.
+    struct NoopPostings;
+
+    impl fmt::Display for NoopPostings {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("NoopPostings")
+        }
+    }
+
+    impl PostingsReaderBase for NoopPostings {
+        fn init(&mut self, _: &mut dyn IndexInput, _: &SegmentReadState) -> Result<()> {
+            Ok(())
+        }
+        fn new_term_state(&self) -> Result<BlockTermState> {
+            Ok(BlockTermState::default())
+        }
+        fn decode_term(
+            &self,
+            _: &mut dyn DataInput,
+            _: &FieldInfo,
+            _: &mut BlockTermState,
+            _: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn postings(
+            &self,
+            _: &FieldInfo,
+            _: &BlockTermState,
+            _: Option<Box<dyn PostingsEnum>>,
+            _: i32,
+        ) -> Result<Box<dyn PostingsEnum>> {
+            unreachable!("not reached by the test")
+        }
+        fn impacts(
+            &self,
+            _: &FieldInfo,
+            _: &BlockTermState,
+            _: i32,
+        ) -> Result<Box<dyn ImpactsEnum>> {
+            unreachable!("not reached by the test")
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Regression (rmp #528): a field number missing from the field infos
+    /// is dereferenced first by `fieldInfo.getIndexOptions()`, so Java's
+    /// `NullPointerException` names that call, not a `name` field read.
+    #[test]
+    fn missing_field_is_the_get_index_options_null_pointer_exception() {
+        let dir = directory();
+        let si = segment_info(&dir, "_0", 1);
+        {
+            let mut out = dir.create_output("_0.tfp", &*DEFAULT_IO_CONTEXT).unwrap();
+            write_index_header(
+                out.as_mut(),
+                TERMS_CODEC_NAME,
+                TERMS_VERSION_CURRENT,
+                &[0u8; 16],
+                "",
+            )
+            .unwrap();
+            let dir_start = out.file_pointer();
+            out.write_v_int(1).unwrap(); // numFields
+            out.write_v_int(99).unwrap(); // field number
+            out.write_v_long(1).unwrap(); // numTerms
+            out.write_v_long(1).unwrap(); // sumTotalTermFreq
+            out.write_long(dir_start).unwrap();
+            write_footer(out.as_mut()).unwrap();
+            out.close().unwrap();
+        }
+        let infos = FieldInfos::new(Vec::new()).unwrap();
+        let state = SegmentReadState::new(dir.as_ref(), &si, &infos, &*DEFAULT_IO_CONTEXT);
+        let err = FSTTermsReader::new(&state, Box::new(NoopPostings))
+            .err()
+            .expect("field 99 is missing")
+            .to_string();
+        assert!(
+            err.contains(
+                "Cannot invoke \"org.apache.lucene.index.FieldInfo.getIndexOptions()\" \
+                 because \"fieldInfo\" is null"
+            ),
+            "{err}"
+        );
+    }
 }

@@ -52,7 +52,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier, LazyLock};
 
 use randomizedtesting::generators::{RandomBytes, RandomNumbers};
-use randomizedtesting::jdk::exception::Throwable;
+use randomizedtesting::jdk::exception::{Throwable, IO_EXCEPTION};
 use randomizedtesting::jdk::random::{JdkRandom, Random};
 use randomizedtesting::jdk::reflect::{modifier, Class, Method};
 use randomizedtesting::jdk::thread::Thread;
@@ -74,7 +74,7 @@ use rucene::util::{GroupVIntUtil, IOUtils};
 use crate::index::base_index_file_format_test_case::assert_array_equals;
 use crate::mockfile::ExtrasFS;
 use crate::store::{MockDirectoryWrapper, RawDirectoryWrapper, Throttling};
-use crate::util::java_exceptions::{expect_throws, expect_throws_any_of, is_instance};
+use crate::util::java_exceptions::{expect_throws, expect_throws_any_of, is_instance, try_with};
 use crate::util::lucene_test_case::{TestDirectory, TEST_NIGHTLY};
 use crate::util::{LuceneTestCase, TestUtil};
 
@@ -249,13 +249,9 @@ pub fn with_directory(
     body: impl FnOnce(&dyn Directory) -> Result<()>,
 ) -> Result<()> {
     // Java's try-with-resources closes the resource on any throwable, an
-    // assumption failure included, then rethrows it.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&*dir)));
-    let closed = dir.close();
-    match result {
-        Ok(result) => result.and(closed),
-        Err(payload) => std::panic::resume_unwind(payload),
-    }
+    // assumption failure included, then rethrows it with a close failure
+    // added as suppressed.
+    try_with(dir, |dir| dir.close(), |dir| body(&**dir))
 }
 
 /// Closes a directory shared through an `Arc`: Java's `dir.close()`.
@@ -269,31 +265,27 @@ pub fn close_shared(dir: Arc<dyn Directory>) -> Result<()> {
 
 /// The try-with-resources of an input or output: closed after `body`.
 fn with_input(
-    mut input: Box<dyn IndexInput>,
+    input: Box<dyn IndexInput>,
     body: impl FnOnce(&mut dyn IndexInput) -> Result<()>,
 ) -> Result<()> {
     // Java's try-with-resources closes the resource on any throwable, an
-    // assumption failure included, then rethrows it.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&mut *input)));
-    let closed = input.close();
-    match result {
-        Ok(result) => result.and(closed),
-        Err(payload) => std::panic::resume_unwind(payload),
-    }
+    // assumption failure included, then rethrows it with a close failure
+    // added as suppressed.
+    try_with(input, |input| input.close(), |input| body(&mut **input))
 }
 
 fn with_output(
-    mut output: Box<dyn IndexOutput>,
+    output: Box<dyn IndexOutput>,
     body: impl FnOnce(&mut dyn IndexOutput) -> Result<()>,
 ) -> Result<()> {
     // Java's try-with-resources closes the resource on any throwable, an
-    // assumption failure included, then rethrows it.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&mut *output)));
-    let closed = output.close();
-    match result {
-        Ok(result) => result.and(closed),
-        Err(payload) => std::panic::resume_unwind(payload),
-    }
+    // assumption failure included, then rethrows it with a close failure
+    // added as suppressed.
+    try_with(
+        output,
+        |output| output.close(),
+        |output| body(&mut **output),
+    )
 }
 
 /// Port of the members of `BaseDirectoryTestCase`: the hook a subclass
@@ -314,25 +306,22 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
 
     /// `testCopyFrom()`.
     fn test_copy_from(&self) -> Result<()> {
-        {
-            let source = self.get_directory(&temp_dir("testCopy"))?;
-            let dest = OwnedTestDirectory::new(LuceneTestCase::new_directory());
-            let dest: Box<dyn Directory> = Box::new(dest);
-            let result = run_copy_from(&*source, &*dest);
-            let closed = dest.close();
-            let source = source;
-            let closed_source = source.close();
-            result.and(closed).and(closed_source)?;
-        }
-        {
-            let source: Box<dyn Directory> =
+        // `try (Directory source = ...; Directory dest = ...)`: `dest` closes
+        // first, then `source`, on every exit, each failure suppressed.
+        with_directory(self.get_directory(&temp_dir("testCopy"))?, |source| {
+            let dest: Box<dyn Directory> =
                 Box::new(OwnedTestDirectory::new(LuceneTestCase::new_directory()));
-            let dest = self.get_directory(&temp_dir("testCopyDestination"))?;
-            let result = run_copy_from(&*source, &*dest);
-            let closed = dest.close();
-            let closed_source = source.close();
-            result.and(closed).and(closed_source)
-        }
+            with_directory(dest, |dest| run_copy_from(source, dest))
+        })?;
+
+        let source: Box<dyn Directory> =
+            Box::new(OwnedTestDirectory::new(LuceneTestCase::new_directory()));
+        with_directory(source, |source| {
+            with_directory(
+                self.get_directory(&temp_dir("testCopyDestination"))?,
+                |dest| run_copy_from(source, dest),
+            )
+        })
     }
 
     /// `testRename()`.
@@ -883,85 +872,101 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
     /// `testThreadSafetyInListAll()`.
     fn test_thread_safety_in_list_all(&self) -> Result<()> {
         let dir: Arc<dyn Directory> = Arc::from(self.get_directory(&temp_dir("testThreadSafety"))?);
-        let result = {
-            if let Some(any) = dir.as_any() {
-                if let Some(mock) = any.downcast_ref::<MockDirectoryWrapper>() {
-                    // we are not making a real index, just writing, reading files.
-                    mock.set_check_index_on_close(false);
-                    // makes this test really slow
-                    mock.set_throttling(Throttling::Never);
-                } else if let Some(raw) = any.downcast_ref::<RawDirectoryWrapper>() {
-                    raw.base().set_check_index_on_close(false);
-                }
-            }
-
-            let stop = Arc::new(AtomicBool::new(false));
-            let writer = {
-                let dir = Arc::clone(&dir);
-                let stop = Arc::clone(&stop);
-                Thread::unnamed(move || {
-                    let run = || -> Result<()> {
-                        let max = RandomizedTest::random_int_between(500, 1000);
-                        for i in 0..max {
-                            let file_name = format!("file-{i}");
-                            let mut output = dir.create_output(&file_name, &*io_context())?;
-                            // Add some lags so that the other thread can read the content of the
-                            // directory.
-                            std::thread::yield_now();
-                            output.close()?;
-                            Assert::assert_true(LuceneTestCase::slow_file_exists(
-                                &*dir, &file_name,
-                            )?);
-                        }
-                        Ok(())
-                    };
-                    let outcome = run();
-                    stop.store(true, Ordering::SeqCst);
-                    if let Err(e) = outcome {
-                        Throwable::new(
-                            "java.io.UncheckedIOException",
-                            crate::util::java_exceptions::java_throwable(&e).to_string(),
-                        )
-                        .throw()
+        // try (Directory dir = getDirectory(createTempDir("testThreadSafety")))
+        try_with(
+            dir,
+            |dir| dir.close(),
+            |dir| {
+                if let Some(any) = dir.as_any() {
+                    if let Some(mock) = any.downcast_ref::<MockDirectoryWrapper>() {
+                        // we are not making a real index, just writing, reading files.
+                        mock.set_check_index_on_close(false);
+                        // makes this test really slow
+                        mock.set_throttling(Throttling::Never);
+                    } else if let Some(raw) = any.downcast_ref::<RawDirectoryWrapper>() {
+                        raw.base().set_check_index_on_close(false);
                     }
-                })
-            };
+                }
 
-            let reader = {
-                let dir = Arc::clone(&dir);
-                let stop = Arc::clone(&stop);
-                Thread::unnamed(move || {
-                    let run = || -> Result<()> {
-                        let rnd = JdkRandom::new(RandomizedTest::random_long());
-                        while !stop.load(Ordering::SeqCst) {
-                            let files: Vec<String> = dir
-                                .list_all()?
-                                .into_iter()
-                                .filter(|name| !ExtrasFS::is_extra(name)) // Ignore anything from ExtraFS.
-                                .collect();
+                let stop = Arc::new(AtomicBool::new(false));
+                let writer = {
+                    let dir = Arc::clone(dir);
+                    let stop = Arc::clone(&stop);
+                    Thread::unnamed(move || {
+                        // `finally { stop.set(true); }`: on every exit, a panic
+                        // included.
+                        struct Stop(Arc<AtomicBool>);
+                        impl Drop for Stop {
+                            fn drop(&mut self) {
+                                self.0.store(true, Ordering::SeqCst);
+                            }
+                        }
+                        let _stop = Stop(stop);
+                        let run = || -> Result<()> {
+                            let max = RandomizedTest::random_int_between(500, 1000);
+                            for i in 0..max {
+                                let file_name = format!("file-{i}");
+                                with_output(
+                                    dir.create_output(&file_name, &*io_context())?,
+                                    |_| {
+                                        // Add some lags so that the other thread can read the content
+                                        // of the directory.
+                                        std::thread::yield_now();
+                                        Ok(())
+                                    },
+                                )?;
+                                Assert::assert_true(LuceneTestCase::slow_file_exists(
+                                    &*dir, &file_name,
+                                )?);
+                            }
+                            Ok(())
+                        };
+                        if let Err(e) = run() {
+                            throw_unchecked_io(&e)
+                        }
+                    })
+                };
 
-                            if !files.is_empty() {
-                                loop {
-                                    let file =
-                                        &files[rnd.next_int_bound(files.len() as i32) as usize];
-                                    match dir.open_input(file, &*io_context()) {
-                                        Ok(mut input) => {
-                                            // Just open, nothing else.
-                                            input.close()?;
-                                        }
-                                        Err(e)
-                                            if is_instance(
-                                                &e,
-                                                "java.nio.file.AccessDeniedException",
-                                            ) =>
-                                        {
-                                            // Access denied is allowed for files for which the
-                                            // output is still open (MockDirectoryWriter enforces
-                                            // this, for example). Since we don't synchronize with
-                                            // the writer thread, just ignore it.
-                                        }
-                                        Err(e) => {
-                                            Throwable::with_cause(
+                let reader = {
+                    let dir = Arc::clone(dir);
+                    let stop = Arc::clone(&stop);
+                    Thread::unnamed(move || {
+                        let run =
+                            || -> Result<()> {
+                                let rnd = JdkRandom::new(RandomizedTest::random_long());
+                                while !stop.load(Ordering::SeqCst) {
+                                    let files: Vec<String> = dir
+                                        .list_all()?
+                                        .into_iter()
+                                        .filter(|name| !ExtrasFS::is_extra(name)) // Ignore anything from ExtraFS.
+                                        .collect();
+
+                                    if !files.is_empty() {
+                                        loop {
+                                            let file = &files
+                                                [rnd.next_int_bound(files.len() as i32) as usize];
+                                            // `try (IndexInput input = dir.openInput(...)) {}` with
+                                            // its `catch` clauses, which also see the close.
+                                            let opened = dir
+                                                .open_input(file, &*io_context())
+                                                .and_then(|input| with_input(input, |_| Ok(())));
+                                            match opened {
+                                                Ok(()) => {
+                                                    // Just open, nothing else.
+                                                }
+                                                Err(e)
+                                                    if is_instance(
+                                                        &e,
+                                                        "java.nio.file.AccessDeniedException",
+                                                    ) =>
+                                                {
+                                                    // Access denied is allowed for files for which the
+                                                    // output is still open (MockDirectoryWriter enforces
+                                                    // this, for example). Since we don't synchronize with
+                                                    // the writer thread, just ignore it.
+                                                }
+                                                Err(e) if is_instance(&e, IO_EXCEPTION) => {
+                                                    Throwable::with_cause(
                                                 "java.io.UncheckedIOException",
                                                 Some(format!(
                                                     "Something went wrong when opening: {file}"
@@ -969,41 +974,32 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                                                 crate::util::java_exceptions::java_throwable(&e),
                                             )
                                             .throw();
+                                                }
+                                                Err(e) => return Err(e),
+                                            }
+                                            if rnd.next_int_bound(3) == 0 {
+                                                break; // Sometimes break and list files again.
+                                            }
                                         }
                                     }
-                                    if rnd.next_int_bound(3) == 0 {
-                                        break; // Sometimes break and list files again.
-                                    }
                                 }
-                            }
+                                Ok(())
+                            };
+                        if let Err(e) = run() {
+                            throw_unchecked_io(&e)
                         }
-                        Ok(())
-                    };
-                    if let Err(e) = run() {
-                        Throwable::new(
-                            "java.io.UncheckedIOException",
-                            crate::util::java_exceptions::java_throwable(&e).to_string(),
-                        )
-                        .throw()
-                    }
-                })
-            };
+                    })
+                };
 
-            reader.start();
-            writer.start();
+                reader.start();
+                writer.start();
 
-            let joined_writer = writer.join();
-            let joined_reader = reader.join();
-            if let Err(payload) = joined_writer {
-                std::panic::resume_unwind(payload);
-            }
-            if let Err(payload) = joined_reader {
-                std::panic::resume_unwind(payload);
-            }
-            Ok(())
-        };
-        let closed = close_shared(dir);
-        result.and(closed)
+                // `Thread.join()` returns normally whatever the thread threw.
+                let _ = writer.join();
+                let _ = reader.join();
+                Ok(())
+            },
+        )
     }
 
     /// `testFileExistsInListAfterCreated()`: LUCENE-1468: once we create an
@@ -1118,14 +1114,21 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
         let temp_dir = temp_dir("doesnotexist");
         IOUtils::rm([&temp_dir])?;
         let dir: Arc<dyn Directory> = Arc::from(self.get_directory(&temp_dir)?);
-        expect_throws_any_of(
-            &[
-                "java.nio.file.NoSuchFileException",
-                "org.apache.lucene.index.IndexNotFoundException",
-            ],
-            || directory_reader::open(Arc::clone(&dir)),
-        );
-        close_shared(dir)
+        // try (Directory dir = getDirectory(tempDir))
+        try_with(
+            dir,
+            |dir| dir.close(),
+            |dir| {
+                expect_throws_any_of(
+                    &[
+                        "java.nio.file.NoSuchFileException",
+                        "org.apache.lucene.index.IndexNotFoundException",
+                    ],
+                    || directory_reader::open(Arc::clone(dir)),
+                );
+                Ok(())
+            },
+        )
     }
 
     /// `testCopyBytes()`.
@@ -1201,75 +1204,78 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
     fn test_copy_bytes_with_threads(&self) -> Result<()> {
         let d: Arc<dyn Directory> =
             Arc::from(self.get_directory(&temp_dir("testCopyBytesWithThreads"))?);
-        let result = (|| -> Result<()> {
-            let header_len = 100;
-            let data =
-                RandomBytes::random_bytes_of_length_between(&*random(), header_len + 1, 10000);
+        // try (Directory d = getDirectory(createTempDir("testCopyBytesWithThreads")))
+        try_with(
+            d,
+            |d| d.close(),
+            |d| {
+                let header_len = 100;
+                let data =
+                    RandomBytes::random_bytes_of_length_between(&*random(), header_len + 1, 10000);
 
-            let mut output = d.create_output("data", &*DEFAULT_IO_CONTEXT)?;
-            output.write_bytes(&data, 0, data.len())?;
-            output.close()?;
+                let mut output = d.create_output("data", &*DEFAULT_IO_CONTEXT)?;
+                output.write_bytes(&data, 0, data.len())?;
+                output.close()?;
 
-            let mut input = d.open_input("data", &*DEFAULT_IO_CONTEXT)?;
-            let mut output_header = d.create_output("header", &*DEFAULT_IO_CONTEXT)?;
-            // copy our header
-            output_header.copy_bytes(&mut *input, i64::from(header_len))?;
-            output_header.close()?;
+                let mut input = d.open_input("data", &*DEFAULT_IO_CONTEXT)?;
+                let mut output_header = d.create_output("header", &*DEFAULT_IO_CONTEXT)?;
+                // copy our header
+                output_header.copy_bytes(&mut *input, i64::from(header_len))?;
+                output_header.close()?;
 
-            // now make N copies of the remaining bytes
-            let threads = 10;
-            let start = Arc::new(Barrier::new(threads));
-            let mut copies = Vec::new();
-            for i in 0..threads {
-                let mut src = input.clone_input()?;
-                let d = Arc::clone(&d);
-                let start = Arc::clone(&start);
-                let t = Thread::unnamed(move || {
-                    let mut run = || -> Result<()> {
-                        start.wait();
-                        let mut dst = d.create_output(&format!("copy{i}"), &*DEFAULT_IO_CONTEXT)?;
-                        let n = src.length() - i64::from(header_len);
-                        dst.copy_bytes(&mut *src, n)?;
-                        dst.close()
-                    };
-                    if let Err(e) = run() {
-                        Throwable::new(
-                            "java.lang.RuntimeException",
-                            crate::util::java_exceptions::java_throwable(&e).to_string(),
-                        )
-                        .throw()
-                    }
-                });
-                t.start();
-                copies.push(t);
-            }
-            for t in copies {
-                if let Err(payload) = t.join() {
-                    std::panic::resume_unwind(payload);
+                // now make N copies of the remaining bytes
+                let threads = 10;
+                let start = Arc::new(Barrier::new(threads));
+                let mut copies = Vec::new();
+                for i in 0..threads {
+                    let mut src = input.clone_input()?;
+                    let d = Arc::clone(d);
+                    let start = Arc::clone(&start);
+                    let t = Thread::unnamed(move || {
+                        let run = || -> Result<()> {
+                            start.wait();
+                            let mut dst =
+                                d.create_output(&format!("copy{i}"), &*DEFAULT_IO_CONTEXT)?;
+                            let n = src.length() - i64::from(header_len);
+                            dst.copy_bytes(&mut *src, n)?;
+                            dst.close()
+                        };
+                        // `catch (Exception e) { throw new RuntimeException(e); }`
+                        let caught = crate::util::java_exceptions::caught_exception(
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)),
+                        );
+                        if let Some(e) = caught {
+                            Throwable::from_cause("java.lang.RuntimeException", e).throw()
+                        }
+                    });
+                    t.start();
+                    copies.push(t);
                 }
-            }
+                for t in copies {
+                    // `Thread.join()` returns normally whatever the thread threw.
+                    let _ = t.join();
+                }
 
-            for i in 0..threads {
-                with_input(
-                    d.open_input(&format!("copy{i}"), &*DEFAULT_IO_CONTEXT)?,
-                    |copied| {
-                        let mut data_copy = vec![0u8; data.len()];
-                        data_copy[..header_len as usize]
-                            .copy_from_slice(&data[..header_len as usize]);
-                        copied.read_bytes(
-                            Some(&mut data_copy),
-                            header_len as usize,
-                            data.len() - header_len as usize,
-                        )?;
-                        assert_array_equals(&java_bytes(&data), &java_bytes(&data_copy));
-                        Ok(())
-                    },
-                )?;
-            }
-            input.close()
-        })();
-        let closed = close_shared(d);
-        result.and(closed)
+                for i in 0..threads {
+                    with_input(
+                        d.open_input(&format!("copy{i}"), &*DEFAULT_IO_CONTEXT)?,
+                        |copied| {
+                            let mut data_copy = vec![0u8; data.len()];
+                            data_copy[..header_len as usize]
+                                .copy_from_slice(&data[..header_len as usize]);
+                            copied.read_bytes(
+                                Some(&mut data_copy),
+                                header_len as usize,
+                                data.len() - header_len as usize,
+                            )?;
+                            assert_array_equals(&java_bytes(&data), &java_bytes(&data_copy));
+                            Ok(())
+                        },
+                    )?;
+                }
+                input.close()
+            },
+        )
     }
 
     /// `testFsyncDoesntCreateNewFiles()`: this test backdoors the directory
@@ -2176,6 +2182,17 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
             },
         )
     }
+}
+
+/// `catch (IOException e) { throw new UncheckedIOException(e); }`: the
+/// cause's `toString()` is the message; any other exception propagates
+/// unchanged.
+fn throw_unchecked_io(e: &rucene::error::LuceneError) -> ! {
+    let t = crate::util::java_exceptions::java_throwable(e);
+    if t.is_instance(IO_EXCEPTION) {
+        Throwable::from_cause("java.io.UncheckedIOException", t).throw()
+    }
+    t.throw()
 }
 
 /// `wrapperClasses(dir).stream().anyMatch(clz -> clz.getName().contains("DirectIO") ||

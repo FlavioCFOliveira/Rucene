@@ -136,7 +136,15 @@ impl SimpleTextStoredFieldsReader {
     ) -> Result<()> {
         read_line(state.input.as_mut(), &mut state.scratch)?;
         debug_assert!(state.scratch.starts_with(VALUE));
-        let value = &state.scratch[VALUE.len()..];
+        // `new byte[scratch.length() - VALUE.length]` for the string and
+        // binary types; the numeric types copy that many UTF-8 bytes into a
+        // `CharsRefBuilder`, which a negative count leaves empty
+        // (`SimpleTextStoredFieldsReader.java:156-178`).
+        let length = state.scratch.len() as i64 - VALUE.len() as i64;
+        if length < 0 && matches!(type_, StoredType::String | StoredType::Binary) {
+            return Err(util::negative_array_size(length));
+        }
+        let value = &state.scratch[VALUE.len().min(state.scratch.len())..];
         match type_ {
             StoredType::String => visitor.string_field(field_info, &java_utf8_to_string(value)),
             StoredType::Binary => visitor.binary_field(field_info, value),
@@ -189,7 +197,10 @@ fn array_index_out_of_bounds(index: i64, length: usize) -> LuceneError {
 impl StoredFieldsReader for SimpleTextStoredFieldsReader {
     /// Port of `SimpleTextStoredFieldsReader.document`.
     fn document(&self, n: i32, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
-        let offsets = self.offsets.as_ref().ok_or_else(closed)?;
+        // `in.seek(offsets[n])` once `close()` set `offsets` to `null`.
+        let offsets = self.offsets.as_ref().ok_or_else(|| {
+            util::null_pointer("Cannot load from long array because \"this.offsets\" is null")
+        })?;
         let offset = *offsets
             .get(usize::try_from(n).unwrap_or(usize::MAX))
             .ok_or_else(|| array_index_out_of_bounds(i64::from(n), offsets.len()))?;
@@ -203,6 +214,13 @@ impl StoredFieldsReader for SimpleTextStoredFieldsReader {
                 break;
             }
             let field_number = parse_int_at(&state.scratch, FIELD.len())?;
+            // `FieldInfos.fieldInfo(int)` rejects a negative number
+            // (`FieldInfos.java:341-344`).
+            if field_number < 0 {
+                return Err(LuceneError::illegal_argument(format!(
+                    "Illegal field number: {field_number}"
+                )));
+            }
             // **Divergence.** Java passes the `null` `fieldInfos.fieldInfo(n)`
             // returns for a field number the segment does not know on to the
             // visitor, whose first use of it throws the
@@ -288,5 +306,91 @@ impl StoredFieldsReader for SimpleTextStoredFieldsReader {
             Some(mut state) => state.input.close(),
             None => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, segment_info, unchecked, write_file};
+    use rucene::document::DocumentStoredFieldVisitor;
+    use rucene::store::DEFAULT_IO_CONTEXT;
+
+    fn reader(lines: &[&str]) -> SimpleTextStoredFieldsReader {
+        let dir = directory();
+        write_file(dir.as_ref(), "_0.fld", lines, true);
+        let si = segment_info(&dir, "_0", 1);
+        let infos = FieldInfos::new(Vec::new()).unwrap();
+        SimpleTextStoredFieldsReader::new(dir.as_ref(), &si, &infos, &*DEFAULT_IO_CONTEXT).unwrap()
+    }
+
+    /// Regression (rmp #526): `fieldInfos.fieldInfo(-1)` throws
+    /// `IllegalArgumentException("Illegal field number: -1")`
+    /// (`FieldInfos.java:341-344`); the port reported a null field info.
+    #[test]
+    fn negative_field_number_is_illegal() {
+        let reader = reader(&["doc 0", "  field -1", "END"]);
+        let error = reader
+            .document(0, &mut DocumentStoredFieldVisitor::new())
+            .unwrap_err();
+        match &error.kind {
+            rucene::error::LuceneErrorKind::IllegalArgument { message, .. } => {
+                assert_eq!(message, "Illegal field number: -1")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Regression (rmp #526): after `close()`, `document` reads the `null`
+    /// `offsets` array: `NullPointerException`, not `AlreadyClosedException`.
+    #[test]
+    fn document_after_close_reads_null_offsets() {
+        let mut reader = reader(&["doc 0", "END"]);
+        reader.close().unwrap();
+        let error = reader
+            .document(0, &mut DocumentStoredFieldVisitor::new())
+            .unwrap_err();
+        assert_eq!(
+            unchecked(&error),
+            (
+                "java.lang.NullPointerException",
+                "Cannot load from long array because \"this.offsets\" is null".to_string()
+            )
+        );
+    }
+
+    /// Regression (rmp #526), release builds (no `-ea`): a `value` line
+    /// shorter than its prefix is `new byte[negative]` for a string field
+    /// (the port panicked on the slice).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn short_string_value_is_a_negative_array_size() {
+        let dir = directory();
+        write_file(
+            dir.as_ref(),
+            "_0.fld",
+            &[
+                "doc 0",
+                "  field 0",
+                "    name f",
+                "    type string",
+                "  x",
+                "END",
+            ],
+            true,
+        );
+        let si = segment_info(&dir, "_0", 1);
+        let field = rucene::index::FieldInfo::new("f", 0);
+        let infos = FieldInfos::new(vec![field]).unwrap();
+        let reader =
+            SimpleTextStoredFieldsReader::new(dir.as_ref(), &si, &infos, &*DEFAULT_IO_CONTEXT)
+                .unwrap();
+        let error = reader
+            .document(0, &mut DocumentStoredFieldVisitor::new())
+            .unwrap_err();
+        assert_eq!(
+            unchecked(&error),
+            ("java.lang.NegativeArraySizeException", "-7".to_string())
+        );
     }
 }

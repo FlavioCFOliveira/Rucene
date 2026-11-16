@@ -190,6 +190,11 @@ impl Fields for SimpleTextFieldsReader {
 }
 
 impl FieldsProducer for SimpleTextFieldsReader {
+    /// `SimpleTextFieldsReader.toString()`: this producer's [`Display`](std::fmt::Display).
+    fn to_java_string(&self) -> String {
+        format!("{self}")
+    }
+
     fn check_integrity(&self) -> Result<()> {
         Ok(())
     }
@@ -930,7 +935,7 @@ impl SimpleTextTerms {
         let mut doc_freq = 0i32;
         let mut total_term_freq = 0i64;
         let mut skip_pointer = 0i64;
-        let visited_docs = FixedBitSet::new(max_doc.max(0) as usize);
+        let visited_docs = FixedBitSet::new_java(max_doc)?;
         let mut scratch_ints_ref = IntsRefBuilder::new();
         let mut scratch = Vec::new();
         let mut sum_total_term_freq = 0i64;
@@ -960,7 +965,8 @@ impl SimpleTextTerms {
                 let doc_id = parse_int_at(&scratch, DOC.len())?;
                 set_visited(&visited_docs, doc_id)?;
             } else if scratch.starts_with(FREQ) {
-                total_term_freq += i64::from(parse_int_at(&scratch, FREQ.len())? - 1);
+                // `parseInt(...) - 1` in `int` arithmetic.
+                total_term_freq += i64::from(parse_int_at(&scratch, FREQ.len())?.wrapping_sub(1));
             } else if scratch.starts_with(SKIP_LIST) {
                 skip_pointer = input.file_pointer()?;
             } else if scratch.starts_with(TERM) {

@@ -34,3 +34,71 @@ pub mod geo_test_util;
 pub mod shape_test_util;
 
 pub use earth_debugger::EarthDebugger;
+
+/// `Math.min(double, double)` (= `StrictMath.min`): `NaN` when either is
+/// `NaN`, and `-0.0` is below `0.0`; `f64::min` returns the other operand for
+/// a `NaN` and either zero for `±0.0`.
+pub(crate) fn java_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() {
+        return a;
+    }
+    if a == 0.0 && b == 0.0 && b.to_bits() == (-0.0f64).to_bits() {
+        return b;
+    }
+    if a <= b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `Math.max(double, double)` (= `StrictMath.max`): `NaN` when either is
+/// `NaN`, and `0.0` is above `-0.0`.
+pub(crate) fn java_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() {
+        return a;
+    }
+    if a == 0.0 && b == 0.0 && a.to_bits() == (-0.0f64).to_bits() {
+        return b;
+    }
+    if a >= b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `StrictMath.min(float, float)`: as [`java_min`] over floats.
+pub(crate) fn java_min_f32(a: f32, b: f32) -> f32 {
+    if a.is_nan() {
+        return a;
+    }
+    if a == 0.0 && b == 0.0 && b.to_bits() == (-0.0f32).to_bits() {
+        return b;
+    }
+    if a <= b {
+        a
+    } else {
+        b
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Math.min`/`Math.max` order the zeros and propagate `NaN`.
+    #[test]
+    fn min_and_max_follow_java_math() {
+        assert_eq!(java_min(0.0, -0.0).to_bits(), (-0.0f64).to_bits());
+        assert_eq!(java_min(-0.0, 0.0).to_bits(), (-0.0f64).to_bits());
+        assert_eq!(java_max(-0.0, 0.0).to_bits(), 0.0f64.to_bits());
+        assert_eq!(java_max(0.0, -0.0).to_bits(), 0.0f64.to_bits());
+        assert!(java_min(1.0, f64::NAN).is_nan());
+        assert!(java_max(f64::NAN, 1.0).is_nan());
+        assert_eq!(java_min(-90.0, 3.0), -90.0);
+        assert_eq!(java_max(-90.0, 3.0), 3.0);
+        assert_eq!(java_min_f32(0.0, -0.0).to_bits(), (-0.0f32).to_bits());
+        assert!(java_min_f32(f32::NAN, 1.0).is_nan());
+    }
+}

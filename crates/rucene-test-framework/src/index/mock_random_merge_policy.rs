@@ -29,6 +29,7 @@ use rucene::error::{LuceneError, Result};
 use rucene::index::codec_reader::CodecReader;
 use rucene::index::doc_values::DocValues;
 use rucene::index::filter_directory_reader::SlowCodecReaderWrapper;
+use rucene::index::filter_reader::FilterLeafReader;
 use rucene::index::index_sorter::SorterDocMap;
 use rucene::index::merge_policy::{
     CfsSettings, MergeContext, MergePolicy, MergeSpecification, MergeTrigger, OneMerge,
@@ -311,15 +312,17 @@ fn wrap_for_merge(r: &dyn Random, reader: Arc<dyn CodecReader>) -> Result<Arc<dy
     if thing_to_do == 0 {
         // simple no-op FilterReader
         if *VERBOSE {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "NOTE: MockRandomMergePolicy now swaps in a SlowCodecReaderWrapper for merging reader={reader}"
-            );
+            ));
         }
         // `new FilterLeafReader(new MergeReaderWrapper(reader)) { ... }`: the
-        // anonymous filter forwards every call, the two cache helpers
-        // included, to the `MergeReaderWrapper`, so the wrapper is handed on
-        // as is.
-        let wrapped: Arc<dyn LeafReader> = Arc::new(MergeReaderWrapper::new(reader)?);
+        // anonymous subclass only overrides the two cache helpers to return
+        // `in`'s, which core's `FilterLeafReader` already does; it keeps the
+        // inherited `toString()` (`FilterLeafReader(...)`), its own reader
+        // core and its `ensureOpen()` checks.
+        let merge_reader: Arc<dyn LeafReader> = Arc::new(MergeReaderWrapper::new(reader)?);
+        let wrapped: Arc<dyn LeafReader> = Arc::new(FilterLeafReader::new(merge_reader)?);
         SlowCodecReaderWrapper::wrap(wrapped)
     } else if thing_to_do == 1 {
         // renumber fields
@@ -327,9 +330,9 @@ fn wrap_for_merge(r: &dyn Random, reader: Arc<dyn CodecReader>) -> Result<Arc<dy
         // being a FilterReader. But it might find bugs elsewhere,
         // and maybe the situation can be improved in the future.
         if *VERBOSE {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "NOTE: MockRandomMergePolicy now swaps in a MismatchedLeafReader for merging reader={reader}"
-            );
+            ));
         }
         Ok(Arc::new(MismatchedCodecReader::new(reader, r)?))
     } else {
@@ -346,7 +349,9 @@ fn reorder(
 ) -> Result<Option<Arc<SorterDocMap>>> {
     if r.next_boolean() {
         if *VERBOSE {
-            println!("NOTE: MockRandomMergePolicy now reverses reader={reader}");
+            randomizedtesting::jdk::system::out_println(&format!(
+                "NOTE: MockRandomMergePolicy now reverses reader={reader}"
+            ));
         }
         // Reverse the doc ID order
         return Ok(Some(Arc::new(reverse(&*reader)?)));
@@ -411,4 +416,50 @@ fn reverse(reader: &dyn CodecReader) -> Result<SorterDocMap> {
         }
     };
     SorterDocMap::from_old_to_new((0..max_doc).map(old_to_new).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rucene::analysis::standard::StandardAnalyzer;
+    use rucene::document::{Document, Store, StringField};
+    use rucene::index::directory_reader;
+    use rucene::index::index_writer::IndexWriter;
+    use rucene::index::index_writer_config::IndexWriterConfig;
+    use rucene::store::ByteBuffersDirectory;
+
+    /// `wrapForMerge`'s first branch wraps the `MergeReaderWrapper` in the
+    /// anonymous `FilterLeafReader` before `SlowCodecReaderWrapper.wrap`, so
+    /// the merging reader renders as Java's
+    /// `SlowCodecReaderWrapper(FilterLeafReader(MergeReaderWrapper(...)))`
+    /// (`MockRandomMergePolicy.java:217-229`).
+    #[test]
+    fn slow_wrapper_branch_keeps_the_anonymous_filter_leaf_reader() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let config = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
+        let iw = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        let mut d = Document::new();
+        d.add(Box::new(
+            StringField::new("id", "0".to_string(), Store::YES).unwrap(),
+        ));
+        iw.add_document(&d).unwrap();
+        iw.commit().unwrap();
+        iw.close().unwrap();
+        let reader = directory_reader::open(dir).unwrap();
+        let leaf = Arc::clone(&reader).leaves().unwrap()[0]
+            .leaf_reader()
+            .as_codec_reader()
+            .unwrap();
+        // the first seed whose `r.nextInt(7)` takes the `thingToDo == 0` branch
+        let seed = (0i64..)
+            .find(|&seed| JdkRandom::new(seed).next_int_bound(7) == 0)
+            .unwrap();
+        let wrapped = wrap_for_merge(&JdkRandom::new(seed), Arc::clone(&leaf)).unwrap();
+        assert_eq!(
+            wrapped.to_string(),
+            format!("SlowCodecReaderWrapper(FilterLeafReader(MergeReaderWrapper({leaf})))")
+        );
+        drop(wrapped);
+        reader.close().unwrap();
+    }
 }

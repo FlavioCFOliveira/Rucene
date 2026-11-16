@@ -175,6 +175,7 @@ def _clause_before(text: str, idx: int) -> str:
 # same file, or on nothing at all.
 MODULE_ASSERTIONS = ITEM_ASSERTIONS
 RE_FQN = re.compile(FQN)
+RE_NAME_LEAD = re.compile("^" + FQN + r"\s*:")
 
 RE_DOC_OUTER = re.compile(r"^\s*///!?(.*)$")
 RE_DOC_INNER = re.compile(r"^\s*//!(.*)$")
@@ -406,7 +407,15 @@ def _item_paragraph_claims(block, item_name):
         joined = " ".join(para)
         lead = next((m.group(1) for pat in CLAIM_PATTERNS
                      if (m := pat.match(joined))), None) if joined else None
-        if lead:
+        # The doc may open with the Java name itself, as a heading of the item:
+        # "`FSTTester.InputOutput`: holds one input/output pair." The name guard
+        # applies (the item is declared under that very name), and so does the
+        # negation guard on the sentence the colon opens.
+        named = RE_NAME_LEAD.match(joined) if joined and not lead else None
+        if named and re.split(r"[.$]", named.group(1))[-1] == item_name \
+                and not NEGATION.search(joined.split(". ", 1)[0]):
+            out.append((para_line, named.group(1)))
+        elif lead:
             out.append((para_line, lead))
         elif joined:
             for m in RE_FQN.finditer(joined):
@@ -932,14 +941,25 @@ def rust_candidates(java_name: str):
     return out
 
 
+# The types whose members are measured and triaged: every in-scope type with a
+# port, and every *nested* type with a type-level port of its own (the crate's
+# claim, a curated edge, or `host-file-name`). A nested type that is
+# `absorbed` has no Rust item of its own to measure against: its members go
+# with the type, which is what `absorbed` records. `triage_dump.py` reads the
+# same pairs, so the reproduction `triage_repro.py` proves stays exact.
+DEPTH_PAIRS = (
+    "MATCH (t)-[e:PORTS]->(c:Class) WHERE c.portScope = 'in' "
+    "OR (c.portScope = 'nested' AND coalesce(e.claimLevel, 'type') = 'type') "
+    "RETURN c.qualifiedName, t.name, t.file, e.claimLevel")
+DEPTH_MEMBERS = (
+    "MATCH (c:Class)-[:DECLARES]->(m:Method) WHERE c.portScope IN ['in', 'nested'] "
+    "AND m.kind = 'method' RETURN c.qualifiedName, m.name")
+
+
 def measure_depth(roadmap, commit, date):
-    """Member-level coverage of every in-scope Lucene type that has a port."""
-    pairs = q(roadmap,
-              "MATCH (t)-[e:PORTS]->(c:Class) WHERE c.portScope = 'in' "
-              "RETURN c.qualifiedName, t.name, t.file, e.claimLevel")
-    members = q(roadmap,
-                "MATCH (c:Class)-[:DECLARES]->(m:Method) WHERE c.portScope = 'in' "
-                "AND m.kind = 'method' RETURN c.qualifiedName, m.name")
+    """Member-level coverage of every Lucene type `DEPTH_PAIRS` names."""
+    pairs = q(roadmap, DEPTH_PAIRS)
+    members = q(roadmap, DEPTH_MEMBERS)
     rust_fns = q(roadmap,
                  "MATCH (f:RustFn) WHERE f.scope = 'crate' "
                  "RETURN f.file, f.owner, f.name")
@@ -993,6 +1013,12 @@ def measure_depth(roadmap, commit, date):
                      "coverage": round(matched / len(java), 3),
                      "commit": commit, "date": date})
 
+    # A nested type measured at an earlier sync may have lost its port since;
+    # its figures must not survive it (`triage_repro.py` would find a type the
+    # graph measures and the pairs no longer name).
+    kg_rmp("update", roadmap,
+           "MATCH (c:Class) WHERE c.portScope = 'nested' AND c.memberTotal IS NOT NULL "
+           "REMOVE c.memberTotal, c.memberMatched, c.memberCoverage, c.memberEvidence")
     run_unwind(roadmap, "update", rows,
                "MATCH (c:Class {qualifiedName:row.cls}) "
                "SET c.memberTotal = row.total, c.memberMatched = row.matched, "

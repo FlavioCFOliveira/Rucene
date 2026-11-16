@@ -388,32 +388,34 @@ pub fn base_assert_equals_sets(
 
     // nextDoc / advance
     if iterator_is_null {
+        // `it2 = ds2.iterator()` is `null`: Java asserts and skips the loop
+        // without touching an iterator (`BaseDocIdSetTestCase.java:141-143`).
         Assert::assert_equals(-1, ds1.next_set_bit(0));
-    }
-    let mut it2 = ds2.iterator()?;
-    // A `null` iterator skips the loop, as Java's `else` branch does.
-    let mut doc = if iterator_is_null { NO_MORE_DOCS } else { -1 };
-    while doc != NO_MORE_DOCS {
-        if random.next_boolean() {
-            doc = ds1.next_set_bit((doc + 1) as usize);
-            if doc == -1 {
-                doc = NO_MORE_DOCS;
-            }
-            Assert::assert_equals(doc, it2.next_doc()?);
-            Assert::assert_equals(doc, it2.doc_id());
-        } else {
-            let bound = if random.next_boolean() {
-                64
+    } else {
+        let mut it2 = ds2.iterator()?;
+        let mut doc = -1;
+        while doc != NO_MORE_DOCS {
+            if random.next_boolean() {
+                doc = ds1.next_set_bit((doc + 1) as usize);
+                if doc == -1 {
+                    doc = NO_MORE_DOCS;
+                }
+                Assert::assert_equals(doc, it2.next_doc()?);
+                Assert::assert_equals(doc, it2.doc_id());
             } else {
-                (num_bits / 8).max(1)
-            };
-            let target = doc + 1 + random.next_int_bound(bound);
-            doc = ds1.next_set_bit(target as usize);
-            if doc == -1 {
-                doc = NO_MORE_DOCS;
+                let bound = if random.next_boolean() {
+                    64
+                } else {
+                    (num_bits / 8).max(1)
+                };
+                let target = doc + 1 + random.next_int_bound(bound);
+                doc = ds1.next_set_bit(target as usize);
+                if doc == -1 {
+                    doc = NO_MORE_DOCS;
+                }
+                Assert::assert_equals(doc, it2.advance(target)?);
+                Assert::assert_equals(doc, it2.doc_id());
             }
-            Assert::assert_equals(doc, it2.advance(target)?);
-            Assert::assert_equals(doc, it2.doc_id());
         }
     }
 

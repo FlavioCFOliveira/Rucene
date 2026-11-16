@@ -148,7 +148,24 @@ struct NewInstanceProvider {
 }
 
 impl InstanceProvider for NewInstanceProvider {
+    /// `constructor.newInstance(args)`. The reflective
+    /// `IllegalArgumentException` of an argument count that differs from the
+    /// parameter count is wrapped, as Java wraps it
+    /// (`RandomizedRunner.java:1591-1594`); a throwable of the constructor
+    /// body propagates unwrapped (Java's `InvocationTargetException` branch).
     fn new_instance(&self) -> Instance {
+        if self.args.len() != self.constructor.parameter_types().len() {
+            let reflective = match try_run(|| self.constructor.new_instance(&self.args)) {
+                Err(t) => t,
+                Ok(_) => unreachable!("the argument count mismatch throws"),
+            };
+            Throwable::with_cause(
+                exception::ILLEGAL_ARGUMENT_EXCEPTION,
+                Some("Constructor arguments do not match provider parameters?".to_string()),
+                reflective,
+            )
+            .throw();
+        }
         self.constructor.new_instance(&self.args)
     }
 }
@@ -226,6 +243,11 @@ impl QueueUncaughtExceptionsHandler {
 }
 
 impl UncaughtExceptionHandler for QueueUncaughtExceptionsHandler {
+    fn class_name(&self) -> String {
+        "com.carrotsearch.randomizedtesting.RandomizedRunner$QueueUncaughtExceptionsHandler"
+            .to_string()
+    }
+
     fn uncaught_exception(&self, t: &Thread, e: Throwable) {
         {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -856,7 +878,7 @@ impl RandomizedRunner {
         if !same {
             let what = match &current {
                 None => "(null)".to_string(),
-                Some(_) => "class <handler>".to_string(),
+                Some(c) => format!("class {}", c.class_name()),
             };
             notifier.fire_test_failure(Failure::new(
                 self.description(),
@@ -1859,6 +1881,10 @@ impl RandomizedRunner {
 const PARAMETERS_FACTORY_CLASS: &str =
     "interface com.carrotsearch.randomizedtesting.annotations.ParametersFactory";
 
+/// `Iterable.class.isAssignableFrom(returnType)` for a factory method
+/// (`RandomizedRunner.java:1489`), by the erased type's name: the same
+/// declared-name limit as `Validation.hasReturnType` (see
+/// [`crate::validation`]).
 fn is_iterable(raw_return_type: &str) -> bool {
     matches!(
         raw_return_type,

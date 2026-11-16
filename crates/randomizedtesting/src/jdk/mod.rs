@@ -14,6 +14,7 @@
 //! Lucene or randomizedtesting file: each one states, at its point, what the
 //! JDK does and where the emulation differs.
 
+pub mod concurrent;
 pub mod exception;
 pub mod format;
 pub mod io;

@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from kgio import kg_target, read as kg_read
+from port_evidence_kg import DEPTH_MEMBERS, DEPTH_PAIRS
 
 OUT = Path(sys.argv[2]) if len(sys.argv) > 2 else kg_target() / "triage"
 ROADMAP = sys.argv[1] if len(sys.argv) > 1 else "rucene"
@@ -20,22 +21,21 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 QUERIES = {
     # exactly the four measure_depth issues
-    "pairs": "MATCH (t)-[e:PORTS]->(c:Class) WHERE c.portScope = 'in' "
-             "RETURN c.qualifiedName, t.name, t.file, e.claimLevel",
-    "members": "MATCH (c:Class)-[:DECLARES]->(m:Method) WHERE c.portScope = 'in' "
-               "AND m.kind = 'method' RETURN c.qualifiedName, m.name",
+    # (nested types with a type-level port included: `DEPTH_PAIRS`)
+    "pairs": DEPTH_PAIRS,
+    "members": DEPTH_MEMBERS,
     "rust_fns": "MATCH (f:RustFn) WHERE f.scope = 'crate' "
                 "RETURN f.file, f.owner, f.name",
     "trait_methods": "MATCH (t)-[:IMPLEMENTS]->(tr:RustTrait) "
                      "WITH t, tr MATCH (tr)-[:DECLARES]->(m:RustFn) "
                      "RETURN t.name, t.file, m.name",
     # what measure_depth stored, to prove the reproduction is exact
-    "stored": "MATCH (c:Class) WHERE c.portScope='in' AND c.memberTotal IS NOT NULL "
+    "stored": "MATCH (c:Class) WHERE c.portScope IN ['in', 'nested'] AND c.memberTotal IS NOT NULL "
               "RETURN c.qualifiedName, c.package, c.name, c.memberTotal, c.memberMatched",
     # extras the triage needs but measure_depth does not use
-    "ports_any": "MATCH (n)-[r:PORTS|PORTS_CANDIDATE]->(c:Class) WHERE c.portScope='in' "
+    "ports_any": "MATCH (n)-[r:PORTS|PORTS_CANDIDATE]->(c:Class) WHERE c.portScope IN ['in', 'nested'] "
                  "RETURN c.qualifiedName, n.file, n.name, type(r)",
-    "supers": "MATCH (a:Class)-[:EXTENDS|IMPLEMENTS]->(b:Class) WHERE a.portScope='in' "
+    "supers": "MATCH (a:Class)-[:EXTENDS|IMPLEMENTS]->(b:Class) WHERE a.portScope IN ['in', 'nested'] "
               "RETURN a.qualifiedName, b.qualifiedName",
     # The same hierarchy without the scope filter, which `triage_members.py`
     # loads separately for the `doc-comment` and `related` rules: those walk
@@ -49,9 +49,9 @@ QUERIES = {
     # abort on a FileNotFoundError before it classified anything.
     "supers_all": "MATCH (a:Class)-[:EXTENDS|IMPLEMENTS]->(b:Class) "
                   "RETURN a.qualifiedName, b.qualifiedName",
-    "member_kinds": "MATCH (c:Class)-[:DECLARES]->(m:Method) WHERE c.portScope='in' "
+    "member_kinds": "MATCH (c:Class)-[:DECLARES]->(m:Method) WHERE c.portScope IN ['in', 'nested'] "
                     "RETURN c.qualifiedName, m.name, m.kind, m.modifiers, m.signature, m.qualifiedName, m.returnType",
-    "class_meta": "MATCH (c:Class) WHERE c.portScope='in' "
+    "class_meta": "MATCH (c:Class) WHERE c.portScope IN ['in', 'nested'] "
                   "RETURN c.qualifiedName, c.package, c.name, c.kind, c.sourceFile",
 }
 

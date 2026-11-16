@@ -38,7 +38,9 @@ use super::knn_vectors_format::{META_EXTENSION, VECTOR_EXTENSION};
 use super::knn_vectors_writer::{
     FIELD_NAME, FIELD_NUMBER, SIZE, VECTOR_DATA_LENGTH, VECTOR_DATA_OFFSET, VECTOR_DIMENSION,
 };
-use super::util::{self, java_split, parse_float, parse_int, parse_long, read_line, CHECKSUM};
+use super::util::{
+    self, java_split, parse_float, parse_int, parse_long, read_line, JavaScratch, CHECKSUM,
+};
 
 const EMPTY: &[u8] = b"";
 
@@ -89,28 +91,34 @@ fn poisoned<T>(_: T) -> LuceneError {
 }
 
 /// `stripPrefix`.
-fn strip_prefix(scratch: &[u8], prefix: &[u8]) -> String {
-    util::read_string(scratch, prefix.len())
+fn strip_prefix(scratch: &JavaScratch, prefix: &[u8]) -> Result<String> {
+    scratch.new_string(prefix.len())
 }
 
 /// `readInt(in, field)`.
-fn read_int(input: &mut dyn IndexInput, scratch: &mut Vec<u8>, field: &[u8]) -> Result<i32> {
-    read_line(input, scratch)?;
+fn read_int(input: &mut dyn IndexInput, scratch: &mut JavaScratch, field: &[u8]) -> Result<i32> {
+    scratch.read_line(input)?;
     debug_assert!(scratch.starts_with(field));
-    parse_int(&strip_prefix(scratch, field))
+    parse_int(&strip_prefix(scratch, field)?)
 }
 
 /// `readLong(in, field)`.
-fn read_long(input: &mut dyn IndexInput, scratch: &mut Vec<u8>, field: &[u8]) -> Result<i64> {
-    read_line(input, scratch)?;
+fn read_long(input: &mut dyn IndexInput, scratch: &mut JavaScratch, field: &[u8]) -> Result<i64> {
+    scratch.read_line(input)?;
     debug_assert!(scratch.starts_with(field));
-    parse_long(&strip_prefix(scratch, field))
+    parse_long(&strip_prefix(scratch, field)?)
 }
 
 /// `readString(in, field)`.
-fn read_string(input: &mut dyn IndexInput, scratch: &mut Vec<u8>, field: &[u8]) -> Result<String> {
-    read_line(input, scratch)?;
-    Ok(strip_prefix(scratch, field))
+/// `readString(in, field)`: no prefix assertion, so a short line fails in
+/// `new String(...)` even under `-ea`.
+fn read_string(
+    input: &mut dyn IndexInput,
+    scratch: &mut JavaScratch,
+    field: &[u8],
+) -> Result<String> {
+    scratch.read_line(input)?;
+    strip_prefix(scratch, field)
 }
 
 impl SimpleTextKnnVectorsReader {
@@ -136,7 +144,7 @@ impl SimpleTextKnnVectorsReader {
         // far nothing — is closed.
         let mut input = read_state.directory.open_checksum_input(&meta_file_name)?;
         let read = (|| -> Result<_> {
-            let mut scratch = Vec::new();
+            let mut scratch = JavaScratch::new();
             let mut field_entries: HashMap<i32, Arc<FieldEntry>> = HashMap::new();
             let mut field_number = read_int(input.as_mut(), &mut scratch, FIELD_NUMBER)?;
             while field_number != -1 {
@@ -147,6 +155,10 @@ impl SimpleTextKnnVectorsReader {
                     read_long(input.as_mut(), &mut scratch, VECTOR_DATA_LENGTH)?;
                 let dimension = read_int(input.as_mut(), &mut scratch, VECTOR_DIMENSION)?;
                 let size = read_int(input.as_mut(), &mut scratch, SIZE)?;
+                // `new int[size]` (`SimpleTextKnnVectorsReader.java:90`).
+                if size < 0 {
+                    return Err(util::negative_array_size(size));
+                }
                 let mut doc_ids = Vec::with_capacity(size.max(0) as usize);
                 for _ in 0..size {
                     doc_ids.push(read_int(input.as_mut(), &mut scratch, EMPTY)?);
@@ -435,7 +447,7 @@ impl KnnVectorsReader for SimpleTextKnnVectorsReader {
 
 /// Reads one `Arrays.toString` line: skip leading "[" and strip trailing
 /// "]", split on ",", `Float.parseFloat` each part.
-fn read_vector_parts(input: &mut dyn IndexInput, scratch: &mut Vec<u8>) -> Result<Vec<f32>> {
+fn read_vector_parts(input: &mut dyn IndexInput, scratch: &mut Vec<u8>) -> Result<Vec<String>> {
     read_line(input, scratch)?;
     // `new BytesRef(scratch.bytes(), 1, scratch.length() - 2).utf8ToString()`.
     let length = scratch.len() as i64 - 2;
@@ -452,7 +464,31 @@ fn read_vector_parts(input: &mut dyn IndexInput, scratch: &mut Vec<u8>) -> Resul
     }
     let inner = &scratch[1..scratch.len() - 1];
     let s = java_utf8_to_string(inner);
-    java_split(&s, ',').into_iter().map(parse_float).collect()
+    Ok(java_split(&s, ',')
+        .into_iter()
+        .map(str::to_string)
+        .collect())
+}
+
+/// The loop of `readVector`: `value[i] = Float.parseFloat(floatStrings[i])`
+/// for every part, the parse before the store, so a part past `dimension`
+/// is parsed and then throws `ArrayIndexOutOfBoundsException`
+/// (`SimpleTextKnnVectorsReader.java:420-429`).
+fn read_vector_values(parts: &[String], dimension: usize) -> Result<Vec<f32>> {
+    debug_assert_eq!(
+        parts.len(),
+        dimension,
+        " read {} when expecting {dimension} floats",
+        parts.join(",")
+    );
+    let mut value = vec![0f32; dimension];
+    for (i, part) in parts.iter().enumerate() {
+        let v = parse_float(part)?;
+        *value
+            .get_mut(i)
+            .ok_or_else(|| util::array_index_out_of_bounds(i as i64, dimension))? = v;
+    }
+    Ok(value)
 }
 
 /// Port of `org.apache.lucene.codecs.simpletext.SimpleTextKnnVectorsReader.SimpleTextFloatVectorValues`.
@@ -467,13 +503,8 @@ impl SimpleTextFloatVectorValues {
         let mut scratch = Vec::new();
         let mut values = Vec::with_capacity(entry.size() as usize);
         for _ in 0..entry.size() {
-            let value = read_vector_parts(input.as_mut(), &mut scratch)?;
-            debug_assert_eq!(value.len() as i32, entry.dimension);
-            let mut fixed = vec![0f32; entry.dimension.max(0) as usize];
-            for (slot, v) in fixed.iter_mut().zip(value) {
-                *slot = v;
-            }
-            values.push(fixed);
+            let parts = read_vector_parts(input.as_mut(), &mut scratch)?;
+            values.push(read_vector_values(&parts, entry.dimension.max(0) as usize)?);
         }
         Ok(Self {
             entry,
@@ -549,15 +580,11 @@ impl SimpleTextByteVectorValues {
         let mut scratch = Vec::new();
         let mut values = Vec::with_capacity(entry.size() as usize);
         for _ in 0..entry.size() {
-            let value = read_vector_parts(input.as_mut(), &mut scratch)?;
-            debug_assert_eq!(value.len() as i32, entry.dimension);
-            let mut fixed = vec![0u8; entry.dimension.max(0) as usize];
-            for (slot, v) in fixed.iter_mut().zip(value) {
-                // `(byte) Float.parseFloat(...)`: float to int (saturating,
-                // NaN to 0), then int to byte.
-                *slot = (v as i32) as i8 as u8;
-            }
-            values.push(fixed);
+            let parts = read_vector_parts(input.as_mut(), &mut scratch)?;
+            let floats = read_vector_values(&parts, entry.dimension.max(0) as usize)?;
+            // `(byte) Float.parseFloat(...)`: float to int (saturating, NaN
+            // to 0), then int to byte.
+            values.push(floats.iter().map(|v| (*v as i32) as i8 as u8).collect());
         }
         Ok(Self {
             entry,
@@ -647,5 +674,94 @@ impl VectorScorer for TextVectorScorer {
 
     fn doc_index_iterator(&mut self) -> Option<&mut dyn DocIndexIterator> {
         Some(self.iterator.as_mut())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simpletext::test_support::unchecked;
+
+    /// Regression (rmp #526), release builds (no `-ea`): each part is parsed
+    /// before it is stored, so the part past `dimension` is parsed and then
+    /// throws `ArrayIndexOutOfBoundsException`; a bad part after it is never
+    /// reached. The port parsed every part first.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn extra_vector_parts_throw_after_their_parse() {
+        let parts: Vec<String> = ["1", " 2", " 3", " x"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let error = read_vector_values(&parts, 2).unwrap_err();
+        assert_eq!(
+            unchecked(&error),
+            (
+                "java.lang.ArrayIndexOutOfBoundsException",
+                "Index 2 out of bounds for length 2".to_string()
+            )
+        );
+        let parts: Vec<String> = ["1", " 2", " x"].iter().map(|s| s.to_string()).collect();
+        assert!(read_vector_values(&parts, 2).is_err());
+    }
+
+    /// Regression (rmp #526): `new int[size]` rejects a negative vector
+    /// count in the `.gri` file.
+    #[test]
+    fn negative_vector_count_is_a_negative_array_size() {
+        use crate::simpletext::test_support::{directory, segment_info, write_file};
+        use rucene::index::FieldInfos;
+        use rucene::store::DEFAULT_IO_CONTEXT;
+        let dir = directory();
+        write_file(
+            dir.as_ref(),
+            "_0.gri",
+            &[
+                "field-number 0",
+                "field-name f",
+                "vector-data-offset 0",
+                "vector-data-length 0",
+                "vector-dimension 2",
+                "size -3",
+            ],
+            true,
+        );
+        let si = segment_info(&dir, "_0", 1);
+        let infos = FieldInfos::new(Vec::new()).unwrap();
+        let state = SegmentReadState::new(dir.as_ref(), &si, &infos, &*DEFAULT_IO_CONTEXT);
+        let error = SimpleTextKnnVectorsReader::new(&state).unwrap_err();
+        assert_eq!(
+            unchecked(&error),
+            ("java.lang.NegativeArraySizeException", "-3".to_string())
+        );
+    }
+}
+
+#[cfg(test)]
+mod short_line_tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, segment_info, unchecked, write_file};
+    use rucene::index::FieldInfos;
+    use rucene::store::DEFAULT_IO_CONTEXT;
+
+    /// Regression (rmp #526): `readString(in, FIELD_NAME)` has no prefix
+    /// assertion, so a short line fails in `new String(scratch.bytes(), 11,
+    /// -8)` with the scratch's capacity: `field-number 0` grew it to 16
+    /// (`oversize(9, 1)`); the port returned an empty name.
+    #[test]
+    fn short_field_name_line_is_a_string_index_out_of_bounds() {
+        let dir = directory();
+        write_file(dir.as_ref(), "_0.gri", &["field-number 0", "fie"], true);
+        let si = segment_info(&dir, "_0", 1);
+        let infos = FieldInfos::new(Vec::new()).unwrap();
+        let state = SegmentReadState::new(dir.as_ref(), &si, &infos, &*DEFAULT_IO_CONTEXT);
+        let error = SimpleTextKnnVectorsReader::new(&state).unwrap_err();
+        assert_eq!(
+            unchecked(&error),
+            (
+                "java.lang.StringIndexOutOfBoundsException",
+                "Range [11, 11 + -8) out of bounds for length 16".to_string()
+            )
+        );
     }
 }

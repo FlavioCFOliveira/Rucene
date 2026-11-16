@@ -259,7 +259,7 @@ def overridden_set(roadmap):
     return {r["qn"] for r in rows}
 
 
-def phase_scope(roadmap, top_level, commit, date, batch_size):
+def phase_scope(roadmap, top_level, commit, date, batch_size, source_root=None):
     print("phase: scope", file=sys.stderr)
     nodes = read(
         roadmap,
@@ -395,7 +395,7 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
             f"  portState preservado por verificacao manual: {len(overridden)}",
             file=sys.stderr,
         )
-    phase_added_nested(roadmap, rows_nested, commit, date, batch_size)
+    phase_added_nested(roadmap, rows_nested, commit, date, batch_size, source_root)
 
 
 def skeleton_targets(roadmap):
@@ -406,7 +406,9 @@ def skeleton_targets(roadmap):
 
 
 def nested_state(qn, claimed, skeletons):
-    """`(portState, portStateEvidence)` of a nested type of an added module."""
+    """`(portState, portStateEvidence)` of a nested type of an added module,
+    from the two facts that need no reading of the port: a type-level `PORTS`
+    and a skeleton declaration."""
     if qn in claimed:
         return "ported", "doc-comment"
     if qn in skeletons:
@@ -414,40 +416,230 @@ def nested_state(qn, claimed, skeletons):
     return "unported", "no-port-claim"
 
 
-def phase_added_nested(roadmap, rows_nested, commit, date, batch_size):
+# The Rust item labels a nested type's port can carry.
+NESTED_ITEM_LABELS = ("RustStruct", "RustEnum", "RustTrait", "RustAlias")
+HOST_FILE_EVIDENCE = "host-file-name"
+HOST_MENTION_EVIDENCE = "host-comment-mention"
+# Bare names that are also Rust's own prelude or standard types: a backticked
+# `Option` in a host file's comment is far more likely Rust's than Java's.
+STD_TYPE_NAMES = frozenset({"Option", "Result", "Box", "Vec", "String", "Iterator",
+                            "Error", "Entry", "Ordering", "Default", "Drop", "Arc"})
+_BACKTICK = re.compile(r"`([^`]+)(?:`|$)")
+
+
+def enclosing_chain(qn):
+    """`pkg.A$B$C` -> `["pkg.A$B", "pkg.A"]`, innermost first."""
+    head, _, rest = qn.partition("$")
+    if not rest:
+        return []
+    segs = rest.split("$")
+    return ["$".join([head] + segs[:k]) for k in range(len(segs) - 1, -1, -1)]
+
+
+def comment_mention(text, outer, inner):
+    """`(line, comment)` of the first comment of `text` that names the nested
+    type in backticks: `Outer.Inner`, `Outer$Inner`, or `Inner` alone (not when
+    `Inner` is a Rust standard type name), possibly inside a quoted Java
+    expression (`` `new Inner(...)` ``, `` `Inner.run()` ``). Consecutive
+    comment lines are read as one block, since a quoted span wraps."""
+    qual = re.compile(r"\b" + re.escape(outer) + r"[.$]" + re.escape(inner) + r"\b")
+    bare = re.compile(r"(?<![\w.$])" + re.escape(inner) + r"\b")
+    blocks, cur, start = [], [], 0
+    for i, line in enumerate(text.splitlines(), 1):
+        pos = line.find("//")
+        if pos >= 0 and not line[:pos].strip():
+            if not cur:
+                start = i
+            cur.append(line[pos:].lstrip("/!").strip())
+            continue
+        if cur:
+            blocks.append((start, " ".join(cur)))
+            cur = []
+        if pos >= 0:                       # a trailing comment after code
+            blocks.append((i, line[pos:].lstrip("/!").strip()))
+    if cur:
+        blocks.append((start, " ".join(cur)))
+    for ln, block in blocks:
+        for span in _BACKTICK.findall(block):
+            if qual.search(span) or (inner not in STD_TYPE_NAMES and bare.search(span)):
+                return ln, block[:160]
+    return None
+
+
+HOST_VARIANT_EVIDENCE = "host-enum-variant"
+
+
+def enum_variant_fold(qn, siblings, files, text_of):
+    """`(file, line, variant, base)` when a subclass hierarchy of nested types
+    became one Rust enum in a host file.
+
+    `FilterExpressionParser$AndNode extends InfixNode extends Node`: the port
+    declares `enum Kind { Eos, Default, And, Or, ... }` and one `struct Node`.
+    The nested type's name is a variant's name followed by the simple name of a
+    sibling nested type (the base, `Node`), a host file declares an enum with
+    that variant, and a comment of that file names the base in backticks.
+    """
+    outer, _, inner = qn.rpartition("$")
+    for sib in siblings:
+        so, _, base = sib.rpartition("$")
+        if so != outer or base == inner or not inner.endswith(base):
+            continue
+        variant = inner[: -len(base)]
+        if not variant:
+            continue
+        line_re = re.compile(r"^\s*" + re.escape(variant) + r"\s*(?:,|\(|\{|=|$)")
+        for f in files:
+            text = text_of(f)
+            if "enum " not in text or f"`{base}`" not in text:
+                continue
+            for i, line in enumerate(text.splitlines(), 1):
+                if line_re.match(line):
+                    return f, i, variant, base
+    return None
+
+
+def classify_added_nested(rows, claimed, skeletons, host_files, rust_items, text_of,
+                          verdicts):
+    """`portState` rows for the nested types of the added modules.
+
+    Strongest evidence first, and the first that applies wins:
+
+    * `doc-comment` -- a type-level `PORTS` from the crate's own claim;
+    * `skeleton-doc-comment` -- a skeleton declares itself the type's;
+    * `host-file-name` -- **ported**: a Rust type of the nested type's own
+      name is declared in a file that holds the port of a type enclosing it
+      (`DirectPostingsFormat$DirectFields` is `struct DirectFields` in
+      `direct_postings_format.rs`). The edge it rests on is written as a
+      `PORTS` with this evidence, so the member triage reaches the item;
+    * `host-comment-mention` -- **absorbed**: no such item, but a comment of a
+      host file names the type in backticks, which is where the port says its
+      work went (`// `new RandomlySplittingBKDWriter(...)``);
+    * `verified-absorption` / `verified-absent` -- the hand verdicts of
+      `nested_port_verdicts.json`, for a shape no rule reads;
+    * `no-port-claim` -- **unported**, with the crate directory its port
+      belongs in.
+
+    `host_files` maps a type's qualified name to the files of its type-level
+    ports; `rust_items` maps `(name, file)` to the item's label.
+    Returns `(state rows, PORTS edge rows)`.
+    """
+    out, edges = [], []
+    siblings = {r["qn"] for r in rows}
+    for r in rows:
+        qn = r["qn"]
+        state, evidence = nested_state(qn, claimed, skeletons)
+        note = host = None
+        if state == "unported":
+            chain = enclosing_chain(qn)
+            host = next((h for h in chain if host_files.get(h)), None)
+            files = sorted(host_files.get(host, ())) if host else []
+            inner = qn.rsplit("$", 1)[-1]
+            outer = qn.rsplit("$", 2)[-2].rsplit(".", 1)[-1]
+            item = next(((inner, f) for f in files if (inner, f) in rust_items), None)
+            if item:
+                state, evidence = "ported", HOST_FILE_EVIDENCE
+                note = (f"{rust_items[item]} {inner} ({item[1]}) is declared in the file "
+                        f"that ports {host}.")
+                edges.append({"name": inner, "file": item[1], "label": rust_items[item],
+                              "qn": qn})
+            else:
+                hit = next(((f, comment_mention(text_of(f), outer, inner)) for f in files
+                            if comment_mention(text_of(f), outer, inner)), None)
+                fold = None if hit else enum_variant_fold(qn, siblings, files, text_of)
+                if hit:
+                    f, (ln, line) = hit
+                    state, evidence = "absorbed", HOST_MENTION_EVIDENCE
+                    note = f"named by a comment of the port of {host}, {f}:{ln}: {line}"
+                elif fold:
+                    f, ln, variant, base = fold
+                    state, evidence = "absorbed", HOST_VARIANT_EVIDENCE
+                    note = (f"the `{base}` subclass hierarchy is an enum in the port of {host}; "
+                            f"this subclass is its variant `{variant}`, {f}:{ln}.")
+                elif qn in verdicts.get("absorbed", {}):
+                    v = verdicts["absorbed"][qn]
+                    state, evidence = "absorbed", "verified-absorption"
+                    note = f"absorbed by {v['host']} at {v['where']}: {v['why']}"
+                elif qn in verdicts.get("unported", {}):
+                    v = verdicts["unported"][qn]
+                    evidence = "verified-absent"
+                    note = v["reason"]
+        out.append({"qn": qn, "state": state, "evidence": evidence, "note": note,
+                    "host": host,
+                    "dest": pm.crate_destination(r["module"], r["pkg"])
+                    if state == "unported" else None})
+    return out, edges
+
+
+def phase_added_nested(roadmap, rows_nested, commit, date, batch_size, source_root=None):
     """`portState` of the nested types of the modules beyond lucene/core.
 
-    `nested_port_kg.py` measures `lucene/core`'s nested types only: its
-    `absorbed` grounds rest on a port of the enclosing type, and none of these
-    modules has one yet. Until it is extended, these carry the mechanical
-    state: `ported` when a type-level `PORTS` reaches them, `skeleton` when a
-    Rust skeleton declares itself theirs (`SKELETON_OF`), else `unported` with
-    the crate directory their port belongs in (`portDestination`), on the
-    evidence `doc-comment`, `skeleton-doc-comment` or `no-port-claim`.
+    `nested_port_kg.py` measures `lucene/core`'s nested types; these are
+    classified by `classify_added_nested`, which reads the port's files under
+    `source_root` (the commit's `git archive` export) for the comment rule.
+    The `host-file-name` `PORTS` edges are owned here: all of them are deleted
+    and the current set rewritten, so an edge cannot outlive its evidence.
     """
+    import json as _json
     rows = [r for r in rows_nested if r["qn"] and r["module"] in pm.ADDED_MODULES]
+    rmp("update", roadmap,
+        "MATCH (c:Class)<-[e:PORTS]-(t) WHERE c.portScope = 'nested' "
+        f"AND e.evidence = '{HOST_FILE_EVIDENCE}' DELETE e", "retire host-file-name PORTS")
     claimed = {r["qn"] for r in read(
         roadmap,
         "MATCH ()-[e:PORTS]->(c:Class) WHERE c.portScope = 'nested' "
         "AND coalesce(e.claimLevel, 'type') = 'type' RETURN DISTINCT c.qualifiedName AS qn")}
     skeletons = skeleton_targets(roadmap)
-    out = []
-    for r in rows:
-        state, evidence = nested_state(r["qn"], claimed, skeletons)
-        out.append({"qn": r["qn"], "state": state, "evidence": evidence,
-                    "dest": pm.crate_destination(r["module"], r["pkg"])
-                    if state == "unported" else None,
-                    "commit": commit, "date": date})
+    host_files = {}
+    for r in read(roadmap, "MATCH (t)-[e:PORTS]->(c:Class) "
+                           "WHERE coalesce(e.claimLevel, 'type') = 'type' "
+                           "RETURN c.qualifiedName AS qn, t.file AS file"):
+        if r["file"]:
+            host_files.setdefault(r["qn"], set()).add(r["file"])
+    rust_items = {}
+    for label in NESTED_ITEM_LABELS:
+        for r in read(roadmap, f"MATCH (n:{label}) RETURN n.name AS name, n.file AS file"):
+            rust_items.setdefault((r["name"], r["file"]), label)
+    verdicts = _json.loads(
+        (Path(__file__).resolve().parent / "nested_port_verdicts.json").read_text(encoding="utf-8"))
+    cache = {}
+
+    def text_of(f):
+        if f not in cache:
+            try:
+                cache[f] = (Path(source_root or ".") / f).read_text(encoding="utf-8",
+                                                                     errors="replace")
+            except OSError:
+                cache[f] = ""
+        return cache[f]
+
+    out, edges = classify_added_nested(rows, claimed, skeletons, host_files, rust_items,
+                                       text_of, verdicts)
+    for label in NESTED_ITEM_LABELS:
+        mine = [dict(e, commit=commit, date=date) for e in edges if e["label"] == label]
+        run_unwind(
+            "create", roadmap, mine,
+            f"MATCH (t:{label} {{name: row.name, file: row.file}}) "
+            "MATCH (c:Class {qualifiedName: row.qn}) "
+            f"CREATE (t)-[:PORTS {{evidence: '{HOST_FILE_EVIDENCE}', claimLevel: 'type', "
+            "gitCommit: row.commit, gitDate: row.date}]->(c)",
+            batch_size, f"host-file-name PORTS ({label})")
+    for o in out:
+        o["commit"], o["date"] = commit, date
     run_unwind(
         "update",
         roadmap,
         out,
         "MATCH (c:Class {qualifiedName:row.qn}) SET c.portState = row.state, "
         "c.portStateEvidence = row.evidence, c.portDestination = row.dest, "
+        "c.portStateNote = row.note, c.nestedHost = row.host, "
         "c.gitCommit = row.commit, c.gitDate = row.date",
         batch_size,
         "added-module nested portState",
     )
+    import collections as _c
+    print("  added-module nested: " + ", ".join(
+        f"{k[0]}/{k[1]} {v}" for k, v in sorted(_c.Counter(
+            (o["state"], o["evidence"]) for o in out).items())), file=sys.stderr)
 
 
 def phase_deps(roadmap, deps, commit, date, batch_size):
@@ -866,6 +1058,8 @@ def main():
     ap.add_argument("--date", required=True)
     ap.add_argument("--survey", help="JSON de extract_rucene_kg.py (fase candidates)")
     ap.add_argument("--batch-size", type=int, default=200)
+    ap.add_argument("--source-root", help="the commit's `git archive` export (scope phase: "
+                    "the port's files the nested-type comment rule reads)")
     ap.add_argument(
         "--phase",
         default="all",
@@ -887,7 +1081,8 @@ def main():
         file=sys.stderr,
     )
     if args.phase in ("all", "scope"):
-        phase_scope(args.roadmap, top_level, args.commit, args.date, args.batch_size)
+        phase_scope(args.roadmap, top_level, args.commit, args.date, args.batch_size,
+                    args.source_root)
     if args.phase in ("all", "deps"):
         phase_deps(args.roadmap, deps, args.commit, args.date, args.batch_size)
     if args.phase in ("all", "candidates"):

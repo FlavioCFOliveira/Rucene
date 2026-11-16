@@ -153,11 +153,14 @@ impl PerThreadPKLookup {
             if terms_enum.seek_exact(id)? {
                 let mut slot = self.postings_enums[seg].borrow_mut();
                 let reuse = slot.take();
-                let postings_enum = slot.insert(
-                    terms_enum
-                        .postings(reuse, 0)?
-                        .ok_or_else(rucene::error::LuceneError::null_pointer)?,
-                );
+                let postings_enum =
+                    slot.insert(terms_enum.postings(reuse, 0)?.ok_or_else(|| {
+                        rucene::error::LuceneError::unchecked(
+                            "java.lang.NullPointerException",
+                            "Cannot invoke \"org.apache.lucene.index.PostingsEnum.nextDoc()\" \
+                                 because \"this.postingsEnums[seg]\" is null",
+                        )
+                    })?);
                 loop {
                     let doc_id = postings_enum.next_doc()?;
                     if doc_id == NO_MORE_DOCS {

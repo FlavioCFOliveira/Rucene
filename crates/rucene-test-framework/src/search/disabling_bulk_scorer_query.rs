@@ -87,7 +87,7 @@ impl Query for DisablingBulkScorerQuery {
                 .is_some_and(|other| self.query.query_eq(&*other.query))
     }
 
-    /// `31 * classHash() + query.hashCode()`.
+    /// `getClass().getName()`.
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.tests.search.DisablingBulkScorerQuery"
     }

@@ -210,15 +210,20 @@ impl PostingsFormat for RAMOnlyPostingsFormat {
         let mut out = write_state
             .directory
             .create_output(&id_file_name, write_state.context)?;
-        let written = (|| -> Result<()> {
+        // The `finally` runs on every exit of the `try`, a panic included.
+        let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
             write_header(out.as_mut(), RAM_ONLY_NAME, VERSION_LATEST)?;
             out.write_v_int(id)
-        })();
+        }));
         match written {
-            Ok(()) => IOUtils::close([IOUtils::closeable(|| out.close())])?,
-            Err(e) => {
+            Ok(Ok(())) => IOUtils::close([IOUtils::closeable(|| out.close())])?,
+            Ok(Err(e)) => {
                 IOUtils::close_while_handling_exception([IOUtils::closeable(|| out.close())])?;
                 return Err(e);
+            }
+            Err(payload) => {
+                IOUtils::close_while_handling_exception([IOUtils::closeable(|| out.close())])?;
+                std::panic::resume_unwind(payload);
             }
         }
 
@@ -249,18 +254,23 @@ impl PostingsFormat for RAMOnlyPostingsFormat {
         let mut input = read_state
             .directory
             .open_input(&id_file_name, read_state.context)?;
-        let read = (|| -> Result<i32> {
+        // The `finally` runs on every exit of the `try`, a panic included.
+        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<i32> {
             check_header(input.as_mut(), RAM_ONLY_NAME, VERSION_START, VERSION_LATEST)?;
             input.read_v_int()
-        })();
+        }));
         let id = match read {
-            Ok(id) => {
+            Ok(Ok(id)) => {
                 IOUtils::close([IOUtils::closeable(|| input.close())])?;
                 id
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 IOUtils::close_while_handling_exception([IOUtils::closeable(|| input.close())])?;
                 return Err(e);
+            }
+            Err(payload) => {
+                IOUtils::close_while_handling_exception([IOUtils::closeable(|| input.close())])?;
+                std::panic::resume_unwind(payload);
             }
         };
 
@@ -547,7 +557,7 @@ impl FieldsConsumer for RAMFieldsConsumer<'_> {
                 &mut ram_field,
                 terms_enum.as_mut(),
                 field_info,
-                self.segment_info.max_doc()?,
+                self.segment_info,
             );
             self.postings
                 .field_to_terms
@@ -571,9 +581,11 @@ fn write_field(
     ram_field: &mut RAMField,
     terms_enum: &mut dyn TermsEnum,
     field_info: &FieldInfo,
-    max_doc: i32,
+    segment_info: &rucene::index::SegmentInfo,
 ) -> Result<()> {
-    let mut docs_seen = FixedBitSet::new(max_doc.max(0) as usize);
+    // `new FixedBitSet(state.segmentInfo.maxDoc())` runs after the field is
+    // published (`RAMOnlyPostingsFormat.java:217-220`).
+    let mut docs_seen = FixedBitSet::new(segment_info.max_doc()?.max(0) as usize);
     let mut sum_total_term_freq = 0i64;
     let mut sum_doc_freq = 0i64;
     let mut postings_enum: Option<Box<dyn PostingsEnum>> = None;
@@ -610,7 +622,12 @@ fn write_field(
         };
         let mut pe = terms_enum
             .postings(postings_enum.take(), enum_flags)?
-            .ok_or_else(LuceneError::null_pointer)?;
+            .ok_or_else(|| {
+                npe(
+                    "Cannot invoke \"org.apache.lucene.index.PostingsEnum.nextDoc()\" because \
+                     \"postingsEnum\" is null",
+                )
+            })?;
 
         let mut doc_freq = 0i32;
         let mut total_term_freq = 0i64;
@@ -951,17 +968,17 @@ impl PostingsEnum for RAMDocsEnum {
         let pos_upto = self.pos_upto;
         let doc = self.current("positions")?;
         java_assert!(pos_upto < doc.positions.len());
-        let Some(&position) = doc.positions.get(pos_upto) else {
-            return Err(LuceneError::unchecked(
-                "java.lang.ArrayIndexOutOfBoundsException",
-                format!(
-                    "Index {pos_upto} out of bounds for length {}",
-                    doc.positions.len()
-                ),
-            ));
-        };
+        let element = doc.positions.get(pos_upto).copied();
+        let length = doc.positions.len();
+        // `current.positions[posUpto++]`: the index expression's increment
+        // happens before the array access throws.
         self.pos_upto += 1;
-        Ok(position)
+        element.ok_or_else(|| {
+            LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!("Index {pos_upto} out of bounds for length {length}"),
+            )
+        })
     }
 
     fn start_offset(&self) -> i32 {
@@ -982,7 +999,13 @@ impl PostingsEnum for RAMDocsEnum {
                         format!("Index -1 out of bounds for length {}", payloads.len()),
                     ));
                 };
-                Ok(payloads.get(i).and_then(|p| p.as_deref()))
+                match payloads.get(i) {
+                    Some(payload) => Ok(payload.as_deref()),
+                    None => Err(LuceneError::unchecked(
+                        "java.lang.ArrayIndexOutOfBoundsException",
+                        format!("Index {i} out of bounds for length {}", payloads.len()),
+                    )),
+                }
             }
             None => Ok(None),
         }

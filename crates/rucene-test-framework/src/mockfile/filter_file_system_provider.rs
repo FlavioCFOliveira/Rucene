@@ -29,7 +29,7 @@
 
 use std::any::Any;
 use std::io;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use rucene::store::java_nio_file::{
     same_file_system, throw_unchecked, AccessMode, AsynchronousFileChannel, AttributeValue,
@@ -47,8 +47,9 @@ pub struct FilterState {
     /// `delegate`: the underlying `FileSystemProvider`.
     delegate: Arc<dyn FileSystemProvider>,
     /// `fileSystem`: the underlying `FileSystem` instance, the singleton
-    /// filesystem of this provider.
-    file_system: OnceLock<Arc<FilterFileSystem>>,
+    /// filesystem of this provider; a non-`final` field, so a subclass may
+    /// assign it again.
+    file_system: RwLock<Option<Arc<FilterFileSystem>>>,
     /// `scheme`: the URI scheme for this provider.
     scheme: String,
 }
@@ -60,7 +61,7 @@ impl FilterState {
     pub fn new(scheme: &str, delegate_instance: &Arc<dyn FileSystem>) -> FilterState {
         FilterState {
             delegate: delegate_instance.provider(),
-            file_system: OnceLock::new(),
+            file_system: RwLock::new(None),
             scheme: scheme.to_string(),
         }
     }
@@ -68,10 +69,17 @@ impl FilterState {
     /// The state of `FilterFileSystemProvider(String scheme,
     /// FileSystemProvider delegate)`: "You must set the singleton
     /// `filesystem` yourself" ([`set_file_system`](Self::set_file_system)).
+    ///
+    /// **Divergence.** Until it is set, Java's `wrapPath` builds a
+    /// `FilterPath` whose filesystem is `null` and `toDelegate` compares
+    /// against `null` (`FilterFileSystemProvider.java:125-127, 260-274`); a
+    /// [`Path`] always belongs to a filesystem, so here both throw the
+    /// `IllegalStateException` of [`require_file_system`](Self::require_file_system).
+    /// No Lucene 10.5.0 class uses this constructor.
     pub fn with_provider(scheme: &str, delegate: Arc<dyn FileSystemProvider>) -> FilterState {
         FilterState {
             delegate,
-            file_system: OnceLock::new(),
+            file_system: RwLock::new(None),
             scheme: scheme.to_string(),
         }
     }
@@ -82,22 +90,20 @@ impl FilterState {
     }
 
     /// `fileSystem`, `None` until set.
-    pub fn file_system(&self) -> Option<&Arc<FilterFileSystem>> {
-        self.file_system.get()
+    pub fn file_system(&self) -> Option<Arc<FilterFileSystem>> {
+        self.file_system
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
-    /// Sets the singleton `fileSystem`.
-    ///
-    /// # Panics
-    ///
-    /// When it was already set.
+    /// `fileSystem = file_system`: sets (or replaces) the singleton
+    /// filesystem.
     pub fn set_file_system(&self, file_system: Arc<FilterFileSystem>) {
-        if self.file_system.set(file_system).is_err() {
-            throw_unchecked(
-                "java.lang.IllegalStateException",
-                Some("filesystem already set"),
-            )
-        }
+        *self
+            .file_system
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Some(file_system);
     }
 
     /// `scheme`.
@@ -111,8 +117,8 @@ impl FilterState {
     ///
     /// `IllegalStateException` ("subclass did not initialize singleton
     /// filesystem") when it was not set.
-    pub fn require_file_system(&self) -> &Arc<FilterFileSystem> {
-        match self.file_system.get() {
+    pub fn require_file_system(&self) -> Arc<FilterFileSystem> {
+        match self.file_system() {
             Some(fs) => fs,
             None => throw_unchecked(
                 "java.lang.IllegalStateException",
@@ -132,7 +138,7 @@ impl FilterState {
     /// filesystem that is not a filter.
     pub fn to_delegate(&self, path: &Path) -> Path {
         let fs = self.require_file_system();
-        to_delegate_of(fs, path)
+        to_delegate_of(&fs, path)
     }
 }
 
@@ -198,7 +204,7 @@ pub trait FilterFileSystemProvider: FileSystemProvider {
     /// `wrapPath(path)`: wraps a delegate path with provider-specific
     /// behavior, a [`FilterPath`] by default.
     fn wrap_path(&self, path: &Path) -> Path {
-        FilterPath::new(path, self.filter().require_file_system())
+        FilterPath::new(path, &self.filter().require_file_system())
     }
 
     /// `onClose()`: overridden to trigger some behavior when the filesystem
@@ -213,8 +219,7 @@ pub trait FilterFileSystemProvider: FileSystemProvider {
 
     /// `getFileSystem(URI)`.
     fn get_file_system(&self) -> Arc<dyn FileSystem> {
-        let fs: Arc<dyn FileSystem> =
-            Arc::clone(self.filter().require_file_system()) as Arc<dyn FileSystem>;
+        let fs: Arc<dyn FileSystem> = self.filter().require_file_system() as Arc<dyn FileSystem>;
         fs
     }
 
@@ -530,7 +535,7 @@ pub fn wrapped_filter(
 pub fn wrapper_of<P: FilterFileSystemProvider + ?Sized>(
     this: &P,
 ) -> Arc<dyn Fn(&Path) -> Path + Send + Sync> {
-    let fs = Arc::clone(this.filter().require_file_system());
+    let fs = this.filter().require_file_system();
     Arc::new(move |path: &Path| fs.wrap_path(path))
 }
 
@@ -547,7 +552,7 @@ pub fn new_directory_stream<P: FilterFileSystemProvider + ?Sized>(
         .new_directory_stream(&f.to_delegate(dir), wrapped)?;
     Ok(Box::new(FilterDirectoryStream::new(
         stream,
-        Arc::clone(f.require_file_system()),
+        f.require_file_system(),
     )))
 }
 
@@ -765,4 +770,27 @@ macro_rules! impl_file_system_provider {
             }
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mockfile::DisableFsyncFS;
+    use rucene::store::java_nio_file::default_file_system;
+
+    /// `fileSystem` is a protected, non-`final` field
+    /// (`FilterFileSystemProvider.java:56`): assigning it again replaces the
+    /// singleton instead of throwing.
+    #[test]
+    fn file_system_can_be_assigned_again() {
+        let provider = DisableFsyncFS::new(default_file_system());
+        let first = provider.filter().require_file_system();
+        let parent: Arc<dyn FilterFileSystemProvider> =
+            Arc::clone(&provider) as Arc<dyn FilterFileSystemProvider>;
+        let second = Arc::new(FilterFileSystem::new(parent, default_file_system()));
+        provider.filter().set_file_system(Arc::clone(&second));
+        let current = provider.filter().require_file_system();
+        assert!(Arc::ptr_eq(&current, &second));
+        assert!(!Arc::ptr_eq(&current, &first));
+    }
 }

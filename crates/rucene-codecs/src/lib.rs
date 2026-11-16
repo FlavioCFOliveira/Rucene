@@ -19,6 +19,7 @@ pub mod bitvectors;
 pub mod blockterms;
 pub mod blocktreeords;
 pub mod bloom;
+mod java_util;
 pub mod memory;
 pub mod simpletext;
 pub mod uniformsplit;

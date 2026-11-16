@@ -260,6 +260,7 @@ def test_a_member_only_claim_leaves_a_sprint9_type_missing_but_not_a_core_one(mo
     ])
     monkeypatch.setattr(pc, "read", g.read)
     monkeypatch.setattr(pc, "run_unwind", g.run_unwind)
+    monkeypatch.setattr(pc, "rmp", lambda *a, **k: "{}")  # the host-file-name PORTS retirement
     pc.phase_scope("r", top, "c" * 40, "2026-11-03", 200)
 
     ins = {r["qn"]: r for r in g.rows("portScope = in")}
@@ -585,6 +586,7 @@ def test_an_unlisted_sandbox_type_never_enters_the_scope(monkeypatch):
     ])
     monkeypatch.setattr(pc, "read", g.read)
     monkeypatch.setattr(pc, "run_unwind", g.run_unwind)
+    monkeypatch.setattr(pc, "rmp", lambda *a, **k: "{}")  # the host-file-name PORTS retirement
     pc.phase_scope("r", {FLT: FLT_FILE}, "c" * 40, "2026-11-14", 200)
     assert g.rows("portScope = in") == [{"qn": FLT, "file": FLT_FILE, "module": SB,
                                           "rule": "sprint-13-listed-file-top-level"}]

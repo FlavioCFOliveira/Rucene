@@ -140,8 +140,8 @@ pub(crate) struct OrdsSegmentTermsEnumFrame {
     /// `bytes` + `bytesReader` (the metadata).
     pub(crate) bytes: OwnedArrayInput,
 
-    start_byte_pos: usize,
-    suffix_length: usize,
+    start_byte_pos: i32,
+    suffix_length: i32,
     sub_code: i64,
 }
 
@@ -160,9 +160,9 @@ impl OrdsSegmentTermsEnumFrame {
             fp: 0,
             fp_orig: 0,
             fp_end: 0,
-            suffixes: OwnedArrayInput::default(),
-            stats: OwnedArrayInput::default(),
-            floor_data: OwnedArrayInput::default(),
+            suffixes: OwnedArrayInput::with_len(128),
+            stats: OwnedArrayInput::with_len(64),
+            floor_data: OwnedArrayInput::with_len(32),
             prefix_length: 0,
             ent_count: 0,
             next_ent: 0,
@@ -312,11 +312,15 @@ impl OrdsSegmentTermsEnumFrame {
         );
         self.next_ent += 1;
         self.term_ord += 1;
-        self.suffix_length = super::array_len(self.suffixes.read_v_int()?)?;
-        self.start_byte_pos = self.suffixes.position();
-        ctx.term.set_length(self.prefix_length + self.suffix_length);
-        self.suffixes
-            .read_into(&mut ctx.term.bytes, self.prefix_length, self.suffix_length)?;
+        self.suffix_length = self.suffixes.read_v_int()?;
+        self.start_byte_pos = self.suffixes.java_position();
+        ctx.term
+            .set_length_and_grow((self.prefix_length as i32).wrapping_add(self.suffix_length))?;
+        self.suffixes.read_into(
+            &mut ctx.term.bytes,
+            self.prefix_length as i32,
+            self.suffix_length,
+        )?;
         // A normal term
         *ctx.term_exists = true;
         Ok(false)
@@ -333,11 +337,15 @@ impl OrdsSegmentTermsEnumFrame {
         );
         self.next_ent += 1;
         let code = self.suffixes.read_v_int()?;
-        self.suffix_length = ((code as u32) >> 1) as usize;
-        self.start_byte_pos = self.suffixes.position();
-        ctx.term.set_length(self.prefix_length + self.suffix_length);
-        self.suffixes
-            .read_into(&mut ctx.term.bytes, self.prefix_length, self.suffix_length)?;
+        self.suffix_length = ((code as u32) >> 1) as i32;
+        self.start_byte_pos = self.suffixes.java_position();
+        ctx.term
+            .set_length_and_grow((self.prefix_length as i32).wrapping_add(self.suffix_length))?;
+        self.suffixes.read_into(
+            &mut ctx.term.bytes,
+            self.prefix_length as i32,
+            self.suffix_length,
+        )?;
         if (code & 1) == 0 {
             // A normal term
             *ctx.term_exists = true;
@@ -543,16 +551,17 @@ impl OrdsSegmentTermsEnumFrame {
         }
     }
 
-    /// The suffix of the current entry, `suffixBytes[startBytePos ..
-    /// startBytePos + suffixLength]`.
-    fn suffix(&self) -> &[u8] {
-        &self.suffixes.bytes[self.start_byte_pos..self.start_byte_pos + self.suffix_length]
-    }
-
-    /// `target.bytes[target.offset + prefixLength .. target.offset +
-    /// target.length]`.
-    fn target_suffix<'t>(&self, target: &'t [u8]) -> &'t [u8] {
-        target.get(self.prefix_length..).unwrap_or(&[])
+    /// `Arrays.compareUnsigned(suffixBytes, startBytePos, startBytePos +
+    /// suffixLength, target.bytes, target.offset + prefixLength,
+    /// target.offset + target.length)`.
+    fn compare_suffix(&self, target: &[u8]) -> Result<i32> {
+        self.suffixes.compare_to(
+            self.start_byte_pos,
+            self.start_byte_pos.wrapping_add(self.suffix_length),
+            target,
+            self.prefix_length as i32,
+            target.len() as i32,
+        )
     }
 
     /// Target's prefix matches this block's prefix; we scan the entries
@@ -573,7 +582,7 @@ impl OrdsSegmentTermsEnumFrame {
 
         if self.next_ent == self.ent_count {
             if exact_only {
-                self.fill_term(ctx.term);
+                self.fill_term(ctx.term)?;
             }
             return Ok(SeekStatus::END);
         }
@@ -585,13 +594,13 @@ impl OrdsSegmentTermsEnumFrame {
             self.next_ent += 1;
             self.term_ord += 1;
 
-            self.suffix_length = super::array_len(self.suffixes.read_v_int()?)?;
+            self.suffix_length = self.suffixes.read_v_int()?;
 
-            self.start_byte_pos = self.suffixes.position();
-            self.suffixes.skip_bytes(self.suffix_length as i32)?;
+            self.start_byte_pos = self.suffixes.java_position();
+            self.suffixes.skip_bytes(self.suffix_length)?;
 
             // Compare suffix and target.
-            let cmp = self.suffix().cmp(self.target_suffix(target));
+            let cmp = self.compare_suffix(target)?.cmp(&0);
 
             match cmp {
                 Ordering::Less => {
@@ -601,7 +610,7 @@ impl OrdsSegmentTermsEnumFrame {
                 Ordering::Greater => {
                     // Done!  Current entry is after target --
                     // return NOT_FOUND:
-                    self.fill_term(ctx.term);
+                    self.fill_term(ctx.term)?;
 
                     return Ok(SeekStatus::NOT_FOUND);
                 }
@@ -612,7 +621,7 @@ impl OrdsSegmentTermsEnumFrame {
                     // would have followed the index to this
                     // sub-block from the start:
 
-                    self.fill_term(ctx.term);
+                    self.fill_term(ctx.term)?;
                     return Ok(SeekStatus::FOUND);
                 }
             }
@@ -631,7 +640,7 @@ impl OrdsSegmentTermsEnumFrame {
         // was fooz (and, eg, first term in the next block will
         // bee fop).
         if exact_only {
-            self.fill_term(ctx.term);
+            self.fill_term(ctx.term)?;
         }
 
         // TODO: not consistent that in the
@@ -655,7 +664,7 @@ impl OrdsSegmentTermsEnumFrame {
 
         if self.next_ent == self.ent_count {
             if exact_only {
-                self.fill_term(ctx.term);
+                self.fill_term(ctx.term)?;
                 *ctx.term_exists = self.sub_code == 0;
             }
             return Ok(NonLeafScan {
@@ -671,11 +680,11 @@ impl OrdsSegmentTermsEnumFrame {
             self.next_ent += 1;
 
             let code = self.suffixes.read_v_int()?;
-            self.suffix_length = ((code as u32) >> 1) as usize;
+            self.suffix_length = ((code as u32) >> 1) as i32;
 
             *ctx.term_exists = (code & 1) == 0;
-            self.start_byte_pos = self.suffixes.position();
-            self.suffixes.skip_bytes(self.suffix_length as i32)?;
+            self.start_byte_pos = self.suffixes.java_position();
+            self.suffixes.skip_bytes(self.suffix_length)?;
             // Must save ord before we skip over a sub-block in case we push, below:
             let prev_term_ord = self.term_ord;
             if *ctx.term_exists {
@@ -689,7 +698,7 @@ impl OrdsSegmentTermsEnumFrame {
             }
 
             // Compare suffix and target.
-            let cmp = self.suffix().cmp(self.target_suffix(target));
+            let cmp = self.compare_suffix(target)?.cmp(&0);
 
             match cmp {
                 Ordering::Less => {
@@ -699,14 +708,17 @@ impl OrdsSegmentTermsEnumFrame {
                 Ordering::Greater => {
                     // Done!  Current entry is after target --
                     // return NOT_FOUND:
-                    self.fill_term(ctx.term);
+                    self.fill_term(ctx.term)?;
 
                     let descend = if !exact_only && !*ctx.term_exists {
                         // We are on a sub-block, and caller wants
                         // us to position to the next term after
                         // the target, so we must recurse into the
                         // sub-frame(s):
-                        Some((self.prefix_length + self.suffix_length, prev_term_ord))
+                        Some((
+                            self.prefix_length + self.suffix_length as usize,
+                            prev_term_ord,
+                        ))
                     } else {
                         None
                     };
@@ -724,7 +736,7 @@ impl OrdsSegmentTermsEnumFrame {
                     // sub-block from the start:
 
                     java_assert!(*ctx.term_exists);
-                    self.fill_term(ctx.term);
+                    self.fill_term(ctx.term)?;
                     return Ok(NonLeafScan {
                         status: SeekStatus::FOUND,
                         descend: None,
@@ -743,7 +755,7 @@ impl OrdsSegmentTermsEnumFrame {
         // was fooz (and, eg, first term in the next block will
         // bee fop).
         if exact_only {
-            self.fill_term(ctx.term);
+            self.fill_term(ctx.term)?;
         }
 
         // TODO: not consistent that in the
@@ -756,9 +768,14 @@ impl OrdsSegmentTermsEnumFrame {
     }
 
     /// Port of `fillTerm()`.
-    fn fill_term(&self, term: &mut TermBuilder) {
-        let term_length = self.prefix_length + self.suffix_length;
-        term.set_length(term_length);
-        term.bytes[self.prefix_length..term_length].copy_from_slice(self.suffix());
+    fn fill_term(&self, term: &mut TermBuilder) -> Result<()> {
+        let term_length = (self.prefix_length as i32).wrapping_add(self.suffix_length);
+        term.set_length_and_grow(term_length)?;
+        self.suffixes.copy_to(
+            self.start_byte_pos,
+            &mut term.bytes,
+            self.prefix_length as i32,
+            self.suffix_length,
+        )
     }
 }

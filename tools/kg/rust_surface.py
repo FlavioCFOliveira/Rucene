@@ -20,10 +20,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from extract_rucene_kg import mask, strip_generics, base_type_name
 
+# A raw identifier is how Rust spells a name that is a keyword: Lucene's
+# `FileSystemProvider.move` is `fn r#move` in the port (`windows_fs.rs`,
+# `verbose_fs.rs`). The name is kept with its `r#`, which is what the triage's
+# `rust-keyword` rule looks for; without the prefix in the pattern the function
+# was not recorded at all and that rule could never fire.
 RE_FN = re.compile(
     r"^[ \t]*(?P<vis>pub(?:\s*\([^)]*\))?\s+)?"
     r"(?:default\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?"
-    r'(?:extern\s+"[^"]*"\s+)?fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)',
+    r'(?:extern\s+"[^"]*"\s+)?fn\s+(?P<name>(?:r#)?[A-Za-z_][A-Za-z0-9_]*)',
     re.M,
 )
 RE_IMPL_HEAD = re.compile(r"^[ \t]*(?:unsafe\s+)?impl(?![A-Za-z0-9_])", re.M)
@@ -46,6 +51,16 @@ RE_DERIVE = re.compile(r"#\[\s*derive\s*\(([^)]*)\)\s*\]")
 # variant, none of which can match.
 RE_VARIANT = re.compile(
     r"^[ \t]*(?P<name>[A-Z][A-Za-z0-9_]*)[ \t]*(?=[,({=]|$)", re.M)
+# A named field of a struct body: `pub value: String,`. The port keeps a Java
+# annotation's members as fields (`declarations.rs`: `Seeds.value()` is
+# `pub value: Vec<Seed>`) and an overridable Java hook as a closure field
+# (`NoShadowingOrOverridesOnMethodsRule.verify` is
+# `verify: Arc<dyn Fn(&Method) -> bool + Send + Sync>`), so the triage needs
+# the fields, their types and their doc comments.
+RE_TUPLE = re.compile(r"\s*(?:<[^>{;]*>)?\s*\(([^;{]*)\)\s*;")
+RE_FIELD = re.compile(
+    r"^[ \t]*(?P<vis>pub(?:\s*\([^)]*\))?\s+)?(?P<name>(?:r#)?[a-z_][A-Za-z0-9_]*)"
+    r"[ \t]*:(?!:)[ \t]*(?P<ty>[^\n]*)", re.M)
 
 
 def block_end(masked, open_pos):
@@ -161,9 +176,17 @@ def parse(rel, text):
 
     free = []
     for m in RE_FN.finditer(masked):
-        rec = {"name": m.group("name"), "line": lineno(m.start()),
-               "doc": doc_before(lines, lineno(m.start())),
-               "pub": bool(m.group("vis"))}
+        ln = lineno(m.start())
+        # A `#[test]` (or `#[tokio::test]`) in the attribute block above: a
+        # test's doc names the member it exercises, which is not a port of it.
+        k, is_test = ln - 2, False
+        while k >= 0 and (lines[k].strip().startswith("#[") or lines[k].strip().startswith("///")):
+            if re.match(r"#\[\s*(?:tokio::)?test\b", lines[k].strip()):
+                is_test = True
+            k -= 1
+        rec = {"name": m.group("name"), "line": ln,
+               "doc": doc_before(lines, ln),
+               "pub": bool(m.group("vis")), "test": is_test}
         own = owner_of(m.start())
         (own["fns"] if own else free).append(rec)
 
@@ -192,11 +215,39 @@ def parse(rel, text):
                     vln = lineno(v.start())
                     variants.append({"name": v.group("name"), "line": vln,
                                      "doc": doc_before(lines, vln)})
+        fields = []
+        if m.re is RE_TYPE_DECL and m.group("kind") == "struct":
+            ob = next_brace(masked, m.end())
+            if ob is not None:
+                end = block_end(masked, ob)
+                body = masked[ob + 1:end - 1]
+                for fm in RE_FIELD.finditer(masked, ob + 1, end - 1):
+                    # Only the struct's own fields, at brace depth zero of its
+                    # body: a `name: Type` inside a nested `{...}` is not one.
+                    rel_pos = fm.start() - (ob + 1)
+                    if body.count("{", 0, rel_pos) != body.count("}", 0, rel_pos):
+                        continue
+                    fln = lineno(fm.start())
+                    fields.append({"name": fm.group("name"), "line": fln,
+                                   "ty": text.splitlines()[fln - 1].split(":", 1)[1].strip(),
+                                   "pub": bool(fm.group("vis")),
+                                   "doc": doc_before(lines, fln)})
         types[m.group("name")] = {"line": ln, "derives": ders,
                                   "doc": doc_before(lines, ln),
                                   "kind": (m.group("kind")
                                            if m.re is RE_TYPE_DECL else "type"),
-                                  "variants": variants}
+                                  "variants": variants, "fields": fields,
+                                  # A tuple struct's field list (`struct
+                                  # RAMTerms(Arc<RAMField>);`), so a newtype
+                                  # wrapping a port type is seen to be one.
+                                  "tuple": (RE_TUPLE.match(masked, m.end()).group(1)
+                                            if m.re is RE_TYPE_DECL and m.group("kind") == "struct"
+                                            and RE_TUPLE.match(masked, m.end()) else None),
+                                  # A type alias's right-hand side, so a field
+                                  # typed `Accept` can be seen to be a closure.
+                                  "alias": (text[m.end():].split(";", 1)[0]
+                                            .split("=", 1)[-1].strip()
+                                            if m.re is RE_ALIAS else "")}
 
     consts = {m.group("name") for m in RE_CONST.finditer(masked)}
     return {"file": rel, "impls": impls, "traits": traits, "macros": macros,

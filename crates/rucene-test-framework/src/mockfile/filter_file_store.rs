@@ -20,7 +20,7 @@
 use std::io;
 use std::sync::Arc;
 
-use rucene::store::java_nio_file::{AttributeValue, FileStore};
+use rucene::store::java_nio_file::{throw_unchecked, AttributeValue, FileStore};
 
 /// Port of `org.apache.lucene.tests.mockfile.FilterFileStore`: a `FileStore`
 /// that contains another, which it uses as its basic source of data.
@@ -71,8 +71,11 @@ impl FileStore for FilterFileStore {
         self.delegate.get_unallocated_space()
     }
 
+    /// `getBlockSize()`: `FilterFileStore` does not override it, so it is
+    /// `FileStore`'s default, which throws `UnsupportedOperationException`
+    /// (no message; JDK 25 probe) instead of asking the delegate.
     fn get_block_size(&self) -> io::Result<i64> {
-        self.delegate.get_block_size()
+        throw_unchecked("java.lang.UnsupportedOperationException", None)
     }
 
     fn supports_file_attribute_view(&self, name: &str) -> bool {
@@ -86,5 +89,32 @@ impl FileStore for FilterFileStore {
     /// `toString()`: `delegate.toString()`.
     fn store_to_string(&self) -> String {
         self.delegate.store_to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use randomizedtesting::jdk::exception::Throwable;
+    use rucene::store::java_nio_file::default_file_system;
+
+    /// `FilterFileStore` inherits `FileStore.getBlockSize()`, which throws
+    /// `UnsupportedOperationException` even when the delegate answers.
+    #[test]
+    fn block_size_is_unsupported_even_when_the_delegate_answers() {
+        let delegate = default_file_system()
+            .get_file_stores()
+            .into_iter()
+            .next()
+            .expect("the default filesystem has a store");
+        assert!(delegate.get_block_size().is_ok());
+        let store = FilterFileStore::new(delegate, "test://");
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = store.get_block_size();
+        }))
+        .unwrap_err();
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.UnsupportedOperationException");
+        assert_eq!(t.message(), None);
     }
 }

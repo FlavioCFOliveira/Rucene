@@ -24,7 +24,7 @@ use randomizedtesting::jdk::thread::Thread;
 use rucene::codecs::{
     DocValuesConsumer, DocValuesFormat, DocValuesProducer, SegmentReadState, SegmentWriteState,
 };
-use rucene::error::Result;
+use rucene::error::{LuceneError, Result};
 use rucene::index::{
     BinaryDocValues, DocValuesSkipIndexType, DocValuesSkipper, DocValuesType, NumericDocValues,
     SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
@@ -40,6 +40,16 @@ use crate::index::asserting_leaf_reader::{
     AssertingSortedSetDocValues,
 };
 use crate::util::TestUtil;
+
+/// The helpful `NullPointerException` of the first call on a `null`
+/// `values` local in an `add*Field` method of `AssertingDocValuesConsumer`
+/// (`AssertingDocValuesFormat.java:79-176`); `method` is the called
+/// `org.apache.lucene.index` method.
+fn null_values(method: &str) -> LuceneError {
+    LuceneError::null_pointer_with_message(format!(
+        "Cannot invoke \"org.apache.lucene.index.{method}\" because \"values\" is null"
+    ))
+}
 
 /// Just like the default doc-values format but with additional asserts.
 ///
@@ -120,7 +130,9 @@ impl DocValuesConsumer for AssertingDocValuesConsumer<'_> {
         field: &FieldInfo,
         values_producer: &dyn DocValuesProducer,
     ) -> Result<()> {
-        let mut values = values_producer.get_numeric(field)?.ok_or_else(npe)?;
+        let mut values = values_producer
+            .get_numeric(field)?
+            .ok_or_else(|| null_values("NumericDocValues.nextDoc()"))?;
         let mut last_doc_id = -1;
         loop {
             let doc_id = values.next_doc()?;
@@ -140,7 +152,9 @@ impl DocValuesConsumer for AssertingDocValuesConsumer<'_> {
         field: &FieldInfo,
         values_producer: &dyn DocValuesProducer,
     ) -> Result<()> {
-        let mut values = values_producer.get_binary(field)?.ok_or_else(npe)?;
+        let mut values = values_producer
+            .get_binary(field)?
+            .ok_or_else(|| null_values("BinaryDocValues.nextDoc()"))?;
         let mut last_doc_id = -1;
         loop {
             let doc_id = values.next_doc()?;
@@ -161,7 +175,9 @@ impl DocValuesConsumer for AssertingDocValuesConsumer<'_> {
         field: &FieldInfo,
         values_producer: &dyn DocValuesProducer,
     ) -> Result<()> {
-        let mut values = values_producer.get_sorted(field)?.ok_or_else(npe)?;
+        let mut values = values_producer
+            .get_sorted(field)?
+            .ok_or_else(|| null_values("SortedDocValues.getValueCount()"))?;
 
         let value_count = values.get_value_count()?;
         java_assert!(value_count <= self.max_doc);
@@ -200,7 +216,9 @@ impl DocValuesConsumer for AssertingDocValuesConsumer<'_> {
         field: &FieldInfo,
         values_producer: &dyn DocValuesProducer,
     ) -> Result<()> {
-        let mut values = values_producer.get_sorted_numeric(field)?.ok_or_else(npe)?;
+        let mut values = values_producer
+            .get_sorted_numeric(field)?
+            .ok_or_else(|| null_values("SortedNumericDocValues.nextDoc()"))?;
 
         let mut last_doc_id = -1;
         loop {
@@ -227,7 +245,9 @@ impl DocValuesConsumer for AssertingDocValuesConsumer<'_> {
         field: &FieldInfo,
         values_producer: &dyn DocValuesProducer,
     ) -> Result<()> {
-        let mut values = values_producer.get_sorted_set(field)?.ok_or_else(npe)?;
+        let mut values = values_producer
+            .get_sorted_set(field)?
+            .ok_or_else(|| null_values("SortedSetDocValues.getValueCount()"))?;
 
         let value_count = values.get_value_count()?;
         let mut last_value: Option<BytesRef> = None;
@@ -306,7 +326,10 @@ impl AssertingDocValuesProducer {
         java_assert!(
             self.field_infos
                 .field_info(&field.name)
-                .ok_or_else(npe)?
+                .ok_or_else(|| LuceneError::null_pointer_with_message(
+                    "Cannot read field \"number\" because the return value of \
+                     \"org.apache.lucene.index.FieldInfos.fieldInfo(String)\" is null"
+                ))?
                 .number
                 == field.number
         );
@@ -354,7 +377,14 @@ impl DocValuesProducer for AssertingDocValuesProducer {
         java_assert!(field.doc_values_type == DocValuesType::SORTED);
         let values = self.r#in.get_sorted(field)?;
         java_assert!(values.is_some());
-        let values = values.ok_or_else(npe)?;
+        // Assertions disabled: the constructor's `in.getValueCount()`
+        // (`AssertingLeafReader.java:988`) dereferences the `null`.
+        let values = values.ok_or_else(|| {
+            LuceneError::null_pointer_with_message(
+                "Cannot invoke \"org.apache.lucene.index.SortedDocValues.getValueCount()\" \
+                 because \"in\" is null",
+            )
+        })?;
         Ok(Some(Box::new(AssertingSortedDocValues::new(
             values,
             self.max_doc,
@@ -414,5 +444,121 @@ impl DocValuesProducer for AssertingDocValuesProducer {
     fn close(&self) -> Result<()> {
         self.r#in.close()?;
         self.r#in.close() // close again
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::java_exceptions::java_throwable;
+
+    /// A producer whose every field is `null`.
+    #[derive(Debug)]
+    struct NullProducer;
+
+    impl DocValuesProducer for NullProducer {
+        fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+            Ok(None)
+        }
+        fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted_numeric(
+            &self,
+            _field: &FieldInfo,
+        ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted_set(
+            &self,
+            _field: &FieldInfo,
+        ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+            Ok(None)
+        }
+        fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+            Ok(None)
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
+            Ok(Box::new(NullProducer))
+        }
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A consumer the asserting consumer never reaches in these tests.
+    #[derive(Debug)]
+    struct Unreached;
+
+    impl DocValuesConsumer for Unreached {
+        fn add_numeric_field(&mut self, _: &FieldInfo, _: &dyn DocValuesProducer) -> Result<()> {
+            unreachable!()
+        }
+        fn add_binary_field(&mut self, _: &FieldInfo, _: &dyn DocValuesProducer) -> Result<()> {
+            unreachable!()
+        }
+        fn add_sorted_field(&mut self, _: &FieldInfo, _: &dyn DocValuesProducer) -> Result<()> {
+            unreachable!()
+        }
+        fn add_sorted_numeric_field(
+            &mut self,
+            _: &FieldInfo,
+            _: &dyn DocValuesProducer,
+        ) -> Result<()> {
+            unreachable!()
+        }
+        fn add_sorted_set_field(&mut self, _: &FieldInfo, _: &dyn DocValuesProducer) -> Result<()> {
+            unreachable!()
+        }
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A `null` `values` local NPEs at its first call with the JDK's helpful
+    /// message, as `AssertingDocValuesConsumer.add*Field` does
+    /// (`AssertingDocValuesFormat.java:79-176`; local names from the 10.5.0
+    /// jar's `LocalVariableTable`).
+    #[test]
+    fn null_values_are_helpful_null_pointer_exceptions() {
+        let mut consumer = AssertingDocValuesConsumer {
+            r#in: Box::new(Unreached),
+            max_doc: 1,
+        };
+        let field = FieldInfo::new("f", 0);
+        let message = |r: Result<()>| {
+            let t = java_throwable(&r.unwrap_err());
+            assert_eq!(t.class_name(), "java.lang.NullPointerException");
+            t.message().unwrap().to_string()
+        };
+        let expected = |method: &str| {
+            format!("Cannot invoke \"org.apache.lucene.index.{method}\" because \"values\" is null")
+        };
+        assert_eq!(
+            message(consumer.add_numeric_field(&field, &NullProducer)),
+            expected("NumericDocValues.nextDoc()")
+        );
+        assert_eq!(
+            message(consumer.add_binary_field(&field, &NullProducer)),
+            expected("BinaryDocValues.nextDoc()")
+        );
+        assert_eq!(
+            message(consumer.add_sorted_field(&field, &NullProducer)),
+            expected("SortedDocValues.getValueCount()")
+        );
+        assert_eq!(
+            message(consumer.add_sorted_numeric_field(&field, &NullProducer)),
+            expected("SortedNumericDocValues.nextDoc()")
+        );
+        assert_eq!(
+            message(consumer.add_sorted_set_field(&field, &NullProducer)),
+            expected("SortedSetDocValues.getValueCount()")
+        );
     }
 }

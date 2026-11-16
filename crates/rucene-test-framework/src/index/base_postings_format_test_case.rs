@@ -79,7 +79,10 @@ use rucene::search::NO_MORE_DOCS;
 use rucene::store::Context;
 use rucene::util::BytesRef;
 
-use super::base_index_file_format_test_case::{format_test, rethrow, BaseIndexFileFormatTestCase};
+use super::base_index_file_format_test_case::{
+    assert_null as assert_null_object, format_test, io_utils_close, npe_with, rethrow, try_with,
+    BaseIndexFileFormatTestCase,
+};
 use crate::analysis::canned_token_stream::CannedTokenStream;
 use crate::analysis::mock_tokenizer::MockTokenizer;
 use crate::analysis::token::Token;
@@ -232,20 +235,67 @@ fn postings_case(c: &dyn BaseIndexFileFormatTestCase) -> &dyn BasePostingsFormat
 // Assertion helpers
 // -----------------------------------------------------------------------------
 
-/// The address of a postings enum, its identity for `assertSame`.
-fn identity(p: &dyn PostingsEnum) -> *const () {
-    p as *const dyn PostingsEnum as *const ()
+/// A postings enum as `assertSame` sees it: its identity (the address) and
+/// its `toString()`, which a failure message prints; `null` is a null
+/// address printed as `null`.
+pub struct EnumId {
+    ptr: *const (),
+    text: String,
 }
 
-/// The identity of an enum that may be `null` (`None`): a null pointer then,
-/// which `assertSame` tells apart from any enum.
-fn identity_of(p: Option<&dyn PostingsEnum>) -> *const () {
-    p.map_or(std::ptr::null(), identity)
+/// The identity of an enum, captured before the enum is offered for reuse
+/// (the port moves it into `TermsEnum::postings`).
+fn identity(p: &dyn PostingsEnum) -> EnumId {
+    EnumId {
+        ptr: p as *const dyn PostingsEnum as *const (),
+        text: p.to_string(),
+    }
 }
 
-/// The runtime class name a reuse message names (`getClass().getName()`).
+/// The identity of an enum that may be `null` (`None`).
+fn identity_of(p: Option<&dyn PostingsEnum>) -> EnumId {
+    p.map_or(
+        EnumId {
+            ptr: std::ptr::null(),
+            text: "null".to_string(),
+        },
+        identity,
+    )
+}
+
+/// `getClass().getName()` of an enum: its `toString()` without the
+/// `@<identity hash>` suffix of `Object.toString()`, which every codec's
+/// enum inherits. **Divergence:** an enum whose class overrides `toString()`
+/// would print that instead; the port has no runtime class name.
 fn class_name_of(p: &dyn PostingsEnum) -> String {
-    p.to_string()
+    let text = p.to_string();
+    match text.rsplit_once('@') {
+        Some((class, hash)) if !hash.is_empty() && hash.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            class.to_string()
+        }
+        _ => text,
+    }
+}
+
+/// `assertNull(termsEnum.next())`: JUnit's `expected null, but was:<…>`
+/// with `BytesRef.toString()`.
+fn assert_null_term(term: Option<BytesRef>) {
+    assert_null_object(term.map(|t| t.to_string()));
+}
+
+/// The JDK's helpful `NullPointerException` for `<local>.<method>` on a
+/// `null` enum.
+fn enum_npe(local: &'static str, method: &'static str) -> impl FnOnce() -> String {
+    move || {
+        format!(
+            "Cannot invoke \"org.apache.lucene.index.PostingsEnum.{method}\" because \"{local}\" is null"
+        )
+    }
+}
+
+/// `leaf.terms(field).iterator()` on a `null` result.
+fn terms_npe() -> String {
+    "Cannot invoke \"org.apache.lucene.index.Terms.iterator()\" because the return value of \"org.apache.lucene.index.LeafReader.terms(String)\" is null".to_string()
 }
 
 /// A payload as JUnit prints it: `BytesRef.toString()`, or `null`.
@@ -277,20 +327,26 @@ fn assert_null(actual: &JavaPayload) {
     }
 }
 
-/// `assertSame(message, expected, actual)` /
-/// `assertNotSame(message, unexpected, actual)` on two enum identities.
-fn assert_same(message: &str, same: bool, expected: *const (), actual: *const ()) {
-    if same && expected != actual {
+/// `assertSame(message, expected, actual)` / `assertNotSame(message,
+/// unexpected, actual)` on two enum identities: JUnit's `failNotSame` /
+/// `failSame`, whose prefix is `message + " "` when the message is not
+/// `null`.
+fn assert_same(message: Option<&str>, same: bool, expected: EnumId, actual: EnumId) {
+    let prefix = message.map_or(String::new(), |m| format!("{m} "));
+    if same && expected.ptr != actual.ptr {
         Throwable::new(
             "java.lang.AssertionError",
-            format!("{message} expected same:<{expected:?}> was not:<{actual:?}>"),
+            format!(
+                "{prefix}expected same:<{}> was not:<{}>",
+                expected.text, actual.text
+            ),
         )
         .throw()
     }
-    if !same && expected == actual {
+    if !same && expected.ptr == actual.ptr {
         Throwable::new(
             "java.lang.AssertionError",
-            format!("{message} expected not same"),
+            format!("{prefix}expected not same"),
         )
         .throw()
     }
@@ -387,12 +443,17 @@ fn term(field: &str, text: &str) -> Term {
 #[derive(Debug)]
 struct MockTokenizerAnalyzer {
     state: AnalyzerState,
+    /// The anonymous class: `$2` in `testPostingsEnumFreqs`, `$3` in
+    /// `testPostingsEnumPositions`, `$4` in `testPostingsEnumOffsets` (the
+    /// jar's `EnclosingMethod` attributes).
+    class_name: &'static str,
 }
 
 impl MockTokenizerAnalyzer {
-    fn new() -> Self {
+    fn new(class_name: &'static str) -> Self {
         MockTokenizerAnalyzer {
             state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
+            class_name,
         }
     }
 }
@@ -403,7 +464,7 @@ impl Analyzer for MockTokenizerAnalyzer {
     }
 
     fn java_class_name(&self) -> &'static str {
-        "org.apache.lucene.tests.index.BasePostingsFormatTestCase$2"
+        self.class_name
     }
 
     fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
@@ -565,7 +626,10 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         tester.shuffle_all_terms(&*LuceneTestCase::random());
         let field_and_term = tester.all_terms()[0].clone();
 
-        let terms = npe(fields_producer.terms(field_and_term.field())?);
+        let terms = npe_with(fields_producer.terms(field_and_term.field())?, || {
+            "Cannot invoke \"org.apache.lucene.index.Terms.iterator()\" because \"terms\" is null"
+                .to_string()
+        });
         let mut te = terms.iterator()?;
 
         te.seek_exact(field_and_term.term())?;
@@ -609,7 +673,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             terms_enum.term()?,
             Some(BytesRef::from_char_sequence("something")),
         );
-        Assert::assert_true(terms_enum.next()?.is_none());
+        assert_null_term(terms_enum.next()?);
         drop((terms_enum, ar));
         ir.close()?;
         drop(ir);
@@ -644,7 +708,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut terms_enum = npe(terms).iterator()?;
         Assert::assert_true(terms_enum.next()?.is_some());
         Assert::assert_equals_nullable(terms_enum.term()?, Some(BytesRef::from_char_sequence("")));
-        Assert::assert_true(terms_enum.next()?.is_none());
+        assert_null_term(terms_enum.next()?);
         drop((terms_enum, ar));
         ir.close()?;
         drop(ir);
@@ -676,11 +740,12 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         iw.add_document(&doc)?;
         let ir = iw.get_reader()?;
         let ar = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ir) as _)?;
-        let mut terms_enum = npe(ar.terms("field")?).iterator()?;
+        let mut terms_enum = npe_with(ar.terms("field")?, terms_npe).iterator()?;
         Assert::assert_true(terms_enum.seek_exact(&BytesRef::from_char_sequence("value"))?);
-        let mut docs_enum = terms_enum
-            .postings(None, NONE)?
-            .ok_or_else(LuceneError::null_pointer)?;
+        let mut docs_enum = npe_with(
+            terms_enum.postings(None, NONE)?,
+            enum_npe("docsEnum", "nextDoc()"),
+        );
         Assert::assert_equals(0, docs_enum.next_doc()?);
         Assert::assert_equals(1, docs_enum.freq()?);
         Assert::assert_equals(1, docs_enum.next_doc()?);
@@ -716,11 +781,12 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         iw.add_document(&doc)?;
         let ir = iw.get_reader()?;
         let ar = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ir) as _)?;
-        let mut terms_enum = npe(ar.terms("field")?).iterator()?;
+        let mut terms_enum = npe_with(ar.terms("field")?, terms_npe).iterator()?;
         Assert::assert_true(terms_enum.seek_exact(&BytesRef::from_char_sequence("value"))?);
-        let mut docs_enum = terms_enum
-            .postings(None, POSITIONS)?
-            .ok_or_else(LuceneError::null_pointer)?;
+        let mut docs_enum = npe_with(
+            terms_enum.postings(None, POSITIONS)?,
+            enum_npe("docsEnum", "nextDoc()"),
+        );
         Assert::assert_equals(0, docs_enum.next_doc()?);
         Assert::assert_equals(1, docs_enum.freq()?);
         Assert::assert_equals(1, docs_enum.next_doc()?);
@@ -765,9 +831,10 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         if let Some(terms) = ar.terms("ghostField")? {
             let mut terms_enum = terms.iterator()?;
             if terms_enum.next()?.is_some() {
-                let mut postings_enum = terms_enum
-                    .postings(None, FREQS)?
-                    .ok_or_else(LuceneError::null_pointer)?;
+                let mut postings_enum = npe_with(
+                    terms_enum.postings(None, FREQS)?,
+                    enum_npe("postingsEnum", "nextDoc()"),
+                );
                 Assert::assert_true(postings_enum.next_doc()? == NO_MORE_DOCS);
             }
         }
@@ -799,7 +866,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
 
         let reader = directory_reader::open_with_writer(&*iw)?;
         let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
-        let mut terms_enum = npe(leaf.terms("id")?).iterator()?;
+        let mut terms_enum = npe_with(leaf.terms("id")?, terms_npe).iterator()?;
 
         for _ in 0..20000 {
             let n = LuceneTestCase::random().next_int_range(0, 10000);
@@ -851,7 +918,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
 
         let reader = directory_reader::open_with_writer(&*iw)?;
         let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
-        let mut terms_enum = npe(leaf.terms("id")?).iterator()?;
+        let mut terms_enum = npe_with(leaf.terms("id")?, terms_npe).iterator()?;
         // test seekExact
         for i in 100000..=100400 {
             let target = BytesRef::from_char_sequence(&i.to_string());
@@ -1028,7 +1095,9 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         w.close()?;
 
         let r: Arc<dyn IndexReader> = r;
-        let terms = npe(MultiTerms::get_terms(&r, "body")?);
+        let terms = npe_with(MultiTerms::get_terms(&r, "body")?, || {
+            "Cannot invoke \"org.apache.lucene.index.Terms.getSumDocFreq()\" because \"terms\" is null".to_string()
+        });
         Assert::assert_equals(
             state.sum_doc_freq.load(Ordering::SeqCst),
             terms.sum_doc_freq()?,
@@ -1046,8 +1115,12 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut term_count: i64 = 0;
         let mut supports_ords = true;
         while terms_enum.next()?.is_some() {
-            let term = npe(terms_enum.term()?);
-            let tf = npe(term_freqs.get(&term.utf8_to_string()?));
+            let term = npe_with(terms_enum.term()?, || {
+                "Cannot invoke \"org.apache.lucene.util.BytesRef.utf8ToString()\" because \"term\" is null".to_string()
+            });
+            let tf = npe_with(term_freqs.get(&term.utf8_to_string()?), || {
+                "Cannot read field \"docFreq\" because the return value of \"java.util.Map.get(Object)\" is null".to_string()
+            });
             Assert::assert_equals(tf.doc_freq, terms_enum.doc_freq()?);
             Assert::assert_equals(tf.total_term_freq, terms_enum.total_term_freq()?);
             if supports_ords {
@@ -1075,16 +1148,17 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         r.close()?;
         drop(r);
         drop(w);
-        docs.close();
+        // Java never closes `docs`; dropping it releases the file.
+        drop(docs);
         dir.close()?;
         Ok(())
     }
 
     /// `assertReused(field, p1, p2)`.
-    fn assert_reused(&self, field: &str, p1: *const (), p2: *const ()) {
+    fn assert_reused(&self, field: &str, p1: EnumId, p2: EnumId) {
         // if its not DirectPF, we should always reuse. This one has trouble.
         if TestUtil::get_postings_format(field) != "Direct" {
-            assert_same("", true, p1, p2);
+            assert_same(None, true, p1, p2);
         }
     }
 
@@ -1104,11 +1178,14 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
 
         // sugar method (FREQS)
-        let mut postings = npe(leaf.postings_default(&term("foo", "bar"))?);
+        let mut postings = npe_with(
+            leaf.postings_default(&term("foo", "bar"))?,
+            enum_npe("postings", "docID()"),
+        );
         check_one_doc(&mut *postings, FreqIs::Eq(1), &[])?;
 
         // termsenum reuse (FREQS)
-        let mut terms_enum = npe(leaf.terms("foo")?).iterator()?;
+        let mut terms_enum = npe_with(leaf.terms("foo")?, terms_npe).iterator()?;
         terms_enum.seek_exact(&BytesRef::from_char_sequence("bar"))?;
         let p1 = identity(&*postings);
         let postings2 = terms_enum.postings(Some(postings), FREQS)?;
@@ -1120,9 +1197,10 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
 
         // asking for any flags: ok
         for flag in [NONE, FREQS, POSITIONS, PAYLOADS, OFFSETS, ALL] {
-            let mut postings = terms_enum
-                .postings(None, flag)?
-                .ok_or_else(LuceneError::null_pointer)?;
+            let mut postings = npe_with(
+                terms_enum.postings(None, flag)?,
+                enum_npe("postings", "docID()"),
+            );
             check_one_doc(&mut *postings, FreqIs::Eq(1), &[])?;
             // reuse that too
             let p1 = identity(&*postings);
@@ -1146,7 +1224,9 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testPostingsEnumFreqs()`.
     fn test_postings_enum_freqs(&self) -> Result<()> {
         let dir = LuceneTestCase::new_directory();
-        let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockTokenizerAnalyzer::new())));
+        let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockTokenizerAnalyzer::new(
+            "org.apache.lucene.tests.index.BasePostingsFormatTestCase$2",
+        ))));
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
         let ft = FieldType::new_from(TextField::type_not_stored());
@@ -1157,11 +1237,14 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
 
         // sugar method (FREQS)
-        let mut postings = npe(leaf.postings_default(&term("foo", "bar"))?);
+        let mut postings = npe_with(
+            leaf.postings_default(&term("foo", "bar"))?,
+            enum_npe("postings", "docID()"),
+        );
         check_one_doc(&mut *postings, FreqIs::Eq(2), &[])?;
 
         // termsenum reuse (FREQS)
-        let mut terms_enum = npe(leaf.terms("foo")?).iterator()?;
+        let mut terms_enum = npe_with(leaf.terms("foo")?, terms_npe).iterator()?;
         terms_enum.seek_exact(&BytesRef::from_char_sequence("bar"))?;
         let p1 = identity(&*postings);
         let postings2 = terms_enum.postings(Some(postings), FREQS)?;
@@ -1172,9 +1255,10 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         check_one_doc(&mut *postings2, FreqIs::Eq(2), &[])?;
 
         // asking for docs only: ok
-        let mut docs_only = terms_enum
-            .postings(None, NONE)?
-            .ok_or_else(LuceneError::null_pointer)?;
+        let mut docs_only = npe_with(
+            terms_enum.postings(None, NONE)?,
+            enum_npe("docsOnly", "docID()"),
+        );
         // we don't define what it is, but if its something else, we should look into it?
         check_one_doc(&mut *docs_only, FreqIs::OneOrTwo, &[])?;
         // reuse that too
@@ -1194,9 +1278,10 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             } else {
                 FreqIs::Unchecked
             };
-            let mut postings = terms_enum
-                .postings(None, flag)?
-                .ok_or_else(LuceneError::null_pointer)?;
+            let mut postings = npe_with(
+                terms_enum.postings(None, flag)?,
+                enum_npe("postings", "docID()"),
+            );
             check_one_doc(&mut *postings, freq, &[])?;
             // reuse that too
             let p1 = identity(&*postings);
@@ -1220,7 +1305,9 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testPostingsEnumPositions()`.
     fn test_postings_enum_positions(&self) -> Result<()> {
         let dir = LuceneTestCase::new_directory();
-        let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockTokenizerAnalyzer::new())));
+        let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockTokenizerAnalyzer::new(
+            "org.apache.lucene.tests.index.BasePostingsFormatTestCase$3",
+        ))));
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
         doc.add(Box::new(TextField::new(
@@ -1256,7 +1343,9 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testPostingsEnumOffsets()`.
     fn test_postings_enum_offsets(&self) -> Result<()> {
         let dir = LuceneTestCase::new_directory();
-        let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockTokenizerAnalyzer::new())));
+        let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockTokenizerAnalyzer::new(
+            "org.apache.lucene.tests.index.BasePostingsFormatTestCase$4",
+        ))));
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
         let ft = FieldType::new_from(TextField::type_not_stored());
@@ -1374,34 +1463,62 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// test realistic data, which is often better at uncovering real bugs.
     fn test_line_file_docs(&self) -> Result<()> {
         // Use a FS dir and a non-randomized IWC to not slow down indexing
-        let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
-        {
-            let docs = LineFileDocs::with_default_file(&*LuceneTestCase::random())
-                .map_err(LuceneError::from)?;
-            let w = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
-            let num_docs = LuceneTestCase::at_least(10_000);
-            for _ in 0..num_docs {
-                // Only keep the body field, and don't index term vectors on it, we only care
-                // about postings
-                let doc = docs.next_doc()?;
-                let doc = doc.borrow();
-                let body = doc.get_field("body");
-                Assert::assert_true(body.is_some());
-                let body = npe(body);
-                Assert::assert_true(body.string_value().is_some());
-                Assert::assert_true(body.field_type().index_options() != IndexOptions::NONE);
-                let body = TextField::new("body", npe(body.string_value()), Store::NO)?;
-                let mut single = Document::new();
-                single.add(Box::new(body));
-                w.add_document(&single)?;
-            }
-            w.force_merge(1)?;
-            docs.close();
-            w.close()?;
-        }
-        TestUtil::check_index(dir.as_directory())?;
-        dir.close()?;
-        Ok(())
+        // `try (Directory dir = ...) { try (LineFileDocs docs = ...; IndexWriter
+        // w = ...) { ... } TestUtil.checkIndex(dir); }`: every resource closed
+        // on every exit, `w` before `docs`.
+        try_with(
+            LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir()),
+            |dir| dir.close(),
+            |dir| {
+                let docs = LineFileDocs::with_default_file(&*LuceneTestCase::random())
+                    .map_err(LuceneError::from)?;
+                try_with(
+                    docs,
+                    |docs| {
+                        docs.close();
+                        Ok(())
+                    },
+                    |docs| {
+                        let w = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
+                        try_with(
+                            w,
+                            |w| w.close(),
+                            |w| -> Result<()> {
+                                let num_docs = LuceneTestCase::at_least(10_000);
+                                for _ in 0..num_docs {
+                                    // Only keep the body field, and don't index term vectors on
+                                    // it, we only care about postings
+                                    let doc = docs.next_doc()?;
+                                    let doc = doc.borrow();
+                                    let body = doc.get_field("body");
+                                    Assert::assert_true(body.is_some());
+                                    let body = npe(body);
+                                    Assert::assert_true(body.string_value().is_some());
+                                    // `assertNotEquals(IndexOptions.NONE, ...)`
+                                    let options = body.field_type().index_options();
+                                    if options == IndexOptions::NONE {
+                                        Assert::fail(&format!(
+                                            "Values should be different. Actual: {options:?}"
+                                        ));
+                                    }
+                                    let body = TextField::new(
+                                        "body",
+                                        npe(body.string_value()),
+                                        Store::NO,
+                                    )?;
+                                    let mut single = Document::new();
+                                    single.add(Box::new(body));
+                                    w.add_document(&single)?;
+                                }
+                                w.force_merge(1)
+                            },
+                        )
+                    },
+                )?;
+                TestUtil::check_index(dir.as_directory())?;
+                Ok(())
+            },
+        )
     }
 
     /// `testMismatchedFields()`.
@@ -1446,23 +1563,33 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
 
         let leaf_reader = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
 
-        let mut te = npe(leaf_reader.terms("f")?).iterator()?;
-        Assert::assert_equals_str(None, Some("a"), Some(&npe(te.next()?).utf8_to_string()?));
+        let next_npe = || {
+            "Cannot invoke \"org.apache.lucene.util.BytesRef.utf8ToString()\" because the return value of \"org.apache.lucene.index.TermsEnum.next()\" is null".to_string()
+        };
+        let mut te = npe_with(leaf_reader.terms("f")?, terms_npe).iterator()?;
+        Assert::assert_equals_str(
+            None,
+            Some("a"),
+            Some(&npe_with(te.next()?, next_npe).utf8_to_string()?),
+        );
         Assert::assert_equals(2, te.doc_freq()?);
-        Assert::assert_true(te.next()?.is_none());
+        assert_null_term(te.next()?);
 
-        te = npe(leaf_reader.terms("g")?).iterator()?;
-        Assert::assert_equals_str(None, Some("b"), Some(&npe(te.next()?).utf8_to_string()?));
+        te = npe_with(leaf_reader.terms("g")?, terms_npe).iterator()?;
+        Assert::assert_equals_str(
+            None,
+            Some("b"),
+            Some(&npe_with(te.next()?, next_npe).utf8_to_string()?),
+        );
         Assert::assert_equals(2, te.doc_freq()?);
-        Assert::assert_true(te.next()?.is_none());
+        assert_null_term(te.next()?);
 
         drop((te, leaf_reader));
-        // `IOUtils.close(reader, w2, dir1, dir2)`
-        reader.close()?;
+        // `IOUtils.close(reader, w2, dir1, dir2)` (`w2` is already closed);
+        // every handle on the directories is released before they close.
+        let reader_closed = reader.close();
         drop(reader);
-        dir1.close()?;
-        dir2.close()?;
-        Ok(())
+        io_utils_close([reader_closed, Ok(()), dir1.close(), dir2.close()])
     }
 
     /// `testDocIDRunEnd()`.
@@ -1554,11 +1681,14 @@ fn check_postings_enum_blocks(
     let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(reader) as _)?;
 
     // sugar method (FREQS)
-    let mut postings = npe(leaf.postings_default(&term("foo", "bar"))?);
+    let mut postings = npe_with(
+        leaf.postings_default(&term("foo", "bar"))?,
+        enum_npe("postings", "docID()"),
+    );
     check_one_doc(&mut *postings, FreqIs::Eq(2), &[])?;
 
     // termsenum reuse (FREQS)
-    let mut terms_enum = npe(leaf.terms("foo")?).iterator()?;
+    let mut terms_enum = npe_with(leaf.terms("foo")?, terms_npe).iterator()?;
     terms_enum.seek_exact(&BytesRef::from_char_sequence("bar"))?;
     let p1 = identity(&*postings);
     let postings2 = terms_enum.postings(Some(postings), FREQS)?;
@@ -1569,9 +1699,10 @@ fn check_postings_enum_blocks(
     check_one_doc(&mut *postings2, FreqIs::Eq(2), &[])?;
 
     // asking for docs only: ok
-    let mut docs_only = terms_enum
-        .postings(None, NONE)?
-        .ok_or_else(LuceneError::null_pointer)?;
+    let mut docs_only = npe_with(
+        terms_enum.postings(None, NONE)?,
+        enum_npe("docsOnly", "docID()"),
+    );
     // we don't define what it is, but if its something else, we should look into it?
     check_one_doc(&mut *docs_only, FreqIs::OneOrTwo, &[])?;
     // reuse that too
@@ -1592,17 +1723,27 @@ fn check_postings_enum_blocks(
         (OFFSETS, offsets),
         (ALL, all),
     ] {
-        let mut docs_and_positions_enum = npe(leaf.postings(&term("foo", "bar"), flag)?);
+        let docs_and_positions_enum = leaf.postings(&term("foo", "bar"), flag)?;
+        // `assertNotNull(docsAndPositionsEnum)` for every flag but `POSITIONS`,
+        // whose enum is dereferenced directly.
+        if flag != POSITIONS {
+            crate::index::base_index_file_format_test_case::assert_not_null(
+                docs_and_positions_enum.is_some(),
+            );
+        }
+        let mut docs_and_positions_enum = npe_with(
+            docs_and_positions_enum,
+            enum_npe("docsAndPositionsEnum", "docID()"),
+        );
         check_one_doc(&mut *docs_and_positions_enum, FreqIs::Eq(2), expected)?;
-        // now reuse the positions
+        // now reuse the positions (no `assertNotNull` on the reused enum)
         let e1 = identity(&*docs_and_positions_enum);
         let docs_and_positions_enum2 = terms_enum.postings(Some(docs_and_positions_enum), flag)?;
-        crate::index::base_index_file_format_test_case::assert_not_null(
-            docs_and_positions_enum2.is_some(),
-        );
         case.assert_reused("foo", e1, identity_of(docs_and_positions_enum2.as_deref()));
-        let mut docs_and_positions_enum2 =
-            docs_and_positions_enum2.ok_or_else(LuceneError::null_pointer)?;
+        let mut docs_and_positions_enum2 = npe_with(
+            docs_and_positions_enum2,
+            enum_npe("docsAndPositionsEnum2", "docID()"),
+        );
         check_one_doc(&mut *docs_and_positions_enum2, FreqIs::Eq(2), expected)?;
     }
     Ok(())
@@ -1619,22 +1760,22 @@ pub fn check_reuse(
     second_flags: i32,
     should_reuse: bool,
 ) -> Result<()> {
-    let postings1 = terms_enum
-        .postings(None, first_flags)?
-        .ok_or_else(LuceneError::null_pointer)?;
+    let postings1 = npe_with(terms_enum.postings(None, first_flags)?, || {
+        "Cannot invoke \"Object.getClass()\" because \"postings1\" is null".to_string()
+    });
     let p1 = identity(&*postings1);
     let class = class_name_of(&*postings1);
     let postings2 = terms_enum.postings(Some(postings1), second_flags)?;
     if should_reuse {
         assert_same(
-            &format!("Expected PostingsEnum {class} to be reused"),
+            Some(&format!("Expected PostingsEnum {class} to be reused")),
             true,
             p1,
             identity_of(postings2.as_deref()),
         );
     } else {
         assert_same(
-            &format!("Expected PostingsEnum {class} to not be reused"),
+            Some(&format!("Expected PostingsEnum {class} to not be reused")),
             false,
             p1,
             identity_of(postings2.as_deref()),
@@ -1740,7 +1881,7 @@ impl FieldsConsumer for InvertedWriteConsumer<'_> {
 
         // We only use one thread for flushing
         // in this test:
-        debug_assert!(is_merge || std::thread::current().id() == self.main_thread);
+        java_assert!(is_merge || std::thread::current().id() == self.main_thread);
 
         // We iterate the provided TermsEnum
         // twice, so we excercise this new freedom
@@ -1751,8 +1892,11 @@ impl FieldsConsumer for InvertedWriteConsumer<'_> {
 
         // Gather our own stats:
         let terms = fields.terms("body")?;
-        debug_assert!(terms.is_some());
-        let terms = npe(terms);
+        java_assert!(terms.is_some());
+        let terms = npe_with(terms, || {
+            "Cannot invoke \"org.apache.lucene.index.Terms.iterator()\" because \"terms\" is null"
+                .to_string()
+        });
 
         let mut term_freqs = self
             .state
@@ -1762,18 +1906,19 @@ impl FieldsConsumer for InvertedWriteConsumer<'_> {
         let mut terms_enum = terms.iterator()?;
         let mut docs: Option<Box<dyn PostingsEnum>> = None;
         while terms_enum.next()?.is_some() {
-            let term = npe(terms_enum.term()?);
+            let term = npe_with(terms_enum.term()?, || {
+                "Cannot invoke \"org.apache.lucene.util.BytesRef.utf8ToString()\" because \"term\" is null".to_string()
+            });
             // TODO: also sometimes ask for payloads/offsets?
             let no_positions = LuceneTestCase::random().next_boolean();
-            let mut d = if no_positions {
-                terms_enum
-                    .postings(docs.take(), FREQS)?
-                    .ok_or_else(LuceneError::null_pointer)?
-            } else {
-                terms_enum
-                    .postings(None, POSITIONS)?
-                    .ok_or_else(LuceneError::null_pointer)?
-            };
+            let mut d = npe_with(
+                if no_positions {
+                    terms_enum.postings(docs.take(), FREQS)?
+                } else {
+                    terms_enum.postings(None, POSITIONS)?
+                },
+                enum_npe("docs", "nextDoc()"),
+            );
             let mut doc_freq = 0;
             let mut total_term_freq: i64 = 0;
             while d.next_doc()? != NO_MORE_DOCS {
@@ -1819,15 +1964,14 @@ impl FieldsConsumer for InvertedWriteConsumer<'_> {
             if terms_enum.seek_exact(&BytesRef::from_char_sequence(&term))? {
                 // TODO: also sometimes ask for payloads/offsets?
                 let no_positions = LuceneTestCase::random().next_boolean();
-                let mut d = if no_positions {
-                    terms_enum
-                        .postings(docs.take(), FREQS)?
-                        .ok_or_else(LuceneError::null_pointer)?
-                } else {
-                    terms_enum
-                        .postings(None, POSITIONS)?
-                        .ok_or_else(LuceneError::null_pointer)?
-                };
+                let mut d = npe_with(
+                    if no_positions {
+                        terms_enum.postings(docs.take(), FREQS)?
+                    } else {
+                        terms_enum.postings(None, POSITIONS)?
+                    },
+                    enum_npe("docs", "nextDoc()"),
+                );
 
                 let mut doc_freq = 0;
                 let mut total_term_freq: i64 = 0;
@@ -1845,8 +1989,10 @@ impl FieldsConsumer for InvertedWriteConsumer<'_> {
 
                 if !is_merge && add_on_second_pass {
                     let tf = term_freqs.get_mut(&term);
-                    debug_assert!(tf.is_some());
-                    let tf = npe(tf);
+                    java_assert!(tf.is_some());
+                    let tf = npe_with(tf, || {
+                        "Cannot read field \"docFreq\" because \"tf\" is null".to_string()
+                    });
                     tf.doc_freq += doc_freq;
                     tf.total_term_freq += total_term_freq;
                     self.state
@@ -1857,7 +2003,9 @@ impl FieldsConsumer for InvertedWriteConsumer<'_> {
                         .fetch_add(total_term_freq, Ordering::SeqCst);
                 }
 
-                let tf = npe(term_freqs.get(&term));
+                let tf = npe_with(term_freqs.get(&term), || {
+                    "Cannot read field \"docFreq\" because the return value of \"java.util.Map.get(Object)\" is null".to_string()
+                });
                 Assert::assert_true(doc_freq <= tf.doc_freq);
                 Assert::assert_true(total_term_freq <= tf.total_term_freq);
             }
@@ -1870,7 +2018,11 @@ impl FieldsConsumer for InvertedWriteConsumer<'_> {
             ));
             let status = terms_enum.seek_ceil(&term)?;
             if status == SeekStatus::NOT_FOUND {
-                Assert::assert_true(term < npe(terms_enum.term()?));
+                // `term.compareTo(null)` reads `other.bytes`.
+                let current = npe_with(terms_enum.term()?, || {
+                    "Cannot read field \"bytes\" because \"other\" is null".to_string()
+                });
+                Assert::assert_true(term < current);
             }
         }
         Ok(())
@@ -2204,5 +2356,53 @@ impl RamObject for EnumConstant {
         JavaObject::Enum {
             shallow_size: aligned_shallow_instance_size(&fields),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use super::*;
+
+    fn message(f: impl FnOnce()) -> String {
+        let t = Throwable::from_panic(catch_unwind(AssertUnwindSafe(f)).expect_err("must fail"));
+        t.message().unwrap_or_default().to_string()
+    }
+
+    fn id(ptr: usize, text: &str) -> EnumId {
+        EnumId {
+            ptr: ptr as *const (),
+            text: text.to_string(),
+        }
+    }
+
+    /// `assertSame(p1, p2)` (no message) has no leading space and prints
+    /// each enum's `toString()`; with a message, `message + " "` leads.
+    #[test]
+    fn assert_same_uses_junit_fail_not_same() {
+        assert_eq!(
+            message(|| assert_same(None, true, id(1, "A@1"), id(0, "null"))),
+            "expected same:<A@1> was not:<null>"
+        );
+        assert_eq!(
+            message(|| assert_same(Some("m"), true, id(1, "A@1"), id(2, "B@2"))),
+            "m expected same:<A@1> was not:<B@2>"
+        );
+        assert_eq!(
+            message(|| assert_same(Some("m"), false, id(1, "A@1"), id(1, "A@1"))),
+            "m expected not same"
+        );
+        assert_same(None, true, id(3, "x"), id(3, "y"));
+    }
+
+    /// `assertNull(termsEnum.next())` prints the term as `BytesRef.toString()`.
+    #[test]
+    fn assert_null_term_prints_bytes_ref() {
+        assert_eq!(
+            message(|| assert_null_term(Some(BytesRef::from_char_sequence("b")))),
+            "expected null, but was:<[62]>"
+        );
+        assert_null_term(None);
     }
 }

@@ -23,7 +23,7 @@ use randomizedtesting::jdk::thread::Thread;
 use rucene::codecs::{
     NormsConsumer, NormsFormat, NormsProducer, SegmentReadState, SegmentWriteState,
 };
-use rucene::error::Result;
+use rucene::error::{LuceneError, Result};
 use rucene::index::FieldInfo;
 use rucene::index::NumericDocValues;
 use rucene::search::NO_MORE_DOCS;
@@ -100,7 +100,12 @@ impl NormsConsumer for AssertingNormsConsumer {
         field: &FieldInfo,
         values_producer: &dyn NormsProducer,
     ) -> Result<()> {
-        let mut values = values_producer.get_norms(field)?.ok_or_else(npe)?;
+        let mut values = values_producer.get_norms(field)?.ok_or_else(|| {
+            LuceneError::null_pointer_with_message(
+                "Cannot invoke \"org.apache.lucene.index.NumericDocValues.nextDoc()\" because \
+                 \"values\" is null",
+            )
+        })?;
         let mut last_doc_id = -1;
         loop {
             let doc_id = values.next_doc()?;
@@ -178,5 +183,65 @@ impl NormsProducer for AssertingNormsProducer {
     fn close(&self) -> Result<()> {
         self.r#in.close()?;
         self.r#in.close() // close again
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::java_exceptions::java_throwable;
+
+    /// A producer whose norms are `null`.
+    #[derive(Debug)]
+    struct NullProducer;
+
+    impl NormsProducer for NullProducer {
+        fn get_norms(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+            Ok(None)
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>> {
+            Ok(Box::new(NullProducer))
+        }
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A consumer the asserting consumer never reaches in this test.
+    #[derive(Debug)]
+    struct Unreached;
+
+    impl NormsConsumer for Unreached {
+        fn add_norms_field(&mut self, _: &FieldInfo, _: &dyn NormsProducer) -> Result<()> {
+            unreachable!()
+        }
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `values.nextDoc()` on `null` norms is the JDK's helpful NPE
+    /// (`AssertingNormsFormat.java:62-66`).
+    #[test]
+    fn null_norms_are_a_helpful_null_pointer_exception() {
+        let mut consumer = AssertingNormsConsumer {
+            r#in: Box::new(Unreached),
+            max_doc: 1,
+        };
+        let e = consumer
+            .add_norms_field(&FieldInfo::new("f", 0), &NullProducer)
+            .unwrap_err();
+        let t = java_throwable(&e);
+        assert_eq!(t.class_name(), "java.lang.NullPointerException");
+        assert_eq!(
+            t.message(),
+            Some(
+                "Cannot invoke \"org.apache.lucene.index.NumericDocValues.nextDoc()\" because \
+                 \"values\" is null"
+            )
+        );
     }
 }

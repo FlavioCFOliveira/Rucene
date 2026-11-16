@@ -31,7 +31,8 @@ use rucene::store::{
 };
 use rucene::util::java_fmt::java_utf8_to_string;
 
-use super::util::{self, parse_int, parse_long, read_line};
+use super::java_decimal_format::DecimalFormat;
+use super::util::{self, parse_int, parse_long, JavaScratch};
 
 /// Extension of compound file.
 pub(crate) const DATA_EXTENSION: &str = "scf";
@@ -64,32 +65,11 @@ impl SimpleTextCompoundFormat {
     }
 }
 
-/// Port of the private `SimpleTextCompoundFormat.stripPrefix`.
-fn strip_prefix(scratch: &[u8], prefix: &[u8]) -> String {
-    java_utf8_to_string(&scratch[prefix.len().min(scratch.len())..])
-}
-
-/// `new DecimalFormat(OFFSETPATTERN, ROOT).parse(s).longValue()`:
-/// `DecimalFormat.parse(String)` reads the longest number at the start of
-/// `s` and throws `ParseException` when there is none.
-fn parse_offset(s: &str) -> Option<i64> {
-    let bytes = s.as_bytes();
-    let (negative, digits) = match bytes.first() {
-        Some(b'-') => (true, &bytes[1..]),
-        _ => (false, bytes),
-    };
-    let count = digits.iter().take_while(|b| b.is_ascii_digit()).count();
-    if count == 0 {
-        return None;
-    }
-    let mut value: i128 = 0;
-    for &d in &digits[..count] {
-        value = value
-            .saturating_mul(10)
-            .saturating_add(i128::from(d - b'0'));
-    }
-    let value = if negative { -value } else { value };
-    Some(value as i64)
+/// Port of the private `SimpleTextCompoundFormat.stripPrefix`: `new
+/// String(scratch.bytes(), prefix.length, scratch.length() -
+/// prefix.length, UTF_8)`.
+fn strip_prefix(scratch: &JavaScratch, prefix: &[u8]) -> Result<String> {
+    scratch.new_string(prefix.len())
 }
 
 impl CompoundFormat for SimpleTextCompoundFormat {
@@ -108,37 +88,49 @@ impl CompoundFormat for SimpleTextCompoundFormat {
         let mut input =
             dir.open_input(&data_file, DEFAULT_IO_CONTEXT.with_hints(&hints).as_ref())?;
 
-        let mut scratch = Vec::new();
+        let mut scratch = JavaScratch::new();
+        let df = DecimalFormat::new(&"0".repeat(OFFSETPATTERN_LEN))?;
 
         // first get to TOC:
         let pos = input.length() - TABLEPOS.len() as i64 - OFFSETPATTERN_LEN as i64 - 1;
         input.seek(pos)?;
-        read_line(input.as_mut(), &mut scratch)?;
+        scratch.read_line(input.as_mut())?;
         debug_assert!(scratch.starts_with(TABLEPOS));
-        let table_pos = parse_offset(&strip_prefix(&scratch, TABLEPOS)).ok_or_else(|| {
-            LuceneError::corrupt_index(
-                format!(
-                    "can't parse CFS trailer, got: {}",
-                    java_utf8_to_string(&scratch)
-                ),
-                input.resource_description(),
-            )
-        })?;
+        // `df.parse(stripPrefix(scratch, TABLEPOS)).longValue()`, its
+        // `ParseException` the cause of the `CorruptIndexException`
+        // (`SimpleTextCompoundFormat.java:84-90`).
+        let table_pos = match df.parse(&strip_prefix(&scratch, TABLEPOS)?) {
+            Ok(number) => number.long_value()?,
+            Err(pe) => {
+                return Err(LuceneError::corrupt_index_with_cause(
+                    format!(
+                        "can't parse CFS trailer, got: {}",
+                        java_utf8_to_string(&scratch)
+                    ),
+                    input.resource_description(),
+                    pe,
+                ))
+            }
+        };
 
         // seek to TOC and read it
         input.seek(table_pos)?;
-        read_line(input.as_mut(), &mut scratch)?;
+        scratch.read_line(input.as_mut())?;
         debug_assert!(scratch.starts_with(TABLE));
-        let num_entries = parse_int(&strip_prefix(&scratch, TABLE))?;
+        let num_entries = parse_int(&strip_prefix(&scratch, TABLE)?)?;
+        // `new String[numEntries]` (`SimpleTextCompoundFormat.java:97`).
+        if num_entries < 0 {
+            return Err(util::negative_array_size(num_entries));
+        }
 
         let mut file_names = Vec::with_capacity(num_entries.max(0) as usize);
         let mut start_offsets = Vec::with_capacity(num_entries.max(0) as usize);
         let mut end_offsets = Vec::with_capacity(num_entries.max(0) as usize);
 
         for i in 0..num_entries as usize {
-            read_line(input.as_mut(), &mut scratch)?;
+            scratch.read_line(input.as_mut())?;
             debug_assert!(scratch.starts_with(TABLENAME));
-            let table_name = strip_prefix(&scratch, TABLENAME);
+            let table_name = strip_prefix(&scratch, TABLENAME)?;
             file_names.push(format!("{}{}", si.name, strip_segment_name(&table_name)));
 
             if i > 0 {
@@ -146,13 +138,13 @@ impl CompoundFormat for SimpleTextCompoundFormat {
                 debug_assert!(file_names[i] > file_names[i - 1]);
             }
 
-            read_line(input.as_mut(), &mut scratch)?;
+            scratch.read_line(input.as_mut())?;
             debug_assert!(scratch.starts_with(TABLESTART));
-            start_offsets.push(parse_long(&strip_prefix(&scratch, TABLESTART))?);
+            start_offsets.push(parse_long(&strip_prefix(&scratch, TABLESTART)?)?);
 
-            read_line(input.as_mut(), &mut scratch)?;
+            scratch.read_line(input.as_mut())?;
             debug_assert!(scratch.starts_with(TABLEEND));
-            end_offsets.push(parse_long(&strip_prefix(&scratch, TABLEEND))?);
+            end_offsets.push(parse_long(&strip_prefix(&scratch, TABLEEND)?)?);
         }
 
         Ok(Box::new(SimpleTextCompoundDirectory {
@@ -345,5 +337,68 @@ impl Directory for SimpleTextCompoundDirectory {
 
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
         Ok(HashSet::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, segment_info, unchecked, write_file};
+    use rucene::util::extra::ParseException;
+
+    /// Writes `_0.scf` holding a 10-byte filler line, a table of contents of
+    /// `size` entries at offset 10, and the trailer `offset` (19 chars).
+    fn compound(dir: &dyn Directory, size: &str, offset: &str) {
+        let toc = format!("table of contents, size: {size}");
+        let trailer = format!("table of contents begins at offset: {offset}");
+        write_file(dir, "_0.scf", &["xxxxxxxxx", &toc, &trailer], false);
+    }
+
+    /// Regression (rmp #526): the trailer is parsed by `DecimalFormat`, which
+    /// reads `…1E1` as 10 (the port read 1), and `new String[numEntries]`
+    /// rejects a negative count with `NegativeArraySizeException`
+    /// (`SimpleTextCompoundFormat.java:84-99`).
+    #[test]
+    fn trailer_exponent_and_negative_entry_count_follow_java() {
+        let dir = directory();
+        compound(dir.as_ref(), "-1", "00000000000000001E1");
+        let si = segment_info(&dir, "_0", 1);
+        let error = SimpleTextCompoundFormat::new()
+            .get_compound_reader(dir.as_ref(), &si)
+            .unwrap_err();
+        assert_eq!(
+            unchecked(&error),
+            ("java.lang.NegativeArraySizeException", "-1".to_string())
+        );
+    }
+
+    /// Regression (rmp #526): an unparseable trailer is a
+    /// `CorruptIndexException` whose cause is the `ParseException`
+    /// (`SimpleTextCompoundFormat.java:87-90`).
+    #[test]
+    fn unparseable_trailer_keeps_the_parse_exception_as_cause() {
+        let dir = directory();
+        compound(dir.as_ref(), "0", "abcdefghijklmnopqrs");
+        let si = segment_info(&dir, "_0", 1);
+        let error = SimpleTextCompoundFormat::new()
+            .get_compound_reader(dir.as_ref(), &si)
+            .unwrap_err();
+        let LuceneErrorKind::CorruptIndex {
+            original_message,
+            cause,
+            ..
+        } = &error.kind
+        else {
+            panic!("{error:?}");
+        };
+        assert_eq!(
+            original_message,
+            "can't parse CFS trailer, got: table of contents begins at offset: abcdefghijklmnopqrs"
+        );
+        let cause = cause.as_deref().expect("the ParseException cause");
+        assert_eq!(
+            ParseException::of(cause).map(ParseException::get_message),
+            Some("Unparseable number: \"abcdefghijklmnopqrs\"")
+        );
     }
 }

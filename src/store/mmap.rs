@@ -23,7 +23,7 @@ use std::fs;
 use std::io;
 use std::sync::{Arc, LazyLock};
 
-use memmap2::Mmap;
+use memmap2::{Mmap, MmapMut};
 
 use super::memory_segment_index_input_provider::{MemorySegmentIndexInputProvider, SharedArenas};
 use super::{
@@ -87,6 +87,50 @@ pub(crate) fn map_read_only(file: &fs::File, offset: u64, len: usize) -> io::Res
             .offset(offset)
             .len(len)
             .map(file)
+    }
+}
+
+/// Maps `len` bytes of `file` from `offset` for reading and writing, the
+/// changes reaching the file: the mapping of `FileChannel.map` in mode
+/// `READ_WRITE` (`MAP_SHARED` with `PROT_READ | PROT_WRITE`).
+///
+/// The same trust model as [`map_read_only`] applies; see its "Safety of the
+/// call site" section. `file` must be open for reading and writing.
+///
+/// # Errors
+///
+/// Returns the underlying `mmap` failure, including the refusal of `memmap2` to
+/// create a zero-length mapping.
+pub(crate) fn map_read_write(file: &fs::File, offset: u64, len: usize) -> io::Result<MmapMut> {
+    // SAFETY: as in `map_read_only`: the caller guarantees the mapped file is
+    // not concurrently modified behind the mapping's back.
+    unsafe {
+        memmap2::MmapOptions::new()
+            .offset(offset)
+            .len(len)
+            .map_mut(file)
+    }
+}
+
+/// Maps `len` bytes of `file` from `offset` copy-on-write: writes reach only
+/// the mapping, never the file. The mapping of `FileChannel.map` in mode
+/// `PRIVATE` (`MAP_PRIVATE` with `PROT_READ | PROT_WRITE`).
+///
+/// The same trust model as [`map_read_only`] applies; see its "Safety of the
+/// call site" section.
+///
+/// # Errors
+///
+/// Returns the underlying `mmap` failure, including the refusal of `memmap2` to
+/// create a zero-length mapping.
+pub(crate) fn map_private(file: &fs::File, offset: u64, len: usize) -> io::Result<MmapMut> {
+    // SAFETY: as in `map_read_only`: the caller guarantees the mapped file is
+    // not concurrently modified behind the mapping's back.
+    unsafe {
+        memmap2::MmapOptions::new()
+            .offset(offset)
+            .len(len)
+            .map_copy(file)
     }
 }
 

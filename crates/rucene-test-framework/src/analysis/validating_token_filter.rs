@@ -31,6 +31,21 @@ use super::token::Token;
 
 const MAX_DEBUG_TOKENS: usize = 20;
 
+/// Java's `System.err` as a [`Write`]: each write goes to the emulated
+/// `System.err` (`randomizedtesting::jdk::system::err_print`).
+struct SystemErr;
+
+impl Write for SystemErr {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        randomizedtesting::jdk::system::err_print(&String::from_utf8_lossy(buf));
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// The logic of [`ValidatingTokenFilter`].
 #[derive(Debug)]
 pub struct ValidatingTokenFilterLogic {
@@ -70,6 +85,14 @@ impl ValidatingTokenFilterLogic {
     }
 
     /// `dump()`.
+    /// `dumpValidatingTokenFilters(this, System.err)` from inside the
+    /// filter: the dumps of the validating filters below it (its input
+    /// chain), then its own, each on a line of the emulated `System.err`.
+    fn dump_chain(&self, input: &dyn TokenStream) {
+        ValidatingTokenFilter::dump_validating_token_filters(input, &mut SystemErr);
+        randomizedtesting::jdk::system::err_println(&self.dump());
+    }
+
     pub fn dump(&self) -> String {
         let mut buf = String::new();
         buf.push_str(&self.name);
@@ -118,9 +141,9 @@ impl TokenFilterLogic for ValidatingTokenFilterLogic {
         self.add_token(start_offset, end_offset, pos_inc);
 
         if self.pos_inc_att.is_some() {
-            self.pos += pos_inc;
+            self.pos = self.pos.wrapping_add(pos_inc);
             if self.pos == -1 {
-                eprintln!("{}", self.dump());
+                self.dump_chain(input);
                 return Err(LuceneError::illegal_state(format!(
                     "{}: first posInc must be > 0",
                     self.name
@@ -130,7 +153,7 @@ impl TokenFilterLogic for ValidatingTokenFilterLogic {
 
         if let Some(att) = &self.offset_att {
             if start_offset < self.last_start_offset {
-                eprintln!("{}", self.dump());
+                self.dump_chain(input);
                 return Err(LuceneError::illegal_state(format!(
                     "{}: offsets must not go backwards startOffset={} is < lastStartOffset={}",
                     self.name, start_offset, self.last_start_offset
@@ -149,7 +172,7 @@ impl TokenFilterLogic for ValidatingTokenFilterLogic {
                     // We've seen a token leaving from this position
                     // before; verify the startOffset is the same:
                     if old_start_offset != start_offset {
-                        eprintln!("{}", self.dump());
+                        self.dump_chain(input);
                         return Err(LuceneError::illegal_state(format!(
                             "{}: inconsistent startOffset at pos={}: {} vs {}; token={}",
                             self.name,
@@ -162,7 +185,7 @@ impl TokenFilterLogic for ValidatingTokenFilterLogic {
                 }
             }
 
-            let end_pos = self.pos + pos_len;
+            let end_pos = self.pos.wrapping_add(pos_len);
 
             match self.pos_to_end_offset.get(&end_pos) {
                 None => {
@@ -173,7 +196,7 @@ impl TokenFilterLogic for ValidatingTokenFilterLogic {
                     // We've seen a token arriving to this position
                     // before; verify the endOffset is the same:
                     if old_end_offset != end_offset {
-                        eprintln!("{}", self.dump());
+                        self.dump_chain(input);
                         return Err(LuceneError::illegal_state(format!(
                             "{}: inconsistent endOffset at pos={}: {} vs {}; token={}",
                             self.name,
@@ -290,5 +313,73 @@ impl TokenStream for ValidatingTokenFilter {
 
     fn as_any(&self) -> Option<&dyn Any> {
         Some(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use rucene::analysis::{TokenFilter, TokenFilterLogic, TokenStream};
+    use rucene::error::Result;
+    use rucene::util::attribute::AttributeSource;
+
+    use super::ValidatingTokenFilter;
+    use crate::analysis::attributes::{offset_id, Att};
+    use crate::analysis::{CannedTokenStream, Token};
+
+    /// Rewrites token `i`'s offsets to `[10 - 5i, 11 - 5i]`: backwards
+    /// offsets that only a validating filter above it sees.
+    #[derive(Debug)]
+    struct Backwards(Att, i32);
+
+    impl TokenFilterLogic for Backwards {
+        fn increment_token(
+            &mut self,
+            _source: &mut AttributeSource,
+            input: &mut dyn TokenStream,
+        ) -> Result<bool> {
+            if !input.increment_token()? {
+                return Ok(false);
+            }
+            let start = 10 - 5 * self.1;
+            self.0.offset_mut().set_offset(start, start + 1);
+            self.1 += 1;
+            Ok(true)
+        }
+    }
+
+    /// On a failure the filter calls `dumpValidatingTokenFilters(this,
+    /// System.err)` (`ValidatingTokenFilter.java:98-100`): the dumps of the
+    /// validating filters below it first, then its own, on `System.err`. The
+    /// port printed only its own dump, through Rust's stderr.
+    #[test]
+    fn a_failure_dumps_the_whole_validating_chain_to_system_err() {
+        let captured = Arc::new(Mutex::new(String::new()));
+        let sink = Arc::clone(&captured);
+        let previous = randomizedtesting::jdk::system::set_err(Some(Arc::new(move |s: &str| {
+            sink.lock().unwrap().push_str(s)
+        })));
+        let canned = CannedTokenStream::new(vec![
+            Token::with_offsets("a", 0, 1),
+            Token::with_offsets("b", 2, 3),
+        ]);
+        let inner = ValidatingTokenFilter::new(Box::new(canned), "inner");
+        let offsets = Att::get(inner.attribute_source(), offset_id()).unwrap();
+        let backwards = TokenFilter::new(Box::new(inner), Backwards(offsets, 0));
+        let mut outer = ValidatingTokenFilter::new(Box::new(backwards), "outer");
+        outer.reset().unwrap();
+        assert!(outer.increment_token().unwrap());
+        let e = outer.increment_token().unwrap_err();
+        randomizedtesting::jdk::system::set_err(previous);
+        assert_eq!(
+            super::super::base_token_stream_test_case::java_message(&e).as_deref(),
+            Some("outer: offsets must not go backwards startOffset=5 is < lastStartOffset=10")
+        );
+        let text = captured.lock().unwrap().clone();
+        assert!(
+            text.contains("inner: a<[0-1] +1> b<[2-3] +1> \nouter: a<[10-11] +1> b<[5-6] +1> \n"),
+            "{text:?}"
+        );
     }
 }

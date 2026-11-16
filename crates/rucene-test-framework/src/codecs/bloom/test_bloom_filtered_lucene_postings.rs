@@ -54,14 +54,14 @@ impl BloomFilterFactory for LowMemoryBloomFactory {
     fn get_set_for_field(
         &self,
         _state: &SegmentWriteState<'_>,
-        _info: &FieldInfo,
+        _info: Option<&FieldInfo>,
     ) -> Result<Option<FuzzySet>> {
         Ok(Some(FuzzySet::create_set_based_on_max_memory(1024)))
     }
 
     /// For test purposes always maintain the BloomFilter - even past the
     /// point of usefulness when all bits are set.
-    fn is_saturated(&self, _bloom_filter: &FuzzySet, _field_info: &FieldInfo) -> bool {
+    fn is_saturated(&self, _bloom_filter: &FuzzySet, _field_info: Option<&FieldInfo>) -> bool {
         false
     }
 }
