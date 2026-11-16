@@ -1,13 +1,18 @@
 //! `anuncios`: one document per Diário da República announcement
 //! (`IDAnuncio`), from the yearly `anuncios<year>.json` files (272,203 rows,
-//! 268,733 distinct ids: `update` keeps the last row of each, #531).
+//! 268,733 distinct ids, #531). The source repeats a notice once per
+//! contracting entity (joint procurement); the ingestion script merges the
+//! rows that share an `IDAnuncio` into one record whose multi-valued
+//! `nifEntidade` and `designacaoEntidade` keep every contracting entity, and
+//! keeps the newest year's record of an id. As in every index, `update`
+//! replaces the document of a key.
 //!
 //! | Source | Field(s) |
 //! | --- | --- |
 //! | `IDAnuncio`, `nAnuncio`, `IdIncm`, `numDR` | same names, exact (`IdIncm` `-1` = absent) |
 //! | `dataPublicacao`, `DataLimitePropostas` | date |
-//! | `nifEntidade` | exact (foreign key to [`adjudicantes`](super::adjudicantes)) |
-//! | `designacaoEntidade` | name |
+//! | `nifEntidade[]` | exact, multi-valued (foreign key to [`adjudicantes`](super::adjudicantes)) |
+//! | `designacaoEntidade[]` | name, multi-valued |
 //! | `descricaoAnuncio` | text |
 //! | `url`, `PecasProcedimento` | stored only |
 //! | `serie`, `tipoActo`, `modeloAnuncio` | keyword |
@@ -40,8 +45,8 @@ pub const SCHEMA: EntitySchema = EntitySchema {
         F::new("nAnuncio", Exact),
         F::new("IdIncm", Exact).absent(INCM_ABSENT),
         F::new("dataPublicacao", Date),
-        F::new("nifEntidade", Exact).absent(NIF_ABSENT),
-        F::new("designacaoEntidade", Name),
+        F::new("nifEntidade", Exact).multi().absent(NIF_ABSENT),
+        F::new("designacaoEntidade", Name).multi(),
         F::new("descricaoAnuncio", Text),
         F::new("url", Stored),
         F::new("numDR", Exact),

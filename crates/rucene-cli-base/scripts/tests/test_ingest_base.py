@@ -202,8 +202,6 @@ SPEC: dict[str, dict[str, str]] = {
             "nAnuncio",
             "IdIncm",
             "dataPublicacao",
-            "nifEntidade",
-            "designacaoEntidade",
             "descricaoAnuncio",
             "url",
             "numDR",
@@ -223,6 +221,8 @@ SPEC: dict[str, dict[str, str]] = {
     )
     | dict.fromkeys(
         [
+            "nifEntidade",
+            "designacaoEntidade",
             "tiposContrato",
             "cpv",
             "cpvDescricao",
@@ -527,7 +527,12 @@ class NoticeTest(unittest.TestCase):
         )
         self.assertEqual(report.events["anuncios: duplicate IDAnuncio rows merged"], 1)
         out = ib.notice_to_cli(first)
-        self.assertEqual(out["nifEntidade"], "501356126")
+        # Bulk format v1.2: every contracting entity of the merged notice.
+        self.assertEqual(out["nifEntidade"], ["501356126", "600082490"])
+        self.assertEqual(
+            out["designacaoEntidade"], [e["nome"] for e in first["entidades"]]
+        )
+        self.assertEqual(len(out["designacaoEntidade"]), 2)
         self.assertIsNone(merged[1]["PrecoBase"])  # "Inexistente"
 
     def test_cpv_and_previous(self) -> None:
@@ -703,9 +708,14 @@ FAKE_CLI = textwrap.dedent(
     """\
     #!/usr/bin/env python3
     import json, pathlib, sys
-    state = pathlib.Path(sys.argv[0]).with_suffix(".state")
-    log = json.loads(state.read_text()) if state.exists() else {"calls": [], "n": {}}
+    import time
     entity, cmd, root = sys.argv[1], sys.argv[2], sys.argv[3]
+    # One state file per index: indices load concurrently.
+    state = pathlib.Path(sys.argv[0]).with_suffix(f".{entity}.state")
+    log = json.loads(state.read_text()) if state.exists() else {"calls": [], "n": {}}
+    log.setdefault("t", []).append(time.monotonic())
+    if cmd == "add":
+        time.sleep(0.2)
     log["calls"].append(sys.argv[1:])
     if cmd == "create":
         log["n"][entity] = 0
@@ -741,9 +751,12 @@ class LoadTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def calls(self) -> list[list[str]]:
-        state = self.binary.with_suffix(".state")
-        return json.loads(state.read_text())["calls"]
+    def log(self, entity: str) -> dict[str, Any]:
+        state = self.binary.with_suffix(f".{entity}.state")
+        return json.loads(state.read_text())
+
+    def calls(self, entity: str = "locais") -> list[list[str]]:
+        return self.log(entity)["calls"]
 
     def test_create_then_add_each_part(self) -> None:
         ib.load(self.binary, self.root, self.outs, ("locais",))
@@ -760,6 +773,67 @@ class LoadTest(unittest.TestCase):
         self.assertEqual(calls[1][4], str(self.outs.parts["locais"][0]))
         self.assertEqual(calls[2][4], str(self.outs.parts["locais"][1]))
         self.assertTrue(all(c[2] == str(self.root) for c in calls))
+
+    def test_indices_load_side_by_side(self) -> None:
+        self.outs.counts["cpv"] = 3  # the fake CLI counts one extra cpv document
+        out = io.StringIO()
+        old, sys.stdout = sys.stdout, out
+        try:
+            counted = ib.load(self.binary, self.root, self.outs, ("cpv", "locais"))
+        finally:
+            sys.stdout = old
+        self.assertEqual(counted, {"cpv": "3", "locais": "3"})
+        # Each index keeps create, its parts in order, then count.
+        for entity in ("cpv", "locais"):
+            calls = self.calls(entity)
+            self.assertEqual(
+                [c[1] for c in calls],
+                ["create", *(["add"] * len(self.outs.parts[entity])), "count"],
+            )
+            self.assertEqual(
+                [c[4] for c in calls if c[1] == "add"],
+                [str(p) for p in self.outs.parts[entity]],
+            )
+        # By default both run at once: each started before the other finished.
+        cpv, locais = self.log("cpv")["t"], self.log("locais")["t"]
+        self.assertLess(max(cpv[0], locais[0]), min(cpv[-1], locais[-1]))
+        self.assertEqual(out.getvalue().count("loaded"), 2)
+
+    def test_jobs_one_loads_one_index_at_a_time(self) -> None:
+        self.outs.counts["cpv"] = 3
+        with open(os.devnull, "w") as null:
+            old, sys.stdout = sys.stdout, null
+            try:
+                ib.load(self.binary, self.root, self.outs, ("cpv", "locais"), 1)
+            finally:
+                sys.stdout = old
+        cpv, locais = self.log("cpv")["t"], self.log("locais")["t"]
+        self.assertTrue(cpv[-1] < locais[0] or locais[-1] < cpv[0])
+
+    def test_load_order_is_largest_first(self) -> None:
+        counts = {"cpv": 7, "contratos": 100, "nuts": 7, "locais": 1}
+        self.assertEqual(
+            ib.load_order(("locais", "nuts", "cpv", "contratos"), counts),
+            ["contratos", "nuts", "cpv", "locais"],
+        )
+
+    def test_first_failure_is_raised_after_running_loads(self) -> None:
+        # cpv's count check fails (fake +1); locais still completes.
+        with (
+            self.assertRaises(ib.IngestError) as ctx,
+            open(os.devnull, "w") as null,
+        ):
+            old, sys.stdout = sys.stdout, null
+            try:
+                ib.load(self.binary, self.root, self.outs, ("cpv", "locais"))
+            finally:
+                sys.stdout = old
+        self.assertIn("cpv", str(ctx.exception))
+        self.assertEqual(self.calls("locais")[-1][1], "count")
+
+    def test_jobs_must_be_positive(self) -> None:
+        with self.assertRaises(ib.IngestError):
+            ib.load(self.binary, self.root, self.outs, ("locais",), 0)
 
     def test_count_mismatch_fails(self) -> None:
         with self.assertRaises(ib.IngestError):
@@ -787,11 +861,14 @@ class ArgsTest(unittest.TestCase):
         self.assertTrue(ib.parse_args(["fetch", "--force"]).force)
         self.assertTrue(ib.parse_args(["status", "--verify"]).verify)
         self.assertEqual(ib.parse_args(["fetch"]).only, ib.ENTITIES)
+        self.assertEqual(ib.parse_args(["ingest", "--jobs", "3"]).jobs, 3)
+        self.assertIsNone(ib.parse_args(["ingest"]).jobs)
 
     def test_validation(self) -> None:
         self.quiet_exit([])
         self.quiet_exit(["ingest", "--only", "contracts"])
         self.quiet_exit(["ingest", "--limit", "0"])
+        self.quiet_exit(["ingest", "--jobs", "0"])
         self.quiet_exit(["fetch", "--limit", "5"])
         self.quiet_exit(["status", "--force"])
 

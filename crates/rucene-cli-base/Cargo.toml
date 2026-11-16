@@ -16,3 +16,10 @@ rucene-analysis-common = { path = "../rucene-analysis-common" }
 [[bin]]
 name = "rucene-base"
 path = "src/main.rs"
+
+[dev-dependencies]
+# The pt-PT analysis portability test reuses the Java-oracle harness of
+# `rucene-analysis-common` (`tests/analysis_oracle/mod.rs`), which draws its
+# corpus with these crates.
+randomizedtesting = { path = "../randomizedtesting" }
+rucene-test-framework = { path = "../rucene-test-framework" }

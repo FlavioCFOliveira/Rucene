@@ -6,6 +6,7 @@ Usage::
     python3 -I ingest_base.py fetch  [--cache DIR] [--only ENTITIES] [--force]
     python3 -I ingest_base.py ingest [--cache DIR] [--only ENTITIES] [--root DIR]
                                      [--binary PATH] [--offline DIR] [--limit N]
+                                     [--jobs N]
     python3 -I ingest_base.py status [--cache DIR] [--verify]
 
 No dataset file is kept in the repository: ``fetch`` downloads the files into
@@ -41,8 +42,11 @@ Stages (``ingest`` runs all of them, in this order):
    format (flat JSON Lines, see the crate documentation) in
    ``<cache>/cli/<entity>/part-NNNN.jsonl`` and run, for every index,
    ``rucene-base <entity> create <root>`` followed by one
-   ``rucene-base <entity> add <root> --file PART`` per part. Every index lives
-   in its own subdirectory ``<root>/<entity>``.
+   ``rucene-base <entity> add <root> --file PART`` per part, then ``count``.
+   Every index lives in its own subdirectory ``<root>/<entity>`` with its own
+   writer, so every index loads side by side with the others (one
+   ``rucene-base`` process each, started largest first; ``--jobs N`` caps how
+   many run at once); each index keeps the order of its parts.
 
 ``ingest`` fails (exit status 1) on any download, parse or CLI error, and when
 a full run yields fewer than 2,000,000 unique contracts. ``--limit N`` reads at
@@ -58,6 +62,7 @@ Only the Python standard library is used.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hashlib
 import html
 import io
@@ -1157,11 +1162,10 @@ def notice_to_cli(n: dict[str, Any]) -> dict[str, Any]:
             "sistemaAquisicaoDinamico",
         ]
     }
-    # The bulk format v1 has single-valued nifEntidade/designacaoEntidade: the
-    # first contracting entity of a merged notice is sent.
-    first = n["entidades"][0] if n["entidades"] else {"nif": None, "nome": None}
-    out["nifEntidade"] = first["nif"]
-    out["designacaoEntidade"] = first["nome"]
+    # Bulk format v1.2: a merged joint-procurement notice sends every
+    # contracting entity (distinct, first-seen order).
+    out["nifEntidade"] = distinct(e["nif"] for e in n["entidades"])
+    out["designacaoEntidade"] = distinct(e["nome"] for e in n["entidades"])
     lots = n["Lotes"]
     out["cpv"] = distinct([e["cpv"] for e in n["CPVs"]] + [e["cpv"] for e in lots])
     out["cpvDescricao"] = distinct(
@@ -2238,33 +2242,78 @@ def run_cli(binary: Path, args: list[str]) -> str:
     return proc.stdout
 
 
+def load_order(wanted: tuple[str, ...], counts: dict[str, int]) -> list[str]:
+    """The order indices start loading in: most documents first, ties in ``wanted`` order."""
+    return sorted(wanted, key=lambda e: (-counts.get(e, 0), wanted.index(e)))
+
+
+def load_one(binary: Path, root: Path, outs: Outputs, entity: str) -> str:
+    """Create one index under ``root``, add its bulk files in order, check ``count``.
+
+    Prints the index's own report line; returns the ``count`` output.
+    """
+    if entity not in outs.parts:
+        raise IngestError(f"{entity}: no bulk files were produced")
+    started = time.monotonic()
+    run_cli(binary, [entity, "create", str(root)])
+    for part in outs.parts[entity]:
+        run_cli(binary, [entity, "add", str(root), "--file", str(part)])
+    counted = run_cli(binary, [entity, "count", str(root)]).strip()
+    print(
+        f"  {entity}: loaded {outs.counts[entity]:,} documents in "
+        f"{time.monotonic() - started:.1f} s; count: {counted}",
+        flush=True,
+    )
+    number = re.search(r"\d+", counted.replace(",", ""))
+    if number and int(number.group()) != outs.counts[entity]:
+        raise IngestError(
+            f"{entity}: index count {number.group()} != {outs.counts[entity]} documents written"
+        )
+    return counted
+
+
 def load(
-    binary: Path, root: Path, outs: Outputs, wanted: tuple[str, ...]
+    binary: Path,
+    root: Path,
+    outs: Outputs,
+    wanted: tuple[str, ...],
+    jobs: int | None = None,
 ) -> dict[str, str]:
-    """Create every wanted index under ``root`` and add its bulk files; return ``count`` output."""
+    """Create every wanted index under ``root`` and add its bulk files; return ``count`` output.
+
+    The indices are independent (``<root>/<entity>``, one writer each), so
+    they load side by side: up to ``jobs`` at once (default: all of them, one
+    ``rucene-base`` process per index), started largest first;
+    each index still runs ``create``, its parts in order, then ``count``. On
+    the first failure no further index is started, the running ones finish,
+    and the first error is raised.
+    """
     if not binary.is_file():
         raise IngestError(
             f"binary not found: {binary} (build it with: cargo build --release -p rucene-cli-base)"
         )
+    if jobs is None:
+        jobs = max(1, len(wanted))
+    if jobs < 1:
+        raise IngestError(f"jobs must be >= 1, got {jobs}")
     root.mkdir(parents=True, exist_ok=True)
+    order = load_order(wanted, outs.counts)
     counted: dict[str, str] = {}
-    for entity in wanted:
-        if entity not in outs.parts:
-            raise IngestError(f"{entity}: no bulk files were produced")
-        started = time.monotonic()
-        run_cli(binary, [entity, "create", str(root)])
-        for part in outs.parts[entity]:
-            run_cli(binary, [entity, "add", str(root), "--file", str(part)])
-        counted[entity] = run_cli(binary, [entity, "count", str(root)]).strip()
-        print(
-            f"  {entity}: loaded {outs.counts[entity]:,} documents in {time.monotonic() - started:.1f} s; count: {counted[entity]}"
-        )
-        number = re.search(r"\d+", counted[entity].replace(",", ""))
-        if number and int(number.group()) != outs.counts[entity]:
-            raise IngestError(
-                f"{entity}: index count {number.group()} != {outs.counts[entity]} documents written"
-            )
-    return counted
+    errors: list[BaseException] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = {pool.submit(load_one, binary, root, outs, e): e for e in order}
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                counted[futures[future]] = future.result()
+            except concurrent.futures.CancelledError:
+                continue
+            except Exception as exc:  # noqa: BLE001 - re-raised below
+                errors.append(exc)
+                for other in futures:
+                    other.cancel()
+    if errors:
+        raise errors[0]
+    return {e: counted[e] for e in wanted}
 
 
 # --------------------------------------------------------------------------
@@ -2340,6 +2389,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="read at most N records per source file (sample run: no minimum "
         "count, yearly files may be missing with --offline)",
     )
+    i.add_argument(
+        "--jobs",
+        type=int,
+        help="cap on the indices loaded at once, largest first (default: every "
+        "selected index at once, one rucene-base process each)",
+    )
     s_ = sub.add_parser(
         "status", parents=[common], help="show the cached files (no network)"
     )
@@ -2347,6 +2402,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = ap.parse_args(argv)
     if hasattr(args, "only"):
         args.only = _only(ap, args.only)
+    if getattr(args, "jobs", None) is not None and args.jobs < 1:
+        ap.error("--jobs must be >= 1")
     if getattr(args, "limit", None) is not None and args.limit < 1:
         ap.error("--limit must be >= 1")
     if getattr(args, "offline", None) is not None and not args.offline.is_dir():
@@ -2398,8 +2455,12 @@ def cmd_ingest(args: argparse.Namespace) -> int:
                 f"contratos: {outs.counts['contratos']:,} unique contracts "
                 f"< {MIN_CONTRACTS:,}"
             )
-        print("stage 4: load")
-        load(args.binary, args.root, outs, args.only)
+        print(f"stages 1-3 done in {time.monotonic() - started:.0f} s")
+        jobs = args.jobs if args.jobs is not None else len(args.only)
+        print(f"stage 4: load ({jobs} index(es) at once)")
+        loading = time.monotonic()
+        load(args.binary, args.root, outs, args.only, jobs)
+        print(f"stage 4 done in {time.monotonic() - loading:.0f} s")
     finally:
         _print_report(report)
     print("documents per index:")

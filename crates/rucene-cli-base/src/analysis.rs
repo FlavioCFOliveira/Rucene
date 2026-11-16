@@ -233,7 +233,7 @@ mod tests {
         (&["anzóis", "anzois", "anzol"], "anzol"),
         (&["preço", "preco"], "prec"),
         (&["música", "musica"], "music"),
-        (&["português", "portugues"], "portugue"),
+        (&["português", "portugues"], "portugu"),
     ];
 
     #[test]

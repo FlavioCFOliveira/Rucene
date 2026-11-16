@@ -446,20 +446,93 @@ fn announcements_parse_string_prices_and_sort_by_date() {
         ),
         expected
     );
-    // Foreign key to the contracting entity.
-    let nif = rows[0].one("nifEntidade");
-    let expected: BTreeSet<String> = rows
+    // Foreign key to the contracting entities (multi-valued): every NIF of
+    // every notice, including each entity of a merged joint-procurement
+    // notice, finds exactly the notices that list it.
+    let nifs: BTreeSet<String> = rows
         .iter()
-        .filter(|row| row.one("nifEntidade") == nif)
-        .map(|row| row.one("IDAnuncio"))
+        .flat_map(|row| row.strings("nifEntidade"))
         .collect();
-    assert_eq!(
-        keys(
-            "anuncios",
-            &root,
-            &["--term", &format!("nifEntidade={nif}")]
-        ),
-        expected
+    for nif in &nifs {
+        let expected: BTreeSet<String> = rows
+            .iter()
+            .filter(|row| row.strings("nifEntidade").contains(nif))
+            .map(|row| row.one("IDAnuncio"))
+            .collect();
+        assert_eq!(
+            keys(
+                "anuncios",
+                &root,
+                &["--term", &format!("nifEntidade={nif}")]
+            ),
+            expected,
+            "nifEntidade={nif}"
+        );
+    }
+}
+
+#[test]
+fn merged_announcements_keep_every_contracting_entity() {
+    let rows = fixture_rows("anuncios");
+    let joint = rows
+        .iter()
+        .find(|row| row.strings("nifEntidade").len() > 1)
+        .expect("the fixture holds a merged joint-procurement notice");
+    let id = joint.one("IDAnuncio");
+    let nifs = joint.strings("nifEntidade");
+    let names = joint.strings("designacaoEntidade");
+    assert!(names.len() > 1, "{names:?}");
+    let root = loaded_root("e-anuncios-joint", "anuncios");
+    let only = BTreeSet::from([id.clone()]);
+    for nif in &nifs {
+        assert_eq!(
+            keys(
+                "anuncios",
+                &root,
+                &["--term", &format!("nifEntidade={nif}")]
+            ),
+            only,
+            "{nif}"
+        );
+    }
+    // Every entity's exact name (`--term` on a name field matches its exact
+    // copy), and a later entity's words typed upper-case and unaccented.
+    for name in &names {
+        assert!(
+            keys(
+                "anuncios",
+                &root,
+                &["--term", &format!("designacaoEntidade={name}")]
+            )
+            .contains(&id),
+            "{name}"
+        );
+    }
+    assert!(keys(
+        "anuncios",
+        &root,
+        &[
+            "--text-in",
+            "designacaoEntidade=SOCIEDADE TURISMO MUNICIPIO"
+        ]
+    )
+    .contains(&id));
+    // get prints both lists in order (round trip).
+    let output = run(&["anuncios", "get", path_str(&root), "--key", &id]);
+    let quoted = |values: &[String]| {
+        values
+            .iter()
+            .map(|value| format!("\"{value}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    assert!(
+        output.contains(&format!("\"nifEntidade\": [{}]", quoted(&nifs))),
+        "{output}"
+    );
+    assert!(
+        output.contains(&format!("\"designacaoEntidade\": [{}]", quoted(&names))),
+        "{output}"
     );
 }
 

@@ -14,6 +14,99 @@ through the public `rucene` API (`IndexWriter`, `DirectoryReader`,
 `QueryBuilder`), and the analysis chain is built from the ported Lucene
 components of `rucene-analysis-common`.
 
+## Dataset and licence
+
+The data is the Portal BASE open data of IMPIC (Instituto dos Mercados
+Públicos, do Imobiliário e da Construção), published weekly on
+[dados.gov.pt](https://dados.gov.pt) in four datasets: contracts
+(`contratos<year>`), contract modifications (`modcontrats<year>`),
+Diário da República announcements (`anuncios<year>`) of 2012 to 2026, and the
+entity register (`entidades.json`). Portal BASE data is in the **public
+domain**.
+
+**No dataset file is committed.** The ingestion script downloads the files
+when they are needed into a git-ignored cache, by default
+`crates/rucene-cli-base/data/base/` (`raw/` downloads, `clean/` and `cli/`
+intermediate JSON Lines, and the default index root `index/`). A full run
+needs about **14 GB** of cache (1.4 GB downloads, 7.1 GB clean and 4.8 GB bulk
+JSON Lines) plus the indices (see [Ingestion](#ingestion)). Only the small
+test fixtures under `tests/fixtures/` and `scripts/tests/fixtures/` are in the
+repository.
+
+**Personal data.** Suppliers, competitors and invited entities that are
+individuals appear, with their names and NIFs, exactly as published in the
+official public-domain data; the indices reproduce them as published. The
+test fixtures exclude them (see [Test fixtures](#test-fixtures)).
+
+## Build
+
+```text
+cargo build --release -p rucene-cli-base
+```
+
+The binary is `target/release/rucene-base`. The ingestion script needs only
+Python 3 (standard library).
+
+## Ingestion
+
+`scripts/ingest_base.py` downloads, cleans and loads the whole dataset:
+
+```text
+python3 -I scripts/ingest_base.py fetch  [--cache DIR] [--only ENTITIES] [--force]
+python3 -I scripts/ingest_base.py ingest [--cache DIR] [--only ENTITIES] [--root DIR]
+                                         [--binary PATH] [--offline DIR] [--limit N]
+                                         [--jobs N]
+python3 -I scripts/ingest_base.py status [--cache DIR] [--verify]
+```
+
+* **`fetch`** asks the dados.gov.pt API for the current resources (their URLs
+  change every week) and downloads into `<cache>/raw` only the files that are
+  missing or stale: a file is kept when its size and SHA-1 match the API.
+  Downloads resume from `.part` files and are retried; `--force` downloads
+  everything again. `<cache>/raw/manifest.json` records each file's URL,
+  size, SHA-1, publication date and download time. A weekly refresh is an
+  explicit `fetch`.
+* **`ingest`** uses the cache without network when it holds every needed file
+  (otherwise it runs `fetch` first), cleans and deduplicates the records
+  (contracts by `idcontrato`, newest year first; announcement rows repeated
+  per contracting entity are merged by `IDAnuncio`), derives the entity
+  indices with their aggregates, writes the bulk JSON Lines and loads them:
+  `rucene-base <entity> create <root>`, then one `add --file` per part of
+  250,000 records, then `count`, which must equal the number of records
+  written. The indices are independent (`<root>/<entity>`, one writer each),
+  so **all of them load side by side**, one `rucene-base` process per index,
+  started largest first, each keeping the order of its parts; `--jobs N` caps
+  how many load at once. `--offline DIR` reads the dataset files from `DIR`; `--only`
+  restricts the run to some indices; `--limit N` makes a sample run.
+* **`status`** lists the cached files per dataset (size, publication date,
+  download time, ok / missing / bad size / bad SHA-1, incomplete years),
+  without network; it exits 1 when something is missing or bad.
+
+### Figures of a full run
+
+A full `ingest --offline` run on the files published on 2026-11-15
+(rmp #535; 16-core x86-64 machine, NVMe disk, release build, all ten indices
+loading at once) took **18 min 40 s**: 635 s to read, clean, derive and write
+the bulk files (single-threaded Python, peak 959 MB) and 485 s to load, bounded
+by `contratos`. The summed resident memory of the ten `rucene-base` processes
+peaked at 755 MB (largest single process 768 MB).
+
+| Index | Documents | Load (s) | On disk |
+| --- | ---: | ---: | ---: |
+| `contratos` | 2,295,074 | 485.4 | 1.5 GB |
+| `procedimentos` | 1,938,286 | 78.0 | 387 MB |
+| `anuncios` | 268,733 | 28.0 | 112 MB |
+| `fornecedores` | 95,318 | 5.9 | 33 MB |
+| `modificacoes` | 90,135 | 3.1 | 9.3 MB |
+| `convidadas` | 78,446 | 1.7 | 9.9 MB |
+| `adjudicantes` | 11,209 | 0.4 | 2.3 MB |
+| `cpv` | 7,669 | 0.2 | 1.2 MB |
+| `locais` | 477 | 0.1 | 108 KB |
+| `nuts` | 288 | 0.1 | 68 KB |
+
+Every index's `count` equals the number of records the script wrote. The ten
+indices take 2.1 GB.
+
 ## Commands
 
 ```text
@@ -86,14 +179,20 @@ multi-valued field, missing values last), `_score`, `_doc`. Ids, analysed
 text without a copy and stored-only fields have no doc values and cannot be
 sorted. Dates are given as `YYYY-MM-DD` or `DD/MM/YYYY`.
 
-Examples:
+Examples (`/data/base` is the index root; case and accents in a query do
+not matter):
 
 ```text
 rucene-base contratos search /data/base --text "AQUISIÇÃO formacao" --sort precoContratual:desc
+rucene-base contratos count  /data/base --text "aquisicao de servicos de manutencao"
+rucene-base contratos search /data/base --phrase-in objectoContrato="REFEICOES ESCOLARES" --limit 5
+rucene-base adjudicantes search /data/base --text-in nome="MUNICIPIO EVORA"
+rucene-base anuncios search /data/base --text "EMPREITADA requalificacao" --sort dataPublicacao:desc --limit 10
+rucene-base anuncios search /data/base --term nifEntidade=505120151 --fields IDAnuncio,nifEntidade,designacaoEntidade
 rucene-base contratos search /data/base --term cpvDivisao=45 --range dataPublicacao=2025-01-01.. --exact-total
 rucene-base contratos count  /data/base --term localNivel2="Portugal, Lisboa" --not --term CritMateriais=nao
 rucene-base fornecedores search /data/base --text "CONSTRUCAO" --sort valorTotal:desc --limit 20
-rucene-base modificacoes get /data/base --key 11103352/2
+rucene-base modificacoes get /data/base --key 238125/2
 ```
 
 ## Analysis: case, accent and diacritic insensitivity
@@ -111,7 +210,9 @@ In Java this is a `CustomAnalyzer` with tokenizer `standard` and filters
 `lowercase`, `asciiFolding`, `stop` (the folded words of Lucene's
 `portuguese_stop.txt`), three `patternReplace` (`replace=first`),
 `portugueseLightStem` and `asciiFolding`; the module documentation of
-`src/analysis.rs` gives the exact builder calls.
+`src/analysis.rs` gives the exact builder calls, and the portability test
+`tests/analysis_oracle_pt.rs` proves the equality against Lucene 10.5.0 (see
+[Tests](#tests)).
 
 * **Folding comes first.** Spellings that differ only in diacritics become
   the same string before the stop filter and the stemmer: `preço`/`preco`,
@@ -132,7 +233,8 @@ In Java this is a `CustomAnalyzer` with tokenizer `standard` and filters
 Result: `ação`, `acao`, `AÇÃO`, `ações`, `acoes`, `AÇÕES` → `acao`;
 `acção`, `acções`, `accao`, `accoes` → `acca`; `pão`, `pães`, `paes` → `pao`;
 `limão`, `limões`, `limoes` → `lima`; `papéis`, `papeis`, `papel` → `papel`;
-`anzóis`, `anzois`, `anzol` → `anzol`. The cost: an unaccented word ending in
+`anzóis`, `anzois`, `anzol` → `anzol`; `português`, `portugues` →
+`portugu`. The cost: an unaccented word ending in
 `-oes`, `-aes` or `-ois` that is not such a plural (a foreign word such as
 `shoes`) gets the plural rule, exactly as its accented spelling would in
 Lucene's `PortugueseAnalyzer`.
@@ -388,8 +490,8 @@ the current table of every index.
 | `nAnuncio` | exact | `StringField` | yes | exact, set | no |  |
 | `IdIncm` | exact | `StringField` | yes | exact, set | no | `-1` |
 | `dataPublicacao` | date | `LongField` (epoch ms) + `StoredField` | yes | exact, set, range | yes |  |
-| `nifEntidade` | exact | `StringField` | yes | exact, set | no | `-` |
-| `designacaoEntidade` | name | `TextField` + `KeywordField` `designacaoEntidade_exact` | yes | words, phrase; exact, set | yes |  |
+| `nifEntidade[]` | exact | `StringField` | yes | exact, set | no | `-` |
+| `designacaoEntidade[]` | name | `TextField` + `KeywordField` `designacaoEntidade_exact` | yes | words, phrase; exact, set | yes |  |
 | `descricaoAnuncio` | text | `TextField` | yes | words, phrase | no |  |
 | `url` | stored | `StoredField` | yes | no | no |  |
 | `numDR` | exact | `StringField` | yes | exact, set | no |  |
@@ -438,7 +540,9 @@ records) built from the Portal BASE files of the 2025 snapshot downloaded on
 2026-11-15: 37 contracts chosen to cover accented, upper-case and pre-1990
 spellings of `ação`, invited entities, competitors, NUTS, several CPVs and
 suppliers, lots with criteria, closing dates, announcements and framework
-agreements, plus their modifications and announcements; the other indices are
+agreements, plus their modifications and announcements (and one joint
+procurement announcement of three contracting entities, merged as the script
+merges it); the other indices are
 aggregated over those contracts and the `entidades` dataset. Contracts with a
 supplier, competitor or invitee that has no NIF or a personal NIF (first digit
 1 to 3, or 45) were excluded, so the fixtures hold no names of private
@@ -448,13 +552,29 @@ individuals.
 
 ```text
 cargo test -p rucene-cli-base
+python3 -I -m unittest discover -s crates/rucene-cli-base/scripts/tests -b
 ```
 
 Unit tests cover the JSON reader, dates, the analysis chain, value parsing,
 placeholders and hierarchy levels. Integration tests drive every subcommand
 of every index on the fixtures (`tests/contratos.rs`, `tests/entities.rs`),
 the layout under one root (`tests/layout.rs`), the binary's exit codes
-(`tests/binary.rs`) and the schema declarations (`tests/schemas.rs`).
-Expected results are computed from the fixture records with plain string
-operations, never from the crate's analyzer or index. Each test uses its own
-directory, so the tests run in parallel.
+(`tests/binary.rs`) and the schema declarations and these README tables
+(`tests/schemas.rs`). Expected results are computed from the fixture records
+with plain string operations, never from the crate's analyzer or index. Each
+test uses its own directory, so the tests run in parallel.
+
+**Portability test** (`tests/analysis_oracle_pt.rs`): Lucene 10.5.0 builds the
+`CustomAnalyzer` above (its stop file derived by Lucene from
+`PortugueseAnalyzer.getDefaultStopSet()`, `tests/oracle/PortugueseStopFolded.java`)
+and the test compares its token streams with `PortugueseFoldingAnalyzer`'s,
+token by token (terms, positions, offsets, types, keyword flags), over the
+spelling groups above, every stop word, accented and upper-case pt-PT
+samples, every fixture text and seeded random input. It reuses the
+Java-oracle harness of `rucene-analysis-common` and needs a JDK (`java` on the
+path) and the Lucene 10.5.0 jars `lucene-core` and `lucene-analysis-common` in
+the local Maven repository (`~/.m2/repository/org/apache/lucene/`).
+
+The script's tests (`scripts/tests/`) cover cleaning, deduplication, merging,
+the derived aggregates, the bulk format, the load against a fake CLI and
+`fetch`/`status` on local `file://` resources.
