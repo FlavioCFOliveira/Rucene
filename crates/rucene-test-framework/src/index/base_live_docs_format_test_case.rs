@@ -178,7 +178,12 @@ pub trait BaseLiveDocsFormatTestCase: Send + Sync + 'static {
         num_live_docs: i32,
         fixed_bit_set: bool,
     ) -> Result<()> {
-        let codec = rucene::codecs::get_default().unwrap_or_else(|| self.get_codec());
+        // `Codec.getDefault()`: never `null` in Java; no fallback.
+        let codec = rucene::codecs::get_default().unwrap_or_else(|| {
+            randomizedtesting::jdk::exception::throw_without_message(
+                "java.lang.NullPointerException",
+            )
+        });
         let format = codec.live_docs_format();
 
         let random = LuceneTestCase::random();

@@ -66,7 +66,7 @@ use rucene::util::Version;
 
 use super::base_index_file_format_test_case::{
     exception_message, expect_throws_lucene, format_test, is_corrupt_index,
-    is_unsupported_operation, BaseIndexFileFormatTestCase, FileTrackingDirectoryWrapper,
+    is_unsupported_operation, try_with, BaseIndexFileFormatTestCase, FileTrackingDirectoryWrapper,
     JavaStringSet, ReadBytesDirectoryWrapper,
 };
 use crate::index::random_index_writer::RandomIndexWriter;
@@ -200,24 +200,18 @@ pub fn new_segment_info(dir: &Arc<dyn Directory>, name: &str) -> Result<SegmentI
 /// a file of the specified size with random data.
 pub fn create_random_file(dir: &dyn Directory, name: &str, size: i32, seg_id: &[u8]) -> Result<()> {
     let rnd = LuceneTestCase::random();
-    let mut os = dir.create_output(name, &*random_io_context())?;
-    let written = (|| -> Result<()> {
-        codec_util::write_index_header(os.as_mut(), "Foo", 0, seg_id, "suffix")?;
-        for _ in 0..size {
-            let b = rnd.next_int_bound(256) as u8;
-            os.write_byte(b)?;
-        }
-        codec_util::write_footer(os.as_mut())
-    })();
-    close_output(os.as_mut(), written)
-}
-
-/// The try-with-resources of an `IndexOutput`: closed on every exit, the
-/// body's failure first.
-fn close_output(os: &mut dyn IndexOutput, body: Result<()>) -> Result<()> {
-    let closed = os.close();
-    body?;
-    closed
+    try_with(
+        dir.create_output(name, &*random_io_context())?,
+        |o| o.close(),
+        |os| {
+            codec_util::write_index_header(os.as_mut(), "Foo", 0, seg_id, "suffix")?;
+            for _ in 0..size {
+                let b = rnd.next_int_bound(256) as u8;
+                os.write_byte(b)?;
+            }
+            codec_util::write_footer(os.as_mut())
+        },
+    )
 }
 
 /// `createSequenceFile(dir, name, start, size, segID, segSuffix)`
@@ -233,17 +227,19 @@ pub fn create_sequence_file(
     seg_id: &[u8],
     seg_suffix: &str,
 ) -> Result<()> {
-    let mut os = dir.create_output(name, &*random_io_context())?;
-    let written = (|| -> Result<()> {
-        codec_util::write_index_header(os.as_mut(), "Foo", 0, seg_id, seg_suffix)?;
-        let mut start = start;
-        for _ in 0..size {
-            os.write_byte(start)?;
-            start = start.wrapping_add(1);
-        }
-        codec_util::write_footer(os.as_mut())
-    })();
-    close_output(os.as_mut(), written)
+    try_with(
+        dir.create_output(name, &*random_io_context())?,
+        |o| o.close(),
+        |os| {
+            codec_util::write_index_header(os.as_mut(), "Foo", 0, seg_id, seg_suffix)?;
+            let mut start = start;
+            for _ in 0..size {
+                os.write_byte(start)?;
+                start = start.wrapping_add(1);
+            }
+            codec_util::write_footer(os.as_mut())
+        },
+    )
 }
 
 /// `assertSameStreams(msg, expected, test)` (`protected static`).
@@ -359,10 +355,12 @@ pub fn create_large_cfs(dir: &Arc<dyn Directory>) -> Result<Box<dyn CompoundDire
 }
 
 /// Writes the test file of the read-only tests: `writeInt(3)`, no header.
+/// Java's `out.writeInt(3); out.close();` has no `try`: a failed write
+/// leaves the output open.
 fn write_int_file(dir: &dyn Directory, testfile: &str) -> Result<()> {
     let mut out = dir.create_output(testfile, &*DEFAULT_IO_CONTEXT)?;
-    let written = out.write_int(3);
-    close_output(out.as_mut(), written)
+    out.write_int(3)?;
+    out.close()
 }
 
 /// Writes `CodecUtil.writeIndexHeader(out, "Foo", 0, id, "suffix");
@@ -373,13 +371,15 @@ fn write_header_int_footer(
     id: &[u8],
     context: &dyn IOContext,
 ) -> Result<()> {
-    let mut out = dir.create_output(testfile, context)?;
-    let written = (|| -> Result<()> {
-        codec_util::write_index_header(out.as_mut(), "Foo", 0, id, "suffix")?;
-        out.write_int(3)?;
-        codec_util::write_footer(out.as_mut())
-    })();
-    close_output(out.as_mut(), written)
+    try_with(
+        dir.create_output(testfile, context)?,
+        |o| o.close(),
+        |out| {
+            codec_util::write_index_header(out.as_mut(), "Foo", 0, id, "suffix")?;
+            out.write_int(3)?;
+            codec_util::write_footer(out.as_mut())
+        },
+    )
 }
 
 /// The body every read-only test shares: an empty compound file over `dir`,
@@ -492,19 +492,21 @@ fn write_with_footer_checksum(
     id: &[u8],
     checksum_delta: i64,
 ) -> Result<()> {
-    let mut os = dir.create_output(sub_file, &*random_io_context())?;
-    let written = (|| -> Result<()> {
-        codec_util::write_index_header(os.as_mut(), "Foo", 0, id, "suffix")?;
-        for i in 0..1024 {
-            os.write_byte(i as u8)?;
-        }
+    try_with(
+        dir.create_output(sub_file, &*random_io_context())?,
+        |o| o.close(),
+        |os| {
+            codec_util::write_index_header(os.as_mut(), "Foo", 0, id, "suffix")?;
+            for i in 0..1024 {
+                os.write_byte(i as u8)?;
+            }
 
-        codec_util::write_be_int(os.as_mut(), FOOTER_MAGIC)?;
-        codec_util::write_be_int(os.as_mut(), 0)?;
-        let checksum = os.checksum()?;
-        codec_util::write_be_long(os.as_mut(), checksum.wrapping_add(checksum_delta))
-    })();
-    close_output(os.as_mut(), written)
+            codec_util::write_be_int(os.as_mut(), FOOTER_MAGIC)?;
+            codec_util::write_be_int(os.as_mut(), 0)?;
+            let checksum = os.checksum()?;
+            codec_util::write_be_long(os.as_mut(), checksum.wrapping_add(checksum_delta))
+        },
+    )
 }
 
 // -----------------------------------------------------------------------------
@@ -665,16 +667,18 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
         let directory = Arc::clone(&dir) as Arc<dyn Directory>;
 
         let si = new_segment_info(&directory, "_123")?;
-        let mut out = directory.create_output(testfile, &*context)?;
-        let written = (|| -> Result<()> {
-            codec_util::write_index_header(out.as_mut(), "Foo", 0, &si.id(), "suffix")?;
-            let bytes = vec![0u8; 512];
-            for _ in 0..1024 * 1024 {
-                out.write_bytes(&bytes, 0, bytes.len())?;
-            }
-            codec_util::write_footer(out.as_mut())
-        })();
-        close_output(out.as_mut(), written)?;
+        try_with(
+            directory.create_output(testfile, &*context)?,
+            |o| o.close(),
+            |out| {
+                codec_util::write_index_header(out.as_mut(), "Foo", 0, &si.id(), "suffix")?;
+                let bytes = vec![0u8; 512];
+                for _ in 0..1024 * 1024 {
+                    out.write_bytes(&bytes, 0, bytes.len())?;
+                }
+                codec_util::write_footer(out.as_mut())
+            },
+        )?;
 
         si.set_files([testfile.to_string()])?;
         write_compound(&*directory, &si, &*context)?;
@@ -720,17 +724,21 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
             let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory))?;
             for si in infos.iter() {
                 if si.info.get_use_compound_file() {
-                    let cfs_dir = compound_reader(&*directory, &si.info)?;
-                    let listed = (|| -> Result<()> {
-                        for cfs_file in cfs_dir.list_all()? {
-                            let mut cfs_in = cfs_dir.open_input(&cfs_file, &*DEFAULT_IO_CONTEXT)?;
-                            cfs_in.close()?;
-                        }
-                        Ok(())
-                    })();
-                    let closed = cfs_dir.close();
-                    listed?;
-                    closed?;
+                    try_with(
+                        compound_reader(&*directory, &si.info)?,
+                        |d| d.close(),
+                        |cfs_dir| {
+                            for cfs_file in cfs_dir.list_all()? {
+                                try_with(
+                                    cfs_dir.open_input(&cfs_file, &*DEFAULT_IO_CONTEXT)?,
+                                    |i| i.close(),
+                                    // `assert cfsIn != null;`: never null.
+                                    |_cfs_in| Ok(()),
+                                )?;
+                            }
+                            Ok(())
+                        },
+                    )?;
                 }
             }
             drop(directory);
@@ -833,13 +841,15 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
         for file_idx in 0..file_count {
             let file = format!("_123.{file_idx}");
             files.push(file.clone());
-            let mut out = directory.create_output(&file, &*random_io_context())?;
-            let written = (|| -> Result<()> {
-                codec_util::write_index_header(out.as_mut(), "Foo", 0, &si.id(), "suffix")?;
-                out.write_byte(file_idx as u8)?;
-                codec_util::write_footer(out.as_mut())
-            })();
-            close_output(out.as_mut(), written)?;
+            try_with(
+                directory.create_output(&file, &*random_io_context())?,
+                |o| o.close(),
+                |out| {
+                    codec_util::write_index_header(out.as_mut(), "Foo", 0, &si.id(), "suffix")?;
+                    out.write_byte(file_idx as u8)?;
+                    codec_util::write_footer(out.as_mut())
+                },
+            )?;
         }
 
         Assert::assert_equals(0, mock.get_file_handle_count());
@@ -1044,14 +1054,16 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
             let sub_file = "_123.xyz";
 
             // missing codec header
-            let mut os = directory.create_output(sub_file, &*random_io_context())?;
-            let written = (|| -> Result<()> {
-                for i in 0..1024 {
-                    os.write_byte(i as u8)?;
-                }
-                Ok(())
-            })();
-            close_output(os.as_mut(), written)?;
+            try_with(
+                directory.create_output(sub_file, &*random_io_context())?,
+                |o| o.close(),
+                |os| {
+                    for i in 0..1024 {
+                        os.write_byte(i as u8)?;
+                    }
+                    Ok(())
+                },
+            )?;
 
             let si = new_segment_info(&directory, "_123")?;
             si.set_files([sub_file.to_string()])?;

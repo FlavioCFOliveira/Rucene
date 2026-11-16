@@ -700,7 +700,7 @@ fn change_indices_run(base: &Arc<ShardSearchingTestBase>) {
 /// A `java.io.PrintStream` over the `System.out` captured at construction
 /// (`None`: the process's standard output), as `new
 /// PrintStreamInfoStream(System.out)` holds it.
-struct SystemOut(Option<randomizedtesting::jdk::system::PrintSink>);
+pub(crate) struct SystemOut(pub(crate) Option<randomizedtesting::jdk::system::PrintSink>);
 
 impl std::io::Write for SystemOut {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {

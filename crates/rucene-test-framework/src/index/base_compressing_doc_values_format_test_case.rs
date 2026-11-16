@@ -42,7 +42,7 @@ use rucene::store::{ByteBuffersDirectory, Directory};
 use rucene::util::packed::PackedInts;
 
 use super::base_doc_values_format_test_case::BaseDocValuesFormatTestCase;
-use super::base_index_file_format_test_case::{format_test, BaseIndexFileFormatTestCase};
+use super::base_index_file_format_test_case::{format_test, try_with, BaseIndexFileFormatTestCase};
 use crate::analysis::MockAnalyzer;
 use crate::hamcrest::{less_than, MatcherAssert};
 use crate::util::lucene_test_case::LuceneTestCase;
@@ -114,89 +114,103 @@ fn mock_config() -> IndexWriterConfig {
 pub trait BaseCompressingDocValuesFormatTestCase: BaseDocValuesFormatTestCase {
     /// `testUniqueValuesCompression()`.
     fn test_unique_values_compression(&self) -> Result<()> {
-        let directory = Arc::new(ByteBuffersDirectory::new());
-        let outcome = (|| -> Result<()> {
-            let iwc = mock_config();
-            let iwriter = IndexWriter::new(Arc::clone(&directory) as Arc<dyn Directory>, iwc)?;
+        // `try (final Directory dir = new ByteBuffersDirectory())`
+        try_with(
+            Arc::new(ByteBuffersDirectory::new()),
+            |d| d.close(),
+            |directory| {
+                let directory = Arc::clone(directory);
+                let iwc = mock_config();
+                let iwriter = IndexWriter::new(Arc::clone(&directory) as Arc<dyn Directory>, iwc)?;
 
-            let unique_value_count = TestUtil::next_int(&*LuceneTestCase::random(), 1, 256);
-            let mut values: Vec<i64> = Vec::new();
+                let unique_value_count = TestUtil::next_int(&*LuceneTestCase::random(), 1, 256);
+                let mut values: Vec<i64> = Vec::new();
 
-            for _ in 0..300 {
-                let value = if (values.len() as i32) < unique_value_count {
-                    let value = LuceneTestCase::random().next_long();
-                    values.push(value);
-                    value
-                } else {
-                    *RandomPicks::random_from_list(&*LuceneTestCase::random(), &values)
-                };
-                iwriter.add_document(&dv_doc(value))?;
-            }
-            iwriter.force_merge(1)?;
-            let size1 = dir_size(&*directory)?;
-            for _ in 0..20 {
-                let value = *RandomPicks::random_from_list(&*LuceneTestCase::random(), &values);
-                iwriter.add_document(&dv_doc(value))?;
-            }
-            iwriter.force_merge(1)?;
-            let size2 = dir_size(&*directory)?;
-            // make sure the new longs did not cost 8 bytes each
-            MatcherAssert::assert_that(&size2, &less_than(size1 + 8 * 20));
-            abandon(iwriter)
-        })();
-        close_directory(directory, outcome)
+                for _ in 0..300 {
+                    let value = if (values.len() as i32) < unique_value_count {
+                        let value = LuceneTestCase::random().next_long();
+                        values.push(value);
+                        value
+                    } else {
+                        *RandomPicks::random_from_list(&*LuceneTestCase::random(), &values)
+                    };
+                    iwriter.add_document(&dv_doc(value))?;
+                }
+                iwriter.force_merge(1)?;
+                let size1 = dir_size(&*directory)?;
+                for _ in 0..20 {
+                    let value = *RandomPicks::random_from_list(&*LuceneTestCase::random(), &values);
+                    iwriter.add_document(&dv_doc(value))?;
+                }
+                iwriter.force_merge(1)?;
+                let size2 = dir_size(&*directory)?;
+                // make sure the new longs did not cost 8 bytes each
+                MatcherAssert::assert_that(&size2, &less_than(size1 + 8 * 20));
+                abandon(iwriter)
+            },
+        )
     }
 
     /// `testDateCompression()`.
     fn test_date_compression(&self) -> Result<()> {
-        let directory = Arc::new(ByteBuffersDirectory::new());
-        let outcome = (|| -> Result<()> {
-            let iwc = mock_config();
-            let iwriter = IndexWriter::new(Arc::clone(&directory) as Arc<dyn Directory>, iwc)?;
+        // `try (final Directory dir = new ByteBuffersDirectory())`
+        try_with(
+            Arc::new(ByteBuffersDirectory::new()),
+            |d| d.close(),
+            |directory| {
+                let directory = Arc::clone(directory);
+                let iwc = mock_config();
+                let iwriter = IndexWriter::new(Arc::clone(&directory) as Arc<dyn Directory>, iwc)?;
 
-            let base: i64 = 13; // prime
-            let day: i64 = 1000 * 60 * 60 * 24;
+                let base: i64 = 13; // prime
+                let day: i64 = 1000 * 60 * 60 * 24;
 
-            for _ in 0..300 {
-                let value = base + i64::from(LuceneTestCase::random().next_int_bound(1000)) * day;
-                iwriter.add_document(&dv_doc(value))?;
-            }
-            iwriter.force_merge(1)?;
-            let size1 = dir_size(&*directory)?;
-            for _ in 0..50 {
-                let value = base + i64::from(LuceneTestCase::random().next_int_bound(1000)) * day;
-                iwriter.add_document(&dv_doc(value))?;
-            }
-            iwriter.force_merge(1)?;
-            let size2 = dir_size(&*directory)?;
-            // make sure the new longs costed less than if they had only been packed
-            let bits = i64::from(PackedInts::bits_required(day)?);
-            MatcherAssert::assert_that(&size2, &less_than(size1 + (bits * 50) / 8));
-            abandon(iwriter)
-        })();
-        close_directory(directory, outcome)
+                for _ in 0..300 {
+                    let value =
+                        base + i64::from(LuceneTestCase::random().next_int_bound(1000)) * day;
+                    iwriter.add_document(&dv_doc(value))?;
+                }
+                iwriter.force_merge(1)?;
+                let size1 = dir_size(&*directory)?;
+                for _ in 0..50 {
+                    let value =
+                        base + i64::from(LuceneTestCase::random().next_int_bound(1000)) * day;
+                    iwriter.add_document(&dv_doc(value))?;
+                }
+                iwriter.force_merge(1)?;
+                let size2 = dir_size(&*directory)?;
+                // make sure the new longs costed less than if they had only been packed
+                let bits = i64::from(PackedInts::bits_required(day)?);
+                MatcherAssert::assert_that(&size2, &less_than(size1 + (bits * 50) / 8));
+                abandon(iwriter)
+            },
+        )
     }
 
     /// `testSingleBigValueCompression()`.
     fn test_single_big_value_compression(&self) -> Result<()> {
-        let directory = Arc::new(ByteBuffersDirectory::new());
-        let outcome = (|| -> Result<()> {
-            let iwc = mock_config();
-            let iwriter = IndexWriter::new(Arc::clone(&directory) as Arc<dyn Directory>, iwc)?;
+        // `try (final Directory dir = new ByteBuffersDirectory())`
+        try_with(
+            Arc::new(ByteBuffersDirectory::new()),
+            |d| d.close(),
+            |directory| {
+                let directory = Arc::clone(directory);
+                let iwc = mock_config();
+                let iwriter = IndexWriter::new(Arc::clone(&directory) as Arc<dyn Directory>, iwc)?;
 
-            for i in 0..20000 {
-                iwriter.add_document(&dv_doc(i & 1023))?;
-            }
-            iwriter.force_merge(1)?;
-            let size1 = dir_size(&*directory)?;
-            iwriter.add_document(&dv_doc(i64::MAX))?;
-            iwriter.force_merge(1)?;
-            let size2 = dir_size(&*directory)?;
-            // make sure the new value did not grow the bpv for every other value
-            MatcherAssert::assert_that(&size2, &less_than(size1 + (20000 * (63 - 10)) / 8));
-            abandon(iwriter)
-        })();
-        close_directory(directory, outcome)
+                for i in 0..20000 {
+                    iwriter.add_document(&dv_doc(i & 1023))?;
+                }
+                iwriter.force_merge(1)?;
+                let size1 = dir_size(&*directory)?;
+                iwriter.add_document(&dv_doc(i64::MAX))?;
+                iwriter.force_merge(1)?;
+                let size2 = dir_size(&*directory)?;
+                // make sure the new value did not grow the bpv for every other value
+                MatcherAssert::assert_that(&size2, &less_than(size1 + (20000 * (63 - 10)) / 8));
+                abandon(iwriter)
+            },
+        )
     }
 }
 
@@ -206,12 +220,4 @@ pub trait BaseCompressingDocValuesFormatTestCase: BaseDocValuesFormatTestCase {
 /// releases it before the directory closes.
 fn abandon(iwriter: Arc<IndexWriter>) -> Result<()> {
     iwriter.rollback()
-}
-
-/// The try-with-resources of the directory: closed on every exit, the
-/// body's failure first.
-fn close_directory(directory: Arc<ByteBuffersDirectory>, outcome: Result<()>) -> Result<()> {
-    let closed = directory.close();
-    outcome?;
-    closed
 }

@@ -52,7 +52,9 @@ use rucene::index::{IndexReader, LeafReader};
 use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
 use rucene::util::{BytesRef, FixedBitSet};
 
-use super::base_index_file_format_test_case::{format_test, BaseIndexFileFormatTestCase};
+use super::base_index_file_format_test_case::{
+    format_test, io_utils_close, try_with, BaseIndexFileFormatTestCase,
+};
 use super::legacy_base_doc_values_format_test_case::{
     aeq, assert_not_null, assert_seek_status, merge_away_all_values,
     merge_away_all_values_large_segment, nbr, npe, random, LegacyBaseDocValuesFormatTestCase,
@@ -212,14 +214,16 @@ fn check_empty_skipper(leaf: &dyn LeafReader) -> Result<()> {
     Ok(())
 }
 
-/// The terms checks of the sorted `*MergeAwayAllValues*WithSkipper` tests.
-fn check_sorted_terms(leaf: &dyn LeafReader, set: bool) -> Result<()> {
+/// The terms checks of the sorted `*MergeAwayAllValues*WithSkipper` tests:
+/// `terms_enum` is `dv.termsEnum()` of the test's own `dv`; `dv.lookupTerm`
+/// runs on a fresh `dv` of the field, since the port's `termsEnum()` takes
+/// the values it enumerates (the declared divergence of the module docs).
+fn check_sorted_terms(
+    leaf: &dyn LeafReader,
+    mut terms_enum: Box<dyn rucene::index::TermsEnum>,
+    set: bool,
+) -> Result<()> {
     let lucene = BytesRef::from_char_sequence("lucene");
-    let mut terms_enum = if set {
-        npe(leaf.get_sorted_set_doc_values("field")?).terms_enum()?
-    } else {
-        npe(leaf.get_sorted_doc_values("field")?).terms_enum()?
-    };
     Assert::assert_false(terms_enum.seek_exact(&lucene)?);
     assert_seek_status(SeekStatus::END, terms_enum.seek_ceil(&lucene)?);
     if set {
@@ -345,10 +349,14 @@ impl SortedNumericWrapper {
     fn read_values(&mut self) -> Result<()> {
         self.max = i64::MIN;
         self.min = i64::MAX;
-        for _ in 0..self.values.doc_value_count()? {
+        // `for (int i = 0; i < values.docValueCount(); i++)`: the count is
+        // read at every iteration.
+        let mut i = 0;
+        while i < self.values.doc_value_count()? {
             let value = self.values.next_value()?;
             self.max = self.max.max(value);
             self.min = self.min.min(value);
+            i += 1;
         }
         Ok(())
     }
@@ -400,10 +408,14 @@ impl SortedSetWrapper {
     fn read_values(&mut self) -> Result<()> {
         self.max = i64::MIN;
         self.min = i64::MAX;
-        for _ in 0..self.values.doc_value_count()? {
+        // `for (int i = 0; i < values.docValueCount(); i++)`: the count is
+        // read at every iteration.
+        let mut i = 0;
+        while i < self.values.doc_value_count()? {
             let value = self.values.next_ord()?;
             self.max = self.max.max(value);
             self.min = self.min.min(value);
+            i += 1;
         }
         Ok(())
     }
@@ -539,7 +551,7 @@ fn assert_doc_values_with_skipper(
         _ => randomizedtesting::jdk::exception::throw_without_message("java.lang.AssertionError"),
     };
     let directory = LuceneTestCase::new_directory();
-    {
+    let (r_closed, writer_closed) = {
         let writer =
             RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
         let mut num_docs = 0;
@@ -599,12 +611,14 @@ fn assert_doc_values_with_skipper(
         }
         aeq(num_docs, read_docs);
         // `IOUtils.close(r, writer, directory)`
-        r.close()?;
+        let r_closed = r.close();
         drop(r);
-        writer.close()?;
+        let writer_closed = writer.close();
         drop(writer);
-    }
-    directory.close()
+        (r_closed, writer_closed)
+    };
+    let directory_closed = directory.close();
+    io_utils_close([r_closed, writer_closed, directory_closed])
 }
 
 /// `assertDocValuesSkipSequential(iterator, skipper)` (`private`).
@@ -639,7 +653,10 @@ fn assert_doc_values_skip_sequential(
         let mut max_doc = -1;
         let mut min_val = i64::MAX;
         let mut max_val = i64::MIN;
-        for _ in 0..skipper.doc_count(0) {
+        // `for (int i = 0; i < skipper.docCount(0); ++i)`: read at every
+        // iteration.
+        let mut i = 0;
+        while i < skipper.doc_count(0) {
             assert_not_equals(i64::from(NO_MORE_DOCS), i64::from(iterator.doc_id()));
             max_doc = max_doc.max(iterator.doc_id());
             min_val = min_val.min(iterator.min_value()?);
@@ -647,17 +664,20 @@ fn assert_doc_values_skip_sequential(
             max_value_count = max_value_count.max(iterator.doc_value_count()?);
             let next = iterator.doc_id() + 1;
             iterator.advance(next)?;
+            i += 1;
         }
         aeq(max_doc, skipper.max_doc_id(0));
         aeq(min_val, skipper.min_value(0));
         aeq(max_val, skipper.max_value(0));
         doc_count += skipper.doc_count(0);
-        for level in 1..skipper.num_levels() {
+        let mut level = 1;
+        while level < skipper.num_levels() {
             Assert::assert_true(skipper.min_doc_id(0) >= skipper.min_doc_id(level));
             Assert::assert_true(skipper.max_doc_id(0) <= skipper.max_doc_id(level));
             Assert::assert_true(skipper.min_value(0) >= skipper.min_value(level));
             Assert::assert_true(skipper.max_value(0) <= skipper.max_value(level));
             Assert::assert_true(skipper.doc_count(0) < skipper.doc_count(level));
+            level += 1;
         }
     }
 
@@ -694,11 +714,13 @@ fn assert_doc_values_skip_random(
             return Ok(());
         }
         if iterator.advance_exact(doc)? {
-            for level in 0..skipper.num_levels() {
+            let mut level = 0;
+            while level < skipper.num_levels() {
                 Assert::assert_true(iterator.doc_id() >= skipper.min_doc_id(level));
                 Assert::assert_true(iterator.doc_id() <= skipper.max_doc_id(level));
                 Assert::assert_true(iterator.min_value()? >= skipper.min_value(level));
                 Assert::assert_true(iterator.max_value()? <= skipper.max_value(level));
+                level += 1;
             }
         }
         next_level = random().next_int_bound(skipper.num_levels());
@@ -741,7 +763,7 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
                 let mut dv = npe(leaf.get_sorted_doc_values("field")?);
                 aeq(NO_MORE_DOCS, dv.next_doc()?);
                 check_empty_skipper(leaf)?;
-                check_sorted_terms(leaf, false)
+                check_sorted_terms(leaf, dv.terms_enum()?, false)
             },
         )
     }
@@ -759,7 +781,7 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
                 let dv = npe(leaf.get_sorted_set_doc_values("field")?);
                 aeq(0, dv.get_value_count()?);
                 check_empty_skipper(leaf)?;
-                check_sorted_terms(leaf, true)
+                check_sorted_terms(leaf, dv.terms_enum()?, true)
             },
         )
     }
@@ -796,7 +818,7 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
                 let mut dv = npe(leaf.get_sorted_doc_values("field")?);
                 aeq(NO_MORE_DOCS, dv.next_doc()?);
                 check_empty_skipper(leaf)?;
-                check_sorted_terms(leaf, false)
+                check_sorted_terms(leaf, dv.terms_enum()?, false)
             },
         )
     }
@@ -814,7 +836,7 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
                 let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
                 aeq(NO_MORE_DOCS, dv.next_doc()?);
                 check_empty_skipper(leaf)?;
-                check_sorted_terms(leaf, true)
+                check_sorted_terms(leaf, dv.terms_enum()?, true)
             },
         )
     }
@@ -998,6 +1020,7 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
         // Created where Java creates it; declared here so it outlives the
         // block that releases every handle on it before it closes.
         let dir2;
+        let reader_closed;
         {
             {
                 let w1 = IndexWriter::new(
@@ -1112,14 +1135,16 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
                 );
                 aeq(NO_MORE_DOCS, ssdv.next_doc()?);
 
-                // `IOUtils.close(reader, w2, dir1, dir2)`
+                // `IOUtils.close(reader, w2, dir1, dir2)`; `w2` is closed
+                // already, and a second `close()` of a writer does nothing.
                 drop((bdv, ndv, sdv, sndv, ssdv, leaf_reader));
-                reader.close()?;
+                reader_closed = reader.close();
                 drop(reader);
             }
         }
-        dir1.close()?;
-        dir2.close()
+        let dir1_closed = dir1.close();
+        let dir2_closed = dir2.close();
+        io_utils_close([reader_closed, dir1_closed, dir2_closed])
     }
 
     /// `testRandomDenseNumericIntoBitSet()`.
@@ -1341,84 +1366,92 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
     ) -> Result<()> {
         let num_docs = LuceneTestCase::at_least(100);
         let mut docs_with_field = 0;
-        let dir = LuceneTestCase::new_directory();
-        let outcome = (|| -> Result<()> {
-            let w = IndexWriter::new(
-                dir.as_directory(),
-                LuceneTestCase::new_index_writer_config(),
-            )?;
-            let indexed = (|| -> Result<()> {
-                for _ in 0..num_docs {
-                    let mut doc = Document::new();
-                    if add_document() {
-                        docs_with_field += 1;
-                        consumer(&mut doc);
-                    }
-                    w.add_document(&doc)?;
-                }
-                w.commit()?;
-                w.force_merge(1)?;
-
-                let reader = directory_reader::open_with_writer(&*w)?;
-                let checked = (|| -> Result<()> {
-                    let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
-                    for _ in 0..20 {
-                        let start = random().next_int_bound(num_docs - 1);
-                        let up_to = random().next_int_range(start, num_docs);
-
-                        let offset = if start == 0 {
-                            0
-                        } else {
-                            random().next_int_bound(start)
-                        };
-                        let mut bit_set = FixedBitSet::new((num_docs - offset) as usize);
-                        let mut expected_bit_set = FixedBitSet::new((num_docs - offset) as usize);
-
-                        let values = producer(&*leaf)?;
-                        let expected = producer(&*leaf)?;
-                        if docs_with_field == 0 {
-                            if values.is_some() {
-                                Throwable::new(
-                                    "java.lang.AssertionError",
-                                    "expected null, but was:<DocIdSetIterator>",
-                                )
-                                .throw()
+        try_with(
+            LuceneTestCase::new_directory(),
+            |d| d.close(),
+            |dir| {
+                try_with(
+                    IndexWriter::new(
+                        dir.as_directory(),
+                        LuceneTestCase::new_index_writer_config(),
+                    )?,
+                    |w| w.close(),
+                    |w| {
+                        let w = Arc::clone(w);
+                        for _ in 0..num_docs {
+                            let mut doc = Document::new();
+                            if add_document() {
+                                docs_with_field += 1;
+                                consumer(&mut doc);
                             }
-                            return Ok(()); // no more to be tested
+                            w.add_document(&doc)?;
                         }
-                        assert_not_null(values.is_some());
-                        let mut values = npe(values);
-                        let mut expected = npe(expected);
-                        values.advance(start)?;
-                        expected.advance(start)?;
-                        aeq(expected.doc_id(), values.doc_id());
-                        if values.doc_id() == NO_MORE_DOCS {
-                            continue;
-                        }
-                        values.into_bit_set(up_to, &mut bit_set, offset)?;
-                        let mut doc = expected.doc_id();
-                        while doc < up_to {
-                            expected_bit_set.set((doc - offset) as usize);
-                            doc = expected.next_doc()?;
-                        }
-                        aeq(expected.doc_id(), values.doc_id());
-                        Assert::assert_equals(
-                            JavaFixedBitSet(expected_bit_set),
-                            JavaFixedBitSet(bit_set),
-                        );
-                    }
-                    Ok(())
-                })();
-                let closed = reader.close();
-                checked?;
-                closed
-            })();
-            let closed = w.close();
-            indexed?;
-            closed
-        })();
-        let closed = dir.close();
-        outcome?;
-        closed
+                        w.commit()?;
+                        w.force_merge(1)?;
+
+                        try_with(
+                            directory_reader::open_with_writer(&*w)?,
+                            |r| r.close(),
+                            |reader| {
+                                let reader = Arc::clone(reader);
+                                let leaf =
+                                    LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
+                                for _ in 0..20 {
+                                    let start = random().next_int_bound(num_docs - 1);
+                                    let up_to = random().next_int_range(start, num_docs);
+
+                                    let offset = if start == 0 {
+                                        0
+                                    } else {
+                                        random().next_int_bound(start)
+                                    };
+                                    let mut bit_set =
+                                        FixedBitSet::new((num_docs - offset) as usize);
+                                    let mut expected_bit_set =
+                                        FixedBitSet::new((num_docs - offset) as usize);
+
+                                    let values = producer(&*leaf)?;
+                                    let expected = producer(&*leaf)?;
+                                    if docs_with_field == 0 {
+                                        if let Some(values) = &values {
+                                            Throwable::new(
+                                                "java.lang.AssertionError",
+                                                format!(
+                                                    "expected null, but was:<{}>",
+                                                    values.java_to_string()
+                                                ),
+                                            )
+                                            .throw()
+                                        }
+                                        return Ok(()); // no more to be tested
+                                    }
+                                    assert_not_null(values.is_some());
+                                    let mut values = npe(values);
+                                    let mut expected = npe(expected);
+                                    values.advance(start)?;
+                                    expected.advance(start)?;
+                                    aeq(expected.doc_id(), values.doc_id());
+                                    if values.doc_id() == NO_MORE_DOCS {
+                                        continue;
+                                    }
+                                    values.into_bit_set(up_to, &mut bit_set, offset)?;
+                                    let mut doc = expected.doc_id();
+                                    while doc < up_to {
+                                        expected_bit_set.set((doc - offset) as usize);
+                                        doc = expected.next_doc()?;
+                                    }
+                                    aeq(expected.doc_id(), values.doc_id());
+                                    Assert::assert_equals(
+                                        JavaFixedBitSet(expected_bit_set),
+                                        JavaFixedBitSet(bit_set),
+                                    );
+                                }
+                                Ok(())
+                            },
+                        )
+                    },
+                )
+            },
+        )
     }
 }
