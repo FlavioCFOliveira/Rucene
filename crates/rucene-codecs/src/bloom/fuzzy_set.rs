@@ -485,8 +485,9 @@ mod tests {
     /// `Integer.MAX_VALUE`; the port widened it and reported `2147483648`.
     #[test]
     fn deserialize_reports_the_wrapped_bit_count() {
-        // vInt hashCount = 1, int bloomSize = 0x7fffffff, int numLongs = 0.
-        let bytes = [1u8, 0x7f, 0xff, 0xff, 0xff, 0, 0, 0, 0];
+        // vInt hashCount = 1, int bloomSize = 0x7fffffff, int numLongs = 0
+        // (`DataInput.readInt` is little-endian).
+        let bytes = [1u8, 0xff, 0xff, 0xff, 0x7f, 0, 0, 0, 0];
         let mut input = ByteArrayDataInput::new(&bytes);
         let error = FuzzySet::deserialize(&mut input).unwrap_err();
         match &error.kind {

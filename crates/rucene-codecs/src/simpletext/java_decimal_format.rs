@@ -1335,17 +1335,18 @@ mod tests {
     }
 
     /// The threshold constants: `bitLength(10^n)` first reaches `2^31` at
-    /// `n = 646456993`, and the mantissa logarithm is exact for powers of
-    /// two.
+    /// `n = 646456993` (`floor(n · log2 10) + 1`: `2147483644` for
+    /// `n = 646456992`, `2147483648` for `n = 646456993`), and the mantissa
+    /// logarithm is exact for powers of two.
     #[test]
     fn power_of_ten_bit_lengths() {
-        assert_eq!(ten_pow_bit_length(646_456_992), (1 << 31) - 1);
+        assert_eq!(ten_pow_bit_length(646_456_992), 2_147_483_644);
         assert_eq!(ten_pow_bit_length(646_456_993), 1 << 31);
         assert_eq!(ten_pow_bit_length(1), 4);
         assert_eq!(ten_pow_bit_length(19), 64);
         let one = Digits::new(b"1");
         assert_eq!((one.bit_length, one.top64), (1, 1 << 63));
-        assert_eq!(product_bit_length(&one, 646_456_992), (1 << 31) - 1);
+        assert_eq!(product_bit_length(&one, 646_456_992), 2_147_483_644);
         let big = Digits::new(b"18446744073709551616");
         assert_eq!(big.bit_length, 65);
         assert_eq!(product_bit_length(&Digits::new(b"8"), 3), 13);

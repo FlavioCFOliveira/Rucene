@@ -178,8 +178,13 @@ pub fn java_message(e: &LuceneError) -> Option<String> {
         | LuceneErrorKind::Arithmetic(message)
         | LuceneErrorKind::MergeAborted(message)
         | LuceneErrorKind::Merge(message)
-        | LuceneErrorKind::AssertionError(message)
         | LuceneErrorKind::Other(message) => message.clone(),
+        // An `assert` without a message (`java_assert!(cond)`, the core's
+        // `AssertionError(String::new())`) is `new AssertionError()`, whose
+        // `getMessage()` is `null`; the core reads an empty message the same
+        // way (`rucene::util::concurrent::throwable_to_string`).
+        LuceneErrorKind::AssertionError(message) if message.is_empty() => return None,
+        LuceneErrorKind::AssertionError(message) => message.clone(),
         LuceneErrorKind::IllegalArgument { message, .. }
         | LuceneErrorKind::IllegalState { message, .. }
         | LuceneErrorKind::CheckIndex { message, .. }

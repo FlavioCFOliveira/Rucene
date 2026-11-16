@@ -359,26 +359,32 @@ mod tests {
 
     /// Regression (rmp #526): the readers are initialised in
     /// `java.util.HashMap` order (`a`..`h` hash to buckets 1..8), so the
-    /// first corrupt field reported is `a`; the port used a randomly seeded
-    /// `std` map.
+    /// first corrupt field reported is `a`, whatever the file order; the
+    /// port used a randomly seeded `std` map. Every rotation of the file
+    /// order is opened twice (16 maps): a randomly seeded map (a fresh seed
+    /// per map) reports `a` each time with probability `(1/8)^16`, and an
+    /// insertion-ordered map fails the rotations that do not start at `a`.
     #[test]
     fn fields_are_initialised_in_java_hash_map_order() {
         let names = ["h", "c", "f", "a", "e", "b", "g", "d"];
-        let mut dii = vec!["field count 8".to_string()];
-        let mut dim = Vec::new();
-        for (i, name) in names.iter().enumerate() {
-            dii.push(format!("  field fp name {name}"));
-            dii.push(format!("  field fp {}", 16 * i));
-            dim.push(format!("num data dims {name}"));
-        }
-        let dii: Vec<&str> = dii.iter().map(String::as_str).collect();
-        let dim: Vec<&str> = dim.iter().map(String::as_str).collect();
-        let error = open(&dii, &dim);
-        match &error.kind {
-            LuceneErrorKind::IllegalArgument { message, .. } => {
-                assert_eq!(message, "For input string: \"a\"")
+        for round in 0..2 * names.len() {
+            let mut dii = vec!["field count 8".to_string()];
+            let mut dim = Vec::new();
+            for i in 0..names.len() {
+                let name = names[(i + round) % names.len()];
+                dii.push(format!("  field fp name {name}"));
+                dii.push(format!("  field fp {}", 16 * i));
+                dim.push(format!("num data dims {name}"));
             }
-            other => panic!("{other:?}"),
+            let dii: Vec<&str> = dii.iter().map(String::as_str).collect();
+            let dim: Vec<&str> = dim.iter().map(String::as_str).collect();
+            let error = open(&dii, &dim);
+            match &error.kind {
+                LuceneErrorKind::IllegalArgument { message, .. } => {
+                    assert_eq!(message, "For input string: \"a\"", "round {round}")
+                }
+                other => panic!("round {round}: {other:?}"),
+            }
         }
     }
 

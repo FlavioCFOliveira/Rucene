@@ -1876,19 +1876,18 @@ pub(crate) fn file_not_found_exception(message: String) -> LuceneError {
     )))
 }
 
-/// Java's `try`-with-resources outcome: the body's error, or else the first
-/// error closing a resource (the others are suppressed).
+/// Java's `try (R1 r1 = ...; ...; RN rN = ...) { body }` outcome, `closes`
+/// in closing order (reverse declaration order): the resources nest one
+/// `try` each (JLS 14.20.3), so every close failure is added as suppressed,
+/// in closing order, to the pending throwable — the body's exception, or,
+/// when the body completed, the first close failure.
 pub(crate) fn try_with_resources<T, const N: usize>(
     body: Result<T>,
     closes: [Result<()>; N],
 ) -> Result<T> {
-    // The closes, in closing order, are `IOUtils.close`'s: the first failure
-    // with the later ones suppressed; then Java's try-with-resources: the
-    // body's exception with that failure suppressed, else that failure.
-    crate::util::java_exceptions::try_with_resource(
-        body,
-        crate::util::java_exceptions::io_utils_close(closes),
-    )
+    closes
+        .into_iter()
+        .fold(body, crate::util::java_exceptions::try_with_resource)
 }
 
 /// [`try_with_resources`] over a body that may have panicked (its

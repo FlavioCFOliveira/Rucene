@@ -20,7 +20,7 @@
 use std::collections::HashSet;
 
 use rucene::codecs::{DocValuesConsumer, DocValuesProducer, SegmentWriteState};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_file_names::segment_file_name;
 use rucene::index::{
     BinaryDocValues, DocValuesIterator, DocValuesType, FieldInfo, SortedNumericDocValues,
@@ -765,9 +765,17 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
     /// Port of `SimpleTextDocValuesWriter.close`.
     fn close(&mut self) -> Result<()> {
         if self.data.is_some() {
-            debug_assert!(!self.fields_seen.is_empty());
-            // TODO: sheisty to do this here?
+            // `try { assert !fieldsSeen.isEmpty(); ... } finally { close }`:
+            // the failed assertion is an `AssertionError` (no message) thrown
+            // inside the `try`, so `data` is still closed (while handling
+            // exceptions) before it propagates.
             let result = (|| {
+                if cfg!(debug_assertions) && self.fields_seen.is_empty() {
+                    return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                        String::new(),
+                    )));
+                }
+                // TODO: sheisty to do this here?
                 self.write_bytes(END)?;
                 self.newline()?;
                 util::write_checksum(self.data()?)
@@ -944,5 +952,43 @@ mod tests {
         binary.set_doc_values_type(DocValuesType::BINARY).unwrap();
         let error = writer.add_binary_field(&binary, &NullProducer).unwrap_err();
         assert_eq!(unchecked(&error).1, util::WRITE_AFTER_CLOSE_NPE);
+    }
+
+    /// Regression (batch #518-#528 test phase): `close()` runs `assert
+    /// !fieldsSeen.isEmpty()` inside `try { ... } finally { ... }`
+    /// (`SimpleTextDocValuesWriter.java`, `close`), so a writer closed
+    /// before any field (an aborted merge) throws a message-less
+    /// `AssertionError` under `-ea` and still closes `data`. The port's
+    /// `debug_assert!` panicked before the close and leaked the output.
+    #[test]
+    fn close_without_fields_fails_the_assert_and_closes_data() {
+        let dir = directory();
+        let si = segment_info(&dir, "_0", 1);
+        let field_infos = FieldInfos::new(Vec::new()).unwrap();
+        let updates = BufferedUpdates::default();
+        let context = DefaultIOContext::default();
+        let state = SegmentWriteState::new(
+            &NoOutputInfoStream,
+            Arc::clone(&dir),
+            &si,
+            &field_infos,
+            &updates,
+            &context,
+        );
+        let mut writer = SimpleTextDocValuesWriter::new(&state, "dat").unwrap();
+        let closed = writer.close();
+        if cfg!(debug_assertions) {
+            let error = closed.unwrap_err();
+            assert!(
+                matches!(error.kind(), LuceneErrorKind::AssertionError(m) if m.is_empty()),
+                "{error:?}"
+            );
+            // Closed before the END line: an empty file.
+            assert_eq!(dir.file_length("_0.dat").unwrap(), 0);
+        } else {
+            closed.unwrap();
+        }
+        assert!(writer.data.is_none());
+        writer.close().unwrap();
     }
 }

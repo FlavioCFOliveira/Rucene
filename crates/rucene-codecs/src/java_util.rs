@@ -204,11 +204,22 @@ impl OwnedArrayInput {
     /// `if (buf.length < len) buf = new byte[ArrayUtil.oversize(len, 1)];
     /// in.readBytes(buf, 0, len); reader.reset(buf, 0, len)`.
     ///
-    /// A negative `len` (a corrupt block) keeps the array and fails in
-    /// `readBytes` as the input's own `readBytes(b, 0, len)` does.
+    /// A negative `len` (a corrupt block) keeps the array and is handed to
+    /// the input's own `readBytes(b, 0, len)`, which rejects it or not as
+    /// that input does (`MemorySegmentIndexInput` throws, the
+    /// `ByteBuffersDataInput` loop `while (len > 0)` reads nothing); when it
+    /// returns, `reader.reset(buf, 0, len)` puts the position at `0`.
+    /// **Divergence (internal only):** Java's limit becomes `len` (negative);
+    /// the window keeps a `usize` limit of `0`. The frames never read the
+    /// limit (no `eof()`/`length()` on these readers in
+    /// `OrdsSegmentTermsEnumFrame`/`OrdsIntersectTermsEnumFrame`), and reads
+    /// are checked against the array, so no outcome differs.
     pub(crate) fn fill(&mut self, input: &mut dyn IndexInput, len: i32) -> Result<()> {
         if len < 0 {
-            return input.read_bytes_out_of_range(&mut self.bytes, 0, len);
+            input.read_bytes_out_of_range(&mut self.bytes, 0, len)?;
+            self.limit = 0;
+            self.pos = 0;
+            return Ok(());
         }
         let len = len as usize;
         if self.bytes.len() < len {
@@ -541,16 +552,20 @@ mod frame_buffer_tests {
     }
 
     /// Regression (rmp #527): a negative block length read from a file is
-    /// passed to the input's `readBytes(buf, 0, len)`, which rejects it, not
-    /// cast to a huge `usize` (an allocation abort) nor refused as
-    /// `new byte[n]`.
+    /// passed to the input's `readBytes(buf, 0, len)`, not cast to a huge
+    /// `usize` (an allocation abort) nor refused as `new byte[n]`. A
+    /// `ByteBuffersIndexInput` accepts it (`ByteBuffersDataInput.readBytes`
+    /// loops `while (len > 0)`, `ByteBuffersDataInput.java`), so the array is
+    /// kept and `reader.reset(buf, 0, len)` rewinds the position to `0`.
     #[test]
-    fn negative_fill_length_fails_in_the_inputs_read_bytes() {
+    fn negative_fill_length_is_handed_to_the_inputs_read_bytes() {
         let mut stats = OwnedArrayInput::with_len(64);
         let mut input = input_of(&[1, 2, 3]);
-        let err = stats.fill(&mut input, -1).unwrap_err().to_string();
-        assert!(err.contains("IndexOutOfBoundsException"), "{err}");
-        assert!(err.contains("-1"), "{err}");
+        stats.fill(&mut input, 3).unwrap();
+        assert_eq!(stats.read_byte().unwrap(), 1);
+        stats.fill(&mut input, -1).unwrap();
         assert_eq!(stats.bytes.len(), 64);
+        assert_eq!(stats.pos, 0);
+        assert_eq!(input.file_pointer().unwrap(), 3);
     }
 }

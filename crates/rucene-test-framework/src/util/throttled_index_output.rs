@@ -300,14 +300,17 @@ mod tests {
 
     /// `ThrottledIndexOutput.java:81`: `closeDelayMillis + getDelay(true)` is
     /// Java `long` arithmetic, which wraps; the wrapped (negative) delay makes
-    /// `sleep` return at once and the delegate is still closed.
+    /// `sleep` return at once and the delegate is still closed. `getDelay`
+    /// must be positive for the sum to wrap: 10 bytes in 1000 ns is
+    /// `(1000 / 10) * 10^9` B/s, above 1000 B/s, so the delay is
+    /// `10 * 1000 / 1000 - 0 = 10` ms.
     #[test]
     fn close_delay_sum_wraps_as_java_long() {
         let dir = ByteBuffersDirectory::default();
         let mut out =
             ThrottledIndexOutput::with_delays(1000, 0, i64::MAX, 0, 10, delegate(&dir, "e.bin"));
         out.pending_bytes = 10;
-        out.time_elapsed = 0;
+        out.time_elapsed = 1000;
         let start = Instant::now();
         out.close().unwrap();
         assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());

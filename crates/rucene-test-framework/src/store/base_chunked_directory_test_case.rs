@@ -595,15 +595,51 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
                         Assert::assert_equals(2, input.read_byte()?);
                         let mut ff = [0f32; 4];
                         input.read_floats(Some(&mut ff), 1, 3)?;
-                        for (e, a) in [0f32, 3.0, f32::MAX, -3.0].iter().zip(ff.iter()) {
-                            Assert::assert_equals_float_msg(None, *e, *a, 0.0);
-                        }
+                        assert_float_array_equals(&[0f32, 3.0, f32::MAX, -3.0], &ff);
                         Assert::assert_equals(13, input.file_pointer()?);
                         Ok(())
                     },
                 )
             },
         )
+    }
+}
+
+/// JUnit 4.13's `assertArrayEquals(float[] expecteds, float[] actuals, 0)`
+/// over arrays of the same length (`ComparisonCriteria.arrayEquals` with
+/// `InexactComparisonCriteria`): the first element `Assert.floatIsDifferent`
+/// reports (`Float.compare != 0` and not `|e - a| <= 0`) fails with an
+/// `org.junit.internal.ArrayComparisonFailure` whose message is `arrays first
+/// differed at element [i]; ` then its cause's, the element's
+/// `AssertionError` (`expected:<e> but was:<a>`, `Float.toString`).
+fn assert_float_array_equals(expecteds: &[f32], actuals: &[f32]) {
+    use randomizedtesting::jdk::lang::float_to_string;
+    for (i, (&e, &a)) in expecteds.iter().zip(actuals).enumerate() {
+        let same = (e.is_nan() && a.is_nan()) || e.to_bits() == a.to_bits();
+        // `!(Math.abs(e - a) <= delta)`: a NaN difference is outside.
+        let within_delta = matches!(
+            (e - a).abs().partial_cmp(&0.0),
+            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+        );
+        if !same && !within_delta {
+            let cause = Throwable::new(
+                "java.lang.AssertionError",
+                format!(
+                    "expected:<{}> but was:<{}>",
+                    float_to_string(e),
+                    float_to_string(a)
+                ),
+            );
+            Throwable::with_cause(
+                "org.junit.internal.ArrayComparisonFailure",
+                Some(format!(
+                    "arrays first differed at element [{i}]; {}",
+                    cause.message().unwrap_or_default()
+                )),
+                cause,
+            )
+            .throw()
+        }
     }
 }
 
@@ -624,4 +660,34 @@ fn assert_slice(
     let from = outer_slice_start + slice_start;
     assert_bytes_ref_equals(&bytes[from..from + slice_length], &slice);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `assertArrayEquals(float[], float[], 0)` fails with JUnit's
+    /// `ArrayComparisonFailure`: `arrays first differed at element [i]; `
+    /// then the element's `AssertionError` message, its cause. The port
+    /// threw the element's message alone.
+    #[test]
+    fn float_array_mismatch_names_the_first_differing_element() {
+        assert_float_array_equals(&[0.0, 3.0], &[0.0, 3.0]);
+        // `-0f` and `0f` differ by `Float.compare` but `|e - a| <= 0`.
+        assert_float_array_equals(&[0.0], &[-0.0]);
+        let payload = std::panic::catch_unwind(|| {
+            assert_float_array_equals(&[0.0, 3.0, 1.0], &[0.0, 3.5, 2.0])
+        })
+        .unwrap_err();
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "org.junit.internal.ArrayComparisonFailure");
+        assert_eq!(
+            t.message(),
+            Some("arrays first differed at element [1]; expected:<3.0> but was:<3.5>")
+        );
+        assert_eq!(
+            t.cause().map(|c| c.class_name().to_string()).as_deref(),
+            Some("java.lang.AssertionError")
+        );
+    }
 }

@@ -392,7 +392,10 @@ mod use_after_finish_tests {
         fw.add(&term, &stats, 0).unwrap();
         fw.finish(0).unwrap();
 
-        let add = message(fw.add(&term, &stats, 0));
+        // A greater term: an equal one fails first in
+        // `StringHelper.bytesDifference` ("terms out of order"), as in Java.
+        let next = BytesRef::new(b"b".to_vec());
+        let add = message(fw.add(&next, &stats, 0));
         assert!(
             add.contains(
                 "Cannot invoke \"org.apache.lucene.util.packed.MonotonicBlockPackedWriter.add(long)\" \

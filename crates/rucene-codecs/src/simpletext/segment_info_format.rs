@@ -465,14 +465,18 @@ mod tests {
         let error = read_error(&dir, &[0; 16]);
         assert_eq!(illegal_argument(&error), "Negative number of mappings: -1");
 
+        // `createOutput` refuses an existing file: one directory per case.
+        let dir = directory();
         si_file(dir.as_ref(), "0", &["    attributes -4"]);
         let error = read_error(&dir, &[0; 16]);
         assert_eq!(illegal_argument(&error), "Negative number of mappings: -4");
 
+        let dir = directory();
         si_file(dir.as_ref(), "0", &["    attributes 0", "    files -3"]);
         let error = read_error(&dir, &[0; 16]);
         assert_eq!(illegal_argument(&error), "Negative number of elements: -3");
 
+        let dir = directory();
         let id = "    id [00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]";
         si_file(
             dir.as_ref(),

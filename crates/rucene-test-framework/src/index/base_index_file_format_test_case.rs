@@ -96,10 +96,10 @@ use crate::util::ram_usage_tester::{self, JavaObject, Queue, RamObject};
 use crate::util::TestUtil;
 
 /// Throws a Rucene error out of a test method, as Java's `throws Exception`:
-/// the throwable has the Java class and message the error stands for.
+/// the throwable is the one the error stands for (class, message — `null`
+/// staying `null` —, cause and suppressed exceptions).
 pub fn rethrow(e: LuceneError) -> ! {
-    let (class, message) = crate::analysis::base_token_stream_test_case::java_class_and_message(&e);
-    Throwable::new(class, message).throw()
+    crate::util::java_exceptions::java_throwable(&e).throw()
 }
 
 // Java's try-with-resources, `IOUtils.close` and `catch (Exception e)`
@@ -2002,6 +2002,37 @@ mod tests {
     use rucene::store::ByteBuffersDirectory;
 
     use super::*;
+
+    /// `rethrow` throws the throwable the error stands for: a `null`
+    /// message stays `null` (the port built the literal `<null>`), and the
+    /// cause is kept.
+    #[test]
+    fn rethrow_keeps_a_null_message_null() {
+        let payload = std::panic::catch_unwind(|| {
+            rethrow(LuceneError::from(LuceneErrorKind::AssertionError(
+                String::new(),
+            )))
+        })
+        .unwrap_err();
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+        assert_eq!(t.message(), None);
+        let cause = LuceneError::illegal_state("inner");
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            rethrow(LuceneError::from(LuceneErrorKind::Unchecked {
+                class: "java.lang.RuntimeException",
+                message: None,
+                cause: Some(std::sync::Arc::new(cause)),
+            }))
+        }))
+        .unwrap_err();
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.message(), None);
+        assert_eq!(
+            t.cause().map(|c| c.class_name().to_string()).as_deref(),
+            Some("java.lang.IllegalStateException")
+        );
+    }
 
     fn io_error(message: &str) -> LuceneError {
         LuceneError::from(LuceneErrorKind::Io(std::io::Error::other(

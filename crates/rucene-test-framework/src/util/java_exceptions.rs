@@ -537,6 +537,23 @@ mod tests {
         assert_eq!(t.to_string(), "java.lang.RuntimeException");
     }
 
+    /// An `assert` without a message (`java_assert!(cond)`, the core's
+    /// `AssertionError(String::new())`) is `new AssertionError()`:
+    /// `getMessage()` is `null`, not `""`; a message stays a message.
+    #[test]
+    fn a_bare_assertion_has_a_null_message() {
+        let e = LuceneError::from(LuceneErrorKind::AssertionError(String::new()));
+        assert_eq!(
+            crate::analysis::base_token_stream_test_case::java_message(&e),
+            None
+        );
+        let t = java_throwable(&e);
+        assert_eq!(t.message(), None);
+        assert_eq!(t.to_string(), "java.lang.AssertionError");
+        let e = LuceneError::from(LuceneErrorKind::AssertionError("m".into()));
+        assert_eq!(java_throwable(&e).message(), Some("m"));
+    }
+
     /// `try { body } catch (Exception e)` over a value: an `Err` or a
     /// non-`Error` panic is caught; an `Error` (as an `Err` or a panic)
     /// propagates, as `catch (Exception)` never catches it.
