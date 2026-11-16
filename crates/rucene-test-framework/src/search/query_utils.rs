@@ -500,7 +500,7 @@ impl QueryUtils {
                 for &o in order {
                     sbord.push_str(if o == skip_op { " skip()" } else { " next()" });
                 }
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "ERROR matching docs:\n\t{}doc={}, scorerDoc={}\n\t{}tscorer.more={}\n\t{}\
                      scorerScore={} scoreDiff={} maxDiff={}\n\t{}scorerScore2={} scorerDiff={}\
                      \n\thitCollector.doc={} score={}\n\t Scorer=<scorer>\n\t Query={}  \
@@ -522,7 +522,7 @@ impl QueryUtils {
                     query_to_string(&**q),
                     sbord,
                     if op == skip_op { " skip()" } else { " next()" }
-                );
+                ));
             }
             resume_unwind(failure);
         }

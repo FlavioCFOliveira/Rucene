@@ -341,11 +341,16 @@ fn is_line_terminator(c: char) -> bool {
 impl RunListener for RunListenerPrintReproduceInfo {
     /// `testRunStarted(description)`.
     fn test_run_started(&self, _description: &Arc<Description>) {
+        {
+            let mut s = self.state();
+            s.suite_failed = false;
+            s.test_failed = false;
+            s.scope = Some(LifecycleScope::Suite);
+        }
+        // `RandomizedContext.current()` may throw: Java has reset the flags
+        // above first (`RunListenerPrintReproduceInfo.java:77-81`).
         let target = RandomizedContext::current().get_target_class_object();
         let mut s = self.state();
-        s.suite_failed = false;
-        s.test_failed = false;
-        s.scope = Some(LifecycleScope::Suite);
         let Some(target_class) = target else {
             exception::throw_without_message(exception::NULL_POINTER_EXCEPTION)
         };
@@ -400,5 +405,42 @@ impl RunListener for RunListenerPrintReproduceInfo {
         if suite_failed {
             self.report_additional_failure_info(None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::Arc;
+
+    use randomizedtesting::junit::{Description, Failure, RunListener};
+    use randomizedtesting::LifecycleScope;
+
+    use super::RunListenerPrintReproduceInfo;
+
+    /// `RunListenerPrintReproduceInfo.java:77-81`: `testRunStarted` resets
+    /// `suiteFailed`, `testFailed` and `scope` before
+    /// `RandomizedContext.current()`, so they are reset even when the lookup
+    /// throws (here: a thread with no randomized context).
+    #[test]
+    fn test_run_started_resets_state_before_the_context_lookup() {
+        let listener = RunListenerPrintReproduceInfo::new();
+        let description = Description::create_suite_description("Suite", Vec::new());
+        listener.test_started(&description);
+        listener.test_failure(&Failure::new(
+            Arc::clone(&description),
+            randomizedtesting::jdk::exception::Throwable::from_text("boom"),
+        ));
+        {
+            let s = listener.state();
+            assert!(s.test_failed);
+            assert_eq!(s.scope, Some(LifecycleScope::Test));
+        }
+        let thrown = catch_unwind(AssertUnwindSafe(|| listener.test_run_started(&description)));
+        assert!(thrown.is_err(), "no randomized context on this thread");
+        let s = listener.state();
+        assert!(!s.test_failed);
+        assert!(!s.suite_failed);
+        assert_eq!(s.scope, Some(LifecycleScope::Suite));
     }
 }

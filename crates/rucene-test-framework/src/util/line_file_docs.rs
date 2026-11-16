@@ -19,7 +19,7 @@
 //! benchmark's `LineDocSource` + `DocMaker`, so tests can enumerate documents
 //! from a line file created by benchmark's `WriteLineDoc` task.
 
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, Read};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -32,6 +32,10 @@ use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::{IndexOptions, IndexableField};
 use rucene::util::atomic_ref_cell::AtomicRefCell;
 use rucene::util::CloseableThreadLocal;
+
+use randomizedtesting::jdk::{exception, system};
+use rucene_analysis_common::jdk::charset::Charset;
+use rucene_analysis_common::jdk::io::{BufferedReader, CodingErrorAction, InputStreamReader};
 
 use crate::jdk::gzip::GzipInputStream;
 use crate::util::lucene_test_case::{TEST_LINE_DOCS_FILE, VERBOSE};
@@ -59,7 +63,7 @@ fn resource(path: &str) -> Option<&'static [u8]> {
 }
 
 /// `BUFFER_SIZE`: 64K.
-const BUFFER_SIZE: usize = 1 << 16;
+const BUFFER_SIZE: i32 = 1 << 16;
 
 /// `SEP`.
 const SEP: char = '\t';
@@ -82,60 +86,28 @@ impl Read for Source {
     }
 }
 
-/// `BufferedReader(new InputStreamReader(is, UTF-8 decoder that REPORTs))`
-/// as `readLine` uses it: a line ends at `\n`, `\r` or `\r\n`.
-struct LineReader {
-    reader: BufReader<Source>,
-    /// `skipLF`: the previous line ended with `\r`.
-    skip_lf: bool,
+/// `new BufferedReader(new InputStreamReader(is, decoder), BUFFER_SIZE)`
+/// with a UTF-8 decoder that `REPORT`s malformed input
+/// (`LineFileDocs.java:216-221`): the JDK reader emulation, so a
+/// `MalformedInputException` carries the JDK's length and surfaces at the
+/// `readLine` whose read-ahead decodes it, as in Java.
+type LineReader = BufferedReader<InputStreamReader<Source>>;
+
+/// `reader.readLine()` as a `String` (the decoders produce no lone
+/// surrogate, so the UTF-16 units convert losslessly).
+fn read_line(reader: &mut BufferedReader<InputStreamReader<Source>>) -> Result<Option<String>> {
+    Ok(reader
+        .read_line()?
+        .map(|units| String::from_utf16_lossy(&units)))
 }
 
-impl LineReader {
-    /// `readLine()`: the next line without its terminator, `None` at the end.
-    ///
-    /// # Errors
-    ///
-    /// The source's errors; `MalformedInputException` (`Input length = 1`)
-    /// for bytes that are not UTF-8, as the reporting decoder throws.
-    fn read_line(&mut self) -> io::Result<Option<String>> {
-        let mut line = Vec::new();
-        loop {
-            let buf = self.reader.fill_buf()?;
-            if buf.is_empty() {
-                break;
-            }
-            let mut start = 0;
-            if self.skip_lf {
-                self.skip_lf = false;
-                if buf[0] == b'\n' {
-                    start = 1;
-                }
-            }
-            match buf[start..].iter().position(|&b| b == b'\n' || b == b'\r') {
-                Some(i) => {
-                    line.extend_from_slice(&buf[start..start + i]);
-                    self.skip_lf = buf[start + i] == b'\r';
-                    self.reader.consume(start + i + 1);
-                    return decode(line).map(Some);
-                }
-                None => {
-                    line.extend_from_slice(&buf[start..]);
-                    let n = buf.len();
-                    self.reader.consume(n);
-                }
-            }
-        }
-        if line.is_empty() {
-            // A final `\r\n` split across reads leaves nothing behind it.
-            return Ok(None);
-        }
-        decode(line).map(Some)
+/// The `IOException` a [`LuceneError`] stands for, for the `io::Result`
+/// methods.
+fn into_io(e: LuceneError) -> io::Error {
+    match e.into_kind() {
+        LuceneErrorKind::Io(io) => io,
+        other => io::Error::other(LuceneError::from(other)),
     }
-}
-
-fn decode(line: Vec<u8>) -> io::Result<String> {
-    String::from_utf8(line)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Input length = 1"))
 }
 
 /// The document [`LineFileDocs::next_doc`] returns: the calling thread's one
@@ -229,7 +201,9 @@ impl LineFileDocs {
                     let size = bytes.len() as i64;
                     let seek_to = Self::random_seek_pos(Some(&self.random), size);
                     if *VERBOSE {
-                        println!("TEST: LineFileDocs: file seek to fp={seek_to} on open");
+                        system::out_println(&format!(
+                            "TEST: LineFileDocs: file seek to fp={seek_to} on open"
+                        ));
                     }
                     let mut cursor = io::Cursor::new(bytes);
                     cursor.set_position(seek_to as u64);
@@ -246,10 +220,16 @@ impl LineFileDocs {
                 }
             }
         };
-        Ok(LineReader {
-            reader: BufReader::with_capacity(BUFFER_SIZE, source),
-            skip_lf: false,
-        })
+        let decoder = Charset::utf_8()
+            .new_decoder()
+            .map_err(into_io)?
+            .on_malformed_input(CodingErrorAction::Report)
+            .on_unmappable_character(CodingErrorAction::Report);
+        BufferedReader::with_size(
+            InputStreamReader::with_decoder(source, decoder),
+            BUFFER_SIZE,
+        )
+        .map_err(into_io)
     }
 
     /// The `needSkip` branch of `open()`: a skip point of the `.seek` file
@@ -266,24 +246,27 @@ impl LineFileDocs {
         };
         // explicitly insert implicit 0 as the first skip point:
         let mut skip_points = vec![0i64];
-        let mut reader = LineReader {
-            reader: BufReader::new(Source::Plain(io::Cursor::new(seek_bytes))),
-            skip_lf: false,
-        };
-        while let Some(line) = reader.read_line()? {
-            let point =
-                randomizedtesting::jdk::lang::parse_long(randomizedtesting::jdk::lang::trim(&line))
-                    .ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("For input string: \"{}\"", line.trim()),
-                        )
-                    })?;
+        // `new BufferedReader(new InputStreamReader(seekIS, UTF_8))`: malformed
+        // input is replaced, not reported.
+        let mut reader = BufferedReader::new(InputStreamReader::new_utf8(Source::Plain(
+            io::Cursor::new(seek_bytes),
+        )));
+        while let Some(line) = read_line(&mut reader).map_err(into_io)? {
+            // `Long.parseLong(line.trim())`: an unchecked `NumberFormatException`.
+            let trimmed = randomizedtesting::jdk::lang::trim(&line);
+            let point = randomizedtesting::jdk::lang::parse_long(trimmed).unwrap_or_else(|| {
+                exception::throw(
+                    "java.lang.NumberFormatException",
+                    format!("For input string: \"{trimmed}\""),
+                )
+            });
             skip_points.push(point);
         }
         let seek_to = skip_points[self.random.next_int_bound(skip_points.len() as i32) as usize];
         if *VERBOSE {
-            println!("TEST: LineFileDocs: stream skip to fp={seek_to} on open");
+            system::out_println(&format!(
+                "TEST: LineFileDocs: stream skip to fp={seek_to} on open"
+            ));
         }
         Ok(seek_to as usize)
     }
@@ -295,6 +278,10 @@ impl LineFileDocs {
     /// The errors of reopening the file.
     pub fn reset(&self) -> io::Result<()> {
         let mut reader = self.lock();
+        // `reader.close()` on the `null` reader of a closed instance.
+        if reader.is_none() {
+            exception::throw_without_message(exception::NULL_POINTER_EXCEPTION)
+        }
         *reader = None;
         *reader = Some(self.open()?);
         self.id.store(0, Ordering::SeqCst);
@@ -308,29 +295,33 @@ impl LineFileDocs {
     ///
     /// The file's errors; `RuntimeException` (`line: [...] is in an invalid
     /// format !`) for a line without two tabs.
+    ///
+    /// # Panics
+    ///
+    /// `NullPointerException`, as Java, after [`close`](Self::close) and
+    /// for a file without lines.
     pub fn next_doc(&self) -> Result<SharedDocument> {
         let line = {
             let mut guard = self.lock();
-            let reader = guard.as_mut().ok_or_else(|| {
-                LuceneError::from(LuceneErrorKind::Other("LineFileDocs is closed".to_string()))
-            })?;
-            match reader.read_line()? {
+            // `reader.readLine()` on the `null` reader of a closed instance.
+            let Some(reader) = guard.as_mut() else {
+                exception::throw_without_message(exception::NULL_POINTER_EXCEPTION)
+            };
+            match read_line(reader)? {
                 Some(line) => line,
                 None => {
                     // Always rewind at end:
                     if *VERBOSE {
-                        println!("TEST: LineFileDocs: now rewind file...");
+                        system::out_println("TEST: LineFileDocs: now rewind file...");
                     }
                     *guard = None;
                     let mut reader = self.open()?;
-                    let line = reader.read_line()?;
+                    let line = read_line(&mut reader);
                     *guard = Some(reader);
-                    line.ok_or_else(|| {
-                        LuceneError::from(LuceneErrorKind::Io(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "empty line file",
-                        )))
-                    })?
+                    // A file without lines: `line.indexOf(SEP)` on `null`.
+                    line?.unwrap_or_else(|| {
+                        exception::throw_without_message(exception::NULL_POINTER_EXCEPTION)
+                    })
                 }
             }
         };
@@ -567,22 +558,63 @@ pub fn date_field_value_to_local_date_time(s: &str) -> std::result::Result<Local
         if b.get(6) != Some(&b'-') {
             return Err(at(6));
         }
-        let year = digits(7, 4).ok_or_else(|| at(7))?;
-        let checks = [(11, b' '), (14, b':'), (17, b':')];
+        // `uuuu`: `appendValue(YEAR, 4, 19, SignStyle.EXCEEDS_PAD)`, parsed
+        // strictly: an optional sign, 4 to 19 digits, `+` only (and then
+        // required) beyond 4 digits, no `-0`.
+        let mut pos = 7;
+        let sign = match b.get(pos) {
+            Some(b'+') => Some(true),
+            Some(b'-') => Some(false),
+            _ => None,
+        };
+        if sign.is_some() {
+            pos += 1;
+        }
+        let digits_start = pos;
+        while pos < b.len() && pos - digits_start < 19 && b[pos].is_ascii_digit() {
+            pos += 1;
+        }
+        let width = pos - digits_start;
+        if width < 4 {
+            return Err(at(if sign.is_some() { 7 } else { digits_start }));
+        }
+        match sign {
+            Some(true) if width <= 4 => return Err(at(7)),
+            None if width > 4 => return Err(at(7)),
+            _ => {}
+        }
+        let magnitude: i128 = s[digits_start..pos].parse().map_err(|_| at(7))?;
+        if sign == Some(false) && magnitude == 0 {
+            return Err(at(7));
+        }
+        let year = if sign == Some(false) {
+            -magnitude
+        } else {
+            magnitude
+        };
+        // `ChronoField.YEAR` is `-999999999..999999999`.
+        if !(-999_999_999..=999_999_999).contains(&year) {
+            return Err(fail(&format!(
+                ": Invalid value for Year (valid values -999999999 - 999999999): {year}"
+            )));
+        }
+        let year = year as i32;
+        let o = pos - 11;
+        let checks = [(11 + o, b' '), (14 + o, b':'), (17 + o, b':')];
         for (i, c) in checks {
             if b.get(i) != Some(&c) {
                 return Err(at(i));
             }
         }
-        let hour = digits(12, 2).ok_or_else(|| at(12))?;
-        let minute = digits(15, 2).ok_or_else(|| at(15))?;
-        let second = digits(18, 2).ok_or_else(|| at(18))?;
-        let nano = match b.len() {
+        let hour = digits(12 + o, 2).ok_or_else(|| at(12 + o))?;
+        let minute = digits(15 + o, 2).ok_or_else(|| at(15 + o))?;
+        let second = digits(18 + o, 2).ok_or_else(|| at(18 + o))?;
+        let nano = match b.len() - o {
             20 => 0,
-            24 if b[20] == b'.' => digits(21, 3).ok_or_else(|| at(21))? * 1_000_000,
-            _ => return Err(fail(&format!(", unparsed text found at index {}", 20))),
+            24 if b[20 + o] == b'.' => digits(21 + o, 3).ok_or_else(|| at(21 + o))? * 1_000_000,
+            _ => return Err(fail(&format!(", unparsed text found at index {}", 20 + o))),
         };
-        (year as i32, month, day, hour, minute, second, nano)
+        (year, month, day, hour, minute, second, nano)
     };
     let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
     let month_length = match month {
@@ -625,5 +657,79 @@ mod tests {
         );
         assert!(date_field_value_to_local_date_time("2023-02-30").is_err());
         assert!(date_field_value_to_local_date_time("12-Foo-2010 12:32:45").is_err());
+    }
+
+    /// `uuuu` is `appendValue(YEAR, 4, 19, SignStyle.EXCEEDS_PAD)`: strictly
+    /// parsed, a year beyond four digits needs (and four digits refuse) `+`,
+    /// and a negative year is allowed.
+    #[test]
+    fn enwiki_year_follows_exceeds_pad_strict_parsing() {
+        assert_eq!(
+            date_field_value_to_local_date_time("12-JAN-+20100 12:32:45"),
+            Ok(LocalDateTime::of(20100, 1, 12, 12, 32, 45))
+        );
+        assert_eq!(
+            date_field_value_to_local_date_time("12-JAN--2010 12:32:45.500"),
+            Ok(LocalDateTime {
+                nano: 500_000_000,
+                ..LocalDateTime::of(-2010, 1, 12, 12, 32, 45)
+            })
+        );
+        assert!(date_field_value_to_local_date_time("12-JAN-20100 12:32:45").is_err());
+        assert!(date_field_value_to_local_date_time("12-JAN-+2010 12:32:45").is_err());
+        assert!(date_field_value_to_local_date_time("12-JAN--0000 12:32:45").is_err());
+    }
+
+    fn scratch_file(name: &str, bytes: &[u8]) -> String {
+        let p = std::env::temp_dir().join(format!(
+            "rucene-line-file-docs-{name}-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&p, bytes).unwrap();
+        p.to_str().unwrap().to_string()
+    }
+
+    /// `LineFileDocs.java:282`: after `close()` the reader is `null`, and
+    /// `nextDoc` throws `NullPointerException`.
+    #[test]
+    fn next_doc_after_close_is_a_null_pointer_exception() {
+        let path = scratch_file("closed", b"t\td\tb\n");
+        let docs = LineFileDocs::new(&JdkRandom::new(1), &path).unwrap();
+        docs.close();
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| docs.next_doc()))
+            .expect_err("NPE");
+        let t = randomizedtesting::jdk::exception::Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.NullPointerException");
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// `LineFileDocs.java:216-221`: the 64K-unit `BufferedReader` over a
+    /// reporting decoder decodes ahead, so malformed UTF-8 later in a small
+    /// file fails the first `readLine` with the JDK's
+    /// `MalformedInputException("Input length = 1")` (`C3 28`).
+    #[test]
+    fn malformed_utf8_surfaces_at_the_first_read_ahead() {
+        let mut bytes = Vec::new();
+        for _ in 0..64 {
+            bytes.extend_from_slice(b"title\tdate\tbody\n");
+        }
+        bytes.extend_from_slice(b"\xC3(\tdate\tbody\n");
+        let path = scratch_file("malformed", &bytes);
+        let docs = LineFileDocs::new(&JdkRandom::new(7), &path).unwrap();
+        let e = docs
+            .next_doc()
+            .expect_err("the read-ahead meets the malformed bytes");
+        let LuceneErrorKind::Io(io) = e.kind() else {
+            panic!("expected an IOException, got {e:?}");
+        };
+        assert_eq!(
+            rucene::store::java_nio_file::java_class_of(io),
+            "java.nio.charset.MalformedInputException"
+        );
+        assert_eq!(
+            rucene::store::java_nio_file::java_message_of(io).as_deref(),
+            Some("Input length = 1")
+        );
+        std::fs::remove_file(&path).ok();
     }
 }

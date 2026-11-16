@@ -245,10 +245,10 @@ impl ShardSearchingTestBase {
         new_searcher: &IndexSearcher,
     ) -> Result<()> {
         if *VERBOSE {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "REOPEN: nodeID={node_id} version={version} maxDoc={}",
                 new_searcher.get_index_reader().max_doc()
-            );
+            ));
         }
 
         // Broadcast new collection stats for this node to all
@@ -541,8 +541,8 @@ fn change_indices_run(base: &Arc<ShardSearchingTestBase>) {
         Err(payload) => Some(Throwable::from_panic(payload)),
     };
     if let Some(t) = failure {
-        println!("FAILED:");
-        println!("{t:?}");
+        randomizedtesting::jdk::system::out_println("FAILED:");
+        randomizedtesting::jdk::system::out_println(&format!("{t:?}"));
         Throwable::from_cause("java.lang.RuntimeException", t).throw();
     }
 }

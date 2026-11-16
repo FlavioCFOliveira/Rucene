@@ -886,7 +886,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
                 // Some docs don't have a point:
                 lats[doc_id] = f64::NAN;
                 if *VERBOSE {
-                    println!("  doc={doc_id} is missing");
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "  doc={doc_id} is missing"
+                    ));
                 }
                 continue;
             }
@@ -902,21 +904,21 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
                 // Fully identical point:
                 lons[doc_id] = lons[old_doc_id];
                 if *VERBOSE {
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "  doc={doc_id} lat={} lon={} (same lat/lon as doc={old_doc_id})",
                         double_to_string(lat),
                         double_to_string(lons[doc_id])
-                    );
+                    ));
                 }
             } else {
                 lons[doc_id] = self.next_longitude();
                 have_real_doc = true;
                 if *VERBOSE {
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "  doc={doc_id} lat={} lon={}",
                         double_to_string(lat),
                         double_to_string(lons[doc_id])
-                    );
+                    ));
                 }
             }
             lats[doc_id] = lat;
@@ -942,7 +944,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
                 // Some docs don't have a point:
                 lats[doc_id] = f64::NAN;
                 if *VERBOSE {
-                    println!("  doc={doc_id} is missing");
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "  doc={doc_id} is missing"
+                    ));
                 }
                 continue;
             }
@@ -958,21 +962,21 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
                 // Fully identical point:
                 lats[doc_id] = lats[old_doc_id];
                 if *VERBOSE {
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "  doc={doc_id} lat={} lon={} (same lat/lon as doc={old_doc_id})",
                         double_to_string(lats[doc_id]),
                         double_to_string(the_lon)
-                    );
+                    ));
                 }
             } else {
                 lats[doc_id] = self.next_latitude();
                 have_real_doc = true;
                 if *VERBOSE {
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "  doc={doc_id} lat={} lon={}",
                         double_to_string(lats[doc_id]),
                         double_to_string(the_lon)
-                    );
+                    ));
                 }
             }
             lons[doc_id] = the_lon;
@@ -1011,17 +1015,17 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             self.add_point_to_doc(FIELD_NAME, &mut doc, lats[2 * id + 1], lons[2 * id + 1])?;
 
             if *VERBOSE {
-                println!("id={id}");
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!("id={id}"));
+                randomizedtesting::jdk::system::out_println(&format!(
                     "  lat={} lon={}",
                     double_to_string(lats[2 * id]),
                     double_to_string(lons[2 * id])
-                );
-                println!(
+                ));
+                randomizedtesting::jdk::system::out_println(&format!(
                     "  lat={} lon={}",
                     double_to_string(lats[2 * id + 1]),
                     double_to_string(lons[2 * id + 1])
-                );
+                ));
             }
             w.add_document(&doc)?;
         }
@@ -1042,7 +1046,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             let rect = self.next_box();
 
             if *VERBOSE {
-                println!("\nTEST: iter={iter} rect={rect}");
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "\nTEST: iter={iter} rect={rect}"
+                ));
             }
 
             let query = self.new_rect_query(
@@ -1076,19 +1082,25 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
                         .and_then(|f| f.string_value())
                         .unwrap_or_else(|| "null".to_string());
                     if expected {
-                        println!("TEST: id={id} docID={doc_id} should match but did not");
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "TEST: id={id} docID={doc_id} should match but did not"
+                        ));
                     } else {
-                        println!("TEST: id={id} docID={doc_id} should not match but did");
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "TEST: id={id} docID={doc_id} should not match but did"
+                        ));
                     }
-                    println!("  rect={rect}");
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!("  rect={rect}"));
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "  lat={} lon={}\n  lat={} lon={}",
                         double_to_string(lat_doc1),
                         double_to_string(lon_doc1),
                         double_to_string(lat_doc2),
                         double_to_string(lon_doc2)
-                    );
-                    println!("  result1={result1} result2={result2}");
+                    ));
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "  result1={result1} result2={result2}"
+                    ));
                     fail = true;
                 }
             }
@@ -1129,7 +1141,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
         let num_points = LuceneTestCase::at_least(count) as usize;
 
         if *VERBOSE {
-            println!("TEST: numPoints={num_points}");
+            randomizedtesting::jdk::system::out_println(&format!("TEST: numPoints={num_points}"));
         }
 
         let mut lats = vec![0.0; num_points];
@@ -1143,7 +1155,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
                 // Some docs don't have a point:
                 lats[id] = f64::NAN;
                 if *VERBOSE {
-                    println!("  id={id} is missing");
+                    randomizedtesting::jdk::system::out_println(&format!("  id={id} is missing"));
                 }
                 continue;
             }
@@ -1161,22 +1173,22 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
                     lats[id] = lats[old_id];
                     lons[id] = self.next_longitude();
                     if *VERBOSE {
-                        println!(
+                        randomizedtesting::jdk::system::out_println(&format!(
                             "  id={id} lat={} lon={} (same lat as doc={old_id})",
                             double_to_string(lats[id]),
                             double_to_string(lons[id])
-                        );
+                        ));
                     }
                 } else if x == 1 {
                     // Identical lon to old point
                     lats[id] = self.next_latitude();
                     lons[id] = lons[old_id];
                     if *VERBOSE {
-                        println!(
+                        randomizedtesting::jdk::system::out_println(&format!(
                             "  id={id} lat={} lon={} (same lon as doc={old_id})",
                             double_to_string(lats[id]),
                             double_to_string(lons[id])
-                        );
+                        ));
                     }
                 } else {
                     assert_eq!(x, 2);
@@ -1184,11 +1196,11 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
                     lats[id] = lats[old_id];
                     lons[id] = lons[old_id];
                     if *VERBOSE {
-                        println!(
+                        randomizedtesting::jdk::system::out_println(&format!(
                             "  id={id} lat={} lon={} (same lat/lon as doc={old_id})",
                             double_to_string(lats[id]),
                             double_to_string(lons[id])
-                        );
+                        ));
                     }
                 }
             } else {
@@ -1196,11 +1208,11 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
                 lons[id] = self.next_longitude();
                 have_real_doc = true;
                 if *VERBOSE {
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "  id={id} lat={} lon={}",
                         double_to_string(lats[id]),
                         double_to_string(lons[id])
-                    );
+                    ));
                 }
             }
         }
@@ -1278,7 +1290,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         for iter in 0..iters {
             if *VERBOSE {
-                println!("\nTEST: iter={iter} s={s:?}");
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "\nTEST: iter={iter} s={s:?}"
+                ));
             }
 
             let rect = self.next_box();
@@ -1292,7 +1306,10 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             )?;
 
             if *VERBOSE {
-                println!("  query={}", query.to_query_string(""));
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "  query={}",
+                    query.to_query_string("")
+                ));
             }
 
             let hits = search_index(&s, Arc::clone(&query), max_doc)?;
@@ -1343,7 +1360,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         for iter in 0..iters {
             if *VERBOSE {
-                println!("\nTEST: iter={iter} s={s:?}");
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "\nTEST: iter={iter} s={s:?}"
+                ));
             }
 
             // Distance
@@ -1357,17 +1376,20 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
                     + 1.0;
 
             if *VERBOSE {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "  radiusMeters = {}",
                     decimal_format_grouped_2(radius_meters)
-                );
+                ));
             }
 
             let query =
                 self.new_distance_query(Some(FIELD_NAME), center_lat, center_lon, radius_meters)?;
 
             if *VERBOSE {
-                println!("  query={}", query.to_query_string(""));
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "  query={}",
+                    query.to_query_string("")
+                ));
             }
 
             let hits = search_index(&s, Arc::clone(&query), max_doc)?;
@@ -1434,7 +1456,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         for iter in 0..iters {
             if *VERBOSE {
-                println!("\nTEST: iter={iter} s={s:?}");
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "\nTEST: iter={iter} s={s:?}"
+                ));
             }
 
             // Polygon
@@ -1442,7 +1466,10 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             let query = self.new_polygon_query(Some(FIELD_NAME), vec![polygon.clone()])?;
 
             if *VERBOSE {
-                println!("  query={}", query.to_query_string(""));
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "  query={}",
+                    query.to_query_string("")
+                ));
             }
 
             let hits = search_index(&s, Arc::clone(&query), max_doc)?;
@@ -1494,7 +1521,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
         for iter in 0..iters {
             if *VERBOSE {
-                println!("\nTEST: iter={iter} s={s:?}");
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "\nTEST: iter={iter} s={s:?}"
+                ));
             }
 
             // Polygon
@@ -1502,7 +1531,10 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             let query = self.new_geometry_query(FIELD_NAME, geometries.clone())?;
 
             if *VERBOSE {
-                println!("  query={}", query.to_query_string(""));
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "  query={}",
+                    query.to_query_string("")
+                ));
             }
 
             let hits = search_index(&s, Arc::clone(&query), max_doc)?;
@@ -1566,7 +1598,9 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
                 )])?;
                 deleted.insert(id_to_delete);
                 if *VERBOSE {
-                    println!("  delete id={id_to_delete}");
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "  delete id={id_to_delete}"
+                    ));
                 }
             }
         }
@@ -1801,24 +1835,24 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
                 Assert::assert_equals(&expected, &actual);
             }));
             if let Err(payload) = outcome {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "center: ({},{}), radius={}",
                     double_to_string(lat),
                     double_to_string(lon),
                     double_to_string(radius)
-                );
+                ));
                 for doc in 0..reader.max_doc() {
                     let stored = stored_fields.document(doc)?;
                     let doc_latitude = double_value(&stored, "lat");
                     let doc_longitude = double_value(&stored, "lon");
                     let distance =
                         SloppyMath::haversin_meters(lat, lon, doc_latitude, doc_longitude);
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "{doc}: ({},{}), distance={}",
                         double_to_string(doc_latitude),
                         double_to_string(doc_longitude),
                         double_to_string(distance)
-                    );
+                    ));
                 }
                 std::panic::resume_unwind(payload);
             }

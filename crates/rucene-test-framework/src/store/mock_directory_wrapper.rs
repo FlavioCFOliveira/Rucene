@@ -713,22 +713,24 @@ impl MockDirectoryWrapper {
     pub fn corrupt_unknown_files(&self) -> Result<()> {
         let _monitor = self.core.monitor.enter();
         if *VERBOSE {
-            println!("MDW: corrupt unknown files");
+            randomizedtesting::jdk::system::out_println("MDW: corrupt unknown files");
         }
         let mut known_files = std::collections::HashSet::new();
         for file_name in self.list_all()? {
             if file_name.starts_with(SEGMENTS) {
                 if *VERBOSE {
-                    println!("MDW: read {file_name} to gather files it references");
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "MDW: read {file_name} to gather files it references"
+                    ));
                 }
                 let infos = match SegmentInfos::read_commit(self.as_directory(), &file_name) {
                     Ok(infos) => infos,
                     Err(e) => {
                         if *VERBOSE {
-                            println!(
+                            randomizedtesting::jdk::system::out_println(&format!(
                                 "MDW: exception reading segment infos {file_name}; files: [{}]",
                                 self.list_all()?.join(", ")
-                            );
+                            ));
                         }
                         return Err(e);
                     }
@@ -917,7 +919,9 @@ impl MockDirectoryWrapper {
             }
 
             if *VERBOSE {
-                println!("MockDirectoryWrapper: {action} unsynced file: {name}");
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "MockDirectoryWrapper: {action} unsynced file: {name}"
+                ));
             }
         }
         Ok(())
@@ -1035,11 +1039,13 @@ impl MockDirectoryWrapper {
             let suffix = message.map_or(String::new(), |m| format!(" ({m})"));
             let ioe = io_exception(format!("a random IOException{suffix}"));
             if *VERBOSE {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "{}: MockDirectoryWrapper: now throw random exception{suffix}",
                     current_thread_name()
-                );
-                println!("java.io.IOException: a random IOException{suffix}");
+                ));
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "java.io.IOException: a random IOException{suffix}"
+                ));
             }
             return Err(LuceneError::from(LuceneErrorKind::Io(ioe)));
         }
@@ -1054,11 +1060,11 @@ impl MockDirectoryWrapper {
         let random = &self.core.random_state;
         if random.next_double() < self.get_random_io_exception_rate_on_open() {
             if *VERBOSE {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "{}: MockDirectoryWrapper: now throw random exception during open file={name}",
                     current_thread_name()
-                );
-                println!("java.lang.Throwable");
+                ));
+                randomizedtesting::jdk::system::out_println("java.lang.Throwable");
             }
             let message = format!("a random IOException ({name})");
             if !self
@@ -1132,8 +1138,8 @@ impl MockDirectoryWrapper {
             };
             if let Err(t) = failure.eval(self) {
                 if *VERBOSE {
-                    println!("MockDirectoryWrapper: throw exc");
-                    println!("{t}");
+                    randomizedtesting::jdk::system::out_println("MockDirectoryWrapper: throw exc");
+                    randomizedtesting::jdk::system::out_println(&format!("{t}"));
                 }
                 return Err(t);
             }
@@ -1221,7 +1227,9 @@ impl MockDirectoryWrapper {
                 && self.core.random_state.next_int_bound(200) == 0)
         {
             if *VERBOSE {
-                println!("MockDirectoryWrapper: throttling indexOutput ({name})");
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "MockDirectoryWrapper: throttling indexOutput ({name})"
+                ));
             }
             Box::new(ThrottledIndexOutput::with_delays(
                 self.core.throttle_bytes_per_second,
@@ -1298,11 +1306,15 @@ impl MockDirectoryWrapper {
         if (self.get_check_index_on_close() || assert_no_unreferenced) && index_exists(self)? {
             if self.get_check_index_on_close() {
                 if *VERBOSE {
-                    println!("\nNOTE: MockDirectoryWrapper: now crush");
+                    randomizedtesting::jdk::system::out_println(
+                        "\nNOTE: MockDirectoryWrapper: now crush",
+                    );
                 }
                 self.crash()?; // corrupt any unsynced-files
                 if *VERBOSE {
-                    println!("\nNOTE: MockDirectoryWrapper: now run CheckIndex");
+                    randomizedtesting::jdk::system::out_println(
+                        "\nNOTE: MockDirectoryWrapper: now run CheckIndex",
+                    );
                 }
 
                 // Methods in MockDirectoryWrapper hold locks on this, which will cause deadlock when
@@ -1329,7 +1341,9 @@ impl MockDirectoryWrapper {
     /// The `assertNoUnreferencedFilesOnClose` block of `close()`.
     fn assert_no_unreferenced_files(&self) -> Result<()> {
         if *VERBOSE {
-            println!("MDW: now assert no unref'd files at close");
+            randomizedtesting::jdk::system::out_println(
+                "MDW: now assert no unref'd files at close",
+            );
         }
         // now look for unreferenced files: discount ones that we tried to delete but could not
         let start_files = self.list_all()?;
@@ -1686,9 +1700,9 @@ impl Directory for MockDirectoryWrapper {
         let use_slow = self.core.use_slow_open_closers.load(Ordering::SeqCst);
         let ii: Box<dyn IndexInput> = if use_slow && random_int == 0 {
             if *VERBOSE {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "MockDirectoryWrapper: using SlowClosingMockIndexInputWrapper for file {name}"
-                );
+                ));
             }
             let ii = SlowClosingMockIndexInputWrapper::new(self, name, delegate_input, confined);
             let (id, ctl) = ii.registration();
@@ -1696,9 +1710,9 @@ impl Directory for MockDirectoryWrapper {
             Box::new(ii)
         } else if use_slow && random_int == 1 {
             if *VERBOSE {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "MockDirectoryWrapper: using SlowOpeningMockIndexInputWrapper for file {name}"
-                );
+                ));
             }
             let ii = SlowOpeningMockIndexInputWrapper::new(self, name, delegate_input, confined)?;
             let (id, ctl) = ii.registration();

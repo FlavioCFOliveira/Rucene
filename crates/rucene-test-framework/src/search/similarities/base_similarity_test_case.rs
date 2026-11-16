@@ -448,19 +448,19 @@ struct FailureReport<'a> {
 impl Drop for FailureReport<'_> {
     fn drop(&mut self) {
         if !self.success {
-            println!("{:?}", self.similarity);
-            println!("{:?}", self.corpus);
-            println!("{:?}", self.term);
+            randomizedtesting::jdk::system::out_println(&format!("{:?}", self.similarity));
+            randomizedtesting::jdk::system::out_println(&format!("{:?}", self.corpus));
+            randomizedtesting::jdk::system::out_println(&format!("{:?}", self.term));
             if self.norm == 0 {
-                println!("norms=omitted");
+                randomizedtesting::jdk::system::out_println("norms=omitted");
             } else {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "norm={} (doc length ~ {})",
                     self.norm,
                     SmallFloat::byte4_to_int(self.norm as u8)
-                );
+                ));
             }
-            println!("freq={:?}", self.freq);
+            randomizedtesting::jdk::system::out_println(&format!("freq={:?}", self.freq));
         }
     }
 }
@@ -547,8 +547,8 @@ pub fn do_test_scoring(
     }
 
     if prev_score > score {
-        println!("{prev_explanation}");
-        println!("{explanation}");
+        randomizedtesting::jdk::system::out_println(&format!("{prev_explanation}"));
+        randomizedtesting::jdk::system::out_println(&format!("{explanation}"));
         Assert::fail(&format!(
             "score({prev_freq:?})={prev_score:?} > score({freq:?})={score:?}"
         ));
@@ -580,8 +580,8 @@ pub fn do_test_scoring(
             );
         }
         if prev_norm_score < score {
-            println!("{prev_norm_explanation}");
-            println!("{explanation}");
+            randomizedtesting::jdk::system::out_println(&format!("{prev_norm_explanation}"));
+            randomizedtesting::jdk::system::out_println(&format!("{explanation}"));
             Assert::fail(&format!(
                 "score({freq:?},{})={prev_norm_score:?} < score({freq:?},{norm})={score:?}",
                 norm - 1
@@ -625,8 +625,8 @@ pub fn do_test_scoring(
         }
 
         if prev_term_score < score {
-            println!("{prev_term_explanation}");
-            println!("{explanation}");
+            randomizedtesting::jdk::system::out_println(&format!("{prev_term_explanation}"));
+            randomizedtesting::jdk::system::out_println(&format!("{explanation}"));
             Assert::fail(&format!(
                 "score({freq:?},{prev_term:?})={prev_term_score:?} < score({freq:?},{term:?})={score:?}"
             ));

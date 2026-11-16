@@ -390,11 +390,13 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
 
         if *crate::util::lucene_test_case::VERBOSE {
             match &fst {
-                None => println!("  fst has 0 nodes (fully pruned)"),
-                Some(_) => println!(
+                None => {
+                    randomizedtesting::jdk::system::out_println("  fst has 0 nodes (fully pruned)")
+                }
+                Some(_) => randomizedtesting::jdk::system::out_println(&format!(
                     "  fst has {} nodes and {} arcs",
                     self.node_count, self.arc_count
-                ),
+                )),
             }
         }
 
@@ -406,7 +408,7 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
     /// `verifyUnPruned(inputMode, fst)`: the FST is complete.
     fn verify_un_pruned(&self, input_mode: i32, fst: Option<&FST<O>>) -> Result<()> {
         if self.pairs.is_empty() {
-            assert!(fst.is_none());
+            randomizedtesting::junit::Assert::assert_true(fst.is_none());
             return Ok(());
         }
 
@@ -426,7 +428,9 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                         Self::input_to_string(input_mode, term)
                     )
                 });
-                assert!(self.outputs_equal(&pair.output, &output));
+                randomizedtesting::junit::Assert::assert_true(
+                    self.outputs_equal(&pair.output, &output),
+                );
 
                 // verify enum's next
                 let t = fst_enum.next()?.expect("assertNotNull(t)");
@@ -437,9 +441,11 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                     Self::input_to_string(input_mode, term),
                     Self::input_to_string(input_mode, t.input)
                 );
-                assert!(self.outputs_equal(&pair.output, t.output));
+                randomizedtesting::junit::Assert::assert_true(
+                    self.outputs_equal(&pair.output, t.output),
+                );
             }
-            assert!(fst_enum.next()?.is_none());
+            randomizedtesting::junit::Assert::assert_true(fst_enum.next()?.is_none());
         }
 
         let terms_map: HashMap<Vec<i32>, &O::Output> = pairs
@@ -459,7 +465,7 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                     Self::input_to_string(input_mode, &word)
                 )
             });
-            assert!(self.outputs_equal(expected, &output));
+            randomizedtesting::junit::Assert::assert_true(self.outputs_equal(expected, &output));
         }
 
         // test IntsRefFSTEnum.seek:
@@ -500,7 +506,9 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                                 )
                             });
                             assert_eq!(&expected.input, seek_result.input);
-                            assert!(self.outputs_equal(&expected.output, seek_result.output));
+                            randomizedtesting::junit::Assert::assert_true(
+                                self.outputs_equal(&expected.output, seek_result.output),
+                            );
                         } else {
                             // seeked before start or beyond end
                             assert!(
@@ -526,7 +534,9 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                 };
                 let seek_result = seek_result.expect("assertNotNull(seekResult)");
                 assert_eq!(&pair.input, seek_result.input);
-                assert!(self.outputs_equal(&pair.output, seek_result.output));
+                randomizedtesting::junit::Assert::assert_true(
+                    self.outputs_equal(&pair.output, seek_result.output),
+                );
             }
         }
 
@@ -561,7 +571,7 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
 
                             if self.random.next_boolean() {
                                 upto -= 1;
-                                assert!(upto != -1);
+                                randomizedtesting::junit::Assert::assert_true(upto != -1);
                                 done = Some(fst_enum.seek_floor(&term)?.is_none());
                             } else {
                                 done = Some(fst_enum.seek_ceil(&term)?.is_none());
@@ -589,13 +599,15 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                     };
                 }
                 if upto == n {
-                    assert!(is_done);
+                    randomizedtesting::junit::Assert::assert_true(is_done);
                     break;
                 } else {
-                    assert!(!is_done);
+                    randomizedtesting::junit::Assert::assert_true(!is_done);
                     let current = fst_enum.current().expect("current");
                     assert_eq!(&pairs[upto as usize].input, current.input);
-                    assert!(self.outputs_equal(&pairs[upto as usize].output, current.output));
+                    randomizedtesting::junit::Assert::assert_true(
+                        self.outputs_equal(&pairs[upto as usize].output, current.output),
+                    );
                 }
             }
         }

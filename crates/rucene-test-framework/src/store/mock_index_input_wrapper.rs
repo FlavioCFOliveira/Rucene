@@ -290,7 +290,10 @@ impl MockIndexInputWrapper {
     ) -> Result<MockIndexInputWrapper> {
         self.ensure_open()?;
         if self.dir().verbose_clone() {
-            println!("java.lang.Exception: slice: {}", self.java_to_string());
+            randomizedtesting::jdk::system::out_println(&format!(
+                "java.lang.Exception: slice: {}",
+                self.java_to_string()
+            ));
         }
         self.dir().increment_input_clone_count();
         let slice = self.r#in.slice(slice_description, offset, length)?;
@@ -454,7 +457,10 @@ impl IndexInput for MockIndexInputWrapper {
     fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
         self.ensure_open()?;
         if self.dir().verbose_clone() {
-            println!("java.lang.Exception: clone: {}", self.java_to_string());
+            randomizedtesting::jdk::system::out_println(&format!(
+                "java.lang.Exception: clone: {}",
+                self.java_to_string()
+            ));
         }
         self.dir().increment_input_clone_count();
         let iiclone = self.r#in.clone_input()?;

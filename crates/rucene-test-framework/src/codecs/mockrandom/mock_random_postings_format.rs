@@ -148,16 +148,18 @@ impl PostingsFormat for MockRandomPostingsFormat {
         let skip_interval = TestUtil::next_int(seed_random, min_skip_interval, 10);
 
         if *VERBOSE {
-            println!("MockRandomCodec: skipInterval={skip_interval}");
+            randomizedtesting::jdk::system::out_println(&format!(
+                "MockRandomCodec: skipInterval={skip_interval}"
+            ));
         }
 
         let seed = seed_random.next_long();
 
         if *VERBOSE {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "MockRandomCodec: writing to seg={} formatID={} seed={seed}",
                 state.segment_info.name, state.segment_suffix
-            );
+            ));
         }
 
         let seed_file_name =
@@ -204,7 +206,9 @@ impl PostingsFormat for MockRandomPostingsFormat {
             // Use BlockTree terms dict
 
             if *VERBOSE {
-                println!("MockRandomCodec: writing BlockTree terms dict");
+                randomizedtesting::jdk::system::out_println(
+                    "MockRandomCodec: writing BlockTree terms dict",
+                );
             }
 
             // TODO: would be nice to allow 1 but this is very
@@ -221,7 +225,9 @@ impl PostingsFormat for MockRandomPostingsFormat {
             )?)
         } else if t1 == 2 {
             if *VERBOSE {
-                println!("MockRandomCodec: writing Block terms dict");
+                randomizedtesting::jdk::system::out_println(
+                    "MockRandomCodec: writing Block terms dict",
+                );
             }
 
             let mut postings_writer = postings_writer;
@@ -229,9 +235,9 @@ impl PostingsFormat for MockRandomPostingsFormat {
                 if random.next_boolean() {
                     let term_index_interval = TestUtil::next_int(&random, 1, 100);
                     if *VERBOSE {
-                        println!(
+                        randomizedtesting::jdk::system::out_println(&format!(
                             "MockRandomCodec: fixed-gap terms index (tii={term_index_interval})"
-                        );
+                        ));
                     }
                     Ok(Box::new(FixedGapTermsIndexWriter::with_interval(
                         state,
@@ -243,7 +249,9 @@ impl PostingsFormat for MockRandomPostingsFormat {
                         if n2 == 0 {
                             let tii = TestUtil::next_int(&random, 1, 100);
                             if *VERBOSE {
-                                println!("MockRandomCodec: variable-gap terms index (tii={tii})");
+                                randomizedtesting::jdk::system::out_println(&format!(
+                                    "MockRandomCodec: variable-gap terms index (tii={tii})"
+                                ));
                             }
                             Box::new(EveryNTermSelector::new(tii))
                         } else if n2 == 1 {
@@ -254,7 +262,9 @@ impl PostingsFormat for MockRandomPostingsFormat {
                             let seed2 = random.next_long();
                             let gap = TestUtil::next_int(&random, 2, 40);
                             if *VERBOSE {
-                                println!("MockRandomCodec: random-gap terms index (max gap={gap})");
+                                randomizedtesting::jdk::system::out_println(&format!(
+                                    "MockRandomCodec: random-gap terms index (max gap={gap})"
+                                ));
                             }
                             Box::new(RandomGapTermSelector {
                                 rand: JdkRandom::new(seed2),
@@ -279,7 +289,9 @@ impl PostingsFormat for MockRandomPostingsFormat {
         } else if t1 == 3 {
             // Use OrdsBlockTree terms dict
             if *VERBOSE {
-                println!("MockRandomCodec: writing OrdsBlockTree");
+                randomizedtesting::jdk::system::out_println(
+                    "MockRandomCodec: writing OrdsBlockTree",
+                );
             }
 
             // TODO: would be nice to allow 1 but this is very
@@ -319,10 +331,10 @@ impl PostingsFormat for MockRandomPostingsFormat {
         let seed = input.read_long()?;
         check_footer(input.as_mut())?;
         if *VERBOSE {
-            println!(
+            randomizedtesting::jdk::system::out_println(&format!(
                 "MockRandomCodec: reading from seg={} formatID={} seed={seed}",
                 state.segment_info.name, state.segment_suffix
-            );
+            ));
         }
         input.close()?;
 
@@ -330,7 +342,9 @@ impl PostingsFormat for MockRandomPostingsFormat {
 
         let read_buffer_size = TestUtil::next_int(&random, 1, 4096);
         if *VERBOSE {
-            println!("MockRandomCodec: readBufferSize={read_buffer_size}");
+            randomizedtesting::jdk::system::out_println(&format!(
+                "MockRandomCodec: readBufferSize={read_buffer_size}"
+            ));
         }
 
         let postings_reader: Box<dyn PostingsReaderBase> =
@@ -344,13 +358,17 @@ impl PostingsFormat for MockRandomPostingsFormat {
         } else if t1 == 1 {
             // Use BlockTree terms dict
             if *VERBOSE {
-                println!("MockRandomCodec: reading BlockTree terms dict");
+                randomizedtesting::jdk::system::out_println(
+                    "MockRandomCodec: reading BlockTree terms dict",
+                );
             }
 
             Box::new(Lucene103BlockTreeTermsReader::new(postings_reader, state)?)
         } else if t1 == 2 {
             if *VERBOSE {
-                println!("MockRandomCodec: reading Block terms dict");
+                randomizedtesting::jdk::system::out_println(
+                    "MockRandomCodec: reading Block terms dict",
+                );
             }
             let postings_reader = postings_reader;
             let index_reader = (|| -> Result<Box<dyn TermsIndexReaderBase>> {
@@ -360,7 +378,9 @@ impl PostingsFormat for MockRandomPostingsFormat {
 
                 if do_fixed_gap {
                     if *VERBOSE {
-                        println!("MockRandomCodec: fixed-gap terms index");
+                        randomizedtesting::jdk::system::out_println(
+                            "MockRandomCodec: fixed-gap terms index",
+                        );
                     }
                     Ok(Box::new(FixedGapTermsIndexReader::new(state)?))
                 } else {
@@ -371,7 +391,9 @@ impl PostingsFormat for MockRandomPostingsFormat {
                         random.next_long();
                     }
                     if *VERBOSE {
-                        println!("MockRandomCodec: variable-gap terms index");
+                        randomizedtesting::jdk::system::out_println(
+                            "MockRandomCodec: variable-gap terms index",
+                        );
                     }
                     Ok(Box::new(VariableGapTermsIndexReader::new(state)?))
                 }
@@ -390,7 +412,9 @@ impl PostingsFormat for MockRandomPostingsFormat {
         } else if t1 == 3 {
             // Use OrdsBlockTree terms dict
             if *VERBOSE {
-                println!("MockRandomCodec: reading OrdsBlockTree terms dict");
+                randomizedtesting::jdk::system::out_println(
+                    "MockRandomCodec: reading OrdsBlockTree terms dict",
+                );
             }
 
             Box::new(OrdsBlockTreeTermsReader::new(postings_reader, state)?)

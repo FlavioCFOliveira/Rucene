@@ -282,7 +282,7 @@ pub trait BaseRangeFieldQueryTestCase: Send + Sync + 'static {
         let dimensions = self.dimension();
 
         if *VERBOSE {
-            println!("TEST: numDocs={num_docs}");
+            randomizedtesting::jdk::system::out_println(&format!("TEST: numDocs={num_docs}"));
         }
 
         let mut ranges: Vec<Option<Rc<Vec<RangeRef>>>> = vec![None; num_docs];
@@ -300,7 +300,7 @@ pub trait BaseRangeFieldQueryTestCase: Send + Sync + 'static {
                     .borrow_mut()
                     .is_missing = true;
                 if *VERBOSE {
-                    println!("  id={id} is missing");
+                    randomizedtesting::jdk::system::out_println(&format!("  id={id} is missing"));
                 }
                 continue;
             }
@@ -345,10 +345,10 @@ pub trait BaseRangeFieldQueryTestCase: Send + Sync + 'static {
                         current[0].borrow_mut().range.set_max(d, max);
                     }
                     if *VERBOSE {
-                        println!(
+                        randomizedtesting::jdk::system::out_println(&format!(
                             "  id={id} box={} (same box as doc={old_id})",
                             boxes_to_string(&current)
-                        );
+                        ));
                     }
                 } else {
                     let even = dimensions % 2;
@@ -361,20 +361,20 @@ pub trait BaseRangeFieldQueryTestCase: Send + Sync + 'static {
                                 let min = old[0].borrow().range.get_min(d);
                                 current[0].borrow_mut().range.set_min(d, min);
                                 if *VERBOSE {
-                                    println!(
+                                    randomizedtesting::jdk::system::out_println(&format!(
                                         "  id={id} box={} (same min[{d}] as doc={old_id})",
                                         boxes_to_string(&current)
-                                    );
+                                    ));
                                 }
                             } else {
                                 // odd is max
                                 let max = old[0].borrow().range.get_max(d);
                                 current[0].borrow_mut().range.set_max(d, max);
                                 if *VERBOSE {
-                                    println!(
+                                    randomizedtesting::jdk::system::out_println(&format!(
                                         "  id={id} box={} (same max[{d}] as doc={old_id})",
                                         boxes_to_string(&current)
-                                    );
+                                    ));
                                 }
                             }
                         }
@@ -427,7 +427,9 @@ pub trait BaseRangeFieldQueryTestCase: Send + Sync + 'static {
                     )])?;
                     deleted.insert(id_to_delete);
                     if *VERBOSE {
-                        println!("  delete id={id_to_delete}");
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "  delete id={id_to_delete}"
+                        ));
                     }
                 }
             }
@@ -449,7 +451,9 @@ pub trait BaseRangeFieldQueryTestCase: Send + Sync + 'static {
             let outcome = (|| -> Result<()> {
                 for iter in 0..iters {
                     if *VERBOSE {
-                        println!("\nTEST: iter={iter} s={s:?}");
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "\nTEST: iter={iter} s={s:?}"
+                        ));
                     }
 
                     // occasionally test open ended bounding ranges
@@ -466,7 +470,10 @@ pub trait BaseRangeFieldQueryTestCase: Send + Sync + 'static {
                     };
 
                     if *VERBOSE {
-                        println!("  query={}", query.to_query_string(""));
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "  query={}",
+                            query.to_query_string("")
+                        ));
                     }
 
                     let hits = s.search_with_manager(

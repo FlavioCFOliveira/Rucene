@@ -641,9 +641,26 @@ impl<S: ReadChars> Debug for BufferedReader<S> {
 impl<S: ReadChars> BufferedReader<S> {
     /// Equivalent to `new BufferedReader(in)`.
     pub fn new(input: S) -> Self {
+        Self::sized(input, DEFAULT_CHAR_BUFFER_SIZE)
+    }
+
+    /// Equivalent to `new BufferedReader(in, sz)`: a buffer of `sz` units.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException("Buffer size <= 0")` when `sz <= 0`, as
+    /// Java throws.
+    pub fn with_size(input: S, sz: i32) -> Result<Self> {
+        if sz <= 0 {
+            return Err(LuceneError::illegal_argument("Buffer size <= 0"));
+        }
+        Ok(Self::sized(input, sz as usize))
+    }
+
+    fn sized(input: S, sz: usize) -> Self {
         Self {
             input: Some(input),
-            cb: vec![0; DEFAULT_CHAR_BUFFER_SIZE],
+            cb: vec![0; sz],
             n_chars: 0,
             next_char: 0,
             skip_lf: false,

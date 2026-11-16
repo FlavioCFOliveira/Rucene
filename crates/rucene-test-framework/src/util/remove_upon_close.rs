@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
-use rucene::store::java_nio_file::io_exception;
+use rucene::store::java_nio_file::{io_exception_with_cause, IntoNioPath};
 use rucene::util::IOUtils;
 
 use crate::util::TestRuleMarkFailure;
@@ -34,9 +34,7 @@ use crate::util::TestRuleMarkFailure;
 /// (`Thread.currentThread().getStackTrace()`, one `\t<frame>\n` per frame)
 /// for the error message; the port records the Rust backtrace
 /// (`std::backtrace::Backtrace::force_capture()`), one `\t<line>\n` per
-/// line: JVM frames do not exist here. The `IOException`'s cause (`IOUtils.rm`'s
-/// exception) is appended to its message, as this port's `io::Error` carries
-/// no cause.
+/// line: JVM frames do not exist here.
 pub struct RemoveUponClose {
     path: PathBuf,
     failure_marker: Arc<TestRuleMarkFailure>,
@@ -68,21 +66,22 @@ impl RemoveUponClose {
     /// # Errors
     ///
     /// `IOException("Could not remove temporary location '<absolute path>',
-    /// created at stack trace:\n<stack>")` when `IOUtils.rm` fails.
+    /// created at stack trace:\n<stack>", cause)` when `IOUtils.rm` fails;
+    /// its cause is `IOUtils.rm`'s exception (`RemoveUponClose.java:50-55`).
     pub fn close(&self) -> Result<()> {
         // only if there were no other test failures.
         if self.failure_marker.was_successful() && self.path.exists() {
             if let Err(e) = IOUtils::rm([self.path.as_path()]) {
-                let absolute =
-                    std::path::absolute(&self.path).unwrap_or_else(|_| self.path.clone());
-                return Err(LuceneError::from(LuceneErrorKind::Io(io_exception(
-                    format!(
-                        "Could not remove temporary location '{}', created at stack trace:\n{}{}",
-                        absolute.display(),
-                        self.creation_stack,
-                        format_args!("Caused by: {e}")
+                return Err(LuceneError::from(LuceneErrorKind::Io(
+                    io_exception_with_cause(
+                        format!(
+                            "Could not remove temporary location '{}', created at stack trace:\n{}",
+                            self.path.as_path().into_nio_path().to_absolute_path(),
+                            self.creation_stack
+                        ),
+                        Some(e),
                     ),
-                ))));
+                )));
             }
         }
         Ok(())
@@ -125,6 +124,52 @@ mod tests {
         marker.mark_failed();
         RemoveUponClose::new(&p, marker).close().unwrap();
         assert!(p.exists());
+        std::fs::remove_dir_all(&p).unwrap();
+    }
+
+    /// `RemoveUponClose.java:50-55`: the `IOException` carries `IOUtils.rm`'s
+    /// exception as its cause, and its message is only the location and the
+    /// creation stack (no appended "Caused by").
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_removal_reports_the_rm_exception_as_its_cause() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let p = scratch("locked");
+        let sub = p.join("sub");
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // A process that may still write into a read-only directory (root)
+        // cannot make `IOUtils.rm` fail this way.
+        let privileged = std::fs::write(sub.join("probe"), b"x").is_ok();
+        let marker = Arc::new(TestRuleMarkFailure::new(Vec::new()));
+        let result = RemoveUponClose::new(&p, marker).close();
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).ok();
+        if privileged {
+            result.unwrap();
+            assert!(!p.exists());
+            return;
+        }
+        let e = result.expect_err("rm must fail on a read-only directory");
+        let rucene::error::LuceneErrorKind::Io(io) = e.kind() else {
+            panic!("expected an IOException, got {e:?}");
+        };
+        let message = io.to_string();
+        assert!(
+            message.starts_with("Could not remove temporary location '"),
+            "{message}"
+        );
+        assert!(
+            message.contains("', created at stack trace:\n"),
+            "{message}"
+        );
+        assert!(!message.contains("Caused by"), "{message}");
+        let cause = rucene::store::java_nio_file::java_cause_of(io).expect("getCause()");
+        assert!(
+            cause
+                .to_string()
+                .contains("Could not remove the following files (in the order of attempts):"),
+            "{cause}"
+        );
         std::fs::remove_dir_all(&p).unwrap();
     }
 }

@@ -2063,7 +2063,9 @@ impl LuceneTestCase {
         let threads = TestUtil::next_int(&*Self::random(), 1, 2);
         let executor = Arc::new(LuceneTestCaseExecutor::new(threads as usize));
         if *VERBOSE {
-            println!("NOTE: Created shared ExecutorService with {threads} threads");
+            system::out_println(&format!(
+                "NOTE: Created shared ExecutorService with {threads} threads"
+            ));
         }
         *EXECUTOR
             .lock()
@@ -2140,10 +2142,10 @@ impl LuceneTestCase {
                     // will create no FC insanity in atomic case, as ParallelLeafReader has own
                     // cache key:
                     if *VERBOSE {
-                        println!(
+                        system::out_println(&format!(
                             "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
                              with ParallelLeaf/CompositeReader"
-                        );
+                        ));
                     }
                     r =
                         match r.composite() {
@@ -2174,10 +2176,10 @@ impl LuceneTestCase {
                         let fields: HashSet<String> = all_fields[..end].iter().cloned().collect();
                         // will create no FC insanity as ParallelLeafReader has own cache key:
                         if *VERBOSE {
-                            println!(
+                            system::out_println(&format!(
                                 "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
                                  with ParallelLeafReader"
-                            );
+                            ));
                         }
                         let kept: Arc<dyn LeafReader> = Arc::new(FieldFilterLeafReader::new(
                             Arc::clone(ar),
@@ -2199,10 +2201,10 @@ impl LuceneTestCase {
                     // QueryUtils' reader with a fake cache key, so insanity checker cannot walk
                     // along our reader:
                     if *VERBOSE {
-                        println!(
+                        system::out_println(&format!(
                             "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
                              with AssertingLeaf/DirectoryReader"
-                        );
+                        ));
                     }
                     match &r {
                         TestReader::Leaf(leaf) => {
@@ -2220,10 +2222,10 @@ impl LuceneTestCase {
                 }
                 3 => {
                     if *VERBOSE {
-                        println!(
+                        system::out_println(&format!(
                             "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
                              with MismatchedLeaf/Directory/CodecReader"
-                        );
+                        ));
                     }
                     // `r instanceof CodecReader` is never reached: a CodecReader is a
                     // LeafReader, which the first branch takes.
@@ -2245,10 +2247,10 @@ impl LuceneTestCase {
                 }
                 4 => {
                     if *VERBOSE {
-                        println!(
+                        system::out_println(&format!(
                             "NOTE: LuceneTestCase.wrapReader: wrapping previous reader={r:?} \
                              with MergingCodecReader"
-                        );
+                        ));
                     }
                     match &r {
                         TestReader::Leaf(leaf) => {
@@ -2278,7 +2280,7 @@ impl LuceneTestCase {
         }
 
         if *VERBOSE {
-            println!("wrapReader wrapped: {r:?}");
+            system::out_println(&format!("wrapReader wrapped: {r:?}"));
         }
 
         Ok(r)
@@ -2357,9 +2359,8 @@ impl LuceneTestCase {
     ) -> IndexSearcher {
         let random = Self::random();
         let mut r: TestReader = r.into();
-        let rethrow = |e: rucene::error::LuceneError| -> ! {
-            panic!("{e}");
-        };
+        // `Rethrow.rethrow(e)`: the exception itself, as a Java throwable.
+        let rethrow = |e: rucene::error::LuceneError| -> ! { rethrow_lucene_error(&e) };
         if concurrency == Concurrency::None {
             if maybe_wrap {
                 r = Self::maybe_wrap_reader(r).unwrap_or_else(|e| rethrow(e));
@@ -2396,7 +2397,7 @@ impl LuceneTestCase {
                 None
             } else {
                 if *VERBOSE {
-                    println!("NOTE: newSearcher using shared ExecutorService");
+                    system::out_println("NOTE: newSearcher using shared ExecutorService");
                 }
                 Self::executor().map(|e| e as Arc<dyn rucene::search::Executor>)
             };
@@ -3006,9 +3007,13 @@ impl LuceneTestCase {
         } else if Self::rarely_with(r) {
             Arc::new(Self::new_alcoholic_merge_policy_with(
                 r,
-                Self::get_default_time_zone().unwrap_or_else(|| {
-                    exception::throw_without_message(exception::NULL_POINTER_EXCEPTION)
-                }),
+                // `classEnvRule.timeZone`, the rule's field.
+                crate::util::lucene_test_case_rules::CLASS_ENV_RULE
+                    .env()
+                    .time_zone
+                    .unwrap_or_else(|| {
+                        exception::throw_without_message(exception::NULL_POINTER_EXCEPTION)
+                    }),
             ))
         } else {
             Arc::new(Self::new_log_merge_policy_with(r))
@@ -3289,8 +3294,16 @@ impl LuceneTestCase {
         }
         if *VERBOSE && did_change {
             let current = c.to_string();
-            let previous_lines: Vec<&str> = previous.split('\n').collect();
-            let current_lines: Vec<&str> = current.split('\n').collect();
+            // `String.split("\n")` drops the trailing empty strings.
+            let java_split = |text: &str| {
+                let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+                while lines.last().is_some_and(String::is_empty) {
+                    lines.pop();
+                }
+                lines
+            };
+            let previous_lines = java_split(&previous);
+            let current_lines = java_split(&current);
             let mut diff = String::new();
 
             // this should always be the case, diff each line
@@ -3308,8 +3321,8 @@ impl LuceneTestCase {
 
             // its possible to be empty, if we "change" a value to what it had before.
             if !diff.is_empty() {
-                println!("NOTE: LuceneTestCase: randomly changed IWC's live settings:");
-                println!("{diff}");
+                system::out_println("NOTE: LuceneTestCase: randomly changed IWC's live settings:");
+                system::out_println(&diff);
             }
         }
     }
@@ -3734,9 +3747,13 @@ impl LuceneTestCase {
     /// `newAlcoholicMergePolicy()`: `newAlcoholicMergePolicy(random(),
     /// classEnvRule.timeZone)`.
     pub fn new_alcoholic_merge_policy() -> rucene::index::merge_policy::LogMergePolicy {
-        let tz = Self::get_default_time_zone()
+        // `newAlcoholicMergePolicy(random(), classEnvRule.timeZone)`.
+        let random = Self::random();
+        let tz = crate::util::lucene_test_case_rules::CLASS_ENV_RULE
+            .env()
+            .time_zone
             .unwrap_or_else(|| exception::throw_without_message(exception::NULL_POINTER_EXCEPTION));
-        Self::new_alcoholic_merge_policy_with(&*Self::random(), tz)
+        Self::new_alcoholic_merge_policy_with(&*random, tz)
     }
 
     /// `newLogMergePolicy(useCFS)`: `newLogMergePolicy()` with
@@ -4212,7 +4229,9 @@ impl LuceneTestCase {
                     .expect(INVARIANT);
             }
             if *VERBOSE {
-                println!("NOTE: LuceneTestCase: upgrade name={name} type={new_type}");
+                system::out_println(&format!(
+                    "NOTE: LuceneTestCase: upgrade name={name} type={new_type}"
+                ));
             }
         }
         new_type.freeze();
@@ -5238,14 +5257,23 @@ impl LuceneTestCase {
     /// `getDVFields(reader)` (private): the fields with doc values, as a
     /// `new HashSet<>()` filled in field-info order.
     fn get_dv_fields(reader: &Arc<dyn IndexReader>) -> HashSet<String> {
-        let mut fields = HashSet::new();
+        Self::get_dv_fields_in_order(reader).into_iter().collect()
+    }
+
+    /// The names `getDVFields` adds to its `HashSet`, in the order it adds
+    /// them (the merged `FieldInfos`' iteration order): the order a Java
+    /// `HashSet` keeps within a bucket.
+    fn get_dv_fields_in_order(reader: &Arc<dyn IndexReader>) -> Vec<String> {
+        let mut fields: Vec<String> = Vec::new();
         for fi in io(rucene::index::FieldInfos::get_merged_field_infos(
             Arc::clone(reader),
         ))
         .iter()
         {
-            if fi.get_doc_values_type() != rucene::index::DocValuesType::NONE {
-                fields.insert(fi.name.clone());
+            if fi.get_doc_values_type() != rucene::index::DocValuesType::NONE
+                && !fields.contains(&fi.name)
+            {
+                fields.push(fi.name.clone());
             }
         }
         fields
@@ -5266,12 +5294,11 @@ impl LuceneTestCase {
         let i = Some(info);
 
         let entries: Vec<(i32, String)> = {
-            // `getDVFields` fills a `new HashSet<>()` element by element.
-            let mut names: Vec<&String> = left_fields.iter().collect();
-            names.sort();
-            names
+            // `getDVFields` fills a `new HashSet<>()` element by element,
+            // in the merged `FieldInfos`' order.
+            Self::get_dv_fields_in_order(left_reader)
                 .into_iter()
-                .map(|n| (randomizedtesting::jdk::lang::string_hash_code(n), n.clone()))
+                .map(|n| (randomizedtesting::jdk::lang::string_hash_code(&n), n))
                 .collect()
         };
         let len = entries.len();

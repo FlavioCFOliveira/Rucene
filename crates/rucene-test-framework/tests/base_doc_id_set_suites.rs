@@ -459,3 +459,44 @@ fn test_fixed_bit_doc_id_set() {
     let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
     run_suite(fixed_class);
 }
+
+// -----------------------------------------------------------------------------
+// A `null` iterator: `assertEquals(int, BitSet, T)` never calls `iterator()`
+// -----------------------------------------------------------------------------
+
+/// A set standing for one whose `iterator()` is `null`: any call to
+/// `iterator()` fails, so a call the Java code would not make is visible.
+struct NullIteratorSet;
+
+impl rucene::util::Accountable for NullIteratorSet {
+    fn ram_bytes_used(&self) -> i64 {
+        0
+    }
+}
+
+impl DocIdSet for NullIteratorSet {
+    fn iterator(&self) -> Result<Box<dyn rucene::search::doc_id_set_iterator::DocIdSetIterator>> {
+        Err(rucene::error::LuceneError::illegal_state(
+            "iterator() called on a set whose iterator is null",
+        ))
+    }
+}
+
+/// `BaseDocIdSetTestCase.java:127-143`: with a `null` iterator both the
+/// `nextDoc` and the `nextDoc`/`advance` sections only assert that the bit
+/// set is empty; neither asks the set for another iterator.
+fn null_iterator_class() -> Arc<Class> {
+    Class::builder("org.apache.lucene.util.TestNullIteratorDocIdSet")
+        .extends(&LuceneTestCase::class())
+        .constructor(Constructor::no_args(|| ()))
+        .method(own_test("testNullIteratorIsNeverAsked", || {
+            base_assert_equals_sets(64, &JavaBitSet::new(), &NullIteratorSet, true)
+        }))
+        .build()
+}
+
+#[test]
+fn test_null_iterator_is_never_asked() {
+    let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
+    run_suite(null_iterator_class);
+}

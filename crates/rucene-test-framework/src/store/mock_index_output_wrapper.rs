@@ -208,11 +208,11 @@ impl MockIndexOutputWrapper {
             }
             message.push(')');
             if *VERBOSE {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "{}: MDW: now throw fake disk full",
                     std::thread::current().name().unwrap_or("main")
-                );
-                println!("java.lang.Throwable");
+                ));
+                randomizedtesting::jdk::system::out_println("java.lang.Throwable");
             }
             return Err(LuceneError::from(LuceneErrorKind::Io(io_exception(
                 message,

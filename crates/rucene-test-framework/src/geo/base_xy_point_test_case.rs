@@ -777,7 +777,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
                 // Some docs don't have a point:
                 ys[doc_id] = f32::NAN;
                 if *VERBOSE {
-                    println!("  doc={doc_id} is missing");
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "  doc={doc_id} is missing"
+                    ));
                 }
                 continue;
             }
@@ -793,21 +795,21 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
                 // Fully identical point:
                 ys[doc_id] = xs[old_doc_id];
                 if *VERBOSE {
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "  doc={doc_id} y={} x={} (same x/y as doc={old_doc_id})",
                         float_to_string(y),
                         float_to_string(xs[doc_id])
-                    );
+                    ));
                 }
             } else {
                 xs[doc_id] = self.next_x();
                 have_real_doc = true;
                 if *VERBOSE {
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "  doc={doc_id} y={} x={}",
                         float_to_string(y),
                         float_to_string(xs[doc_id])
-                    );
+                    ));
                 }
             }
             ys[doc_id] = y;
@@ -831,7 +833,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
                 // Some docs don't have a point:
                 ys[doc_id] = f32::NAN;
                 if *VERBOSE {
-                    println!("  doc={doc_id} is missing");
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "  doc={doc_id} is missing"
+                    ));
                 }
                 continue;
             }
@@ -847,21 +851,21 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
                 // Fully identical point:
                 ys[doc_id] = ys[old_doc_id];
                 if *VERBOSE {
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "  doc={doc_id} y={} x={} (same X/y as doc={old_doc_id})",
                         float_to_string(ys[doc_id]),
                         float_to_string(the_x)
-                    );
+                    ));
                 }
             } else {
                 ys[doc_id] = self.next_y();
                 have_real_doc = true;
                 if *VERBOSE {
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "  doc={doc_id} y={} x={}",
                         float_to_string(ys[doc_id]),
                         float_to_string(the_x)
-                    );
+                    ));
                 }
             }
             xs[doc_id] = the_x;
@@ -900,17 +904,17 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
             self.add_point_to_doc(FIELD_NAME, &mut doc, xs[2 * id + 1], ys[2 * id + 1])?;
 
             if *VERBOSE {
-                println!("id={id}");
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!("id={id}"));
+                randomizedtesting::jdk::system::out_println(&format!(
                     "  x={} y={}",
                     float_to_string(xs[2 * id]),
                     float_to_string(ys[2 * id])
-                );
-                println!(
+                ));
+                randomizedtesting::jdk::system::out_println(&format!(
                     "  x={} y={}",
                     float_to_string(xs[2 * id + 1]),
                     float_to_string(ys[2 * id + 1])
-                );
+                ));
             }
             w.add_document(&doc)?;
         }
@@ -931,7 +935,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
             let rect = self.next_box();
 
             if *VERBOSE {
-                println!("\nTEST: iter={iter} rect={rect}");
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "\nTEST: iter={iter} rect={rect}"
+                ));
             }
 
             let query = self.new_rect_query(
@@ -965,19 +971,25 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
                         .and_then(|f| f.string_value())
                         .unwrap_or_else(|| "null".to_string());
                     if expected {
-                        println!("TEST: id={id} docID={doc_id} should match but did not");
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "TEST: id={id} docID={doc_id} should match but did not"
+                        ));
                     } else {
-                        println!("TEST: id={id} docID={doc_id} should not match but did");
+                        randomizedtesting::jdk::system::out_println(&format!(
+                            "TEST: id={id} docID={doc_id} should not match but did"
+                        ));
                     }
-                    println!("  rect={rect}");
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!("  rect={rect}"));
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "  x={} y={}\n  x={} y={}",
                         float_to_string(x_doc1),
                         float_to_string(y_doc1),
                         float_to_string(x_doc2),
                         float_to_string(y_doc2)
-                    );
-                    println!("  result1={result1} result2={result2}");
+                    ));
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "  result1={result1} result2={result2}"
+                    ));
                     fail = true;
                 }
             }
@@ -1018,7 +1030,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
         let num_points = LuceneTestCase::at_least(count) as usize;
 
         if *VERBOSE {
-            println!("TEST: numPoints={num_points}");
+            randomizedtesting::jdk::system::out_println(&format!("TEST: numPoints={num_points}"));
         }
 
         let mut xs = vec![0f32; num_points];
@@ -1032,7 +1044,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
                 // Some docs don't have a point:
                 ys[id] = f32::NAN;
                 if *VERBOSE {
-                    println!("  id={id} is missing");
+                    randomizedtesting::jdk::system::out_println(&format!("  id={id} is missing"));
                 }
                 continue;
             }
@@ -1050,22 +1062,22 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
                     ys[id] = ys[old_id];
                     xs[id] = self.next_x();
                     if *VERBOSE {
-                        println!(
+                        randomizedtesting::jdk::system::out_println(&format!(
                             "  id={id} x={} y={} (same x as doc={old_id})",
                             float_to_string(xs[id]),
                             float_to_string(ys[id])
-                        );
+                        ));
                     }
                 } else if x == 1 {
                     // Identical y to old point
                     ys[id] = self.next_y();
                     xs[id] = xs[old_id];
                     if *VERBOSE {
-                        println!(
+                        randomizedtesting::jdk::system::out_println(&format!(
                             "  id={id} x={} y={} (same y as doc={old_id})",
                             float_to_string(xs[id]),
                             float_to_string(ys[id])
-                        );
+                        ));
                     }
                 } else {
                     assert_eq!(x, 2);
@@ -1073,11 +1085,11 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
                     xs[id] = xs[old_id];
                     ys[id] = ys[old_id];
                     if *VERBOSE {
-                        println!(
+                        randomizedtesting::jdk::system::out_println(&format!(
                             "  id={id} x={} y={} (same X/y as doc={old_id})",
                             float_to_string(xs[id]),
                             float_to_string(ys[id])
-                        );
+                        ));
                     }
                 }
             } else {
@@ -1085,11 +1097,11 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
                 ys[id] = self.next_y();
                 have_real_doc = true;
                 if *VERBOSE {
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "  id={id} x={} y={}",
                         float_to_string(xs[id]),
                         float_to_string(ys[id])
-                    );
+                    ));
                 }
             }
         }
@@ -1155,7 +1167,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         for iter in 0..iters {
             if *VERBOSE {
-                println!("\nTEST: iter={iter} s={s:?}");
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "\nTEST: iter={iter} s={s:?}"
+                ));
             }
 
             let rect = self.next_box();
@@ -1169,7 +1183,10 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
             )?;
 
             if *VERBOSE {
-                println!("  query={}", query.to_query_string(""));
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "  query={}",
+                    query.to_query_string("")
+                ));
             }
 
             let hits = search_index(&s, Arc::clone(&query), max_doc)?;
@@ -1220,7 +1237,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         for iter in 0..iters {
             if *VERBOSE {
-                println!("\nTEST: iter={iter} s={s:?}");
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "\nTEST: iter={iter} s={s:?}"
+                ));
             }
 
             // Distance
@@ -1234,13 +1253,19 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
             }
 
             if *VERBOSE {
-                println!("  radius = {}", decimal_format_grouped_2(f64::from(radius)));
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "  radius = {}",
+                    decimal_format_grouped_2(f64::from(radius))
+                ));
             }
 
             let query = self.new_distance_query(Some(FIELD_NAME), center_x, center_y, radius)?;
 
             if *VERBOSE {
-                println!("  query={}", query.to_query_string(""));
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "  query={}",
+                    query.to_query_string("")
+                ));
             }
 
             let hits = search_index(&s, Arc::clone(&query), max_doc)?;
@@ -1313,7 +1338,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         for iter in 0..iters {
             if *VERBOSE {
-                println!("\nTEST: iter={iter} s={s:?}");
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "\nTEST: iter={iter} s={s:?}"
+                ));
             }
 
             // Polygon
@@ -1321,7 +1348,10 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
             let query = self.new_polygon_query(Some(FIELD_NAME), vec![polygon.clone()])?;
 
             if *VERBOSE {
-                println!("  query={}", query.to_query_string(""));
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "  query={}",
+                    query.to_query_string("")
+                ));
             }
 
             let hits = search_index(&s, Arc::clone(&query), max_doc)?;
@@ -1377,7 +1407,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
         for iter in 0..iters {
             if *VERBOSE {
-                println!("\nTEST: iter={iter} s={s:?}");
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "\nTEST: iter={iter} s={s:?}"
+                ));
             }
 
             // geometries
@@ -1386,7 +1418,10 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
             let component2d = XYGeometryValue::create(&geometries)?;
 
             if *VERBOSE {
-                println!("  query={}", query.to_query_string(""));
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "  query={}",
+                    query.to_query_string("")
+                ));
             }
 
             let hits = search_index(&s, Arc::clone(&query), max_doc)?;
@@ -1448,7 +1483,9 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
                 )])?;
                 deleted.insert(id_to_delete);
                 if *VERBOSE {
-                    println!("  delete id={id_to_delete}");
+                    randomizedtesting::jdk::system::out_println(&format!(
+                        "  delete id={id_to_delete}"
+                    ));
                 }
             }
         }
@@ -1650,12 +1687,12 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
                 Assert::assert_equals(&expected, &actual);
             }));
             if let Err(payload) = outcome {
-                println!(
+                randomizedtesting::jdk::system::out_println(&format!(
                     "center: ({},{}), radius={}",
                     float_to_string(x),
                     float_to_string(y),
                     float_to_string(radius)
-                );
+                ));
                 for doc in 0..reader.max_doc() {
                     let stored = stored_fields.document(doc)?;
                     let doc_x = float_value(&stored, "x");
@@ -1666,12 +1703,12 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
                         f64::from(doc_x),
                         f64::from(doc_y),
                     );
-                    println!(
+                    randomizedtesting::jdk::system::out_println(&format!(
                         "{doc}: ({},{}), distance={}",
                         float_to_string(x),
                         float_to_string(y),
                         double_to_string(distance)
-                    );
+                    ));
                 }
                 std::panic::resume_unwind(payload);
             }

@@ -336,7 +336,7 @@ fn writer_thread_run(num_iteration: i32, dir: &Arc<dyn Directory>, hit_exception
     let baos = SharedBytes::default();
     for i in 0..num_iteration {
         if *VERBOSE {
-            println!("TEST: WriterThread iter={i}");
+            randomizedtesting::jdk::system::out_println(&format!("TEST: WriterThread iter={i}"));
         }
 
         let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
@@ -372,9 +372,11 @@ fn writer_thread_run(num_iteration: i32, dir: &Arc<dyn Directory>, hit_exception
 fn report(hit_exception: &AtomicBool, what: &str, t: &LuceneError, baos: &SharedBytes) {
     hit_exception.store(true, Ordering::SeqCst);
     let t = crate::util::java_exceptions::java_throwable(t);
-    println!("Stress Test Index Writer: {what} hit unexpected exception: {t}");
-    println!("{t}");
-    println!("{}", baos.text());
+    randomizedtesting::jdk::system::out_println(&format!(
+        "Stress Test Index Writer: {what} hit unexpected exception: {t}"
+    ));
+    randomizedtesting::jdk::system::out_println(&format!("{t}"));
+    randomizedtesting::jdk::system::out_println(&baos.text());
 }
 
 /// `SearcherThread.run()`.
@@ -389,7 +391,9 @@ fn searcher_thread_run(num_iteration: i32, dir: &Arc<dyn Directory>, hit_excepti
             Err(e) => {
                 hit_exception.store(true, Ordering::SeqCst);
                 let e = crate::util::java_exceptions::java_throwable(&e);
-                println!("Stress Test Index Searcher: create hit unexpected exception: {e}");
+                randomizedtesting::jdk::system::out_println(&format!(
+                    "Stress Test Index Searcher: create hit unexpected exception: {e}"
+                ));
                 break;
             }
         };
@@ -397,14 +401,18 @@ fn searcher_thread_run(num_iteration: i32, dir: &Arc<dyn Directory>, hit_excepti
         if let Err(e) = searcher.search(Arc::clone(&query), 1000) {
             hit_exception.store(true, Ordering::SeqCst);
             let e = crate::util::java_exceptions::java_throwable(&e);
-            println!("Stress Test Index Searcher: search hit unexpected exception: {e}");
+            randomizedtesting::jdk::system::out_println(&format!(
+                "Stress Test Index Searcher: search hit unexpected exception: {e}"
+            ));
             break;
         }
         drop(searcher);
         if let Err(e) = reader.close() {
             hit_exception.store(true, Ordering::SeqCst);
             let e = crate::util::java_exceptions::java_throwable(&e);
-            println!("Stress Test Index Searcher: close hit unexpected exception: {e}");
+            randomizedtesting::jdk::system::out_println(&format!(
+                "Stress Test Index Searcher: close hit unexpected exception: {e}"
+            ));
             break;
         }
     }
