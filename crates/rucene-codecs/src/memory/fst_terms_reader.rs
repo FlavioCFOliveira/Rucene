@@ -285,6 +285,11 @@ impl Fields for FSTTermsReader {
 }
 
 impl FieldsProducer for FSTTermsReader {
+    /// `FSTTermsReader.toString()`: this producer's [`Display`](std::fmt::Display).
+    fn to_java_string(&self) -> String {
+        format!("{self}")
+    }
+
     fn check_integrity(&self) -> Result<()> {
         match &self.postings_reader {
             Some(p) => p.check_integrity(),
@@ -697,6 +702,14 @@ struct Frame {
     output: TermData,
     /// automaton stats
     fsa_state: i32,
+}
+
+impl fmt::Display for Frame {
+    /// `Frame.toString()` (`FSTTermsReader.java:463-466`):
+    /// `"arc=" + fstArc + " state=" + fsaState`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "arc={} state={}", self.fst_arc, self.fsa_state)
+    }
 }
 
 impl Frame {
@@ -1184,4 +1197,24 @@ pub(crate) fn walk<O: Outputs>(fst: &FST<O>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+    use rucene::util::fst::OutputToString;
+
+    /// `"arc=" + fstArc + " state=" + fsaState`, where a fresh `FST.Arc`
+    /// renders as `" target=0 label=0x0"`.
+    #[test]
+    fn frame_to_string_matches_java() {
+        let frame = Frame::new();
+        assert_eq!(frame.to_string(), "arc= target=0 label=0x0 state=-1");
+        let mut frame = Frame::new();
+        frame.fsa_state = 3;
+        assert_eq!(frame.to_string(), "arc= target=0 label=0x0 state=3");
+        // The output form `Arc.toString()` appends is `TermData.toString()`.
+        let data = TermData::default();
+        assert_eq!(data.output_to_java_string(), data.to_string());
+    }
 }

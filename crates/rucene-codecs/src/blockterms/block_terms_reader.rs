@@ -280,6 +280,11 @@ impl Fields for BlockTermsReader {
 }
 
 impl FieldsProducer for BlockTermsReader {
+    /// `BlockTermsReader.toString()`: this producer's [`Display`](std::fmt::Display).
+    fn to_java_string(&self) -> String {
+        format!("{self}")
+    }
+
     fn check_integrity(&self) -> Result<()> {
         let shared = self.shared()?;
         // verify terms

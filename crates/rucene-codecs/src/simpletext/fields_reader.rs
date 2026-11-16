@@ -190,6 +190,11 @@ impl Fields for SimpleTextFieldsReader {
 }
 
 impl FieldsProducer for SimpleTextFieldsReader {
+    /// `SimpleTextFieldsReader.toString()`: this producer's [`Display`](std::fmt::Display).
+    fn to_java_string(&self) -> String {
+        format!("{self}")
+    }
+
     fn check_integrity(&self) -> Result<()> {
         Ok(())
     }

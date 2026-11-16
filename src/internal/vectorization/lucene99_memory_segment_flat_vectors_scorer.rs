@@ -690,4 +690,43 @@ mod tests {
         };
         assert_eq!(byte_copies(Some(heap.as_ref())), byte_copies(None));
     }
+
+    /// `AbstractRandomVectorScorer.values()` on the two memory-segment
+    /// scorers: the values passed to `super(values)`.
+    #[test]
+    fn memory_segment_scorers_values_is_the_scored_values() {
+        use crate::util::hnsw::HasKnnVectorValues;
+        fn addr<T: ?Sized>(t: &T) -> *const () {
+            std::ptr::from_ref(t).cast::<()>()
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir =
+            MMapDirectory::with_lock_factory(tmp.path(), Box::new(NativeFSLockFactory)).unwrap();
+        let mut out = dir.create_output("v.vec", &*DEFAULT_IO_CONTEXT).unwrap();
+        out.write_bytes(&[0u8; 64], 0, 64).unwrap();
+        out.close().unwrap();
+        let input = dir.open_input("v.vec", &*DEFAULT_IO_CONTEXT).unwrap();
+
+        let floats = float_values();
+        let scorer = Lucene99MemorySegmentFloatVectorScorer::create(
+            VectorSimilarityFunction::EUCLIDEAN,
+            input.as_ref(),
+            Arc::clone(&floats),
+            &FLOAT_QUERY,
+        )
+        .unwrap()
+        .expect("a mapped input");
+        assert_eq!(addr(scorer.values().unwrap()), addr(&*floats));
+
+        let bytes = byte_values();
+        let scorer = Lucene99MemorySegmentByteVectorScorer::create(
+            VectorSimilarityFunction::EUCLIDEAN,
+            input.as_ref(),
+            Arc::clone(&bytes),
+            &BYTE_QUERY,
+        )
+        .unwrap()
+        .expect("a mapped input");
+        assert_eq!(addr(scorer.values().unwrap()), addr(&*bytes));
+    }
 }

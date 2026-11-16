@@ -362,6 +362,11 @@ impl Fields for OrdsBlockTreeTermsReader {
 }
 
 impl FieldsProducer for OrdsBlockTreeTermsReader {
+    /// `OrdsBlockTreeTermsReader.toString()`: this producer's [`Display`](std::fmt::Display).
+    fn to_java_string(&self) -> String {
+        format!("{self}")
+    }
+
     fn check_integrity(&self) -> Result<()> {
         let shared = self.shared()?;
         // term dictionary

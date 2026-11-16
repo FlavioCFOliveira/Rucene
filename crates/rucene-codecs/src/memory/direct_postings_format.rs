@@ -240,6 +240,11 @@ impl Fields for DirectFields {
 }
 
 impl FieldsProducer for DirectFields {
+    /// `DirectPostingsFormat.DirectFields.toString()`: this producer's [`Display`](std::fmt::Display).
+    fn to_java_string(&self) -> String {
+        format!("{self}")
+    }
+
     fn check_integrity(&self) -> Result<()> {
         // if we read entirely into ram, we already validated.
         // otherwise returned the raw postings reader

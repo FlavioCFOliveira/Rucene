@@ -115,6 +115,14 @@ impl fmt::Debug for TermData {
     }
 }
 
+impl rucene::util::fst::OutputToString for TermData {
+    /// `TermData.toString()`, the form `FST.Arc.toString()` appends for an
+    /// output.
+    fn output_to_java_string(&self) -> String {
+        self.to_string()
+    }
+}
+
 impl fmt::Display for TermData {
     /// Port of `TermData.toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

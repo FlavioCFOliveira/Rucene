@@ -90,6 +90,19 @@ struct InputOutput {
     output: Option<Output>,
 }
 
+impl fmt::Display for InputOutput {
+    /// `InputOutput.toString()` (`OrdsSegmentTermsEnum.java:1151-1154`):
+    /// `"InputOutput(input=" + input + " output=" + output + ")"`, the input
+    /// rendered as `IntsRef.toString()` and a null output as `null`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let input = rucene::util::IntsRef::new(self.input.clone());
+        match &self.output {
+            Some(output) => write!(f, "InputOutput(input={input} output={output})"),
+            None => write!(f, "InputOutput(input={input} output=null)"),
+        }
+    }
+}
+
 impl OrdsSegmentTermsEnum {
     /// Port of `OrdsSegmentTermsEnum(OrdsFieldReader)`.
     pub(crate) fn new(fr: OrdsFieldReader) -> Result<Self> {
@@ -1062,5 +1075,29 @@ impl TermsEnum for OrdsSegmentTermsEnum {
         self.valid_index_prefix = 0;
         self.positioned = false;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod input_output_tests {
+    use super::*;
+
+    /// `"InputOutput(input=" + input + " output=" + output + ")"`: the input as
+    /// `IntsRef.toString()` (unsigned hex), the output as `Output.toString()`.
+    #[test]
+    fn input_output_to_string_matches_java() {
+        let io = InputOutput {
+            input: vec![1, 0x1f, -1],
+            output: Some(FST_OUTPUTS.new_output(Vec::new(), 3, 5)),
+        };
+        assert_eq!(
+            io.to_string(),
+            "InputOutput(input=[1 1f ffffffff] output=3 to -5)"
+        );
+        let empty = InputOutput {
+            input: Vec::new(),
+            output: None,
+        };
+        assert_eq!(empty.to_string(), "InputOutput(input=[] output=null)");
     }
 }

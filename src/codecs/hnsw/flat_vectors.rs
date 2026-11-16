@@ -979,6 +979,14 @@ impl FloatVectorScorer {
     }
 }
 
+impl crate::util::hnsw::HasKnnVectorValues for FloatVectorScorer {
+    /// Equivalent to `AbstractRandomVectorScorer.values()` (`RandomVectorScorer.java:109-112`), inherited by
+    /// `DefaultFlatVectorScorer.FloatVectorScorer`, `super(values)`: the values the scorer reads.
+    fn values(&self) -> Option<&dyn crate::index::vector_values::KnnVectorValues> {
+        Some(&*self.values)
+    }
+}
+
 impl RandomVectorScorer for FloatVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
         let v = self.values.vector_value(node)?;
@@ -1018,6 +1026,14 @@ impl ByteVectorScorer {
             query,
             similarity_function,
         }
+    }
+}
+
+impl crate::util::hnsw::HasKnnVectorValues for ByteVectorScorer {
+    /// Equivalent to `AbstractRandomVectorScorer.values()` (`RandomVectorScorer.java:109-112`), inherited by
+    /// `DefaultFlatVectorScorer.ByteVectorScorer`, `super(values)`: the values the scorer reads.
+    fn values(&self) -> Option<&dyn crate::index::vector_values::KnnVectorValues> {
+        Some(&*self.values)
     }
 }
 
@@ -1099,6 +1115,14 @@ struct UpdateableFloatVectorScorer {
     target_vectors: Arc<dyn FloatVectorValues>,
     query: Vec<f32>,
     similarity_function: VectorSimilarityFunction,
+}
+
+impl crate::util::hnsw::HasKnnVectorValues for UpdateableFloatVectorScorer {
+    /// Equivalent to `AbstractUpdateableRandomVectorScorer.values()` (`UpdateableRandomVectorScorer.java:68-71`), inherited by
+    /// the anonymous scorer of `DefaultFlatVectorScorer.FloatScoringSupplier.scorer()`, built over `vectors`, not `targetVectors`: the values the scorer reads.
+    fn values(&self) -> Option<&dyn crate::index::vector_values::KnnVectorValues> {
+        Some(&*self.values)
+    }
 }
 
 impl RandomVectorScorer for UpdateableFloatVectorScorer {
@@ -1187,6 +1211,14 @@ struct UpdateableByteVectorScorer {
     target_vectors: Arc<dyn ByteVectorValues>,
     query: Vec<u8>,
     similarity_function: VectorSimilarityFunction,
+}
+
+impl crate::util::hnsw::HasKnnVectorValues for UpdateableByteVectorScorer {
+    /// Equivalent to `AbstractUpdateableRandomVectorScorer.values()` (`UpdateableRandomVectorScorer.java:68-71`), inherited by
+    /// the anonymous scorer of `DefaultFlatVectorScorer.ByteScoringSupplier.scorer()`, built over `vectors`, not `targetVectors`: the values the scorer reads.
+    fn values(&self) -> Option<&dyn crate::index::vector_values::KnnVectorValues> {
+        Some(&*self.values)
+    }
 }
 
 impl RandomVectorScorer for UpdateableByteVectorScorer {
@@ -1547,5 +1579,47 @@ mod tests {
         let score_same = scorer.score(0).unwrap();
         let score_other = scorer.score(1).unwrap();
         assert!(score_same > score_other);
+    }
+
+    /// `AbstractRandomVectorScorer.values()` and
+    /// `AbstractUpdateableRandomVectorScorer.values()`: each default scorer
+    /// returns the very values it scores against, and an updateable scorer
+    /// returns `vectors`, never its `targetVectors` copy.
+    #[test]
+    fn default_scorers_values_is_the_scored_values() {
+        use crate::index::vector_values::from_bytes;
+        use crate::util::hnsw::HasKnnVectorValues;
+        fn addr<T: ?Sized>(t: &T) -> *const () {
+            std::ptr::from_ref(t).cast::<()>()
+        }
+        let floats: Arc<dyn FloatVectorValues> =
+            Arc::new(from_floats(vec![vec![1.0, 0.0], vec![0.0, 1.0]], 2));
+        let float_copy: Arc<dyn FloatVectorValues> = Arc::from(floats.copy_float().unwrap());
+        let bytes: Arc<dyn ByteVectorValues> =
+            Arc::new(from_bytes(vec![vec![1, 2], vec![3, 4]], 2));
+        let byte_copy: Arc<dyn ByteVectorValues> = Arc::from(bytes.copy_byte().unwrap());
+        let sim = VectorSimilarityFunction::DOT_PRODUCT;
+
+        let s = FloatVectorScorer::new(Arc::clone(&floats), vec![1.0, 0.0], sim);
+        assert_eq!(addr(s.values().unwrap()), addr(&*floats));
+        let s = ByteVectorScorer::new(Arc::clone(&bytes), vec![1, 0], sim);
+        assert_eq!(addr(s.values().unwrap()), addr(&*bytes));
+        let s = UpdateableFloatVectorScorer {
+            values: Arc::clone(&floats),
+            target_vectors: Arc::clone(&float_copy),
+            query: vec![0.0; 2],
+            similarity_function: sim,
+        };
+        assert_eq!(addr(s.values().unwrap()), addr(&*floats));
+        assert_ne!(addr(s.values().unwrap()), addr(&*float_copy));
+        let s = UpdateableByteVectorScorer {
+            values: Arc::clone(&bytes),
+            target_vectors: Arc::clone(&byte_copy),
+            query: vec![0; 2],
+            similarity_function: sim,
+        };
+        assert_eq!(addr(s.values().unwrap()), addr(&*bytes));
+        assert_ne!(addr(s.values().unwrap()), addr(&*byte_copy));
+        assert_eq!(s.values().unwrap().size(), 2);
     }
 }

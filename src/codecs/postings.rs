@@ -312,6 +312,24 @@ pub trait FieldsProducer: Fields + Send + Sync {
     /// enum), so implementations close their inputs through interior
     /// mutability.
     fn close(&self) -> Result<()>;
+
+    /// Returns this producer's string form.
+    ///
+    /// Equivalent to `toString()`. Java renders a wrapped producer with its
+    /// class's `toString()`, as `AssertingPostingsFormat.AssertingFieldsProducer`
+    /// does with its delegate (`"AssertingFieldsProducer(" + in + ")"`,
+    /// `AssertingPostingsFormat.java:100-103`). Rust has no `toString()` on a
+    /// trait object, so the trait carries it, as
+    /// [`Bits::bits_to_string`](crate::util::Bits::bits_to_string) does. The
+    /// default is the `Object.toString()` a producer without a `toString()` of
+    /// its own inherits: `getClass().getName() + "@" + hex identity`, rendered
+    /// by [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// with the implementing type's name standing in for the Java class name,
+    /// since a Rust type has no Java binary name; an implementation whose Java
+    /// class overrides `toString()` overrides this method.
+    fn to_java_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(std::any::type_name::<Self>(), self)
+    }
 }
 
 // -----------------------------------------------------------------------------

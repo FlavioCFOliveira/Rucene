@@ -2660,6 +2660,11 @@ impl Fields for Lucene103BlockTreeTermsReader {
 }
 
 impl FieldsProducer for Lucene103BlockTreeTermsReader {
+    /// `Lucene103BlockTreeTermsReader.toString()`: this producer's [`Display`](std::fmt::Display).
+    fn to_java_string(&self) -> String {
+        format!("{self}")
+    }
+
     /// Equivalent to `Lucene103BlockTreeTermsReader.checkIntegrity()`
     /// (`Lucene103BlockTreeTermsReader.java:303-313`): the checksums of the
     /// terms index (`.tip`) and the terms dictionary (`.tim`), then the

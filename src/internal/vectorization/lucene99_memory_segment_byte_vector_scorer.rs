@@ -188,6 +188,14 @@ impl Lucene99MemorySegmentByteVectorScorer {
     }
 }
 
+impl crate::util::hnsw::HasKnnVectorValues for Lucene99MemorySegmentByteVectorScorer {
+    /// Equivalent to `AbstractRandomVectorScorer.values()` (`RandomVectorScorer.java:109-112`), inherited by
+    /// `Lucene99MemorySegmentByteVectorScorer`, `super(values)`: the values the scorer reads.
+    fn values(&self) -> Option<&dyn crate::index::vector_values::KnnVectorValues> {
+        Some(&*self.values)
+    }
+}
+
 impl RandomVectorScorer for Lucene99MemorySegmentByteVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
         check_ordinal(node, self.max_ord)?;

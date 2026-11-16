@@ -23,9 +23,10 @@ use std::sync::Arc;
 use rucene::codecs::hnsw::flat_vectors::FlatVectorsScorer;
 use rucene::codecs::{ByteVectorValues, FloatVectorValues};
 use rucene::error::{LuceneError, Result};
-use rucene::index::VectorSimilarityFunction;
+use rucene::index::{KnnVectorValues, VectorSimilarityFunction};
 use rucene::util::hnsw::{
-    RandomVectorScorer, RandomVectorScorerSupplier, UpdateableRandomVectorScorer,
+    HasKnnVectorValues, RandomVectorScorer, RandomVectorScorerSupplier,
+    UpdateableRandomVectorScorer,
 };
 use rucene::util::vector_util::xor_bit_count;
 use rucene::util::Bits;
@@ -156,6 +157,14 @@ impl UpdateableRandomVectorScorer for BitRandomVectorScorer {
     }
 }
 
+impl HasKnnVectorValues for BitRandomVectorScorer {
+    /// `BitRandomVectorScorer.values()` (`FlatBitVectorsScorer.java:98-101`):
+    /// the `vectorValues` the scorer reads.
+    fn values(&self) -> Option<&dyn KnnVectorValues> {
+        Some(&*self.vector_values)
+    }
+}
+
 /// Port of `FlatBitVectorsScorer.BitRandomVectorScorerSupplier`.
 struct BitRandomVectorScorerSupplier {
     vector_values: Arc<dyn ByteVectorValues>,
@@ -187,5 +196,34 @@ impl RandomVectorScorerSupplier for BitRandomVectorScorerSupplier {
         Ok(Box::new(BitRandomVectorScorerSupplier::new(Arc::clone(
             &self.vector_values,
         ))?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rucene::index::from_bytes;
+
+    /// `values()` returns the very `vectorValues` the scorer was built over,
+    /// from both the query-vector and the supplier construction.
+    #[test]
+    fn values_is_the_scorer_vector_values() {
+        let values: Arc<dyn ByteVectorValues> =
+            Arc::new(from_bytes(vec![vec![0b1010_1010u8], vec![0xFF]], 1));
+        let addr = Arc::as_ptr(&values).cast::<()>();
+
+        let scorer = BitRandomVectorScorer::new(Arc::clone(&values), vec![0u8]);
+        let got = scorer.values().expect("values() is never null here");
+        assert_eq!(std::ptr::from_ref(got).cast::<()>(), addr);
+        assert_eq!(got.size(), 2);
+        assert_eq!(got.dimension(), 1);
+
+        let supplier = BitRandomVectorScorerSupplier::new(Arc::clone(&values)).unwrap();
+        let from_supplier =
+            BitRandomVectorScorer::new(Arc::clone(&supplier.vector_values), vec![0]);
+        assert_eq!(
+            std::ptr::from_ref(from_supplier.values().unwrap()).cast::<()>(),
+            addr
+        );
     }
 }

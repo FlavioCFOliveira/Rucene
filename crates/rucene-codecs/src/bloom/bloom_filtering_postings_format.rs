@@ -192,10 +192,6 @@ impl PostingsFormat for BloomFilteringPostingsFormat {
 }
 
 /// Port of the static inner class `BloomFilteredFieldsProducer`.
-///
-/// **Divergence.** Java's `toString()` prints the delegate producer's;
-/// [`FieldsProducer`] carries no `Display` in this port, so the producer has
-/// no `Display` either.
 struct BloomFilteredFieldsProducer {
     delegate_fields_producer: Box<dyn FieldsProducer>,
     blooms_by_field_name: Arc<HashMap<String, Arc<FuzzySet>>>,
@@ -299,7 +295,26 @@ impl Fields for BloomFilteredFieldsProducer {
     }
 }
 
+impl fmt::Display for BloomFilteredFieldsProducer {
+    /// `BloomFilteredFieldsProducer.toString()` (`BloomFilteringPostingsFormat.java:399-407`):
+    /// `getClass().getSimpleName() + "(fields=" + bloomsByFieldName.size()
+    /// + ",delegate=" + delegateFieldsProducer + ")"`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "BloomFilteredFieldsProducer(fields={},delegate={})",
+            self.blooms_by_field_name.len(),
+            self.delegate_fields_producer.to_java_string()
+        )
+    }
+}
+
 impl FieldsProducer for BloomFilteredFieldsProducer {
+    /// `toString()`: this producer's [`Display`](fmt::Display).
+    fn to_java_string(&self) -> String {
+        format!("{self}")
+    }
+
     fn check_integrity(&self) -> Result<()> {
         self.delegate_fields_producer.check_integrity()
     }
@@ -709,5 +724,73 @@ impl FieldsConsumer for BloomFilteredFieldsConsumer<'_> {
         }
         // We are done with large bitsets so no need to keep them hanging around
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod producer_to_string_tests {
+    use super::*;
+
+    /// A delegate whose class overrides `toString()`.
+    struct Named;
+
+    impl Fields for Named {
+        fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            Box::new(std::iter::empty())
+        }
+        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+            Ok(None)
+        }
+        fn size(&self) -> i32 {
+            0
+        }
+    }
+
+    impl FieldsProducer for Named {
+        fn to_java_string(&self) -> String {
+            "Named(fields=2)".to_string()
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
+            Ok(Box::new(Named))
+        }
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `getClass().getSimpleName() + "(fields=" + bloomsByFieldName.size()
+    /// + ",delegate=" + delegateFieldsProducer + ")"`.
+    #[test]
+    fn to_string_matches_java() {
+        let mut blooms = HashMap::new();
+        blooms.insert(
+            "id".to_string(),
+            Arc::new(FuzzySet::create_set_based_on_max_memory(1024)),
+        );
+        blooms.insert(
+            "title".to_string(),
+            Arc::new(FuzzySet::create_set_based_on_max_memory(1024)),
+        );
+        let producer = BloomFilteredFieldsProducer {
+            delegate_fields_producer: Box::new(Named),
+            blooms_by_field_name: Arc::new(blooms),
+        };
+        assert_eq!(
+            producer.to_string(),
+            "BloomFilteredFieldsProducer(fields=2,delegate=Named(fields=2))"
+        );
+        assert_eq!(producer.to_java_string(), producer.to_string());
+
+        let empty = BloomFilteredFieldsProducer {
+            delegate_fields_producer: Box::new(Named),
+            blooms_by_field_name: Arc::new(HashMap::new()),
+        };
+        assert_eq!(
+            empty.to_string(),
+            "BloomFilteredFieldsProducer(fields=0,delegate=Named(fields=2))"
+        );
     }
 }

@@ -78,6 +78,25 @@ impl BlockLine {
         }
     }
 
+    /// Resets this [`BlockLine`] to reuse it when reading.
+    ///
+    /// Port of `BlockLine.reset(TermBytes, int)` (`BlockLine.java:74-80`).
+    ///
+    /// # Errors
+    ///
+    /// `AssertionError` (with assertions enabled) on a line built for
+    /// writing, which carries a term state: Java's `assert termState == null`.
+    pub fn reset(
+        &mut self,
+        term_bytes: TermBytes,
+        term_state_relative_offset: i32,
+    ) -> Result<&mut Self> {
+        java_assert!(self.term_state.is_none());
+        self.term_bytes = term_bytes;
+        self.term_state_relative_offset = term_state_relative_offset;
+        Ok(self)
+    }
+
     /// Port of `BlockLine.getTermBytes()`.
     pub fn get_term_bytes(&self) -> &TermBytes {
         &self.term_bytes
@@ -386,4 +405,39 @@ impl Accountable for Serializer {
 /// Port of `Serializer.numBitsToEncode(int)`.
 pub fn num_bits_to_encode(i: i32) -> i32 {
     32 - i.leading_zeros() as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `reset` replaces the term and the offset of a reading line and returns
+    /// the line itself.
+    #[test]
+    fn reset_reuses_a_reading_line() {
+        let mut line = BlockLine::for_reading(TermBytes::new(1, BytesRef::new(b"ab".to_vec())), 7);
+        let addr: *const BlockLine = &line;
+        let back = line
+            .reset(TermBytes::new(2, BytesRef::new(b"abc".to_vec())), 11)
+            .unwrap();
+        assert!(std::ptr::eq(back, addr));
+        assert_eq!(line.get_term_state_relative_offset(), 11);
+        assert_eq!(line.get_term_bytes().get_mdp_length(), 2);
+        assert_eq!(line.get_term_bytes().get_term().slice(), b"abc");
+    }
+
+    /// `assert termState == null`: a writing line cannot be reset.
+    #[test]
+    fn reset_asserts_no_term_state() {
+        let mut line = BlockLine::for_writing(
+            TermBytes::new(1, BytesRef::new(b"a".to_vec())),
+            Some(BlockTermState::default()),
+        );
+        let r = line.reset(TermBytes::new(1, BytesRef::new(b"b".to_vec())), 3);
+        if cfg!(debug_assertions) {
+            assert!(r.is_err());
+        } else {
+            assert!(r.is_ok());
+        }
+    }
 }

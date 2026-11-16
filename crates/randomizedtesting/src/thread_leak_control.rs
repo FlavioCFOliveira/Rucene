@@ -33,7 +33,8 @@ use crate::jdk::reflect::{find_annotation, AnnotationRef, Class, JavaAnnotation}
 use crate::jdk::system;
 use crate::jdk::thread::Thread;
 use crate::junit::{
-    Description, Failure, Notifier, RunNotifier, Statement, Test, ASSUMPTION_VIOLATED,
+    Description, Failure, JUnitResult, ListenerRef, Notifier, RunNotifier, Statement, Test,
+    ASSUMPTION_VIOLATED,
 };
 use crate::lifecycle_scope::LifecycleScope;
 use crate::randomized_context::RandomizedContext;
@@ -186,6 +187,62 @@ struct SubState {
 impl SubNotifier {
     fn state(&self) -> std::sync::MutexGuard<'_, SubState> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `addListener(listener)` (`ThreadLeakControl.java:149-152`).
+    ///
+    /// # Panics
+    ///
+    /// Always: `UnsupportedOperationException` with a null message, as Java.
+    #[allow(dead_code)]
+    fn add_listener(&self, _listener: ListenerRef) {
+        Throwable::with_message(exception::UNSUPPORTED_OPERATION_EXCEPTION, None).throw()
+    }
+
+    /// `addFirstListener(listener)` (`ThreadLeakControl.java:154-157`).
+    ///
+    /// # Panics
+    ///
+    /// Always: `UnsupportedOperationException` with a null message, as Java.
+    #[allow(dead_code)]
+    fn add_first_listener(&self, _listener: ListenerRef) {
+        Throwable::with_message(exception::UNSUPPORTED_OPERATION_EXCEPTION, None).throw()
+    }
+
+    /// `removeListener(listener)` (`ThreadLeakControl.java:159-162`).
+    ///
+    /// # Panics
+    ///
+    /// Always: `UnsupportedOperationException` with a null message, as Java.
+    #[allow(dead_code)]
+    fn remove_listener(&self, _listener: &ListenerRef) {
+        Throwable::with_message(exception::UNSUPPORTED_OPERATION_EXCEPTION, None).throw()
+    }
+
+    /// `fireTestRunFinished(result)` (`ThreadLeakControl.java:164-167`).
+    ///
+    /// # Panics
+    ///
+    /// Always: `UnsupportedOperationException` with a null message, as Java.
+    #[allow(dead_code)]
+    fn fire_test_run_finished(&self, _result: &JUnitResult) {
+        Throwable::with_message(exception::UNSUPPORTED_OPERATION_EXCEPTION, None).throw()
+    }
+
+    /// `fireTestRunStarted(description)` (`ThreadLeakControl.java:169-172`).
+    ///
+    /// # Panics
+    ///
+    /// Always: `UnsupportedOperationException` with a null message, as Java.
+    #[allow(dead_code)]
+    fn fire_test_run_started(&self, _description: &Arc<Description>) {
+        Throwable::with_message(exception::UNSUPPORTED_OPERATION_EXCEPTION, None).throw()
+    }
+
+    /// `pleaseStop()` (`ThreadLeakControl.java:217-223`): detaches from the
+    /// target notifier; every later event is dropped.
+    fn please_stop(&self) {
+        self.state().stop_requested = true;
     }
 }
 
@@ -366,7 +423,8 @@ impl ThreadLeakControl {
                         suite_description,
                         me.format_thread_stacks_full()
                     ));
-                    me.sub_notifier.state().stop_requested = true;
+                    // mark subNotifier as dead (no longer passing events).
+                    me.sub_notifier.please_stop();
                 }
             }
             if timed_out {
@@ -827,4 +885,74 @@ fn thread_names(threads: &[Thread]) -> String {
         .enumerate()
         .map(|(i, t)| format!("\n  {:>2}) {}", i + 1, Threads::thread_name(t)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::junit::RunListener;
+
+    struct Recorder(Mutex<Vec<String>>);
+
+    impl RunListener for Recorder {
+        fn test_started(&self, d: &Arc<Description>) {
+            self.0.lock().unwrap().push(format!("started {d}"));
+        }
+    }
+
+    fn sub_notifier() -> (SubNotifier, Arc<Recorder>) {
+        let target = Arc::new(RunNotifier::new());
+        let rec = Arc::new(Recorder(Mutex::new(Vec::new())));
+        target.add_listener(rec.clone());
+        let sub = SubNotifier {
+            target,
+            lock: Arc::new(Mutex::new(())),
+            state: Mutex::new(SubState::default()),
+        };
+        (sub, rec)
+    }
+
+    /// Runs `f` and returns the class and message of what it threw.
+    fn thrown(f: impl FnOnce()) -> (String, Option<String>) {
+        let t = try_run(f).expect_err("must throw");
+        (t.class_name().to_string(), t.message().map(str::to_string))
+    }
+
+    #[test]
+    fn listener_and_run_events_throw_unsupported_operation() {
+        let (sub, rec) = sub_notifier();
+        let listener: ListenerRef = rec.clone();
+        let d = Description::create_suite_description("suite", Vec::new());
+        let uoe = ("java.lang.UnsupportedOperationException".to_string(), None);
+        assert_eq!(thrown(|| sub.add_listener(Arc::clone(&listener))), uoe);
+        assert_eq!(
+            thrown(|| sub.add_first_listener(Arc::clone(&listener))),
+            uoe
+        );
+        assert_eq!(thrown(|| sub.remove_listener(&listener)), uoe);
+        assert_eq!(thrown(|| sub.fire_test_run_started(&d)), uoe);
+        assert_eq!(
+            thrown(|| sub.fire_test_run_finished(&JUnitResult::new())),
+            uoe
+        );
+    }
+
+    #[test]
+    fn please_stop_detaches_from_the_target_notifier() {
+        let (sub, rec) = sub_notifier();
+        let d = Description::create_suite_description("t1", Vec::new());
+        sub.fire_test_started(&d);
+        assert_eq!(rec.0.lock().unwrap().len(), 1);
+        // Java's `pleaseStop()` sets `stopRequested`; it does not throw.
+        sub.please_stop();
+        assert!(sub.state().stop_requested);
+        let d2 = Description::create_suite_description("t2", Vec::new());
+        sub.fire_test_started(&d2);
+        assert_eq!(rec.0.lock().unwrap().len(), 1);
+        assert!(sub
+            .state()
+            .test_in_progress
+            .as_ref()
+            .is_some_and(|t| Arc::ptr_eq(t, &d)));
+    }
 }

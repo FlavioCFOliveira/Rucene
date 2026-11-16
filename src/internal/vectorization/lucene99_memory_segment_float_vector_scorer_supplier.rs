@@ -268,6 +268,14 @@ impl AbstractBulkScorer {
     }
 }
 
+impl crate::util::hnsw::HasKnnVectorValues for AbstractBulkScorer {
+    /// Equivalent to `AbstractUpdateableRandomVectorScorer.values()` (`UpdateableRandomVectorScorer.java:68-71`), inherited by
+    /// `Lucene99MemorySegmentFloatVectorScorerSupplier.AbstractBulkScorer`, `super(values)`: the values the scorer reads.
+    fn values(&self) -> Option<&dyn crate::index::vector_values::KnnVectorValues> {
+        Some(&*self.values)
+    }
+}
+
 impl RandomVectorScorer for AbstractBulkScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
         check_ordinal(node, self.max_ord)?;
