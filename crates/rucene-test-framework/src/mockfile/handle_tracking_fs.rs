@@ -157,13 +157,22 @@ fn call_open_hook(
     match catch_unwind(AssertUnwindSafe(|| owner.on_open(path, handle))) {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => {
-            // `closeWhileHandlingException`: an `IOException` is swallowed;
-            // an `Error` (a panic here) propagates and replaces the failure.
-            let _ = close();
+            close_while_handling_exception(close);
             Err(error)
         }
         Err(payload) => {
-            let _ = close();
+            close_while_handling_exception(close);
+            resume_unwind(payload)
+        }
+    }
+}
+
+/// `IOUtils.closeWhileHandlingException(stream)` (`IOUtils.java:113-135`):
+/// every failure of `close()` is swallowed except a Java `Error`, which
+/// propagates (from the `finally`, replacing the exception in flight).
+fn close_while_handling_exception(close: impl FnOnce() -> io::Result<()>) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(close)) {
+        if super::is_java_error(&*payload) {
             resume_unwind(payload)
         }
     }
@@ -479,7 +488,7 @@ pub fn new_directory_stream<P: HandleTrackingFS + ?Sized>(
     let handle = Handle::new("DirectoryStream", dir);
     let mut stream = FilterDirectoryStream::with_overrides(
         stream,
-        Arc::clone(f.require_file_system()),
+        f.require_file_system(),
         Box::new(TrackedDirectoryStream {
             owner: Arc::clone(&owner),
             dir: dir.clone(),
@@ -542,4 +551,83 @@ macro_rules! handle_tracking_fs_methods {
             $crate::mockfile::handle_tracking_fs::new_directory_stream(self, dir, filter)
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mockfile::filter_file_system_provider::{install, FilterState};
+    use randomizedtesting::jdk::exception::{Throwable, ASSERTION_ERROR, RUNTIME_EXCEPTION};
+    use rucene::store::java_nio_file::{default_file_system, Files};
+
+    /// A tracking filesystem whose `onOpen` refuses every open and whose
+    /// `onClose` throws `close_class`.
+    struct RefusingFS {
+        filter: FilterState,
+        tracking: HandleTrackingState,
+        close_class: &'static str,
+    }
+
+    impl HandleTrackingFS for RefusingFS {
+        fn tracking(&self) -> &HandleTrackingState {
+            &self.tracking
+        }
+        fn on_open(&self, _path: &Path, _stream: &Handle) -> io::Result<()> {
+            Err(io::Error::other("open refused"))
+        }
+        fn on_close_handle(&self, _path: &Path, _stream: &Handle) -> io::Result<()> {
+            Throwable::new(self.close_class, "close failed").throw()
+        }
+    }
+
+    impl FilterFileSystemProvider for RefusingFS {
+        fn filter(&self) -> &FilterState {
+            &self.filter
+        }
+        fn class_name(&self) -> &'static str {
+            "RefusingFS"
+        }
+        crate::handle_tracking_fs_methods!();
+    }
+
+    crate::impl_file_system_provider!(RefusingFS);
+
+    fn open_refused(close_class: &'static str) -> io::Result<()> {
+        let default = default_file_system();
+        let fs = Arc::new(RefusingFS {
+            filter: FilterState::new("refusing://", &default),
+            tracking: HandleTrackingState::new(),
+            close_class,
+        });
+        install(&fs, default);
+        install_tracking(&fs);
+        let file = std::env::temp_dir().join(format!(
+            "rucene-handle-tracking-{close_class}-{}",
+            std::process::id()
+        ));
+        let path =
+            FilterFileSystemProvider::get_file_system(&*fs).get_path(&file.to_string_lossy(), &[]);
+        let result = Files::new_output_stream(&path, &[]).map(drop);
+        let _ = std::fs::remove_file(&file);
+        result
+    }
+
+    /// `closeWhileHandlingException(stream)` of `callOpenHook`
+    /// (`HandleTrackingFS.java:79-89`, `IOUtils.java:113-135`) swallows an
+    /// exception of the stream's close: `onOpen`'s failure propagates.
+    #[test]
+    fn an_exception_closing_a_refused_stream_is_swallowed() {
+        let error = open_refused(RUNTIME_EXCEPTION).unwrap_err();
+        assert_eq!(error.to_string(), "open refused");
+    }
+
+    /// An `Error` of the stream's close propagates from the `finally`,
+    /// replacing `onOpen`'s failure.
+    #[test]
+    fn an_error_closing_a_refused_stream_propagates() {
+        let payload = catch_unwind(|| open_refused(ASSERTION_ERROR)).unwrap_err();
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), ASSERTION_ERROR);
+        assert_eq!(t.message(), Some("close failed"));
+    }
 }

@@ -32,6 +32,23 @@ use rucene::util::unicode_util::UnicodeUtil;
 use rucene::util::BytesRef;
 
 use crate::util::{LuceneTestCase, TestUtil};
+use randomizedtesting::junit::Assert;
+
+/// JUnit's `failNotNull(message, actual)` of a failed `assertNull`:
+/// `message `, then `expected null, but was:<actual>`.
+fn assert_null_failed(message: Option<&str>, actual: &str) -> ! {
+    let formatted = message.map_or_else(String::new, |m| format!("{m} "));
+    Assert::fail(&format!("{formatted}expected null, but was:<{actual}>"))
+}
+
+/// `Object.toString()` of an `IntsRefFSTEnum.InputOutput`, which does not
+/// override it (class name and identity hash).
+fn input_output_to_string<T: ?Sized>(io: &T) -> String {
+    rucene::index::index_reader::java_object_to_string(
+        "org.apache.lucene.util.fst.IntsRefFSTEnum$InputOutput",
+        io,
+    )
+}
 
 /// Holds one input/output pair.
 ///
@@ -408,11 +425,14 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
     /// `verifyUnPruned(inputMode, fst)`: the FST is complete.
     fn verify_un_pruned(&self, input_mode: i32, fst: Option<&FST<O>>) -> Result<()> {
         if self.pairs.is_empty() {
-            randomizedtesting::junit::Assert::assert_true(fst.is_none());
+            // assertNull(fst)
+            if let Some(fst) = fst {
+                assert_null_failed(None, &fst.to_string());
+            }
             return Ok(());
         }
 
-        let fst = fst.expect("assertNotNull(fst)");
+        let fst = fst.unwrap_or_else(|| Assert::fail_without_message());
         let pairs = &self.pairs;
 
         // visit valid pairs in order -- make sure all words
@@ -433,19 +453,26 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                 );
 
                 // verify enum's next
-                let t = fst_enum.next()?.expect("assertNotNull(t)");
-                assert_eq!(
+                let t = fst_enum
+                    .next()?
+                    .unwrap_or_else(|| Assert::fail_without_message());
+                Assert::assert_equals_msg(
+                    Some(&format!(
+                        "expected input={} but fstEnum returned {}",
+                        Self::input_to_string(input_mode, term),
+                        Self::input_to_string(input_mode, t.input)
+                    )),
                     term,
                     t.input,
-                    "expected input={} but fstEnum returned {}",
-                    Self::input_to_string(input_mode, term),
-                    Self::input_to_string(input_mode, t.input)
                 );
                 randomizedtesting::junit::Assert::assert_true(
                     self.outputs_equal(&pair.output, t.output),
                 );
             }
-            randomizedtesting::junit::Assert::assert_true(fst_enum.next()?.is_none());
+            // assertNull(fstEnum.next())
+            if let Some(t) = fst_enum.next()? {
+                assert_null_failed(None, &input_output_to_string(&t));
+            }
         }
 
         let terms_map: HashMap<Vec<i32>, &O::Output> = pairs
@@ -505,19 +532,30 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                                     Self::input_to_string(input_mode, &expected.input)
                                 )
                             });
-                            assert_eq!(&expected.input, seek_result.input);
+                            Assert::assert_equals_msg(
+                                Some(&format!(
+                                    "expected {} but got {}",
+                                    Self::input_to_string(input_mode, &expected.input),
+                                    Self::input_to_string(input_mode, seek_result.input)
+                                )),
+                                &expected.input,
+                                seek_result.input,
+                            );
                             randomizedtesting::junit::Assert::assert_true(
                                 self.outputs_equal(&expected.output, seek_result.output),
                             );
                         } else {
                             // seeked before start or beyond end
-                            assert!(
-                                seek_result.is_none(),
-                                "expected null but got {}",
-                                seek_result
-                                    .map(|r| Self::input_to_string(input_mode, r.input))
-                                    .unwrap_or_default()
-                            );
+                            // assertNull("expected null but got " + ..., seekResult)
+                            if let Some(r) = seek_result {
+                                assert_null_failed(
+                                    Some(&format!(
+                                        "expected null but got {}",
+                                        Self::input_to_string(input_mode, r.input)
+                                    )),
+                                    &input_output_to_string(&r),
+                                );
+                            }
                         }
                         break;
                     }
@@ -532,8 +570,16 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                 } else {
                     fst_enum.seek_ceil(&pair.input)?
                 };
-                let seek_result = seek_result.expect("assertNotNull(seekResult)");
-                assert_eq!(&pair.input, seek_result.input);
+                let seek_result = seek_result.unwrap_or_else(|| Assert::fail_without_message());
+                Assert::assert_equals_msg(
+                    Some(&format!(
+                        "got {} but expected {}",
+                        Self::input_to_string(input_mode, seek_result.input),
+                        Self::input_to_string(input_mode, &pair.input)
+                    )),
+                    &pair.input,
+                    seek_result.input,
+                );
                 randomizedtesting::junit::Assert::assert_true(
                     self.outputs_equal(&pair.output, seek_result.output),
                 );
@@ -604,7 +650,7 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                 } else {
                     randomizedtesting::junit::Assert::assert_true(!is_done);
                     let current = fst_enum.current().expect("current");
-                    assert_eq!(&pairs[upto as usize].input, current.input);
+                    Assert::assert_equals(&pairs[upto as usize].input, current.input);
                     randomizedtesting::junit::Assert::assert_true(
                         self.outputs_equal(&pairs[upto as usize].output, current.output),
                     );
@@ -665,5 +711,35 @@ mod tests {
         };
         assert_eq!(find(3), Ok(1));
         assert_eq!(find(4), Err(2));
+    }
+}
+
+#[cfg(test)]
+mod junit_message_tests {
+    use super::*;
+    use randomizedtesting::jdk::exception::Throwable;
+
+    fn failure(f: impl FnOnce() + std::panic::UnwindSafe) -> Throwable {
+        Throwable::from_panic(std::panic::catch_unwind(f).unwrap_err())
+    }
+
+    /// `assertNull(message, x)` fails with `message expected null, but
+    /// was:<x>`, `assertNull(x)` without the prefix (JUnit 4
+    /// `failNotNull`), and `assertNotNull(x)` with a `null` message.
+    #[test]
+    fn null_assertions_use_junit_messages() {
+        let t = failure(|| assert_null_failed(Some("expected null but got [1]"), "IO@1"));
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+        assert_eq!(
+            t.message(),
+            Some("expected null but got [1] expected null, but was:<IO@1>")
+        );
+        let t = failure(|| assert_null_failed(None, "FST(input=BYTE1,output=x"));
+        assert_eq!(
+            t.message(),
+            Some("expected null, but was:<FST(input=BYTE1,output=x>")
+        );
+        let t = failure(|| Assert::fail_without_message());
+        assert_eq!(t.message(), None);
     }
 }

@@ -1251,6 +1251,8 @@ impl TestUtil {
             }
             crc.get_value()
         };
+        // `ZipConstants64.ZIP64_MAGICVAL`.
+        const ZIP64_MAGICVAL: i64 = 0xFFFF_FFFF;
         let mut pos = 0;
         loop {
             // `readLOC()`: a short header or another signature ends the entries.
@@ -1264,6 +1266,12 @@ impl TestUtil {
             let name = std::str::from_utf8(name_bytes)
                 .map_err(|_| zip_exception("invalid LOC header (bad entry name)".to_string()))?
                 .to_string();
+            // `new ZipEntry(name)`: `isCENHeaderValid(name, null, null)`, the
+            // CEN header (46 bytes) plus the name's UTF-16 length within 0xFFFF.
+            let name_length = name.encode_utf16().count();
+            if 46 + name_length > 0xFFFF {
+                randomizedtesting::jdk::exception::illegal_argument("entry name too long");
+            }
             if flag & 1 == 1 {
                 return Err(zip_exception(
                     "encrypted ZIP entry not supported".to_string(),
@@ -1285,6 +1293,54 @@ impl TestUtil {
             let data_start = pos + 30 + name_len + extra_len;
             if input.len() < data_start {
                 return Err(eof());
+            }
+            // `ZipEntry.setExtra0(extra, doZIP64, true)` and
+            // `expect64BitDataDescriptor(extra, flag, csize, size)` of
+            // `readLOC()`, for a non-empty extra field.
+            let mut expect_64_bit_data_descriptor = false;
+            if extra_len > 0 {
+                let extra = &input[pos + 30 + name_len..data_start];
+                if 46 + name_length + extra_len > 0xFFFF {
+                    randomizedtesting::jdk::exception::illegal_argument(
+                        "invalid extra field length",
+                    );
+                }
+                let get16 = |o: usize| usize::from(u16::from_le_bytes([extra[o], extra[o + 1]]));
+                let get64s =
+                    |o: usize| i64::from_le_bytes(extra[o..o + 8].try_into().expect("8 bytes"));
+                // A descriptor entry keeps the sizes unset (`-1`), so only an
+                // entry without one reads the ZIP64 sizes from its LOC.
+                if !has_descriptor && (csize == ZIP64_MAGICVAL || size == ZIP64_MAGICVAL) {
+                    let mut off = 0;
+                    while off + 4 < extra_len {
+                        let (tag, sz) = (get16(off), get16(off + 2));
+                        off += 4;
+                        if off + sz > extra_len {
+                            break;
+                        }
+                        if tag == 0x0001 && sz >= 16 {
+                            size = get64s(off);
+                            csize = get64s(off + 8);
+                        }
+                        off += sz;
+                    }
+                }
+                let loc_csize = i64::from(u32_at(pos + 18));
+                let loc_size = i64::from(u32_at(pos + 22));
+                if has_descriptor && (loc_csize == ZIP64_MAGICVAL || loc_size == ZIP64_MAGICVAL) {
+                    let mut i = 0;
+                    while i + 4 < extra_len {
+                        let (id, dsize) = (get16(i), get16(i + 2));
+                        if i + 4 + dsize > extra_len {
+                            break;
+                        }
+                        if id == 0x0001 {
+                            expect_64_bit_data_descriptor = true;
+                            break;
+                        }
+                        i += 4 + dsize;
+                    }
+                }
             }
 
             let target_file = dest_dir.join(&name);
@@ -1334,18 +1390,41 @@ impl TestUtil {
                     }
                     let mut next = data_start + used;
                     if has_descriptor {
-                        // `EXTHDR` (16) bytes, the `EXTSIG` optional.
-                        let d = input.get(next..next + 16).ok_or_else(eof)?;
-                        let sig = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
-                        let field = |o: usize| {
-                            i64::from(u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]))
-                        };
-                        if sig != 0x0807_4b50 {
-                            (crc, csize, size) = (i64::from(sig), field(4), field(8));
-                            next += 12;
+                        let zip64 = data.len() as i64 > ZIP64_MAGICVAL
+                            || used as i64 > ZIP64_MAGICVAL
+                            || expect_64_bit_data_descriptor;
+                        if zip64 {
+                            // `ZIP64_EXTHDR` (24) bytes with 64-bit sizes, the
+                            // `EXTSIG` optional.
+                            let d = input.get(next..next + 24).ok_or_else(eof)?;
+                            let sig = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
+                            let field32 = |o: usize| {
+                                i64::from(u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]))
+                            };
+                            let field64 = |o: usize| {
+                                i64::from_le_bytes(d[o..o + 8].try_into().expect("8 bytes"))
+                            };
+                            if sig != 0x0807_4b50 {
+                                (crc, csize, size) = (i64::from(sig), field64(4), field64(12));
+                                next += 20;
+                            } else {
+                                (crc, csize, size) = (field32(4), field64(8), field64(16));
+                                next += 24;
+                            }
                         } else {
-                            (crc, csize, size) = (field(4), field(8), field(12));
-                            next += 16;
+                            // `EXTHDR` (16) bytes, the `EXTSIG` optional.
+                            let d = input.get(next..next + 16).ok_or_else(eof)?;
+                            let sig = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
+                            let field = |o: usize| {
+                                i64::from(u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]))
+                            };
+                            if sig != 0x0807_4b50 {
+                                (crc, csize, size) = (i64::from(sig), field(4), field(8));
+                                next += 12;
+                            } else {
+                                (crc, csize, size) = (field(4), field(8), field(12));
+                                next += 16;
+                            }
                         }
                     }
                     if size != data.len() as i64 {
@@ -2501,6 +2580,46 @@ mod tests {
             rucene::store::java_nio_file::java_class_of(&e).to_string(),
             rucene::store::java_nio_file::java_message_of(&e),
         )
+    }
+
+    /// `ZipInputStream.readEnd` (JDK 25): a LOC with ZIP64 size markers and a
+    /// ZIP64 extra field announces a 24-byte data descriptor with 64-bit
+    /// sizes (`expect64BitDataDescriptor`), read in full even without its
+    /// signature. Vectors and outcomes from a JDK 25 probe: with the
+    /// signature the entry extracts; without it (20 bytes left) and with a
+    /// 32-bit descriptor (16 bytes left) `readFully` hits the end.
+    #[test]
+    fn unzip_reads_zip64_data_descriptors_as_zip_input_stream_does() {
+        let hex = |s: &str| -> Vec<u8> {
+            (0..s.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+                .collect()
+        };
+        let head = "504b03042d00080008000000000000000000ffffffffffffffff050014007a2e74787401001000\
+                    00000000000000000000000000000000cb48cdc9c957a8ca2c30330100";
+        let sig64 = hex(&format!(
+            "{head}504b0708acba0af80d000000000000000b00000000000000"
+        ));
+        let dir = std::env::temp_dir().join(format!(
+            "rucene-test-util-unzip-zip64-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        TestUtil::unzip(&sig64, &dir).unwrap();
+        assert_eq!(std::fs::read(dir.join("z.txt")).unwrap(), b"hello zip64");
+        std::fs::remove_dir_all(&dir).ok();
+
+        let nosig64 = hex(&format!("{head}acba0af80d000000000000000b00000000000000"));
+        assert_eq!(
+            unzip_error(&nosig64, "zip64-nosig"),
+            ("java.io.EOFException".to_string(), None)
+        );
+        let sig32 = hex(&format!("{head}504b0708acba0af80d0000000b000000"));
+        assert_eq!(
+            unzip_error(&sig32, "zip64-sig32"),
+            ("java.io.EOFException".to_string(), None)
+        );
     }
 
     /// `ZipInputStream` (JDK 25): a STORED entry is CRC-checked

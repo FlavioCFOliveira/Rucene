@@ -204,7 +204,7 @@ impl StoredFieldsWriter for AssertingStoredFieldsWriter {
     fn start_document(&mut self) -> Result<()> {
         java_assert!(self.doc_status != Status::Started);
         self.r#in.start_document()?;
-        self.num_written += 1;
+        self.num_written = self.num_written.wrapping_add(1); // Java `int` `++` wraps
         self.doc_status = Status::Started;
         Ok(())
     }
@@ -272,5 +272,68 @@ impl StoredFieldsWriter for AssertingStoredFieldsWriter {
     fn close(&mut self) -> Result<()> {
         self.r#in.close()?;
         self.r#in.close() // close again
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A writer that accepts every call.
+    #[derive(Debug)]
+    struct Sink;
+
+    impl Accountable for Sink {
+        fn ram_bytes_used(&self) -> i64 {
+            0
+        }
+    }
+
+    impl StoredFieldsWriter for Sink {
+        fn start_document(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn write_field_i32(&mut self, _info: &FieldInfo, _value: i32) -> Result<()> {
+            Ok(())
+        }
+        fn write_field_i64(&mut self, _info: &FieldInfo, _value: i64) -> Result<()> {
+            Ok(())
+        }
+        fn write_field_f32(&mut self, _info: &FieldInfo, _value: f32) -> Result<()> {
+            Ok(())
+        }
+        fn write_field_f64(&mut self, _info: &FieldInfo, _value: f64) -> Result<()> {
+            Ok(())
+        }
+        fn write_field_bytes(&mut self, _info: &FieldInfo, _value: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_field_data_input(
+            &mut self,
+            _info: &FieldInfo,
+            _value: &mut StoredFieldDataInput<'_>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn write_field_string(&mut self, _info: &FieldInfo, _value: &str) -> Result<()> {
+            Ok(())
+        }
+        fn finish(&mut self, _num_docs: i32) -> Result<()> {
+            Ok(())
+        }
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `numWritten++` of `startDocument` (`AssertingStoredFieldsFormat.java:122`)
+    /// is Java `int` arithmetic: from `Integer.MAX_VALUE` it wraps to
+    /// `Integer.MIN_VALUE` instead of overflowing.
+    #[test]
+    fn num_written_increment_wraps_as_java_int() {
+        let mut writer = AssertingStoredFieldsWriter::new(Box::new(Sink));
+        writer.num_written = i32::MAX;
+        writer.start_document().unwrap();
+        assert_eq!(writer.num_written, i32::MIN);
     }
 }

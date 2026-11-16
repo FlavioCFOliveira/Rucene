@@ -114,7 +114,8 @@ impl LiveDocsFormat for AssertingLiveDocsFormat {
         Self::check(
             bits,
             info.info.max_doc()?,
-            info.get_del_count() + new_del_count,
+            // Java `int` addition wraps.
+            info.get_del_count().wrapping_add(new_del_count),
         )?;
         self.r#in
             .get()

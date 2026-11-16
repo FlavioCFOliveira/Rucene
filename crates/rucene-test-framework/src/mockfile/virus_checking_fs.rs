@@ -23,7 +23,9 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::system;
 use rucene::index::WRITE_LOCK_NAME;
-use rucene::store::java_nio_file::{access_denied_exception, FileSystem, Files, Path};
+use rucene::store::java_nio_file::{
+    access_denied_exception, throw_unchecked, FileSystem, Files, Path,
+};
 
 use super::filter_file_system_provider::{
     self as ffsp, install, FilterFileSystemProvider, FilterState,
@@ -89,9 +91,19 @@ impl FilterFileSystemProvider for VirusCheckingFS {
     /// `AccessDeniedException`.
     fn delete(&self, path: &Path) -> io::Result<()> {
         let name = path.get_file_name();
-        let hash_code = name.as_ref().map_or(0, Path::hash_code);
-        let hash = (self.state.fetch_add(1, Ordering::SeqCst).wrapping_add(1))
-            .wrapping_mul(i64::from(hash_code));
+        // `state.incrementAndGet() * path.getFileName().hashCode()`: the
+        // increment happens before the `null` file name is dereferenced.
+        let state = self.state.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+        let Some(hash_code) = name.as_ref().map(Path::hash_code) else {
+            throw_unchecked(
+                "java.lang.NullPointerException",
+                Some(
+                    "Cannot invoke \"java.nio.file.Path.hashCode()\" because the return value of \
+                     \"java.nio.file.Path.getFileName()\" is null",
+                ),
+            )
+        };
+        let hash = state.wrapping_mul(i64::from(hash_code));
         if self.enabled.load(Ordering::SeqCst)
             && Files::exists(path, &[])
             && name.map(|n| n.to_string()).as_deref() != Some(WRITE_LOCK_NAME)
@@ -111,3 +123,33 @@ impl FilterFileSystemProvider for VirusCheckingFS {
 }
 
 crate::impl_file_system_provider!(VirusCheckingFS);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use randomizedtesting::jdk::exception::Throwable;
+    use rucene::store::java_nio_file::default_file_system;
+
+    /// `path.getFileName().hashCode()` of a path without a file name NPEs
+    /// (`VirusCheckingFS.java:63`, JDK 25 helpful message probed), after
+    /// `state.incrementAndGet()` ran.
+    #[test]
+    fn delete_of_a_path_without_file_name_is_a_null_pointer_exception() {
+        let fs = VirusCheckingFS::new(default_file_system(), 41);
+        let root = FilterFileSystemProvider::get_file_system(&*fs).get_path("/", &[]);
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = ffsp::FilterFileSystemProvider::delete(&*fs, &root);
+        }))
+        .unwrap_err();
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.NullPointerException");
+        assert_eq!(
+            t.message(),
+            Some(
+                "Cannot invoke \"java.nio.file.Path.hashCode()\" because the return value of \
+                 \"java.nio.file.Path.getFileName()\" is null"
+            )
+        );
+        assert_eq!(fs.state.load(Ordering::SeqCst), 42);
+    }
+}

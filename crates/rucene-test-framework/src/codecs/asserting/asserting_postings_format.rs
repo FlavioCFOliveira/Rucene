@@ -189,12 +189,9 @@ impl FieldsConsumer for AssertingFieldsConsumer<'_> {
             let Some(field_info) = field_info else {
                 // Only reachable with assertions disabled: Java's next line
                 // dereferences the null field info.
-                return Err(rucene::error::LuceneError::from(
-                    rucene::error::LuceneErrorKind::Unchecked {
-                        class: "java.lang.NullPointerException",
-                        message: None,
-                        cause: None,
-                    },
+                return Err(rucene::error::LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"org.apache.lucene.index.FieldInfo.getIndexOptions()\" \
+                     because \"fieldInfo\" is null",
                 ));
             };
 
@@ -237,8 +234,13 @@ impl FieldsConsumer for AssertingFieldsConsumer<'_> {
                     postings.is_some(),
                     "termsEnum={terms_enum} hasPositions={has_positions}"
                 );
-                let postings = postings_enum
-                    .insert(postings.ok_or_else(rucene::error::LuceneError::null_pointer)?);
+                let postings = postings_enum.insert(postings.ok_or_else(|| {
+                    // Assertions disabled: `postingsEnum.nextDoc()`.
+                    rucene::error::LuceneError::null_pointer_with_message(
+                        "Cannot invoke \"org.apache.lucene.index.PostingsEnum.nextDoc()\" \
+                         because \"postingsEnum\" is null",
+                    )
+                })?);
 
                 let mut last_doc_id = -1;
 

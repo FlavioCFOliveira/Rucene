@@ -176,7 +176,7 @@ impl FilterFileSystemProvider for WindowsFS {
 
     /// `wrapPath(path)`: a `WindowsPath`.
     fn wrap_path(&self, path: &Path) -> Path {
-        super::FilterPath::new(path, self.filter.require_file_system())
+        super::FilterPath::new(path, &self.filter.require_file_system())
     }
 
     /// `WindowsPath.resolve(Path)`: `checkInvalidPath(other)`, then

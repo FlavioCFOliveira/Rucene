@@ -21,6 +21,9 @@ use std::any::Any;
 use std::io;
 use std::sync::Arc;
 
+use randomizedtesting::jdk::exception::Throwable;
+use rucene::error::LuceneError;
+
 use rucene::store::java_nio_file::{
     default_file_system, same_file_system, FileStore, FileSystem, FileSystemProvider, Path,
     PathMatcher,
@@ -28,6 +31,7 @@ use rucene::store::java_nio_file::{
 
 use super::filter_file_store::FilterFileStore;
 use super::filter_file_system_provider::FilterFileSystemProvider;
+use crate::util::java_exceptions::java_throwable;
 
 /// Port of `org.apache.lucene.tests.mockfile.FilterFileSystem`: a filesystem
 /// that contains another filesystem, which it uses as its basic source of
@@ -90,10 +94,17 @@ impl FileSystem for FilterFileSystem {
                 self.parent.on_close();
             }));
             let closed = self.delegate.close();
-            if let Err(payload) = closing {
-                std::panic::resume_unwind(payload);
+            match (closing, closed) {
+                (Ok(()), closed) => closed,
+                // `Throwable.addSuppressed` of the try-with-resources: the
+                // delegate's close failure rides on `onClose()`'s.
+                (Err(payload), Err(error)) => {
+                    let mut primary = Throwable::from_panic(payload);
+                    primary.add_suppressed(java_throwable(&LuceneError::from(error)));
+                    primary.throw()
+                }
+                (Err(payload), Ok(())) => std::panic::resume_unwind(payload),
             }
-            closed
         }
     }
 
@@ -181,5 +192,98 @@ impl PathMatcher for FilterPathMatcher {
                 .matches(&path.with_file_system(Arc::clone(&fs.delegate))),
             None => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mockfile::filter_file_system_provider::{install, FilterState};
+
+    /// The default filesystem, except that `close()` fails.
+    struct FailingClose(Arc<dyn FileSystem>);
+
+    impl FileSystem for FailingClose {
+        fn provider(&self) -> Arc<dyn FileSystemProvider> {
+            self.0.provider()
+        }
+        fn close(&self) -> io::Result<()> {
+            Err(io::Error::other("delegate close failed"))
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+        fn is_read_only(&self) -> bool {
+            self.0.is_read_only()
+        }
+        fn get_separator(&self) -> String {
+            self.0.get_separator()
+        }
+        fn get_root_directories(self: Arc<Self>) -> Vec<Path> {
+            Arc::clone(&self.0).get_root_directories()
+        }
+        fn get_file_stores(&self) -> Vec<Arc<dyn FileStore>> {
+            self.0.get_file_stores()
+        }
+        fn supported_file_attribute_views(&self) -> Vec<String> {
+            self.0.supported_file_attribute_views()
+        }
+        fn get_path(self: Arc<Self>, first: &str, more: &[&str]) -> Path {
+            Arc::clone(&self.0).get_path(first, more)
+        }
+        fn get_path_matcher(&self, syntax_and_pattern: &str) -> Box<dyn PathMatcher> {
+            self.0.get_path_matcher(syntax_and_pattern)
+        }
+        fn file_system_to_string(&self) -> String {
+            "FailingClose".to_string()
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    /// A filter provider whose `onClose()` throws.
+    struct ThrowingOnClose {
+        filter: FilterState,
+    }
+
+    impl FilterFileSystemProvider for ThrowingOnClose {
+        fn filter(&self) -> &FilterState {
+            &self.filter
+        }
+        fn class_name(&self) -> &'static str {
+            "ThrowingOnClose"
+        }
+        fn on_close(&self) {
+            randomizedtesting::jdk::exception::illegal_state("onClose failed")
+        }
+    }
+
+    crate::impl_file_system_provider!(ThrowingOnClose);
+
+    /// `try (FileSystem d = delegate) { parent.onClose(); }`
+    /// (`FilterFileSystem.java:67-70`): when both throw, `onClose()`'s
+    /// exception propagates with the delegate's close failure suppressed.
+    #[test]
+    fn delegate_close_failure_is_suppressed_by_on_close_failure() {
+        let delegate: Arc<dyn FileSystem> = Arc::new(FailingClose(default_file_system()));
+        let provider = Arc::new(ThrowingOnClose {
+            filter: FilterState::new("throwing://", &delegate),
+        });
+        install(&provider, delegate);
+        let fs = FilterFileSystemProvider::get_file_system(&*provider);
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = fs.close();
+        }))
+        .unwrap_err();
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.IllegalStateException");
+        assert_eq!(t.message(), Some("onClose failed"));
+        assert_eq!(t.suppressed().len(), 1, "{t:?}");
+        assert_eq!(
+            t.suppressed()[0].message(),
+            Some("delegate close failed"),
+            "{t:?}"
+        );
     }
 }

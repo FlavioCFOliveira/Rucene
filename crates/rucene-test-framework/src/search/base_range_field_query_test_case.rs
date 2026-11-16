@@ -48,7 +48,7 @@ use rucene::index::multi_doc_values::MultiDocValues;
 use rucene::index::terms::Term;
 use rucene::index::{IndexReader, IndexableField};
 use rucene::search::query::Query;
-use rucene::util::BytesRef;
+use rucene::util::{BytesRef, IOUtils};
 
 use crate::search::FixedBitSetCollector;
 use crate::util::java_exceptions::rethrow_java;
@@ -406,7 +406,10 @@ pub trait BaseRangeFieldQueryTestCase: Send + Sync + 'static {
             LuceneTestCase::new_directory()
         };
 
-        let result = (|| -> Result<()> {
+        // Java closes the reader and the directory only after every check
+        // passed (`IOUtils.close(r, dir)`, `BaseRangeFieldQueryTestCase.java:338`):
+        // a failure leaves both open.
+        let r = (|| -> Result<Arc<dyn IndexReader>> {
             let mut deleted: HashSet<usize> = HashSet::new();
             let w = IndexWriter::new(dir.as_directory(), iwc)?;
             for (id, boxes) in ranges.iter().enumerate() {
@@ -534,12 +537,17 @@ pub trait BaseRangeFieldQueryTestCase: Send + Sync + 'static {
                 }
                 Ok(())
             })();
+            outcome?;
             drop(s);
             drop(live_docs);
-            let closed = r.close();
-            outcome.and(closed)
-        })();
-        result.and(dir.close())
+            Ok(r)
+        })()?;
+        // `IOUtils.close(r, dir)`: both are closed; the first failure is
+        // thrown with the later one suppressed.
+        IOUtils::close([
+            IOUtils::closeable(|| r.close()),
+            IOUtils::closeable(|| dir.close()),
+        ])
     }
 
     /// `addRange(Document doc, Range box)` (`protected`).

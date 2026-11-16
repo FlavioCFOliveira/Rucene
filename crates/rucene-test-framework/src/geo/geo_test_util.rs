@@ -42,6 +42,7 @@ use rucene::util::java_fmt::double_to_string;
 use rucene::util::sloppy_math::SloppyMath;
 use rucene::util::NumericUtils;
 
+use super::{java_max, java_min};
 use crate::jdk::gzip::GzipInputStream;
 use crate::util::TestUtil;
 
@@ -53,6 +54,11 @@ fn random() -> Arc<dyn Random> {
 /// Throws the `AssertionError` of a Java `assert` with a message.
 fn java_assert(condition: bool, message: impl FnOnce() -> String) {
     randomizedtesting::jdk::exception::java_assert(condition, message);
+}
+
+/// `assert condition;` (no message: Java's `null`).
+fn java_assert_no_message(condition: bool) {
+    randomizedtesting::jdk::exception::java_assert_no_message(condition);
 }
 
 /// Rethrows an error as the Java exception it stands for.
@@ -104,10 +110,10 @@ pub fn next_longitude() -> f64 {
 /// `nextDoubleInternal(double low, double high)` (`private`): returns a
 /// double within the closed range `[low, high]`, biased towards the edges.
 fn next_double_internal(low: f64, high: f64) -> f64 {
-    java_assert(low >= f64::from(i32::MIN), String::new);
-    java_assert(high <= f64::from(i32::MAX), String::new);
-    java_assert(low.is_finite(), String::new);
-    java_assert(high.is_finite(), String::new);
+    java_assert_no_message(low >= f64::from(i32::MIN));
+    java_assert_no_message(high <= f64::from(i32::MAX));
+    java_assert_no_message(low.is_finite());
+    java_assert_no_message(high.is_finite());
     java_assert(high >= low, || {
         format!(
             "low={} high={}",
@@ -148,8 +154,8 @@ fn next_double_internal(low: f64, high: f64) -> f64 {
         low + (high - low) * random().next_double()
     };
 
-    java_assert(base_value >= low, String::new);
-    java_assert(base_value <= high, String::new);
+    java_assert_no_message(base_value >= low);
+    java_assert_no_message(base_value <= high);
 
     // either return the base value or adjust it by 1 ulp in a random direction (if possible)
     let adjust_me = random().next_int_bound(17);
@@ -175,10 +181,10 @@ fn next_latitude_near(other_latitude: f64, delta: f64) -> f64 {
         next_latitude()
     } else if surprise_me < 49 {
         // upper half of region (the exact point or 1 ulp difference is still likely)
-        next_double_internal(other_latitude, 90f64.min(other_latitude + delta))
+        next_double_internal(other_latitude, java_min(90.0, other_latitude + delta))
     } else {
         // lower half of region (the exact point or 1 ulp difference is still likely)
-        next_double_internal((-90f64).max(other_latitude - delta), other_latitude)
+        next_double_internal(java_max(-90.0, other_latitude - delta), other_latitude)
     }
 }
 
@@ -193,10 +199,10 @@ fn next_longitude_near(other_longitude: f64, delta: f64) -> f64 {
         next_longitude()
     } else if surprise_me < 49 {
         // upper half of region (the exact point or 1 ulp difference is still likely)
-        next_double_internal(other_longitude, 180f64.min(other_longitude + delta))
+        next_double_internal(other_longitude, java_min(180.0, other_longitude + delta))
     } else {
         // lower half of region (the exact point or 1 ulp difference is still likely)
-        next_double_internal((-180f64).max(other_longitude - delta), other_longitude)
+        next_double_internal(java_max(-180.0, other_longitude - delta), other_longitude)
     }
 }
 
@@ -204,7 +210,7 @@ fn next_longitude_near(other_longitude: f64, delta: f64) -> f64 {
 /// (`private`): returns a latitude within the closed range, with some
 /// overshoot.
 fn next_latitude_between(min_latitude: f64, max_latitude: f64) -> f64 {
-    java_assert(max_latitude >= min_latitude, String::new);
+    java_assert_no_message(max_latitude >= min_latitude);
     GeoUtils::check_latitude(min_latitude).unwrap_or_else(|e| rethrow(e));
     GeoUtils::check_latitude(max_latitude).unwrap_or_else(|e| rethrow(e));
     if random().next_int_bound(47) == 0 {
@@ -213,8 +219,8 @@ fn next_latitude_between(min_latitude: f64, max_latitude: f64) -> f64 {
     } else {
         // extend the range by 1%
         let difference = (max_latitude - min_latitude) / 100.0;
-        let lower = (-90f64).max(min_latitude - difference);
-        let upper = 90f64.min(max_latitude + difference);
+        let lower = java_max(-90.0, min_latitude - difference);
+        let upper = java_min(90.0, max_latitude + difference);
         next_double_internal(lower, upper)
     }
 }
@@ -223,7 +229,7 @@ fn next_latitude_between(min_latitude: f64, max_latitude: f64) -> f64 {
 /// (`private`): returns a longitude within the closed range, with some
 /// overshoot.
 fn next_longitude_between(min_longitude: f64, max_longitude: f64) -> f64 {
-    java_assert(max_longitude >= min_longitude, String::new);
+    java_assert_no_message(max_longitude >= min_longitude);
     GeoUtils::check_longitude(min_longitude).unwrap_or_else(|e| rethrow(e));
     GeoUtils::check_longitude(max_longitude).unwrap_or_else(|e| rethrow(e));
     if random().next_int_bound(47) == 0 {
@@ -232,8 +238,8 @@ fn next_longitude_between(min_longitude: f64, max_longitude: f64) -> f64 {
     } else {
         // extend the range by 1%
         let difference = (max_longitude - min_longitude) / 100.0;
-        let lower = (-180f64).max(min_longitude - difference);
-        let upper = 180f64.min(max_longitude + difference);
+        let lower = java_max(-180.0, min_longitude - difference);
+        let upper = java_min(180.0, max_longitude + difference);
         next_double_internal(lower, upper)
     }
 }
@@ -245,10 +251,10 @@ fn next_point_around_line(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> [f64; 2
     let x2 = lon2;
     let y1 = lat1;
     let y2 = lat2;
-    let min_x = x1.min(x2);
-    let max_x = x1.max(x2);
-    let min_y = y1.min(y2);
-    let max_y = y1.max(y2);
+    let min_x = java_min(x1, x2);
+    let max_x = java_max(x1, x2);
+    let min_y = java_min(y1, y2);
+    let max_y = java_max(y1, y2);
     if min_x == max_x {
         // Java evaluates the array elements left to right.
         let lat = next_latitude_between(min_y, max_y);
@@ -268,8 +274,8 @@ fn next_point_around_line(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> [f64; 2
         }
         let delta = (max_y - min_y) * 0.01;
         // our formula may put the point outside of the box, so restrict to the box
-        y = 90f64.min(y);
-        y = (-90f64).max(y);
+        y = java_min(90.0, y);
+        y = java_max(-90.0, y);
         [next_latitude_near(y, delta), x]
     }
 }
@@ -404,10 +410,10 @@ pub fn next_box_near(polygon: &Polygon) -> Rectangle {
     }
 
     // form a box from the two points
-    let min_lat = point1[0].min(point2[0]);
-    let max_lat = point1[0].max(point2[0]);
-    let min_lon = point1[1].min(point2[1]);
-    let max_lon = point1[1].max(point2[1]);
+    let min_lat = java_min(point1[0], point2[0]);
+    let max_lat = java_max(point1[0], point2[0]);
+    let min_lon = java_min(point1[1], point2[1]);
+    let max_lon = java_max(point1[1], point2[1]);
     rect(min_lat, max_lat, min_lon, max_lon)
 }
 
@@ -440,6 +446,20 @@ pub fn create_regular_polygon(
     radius_meters: f64,
     gons: i32,
 ) -> Result<Polygon> {
+    // `new double[gons + 1]` (`int` arithmetic), then `result[0][gons]`.
+    let length = gons.wrapping_add(1);
+    if length < 0 {
+        return Err(LuceneError::unchecked(
+            "java.lang.NegativeArraySizeException",
+            length.to_string(),
+        ));
+    }
+    if gons < 0 {
+        return Err(LuceneError::unchecked(
+            "java.lang.ArrayIndexOutOfBoundsException",
+            format!("Index {gons} out of bounds for length {length}"),
+        ));
+    }
     let gons = gons as usize;
     let mut lats = vec![0f64; gons + 1];
     let mut lons = vec![0f64; gons + 1];
@@ -585,7 +605,7 @@ fn next_box_internal(can_cross_date_line: bool) -> Rectangle {
 
 /// `boxPolygon(Rectangle box)` (`private`).
 fn box_polygon(r#box: &Rectangle) -> Polygon {
-    java_assert(!r#box.crosses_dateline(), String::new);
+    java_assert_no_message(!r#box.crosses_dateline());
     polygon(
         vec![
             r#box.min_lat(),
@@ -606,7 +626,7 @@ fn box_polygon(r#box: &Rectangle) -> Polygon {
 
 /// `trianglePolygon(Rectangle box)` (`private`).
 fn triangle_polygon(r#box: &Rectangle) -> Polygon {
-    java_assert(!r#box.crosses_dateline(), String::new);
+    java_assert_no_message(!r#box.crosses_dateline());
     polygon(
         vec![
             r#box.min_lat(),
@@ -701,10 +721,10 @@ pub fn to_svg(objects: &[SvgObject<'_>]) -> Result<String> {
     for o in &flattened {
         if let SvgObject::Polygon(p) = o {
             let r = Rectangle::from_polygon(std::slice::from_ref(*p))?;
-            min_lat = min_lat.min(r.min_lat());
-            max_lat = max_lat.max(r.max_lat());
-            min_lon = min_lon.min(r.min_lon());
-            max_lon = max_lon.max(r.max_lon());
+            min_lat = java_min(min_lat, r.min_lat());
+            max_lat = java_max(max_lat, r.max_lat());
+            min_lon = java_min(min_lon, r.min_lon());
+            max_lon = java_max(max_lon, r.max_lon());
         }
     }
     if !min_lat.is_finite() || !max_lat.is_finite() || !min_lon.is_finite() || !max_lon.is_finite()
@@ -759,10 +779,10 @@ pub fn to_svg(objects: &[SvgObject<'_>]) -> Result<String> {
             ),
             SvgObject::Point(point) => (
                 box_polygon(&rect(
-                    (-90f64).max(point[0] - point_y),
-                    90f64.min(point[0] + point_y),
-                    (-180f64).max(point[1] - point_x),
-                    180f64.min(point[1] + point_x),
+                    java_max(-90.0, point[0] - point_y),
+                    java_min(90.0, point[0] + point_y),
+                    java_max(-180.0, point[1] - point_x),
+                    java_min(180.0, point[1] + point_x),
                 )),
                 "fill:red;stroke:red;stroke-width:0.1%;",
                 "0.7",
@@ -975,12 +995,9 @@ pub fn read_shape(name: &str) -> Result<String> {
         data.extend_from_slice(bytes);
     }
     let text = String::from_utf8_lossy(&data);
-    // BufferedReader.lines(): \n, \r and \r\n end a line
-    let mut builder = String::new();
-    for line in text.split('\n') {
-        builder.push_str(line.strip_suffix('\r').unwrap_or(line));
-    }
-    Ok(builder)
+    // `BufferedReader.lines()` joined without separators: `\n`, `\r` and
+    // `\r\n` each end a line, so every `\n` and `\r` disappears.
+    Ok(text.chars().filter(|&c| c != '\n' && c != '\r').collect())
 }
 
 #[cfg(test)]
@@ -1002,5 +1019,53 @@ mod next_after_tests {
             1.401298464324817e-45
         );
         assert_eq!(f64::from(next_after_float(1.0, 1.0)), 1.0);
+    }
+}
+
+#[cfg(test)]
+mod a3_tests {
+    use super::*;
+    use randomizedtesting::jdk::exception::Throwable;
+
+    /// `assert high >= low : ...` keeps its message, and the four plain
+    /// `assert`s of `nextDoubleInternal` throw an `AssertionError` whose
+    /// message is `null`, not an empty string.
+    #[test]
+    fn plain_asserts_have_a_null_message() {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        let payload = std::panic::catch_unwind(|| next_double_internal(f64::NAN, 1.0)).unwrap_err();
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+        assert_eq!(t.message(), None);
+        let payload = std::panic::catch_unwind(|| next_double_internal(1.0, 0.0)).unwrap_err();
+        assert_eq!(
+            Throwable::from_panic(payload).message(),
+            Some("low=1.0 high=0.0")
+        );
+    }
+
+    /// `new double[gons + 1]` and `result[0][gons]` with negative `gons`.
+    #[test]
+    fn negative_gons_throw_as_java_arrays_do() {
+        let class_and_message = |gons: i32| match create_regular_polygon(0.0, 0.0, 1.0, gons) {
+            Err(LuceneError {
+                kind: LuceneErrorKind::Unchecked { class, message, .. },
+                ..
+            }) => (class, message.unwrap_or_default()),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            class_and_message(-5),
+            ("java.lang.NegativeArraySizeException", "-4".to_string())
+        );
+        assert_eq!(
+            class_and_message(-1),
+            (
+                "java.lang.ArrayIndexOutOfBoundsException",
+                "Index -1 out of bounds for length 0".to_string()
+            )
+        );
     }
 }

@@ -21,9 +21,11 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::junit::Assert;
-use rucene::store::java_nio_file::{Files, Path};
+use rucene::error::LuceneError;
+use rucene::store::java_nio_file::{DirectoryStream, Files, Path};
 
 use super::filter_path::FilterPath;
+use crate::util::java_exceptions::java_throwable;
 use crate::util::lucene_test_case::LuceneTestCase;
 
 /// The declaration of `org.apache.lucene.tests.mockfile.MockFileSystemTestCase`
@@ -70,8 +72,8 @@ pub trait MockFileSystemTestCase {
         let f1_again = dir.resolve_str("file1");
         let f2 = dir.resolve_str("file2");
 
-        Assert::assert_true(f1 == f1);
-        Assert::assert_true(f1 == f1_again);
+        assert_equals_paths(&f1, &f1);
+        assert_equals_paths(&f1, &f1_again);
         Assert::assert_equals(f1.hash_code(), f1_again.hash_code());
         Assert::assert_false(f1 == f2);
         close_file_system(&dir);
@@ -114,7 +116,7 @@ pub trait MockFileSystemTestCase {
 
         let uri = f1.to_uri();
         let f2 = dir.get_file_system().provider().get_path(&uri);
-        Assert::assert_true(f1 == f2);
+        assert_equals_paths(&f1, &f2);
 
         close_file_system(&dir);
     }
@@ -128,22 +130,23 @@ pub trait MockFileSystemTestCase {
             Files::new_output_stream(&dir.resolve_str("file1"), &[]).unwrap_or_else(rethrow);
         file.write_byte(5).unwrap_or_else(rethrow);
         file.close().unwrap_or_else(rethrow);
-        let mut stream = Files::new_directory_stream(&dir).unwrap_or_else(rethrow);
-        let mut count = 0;
-        for path in stream.iterator() {
-            let path = path.unwrap_or_else(rethrow);
-            Assert::assert_true(FilterPath::is_filter_path(&path));
-            if !path
-                .get_file_name()
-                .map(|n| n.to_string())
-                .unwrap_or_default()
-                .starts_with("extra")
-            {
-                count += 1;
+        let stream = Files::new_directory_stream(&dir).unwrap_or_else(rethrow);
+        with_resource(stream, |stream| {
+            let mut count = 0;
+            for path in stream.iterator() {
+                let path = path.unwrap_or_else(rethrow);
+                Assert::assert_true(FilterPath::is_filter_path(&path));
+                if !path
+                    .get_file_name()
+                    .map(|n| n.to_string())
+                    .unwrap_or_default()
+                    .starts_with("extra")
+                {
+                    count += 1;
+                }
             }
-        }
-        Assert::assert_equals(1, count);
-        stream.close().unwrap_or_else(rethrow);
+            Assert::assert_equals(1, count);
+        });
         close_file_system(&dir);
     }
 
@@ -160,15 +163,16 @@ pub trait MockFileSystemTestCase {
             Files::new_output_stream(&dir.resolve_str("bar"), &[]).unwrap_or_else(rethrow);
         file.write_byte(5).unwrap_or_else(rethrow);
         file.close().unwrap_or_else(rethrow);
-        let mut stream = Files::new_directory_stream_glob(&dir, "f*").unwrap_or_else(rethrow);
-        let mut count = 0;
-        for path in stream.iterator() {
-            let path = path.unwrap_or_else(rethrow);
-            Assert::assert_true(FilterPath::is_filter_path(&path));
-            count += 1;
-        }
-        Assert::assert_equals(1, count);
-        stream.close().unwrap_or_else(rethrow);
+        let stream = Files::new_directory_stream_glob(&dir, "f*").unwrap_or_else(rethrow);
+        with_resource(stream, |stream| {
+            let mut count = 0;
+            for path in stream.iterator() {
+                let path = path.unwrap_or_else(rethrow);
+                Assert::assert_true(FilterPath::is_filter_path(&path));
+                count += 1;
+            }
+            Assert::assert_equals(1, count);
+        });
         close_file_system(&dir);
     }
 }
@@ -181,9 +185,93 @@ fn close_file_system(dir: &Path) {
 
 /// Throws an `IOException` out of a test method, as `throws IOException`.
 fn rethrow<T>(error: std::io::Error) -> T {
-    Throwable::new(
-        rucene::store::java_nio_file::java_class_of(&error).to_string(),
-        rucene::store::java_nio_file::java_message_of(&error).unwrap_or_default(),
-    )
-    .throw()
+    java_throwable(&LuceneError::from(error)).throw()
+}
+
+/// `try (DirectoryStream<Path> stream = ...) { body }`: the stream is closed
+/// whether `body` completes or throws; a close failure after a throwing body
+/// is suppressed by the body's throwable.
+fn with_resource(
+    mut stream: Box<dyn DirectoryStream>,
+    body: impl FnOnce(&mut Box<dyn DirectoryStream>),
+) {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&mut stream)));
+    let closed = stream.close();
+    match (outcome, closed) {
+        (Ok(()), closed) => {
+            closed.unwrap_or_else(rethrow);
+        }
+        (Err(payload), Err(error)) => {
+            let mut primary = Throwable::from_panic(payload);
+            primary.add_suppressed(java_throwable(&LuceneError::from(error)));
+            primary.throw()
+        }
+        (Err(payload), Ok(())) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// JUnit's `assertEquals(Object expected, Object actual)` of two paths:
+/// `expected:<x> but was:<y>`, or, when both print alike, each with its
+/// class (`expected: C<x> but was: C<y>`).
+fn assert_equals_paths(expected: &Path, actual: &Path) {
+    if expected != actual {
+        let (e, a) = (expected.to_string(), actual.to_string());
+        let message = if e == a {
+            format!(
+                "expected: {}<{e}> but was: {}<{a}>",
+                path_class(expected),
+                path_class(actual)
+            )
+        } else {
+            format!("expected:<{e}> but was:<{a}>")
+        };
+        Assert::fail(&message)
+    }
+}
+
+/// `path.getClass().getName()`: a `WindowsPath` for `WindowsFS`'s paths, a
+/// `FilterPath` for another filter filesystem's, the JDK's `UnixPath`
+/// otherwise.
+fn path_class(path: &Path) -> &'static str {
+    match path
+        .get_file_system()
+        .as_any()
+        .downcast_ref::<super::FilterFileSystem>()
+    {
+        Some(fs) if fs.parent().class_name() == "org.apache.lucene.tests.mockfile.WindowsFS" => {
+            "org.apache.lucene.tests.mockfile.WindowsPath"
+        }
+        Some(_) => "org.apache.lucene.tests.mockfile.FilterPath",
+        None => "sun.nio.fs.UnixPath",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mockfile::{DisableFsyncFS, FilterFileSystemProvider};
+    use rucene::store::java_nio_file::default_file_system;
+
+    /// JUnit's `assertEquals(Object, Object)`: two unequal paths that print
+    /// alike fail with each value's class.
+    #[test]
+    fn unequal_paths_printing_alike_fail_with_their_classes() {
+        let plain = default_file_system().get_path("/tmp/x", &[]);
+        let fs = DisableFsyncFS::new(default_file_system());
+        let filtered = FilterFileSystemProvider::get_file_system(&*fs).get_path("/tmp/x", &[]);
+        assert_ne!(plain, filtered);
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_equals_paths(&plain, &filtered)
+        }))
+        .unwrap_err();
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+        assert_eq!(
+            t.message(),
+            Some(
+                "expected: sun.nio.fs.UnixPath</tmp/x> but was: \
+                 org.apache.lucene.tests.mockfile.FilterPath</tmp/x>"
+            )
+        );
+    }
 }

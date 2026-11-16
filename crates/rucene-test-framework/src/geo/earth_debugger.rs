@@ -100,7 +100,7 @@ impl EarthDebugger {
     /// `addPolygon(Polygon poly, String color)`.
     pub fn add_polygon_with_color(&mut self, poly: &Polygon, color: &str) {
         let name = format!("poly{}", self.next_shape);
-        self.next_shape += 1;
+        self.next_shape = self.next_shape.wrapping_add(1);
 
         let _ = writeln!(self.b, "        var {name} = WE.polygon([");
         let poly_lats = poly.get_polylats();
@@ -164,7 +164,7 @@ impl EarthDebugger {
         color: &str,
     ) {
         let name = format!("rect{}", self.next_shape);
-        self.next_shape += 1;
+        self.next_shape = self.next_shape.wrapping_add(1);
 
         let _ = writeln!(
             self.b,
@@ -200,7 +200,7 @@ impl EarthDebugger {
     /// `addLatLine(double lat, double minLon, double maxLon)`.
     pub fn add_lat_line(&mut self, lat: f64, min_lon: f64, max_lon: f64) {
         let name = format!("latline{}", self.next_shape);
-        self.next_shape += 1;
+        self.next_shape = self.next_shape.wrapping_add(1);
         let _ = writeln!(self.b, "        var {name} = WE.polygon([");
         let steps = f64::from(Self::get_step_count(lat, min_lon, lat, max_lon));
         let mut lon = min_lon;
@@ -223,7 +223,7 @@ impl EarthDebugger {
     /// `addLonLine(double minLat, double maxLat, double lon)`.
     pub fn add_lon_line(&mut self, min_lat: f64, max_lat: f64, lon: f64) {
         let name = format!("lonline{}", self.next_shape);
-        self.next_shape += 1;
+        self.next_shape = self.next_shape.wrapping_add(1);
         let _ = writeln!(self.b, "        var {name} = WE.polygon([");
         let steps = f64::from(Self::get_step_count(min_lat, lon, max_lat, lon));
         let mut lat = min_lat;
@@ -268,7 +268,7 @@ impl EarthDebugger {
     ) -> Result<()> {
         self.add_point(center_lat, center_lon);
         let name = format!("circle{}", self.next_shape);
-        self.next_shape += 1;
+        self.next_shape = self.next_shape.wrapping_add(1);
         let _ = writeln!(self.b, "        var {name} = WE.polygon([");
         inverse_haversin(&mut self.b, center_lat, center_lon, radius_meters);
         self.b.push_str(
@@ -331,7 +331,16 @@ impl EarthDebugger {
 
 /// `Math.round(double)`: the closest `long`, ties rounding up.
 fn java_round(x: f64) -> i64 {
-    (x + 0.5).floor() as i64
+    // Java 8+ rounds exactly (`floor(x + 0.5)` would round
+    // 0.49999999999999994 up): the floor, plus one when the fraction is at
+    // least one half; `NaN` is 0 and out-of-range values saturate, as the
+    // `as` cast does.
+    let floor = x.floor();
+    if x - floor >= 0.5 {
+        (floor + 1.0) as i64
+    } else {
+        floor as i64
+    }
 }
 
 /// `inverseHaversin(StringBuilder b, double centerLat, double centerLon,
@@ -407,5 +416,24 @@ fn wrap_lon(lon: f64) -> f64 {
         lon + 360.0
     } else {
         lon
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Math.round(double)` (JDK 8+): exact rounding, ties toward positive
+    /// infinity; `floor(x + 0.5)` would answer 1 for the largest double
+    /// below one half.
+    #[test]
+    fn round_is_java_math_round() {
+        assert_eq!(java_round(0.49999999999999994), 0);
+        assert_eq!(java_round(0.5), 1);
+        assert_eq!(java_round(-0.5), 0);
+        assert_eq!(java_round(-2.5), -2);
+        assert_eq!(java_round(2.4), 2);
+        assert_eq!(java_round(f64::NAN), 0);
+        assert_eq!(java_round(1e300), i64::MAX);
     }
 }

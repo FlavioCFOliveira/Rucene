@@ -40,12 +40,13 @@
 //!   ([`searcher_expired`], [`is_searcher_expired`]).
 //! * `ConcurrentHashMap` caches are `Mutex<HashMap>`; the `volatile
 //!   currentShardSearcher` is an `RwLock<Option<Arc<…>>>`.
-//! * `protected NodeState[] nodes` is set once (`OnceLock`), because
-//!   [`ShardSearchingTestBase::nodes`] lends the array to the node threads
-//!   for the instance's lifetime: a second `start()` returns an
-//!   `IllegalStateException` (`start was already called`) where Java would
-//!   replace the array (`ShardSearchingTestBase.java`, `start`). Lucene's
-//!   subclasses call `start` once.
+//! * `protected NodeState[] nodes` is an `RwLock<Option<Arc<`[`NodeArray`]`>>>`:
+//!   [`ShardSearchingTestBase::nodes`] hands out the current array, whose
+//!   slots are `None` where Java's hold `null`. `start()` publishes
+//!   `new NodeState[numNodes]` before constructing the nodes
+//!   (`ShardSearchingTestBase.java:602-605`), so a failing constructor leaves
+//!   the remaining slots empty, and each caller that dereferences an empty
+//!   slot throws the JDK's helpful `NullPointerException` of that site.
 //! * `QueryVisitor.termCollector(Set<Term>)` fills the port's
 //!   `BTreeSet<Term>`; the iteration order of the set draws no randomness
 //!   and only decides the order of cache insertions.
@@ -54,7 +55,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock, Weak};
+use std::sync::{Arc, LazyLock, Mutex, RwLock, Weak};
 use std::time::Instant;
 
 use randomizedtesting::jdk::exception::{register_class, Throwable};
@@ -194,7 +195,7 @@ pub struct ShardSearchingTestBase {
     /// node reopen.
     fields_to_share: [&'static str; 2],
     /// `protected NodeState[] nodes`.
-    nodes: OnceLock<Vec<Arc<NodeState>>>,
+    nodes: RwLock<Option<Arc<NodeArray>>>,
     /// `int maxSearcherAgeSeconds`.
     max_searcher_age_seconds: AtomicI32,
     /// `public long endTimeNanos`.
@@ -203,10 +204,93 @@ pub struct ShardSearchingTestBase {
     change_indices_thread: Mutex<Option<Thread>>,
 }
 
+/// `NodeState[]`: a fixed-length array whose slots are `None` where Java's
+/// hold `null` (published by `start()` before its nodes exist).
+pub struct NodeArray {
+    slots: Vec<std::sync::OnceLock<Arc<NodeState>>>,
+}
+
+impl NodeArray {
+    /// `new NodeState[length]`.
+    ///
+    /// # Errors
+    ///
+    /// `NegativeArraySizeException` for a negative `length`.
+    fn new(length: i32) -> Result<NodeArray> {
+        if length < 0 {
+            return Err(LuceneError::unchecked(
+                "java.lang.NegativeArraySizeException",
+                length.to_string(),
+            ));
+        }
+        Ok(NodeArray {
+            slots: (0..length).map(|_| std::sync::OnceLock::new()).collect(),
+        })
+    }
+
+    /// `nodes[index] = node` of `start()` (each slot is assigned once).
+    fn set(&self, index: i32, node: Arc<NodeState>) {
+        let _ = self.slots[index as usize].set(node);
+    }
+
+    /// `nodes.length`.
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// `nodes.length == 0`.
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    /// `nodes[index]`: `None` for a `null` slot.
+    ///
+    /// # Panics
+    ///
+    /// `ArrayIndexOutOfBoundsException` outside `[0, length)`.
+    pub fn get(&self, index: i32) -> Option<&Arc<NodeState>> {
+        match usize::try_from(index).ok().and_then(|i| self.slots.get(i)) {
+            Some(slot) => slot.get(),
+            None => randomizedtesting::jdk::exception::throw(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!(
+                    "Index {index} out of bounds for length {}",
+                    self.slots.len()
+                ),
+            ),
+        }
+    }
+
+    /// `nodes[index].<member>`: the node, or the JDK's helpful
+    /// `NullPointerException` (`Cannot <action> because "<array>" is null`)
+    /// for a `null` slot.
+    pub fn deref(&self, index: i32, action: &str, array: &str) -> &Arc<NodeState> {
+        self.get(index).unwrap_or_else(|| null_node(action, array))
+    }
+
+    /// The slots in order, `None` for `null` (the enhanced `for` over the
+    /// array).
+    pub fn iter(&self) -> impl Iterator<Item = Option<&Arc<NodeState>>> {
+        self.slots.iter().map(std::sync::OnceLock::get)
+    }
+}
+
+/// The JDK's helpful `NullPointerException` of a dereferenced `null` node:
+/// `Cannot <action> because "<description>" is null` (forms probed on JDK
+/// 25: `invoke "…$NodeState.close()"`, `read field "myNodeID"`, `"node"`,
+/// `"this.nodes[nodeID]"`, `"this.this$0.nodes[java.util.Random.nextInt(int)]"`,
+/// `"this.this$1.this$0.nodes[nodeID]"`).
+pub fn null_node(action: &str, description: &str) -> ! {
+    randomizedtesting::jdk::exception::throw(
+        "java.lang.NullPointerException",
+        format!("Cannot {action} because \"{description}\" is null"),
+    )
+}
+
 impl fmt::Debug for ShardSearchingTestBase {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ShardSearchingTestBase")
-            .field("nodes", &self.nodes.get().map(Vec::len))
+            .field("nodes", &read(&self.nodes).as_ref().map(|n| n.len()))
             .finish_non_exhaustive()
     }
 }
@@ -217,7 +301,7 @@ impl ShardSearchingTestBase {
         Arc::new_cyclic(|this| ShardSearchingTestBase {
             this: this.clone(),
             fields_to_share: ["body", "title"],
-            nodes: OnceLock::new(),
+            nodes: RwLock::new(None),
             max_searcher_age_seconds: AtomicI32::new(0),
             end_time_nanos: AtomicI64::new(0),
             change_indices_thread: Mutex::new(None),
@@ -225,8 +309,8 @@ impl ShardSearchingTestBase {
     }
 
     /// `nodes`; `NullPointerException` before [`start`](Self::start).
-    pub fn nodes(&self) -> &[Arc<NodeState>] {
-        match self.nodes.get() {
+    pub fn nodes(&self) -> Arc<NodeArray> {
+        match read(&self.nodes).clone() {
             Some(nodes) => nodes,
             None => randomizedtesting::jdk::exception::throw_without_message(
                 "java.lang.NullPointerException",
@@ -262,7 +346,8 @@ impl ShardSearchingTestBase {
         for field in self.fields_to_share {
             let stats = new_searcher.collection_statistics(field)?;
             if let Some(stats) = stats {
-                for node in self.nodes() {
+                for node in self.nodes().iter() {
+                    let node = node.unwrap_or_else(|| null_node("read field \"myNodeID\"", "node"));
                     // Don't put my own collection stats into the cache;
                     // we pull locally:
                     if node.my_node_id != node_id {
@@ -278,7 +363,13 @@ impl ShardSearchingTestBase {
                 }
             }
         }
-        for node in self.nodes() {
+        for node in self.nodes().iter() {
+            let node = node.unwrap_or_else(|| {
+                null_node(
+                    "invoke \"org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState.updateNodeVersion(int, long)\"",
+                    "node",
+                )
+            });
             node.update_node_version(node_id, version)?;
         }
         Ok(())
@@ -304,8 +395,10 @@ impl ShardSearchingTestBase {
         num_hits: i32,
         search_after: Option<ScoreDoc>,
     ) -> Result<NodeHits> {
-        let node = &self.nodes()[node_id as usize];
-        let s = node.acquire_versions(node_versions)?;
+        let s = self
+            .nodes()
+            .deref(node_id, "invoke \"org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState.acquire(long[])\"", "this.nodes[nodeID]")
+            .acquire_versions(node_versions)?;
         let result = (|| -> Result<NodeHits> {
             match sort {
                 None => {
@@ -327,8 +420,15 @@ impl ShardSearchingTestBase {
                 }
             }
         })();
-        // finally
-        let released = node.release(&s);
+        // finally: `nodes[nodeID].release(s)` reads the array again.
+        let released = self
+            .nodes()
+            .deref(
+                node_id,
+                "invoke \"org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState.release(org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState$ShardIndexSearcher)\"",
+                "this.nodes[nodeID]",
+            )
+            .release(&s);
         let hits = result?;
         released?;
         Ok(hits)
@@ -348,7 +448,10 @@ impl ShardSearchingTestBase {
         node_id: i32,
         version: i64,
     ) -> Result<HashMap<Term, TermStatistics>> {
-        let node = &self.nodes()[node_id as usize];
+        let nodes = self.nodes();
+        let node = nodes
+            .get(node_id)
+            .unwrap_or_else(|| null_node("read field \"searchers\"", "node"));
         let mut stats = HashMap::new();
         let Some(s) = node.searchers().acquire(version)? else {
             return Err(searcher_expired(format!(
@@ -384,6 +487,8 @@ impl ShardSearchingTestBase {
     /// # Errors
     ///
     /// The errors of opening the nodes and recording their searchers.
+    // The loops index `nodeVersions` and the nodes by `nodeID`, as Java's.
+    #[allow(clippy::needless_range_loop)]
     pub fn start(
         &self,
         num_nodes: i32,
@@ -397,43 +502,38 @@ impl ShardSearchingTestBase {
         self.max_searcher_age_seconds
             .store(max_searcher_age_seconds, Ordering::SeqCst);
 
-        let mut nodes = Vec::with_capacity(num_nodes as usize);
-        for node_id in 0..num_nodes {
-            nodes.push(NodeState::new(
-                &*random(),
-                node_id,
-                num_nodes,
-                self.this.clone(),
-            )?);
-        }
-        if self.nodes.set(nodes).is_err() {
-            return Err(LuceneError::from(LuceneErrorKind::IllegalState {
-                message: "start was already called".to_string(),
-                cause: None,
-            }));
-        }
+        let this = self.this.clone();
+        self.start_nodes(num_nodes, |node_id| {
+            NodeState::new(&*random(), node_id, num_nodes, this.clone())
+        })?;
         let nodes = self.nodes();
+        // Every slot is set once `start_nodes` returns.
+        let node = |node_id: usize| -> &Arc<NodeState> {
+            nodes
+                .get(node_id as i32)
+                .expect("INVARIANT: start_nodes filled every slot")
+        };
 
         let mut node_versions = vec![0i64; nodes.len()];
         for node_id in 0..num_nodes as usize {
-            let s = nodes[node_id].mgr().acquire()?;
-            let recorded = nodes[node_id].searchers().record(&s);
-            let released = nodes[node_id].mgr().release(s);
+            let s = node(node_id).mgr().acquire()?;
+            let recorded = node(node_id).searchers().record(&s);
+            let released = node(node_id).mgr().release(s);
             node_versions[node_id] = recorded?;
             released?;
         }
 
         for node_id in 0..num_nodes as usize {
-            let s = nodes[node_id].mgr().acquire()?;
+            let s = node(node_id).mgr().acquire()?;
             // `assert nodeVersions[nodeID] == nodes[nodeID].searchers.record(s);`:
             // `record` runs only under -ea.
             if cfg!(debug_assertions) {
-                let recorded = nodes[node_id].searchers().record(&s)?;
+                let recorded = node(node_id).searchers().record(&s)?;
                 java_assert!(node_versions[node_id] == recorded);
             }
             let result =
                 self.broadcast_node_reopen(node_id as i32, node_versions[node_id], s.searcher());
-            let released = nodes[node_id].mgr().release(s);
+            let released = node(node_id).mgr().release(s);
             result?;
             released?;
         }
@@ -460,8 +560,31 @@ impl ShardSearchingTestBase {
                 std::panic::resume_unwind(payload);
             }
         }
-        for node in self.nodes() {
+        for node in self.nodes().iter() {
+            let node = node
+                .unwrap_or_else(|| null_node("invoke \"org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState.close()\"", "node"));
             node.close()?;
+        }
+        Ok(())
+    }
+
+    /// `nodes = new NodeState[numNodes]; for (...) nodes[nodeID] = new
+    /// NodeState(...)` (`ShardSearchingTestBase.java:602-605`): the array is
+    /// published with empty slots first, then each slot is filled as its node
+    /// is built, so a failing constructor leaves it and the later slots empty.
+    ///
+    /// # Errors
+    ///
+    /// The first failure of `make`.
+    fn start_nodes(
+        &self,
+        num_nodes: i32,
+        mut make: impl FnMut(i32) -> Result<Arc<NodeState>>,
+    ) -> Result<()> {
+        let array = Arc::new(NodeArray::new(num_nodes)?);
+        *write(&self.nodes) = Some(Arc::clone(&array));
+        for node_id in 0..num_nodes {
+            array.set(node_id, make(node_id)?);
         }
         Ok(())
     }
@@ -501,11 +624,19 @@ fn change_indices_run(base: &Arc<ShardSearchingTestBase>) {
     let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         let docs = LineFileDocs::with_default_file(&*random()).map_err(LuceneError::from)?;
         let result = (|| -> Result<()> {
-            let nodes = base.nodes();
             let mut num_docs = 0;
             while nano_time() < base.end_time_nanos() {
                 let what = random().next_int_bound(3);
-                let node = &nodes[random().next_int_bound(nodes.len() as i32) as usize];
+                // `nodes[random().nextInt(nodes.length)]` reads the field each
+                // time.
+                let nodes = base.nodes();
+                let index = random().next_int_bound(base.nodes().len() as i32);
+                let node = Arc::clone(
+                    nodes
+                        .get(index)
+                        .unwrap_or_else(|| null_node("read field \"writer\"", "node")),
+                );
+                drop(nodes);
                 if num_docs == 0 || what == 0 {
                     node.writer().add_document(&*docs.next_doc()?.borrow())?;
                     num_docs += 1;
@@ -534,7 +665,15 @@ fn change_indices_run(base: &Arc<ShardSearchingTestBase>) {
                 }
 
                 if random().next_int_bound(17) == 12 {
-                    nodes[random().next_int_bound(nodes.len() as i32) as usize].reopen()?;
+                    let nodes = base.nodes();
+                    let index = random().next_int_bound(base.nodes().len() as i32);
+                    nodes
+                        .deref(
+                            index,
+                            "invoke \"org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState.reopen()\"",
+                            "this.this$0.nodes[java.util.Random.nextInt(int)]",
+                        )
+                        .reopen()?;
                 }
             }
             Ok(())
@@ -1261,8 +1400,14 @@ impl IndexSearcherOverrides for ShardIndexSearcherOverrides {
                 // all documents with after.score were already collected, so collect
                 // only documents with worse scores.
                 let base = self.base();
-                let node = &base.nodes()[node_id as usize];
-                let s = node.acquire_versions(&self.node_versions)?;
+                let s = base
+                    .nodes()
+                    .deref(
+                        node_id,
+                        "invoke \"org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState.acquire(long[])\"",
+                        "this.this$1.this$0.nodes[nodeID]",
+                    )
+                    .acquire_versions(&self.node_versions)?;
                 // Setting after.doc to reader.maxDoc-1 is a way to tell
                 // TopScoreDocCollector that no more docs with that score should
                 // be collected. note that in practice the shard which sends the
@@ -1270,7 +1415,14 @@ impl IndexSearcherOverrides for ShardIndexSearcherOverrides {
                 // it will send some arbitrary value which will be fixed on the
                 // other end.
                 shard_after.doc = s.get_index_reader().max_doc() - 1;
-                node.release(&s)?;
+                // finally: `nodes[nodeID].release(s)` reads the array again.
+                base.nodes()
+                    .deref(
+                        node_id,
+                        "invoke \"org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState.release(org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState$ShardIndexSearcher)\"",
+                        "this.this$1.this$0.nodes[nodeID]",
+                    )
+                    .release(&s)?;
             } else if node_id == after.shard_index {
                 // collect all documents following the last collected doc with
                 // after.score + documents with worse scores.
@@ -1353,4 +1505,56 @@ pub struct SearcherAndVersion {
     pub searcher: Arc<ManagedSearcher>,
     /// `version`.
     pub version: i64,
+}
+
+#[cfg(test)]
+mod node_array_tests {
+    use super::*;
+
+    fn npe_message(f: impl FnOnce()) -> String {
+        let payload = catch_unwind(AssertUnwindSafe(f)).unwrap_err();
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.NullPointerException");
+        t.message().unwrap_or_default().to_string()
+    }
+
+    /// `nodes = new NodeState[numNodes]` is published before the nodes are
+    /// built (`ShardSearchingTestBase.java:602-605`): a failing constructor
+    /// leaves its slot and the later ones `null`, replacing the earlier
+    /// array, and the callers then throw the JDK's helpful NPEs.
+    #[test]
+    fn failing_node_constructor_leaves_empty_slots() {
+        let base = ShardSearchingTestBase::new();
+        let failure = || LuceneError::illegal_state("constructor failed");
+        assert!(base.start_nodes(2, |_| Err(failure())).is_err());
+        assert_eq!(base.nodes().len(), 2);
+        assert!(base.start_nodes(3, |_| Err(failure())).is_err());
+        let nodes = base.nodes();
+        assert_eq!(nodes.len(), 3);
+        assert!(nodes.iter().all(|slot| slot.is_none()));
+        assert_eq!(
+            npe_message(|| {
+                let _ = base.finish();
+            }),
+            "Cannot invoke \"org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState.close()\" \
+             because \"node\" is null"
+        );
+        assert_eq!(
+            npe_message(|| {
+                let _ = base.get_node_term_stats(&BTreeSet::new(), 1, 0);
+            }),
+            "Cannot read field \"searchers\" because \"node\" is null"
+        );
+        assert_eq!(
+            npe_message(|| {
+                let _ = nodes.deref(
+                    2,
+                    "invoke \"org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState.acquire(long[])\"",
+                    "this.nodes[nodeID]",
+                );
+            }),
+            "Cannot invoke \"org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState.acquire(long[])\" \
+             because \"this.nodes[nodeID]\" is null"
+        );
+    }
 }

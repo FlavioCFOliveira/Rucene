@@ -58,7 +58,7 @@ use rucene::search::index_searcher::IndexSearcher;
 use rucene::search::query::Query;
 use rucene::search::TopDocs;
 use rucene::util::java_fmt::{double_to_string, float_to_string};
-use rucene::util::{Bits, BytesRef, FixedBitSet};
+use rucene::util::{Bits, BytesRef, FixedBitSet, IOUtils};
 
 use super::base_geo_point_test_case::{decimal_format_grouped_2, index_order, leaf_size_codec};
 use super::shape_test_util;
@@ -195,25 +195,13 @@ fn message(t: &randomizedtesting::jdk::exception::Throwable) -> String {
 fn message_contains(t: &randomizedtesting::jdk::exception::Throwable, s: &str) -> bool {
     match t.message() {
         Some(m) => m.contains(s),
-        None => randomizedtesting::jdk::exception::throw_without_message(
+        // Every caller's `expected` is an `IllegalArgumentException`
+        // (JDK 25 helpful message, probed).
+        None => randomizedtesting::jdk::exception::throw(
             "java.lang.NullPointerException",
+            "Cannot invoke \"String.contains(java.lang.CharSequence)\" because the return value \
+             of \"java.lang.IllegalArgumentException.getMessage()\" is null",
         ),
-    }
-}
-
-/// A query compared with `Query.equals` and printed with `toString()`, for
-/// `assertEquals(q1, q2)`.
-struct QueryObject(Arc<dyn Query>);
-
-impl PartialEq for QueryObject {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.query_eq(&*other.0)
-    }
-}
-
-impl std::fmt::Display for QueryObject {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0.to_query_string(""))
     }
 }
 
@@ -241,21 +229,49 @@ fn polygon(xs: &[f32], ys: &[f32], holes: Vec<XYPolygon>) -> Result<XYPolygon> {
 
 /// `IOUtils.close(r, dir)`: closes both, then throws the first failure.
 fn close_all(r: Arc<dyn IndexReader>, dir: &mut TestDirectory) -> Result<()> {
-    let first = r.close();
-    drop(r);
-    let second = dir.close();
-    first.and(second)
+    // `IOUtils.close(r, dir)`: both are closed; a later failure is
+    // suppressed by the first.
+    IOUtils::close([
+        IOUtils::closeable(|| r.close()),
+        IOUtils::closeable(|| dir.close()),
+    ])
+}
+
+/// JUnit's `assertEquals(Object, Object)` of two queries: `expected:<q1>
+/// but was:<q2>`, or each with its class when both print alike.
+fn assert_equals_queries(q1: &dyn Query, q2: &dyn Query) {
+    if !q1.query_eq(q2) {
+        let (expected, actual) = (q1.to_query_string(""), q2.to_query_string(""));
+        if expected == actual {
+            Assert::fail(&format!(
+                "expected: {}<{expected}> but was: {}<{actual}>",
+                q1.java_class_name(),
+                q2.java_class_name()
+            ));
+        }
+        Assert::fail(&format!("expected:<{expected}> but was:<{actual}>"));
+    }
 }
 
 /// The `floatValue()` of a stored field's `numericValue()`.
 fn float_value(doc: &Document, name: &str) -> f32 {
-    match doc.get_field(name).and_then(|f| f.numeric_value()) {
-        Some(NumericValue::Int(v)) => v as f32,
-        Some(NumericValue::Long(v)) => v as f32,
-        Some(NumericValue::Float(v)) => v,
-        Some(NumericValue::Double(v)) => v as f32,
-        _ => randomizedtesting::jdk::exception::throw_without_message(
+    match doc.get_field(name).map(|f| f.numeric_value()) {
+        Some(Some(NumericValue::Int(v))) => v as f32,
+        Some(Some(NumericValue::Long(v))) => v as f32,
+        Some(Some(NumericValue::Float(v))) => v,
+        Some(Some(NumericValue::Double(v))) => v as f32,
+        // `getField(name).numericValue().floatValue()`: the JDK 25 helpful NPE of
+        // whichever call meets the `null`.
+        Some(_) => randomizedtesting::jdk::exception::throw(
             "java.lang.NullPointerException",
+            "Cannot invoke \"java.lang.Number.floatValue()\" because the return value of \
+             \"org.apache.lucene.index.IndexableField.numericValue()\" is null",
+        ),
+        None => randomizedtesting::jdk::exception::throw(
+            "java.lang.NullPointerException",
+            "Cannot invoke \"org.apache.lucene.index.IndexableField.numericValue()\" because \
+             the return value of \"org.apache.lucene.document.Document.getField(String)\" is \
+             null",
         ),
     }
 }
@@ -1080,7 +1096,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
                         ));
                     }
                 } else {
-                    assert_eq!(x, 2);
+                    java_assert_unchecked!(x == 2);
                     // Fully identical point:
                     xs[id] = xs[old_id];
                     ys[id] = ys[old_id];
@@ -1740,13 +1756,13 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
             rect.min_y(),
             rect.max_y(),
         )?;
-        Assert::assert_equals(QueryObject(q1), QueryObject(q2));
+        assert_equals_queries(&*q1, &*q2);
 
         let x = self.next_x();
         let y = self.next_y();
         let q1 = self.new_distance_query(Some("field"), x, y, 10000.0)?;
         let q2 = self.new_distance_query(Some("field"), x, y, 10000.0)?;
-        Assert::assert_equals(QueryObject(Arc::clone(&q1)), QueryObject(q2));
+        assert_equals_queries(&*q1, &*q2);
         Assert::assert_false(q1.query_eq(&*self.new_distance_query(
             Some("field2"),
             x,
@@ -1770,7 +1786,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
         ];
         let q1 = self.new_polygon_query(Some("field"), vec![polygon(&xs, &ys, Vec::new())?])?;
         let q2 = self.new_polygon_query(Some("field"), vec![polygon(&xs, &ys, Vec::new())?])?;
-        Assert::assert_equals(QueryObject(Arc::clone(&q1)), QueryObject(q2));
+        assert_equals_queries(&*q1, &*q2);
         Assert::assert_false(q1.query_eq(
             &*self.new_polygon_query(Some("field2"), vec![polygon(&xs, &ys, Vec::new())?])?,
         ));
@@ -1975,8 +1991,11 @@ fn numeric_ids(
 ) -> Result<Box<dyn rucene::index::doc_values::NumericDocValues>> {
     Ok(
         MultiDocValues::get_numeric_values(r, "id")?.unwrap_or_else(|| {
-            randomizedtesting::jdk::exception::throw_without_message(
+            // `docIDToID.nextDoc()` on the `null` of a reader without ids.
+            randomizedtesting::jdk::exception::throw(
                 "java.lang.NullPointerException",
+                "Cannot invoke \"org.apache.lucene.index.NumericDocValues.nextDoc()\" because \
+                 \"docIDToID\" is null",
             )
         }),
     )
