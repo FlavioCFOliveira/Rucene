@@ -162,6 +162,20 @@ pub(crate) fn to_int_exact(value: usize) -> Result<i32> {
 
 impl<'o, L: WriterLine> BlockWriter<'o, L> {
     /// Port of `BlockWriter(IndexOutput, int, int, BlockEncoder)`.
+    ///
+    /// **Divergence from Lucene 10.5.0: the serializer factories are
+    /// inlined.** Java's constructor calls the protected factories
+    /// `createBlockHeaderSerializer()`, `createBlockLineSerializer()` and
+    /// `createDeltaBaseTermStateSerializer()` (`BlockWriter.java:90-92`,
+    /// declared at `:102-112`), and `STBlockWriter` overrides the second to
+    /// return an `STBlockLine.Serializer` (`STBlockWriter.java:92-95`). The
+    /// port's serializers are concrete types, not a class hierarchy: the
+    /// constructor builds the base serializers directly, and the `sharedterms`
+    /// writer reaches `STBlockLine.Serializer`'s added methods as the free
+    /// functions of [`st_block_line`](super::sharedterms::st_block_line).
+    /// Making the factories overridable would need a serializer trait object
+    /// per field, which no Rust caller can supply; the bytes written are
+    /// Java's either way.
     pub fn new(
         block_output: &'o mut dyn IndexOutput,
         target_num_block_lines: i32,

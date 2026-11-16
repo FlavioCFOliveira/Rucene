@@ -34,7 +34,7 @@ use rucene::index::{
 use rucene::store::{ByteArrayDataInput, DataInput, IndexInput, SharedIndexInput};
 use rucene::util::attribute::AttributeSource;
 use rucene::util::java_collections::java_compare_to;
-use rucene::util::BytesRef;
+use rucene::util::{BytesRef, RamUsageEstimator};
 
 use super::block_terms_writer::{CODEC_NAME, TERMS_EXTENSION, VERSION_CURRENT, VERSION_START};
 use super::fixed_gap_terms_index_reader::{field_info_by_number, seek_dir};
@@ -377,12 +377,28 @@ impl Terms for FieldReader {
     }
 }
 
-/// Java: `public long ramBytesUsed()` (`BlockTermsReader.java:250-253`).
+/// Port of `BlockTermsReader.FIELD_READER_RAM_BYTES_USED`
+/// (`BlockTermsReader.java:223-224`):
+/// `RamUsageEstimator.shallowSizeOfInstance(FieldReader.class)`.
 ///
-/// Skeleton of member `org.apache.lucene.codecs.blockterms.BlockTermsReader.FieldReader.ramBytesUsed`; ported by rmp task #514.
+/// Java reads the fields by reflection; they are declared here as Java has
+/// them: `numTerms`, `fieldInfo`, `termsStartPointer`, `sumTotalTermFreq`,
+/// `sumDocFreq`, `docCount`, and the inner class's synthetic `this$0`
+/// (`FieldReader extends Terms`, which has no instance field). 56 bytes on a
+/// 64-bit JVM with compressed oops, as Lucene 10.5.0 reports on JDK 25.
+fn field_reader_ram_bytes_used() -> i64 {
+    const LONG: i64 = 8;
+    const INT: i64 = 4;
+    const REF: i64 = RamUsageEstimator::NUM_BYTES_OBJECT_REF;
+    RamUsageEstimator::shallow_size_of_declared_instance(&[LONG, REF, LONG, LONG, LONG, INT, REF])
+}
+
+/// `FieldReader implements Accountable`.
 impl rucene::util::Accountable for FieldReader {
+    /// Port of `ramBytesUsed()` (`BlockTermsReader.java:250-253`):
+    /// `FIELD_READER_RAM_BYTES_USED`, the shallow size alone.
     fn ram_bytes_used(&self) -> i64 {
-        todo!("ported by rmp task #514")
+        field_reader_ram_bytes_used()
     }
 }
 
@@ -494,6 +510,14 @@ fn target_byte(target: &BytesRef, i: usize) -> Result<i32> {
 
 /// Port of the private inner class `FieldReader.SegmentTermsEnum`: iterates
 /// through terms in this field.
+///
+/// **Divergence from Lucene 10.5.0: `FieldAndTerm` and the `fieldTerm`
+/// field are omitted.** Java declares the private class `FieldAndTerm`
+/// ("Used as key for the terms cache", `BlockTermsReader.java:70-97`), keeps
+/// one in `fieldTerm` (`:307`) and only assigns `fieldTerm.field =
+/// fieldInfo.name` in the constructor (`:350`); nothing reads it, and no terms
+/// cache exists in 10.5.0. The dead class and field have no observable
+/// effect, so the port leaves them out.
 struct SegmentTermsEnum {
     shared: Arc<Shared>,
     field: Arc<FieldReaderData>,
@@ -1056,5 +1080,18 @@ impl TermsEnum for SegmentTermsEnum {
             return Err(LuceneError::unsupported_operation(String::new()));
         }
         Ok(self.state.ord)
+    }
+}
+
+#[cfg(test)]
+mod field_reader_ram_tests {
+    /// `FIELD_READER_RAM_BYTES_USED`, which `FieldReader.ramBytesUsed()`
+    /// returns: `RamUsageEstimator.shallowSizeOfInstance(FieldReader.class)`
+    /// is 56 in Lucene 10.5.0 on JDK 25 (64-bit, compressed oops), over the
+    /// fields reflection lists (`numTerms`, `fieldInfo`, `termsStartPointer`,
+    /// `sumTotalTermFreq`, `sumDocFreq`, `docCount`, `this$0`).
+    #[test]
+    fn field_reader_ram_bytes_used_is_lucenes() {
+        assert_eq!(super::field_reader_ram_bytes_used(), 56);
     }
 }

@@ -21,7 +21,9 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use rucene::store::java_nio_file::{FileChannel, FileLock, SeekableByteChannel};
+use rucene::store::java_nio_file::{
+    FileChannel, FileLock, MapMode, MappedByteBuffer, SeekableByteChannel,
+};
 
 use super::identity_string;
 
@@ -185,6 +187,12 @@ impl FileChannel for FilterFileChannel {
         self.delegate.write_at(src, position)
     }
 
+    /// Port of `map(MapMode, long, long)` (`FilterFileChannel.java:116-119`):
+    /// `delegate.map(mode, position, size)`.
+    fn map(&self, mode: MapMode, position: i64, size: i64) -> io::Result<MappedByteBuffer> {
+        self.delegate.map(mode, position, size)
+    }
+
     fn lock(&self, position: i64, size: i64, shared: bool) -> io::Result<Box<dyn FileLock>> {
         self.delegate.lock(position, size, shared)
     }
@@ -196,5 +204,49 @@ impl FileChannel for FilterFileChannel {
         shared: bool,
     ) -> io::Result<Option<Box<dyn FileLock>>> {
         self.delegate.try_lock(position, size, shared)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use rucene::store::java_nio_file::{
+        default_file_system, java_to_string, FileChannel, Files, MapMode, OpenOption, Path,
+    };
+
+    use super::FilterFileChannel;
+
+    /// `FilterFileChannel.map` returns what the delegate's `map` returns,
+    /// buffer or exception (`FilterFileChannel.java:116-119`).
+    #[test]
+    fn map_delegates() {
+        let dir = std::env::temp_dir().join(format!(
+            "rucene-filter-file-channel-map-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = Path::new(default_file_system(), dir.join("f"));
+        Files::write(&f, &[1, 2, 3, 4, 5], &[]).unwrap();
+        let delegate = <dyn FileChannel>::open(&f, &[OpenOption::Read, OpenOption::Write]).unwrap();
+        let filter = FilterFileChannel::new(Arc::clone(&delegate));
+        let mut b = filter.map(MapMode::ReadWrite, 1, 3).unwrap();
+        assert_eq!(
+            (b.capacity(), b.is_read_only(), b.as_slice()),
+            (3, false, &[2, 3, 4][..])
+        );
+        b.put(0, 9);
+        assert_eq!(Files::read_all_bytes(&f).unwrap(), [1, 9, 3, 4, 5]);
+        let ro = filter.map(MapMode::ReadOnly, 0, 2).unwrap();
+        assert!(ro.is_read_only());
+        // The delegate extends the file on a writable channel.
+        assert_eq!(filter.map(MapMode::Private, 6, 0).unwrap().capacity(), 0);
+        assert_eq!(delegate.size().unwrap(), 6);
+        delegate.close().unwrap();
+        assert_eq!(
+            java_to_string(&filter.map(MapMode::ReadOnly, 0, 1).unwrap_err()),
+            "java.nio.channels.ClosedChannelException"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

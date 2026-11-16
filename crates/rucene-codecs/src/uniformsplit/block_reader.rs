@@ -791,6 +791,20 @@ impl BlockReader {
 
     /// Port of `BlockReader.initializeBlockReadLazily()`.
     ///
+    /// **Divergence from Lucene 10.5.0: the serializer factories are
+    /// inlined.** Java calls the protected factories
+    /// `createBlockHeaderSerializer()`, `createBlockLineSerializer()` and
+    /// `createDeltaBaseTermStateSerializer()` here (`BlockReader.java:415-419`,
+    /// declared at `:425-435`), and `STBlockReader` and
+    /// `STIntersectBlockReader` override the second to return an
+    /// `STBlockLine.Serializer` (`STBlockReader.java:122-125`,
+    /// `STIntersectBlockReader.java:98-101`). The port's serializers are
+    /// concrete types, not a class hierarchy: the base serializers are built
+    /// directly, and the `sharedterms` readers reach `STBlockLine.Serializer`'s
+    /// added methods through `SharedTermsHooks` and the free functions of
+    /// [`st_block_line`], not through
+    /// [`BlockReaderOverrides`]. The bytes read are Java's either way.
+    ///
     /// # Errors
     ///
     /// The I/O errors of cloning the block input.

@@ -543,6 +543,12 @@ impl Accountable for MonotonicBlockPackedReader {
         size_in_bytes += self.total_byte_count;
         size_in_bytes
     }
+
+    /// `toString()` (`MonotonicBlockPackedReader.java:140-151`), the text the
+    /// [`Debug`](std::fmt::Debug) impl writes, as `Accountables` reads it.
+    fn accountable_to_string(&self) -> String {
+        format!("{self:?}")
+    }
 }
 
 impl std::fmt::Debug for MonotonicBlockPackedReader {

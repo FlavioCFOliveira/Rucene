@@ -116,17 +116,65 @@ impl CharReader for MockReaderWrapper {
         self.input.close()
     }
 
-    /// Java: `public boolean markSupported()` (`MockReaderWrapper.java:81-84`).
-    ///
-    /// Skeleton of member `org.apache.lucene.tests.analysis.MockReaderWrapper.markSupported`; ported by rmp task #512.
+    /// Port of `markSupported()` (`MockReaderWrapper.java:81-84`): `false`,
+    /// whatever the wrapped reader supports.
     fn mark_supported(&self) -> bool {
-        todo!("ported by rmp task #512")
+        false
     }
 
-    /// Java: `public boolean ready()` (`MockReaderWrapper.java:86-89`).
-    ///
-    /// Skeleton of member `org.apache.lucene.tests.analysis.MockReaderWrapper.ready`; ported by rmp task #512.
+    /// Port of `ready()` (`MockReaderWrapper.java:86-89`): `false`, without
+    /// asking the wrapped reader; it never throws.
     fn ready(&mut self) -> Result<bool> {
-        todo!("ported by rmp task #512")
+        Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use randomizedtesting::jdk::random::JdkRandom;
+    use rucene::analysis::{CharReader, StringCharReader};
+    use rucene::error::Result;
+
+    use super::MockReaderWrapper;
+
+    /// A reader that supports marking and is always ready, as
+    /// `java.io.StringReader` answers.
+    #[derive(Debug)]
+    struct Ready;
+
+    impl CharReader for Ready {
+        fn read(&mut self, _buf: &mut [u16]) -> Result<usize> {
+            Ok(0)
+        }
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn mark_supported(&self) -> bool {
+            true
+        }
+        fn ready(&mut self) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// `MockReaderWrapper.markSupported()` and `ready()` answer `false`
+    /// without delegating: Java's wrapper over a `StringReader` (which
+    /// answers `true` to both on JDK 25) still answers `false`.
+    #[test]
+    fn mark_supported_and_ready_are_false_without_delegation() {
+        let mut inner = Ready;
+        assert!(inner.mark_supported());
+        assert!(inner.ready().unwrap());
+        let mut w = MockReaderWrapper::new(Arc::new(JdkRandom::new(0)), Box::new(Ready));
+        assert!(!w.mark_supported());
+        assert!(!w.ready().unwrap());
+        let mut w = MockReaderWrapper::new(
+            Arc::new(JdkRandom::new(0)),
+            Box::new(StringCharReader::new("abc")),
+        );
+        assert!(!w.mark_supported());
+        assert!(!w.ready().unwrap());
     }
 }

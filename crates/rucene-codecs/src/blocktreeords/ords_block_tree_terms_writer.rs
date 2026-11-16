@@ -29,7 +29,7 @@ use rucene::index::index_file_names::segment_file_name;
 use rucene::index::{FieldInfo, FieldInfos, Fields, IndexOptions, TermsEnum};
 use rucene::store::{ByteBuffersDataOutput, DataOutput, IndexOutput};
 use rucene::util::fst::{Builder, BytesRefFSTEnum, InputType, Util, FST};
-use rucene::util::{BytesRef, FixedBitSet, IOUtils, IntsRefBuilder};
+use rucene::util::{BytesRef, FixedBitSet, IOUtils, IntsRefBuilder, ToStringUtils};
 
 use super::fst_ords_outputs::{FSTOrdsOutputs, Output};
 
@@ -339,12 +339,23 @@ struct PendingTerm {
     state: BlockTermState,
 }
 
-/// Java: `public String toString()` (`OrdsBlockTreeTermsWriter.java:270-273`).
-///
-/// Skeleton of member `org.apache.lucene.codecs.blocktreeords.OrdsBlockTreeTermsWriter.PendingTerm.toString`; ported by rmp task #514.
+/// Port of `PendingTerm.toString()` (`OrdsBlockTreeTermsWriter.java:270-273`):
+/// `ToStringUtils.bytesRefToString(termBytes)`.
 impl std::fmt::Display for PendingTerm {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!("ported by rmp task #514")
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&ToStringUtils::bytes_to_string(&self.term_bytes))
+    }
+}
+
+/// Java's `PendingEntry` declares no `toString()`; each entry renders as its
+/// class does (`PendingTerm` or `PendingBlock`), as Java's virtual dispatch
+/// does when the `pending` list is printed.
+impl std::fmt::Display for PendingEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PendingEntry::Term(term) => term.fmt(f),
+            PendingEntry::Block(block) => block.fmt(f),
+        }
     }
 }
 
@@ -392,13 +403,19 @@ impl PendingBlock {
     }
 }
 
-/// Java: `public String toString()` (`OrdsBlockTreeTermsWriter.java:308-311`).
-///
-/// Skeleton of member `org.apache.lucene.codecs.blocktreeords.OrdsBlockTreeTermsWriter.PendingBlock.toString`; ported by rmp task #514.
+/// Port of `PendingBlock.toString()` (`OrdsBlockTreeTermsWriter.java:308-311`):
+/// `"BLOCK: " + ToStringUtils.bytesRefToString(prefix)`.
 impl std::fmt::Display for PendingBlock {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!("ported by rmp task #514")
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BLOCK: {}", ToStringUtils::bytes_to_string(&self.prefix))
     }
+}
+
+/// `List.toString()` of Java's `pending` (`ArrayList<PendingEntry>`):
+/// `[` + the entries' `toString()` joined by `", "` + `]`.
+fn pending_to_string(pending: &[PendingEntry]) -> String {
+    let entries: Vec<String> = pending.iter().map(ToString::to_string).collect();
+    format!("[{}]", entries.join(", "))
 }
 
 /// Port of `PendingBlock.compileIndex(List<PendingBlock>,
@@ -994,8 +1011,9 @@ impl TermsWriter {
             // We better have one final "root" block:
             debug_assert!(
                 self.pending.len() == 1 && matches!(self.pending[0], PendingEntry::Block(_)),
-                "pending.size()={}",
-                self.pending.len()
+                "pending.size()={} pending={}",
+                self.pending.len(),
+                pending_to_string(&self.pending)
             );
             let PendingEntry::Block(root) = &self.pending[0] else {
                 unreachable!("INVARIANT: writeBlocks(0, ...) leaves the root block");
@@ -1043,5 +1061,41 @@ impl TermsWriter {
             debug_assert_eq!(self.docs_seen.cardinality(), 0);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod to_string_tests {
+    use super::{pending_to_string, PendingBlock, PendingEntry, PendingTerm};
+
+    fn term(bytes: &[u8]) -> PendingTerm {
+        PendingTerm {
+            term_bytes: bytes.to_vec(),
+            state: Default::default(),
+        }
+    }
+
+    fn block(prefix: &[u8]) -> PendingBlock {
+        PendingBlock::new(prefix.to_vec(), 0, true, 1, false, -1, None)
+    }
+
+    /// `PendingTerm.toString()`, `PendingBlock.toString()` and the `pending`
+    /// list of `finish`'s assertion message, against Lucene 10.5.0
+    /// (`ToStringUtils.bytesRefToString` and `ArrayList.toString` on JDK 25:
+    /// `hello [68 65 6c 6c 6f]`, `BLOCK:  []`, `[x, y]`).
+    #[test]
+    fn pending_entries_render_as_lucene() {
+        assert_eq!(term(b"hello").to_string(), "hello [68 65 6c 6c 6f]");
+        assert_eq!(block(b"ab").to_string(), "BLOCK: ab [61 62]");
+        assert_eq!(block(b"").to_string(), "BLOCK:  []");
+        let pending = vec![
+            PendingEntry::Term(term(b"hello")),
+            PendingEntry::Block(block(b"ab")),
+        ];
+        assert_eq!(
+            pending_to_string(&pending),
+            "[hello [68 65 6c 6c 6f], BLOCK: ab [61 62]]"
+        );
+        assert_eq!(pending_to_string(&[]), "[]");
     }
 }

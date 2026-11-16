@@ -16,6 +16,11 @@
 //! `\t... N more`), random seeds (hexadecimal runs of 8 to 16 digits in
 //! brackets), thread ids and the unnamed module's identity hash.
 //!
+//! The one snippet of the suite, `snippets.TheGoodBadAndUglySnippet`, is no
+//! test class; [`snippets::check`] runs its nested suite directly and nested
+//! (seeded) and compares with `tests/fixtures/self_tests_snippets.tsv`
+//! (`SnippetsOracle.java`).
+//!
 //! `SELF_TESTS_FILTER=<substring>[,<substring>...]` runs only the classes
 //! whose name contains one of them.
 //!
@@ -41,6 +46,7 @@ mod generators;
 mod inheritance;
 mod print_event_listener;
 mod rules;
+mod snippets;
 mod support;
 mod timeouts;
 mod utils;
@@ -440,6 +446,12 @@ fn main() {
             report.push(format!("EXTRA (no oracle row) {k}"));
             differences += 1;
         }
+    }
+    if filter.as_ref().is_none_or(|f| {
+        f.split(',')
+            .any(|p| "snippets.TheGoodBadAndUglySnippet".contains(p))
+    }) {
+        differences += snippets::check(&mut report);
     }
     println!("\n==== randomizedtesting self tests: Java (JUnit 4.13.1) vs Rust");
     for l in &report {

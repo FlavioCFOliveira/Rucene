@@ -209,3 +209,154 @@ fn unexpected_eof_stands_for_eof_exception() {
     let carried = io_exception("explicit");
     assert_eq!(java_class_of(&carried), IO_EXCEPTION);
 }
+
+/// The text of the unchecked Java exception `f` throws (`class: message`, or
+/// `class` alone for a `null` message).
+#[cfg(feature = "mmap")]
+fn unchecked_of<T>(f: impl FnOnce() -> T) -> String {
+    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .err()
+        .expect("expected an unchecked exception");
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap()
+}
+
+/// `FileChannel.map(MapMode, long, long)` and the `MappedByteBuffer` it
+/// returns, against OpenJDK 25.0.5 (probe: the same calls on a 5-byte file
+/// `{1,2,3,4,5}` through `FileChannel.open` with `READ`, `WRITE`, and both).
+#[cfg(feature = "mmap")]
+#[test]
+fn file_channel_map_matches_the_jdk() {
+    let (_tmp, d) = temp_dir();
+    let f = d.resolve_str("f");
+    Files::write(&f, &[1, 2, 3, 4, 5], &[]).unwrap();
+    assert_eq!(
+        format!(
+            "{} {} {}",
+            MapMode::ReadOnly,
+            MapMode::ReadWrite,
+            MapMode::Private
+        ),
+        "READ_ONLY READ_WRITE PRIVATE"
+    );
+    const IAE: &str = "java.lang.IllegalArgumentException";
+
+    // Read-only channel.
+    let r = <dyn FileChannel>::open(&f, &[OpenOption::Read]).unwrap();
+    let b = r.map(MapMode::ReadOnly, 1, 3).unwrap();
+    assert_eq!((b.capacity(), b.is_read_only()), (3, true));
+    assert_eq!((b.get(0), b.get(2)), (2, 4));
+    assert_eq!(
+        unchecked_of(|| b.get(3)),
+        "java.lang.IndexOutOfBoundsException"
+    );
+    assert_eq!(
+        unchecked_of(|| b.get(-1)),
+        "java.lang.IndexOutOfBoundsException"
+    );
+    let mut b = b;
+    assert_eq!(
+        unchecked_of(|| b.put(0, 9)),
+        "java.nio.ReadOnlyBufferException"
+    );
+    for mode in [MapMode::ReadWrite, MapMode::Private] {
+        assert_eq!(
+            unchecked_of(|| r.map(mode, 0, 1)),
+            "java.nio.channels.NonWritableChannelException"
+        );
+    }
+    assert_eq!(
+        unchecked_of(|| r.map(MapMode::ReadOnly, -1, 1)),
+        format!("{IAE}: Negative position")
+    );
+    assert_eq!(
+        unchecked_of(|| r.map(MapMode::ReadOnly, 0, -1)),
+        format!("{IAE}: Negative size")
+    );
+    assert_eq!(
+        unchecked_of(|| r.map(MapMode::ReadOnly, i64::MAX, 1)),
+        format!("{IAE}: Position + size overflow")
+    );
+    let too_big = i64::from(i32::MAX) + 1;
+    assert_eq!(
+        unchecked_of(|| r.map(MapMode::ReadOnly, 0, too_big)),
+        format!("{IAE}: Size exceeds Integer.MAX_VALUE")
+    );
+    assert_eq!(
+        unchecked_of(|| r.map(MapMode::ReadOnly, -1, too_big)),
+        format!("{IAE}: Size exceeds Integer.MAX_VALUE")
+    );
+    // The argument checks come before the mode check.
+    assert_eq!(
+        unchecked_of(|| r.map(MapMode::ReadWrite, -1, 1)),
+        format!("{IAE}: Negative position")
+    );
+    let not_extended =
+        "java.io.IOException: Channel not open for writing - cannot extend file to required size";
+    assert_eq!(
+        java_to_string(&r.map(MapMode::ReadOnly, 4, 5).unwrap_err()),
+        not_extended
+    );
+    assert_eq!(
+        java_to_string(&r.map(MapMode::ReadOnly, 10, 0).unwrap_err()),
+        not_extended
+    );
+    let empty = r.map(MapMode::ReadOnly, 2, 0).unwrap();
+    assert_eq!((empty.capacity(), empty.is_read_only()), (0, true));
+    r.close().unwrap();
+    assert_eq!(
+        java_to_string(&r.map(MapMode::ReadOnly, 0, 1).unwrap_err()),
+        "java.nio.channels.ClosedChannelException"
+    );
+    assert_eq!(
+        java_to_string(&r.map(MapMode::ReadOnly, -1, 1).unwrap_err()),
+        "java.nio.channels.ClosedChannelException"
+    );
+    assert_eq!(
+        unchecked_of(|| r.map(MapMode::ReadOnly, 0, too_big)),
+        format!("{IAE}: Size exceeds Integer.MAX_VALUE")
+    );
+
+    // Write-only channel.
+    let w = <dyn FileChannel>::open(&f, &[OpenOption::Write]).unwrap();
+    for mode in [MapMode::ReadOnly, MapMode::ReadWrite] {
+        assert_eq!(
+            unchecked_of(|| w.map(mode, 0, 1)),
+            "java.nio.channels.NonReadableChannelException"
+        );
+    }
+    w.close().unwrap();
+
+    // Read-write channel.
+    let rw = <dyn FileChannel>::open(&f, &[OpenOption::Read, OpenOption::Write]).unwrap();
+    let mut shared = rw.map(MapMode::ReadWrite, 0, 5).unwrap();
+    assert_eq!((shared.capacity(), shared.is_read_only()), (5, false));
+    shared.put(0, 42);
+    assert_eq!(Files::read_all_bytes(&f).unwrap()[0], 42);
+    assert_eq!(
+        unchecked_of(|| shared.put(5, 1)),
+        "java.lang.IndexOutOfBoundsException"
+    );
+    let mut private = rw.map(MapMode::Private, 0, 5).unwrap();
+    assert!(!private.is_read_only());
+    private.put(1, 77);
+    assert_eq!(private.get(1), 77);
+    assert_eq!(Files::read_all_bytes(&f).unwrap()[1], 2);
+    let ro = rw.map(MapMode::ReadOnly, 0, 2).unwrap();
+    assert_eq!((ro.capacity(), ro.is_read_only()), (2, true));
+    // A writable channel extends the file, whatever the mode.
+    let ro = rw.map(MapMode::ReadOnly, 6, 2).unwrap();
+    assert_eq!(
+        (ro.capacity(), ro.is_read_only(), rw.size().unwrap()),
+        (2, true, 8)
+    );
+    let empty = rw.map(MapMode::ReadWrite, 20, 0).unwrap();
+    assert_eq!(
+        (empty.capacity(), empty.is_read_only(), rw.size().unwrap()),
+        (0, false, 20)
+    );
+    rw.close().unwrap();
+}

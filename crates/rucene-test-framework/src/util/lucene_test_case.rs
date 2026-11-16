@@ -1646,10 +1646,30 @@ impl LuceneTestCase {
     }
 }
 
-/// Java: `public interface`.
+/// A `java.util.function.Consumer` that can throw any checked exception.
 ///
-/// Skeleton of `org.apache.lucene.tests.util.LuceneTestCase.ThrowingConsumer`; ported by rmp task #511.
-pub trait ThrowingConsumer {}
+/// Port of the functional interface `LuceneTestCase.ThrowingConsumer<T>`
+/// (`LuceneTestCase.java:2906-2910`): one method, `void accept(T t) throws
+/// Exception`. As for Java's lambdas, every closure `FnMut(T) -> Result<(),
+/// Throwable>` is one; an `Err` is the exception `accept` throws. The error
+/// type is the crate's [`Throwable`], as the other `Throwing…` callbacks of
+/// this class (`ThrowingRunnable`, taken by
+/// [`expect_throws`](LuceneTestCase::expect_throws)) use: Rust has no checked
+/// exceptions to narrow it to `Exception`.
+pub trait ThrowingConsumer<T> {
+    /// `void accept(T t) throws Exception`.
+    ///
+    /// # Errors
+    ///
+    /// The exception the consumer throws.
+    fn accept(&mut self, t: T) -> Result<(), Throwable>;
+}
+
+impl<T, F: FnMut(T) -> Result<(), Throwable>> ThrowingConsumer<T> for F {
+    fn accept(&mut self, t: T) -> Result<(), Throwable> {
+        self(t)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The searcher factory (`newSearcher`) and what it calls (`maybeWrapReader`,
@@ -5597,5 +5617,43 @@ impl LuceneTestCase {
                 // we don't need to uninvert and compare here ... we did that in the first loop above
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod throwing_consumer_tests {
+    use randomizedtesting::jdk::exception::Throwable;
+
+    use super::ThrowingConsumer;
+
+    /// Java's contract: `accept` runs the consumer on its argument, and an
+    /// exception it throws reaches the caller unchanged.
+    #[test]
+    fn accept_invokes_the_consumer_and_propagates_its_exception() {
+        let mut seen = Vec::new();
+        let mut consumer = |t: i32| {
+            seen.push(t);
+            if t < 0 {
+                Err(Throwable::new("java.io.IOException", "negative"))
+            } else {
+                Ok(())
+            }
+        };
+        assert!(ThrowingConsumer::accept(&mut consumer, 1).is_ok());
+        let e = ThrowingConsumer::accept(&mut consumer, -2).unwrap_err();
+        assert_eq!(e.class_name(), "java.io.IOException");
+        assert_eq!(e.message(), Some("negative"));
+        assert_eq!(seen, [1, -2]);
+
+        // A trait object, as a Java caller holds the interface type.
+        let mut count = 0;
+        {
+            let mut boxed: Box<dyn ThrowingConsumer<&str> + '_> = Box::new(|s: &str| {
+                count += s.len();
+                Ok(())
+            });
+            boxed.accept("abc").unwrap();
+        }
+        assert_eq!(count, 3);
     }
 }

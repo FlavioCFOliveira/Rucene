@@ -172,7 +172,7 @@ fn rule_chain() -> Value {
 }
 
 /// `setupNested()`.
-fn setup_nested() {
+pub fn setup_nested() {
     RUNNING_NESTED.store(true, Ordering::SeqCst);
     ZOMBIE_TOKEN.store(
         ZOMBIE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1,
@@ -217,7 +217,7 @@ fn setup_nested() {
 }
 
 /// `clearNested()`.
-fn clear_nested() {
+pub fn clear_nested() {
     ZOMBIE_TOKEN.store(0, Ordering::SeqCst);
     RUNNING_NESTED.store(false, Ordering::SeqCst);
     *APPLY_RUNNABLE.lock().unwrap_or_else(|e| e.into_inner()) = None;

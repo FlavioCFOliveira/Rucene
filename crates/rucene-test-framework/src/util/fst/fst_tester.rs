@@ -33,13 +33,34 @@ use rucene::util::BytesRef;
 
 use crate::util::{LuceneTestCase, TestUtil};
 
-/// `FSTTester.InputOutput`: one input/output pair, ordered by its input.
+/// Holds one input/output pair.
+///
+/// Port of the record `FSTTester.InputOutput<T>(IntsRef input, T output)
+/// implements Comparable<InputOutput<T>>` (`FSTTester.java:166-173`).
+///
+/// **Divergence from Lucene 10.5.0, in shape only.** Java's `compareTo`
+/// orders by `input` alone while the record's `equals` compares both
+/// components; Rust's `Ord` must agree with `Eq`, so the type cannot carry
+/// both as trait impls. `Comparable.compareTo` is therefore the inherent
+/// [`compare_to`](Self::compare_to), used exactly where Java compares pairs
+/// (`Collections.binarySearch`, `FSTTester.java:434` and `:554`). Its
+/// argument may carry any output type, so that Java's search key
+/// `new InputOutput<>(term, null)` is a pair whose output is `None`: the
+/// comparison never reads it.
 #[derive(Debug, Clone)]
 pub struct InputOutput<T> {
     /// `input`.
     pub input: IntsRef,
     /// `output`.
     pub output: T,
+}
+
+impl<T> InputOutput<T> {
+    /// Port of `compareTo(InputOutput<T> other)` (`FSTTester.java:169-172`):
+    /// `input.compareTo(other.input)`.
+    pub fn compare_to<U>(&self, other: &InputOutput<U>) -> std::cmp::Ordering {
+        self.input.cmp(&other.input)
+    }
 }
 
 /// Port of `org.apache.lucene.tests.util.fst.FSTTester`.
@@ -444,7 +465,15 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
         // test IntsRefFSTEnum.seek:
         let mut fst_enum = IntsRefFSTEnum::new(fst)?;
         let num = LuceneTestCase::at_least_with(self.random, 100);
-        let search = |term: &IntsRef| pairs.binary_search_by(|p| p.input.cmp(term));
+        // `Collections.binarySearch(pairs, new InputOutput<>(term, null))`,
+        // which compares each probed pair with the key: `midVal.compareTo(key)`.
+        let search = |term: &IntsRef| {
+            let key: InputOutput<Option<O::Output>> = InputOutput {
+                input: term.clone(),
+                output: None,
+            };
+            pairs.binary_search_by(|p| p.compare_to(&key))
+        };
         for _ in 0..num {
             if self.random.next_boolean() {
                 // seek to term that doesn't exist:
@@ -571,5 +600,58 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cmp::Ordering;
+
+    use rucene::util::string_helper::IntsRef;
+
+    use super::InputOutput;
+
+    fn pair(input: &[i32], output: i64) -> InputOutput<i64> {
+        InputOutput {
+            input: IntsRef::new(input.to_vec()),
+            output,
+        }
+    }
+
+    /// Java's `compareTo` is `input.compareTo(other.input)`: signed,
+    /// lexicographic, a prefix first, and blind to the outputs.
+    #[test]
+    fn compare_to_orders_by_input_only() {
+        assert_eq!(
+            pair(&[1, 2], 9).compare_to(&pair(&[1, 3], 0)),
+            Ordering::Less
+        );
+        assert_eq!(
+            pair(&[1, 3], 0).compare_to(&pair(&[1, 2], 9)),
+            Ordering::Greater
+        );
+        assert_eq!(pair(&[1], 0).compare_to(&pair(&[1, 0], 0)), Ordering::Less);
+        assert_eq!(pair(&[-1], 0).compare_to(&pair(&[0], 0)), Ordering::Less);
+        assert_eq!(
+            pair(&[5, 6], 1).compare_to(&pair(&[5, 6], 2)),
+            Ordering::Equal
+        );
+        // `new InputOutput<>(term, null)`: the key's output is never read.
+        let key: InputOutput<Option<i64>> = InputOutput {
+            input: IntsRef::new(vec![5, 6]),
+            output: None,
+        };
+        assert_eq!(pair(&[5, 6], 1).compare_to(&key), Ordering::Equal);
+        // `Collections.binarySearch` over pairs sorted by input.
+        let pairs = [pair(&[1], 0), pair(&[3], 0), pair(&[7], 0)];
+        let find = |t: i32| {
+            let key: InputOutput<Option<i64>> = InputOutput {
+                input: IntsRef::new(vec![t]),
+                output: None,
+            };
+            pairs.binary_search_by(|p| p.compare_to(&key))
+        };
+        assert_eq!(find(3), Ok(1));
+        assert_eq!(find(4), Err(2));
     }
 }

@@ -26,6 +26,7 @@ use crate::annotations::{
     ThreadLeakLingering, ThreadLeakScope, ThreadLeakZombies, Timeout, TimeoutSuite,
 };
 use crate::deadline_clock::DeadlineClock;
+use crate::jdk::concurrent::TimeUnit;
 use crate::jdk::exception::{self, Throwable};
 use crate::jdk::lang::parse_int;
 use crate::jdk::reflect::{find_annotation, AnnotationRef, Class, JavaAnnotation};
@@ -534,7 +535,7 @@ impl ThreadLeakControl {
         };
         let mut threads = leaked(self);
         if linger > 0 && !threads.is_empty() {
-            let clock = DeadlineClock::millis(i64::from(linger));
+            let clock = DeadlineClock::new(TimeUnit::Milliseconds, i64::from(linger));
             RandomizedRunner::logger().warning(&format!(
                 "Will linger awaiting termination of {} leaked thread(s).",
                 threads.len()
@@ -655,13 +656,13 @@ impl ThreadLeakControl {
             for t in &ordered {
                 t.interrupt();
             }
-            let clock = DeadlineClock::millis(i64::from(self.kill_wait));
+            let clock = DeadlineClock::new(TimeUnit::Milliseconds, i64::from(self.kill_wait));
             let mut interrupted = false;
             let mut i = 0;
             while i < ordered.len() {
                 if ordered[i].is_alive() {
                     all_dead = false;
-                    let wait = clock.time_until_deadline_millis().max(1);
+                    let wait = clock.time_until_deadline(TimeUnit::Milliseconds).max(1);
                     if join(&ordered[i], wait, &mut Thread::try_sleep).is_err() {
                         interrupted = true;
                         break;
@@ -789,9 +790,9 @@ fn join(
     if millis <= 0 {
         exception::illegal_argument(format!("Timeout must be positive: {millis}"));
     }
-    let clock = DeadlineClock::millis(millis);
+    let clock = DeadlineClock::new(TimeUnit::Milliseconds, millis);
     while t.is_alive() {
-        let until = clock.time_until_deadline_millis();
+        let until = clock.time_until_deadline(TimeUnit::Milliseconds);
         if until > 0 {
             cond(until.min(250))?;
         } else {

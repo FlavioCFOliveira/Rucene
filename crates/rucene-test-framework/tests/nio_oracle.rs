@@ -418,6 +418,14 @@ impl FileChannel for RecordingChannel {
     fn write_at(&self, src: &[u8], p: i64) -> io::Result<i32> {
         self.inner.write_at(src, p)
     }
+    fn map(
+        &self,
+        mode: rucene::store::java_nio_file::MapMode,
+        p: i64,
+        s: i64,
+    ) -> io::Result<rucene::store::java_nio_file::MappedByteBuffer> {
+        self.inner.map(mode, p, s)
+    }
     fn lock(&self, p: i64, s: i64, sh: bool) -> io::Result<Box<dyn FileLock>> {
         self.inner.lock(p, s, sh)
     }

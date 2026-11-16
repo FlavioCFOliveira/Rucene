@@ -16,6 +16,7 @@ use randomizedtesting::annotations::{
     Action, Consequence, Scope, TestCaseOrdering, ThreadLeakAction, ThreadLeakLingering,
     ThreadLeakScope, ThreadLeakZombies, TimeoutSuite,
 };
+use randomizedtesting::jdk::concurrent::TimeUnit;
 use randomizedtesting::jdk::exception::EXCEPTION;
 use randomizedtesting::jdk::reflect::{modifier, Class, Method};
 use randomizedtesting::jdk::system;
@@ -100,7 +101,7 @@ pub fn classes() -> Vec<Arc<Class>> {
                     Some(run_tests(std::slice::from_ref(&*NESTED1)));
             });
             tester.start();
-            let deadline = DeadlineClock::millis(10_000);
+            let deadline = DeadlineClock::new(TimeUnit::Milliseconds, 10_000);
             while deadline.is_before_deadline() && tester.is_alive() {
                 Thread::sleep(250);
             }
