@@ -150,6 +150,8 @@ impl SimpleTextBKDWriter {
         let tracking_dir = Arc::new(TrackingDirectoryWrapper::new(Box::new(SharedDirectory(
             temp_dir,
         ))));
+        // `docsSeen = new FixedBitSet(maxDoc)` (`SimpleTextBKDWriter.java:148`).
+        let docs_seen = FixedBitSet::new_java(max_doc)?;
 
         let bytes_per_dim = config.bytes_per_dim as usize;
         let packed_bytes_length = config.packed_bytes_length() as usize;
@@ -178,7 +180,7 @@ impl SimpleTextBKDWriter {
             temp_file_name_prefix: temp_file_name_prefix.to_string(),
             total_point_count,
             max_doc,
-            docs_seen: FixedBitSet::new(max_doc.max(0) as usize),
+            docs_seen,
             scratch_diff: vec![0u8; bytes_per_dim],
             scratch1: vec![0u8; packed_bytes_length],
             scratch2: vec![0u8; packed_bytes_length],
@@ -303,15 +305,10 @@ impl SimpleTextBKDWriter {
     }
 
     /// `docsSeen.set(docID)`.
+    /// `docsSeen.set(docID)`: Java's unchecked `FixedBitSet.set`
+    /// ([`util::java_fixed_bit_set_set`]).
     fn set_doc_seen(&mut self, doc_id: i32) -> Result<()> {
-        if doc_id < 0 || doc_id as usize >= self.docs_seen.length() {
-            return Err(LuceneError::illegal_state(format!(
-                "index={doc_id}, numBits={}",
-                self.docs_seen.length()
-            )));
-        }
-        self.docs_seen.set(doc_id as usize);
-        Ok(())
+        util::java_fixed_bit_set_set(&self.docs_seen, self.max_doc, doc_id)
     }
 
     /// How many points have been added so far.
@@ -758,13 +755,21 @@ impl SimpleTextBKDWriter {
         if let Some(name) = self.temp_input.take() {
             // NOTE: this should only happen on exception, e.g. caller calls
             // close w/o calling finish:
-            let closed = match self.point_writer.as_mut() {
-                Some(writer) => writer.close(),
+            // `try { tempInput.close(); } finally { tempDir.deleteFile(…); }`
+            // (`SimpleTextBKDWriter.java:615-627`): the raw spill output is
+            // closed, with no codec footer, and a failure to delete replaces
+            // a failure to close.
+            let closed = match self
+                .point_writer
+                .as_mut()
+                .and_then(|w| w.as_any_mut().downcast_mut::<OfflinePointWriter>())
+            {
+                Some(offline) => offline.out_mut().close(),
                 None => Ok(()),
             };
             let deleted = self.temp_dir.delete_file(&name);
-            closed?;
             deleted?;
+            closed?;
         }
         Ok(())
     }
@@ -950,6 +955,20 @@ impl SimpleTextBKDWriter {
 
             // Write the full values:
             let mut packed_values = |i: usize| reader.value((from + i) as i32).into_owned();
+            // `assert valuesInOrderAndBounds(count, sortedDim, minPackedValue,
+            // maxPackedValue, packedValues, docIDs, 0)`.
+            #[cfg(debug_assertions)]
+            if let Err(message) = values_in_order_and_bounds(
+                &self.config,
+                count,
+                sorted_dim,
+                min_packed_value,
+                max_packed_value,
+                &mut packed_values,
+                spare_doc_ids,
+            ) {
+                panic!("{message}");
+            }
             Self::write_leaf_block_packed_values(out, count, &mut packed_values)?;
         } else {
             // inner node
@@ -1133,6 +1152,20 @@ impl SimpleTextBKDWriter {
             // Write the full values:
             let heap: &HeapPointWriter = heap_source;
             let mut packed_values = |i: usize| heap.get_packed_value_slice(from + i).packed;
+            // `assert valuesInOrderAndBounds(count, sortedDim, minPackedValue,
+            // maxPackedValue, packedValues, docIDs, 0)`.
+            #[cfg(debug_assertions)]
+            if let Err(message) = values_in_order_and_bounds(
+                &self.config,
+                count,
+                sorted_dim,
+                min_packed_value,
+                max_packed_value,
+                &mut packed_values,
+                spare_doc_ids,
+            ) {
+                panic!("{message}");
+            }
             Self::write_leaf_block_packed_values(out, count, &mut packed_values)?;
         } else {
             // Inner node: partition/recurse
@@ -1248,15 +1281,115 @@ impl SimpleTextBKDWriter {
     }
 }
 
-impl Drop for SimpleTextBKDWriter {
-    /// Java callers use the writer in try-with-resources; the port closes it
-    /// on drop, ignoring the error a destructor cannot report.
-    fn drop(&mut self) {
-        let _ = self.close();
+/// A `name value` line.
+/// Port of `valuesInOrderAndBounds` (`SimpleTextBKDWriter.java:960-985`),
+/// which only assertions call: `Err` carries the `AssertionError` message
+/// (empty for a bare `assert`).
+#[cfg(debug_assertions)]
+fn values_in_order_and_bounds(
+    config: &BKDConfig,
+    count: usize,
+    sorted_dim: usize,
+    min_packed_value: &[u8],
+    max_packed_value: &[u8],
+    values: &mut dyn FnMut(usize) -> Vec<u8>,
+    docs: &[i32],
+) -> std::result::Result<(), String> {
+    let mut last_packed_value = vec![0u8; config.packed_bytes_length() as usize];
+    let mut last_doc = -1;
+    for (i, &doc) in docs.iter().enumerate().take(count) {
+        let packed_value = values(i);
+        if packed_value.len() != config.packed_bytes_length() as usize {
+            return Err(String::new());
+        }
+        value_in_order(
+            config,
+            i as i64,
+            sorted_dim,
+            &mut last_packed_value,
+            &packed_value,
+            doc,
+            last_doc,
+        )?;
+        last_doc = doc;
+        if !value_in_bounds(config, &packed_value, min_packed_value, max_packed_value) {
+            return Err(String::new());
+        }
     }
+    Ok(())
 }
 
-/// A `name value` line.
+/// Port of `valueInBounds` (`SimpleTextBKDWriter.java:637-663`).
+#[cfg(debug_assertions)]
+fn value_in_bounds(
+    config: &BKDConfig,
+    packed_value: &[u8],
+    min_packed_value: &[u8],
+    max_packed_value: &[u8],
+) -> bool {
+    let bytes_per_dim = config.bytes_per_dim as usize;
+    for dim in 0..config.num_index_dims as usize {
+        let offset = bytes_per_dim * dim;
+        let value = &packed_value[offset..offset + bytes_per_dim];
+        if value < &min_packed_value[offset..offset + bytes_per_dim] {
+            return false;
+        }
+        if value > &max_packed_value[offset..offset + bytes_per_dim] {
+            return false;
+        }
+    }
+    true
+}
+
+/// Port of `valueInOrder` (`SimpleTextBKDWriter.java:987-1046`): `Err`
+/// carries the message of the `AssertionError` it throws; it copies the
+/// value into `last_packed_value` either way.
+#[cfg(debug_assertions)]
+fn value_in_order(
+    config: &BKDConfig,
+    ord: i64,
+    sorted_dim: usize,
+    last_packed_value: &mut [u8],
+    packed_value: &[u8],
+    doc: i32,
+    last_doc: i32,
+) -> std::result::Result<(), String> {
+    let bytes_per_dim = config.bytes_per_dim as usize;
+    let packed_len = config.packed_bytes_length() as usize;
+    let dim_offset = sorted_dim * bytes_per_dim;
+    if ord > 0 {
+        let mut cmp = last_packed_value[dim_offset..dim_offset + bytes_per_dim]
+            .cmp(&packed_value[dim_offset..dim_offset + bytes_per_dim]);
+        if cmp.is_gt() {
+            return Err(format!(
+                "values out of order: last value={} current value={} ord={ord} sortedDim={sorted_dim}",
+                BytesRef::new(last_packed_value.to_vec()),
+                BytesRef::new(packed_value[..packed_len].to_vec())
+            ));
+        }
+        if cmp.is_eq() && config.num_dims > config.num_index_dims {
+            let data_offset = config.num_index_dims as usize * bytes_per_dim;
+            cmp = last_packed_value[data_offset..packed_len]
+                .cmp(&packed_value[data_offset..packed_len]);
+            if cmp.is_gt() {
+                return Err(format!(
+                    "data values out of order: last value={} current value={} ord={ord}",
+                    BytesRef::new(last_packed_value.to_vec()),
+                    BytesRef::new(packed_value[..packed_len].to_vec())
+                ));
+            }
+        }
+        if cmp.is_eq() && doc < last_doc {
+            return Err(format!(
+                "docs out of order: last doc={last_doc} current doc={doc} ord={ord} \
+                 sortedDim={sorted_dim}"
+            ));
+        }
+    }
+    last_packed_value[..packed_len].copy_from_slice(&packed_value[..packed_len]);
+    Ok(())
+}
+
 fn line(out: &mut dyn IndexOutput, prefix: &[u8], value: &str) -> Result<()> {
     util::write_bytes(out, prefix)?;
     util::write_str(out, value)?;
@@ -1272,6 +1405,7 @@ struct OneDimensionBKDWriter {
     value_count: i64,
     leaf_count: usize,
     // for asserts
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     last_packed_value: Vec<u8>,
     last_doc_id: i32,
 }
@@ -1319,13 +1453,20 @@ impl OneDimensionBKDWriter {
         doc_id: i32,
     ) -> Result<()> {
         let packed_len = w.config.packed_bytes_length() as usize;
-        debug_assert!({
-            let ord = self.value_count + self.leaf_count as i64;
-            let ok = ord == 0 || self.last_packed_value.as_slice() <= packed_value;
-            self.last_packed_value
-                .copy_from_slice(&packed_value[..packed_len]);
-            ok
-        });
+        // `assert valueInOrder(valueCount + leafCount, 0, lastPackedValue,
+        // packedValue, 0, docID, lastDocID)`.
+        #[cfg(debug_assertions)]
+        if let Err(message) = value_in_order(
+            &w.config,
+            self.value_count + self.leaf_count as i64,
+            0,
+            &mut self.last_packed_value,
+            packed_value,
+            doc_id,
+            self.last_doc_id,
+        ) {
+            panic!("{message}");
+        }
 
         self.leaf_values[self.leaf_count * packed_len..(self.leaf_count + 1) * packed_len]
             .copy_from_slice(&packed_value[..packed_len]);
@@ -1430,6 +1571,20 @@ impl OneDimensionBKDWriter {
         let leaf_values = &self.leaf_values;
         let mut packed_values =
             |i: usize| leaf_values[packed_len * i..packed_len * (i + 1)].to_vec();
+        // `assert valuesInOrderAndBounds(leafCount, 0, <first value>, <last
+        // value>, packedValues, leafDocs, 0)`.
+        #[cfg(debug_assertions)]
+        if let Err(message) = values_in_order_and_bounds(
+            &w.config,
+            self.leaf_count,
+            0,
+            &leaf_values[..packed_len],
+            &leaf_values[last..last + packed_len],
+            &mut packed_values,
+            &self.leaf_docs,
+        ) {
+            panic!("{message}");
+        }
         SimpleTextBKDWriter::write_leaf_block_packed_values(
             out,
             self.leaf_count,
@@ -1457,5 +1612,91 @@ impl IntersectVisitor for OneDimVisitor<'_> {
 
     fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Result<Relation> {
         Ok(Relation::CellCrossesQuery)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simpletext::test_support::directory;
+
+    fn writer(max_doc: i32) -> SimpleTextBKDWriter {
+        SimpleTextBKDWriter::new(
+            max_doc,
+            directory(),
+            "_0",
+            BKDConfig::new(1, 1, 1, 4).unwrap(),
+            16.0,
+            10,
+        )
+        .unwrap()
+    }
+
+    /// Regression (rmp #526): `docsSeen.set(docID)` only asserts the range
+    /// (`FixedBitSet.java:297-302`); the port raised `IllegalStateException`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "index=5, numBits=3")]
+    fn doc_past_max_doc_trips_the_fixed_bit_set_assertion() {
+        let mut w = writer(3);
+        let _ = w.add(&[1], 5);
+    }
+
+    /// Regression (rmp #526), release builds (no `-ea`): a doc past `maxDoc`
+    /// inside the last word sets a ghost bit, one past the words throws
+    /// `ArrayIndexOutOfBoundsException`.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn doc_past_max_doc_follows_unchecked_fixed_bit_set() {
+        let mut w = writer(3);
+        w.add(&[1], 5).unwrap();
+        assert_eq!(w.docs_seen.cardinality(), 1);
+        let error = w.add(&[1], 64).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Index 1 out of bounds for length 1"),
+            "{error}"
+        );
+    }
+
+    /// Regression (rmp #526): `valueInOrder` throws `docs out of order` for
+    /// equal values with decreasing docs (`SimpleTextBKDWriter.java:1032-1042`);
+    /// the port's 1-D check compared the values only.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn value_in_order_checks_doc_order() {
+        let config = BKDConfig::new(1, 1, 1, 4).unwrap();
+        let mut last = vec![0u8; 1];
+        value_in_order(&config, 0, 0, &mut last, &[7], 5, -1).unwrap();
+        assert_eq!(last, vec![7]);
+        let message = value_in_order(&config, 1, 0, &mut last, &[7], 3, 5).unwrap_err();
+        assert_eq!(
+            message,
+            "docs out of order: last doc=5 current doc=3 ord=1 sortedDim=0"
+        );
+        let message = value_in_order(&config, 2, 0, &mut last, &[6], 9, 3).unwrap_err();
+        assert_eq!(
+            message,
+            "values out of order: last value=[7] current value=[6] ord=2 sortedDim=0"
+        );
+    }
+
+    /// Regression (rmp #526): leaf blocks are checked against the cell's
+    /// bounds (`valuesInOrderAndBounds`), a bare `assert` with no message.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn values_in_order_and_bounds_checks_bounds() {
+        let config = BKDConfig::new(1, 1, 1, 4).unwrap();
+        let mut values = |i: usize| vec![[2u8, 9][i]];
+        assert_eq!(
+            values_in_order_and_bounds(&config, 2, 0, &[1], &[8], &mut values, &[0, 1]),
+            Err(String::new())
+        );
+        let mut values = |i: usize| vec![[2u8, 3][i]];
+        assert_eq!(
+            values_in_order_and_bounds(&config, 2, 0, &[1], &[8], &mut values, &[0, 1]),
+            Ok(())
+        );
     }
 }

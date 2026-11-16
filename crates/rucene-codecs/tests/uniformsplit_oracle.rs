@@ -456,3 +456,78 @@ fn shared_terms_sorted_merge_falls_back_to_the_default_merge() {
         true,
     );
 }
+
+/// Regression (rmp #528): with valid settings whose `deltaNumLines` is close
+/// to `targetNumBlockLines` (10 and 9), `splitAndWriteBlock` computes a
+/// negative `deltaStart` for a short last block. Java fails its assertion
+/// (`blockLines size: 5`) under `-ea`, and without it `blockLines.get(-13)`
+/// throws `IndexOutOfBoundsException`; the port clamped the index to 0 and
+/// wrote the block.
+#[test]
+fn negative_delta_start_is_javas_failure() {
+    use rucene::document::{Document, Store, StringField};
+    use rucene::index::index_writer::IndexWriter;
+
+    let format = UniformSplitPostingsFormat::with_settings(10, 9, None, None, false).unwrap();
+    let codec = per_field_postings_codec(Arc::new(format));
+    let dir = TempDir::new("uniformsplit-delta-start");
+    let w = IndexWriter::new(open_dir(&dir.0), new_config(codec)).unwrap();
+    for t in ["a", "b", "c", "d", "e"] {
+        let mut d = Document::new();
+        d.add(Box::new(
+            StringField::new("f", t.to_string(), Store::NO).unwrap(),
+        ));
+        w.add_document(&d).unwrap();
+    }
+    let err = w.commit().expect_err("the last block cannot be split");
+    let message = format!("{err:?} {err}");
+    if cfg!(debug_assertions) {
+        assert!(message.contains("blockLines size: 5"), "{message}");
+    } else {
+        assert!(
+            message.contains("Index -13 out of bounds for length 5"),
+            "{message}"
+        );
+    }
+}
+
+/// Regression (rmp #528): `BlockReader.seekExact(BytesRef, TermState)`
+/// copies the state with `BlockTermState.copyFrom`, whose cast rejects
+/// another kind of `TermState`: an `AssertionError` under `-ea`, a
+/// `ClassCastException` without it — never a silent no-op.
+#[test]
+fn seek_exact_with_a_foreign_term_state_is_rejected() {
+    use rucene::document::{Document, Store, StringField};
+    use rucene::index::index_writer::IndexWriter;
+    use rucene::index::{directory_reader, OrdTermState};
+    use rucene::util::BytesRef;
+
+    let codec = per_field_postings_codec(Arc::new(UniformSplitPostingsFormat::new()));
+    let dir = TempDir::new("uniformsplit-foreign-state");
+    let w = IndexWriter::new(open_dir(&dir.0), new_config(codec)).unwrap();
+    let mut d = Document::new();
+    d.add(Box::new(
+        StringField::new("f", "a".to_string(), Store::NO).unwrap(),
+    ));
+    w.add_document(&d).unwrap();
+    w.commit().unwrap();
+    w.close().unwrap();
+    let reader = directory_reader::open(open_dir(&dir.0)).unwrap();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
+    let terms = leaves[0].leaf_reader().terms("f").unwrap().unwrap();
+    let mut te = terms.iterator().unwrap();
+    let target = BytesRef::new(b"a".to_vec());
+    let foreign = OrdTermState::new();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        te.seek_term_state(&target, &foreign)
+    }));
+    if cfg!(debug_assertions) {
+        assert!(result.is_err(), "the assertion fails under -ea");
+    } else {
+        let err = result.expect("no assertion without -ea").unwrap_err();
+        assert!(
+            err.to_string().contains("java.lang.ClassCastException"),
+            "{err}"
+        );
+    }
+}

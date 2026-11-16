@@ -235,15 +235,22 @@ impl DeltaBaseTermStateSerializer {
     /// The estimated RAM usage of the given `TermState`.
     ///
     /// Port of the static `DeltaBaseTermStateSerializer.ramBytesUsed(TermState)`;
-    /// every term state of the port is an `IntBlockTermState`.
+    /// every term state of the port is an `IntBlockTermState`, whose
+    /// `INT_BLOCK_TERM_STATE_RAM_USAGE` is `shallowSizeOfInstance` over its
+    /// fields (`OrdTermState.ord`; `BlockTermState.docFreq`,
+    /// `totalTermFreq`, `termBlockOrd`, `blockFilePointer`; `docStartFP`,
+    /// `posStartFP`, `payStartFP`, `lastPosBlockOffset`, `singletonDocID`):
+    /// 80 bytes on JDK 25, as Lucene 10.5.0 reports.
     pub fn ram_bytes_used_of(_term_state: &BlockTermState) -> i64 {
-        RamUsageEstimator::shallow_size_of_instance::<BlockTermState>()
+        RamUsageEstimator::shallow_size_of_declared_instance(&[8, 4, 8, 4, 8, 8, 8, 8, 8, 4])
     }
 }
 
 impl Accountable for DeltaBaseTermStateSerializer {
     /// Port of `DeltaBaseTermStateSerializer.ramBytesUsed()`.
     fn ram_bytes_used(&self) -> i64 {
-        RamUsageEstimator::shallow_size_of_instance::<DeltaBaseTermStateSerializer>()
+        // `RAM_USAGE`: `baseDocStartFP`, `basePosStartFP`, `basePayStartFP`
+        // (40 bytes on JDK 25, as Lucene 10.5.0 reports).
+        RamUsageEstimator::shallow_size_of_declared_instance(&[8, 8, 8])
     }
 }

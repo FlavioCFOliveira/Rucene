@@ -127,6 +127,16 @@ impl TermBytes {
     }
 }
 
+/// `TermBytes.BASE_RAM_USAGE`: `shallowSizeOfInstance(TermBytes.class)` over
+/// `int mdpLength`, `BytesRef term` (24 bytes on JDK 25, as Lucene 10.5.0
+/// reports).
+pub(crate) fn term_bytes_base_ram_usage() -> i64 {
+    RamUsageEstimator::shallow_size_of_declared_instance(&[
+        4,
+        RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+    ])
+}
+
 /// `Math.max(mdpLength - 1, 0)`, `getSuffixOffset()` of a term whose MDP
 /// length is `mdp_length`.
 pub(crate) fn suffix_offset(mdp_length: i32) -> i32 {
@@ -136,8 +146,7 @@ pub(crate) fn suffix_offset(mdp_length: i32) -> i32 {
 impl Accountable for TermBytes {
     /// Port of `TermBytes.ramBytesUsed()`.
     fn ram_bytes_used(&self) -> i64 {
-        RamUsageEstimator::shallow_size_of_instance::<TermBytes>()
-            + ram_usage_util::ram_bytes_used_bytes_ref(&self.term)
+        term_bytes_base_ram_usage() + ram_usage_util::ram_bytes_used_bytes_ref(&self.term)
     }
 }
 

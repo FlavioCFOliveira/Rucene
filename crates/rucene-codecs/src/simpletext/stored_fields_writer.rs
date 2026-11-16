@@ -79,7 +79,7 @@ impl SimpleTextStoredFieldsWriter {
     fn out(&mut self) -> Result<&mut dyn IndexOutput> {
         match self.out.as_deref_mut() {
             Some(out) => Ok(out),
-            None => Err(LuceneError::already_closed("this writer is closed")),
+            None => Err(util::null_pointer(util::WRITE_AFTER_CLOSE_NPE)),
         }
     }
 
@@ -162,10 +162,18 @@ impl StoredFieldsWriter for SimpleTextStoredFieldsWriter {
 
     fn finish(&mut self, num_docs: i32) -> Result<()> {
         if self.num_docs_written != num_docs {
-            let description = self.out.as_deref().map_or_else(
-                || "null".to_string(),
-                |o| o.resource_description().to_string(),
-            );
+            // `+ out.toString()`, a `NullPointerException` once `close()`
+            // set `out` to `null`.
+            let description = self
+                .out
+                .as_deref()
+                .map(|o| o.resource_description().to_string())
+                .ok_or_else(|| {
+                    util::null_pointer(
+                        "Cannot invoke \"org.apache.lucene.store.IndexOutput.toString()\" \
+                         because \"this.out\" is null",
+                    )
+                })?;
             return Err(LuceneError::unchecked(
                 "java.lang.RuntimeException",
                 format!(
@@ -185,5 +193,38 @@ impl StoredFieldsWriter for SimpleTextStoredFieldsWriter {
             Some(mut out) => out.close(),
             None => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, unchecked};
+    use rucene::store::DEFAULT_IO_CONTEXT;
+
+    /// Regression (rmp #526): once `close()` set `out` to `null`, writing
+    /// fails in `SimpleTextUtil.write` and `finish` with a wrong count fails
+    /// on `out.toString()`, both `NullPointerException`s (the port raised
+    /// `AlreadyClosedException` and printed `file=null`).
+    #[test]
+    fn use_after_close_is_a_null_pointer() {
+        let dir = directory();
+        let mut writer =
+            SimpleTextStoredFieldsWriter::new(dir.as_ref(), "_0", &*DEFAULT_IO_CONTEXT).unwrap();
+        writer.close().unwrap();
+        let error = writer.start_document().unwrap_err();
+        assert_eq!(
+            unchecked(&error),
+            (
+                "java.lang.NullPointerException",
+                util::WRITE_AFTER_CLOSE_NPE.to_string()
+            )
+        );
+        let error = writer.finish(3).unwrap_err();
+        assert_eq!(
+            unchecked(&error).1,
+            "Cannot invoke \"org.apache.lucene.store.IndexOutput.toString()\" because \
+             \"this.out\" is null"
+        );
     }
 }

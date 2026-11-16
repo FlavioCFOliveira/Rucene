@@ -133,3 +133,43 @@ fn direct_resolves_by_name() {
         "org.apache.lucene.codecs.memory.DirectPostingsFormat"
     );
 }
+
+/// Regression (rmp #528): `FSTTermsReader`'s `seekExact(BytesRef,
+/// TermState)` copies the state with `BlockTermState.copyFrom`, whose cast
+/// rejects another kind of `TermState`: an `AssertionError` under `-ea`, a
+/// `ClassCastException` without it — never a silent no-op.
+#[test]
+fn fst50_seek_exact_with_a_foreign_term_state_is_rejected() {
+    use rucene::document::{Document, Store, StringField};
+    use rucene::index::index_writer::IndexWriter;
+    use rucene::index::{directory_reader, OrdTermState};
+    use rucene::util::BytesRef;
+
+    let dir = TempDir::new("fst50-foreign-state");
+    let w = IndexWriter::new(open_dir(&dir.0), new_config(fst50_codec())).unwrap();
+    let mut d = Document::new();
+    d.add(Box::new(
+        StringField::new("f", "a".to_string(), Store::NO).unwrap(),
+    ));
+    w.add_document(&d).unwrap();
+    w.commit().unwrap();
+    w.close().unwrap();
+    let reader = directory_reader::open(open_dir(&dir.0)).unwrap();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
+    let terms = leaves[0].leaf_reader().terms("f").unwrap().unwrap();
+    let mut te = terms.iterator().unwrap();
+    let target = BytesRef::new(b"b".to_vec());
+    let foreign = OrdTermState::new();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        te.seek_term_state(&target, &foreign)
+    }));
+    if cfg!(debug_assertions) {
+        assert!(result.is_err(), "the assertion fails under -ea");
+    } else {
+        let err = result.expect("no assertion without -ea").unwrap_err();
+        assert!(
+            err.to_string().contains("java.lang.ClassCastException"),
+            "{err}"
+        );
+    }
+}

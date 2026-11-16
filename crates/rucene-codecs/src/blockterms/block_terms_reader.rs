@@ -31,10 +31,12 @@ use rucene::index::{
     FieldInfo, Fields, ImpactsEnum, IndexOptions, PostingsEnum, SeekStatus, TermState, Terms,
     TermsEnum,
 };
-use rucene::store::{ByteArrayDataInput, DataInput, IndexInput, SharedIndexInput};
+use rucene::store::{IndexInput, SharedIndexInput};
 use rucene::util::attribute::AttributeSource;
 use rucene::util::java_collections::java_compare_to;
 use rucene::util::{BytesRef, RamUsageEstimator};
+
+use crate::java_util::{array_index_out_of_bounds, OwnedArrayInput, TermBuilder};
 
 use super::block_terms_writer::{CODEC_NAME, TERMS_EXTENSION, VERSION_CURRENT, VERSION_START};
 use super::fixed_gap_terms_index_reader::{field_info_by_number, seek_dir};
@@ -79,8 +81,10 @@ impl BlockTermsReader {
     ///
     /// The two readers move into the constructor, so when it fails it also
     /// closes them, which Java's callers (`LuceneFixedGap` and the other
-    /// blockterms assemblies) do in their `finally`: the postings reader
-    /// first, then the index reader.
+    /// blockterms assemblies) do in their `finally`: `try {
+    /// postings.close(); } finally { indexReader.close(); }`, so the index
+    /// reader's exception replaces the postings reader's, and either
+    /// replaces the constructor's.
     ///
     /// # Errors
     ///
@@ -106,8 +110,9 @@ impl BlockTermsReader {
             Err(e) => {
                 let postings = postings_reader.close();
                 let index = index_reader.close();
-                postings?;
+                // A `finally` that throws replaces the exception of its `try`.
                 index?;
+                postings?;
                 Err(e)
             }
         }
@@ -407,110 +412,15 @@ impl rucene::util::Accountable for FieldReader {
     }
 }
 
-/// Java's `BytesRefBuilder term`: `setLength` keeps the bytes of the
-/// backing array, and `grow` zero-fills the new ones.
-#[derive(Default)]
-struct TermBuilder {
-    bytes: Vec<u8>,
-    length: usize,
-}
-
-impl TermBuilder {
-    fn set_length(&mut self, length: usize) {
-        if self.bytes.len() < length {
-            self.bytes.resize(length, 0);
-        }
-        self.length = length;
-    }
-
-    fn copy_bytes(&mut self, src: &[u8]) {
-        self.set_length(src.len());
-        self.bytes[..src.len()].copy_from_slice(src);
-    }
-
-    fn get(&self) -> &[u8] {
-        &self.bytes[..self.length]
-    }
-
-    /// `byteAt(i)`: Java reads the backing array, which `ArrayUtil.grow`
-    /// oversizes; past it Java throws `ArrayIndexOutOfBoundsException`. The
-    /// port's array is exactly as long as the longest term it held, so an
-    /// index past it (which only a corrupt block prefix can produce) raises
-    /// the same exception.
-    fn byte_at(&self, i: usize) -> Result<u8> {
-        self.bytes.get(i).copied().ok_or_else(|| {
-            LuceneError::unchecked(
-                "java.lang.ArrayIndexOutOfBoundsException",
-                format!("Index {i} out of bounds for length {}", self.bytes.len()),
-            )
-        })
-    }
-}
-
-/// A `ByteArrayDataInput` over a buffer the enum owns: the buffer, the
-/// window's limit and the read position.
-#[derive(Default)]
-struct OwnedArrayInput {
-    bytes: Vec<u8>,
-    limit: usize,
-    pos: usize,
-}
-
-impl OwnedArrayInput {
-    /// `in.readBytes(buffer, 0, len); reader.reset(buffer, 0, len)`.
-    fn fill(&mut self, input: &mut dyn IndexInput, len: usize) -> Result<()> {
-        if self.bytes.len() < len {
-            self.bytes.resize(len, 0);
-        }
-        input.read_bytes(Some(&mut self.bytes), 0, len)?;
-        self.limit = len;
-        self.pos = 0;
-        Ok(())
-    }
-
-    fn with<R>(&mut self, f: impl FnOnce(&mut ByteArrayDataInput<'_>) -> Result<R>) -> Result<R> {
-        let mut input = ByteArrayDataInput::with_range(&self.bytes, 0, self.limit);
-        input.set_position(self.pos);
-        let result = f(&mut input);
-        self.pos = input.position();
-        result
-    }
-
-    fn read_v_int(&mut self) -> Result<i32> {
-        self.with(|i| i.read_v_int())
-    }
-
-    fn read_v_long(&mut self) -> Result<i64> {
-        self.with(|i| i.read_v_long())
-    }
-
-    fn skip_bytes(&mut self, n: usize) -> Result<()> {
-        self.with(|i| i.skip_bytes(n as i64))
-    }
-
-    /// `readBytes(term.bytes(), offset, len)`.
-    fn read_into(&mut self, term: &mut TermBuilder, offset: usize, len: usize) -> Result<()> {
-        self.with(|i| i.read_bytes(Some(&mut term.bytes), offset, len))
-    }
-}
-
 /// `target.bytes[target.offset + i] & 0xFF`, with the
 /// `ArrayIndexOutOfBoundsException` of an index past the backing array.
-fn target_byte(target: &BytesRef, i: usize) -> Result<i32> {
-    target
-        .bytes
-        .get(target.offset + i)
+fn target_byte(target: &BytesRef, i: i32) -> Result<i32> {
+    let index = target.offset as i64 + i64::from(i);
+    usize::try_from(index)
+        .ok()
+        .and_then(|i| target.bytes.get(i))
         .map(|&b| i32::from(b))
-        .ok_or_else(|| {
-            LuceneError::unchecked(
-                "java.lang.ArrayIndexOutOfBoundsException",
-                format!(
-                    "Index {} out of bounds for length {}",
-                    target.offset + i,
-                    target.bytes.len()
-                ),
-            )
-        })
+        .ok_or_else(|| array_index_out_of_bounds(index, target.bytes.len()))
 }
 
 /// Port of the private inner class `FieldReader.SegmentTermsEnum`: iterates
@@ -555,7 +465,7 @@ struct SegmentTermsEnum {
     term_suffixes: OwnedArrayInput,
 
     /// Common prefix used for all terms in this block.
-    term_block_prefix: usize,
+    term_block_prefix: i32,
 
     /// How many terms in current block.
     block_term_count: i32,
@@ -601,10 +511,10 @@ impl SegmentTermsEnum {
             did_index_next: false,
             next_index_term: None,
             seek_pending: false,
-            term_suffixes: OwnedArrayInput::default(),
+            term_suffixes: OwnedArrayInput::with_len(128),
             term_block_prefix: 0,
             block_term_count: 0,
-            freq_reader: OwnedArrayInput::default(),
+            freq_reader: OwnedArrayInput::with_len(64),
             meta_data_upto: 0,
             bytes_reader: OwnedArrayInput::default(),
         })
@@ -614,10 +524,11 @@ impl SegmentTermsEnum {
     /// common prefix: `term.setLength(termBlockPrefix + suffix);
     /// term.grow(term.length()); termSuffixesReader.readBytes(term.bytes(),
     /// termBlockPrefix, suffix)`.
-    fn fill_term(&mut self, suffix: usize) -> Result<()> {
+    fn fill_term(&mut self, suffix: i32) -> Result<()> {
         let prefix = self.term_block_prefix;
-        self.term.set_length(prefix + suffix);
-        self.term_suffixes.read_into(&mut self.term, prefix, suffix)
+        self.term.set_length_and_grow(prefix.wrapping_add(suffix))?;
+        self.term_suffixes
+            .read_into(&mut self.term.bytes, prefix, suffix)
     }
 
     /// Port of `_next()`: decodes only the term bytes of the next term. If
@@ -631,7 +542,7 @@ impl SegmentTermsEnum {
         }
 
         // TODO: cutover to something better for these ints!  simple64?
-        let suffix = self.term_suffixes.read_v_int()? as usize;
+        let suffix = self.term_suffixes.read_v_int()?;
         self.fill_term(suffix)?;
         self.state.term_block_ord += 1;
 
@@ -658,18 +569,18 @@ impl SegmentTermsEnum {
         if self.block_term_count == 0 {
             return Ok(false);
         }
-        self.term_block_prefix = self.input.read_v_int()? as usize;
+        self.term_block_prefix = self.input.read_v_int()?;
 
         // term suffixes:
-        let len = self.input.read_v_int()? as usize;
+        let len = self.input.read_v_int()?;
         self.term_suffixes.fill(self.input.as_mut(), len)?;
 
         // docFreq, totalTermFreq
-        let len = self.input.read_v_int()? as usize;
+        let len = self.input.read_v_int()?;
         self.freq_reader.fill(self.input.as_mut(), len)?;
 
         // metadata
-        let len = self.input.read_v_int()? as usize;
+        let len = self.input.read_v_int()?;
         self.bytes_reader.fill(self.input.as_mut(), len)?;
 
         self.meta_data_upto = 0;
@@ -809,7 +720,7 @@ impl TermsEnum for SegmentTermsEnum {
 
         self.seek_pending = false;
 
-        let mut common = 0usize;
+        let mut common = 0i32;
 
         // Scan within block.  We could do this by calling
         // _next() and testing the resulting term, but this
@@ -824,7 +735,7 @@ impl TermsEnum for SegmentTermsEnum {
             // First, see if target term matches common prefix
             // in this block:
             if common < self.term_block_prefix {
-                let cmp = i32::from(self.term.byte_at(common)?) - target_byte(target, common)?;
+                let cmp = i32::from(self.term.byte_at_java(common)?) - target_byte(target, common)?;
                 if cmp < 0 {
                     // TODO: maybe we should store common prefix
                     // in block header?  (instead of relying on
@@ -839,10 +750,10 @@ impl TermsEnum for SegmentTermsEnum {
                         while self.state.term_block_ord < self.block_term_count - 1 {
                             self.state.term_block_ord += 1;
                             self.state.ord += 1;
-                            let skip = self.term_suffixes.read_v_int()? as usize;
+                            let skip = self.term_suffixes.read_v_int()?;
                             self.term_suffixes.skip_bytes(skip)?;
                         }
-                        let suffix = self.term_suffixes.read_v_int()? as usize;
+                        let suffix = self.term_suffixes.read_v_int()?;
                         self.fill_term(suffix)?;
                     }
                     self.state.ord += 1;
@@ -858,7 +769,7 @@ impl TermsEnum for SegmentTermsEnum {
                     // block and return NOT_FOUND:
                     debug_assert_eq!(self.state.term_block_ord, 0);
 
-                    let suffix = self.term_suffixes.read_v_int()? as usize;
+                    let suffix = self.term_suffixes.read_v_int()?;
                     self.fill_term(suffix)?;
                     return Ok(SeekStatus::NOT_FOUND);
                 } else {
@@ -873,38 +784,25 @@ impl TermsEnum for SegmentTermsEnum {
                 self.state.term_block_ord += 1;
                 self.state.ord += 1;
 
-                let suffix = self.term_suffixes.read_v_int()? as usize;
+                let suffix = self.term_suffixes.read_v_int()?;
 
                 // We know the prefix matches, so just compare the new suffix:
-                let term_len = self.term_block_prefix + suffix;
-                let mut byte_pos = self.term_suffixes.pos;
-
+                let term_len = self.term_block_prefix.wrapping_add(suffix);
+                let mut byte_pos = self.term_suffixes.java_position();
                 let mut next = false;
-                let limit = target.offset
-                    + if term_len < target.length {
-                        term_len
-                    } else {
-                        target.length
-                    };
-                let mut target_pos = target.offset + self.term_block_prefix;
+                // Java's `int` arithmetic on `target.offset + ...`.
+                let offset = target.offset as i32;
+                let target_length = target.length as i32;
+                let limit = offset.wrapping_add(if term_len < target_length {
+                    term_len
+                } else {
+                    target_length
+                });
+                let mut target_pos = offset.wrapping_add(self.term_block_prefix);
                 while target_pos < limit {
-                    let suffix_byte =
-                        self.term_suffixes
-                            .bytes
-                            .get(byte_pos)
-                            .copied()
-                            .ok_or_else(|| {
-                                LuceneError::unchecked(
-                                    "java.lang.ArrayIndexOutOfBoundsException",
-                                    format!(
-                                        "Index {byte_pos} out of bounds for length {}",
-                                        self.term_suffixes.bytes.len()
-                                    ),
-                                )
-                            })?;
-                    byte_pos += 1;
-                    let cmp =
-                        i32::from(suffix_byte) - target_byte(target, target_pos - target.offset)?;
+                    let suffix_byte = self.term_suffixes.byte_at(byte_pos)?;
+                    byte_pos = byte_pos.wrapping_add(1);
+                    let cmp = i32::from(suffix_byte) - target_byte(target, target_pos - offset)?;
                     target_pos += 1;
                     if cmp < 0 {
                         // Current term is still before the target;
@@ -919,10 +817,10 @@ impl TermsEnum for SegmentTermsEnum {
                     }
                 }
 
-                if !next && target.length <= term_len {
+                if !next && target_length <= term_len {
                     self.fill_term(suffix)?;
 
-                    if target.length == term_len {
+                    if target_length == term_len {
                         // Done!  Exact match.  Stop here, fill in
                         // real term, return FOUND.
                         return Ok(SeekStatus::FOUND);
@@ -1028,9 +926,15 @@ impl TermsEnum for SegmentTermsEnum {
         let other = other_state.as_any().downcast_ref::<BlockTermState>();
         debug_assert!(other.is_some());
         debug_assert!(!self.do_ord || other.is_some_and(|o| o.ord < self.field.num_terms));
-        if let Some(other) = other {
-            self.state.copy_from(other);
-        }
+        // `state.copyFrom(otherState)`: `BlockTermState.copyFrom` casts the
+        // state, which throws without `-ea` for another kind.
+        let other = other.ok_or_else(|| {
+            LuceneError::unchecked(
+                "java.lang.ClassCastException",
+                "class cannot be cast to class org.apache.lucene.codecs.BlockTermState",
+            )
+        })?;
+        self.state.copy_from(other);
         self.seek_pending = true;
         self.index_is_current = false;
         self.term.copy_bytes(target.slice());
@@ -1098,5 +1002,101 @@ mod field_reader_ram_tests {
     #[test]
     fn field_reader_ram_bytes_used_is_lucenes() {
         assert_eq!(super::field_reader_ram_bytes_used(), 56);
+    }
+}
+
+#[cfg(test)]
+mod constructor_failure_tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, segment_info};
+    use rucene::index::{FieldInfos, ImpactsEnum, PostingsEnum};
+    use rucene::store::{DataInput, DEFAULT_IO_CONTEXT};
+
+    /// A postings reader whose `close()` fails.
+    struct FailingPostings;
+
+    impl fmt::Display for FailingPostings {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("FailingPostings")
+        }
+    }
+
+    impl PostingsReaderBase for FailingPostings {
+        fn init(&mut self, _: &mut dyn IndexInput, _: &SegmentReadState) -> Result<()> {
+            Ok(())
+        }
+        fn new_term_state(&self) -> Result<BlockTermState> {
+            Ok(BlockTermState::default())
+        }
+        fn decode_term(
+            &self,
+            _: &mut dyn DataInput,
+            _: &FieldInfo,
+            _: &mut BlockTermState,
+            _: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn postings(
+            &self,
+            _: &FieldInfo,
+            _: &BlockTermState,
+            _: Option<Box<dyn PostingsEnum>>,
+            _: i32,
+        ) -> Result<Box<dyn PostingsEnum>> {
+            unreachable!("not reached by the test")
+        }
+        fn impacts(
+            &self,
+            _: &FieldInfo,
+            _: &BlockTermState,
+            _: i32,
+        ) -> Result<Box<dyn ImpactsEnum>> {
+            unreachable!("not reached by the test")
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn close(&self) -> Result<()> {
+            Err(LuceneError::illegal_state(
+                "postings close failed".to_string(),
+            ))
+        }
+    }
+
+    /// A terms index reader whose `close()` fails.
+    struct FailingIndex;
+
+    impl fmt::Display for FailingIndex {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("FailingIndex")
+        }
+    }
+
+    impl TermsIndexReaderBase for FailingIndex {
+        fn get_field_enum(&self, _: &FieldInfo) -> Option<Box<dyn FieldIndexEnum>> {
+            None
+        }
+        fn close(&self) -> Result<()> {
+            Err(LuceneError::illegal_state("index close failed".to_string()))
+        }
+        fn supports_ord(&self) -> bool {
+            false
+        }
+    }
+
+    /// Regression (rmp #527): when the constructor fails, Java's callers run
+    /// `try { postings.close(); } finally { indexReader.close(); }`, so the
+    /// index reader's exception is the one that propagates.
+    #[test]
+    fn failed_open_raises_the_index_readers_close_error() {
+        let dir = directory();
+        let si = segment_info(&dir, "_0", 1);
+        let infos = FieldInfos::new(Vec::new()).unwrap();
+        let state = SegmentReadState::new(dir.as_ref(), &si, &infos, &*DEFAULT_IO_CONTEXT);
+        let err = BlockTermsReader::new(Box::new(FailingIndex), Box::new(FailingPostings), &state)
+            .err()
+            .expect("the .tib file does not exist");
+        assert!(err.to_string().contains("index close failed"), "{err}");
     }
 }

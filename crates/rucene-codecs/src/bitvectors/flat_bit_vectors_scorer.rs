@@ -110,7 +110,8 @@ struct BitRandomVectorScorer {
 
 impl BitRandomVectorScorer {
     fn new(vector_values: Arc<dyn ByteVectorValues>, query: Vec<u8>) -> Self {
-        let bit_dimensions = vector_values.dimension() * 8;
+        // `vectorValues.dimension() * Byte.SIZE`, an `int` product.
+        let bit_dimensions = vector_values.dimension().wrapping_mul(8);
         Self {
             vector_values,
             bit_dimensions,
@@ -206,6 +207,16 @@ mod tests {
 
     /// `values()` returns the very `vectorValues` the scorer was built over,
     /// from both the query-vector and the supplier construction.
+    /// Regression (rmp #526): `bitDimensions = dimension() * Byte.SIZE`
+    /// wraps in `int` arithmetic; the port's checked product panicked in
+    /// debug builds.
+    #[test]
+    fn bit_dimensions_wrap_like_java_int() {
+        let values: Arc<dyn ByteVectorValues> = Arc::new(from_bytes(Vec::new(), 1 << 28));
+        let scorer = BitRandomVectorScorer::new(values, Vec::new());
+        assert_eq!(scorer.bit_dimensions, i32::MIN);
+    }
+
     #[test]
     fn values_is_the_scorer_vector_values() {
         let values: Arc<dyn ByteVectorValues> =

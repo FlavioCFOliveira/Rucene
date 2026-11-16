@@ -108,8 +108,8 @@ pub(crate) struct OrdsIntersectTermsEnumFrame {
     // Cumulative output so far
     pub(crate) output_prefix: Output,
 
-    pub(crate) start_byte_pos: usize,
-    pub(crate) suffix: usize,
+    pub(crate) start_byte_pos: i32,
+    pub(crate) suffix: i32,
 }
 
 impl OrdsIntersectTermsEnumFrame {
@@ -126,9 +126,9 @@ impl OrdsIntersectTermsEnumFrame {
             last_sub_fp: 0,
             state: 0,
             meta_data_upto: 0,
-            suffixes: OwnedArrayInput::default(),
-            stats: OwnedArrayInput::default(),
-            floor_data: OwnedArrayInput::default(),
+            suffixes: OwnedArrayInput::with_len(128),
+            stats: OwnedArrayInput::with_len(64),
+            floor_data: OwnedArrayInput::with_len(32),
             prefix: 0,
             ent_count: 0,
             next_ent: 0,
@@ -285,9 +285,9 @@ impl OrdsIntersectTermsEnumFrame {
             self.fp
         );
         self.next_ent += 1;
-        self.suffix = super::array_len(self.suffixes.read_v_int()?)?;
-        self.start_byte_pos = self.suffixes.position();
-        self.suffixes.skip_bytes(self.suffix as i32)?;
+        self.suffix = self.suffixes.read_v_int()?;
+        self.start_byte_pos = self.suffixes.java_position();
+        self.suffixes.skip_bytes(self.suffix)?;
         Ok(false)
     }
 
@@ -302,9 +302,9 @@ impl OrdsIntersectTermsEnumFrame {
         );
         self.next_ent += 1;
         let code = self.suffixes.read_v_int()?;
-        self.suffix = ((code as u32) >> 1) as usize;
-        self.start_byte_pos = self.suffixes.position();
-        self.suffixes.skip_bytes(self.suffix as i32)?;
+        self.suffix = ((code as u32) >> 1) as i32;
+        self.start_byte_pos = self.suffixes.java_position();
+        self.suffixes.skip_bytes(self.suffix)?;
         if (code & 1) == 0 {
             // A normal term
             self.term_state.term_block_ord += 1;

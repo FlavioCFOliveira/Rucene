@@ -20,7 +20,7 @@
 use rucene::codecs::{
     CompetitiveImpactAccumulator, FieldsConsumer, NormsProducer, SegmentWriteState,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::Result;
 use rucene::index::{
     FieldInfos, Fields, NumericDocValues, PostingsEnum, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_OFFSETS,
     POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
@@ -95,7 +95,7 @@ impl<'a> SimpleTextFieldsWriter<'a> {
     fn out(&mut self) -> Result<&mut dyn IndexOutput> {
         match self.out.as_deref_mut() {
             Some(out) => Ok(out),
-            None => Err(LuceneError::already_closed("this writer is closed")),
+            None => Err(util::null_pointer(util::WRITE_AFTER_CLOSE_NPE)),
         }
     }
 
@@ -129,17 +129,21 @@ impl<'a> SimpleTextFieldsWriter<'a> {
                 // Annoyingly, this can happen!
                 continue;
             };
-            let field_info = field_infos.field_info(field).ok_or_else(|| {
-                LuceneError::null_pointer_with_message(
-                    "Cannot invoke \"org.apache.lucene.index.FieldInfo.hasPayloads()\" because \
-                     \"fieldInfo\" is null",
-                )
-            })?;
+            let field_info = field_infos.field_info(field);
 
             let mut wrote_field = false;
 
             let has_positions = terms.has_positions();
             let has_freqs = terms.has_freqs();
+            // `fieldInfo.hasPayloads()` dereferences the field info after
+            // `terms.hasPositions()` and `terms.hasFreqs()`
+            // (`SimpleTextFieldsWriter.java:83-87`).
+            let field_info = field_info.ok_or_else(|| {
+                util::null_pointer(
+                    "Cannot invoke \"org.apache.lucene.index.FieldInfo.hasPayloads()\" because \
+                     \"fieldInfo\" is null",
+                )
+            })?;
             let has_payloads = field_info.has_payloads();
             let has_offsets = terms.has_offsets();
             let field_has_norms = field_info.has_norms();
@@ -180,7 +184,12 @@ impl<'a> SimpleTextFieldsWriter<'a> {
                     postings.is_some(),
                     "termsEnum={terms_enum} hasPos={has_positions} flags={flags}"
                 );
-                let mut postings = postings.ok_or_else(LuceneError::null_pointer)?;
+                let mut postings = postings.ok_or_else(|| {
+                    util::null_pointer(
+                        "Cannot invoke \"org.apache.lucene.index.PostingsEnum.nextDoc()\" because \
+                         \"postingsEnum\" is null",
+                    )
+                })?;
 
                 let mut wrote_term = false;
 
@@ -278,7 +287,7 @@ impl<'a> SimpleTextFieldsWriter<'a> {
                     let out = self
                         .out
                         .as_deref_mut()
-                        .ok_or_else(|| LuceneError::already_closed("this writer is closed"))?;
+                        .ok_or_else(|| util::null_pointer(util::WRITE_AFTER_CLOSE_NPE))?;
                     self.skip_writer.write_skip(out)?;
                 }
                 postings_enum = Some(postings);
@@ -314,11 +323,53 @@ impl FieldsConsumer for SimpleTextFieldsWriter<'_> {
                 self.newline()?;
                 util::write_checksum(self.out()?)
             })();
+            // `try { … } finally { out.close(); out = null; }`
+            // (`SimpleTextFieldsWriter.java:226-236`): a failure to close
+            // replaces the body's.
             let mut out = self.out.take().expect("INVARIANT: checked above");
-            let closed = out.close();
+            out.close()?;
             result?;
-            closed?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, segment_info, FailingOutput};
+    use rucene::codecs::FieldsConsumer;
+    use rucene::index::documents_writer::BufferedUpdates;
+    use rucene::index::FieldInfos;
+    use rucene::store::DefaultIOContext;
+    use rucene::util::NoOutputInfoStream;
+    use std::sync::Arc;
+
+    /// Regression (rmp #526): `close()` is `try { write END + checksum }
+    /// finally { out.close(); }` (`SimpleTextFieldsWriter.java:226-236`), so
+    /// a failing `close` replaces the failure of the body; the port kept the
+    /// body's.
+    #[test]
+    fn close_failure_replaces_the_body_failure() {
+        let dir = directory();
+        let si = segment_info(&dir, "_0", 1);
+        let field_infos = FieldInfos::new(Vec::new()).unwrap();
+        let updates = BufferedUpdates::default();
+        let context = DefaultIOContext::default();
+        let state = SegmentWriteState::new(
+            &NoOutputInfoStream,
+            Arc::clone(&dir),
+            &si,
+            &field_infos,
+            &updates,
+            &context,
+        );
+        let mut writer = SimpleTextFieldsWriter::new(&state).unwrap();
+        let mut real = writer.out.replace(Box::new(FailingOutput)).unwrap();
+        real.close().unwrap();
+        let error = writer.close().unwrap_err();
+        assert!(error.to_string().contains("close failed"), "{error}");
+        // `out = null` in the `finally`: a second close does nothing.
+        writer.close().unwrap();
     }
 }

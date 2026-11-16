@@ -239,10 +239,7 @@ impl FuzzySet {
         }
         let mut longs = vec![0i64; num_longs as usize];
         input.read_longs(Some(&mut longs), 0, num_longs as usize)?;
-        let bits = FixedBitSet::from_bits(
-            longs.into_iter().map(|l| l as u64).collect(),
-            num_bits(bloom_size),
-        )?;
+        let bits = from_bits_java(longs, bloom_size.wrapping_add(1))?;
         Ok(FuzzySet::new(bits, bloom_size, hash_count))
     }
 
@@ -376,6 +373,30 @@ impl FuzzySet {
     }
 }
 
+/// `new FixedBitSet(long[] storedBits, int numBits)` over Java's `int`
+/// `numBits` (`FixedBitSet.java:160-172`), which `deserialize` computes as
+/// `bloomSize + 1` and so wraps to `Integer.MIN_VALUE` for `Integer.MAX_VALUE`.
+///
+/// A negative `numBits` whose `bits2words` fits in the array builds, in
+/// Java, a set whose `length()` is negative; the port builds it with length
+/// 0, as `FixedBitSet::new_java` does for the same reason.
+fn from_bits_java(longs: Vec<i64>, num_bits: i32) -> Result<FixedBitSet> {
+    let words: Vec<u64> = longs.into_iter().map(|l| l as u64).collect();
+    match usize::try_from(num_bits) {
+        Ok(n) => FixedBitSet::from_bits(words, n),
+        Err(_) => {
+            // `bits2words(numBits)`: `((numBits - 1) >> 6) + 1`.
+            let num_words = (num_bits.wrapping_sub(1) >> 6).wrapping_add(1);
+            if i64::from(num_words) > words.len() as i64 {
+                return Err(LuceneError::illegal_argument(format!(
+                    "The given long array is too small  to hold {num_bits} bits"
+                )));
+            }
+            FixedBitSet::from_bits(words, 0)
+        }
+    }
+}
+
 /// `new FixedBitSet(setSize + 1)`.
 fn new_bit_set(set_size: i32) -> FixedBitSet {
     FixedBitSet::new(num_bits(set_size))
@@ -451,5 +472,29 @@ impl fmt::Display for FuzzySet {
             self.filter.cardinality(),
             self.filter.length()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rucene::store::ByteArrayDataInput;
+
+    /// Regression (rmp #526): `deserialize` passes the `int` `bloomSize + 1`
+    /// to `new FixedBitSet(long[], int)`, which wraps for
+    /// `Integer.MAX_VALUE`; the port widened it and reported `2147483648`.
+    #[test]
+    fn deserialize_reports_the_wrapped_bit_count() {
+        // vInt hashCount = 1, int bloomSize = 0x7fffffff, int numLongs = 0.
+        let bytes = [1u8, 0x7f, 0xff, 0xff, 0xff, 0, 0, 0, 0];
+        let mut input = ByteArrayDataInput::new(&bytes);
+        let error = FuzzySet::deserialize(&mut input).unwrap_err();
+        match &error.kind {
+            rucene::error::LuceneErrorKind::IllegalArgument { message, .. } => assert_eq!(
+                message,
+                "The given long array is too small  to hold -2147483648 bits"
+            ),
+            other => panic!("{other:?}"),
+        }
     }
 }

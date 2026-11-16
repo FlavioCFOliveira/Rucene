@@ -944,6 +944,14 @@ impl OfflinePointWriter {
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    /// The temporary file's output, Java's public field
+    /// `OfflinePointWriter.out` (`OfflinePointWriter.java:34`), which
+    /// `SimpleTextBKDWriter.close()` closes directly — without the codec
+    /// footer `close()` writes — when the writer is abandoned.
+    pub fn out_mut(&mut self) -> &mut dyn IndexOutput {
+        self.out.as_mut()
+    }
 }
 
 impl PointWriter for OfflinePointWriter {

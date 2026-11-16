@@ -29,6 +29,15 @@ use super::term_bytes::{suffix_offset, TermBytes};
 
 use crate::blocktreeords::java_assert;
 
+/// `BlockLine.BASE_RAM_USAGE`: `shallowSizeOfInstance(BlockLine.class)`
+/// over `TermBytes termBytes`, `int termStateRelativeOffset`,
+/// `BlockTermState termState` (24 bytes on JDK 25, as Lucene 10.5.0
+/// reports).
+pub(crate) fn block_line_base_ram_usage() -> i64 {
+    const REF: i64 = RamUsageEstimator::NUM_BYTES_OBJECT_REF;
+    RamUsageEstimator::shallow_size_of_declared_instance(&[REF, 4, REF])
+}
+
 /// One term block line.
 ///
 /// Contains a term and its details as a [`BlockTermState`].
@@ -112,7 +121,7 @@ impl BlockLine {
 impl Accountable for BlockLine {
     /// Port of `BlockLine.ramBytesUsed()`.
     fn ram_bytes_used(&self) -> i64 {
-        RamUsageEstimator::shallow_size_of_instance::<BlockLine>()
+        block_line_base_ram_usage()
             + self.term_bytes.ram_bytes_used()
             + self
                 .term_state
@@ -354,7 +363,8 @@ impl Serializer {
                 let num_mdp_bits = num_bits_to_encode(self.current_term.length as i32);
                 // Get rightmost numMdpBits.
                 let mask = i64::from(1i32.wrapping_shl(num_mdp_bits as u32).wrapping_sub(1));
-                mdp_length = (mdp_and_suffix_lengths & mask) as i32 + 1;
+                // `(int) (...) + 1` in Java's wrapping `int` arithmetic.
+                mdp_length = ((mdp_and_suffix_lengths & mask) as i32).wrapping_add(1);
                 // Get remaining left bits.
                 let suffix_length =
                     ((mdp_and_suffix_lengths as u64).wrapping_shr(num_mdp_bits as u32)) as i32;
@@ -371,31 +381,48 @@ impl Serializer {
     ///
     /// Port of `Serializer.readBytes(DataInput, BytesRef, int, int)` on
     /// `currentTerm`.
+    /// Port of `readBytes(DataInput, BytesRef, int, int)`: `bytes.length =
+    /// offset + length; bytes.bytes = ArrayUtil.grow(bytes.bytes,
+    /// bytes.length); input.readBytes(bytes.bytes, offset, length)`. The
+    /// array grows to `ArrayUtil.oversize`, keeping its bytes; a negative
+    /// length fails `ArrayUtil.grow`'s assertion under `-ea`, and without it
+    /// the input's own `readBytes` rejects it.
     fn read_bytes(&mut self, input: &mut dyn DataInput, offset: i32, length: i32) -> Result<()> {
         let end = offset.wrapping_add(length);
-        let (Ok(offset), Ok(length), Ok(end)) = (
-            usize::try_from(offset),
-            usize::try_from(length),
-            usize::try_from(end),
-        ) else {
-            return Err(LuceneError::unchecked(
-                "java.lang.IndexOutOfBoundsException",
-                format!("Range [{offset}, {offset} + {length}) out of bounds"),
-            ));
-        };
-        self.current_term.length = end;
-        if self.current_term.bytes.len() < end {
-            self.current_term.bytes.resize(end, 0);
+        if end < 0 {
+            crate::blocktreeords::java_assert!(
+                false,
+                "{}",
+                crate::java_util::negative_grow_message(i64::from(end))
+            );
+        } else {
+            self.current_term.length = end as usize;
+            let end = end as usize;
+            if self.current_term.bytes.len() < end {
+                self.current_term
+                    .bytes
+                    .resize(rucene::util::ArrayUtil::oversize(end, 1), 0);
+            }
         }
-        input.read_bytes(Some(&mut self.current_term.bytes), offset, length)
+        if offset < 0 || length < 0 {
+            return input.read_bytes_out_of_range(&mut self.current_term.bytes, offset, length);
+        }
+        input.read_bytes(
+            Some(&mut self.current_term.bytes),
+            offset as usize,
+            length as usize,
+        )
     }
 }
 
 impl Accountable for Serializer {
     /// Port of `Serializer.ramBytesUsed()`.
     fn ram_bytes_used(&self) -> i64 {
-        RamUsageEstimator::shallow_size_of_instance::<Serializer>()
-            + ram_usage_util::ram_bytes_used_bytes_ref(&self.current_term)
+        // `Serializer.BASE_RAM_USAGE`: its `BytesRef currentTerm` (16 bytes
+        // on JDK 25, as Lucene 10.5.0 reports).
+        RamUsageEstimator::shallow_size_of_declared_instance(&[
+            RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+        ]) + ram_usage_util::ram_bytes_used_bytes_ref(&self.current_term)
     }
 }
 
@@ -438,6 +465,74 @@ mod tests {
             assert!(r.is_err());
         } else {
             assert!(r.is_ok());
+        }
+    }
+}
+
+#[cfg(test)]
+mod ram_and_read_bytes_tests {
+    use super::*;
+    use crate::uniformsplit::block_reader::block_reader_base_ram_usage;
+    use rucene::store::ByteArrayDataInput;
+    use rucene::util::ArrayUtil;
+
+    /// Regression (rmp #528): the RAM estimates use the Java classes' shallow
+    /// sizes (JDK 25 probe of Lucene 10.5.0: `BlockLine` 24, its
+    /// `Serializer` 16, `TermBytes` 24, `BytesRef` 24,
+    /// `DeltaBaseTermStateSerializer` 40, `IntBlockTermState` 80,
+    /// `BlockReader` 112 + `IndexInput` 16 + 2 × `ByteArrayDataInput` 24).
+    #[test]
+    fn ram_estimates_use_javas_shallow_sizes() {
+        let serializer = Serializer::new();
+        // `new BytesRef(64)`: a 64-byte array (80 bytes with its header).
+        assert_eq!(serializer.ram_bytes_used(), 16 + 24 + 80);
+        let line = BlockLine::for_reading(TermBytes::new(0, BytesRef::default()), 0);
+        assert_eq!(line.ram_bytes_used(), 24 + 24 + 24 + 16);
+        let writing = BlockLine::for_writing(
+            TermBytes::new(0, BytesRef::default()),
+            Some(BlockTermState::default()),
+        );
+        assert_eq!(writing.ram_bytes_used(), 24 + 24 + 24 + 16 + 80);
+        assert_eq!(DeltaBaseTermStateSerializer::new().ram_bytes_used(), 40);
+        assert_eq!(block_reader_base_ram_usage(), 112 + 16 + 2 * 24);
+    }
+
+    /// Regression (rmp #528): `readBytes` grows `currentTerm` with
+    /// `ArrayUtil.grow` (to `ArrayUtil.oversize`), which `ramBytesUsed()`
+    /// sees; a negative length fails `ArrayUtil.grow`'s assertion under
+    /// `-ea` and the input's `readBytes` without it, never an invented
+    /// `IndexOutOfBoundsException`.
+    #[test]
+    fn read_bytes_grows_and_rejects_like_java() {
+        let mut serializer = Serializer::new();
+        let mut data = vec![65u8]; // vLong 65
+        data.extend(std::iter::repeat_n(b'a', 65));
+        let mut input = ByteArrayDataInput::new(&data);
+        let mdp = serializer
+            .read_incrementally_encoded_term(&mut input, true)
+            .unwrap();
+        assert_eq!(mdp, 1);
+        let capacity = ArrayUtil::oversize(65, 1);
+        assert_eq!(serializer.current_term.bytes.len(), capacity);
+        assert_eq!(
+            serializer.ram_bytes_used(),
+            16 + 24 + RamUsageEstimator::shallow_size_of_array::<u8>(capacity)
+        );
+
+        // vLong 0xFFFFFFFF: `(int)` → -1.
+        let negative = [0xffu8, 0xff, 0xff, 0xff, 0x0f];
+        let mut input = ByteArrayDataInput::new(&negative);
+        let err = serializer
+            .read_incrementally_encoded_term(&mut input, true)
+            .unwrap_err()
+            .to_string();
+        if cfg!(debug_assertions) {
+            assert!(
+                err.contains("size must be positive (got -1): likely integer overflow?"),
+                "{err}"
+            );
+        } else {
+            assert!(err.contains("arraycopy: length -1 is negative"), "{err}");
         }
     }
 }

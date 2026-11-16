@@ -32,8 +32,7 @@ use rucene::codecs::{
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_file_names::segment_file_name;
 use rucene::index::{
-    FieldInfo, Fields, ImpactsEnum, PostingsEnum, SeekStatus, TermState, Terms, TermsEnum,
-    POSTINGS_ENUM_NONE,
+    FieldInfo, Fields, ImpactsEnum, PostingsEnum, SeekStatus, Terms, TermsEnum, POSTINGS_ENUM_NONE,
 };
 use rucene::search::NO_MORE_DOCS;
 use rucene::store::{ChecksumIndexInput, IndexOutput};
@@ -84,14 +83,9 @@ const BLOOM_EXTENSION: &str = "blm";
 /// * Footer --> `CodecUtil.writeFooter` CodecFooter
 ///
 /// Port of `org.apache.lucene.codecs.bloom.BloomFilteringPostingsFormat`,
-/// named `BloomFilter`.
-///
-/// **Divergence.** Java's `toString()` is
-/// `"BloomFilteringPostingsFormat(" + delegatePostingsFormat + ")"`. This
-/// type's [`fmt::Display`] prints that; but a `dyn PostingsFormat` prints
-/// `PostingsFormat(name=BloomFilter)` (`impl Display for dyn
-/// PostingsFormat`), which a format cannot override, as for
-/// `FSTPostingsFormat`.
+/// named `BloomFilter`. Its `toString()` is this type's [`fmt::Display`],
+/// which a `dyn PostingsFormat` reaches through
+/// [`PostingsFormat::to_java_string`].
 #[derive(Debug, Clone)]
 pub struct BloomFilteringPostingsFormat {
     bloom_filter_factory: Arc<dyn BloomFilterFactory>,
@@ -193,7 +187,8 @@ impl PostingsFormat for BloomFilteringPostingsFormat {
 
 /// Port of the static inner class `BloomFilteredFieldsProducer`.
 struct BloomFilteredFieldsProducer {
-    delegate_fields_producer: Box<dyn FieldsProducer>,
+    /// Shared with the merge instance, which in Java is `this`.
+    delegate_fields_producer: Arc<dyn FieldsProducer>,
     blooms_by_field_name: Arc<HashMap<String, Arc<FuzzySet>>>,
 }
 
@@ -251,8 +246,9 @@ impl BloomFilteredFieldsProducer {
         })();
         match result {
             Ok(()) => Ok(Self {
-                delegate_fields_producer: delegate_fields_producer
-                    .expect("INVARIANT: set before the success"),
+                delegate_fields_producer: Arc::from(
+                    delegate_fields_producer.expect("INVARIANT: set before the success"),
+                ),
                 blooms_by_field_name: Arc::new(blooms_by_field_name),
             }),
             Err(e) => {
@@ -320,12 +316,10 @@ impl FieldsProducer for BloomFilteredFieldsProducer {
     }
 
     /// `FieldsProducer.getMergeInstance()`, which this producer inherits:
-    /// `this`, here a producer over the delegate's merge instance (which is
-    /// itself, for every delegate that does not override it) and the same
-    /// filters.
+    /// `this` — here a handle on the same delegate and the same filters.
     fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
         Ok(Box::new(Self {
-            delegate_fields_producer: self.delegate_fields_producer.get_merge_instance()?,
+            delegate_fields_producer: Arc::clone(&self.delegate_fields_producer),
             blooms_by_field_name: Arc::clone(&self.blooms_by_field_name),
         }))
     }
@@ -504,18 +498,6 @@ impl TermsEnum for BloomFilteredTermsEnum {
         self.delegate()?.seek_ord(ord)
     }
 
-    /// `BaseTermsEnum.seekExact(BytesRef, TermState)`, which Java's enum
-    /// inherits: `seekExact(term)` (through the filter), else
-    /// `IllegalArgumentException`.
-    fn seek_term_state(&mut self, text: &BytesRef, _state: &dyn TermState) -> Result<()> {
-        if !self.seek_exact(text)? {
-            return Err(LuceneError::illegal_argument(format!(
-                "term={text:?} does not exist"
-            )));
-        }
-        Ok(())
-    }
-
     fn term(&self) -> Result<Option<BytesRef>> {
         self.with_delegate(|d| d.term())
     }
@@ -577,7 +559,9 @@ impl BloomFilteredFieldsConsumer<'_> {
         bloom_filter: &FuzzySet,
         field_info: &FieldInfo,
     ) -> Result<()> {
-        let right_sized_set = self.bloom_filter_factory.downsize(field_info, bloom_filter);
+        let right_sized_set = self
+            .bloom_filter_factory
+            .downsize(Some(field_info), bloom_filter);
         match &right_sized_set {
             Some(set) => set.serialize(bloom_output),
             None => bloom_filter.serialize(bloom_output),
@@ -616,17 +600,9 @@ impl FieldsConsumer for BloomFilteredFieldsConsumer<'_> {
                 let index = match bloom_filter {
                     Some(index) => index,
                     None => {
-                        let set = match &field_info {
-                            Some(info) => self
-                                .bloom_filter_factory
-                                .get_set_for_field(&self.state, info)?,
-                            None => {
-                                return Err(LuceneError::unchecked(
-                                    "java.lang.NullPointerException",
-                                    "Cannot read field \"name\" because \"fieldInfo\" is null",
-                                ))
-                            }
-                        };
+                        let set = self
+                            .bloom_filter_factory
+                            .get_set_for_field(&self.state, field_info.as_ref())?;
                         let Some(set) = set else {
                             // Field not bloom'd
                             break;
@@ -672,10 +648,9 @@ impl FieldsConsumer for BloomFilteredFieldsConsumer<'_> {
         let mut non_saturated_blooms: Vec<(&Option<FieldInfo>, &FuzzySet)> = Vec::new();
 
         for (info, bloom_filter) in &bloom_filters {
-            let info_ref = info.as_ref().ok_or_else(null_field_info)?;
             if !self
                 .bloom_filter_factory
-                .is_saturated(bloom_filter, info_ref)
+                .is_saturated(bloom_filter, info.as_ref())
             {
                 non_saturated_blooms.push((info, bloom_filter));
             }
@@ -775,7 +750,7 @@ mod producer_to_string_tests {
             Arc::new(FuzzySet::create_set_based_on_max_memory(1024)),
         );
         let producer = BloomFilteredFieldsProducer {
-            delegate_fields_producer: Box::new(Named),
+            delegate_fields_producer: Arc::new(Named),
             blooms_by_field_name: Arc::new(blooms),
         };
         assert_eq!(
@@ -785,12 +760,164 @@ mod producer_to_string_tests {
         assert_eq!(producer.to_java_string(), producer.to_string());
 
         let empty = BloomFilteredFieldsProducer {
-            delegate_fields_producer: Box::new(Named),
+            delegate_fields_producer: Arc::new(Named),
             blooms_by_field_name: Arc::new(HashMap::new()),
         };
         assert_eq!(
             empty.to_string(),
             "BloomFilteredFieldsProducer(fields=0,delegate=Named(fields=2))"
         );
+    }
+}
+
+#[cfg(test)]
+mod fidelity_tests {
+    use super::*;
+    use rucene::error::LuceneErrorKind;
+    use rucene::index::OrdTermState;
+
+    /// A delegate the filter must never reach.
+    struct UnusedTerms;
+
+    impl Terms for UnusedTerms {
+        fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+            panic!("the bloom filter answered NO; the delegate is not pulled")
+        }
+        fn size(&self) -> Result<i64> {
+            Ok(0)
+        }
+        fn sum_total_term_freq(&self) -> Result<i64> {
+            Ok(0)
+        }
+        fn sum_doc_freq(&self) -> Result<i64> {
+            Ok(0)
+        }
+        fn doc_count(&self) -> Result<i32> {
+            Ok(0)
+        }
+        fn has_freqs(&self) -> bool {
+            false
+        }
+        fn has_offsets(&self) -> bool {
+            false
+        }
+        fn has_positions(&self) -> bool {
+            false
+        }
+        fn has_payloads(&self) -> bool {
+            false
+        }
+    }
+
+    /// Regression (rmp #526): the inherited `BaseTermsEnum.seekExact(term,
+    /// state)` reports `"term=" + term + " does not exist"` with
+    /// `BytesRef.toString()`; the port's override printed Rust's `Debug`.
+    #[test]
+    fn seek_term_state_message_uses_bytes_ref_to_string() {
+        let mut terms_enum = BloomFilteredTermsEnum::new(
+            Arc::new(UnusedTerms),
+            Arc::new(FuzzySet::create_set_based_on_max_memory(1024)),
+        );
+        let error = terms_enum
+            .seek_term_state(&BytesRef::new(b"ab".to_vec()), &OrdTermState::default())
+            .unwrap_err();
+        match &error.kind {
+            LuceneErrorKind::IllegalArgument { message, .. } => {
+                assert_eq!(message, "term=[61 62] does not exist")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A delegate whose merge instance is a different producer.
+    struct Original;
+
+    impl Fields for Original {
+        fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            Box::new(std::iter::empty())
+        }
+        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+            Ok(None)
+        }
+        fn size(&self) -> i32 {
+            0
+        }
+    }
+
+    impl FieldsProducer for Original {
+        fn to_java_string(&self) -> String {
+            "Original".to_string()
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
+            Ok(Box::new(super::producer_to_string_tests_support::Merged))
+        }
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Regression (rmp #526): `getMergeInstance()` is inherited from
+    /// `FieldsProducer` and returns `this`, so the merge instance keeps the
+    /// original delegate; the port swapped in the delegate's merge instance.
+    #[test]
+    fn merge_instance_keeps_the_delegate() {
+        let producer = BloomFilteredFieldsProducer {
+            delegate_fields_producer: Arc::new(Original),
+            blooms_by_field_name: Arc::new(HashMap::new()),
+        };
+        let merge = producer.get_merge_instance().unwrap();
+        assert_eq!(
+            merge.to_java_string(),
+            "BloomFilteredFieldsProducer(fields=0,delegate=Original)"
+        );
+    }
+
+    /// Regression (rmp #526): a field without a `FieldInfo` reaches the
+    /// factory as `null` (the default factory ignores it), so `write`
+    /// succeeds; the port threw a `NullPointerException` there.
+    #[test]
+    fn factories_accept_a_missing_field_info() {
+        let factory = DefaultBloomFilterFactory::new();
+        let set = FuzzySet::create_set_based_on_max_memory(1024);
+        assert!(!factory.is_saturated(&set, None));
+        assert!(factory.downsize(None, &set).is_some());
+    }
+}
+
+#[cfg(test)]
+mod producer_to_string_tests_support {
+    use super::*;
+
+    /// The merge instance `Original` hands out.
+    pub(super) struct Merged;
+
+    impl Fields for Merged {
+        fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            Box::new(std::iter::empty())
+        }
+        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+            Ok(None)
+        }
+        fn size(&self) -> i32 {
+            0
+        }
+    }
+
+    impl FieldsProducer for Merged {
+        fn to_java_string(&self) -> String {
+            "Merged".to_string()
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
+            Ok(Box::new(Merged))
+        }
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
     }
 }

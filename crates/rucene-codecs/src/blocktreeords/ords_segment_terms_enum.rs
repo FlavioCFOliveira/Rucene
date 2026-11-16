@@ -43,6 +43,12 @@ use super::ords_field_reader::OrdsFieldReader;
 use super::ords_segment_terms_enum_frame::{OrdsSegmentTermsEnumFrame, SteCtx};
 use super::{java_assert, TermBuilder};
 
+/// `(char) label`, the conversion Java's assertion messages print a label
+/// with.
+fn java_char(label: i32) -> char {
+    char::from_u32(label as u16 as u32).unwrap_or(char::REPLACEMENT_CHARACTER)
+}
+
 /// The ord of `staticFrame`.
 const STATIC_FRAME: i32 = -1;
 
@@ -408,8 +414,8 @@ impl OrdsSegmentTermsEnum {
             java_assert!(
                 arc.label() == i32::from(target[target_upto]),
                 "arc.label={} targetLabel={}",
-                arc.label(),
-                target[target_upto]
+                java_char(arc.label()),
+                char::from(target[target_upto])
             );
             if !arc.output().is_no_output() {
                 output = FST_OUTPUTS.add(&output, arc.output());
@@ -813,16 +819,14 @@ impl OrdsSegmentTermsEnum {
 
 impl fmt::Display for OrdsSegmentTermsEnum {
     /// Port of `OrdsSegmentTermsEnum.toString()`: `"OrdsSegmentTermsEnum(seg="
-    /// + fr.parent + ")"`.
-    ///
-    /// **Divergence.** Java prints the reader's live field count, which its
-    /// `close()` clears to `0`; the enum shares only what the reader read,
-    /// so it prints the count the reader opened with.
+    /// + fr.parent + ")"`, the reader's live field count included (`0` once
+    /// the reader's `close()` cleared its fields).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "OrdsSegmentTermsEnum(seg=OrdsBlockTreeTermsReader({},delegate={}))",
-            self.fr.parent.description, self.fr.parent.postings_reader
+            "OrdsSegmentTermsEnum(seg=OrdsBlockTreeTermsReader(fields={},delegate={}))",
+            self.fr.parent.fields_size(),
+            self.fr.parent.postings_reader
         )
     }
 }

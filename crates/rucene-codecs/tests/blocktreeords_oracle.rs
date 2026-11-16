@@ -398,3 +398,25 @@ fn test_seek_ceil_not_found() {
     assert_eq!(te.ord().unwrap(), 1);
     check_ord_api(t.as_ref());
 }
+
+/// Regression (rmp #527): `OrdsSegmentTermsEnum.toString()` prints the
+/// reader (`"OrdsSegmentTermsEnum(seg=" + fr.parent + ")"`), whose field
+/// count its `close()` clears to `0`.
+#[test]
+fn enum_to_string_sees_the_reader_close() {
+    let dir = TempDir::new("blocktreeords-tostring");
+    let r = ords_index(&dir, &one_per_doc(&["a".to_string(), "b".to_string()]));
+    let t = field_terms(&r);
+    let te = t.iterator().unwrap();
+    let before = te.to_string();
+    assert!(
+        before.starts_with("OrdsSegmentTermsEnum(seg=OrdsBlockTreeTermsReader(fields=1,delegate="),
+        "{before}"
+    );
+    r.close().unwrap();
+    let after = te.to_string();
+    assert!(
+        after.starts_with("OrdsSegmentTermsEnum(seg=OrdsBlockTreeTermsReader(fields=0,delegate="),
+        "{after}"
+    );
+}

@@ -30,6 +30,7 @@ use rucene::util::fst::{Builder, FSTCompiler, InputType, PositiveIntOutputs, Uti
 use rucene::util::{BytesRef, IOUtils, IntsRef, IntsRefBuilder};
 
 use super::terms_index_writer_base::{FieldWriter, TermsIndexWriterBase};
+use crate::java_util::null_receiver;
 
 /// Extension of terms index file.
 pub(crate) const TERMS_INDEX_EXTENSION: &str = "tiv";
@@ -280,7 +281,13 @@ impl FieldWriter for FSTFieldWriter {
         if let Some(fst) = fst {
             let mut shared = self.shared.borrow_mut();
             let Shared { meta_out, out, .. } = &mut *shared;
-            let meta_out = meta_out.as_mut().ok_or_else(closed)?;
+            // `metaOut.writeInt(...)` once `close()` set the outputs to null.
+            let meta_out = meta_out.as_mut().ok_or_else(|| {
+                null_receiver(
+                    "org.apache.lucene.store.IndexOutput.writeInt(int)",
+                    "this.this$0.metaOut",
+                )
+            })?;
             let out = out.as_mut().ok_or_else(closed)?;
             meta_out.write_int(self.field_number)?;
             meta_out.write_v_long(out.file_pointer())?;
@@ -337,5 +344,50 @@ impl TermsIndexWriterBase for VariableGapTermsIndexWriter {
         // A `finally` that throws replaces the exception of its `try`.
         closed?;
         written
+    }
+}
+
+#[cfg(test)]
+mod use_after_close_tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, segment_info};
+    use rucene::index::documents_writer::BufferedUpdates;
+    use rucene::index::FieldInfos;
+    use rucene::store::DefaultIOContext;
+    use rucene::util::NoOutputInfoStream;
+    use std::sync::Arc;
+
+    /// Regression (rmp #527): `close()` sets `metaOut = null`; a field
+    /// writer finished afterwards raises the `NullPointerException` of
+    /// `metaOut.writeInt(fieldInfo.number)`, not an
+    /// `AlreadyClosedException`.
+    #[test]
+    fn finish_after_close_is_javas_null_pointer_exception() {
+        let dir = directory();
+        let si = segment_info(&dir, "_0", 1);
+        let field_infos = FieldInfos::new(Vec::new()).unwrap();
+        let updates = BufferedUpdates::default();
+        let context = DefaultIOContext::default();
+        let state = SegmentWriteState::new(
+            &NoOutputInfoStream,
+            Arc::clone(&dir),
+            &si,
+            &field_infos,
+            &updates,
+            &context,
+        );
+        let mut writer =
+            VariableGapTermsIndexWriter::new(&state, Box::new(EveryNTermSelector::new(32)))
+                .unwrap();
+        let mut fw = writer.add_field(&FieldInfo::new("f", 0), 0).unwrap();
+        writer.close().unwrap();
+        let err = fw.finish(0).expect_err("metaOut is null").to_string();
+        assert!(
+            err.contains(
+                "Cannot invoke \"org.apache.lucene.store.IndexOutput.writeInt(int)\" \
+                 because \"this.this$0.metaOut\" is null"
+            ),
+            "{err}"
+        );
     }
 }

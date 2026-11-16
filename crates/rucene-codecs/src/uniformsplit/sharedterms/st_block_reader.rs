@@ -181,8 +181,7 @@ impl TermsEnum for STBlockReader {
     }
 
     fn seek_term_state(&mut self, text: &BytesRef, state: &dyn TermState) -> Result<()> {
-        self.base.seek_exact_state(text, state);
-        Ok(())
+        self.base.seek_exact_state(text, state)
     }
 
     fn term(&self) -> Result<Option<BytesRef>> {

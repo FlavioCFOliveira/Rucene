@@ -31,6 +31,7 @@ use rucene::util::string_helper::StringHelper;
 use rucene::util::{BytesRef, IOUtils};
 
 use super::terms_index_writer_base::{FieldWriter, TermsIndexWriterBase};
+use crate::java_util::null_receiver;
 
 /// Extension of terms index file.
 pub(crate) const TERMS_INDEX_EXTENSION: &str = "tii";
@@ -51,10 +52,15 @@ struct Shared {
 }
 
 impl Shared {
-    fn out(&mut self) -> Result<&mut Box<dyn IndexOutput>> {
-        self.out
-            .as_mut()
-            .ok_or_else(|| LuceneError::already_closed("this IndexOutput is closed"))
+    /// `out`, for an `out.<method>` call reached through `receiver`: once
+    /// `close()` has set `out = null`, the call's `NullPointerException`.
+    fn out(&mut self, method: &str, receiver: &str) -> Result<&mut Box<dyn IndexOutput>> {
+        self.out.as_mut().ok_or_else(|| {
+            null_receiver(
+                &format!("org.apache.lucene.store.IndexOutput.{method}"),
+                receiver,
+            )
+        })
     }
 }
 
@@ -153,9 +159,11 @@ struct SimpleFieldWriter {
     shared: Rc<RefCell<Shared>>,
     state: Rc<RefCell<SimpleFieldWriterState>>,
     num_terms: i64,
-    term_offsets: Vec<i64>,
+    /// `termOffsets`'s values; `None` once `finish()` set it to `null`.
+    term_offsets: Option<Vec<i64>>,
     current_offset: i64,
-    term_addresses: Vec<i64>,
+    /// `termAddresses`'s values; `None` once `finish()` set it to `null`.
+    term_addresses: Option<Vec<i64>>,
     last_term: BytesRef,
 }
 
@@ -188,20 +196,34 @@ impl FieldWriter for SimpleFieldWriter {
 
         // write only the min prefix that shows the diff
         // against prior term
-        self.shared.borrow_mut().out()?.write_bytes(
-            &text.bytes,
-            text.offset,
-            indexed_term_length as usize,
-        )?;
+        self.shared
+            .borrow_mut()
+            .out("writeBytes(byte[], int, int)", "this.this$0.out")?
+            .write_bytes(&text.bytes, text.offset, indexed_term_length as usize)?;
 
         // save delta terms pointer
         self.term_addresses
+            .as_mut()
+            .ok_or_else(|| {
+                null_receiver(
+                    "org.apache.lucene.util.packed.MonotonicBlockPackedWriter.add(long)",
+                    "this.termAddresses",
+                )
+            })?
             .push(terms_file_pointer - state.terms_start);
 
         // save term length (in bytes)
         debug_assert!(indexed_term_length <= i32::from(i16::MAX));
         self.current_offset += i64::from(indexed_term_length);
-        self.term_offsets.push(self.current_offset);
+        self.term_offsets
+            .as_mut()
+            .ok_or_else(|| {
+                null_receiver(
+                    "org.apache.lucene.util.packed.MonotonicBlockPackedWriter.add(long)",
+                    "this.termOffsets",
+                )
+            })?
+            .push(self.current_offset);
 
         self.last_term = BytesRef::deep_copy_of(text);
         state.num_index_terms += 1;
@@ -210,18 +232,28 @@ impl FieldWriter for SimpleFieldWriter {
 
     fn finish(&mut self, _terms_file_pointer: i64) -> Result<()> {
         let mut shared = self.shared.borrow_mut();
-        let out = shared.out()?;
+        let out = shared.out("getFilePointer()", "this.this$0.out")?;
         let mut state = self.state.borrow_mut();
 
         // write primary terms dict offsets
         state.packed_index_start = out.file_pointer();
+        let finished = |field: &str| {
+            null_receiver(
+                "org.apache.lucene.util.packed.MonotonicBlockPackedWriter.finish()",
+                field,
+            )
+        };
+        let term_addresses_values = self
+            .term_addresses
+            .take()
+            .ok_or_else(|| finished("this.termAddresses"))?;
 
         // relative to our indexStart
         let mut address_buffer = ByteBuffersDataOutput::new_resettable_instance();
         {
             let mut term_addresses =
                 MonotonicBlockPackedWriter::new(&mut address_buffer, BLOCKSIZE)?;
-            for &v in &self.term_addresses {
+            for &v in &term_addresses_values {
                 term_addresses.add(v)?;
             }
             term_addresses.finish()?;
@@ -229,19 +261,22 @@ impl FieldWriter for SimpleFieldWriter {
         address_buffer.copy_to(out.as_mut())?;
 
         state.packed_offsets_start = out.file_pointer();
+        let term_offsets_values = self
+            .term_offsets
+            .take()
+            .ok_or_else(|| finished("this.termOffsets"))?;
 
         // write offsets into the byte[] terms
         let mut offsets_buffer = ByteBuffersDataOutput::new_resettable_instance();
         {
             let mut term_offsets = MonotonicBlockPackedWriter::new(&mut offsets_buffer, BLOCKSIZE)?;
-            for &v in &self.term_offsets {
+            for &v in &term_offsets_values {
                 term_offsets.add(v)?;
             }
             term_offsets.finish()?;
         }
         offsets_buffer.copy_to(out.as_mut())?;
-        self.term_offsets = Vec::new();
-        self.term_addresses = Vec::new();
+        // termOffsets = termAddresses = null: taken above.
         Ok(())
     }
 }
@@ -252,7 +287,13 @@ impl TermsIndexWriterBase for FixedGapTermsIndexWriter {
         field_info: &FieldInfo,
         terms_file_pointer: i64,
     ) -> Result<Box<dyn FieldWriter>> {
-        let index_start = self.shared.borrow_mut().out()?.file_pointer();
+        // `new SimpleFieldWriter(...)`: its constructor reads `out` through
+        // the outer instance parameter.
+        let index_start = self
+            .shared
+            .borrow_mut()
+            .out("getFilePointer()", "this$0.out")?
+            .file_pointer();
         let state = Rc::new(RefCell::new(SimpleFieldWriterState {
             field_number: field_info.number,
             num_index_terms: 0,
@@ -267,9 +308,9 @@ impl TermsIndexWriterBase for FixedGapTermsIndexWriter {
             state,
             num_terms: 0,
             // `termOffsets.add(0L)` in Java's constructor.
-            term_offsets: vec![0],
+            term_offsets: Some(vec![0]),
             current_offset: 0,
-            term_addresses: Vec::new(),
+            term_addresses: Some(Vec::new()),
             last_term: BytesRef::default(),
         }))
     }
@@ -303,5 +344,87 @@ impl TermsIndexWriterBase for FixedGapTermsIndexWriter {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod use_after_finish_tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, segment_info};
+    use rucene::index::documents_writer::BufferedUpdates;
+    use rucene::index::FieldInfos;
+    use rucene::store::DefaultIOContext;
+    use rucene::util::NoOutputInfoStream;
+    use std::sync::Arc;
+
+    fn message(result: Result<impl Sized>) -> String {
+        match result {
+            Ok(_) => panic!("expected the Java exception"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    /// Regression (rmp #527): `finish()` sets `termOffsets = termAddresses =
+    /// null` and `close()` sets `out = null`; later calls raise Java's
+    /// `NullPointerException`s (texts as the JDK 25 helpful messages give
+    /// them), not an `AlreadyClosedException` or a silent write.
+    #[test]
+    fn calls_after_finish_and_close_raise_javas_null_pointer_exceptions() {
+        let dir = directory();
+        let si = segment_info(&dir, "_0", 1);
+        let field_infos = FieldInfos::new(Vec::new()).unwrap();
+        let updates = BufferedUpdates::default();
+        let context = DefaultIOContext::default();
+        let state = SegmentWriteState::new(
+            &NoOutputInfoStream,
+            Arc::clone(&dir),
+            &si,
+            &field_infos,
+            &updates,
+            &context,
+        );
+        let mut writer = FixedGapTermsIndexWriter::new(&state).unwrap();
+        let field = FieldInfo::new("f", 0);
+        let mut fw = writer.add_field(&field, 0).unwrap();
+        let stats = TermStats::new(1, 1);
+        let term = BytesRef::new(b"a".to_vec());
+        assert!(fw.check_index_term(&term, &stats).unwrap());
+        fw.add(&term, &stats, 0).unwrap();
+        fw.finish(0).unwrap();
+
+        let add = message(fw.add(&term, &stats, 0));
+        assert!(
+            add.contains(
+                "Cannot invoke \"org.apache.lucene.util.packed.MonotonicBlockPackedWriter.add(long)\" \
+                 because \"this.termAddresses\" is null"
+            ),
+            "{add}"
+        );
+        let finish = message(fw.finish(0));
+        assert!(
+            finish.contains(
+                "Cannot invoke \"org.apache.lucene.util.packed.MonotonicBlockPackedWriter.finish()\" \
+                 because \"this.termAddresses\" is null"
+            ),
+            "{finish}"
+        );
+
+        writer.close().unwrap();
+        let add_field = message(writer.add_field(&field, 0));
+        assert!(
+            add_field.contains(
+                "Cannot invoke \"org.apache.lucene.store.IndexOutput.getFilePointer()\" \
+                 because \"this$0.out\" is null"
+            ),
+            "{add_field}"
+        );
+        let finish = message(fw.finish(0));
+        assert!(
+            finish.contains(
+                "Cannot invoke \"org.apache.lucene.store.IndexOutput.getFilePointer()\" \
+                 because \"this.this$0.out\" is null"
+            ),
+            "{finish}"
+        );
     }
 }

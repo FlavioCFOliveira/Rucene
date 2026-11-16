@@ -166,8 +166,22 @@ impl std::fmt::Debug for SimpleTextDocValuesWriter {
     }
 }
 
-fn missing(what: &str, field: &FieldInfo) -> LuceneError {
-    LuceneError::illegal_state(format!("no {what} doc values for field \"{}\"", field.name))
+/// The `NullPointerException` of `receiver.method()` on a `null` doc values
+/// iterator of type `class`, as Java's helpful message reports it.
+fn npe_invoke(class: &str, method: &str, receiver: &str) -> LuceneError {
+    util::null_pointer(format!(
+        "Cannot invoke \"org.apache.lucene.index.{class}.{method}()\" because \"{receiver}\" is null"
+    ))
+}
+
+/// The `NullPointerException` of `valuesProducer.getter(field).termsEnum()`
+/// when the producer returns `null`.
+fn npe_terms_enum(class: &str, getter: &str) -> LuceneError {
+    util::null_pointer(format!(
+        "Cannot invoke \"org.apache.lucene.index.{class}.termsEnum()\" because the return value \
+         of \"org.apache.lucene.index.DocValuesProducer.{getter}(org.apache.lucene.index.FieldInfo)\" \
+         is null"
+    ))
 }
 
 impl SimpleTextDocValuesWriter {
@@ -191,7 +205,7 @@ impl SimpleTextDocValuesWriter {
     fn data(&mut self) -> Result<&mut dyn IndexOutput> {
         match self.data.as_deref_mut() {
             Some(data) => Ok(data),
-            None => Err(LuceneError::already_closed("this writer is closed")),
+            None => Err(util::null_pointer(util::WRITE_AFTER_CLOSE_NPE)),
         }
     }
 
@@ -227,11 +241,15 @@ impl SimpleTextDocValuesWriter {
     /// int)`; `values` stands for `valuesProducer.getBinary(field)`.
     fn do_add_binary_field(
         &mut self,
-        values: &dyn Fn() -> Result<Box<dyn BinaryDocValues>>,
+        values: &dyn Fn() -> Result<Option<Box<dyn BinaryDocValues>>>,
         max_value_count: i32,
+        receiver: (&str, &str),
     ) -> Result<()> {
+        // `receiver`: the class and the variable of the iterator a `null`
+        // dereference names.
+        let (class, var) = receiver;
         let mut max_length = 0usize;
-        let mut it = values()?;
+        let mut it = values()?.ok_or_else(|| npe_invoke(class, "nextDoc", var))?;
         let mut doc_count = 0i32;
         let mut doc = it.next_doc()?;
         while doc != NO_MORE_DOCS {
@@ -264,6 +282,9 @@ impl SimpleTextDocValuesWriter {
         let mut it = values()?;
         let mut num_docs_written = 0;
         for i in 0..self.num_docs {
+            let it = it
+                .as_deref_mut()
+                .ok_or_else(|| npe_invoke(class, "docID", var))?;
             if it.doc_id() < i {
                 it.next_doc()?;
                 debug_assert!(it.doc_id() >= i);
@@ -367,7 +388,7 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
         let mut max_value = i64::MIN;
         let mut values = values_producer
             .get_numeric(field)?
-            .ok_or_else(|| missing("numeric", field))?;
+            .ok_or_else(|| npe_invoke("NumericDocValues", "nextDoc", "values"))?;
         let mut num_values = 0i32;
         let mut skip = SkipIntervals::new();
         let mut doc = values.next_doc()?;
@@ -411,10 +432,11 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
         let mut num_docs_written = 0;
 
         // second pass to write the values
-        let mut values = values_producer
-            .get_numeric(field)?
-            .ok_or_else(|| missing("numeric", field))?;
+        let mut values = values_producer.get_numeric(field)?;
         for i in 0..self.num_docs {
+            let values = values
+                .as_deref_mut()
+                .ok_or_else(|| npe_invoke("NumericDocValues", "docID", "values"))?;
             if values.doc_id() < i {
                 values.next_doc()?;
                 debug_assert!(values.doc_id() >= i);
@@ -458,12 +480,8 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
         debug_assert!(self.field_seen(&field.name));
         debug_assert_eq!(field.get_doc_values_type(), DocValuesType::BINARY);
         self.write_field_entry(field, DocValuesType::BINARY)?;
-        let values = || -> Result<Box<dyn BinaryDocValues>> {
-            values_producer
-                .get_binary(field)?
-                .ok_or_else(|| missing("binary", field))
-        };
-        self.do_add_binary_field(&values, -1)
+        let values = || values_producer.get_binary(field);
+        self.do_add_binary_field(&values, -1, ("BinaryDocValues", "values"))
     }
 
     /// Port of `SimpleTextDocValuesWriter.addSortedField`.
@@ -476,15 +494,12 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
         debug_assert_eq!(field.get_doc_values_type(), DocValuesType::SORTED);
         self.write_field_entry(field, DocValuesType::SORTED)?;
 
-        let sorted = || {
-            values_producer
-                .get_sorted(field)?
-                .ok_or_else(|| missing("sorted", field))
-        };
+        let sorted = || values_producer.get_sorted(field);
 
         let mut doc_count = 0i32;
         let mut skip = SkipIntervals::new();
-        let mut values = sorted()?;
+        let mut values =
+            sorted()?.ok_or_else(|| npe_invoke("SortedDocValues", "nextDoc", "values"))?;
         let mut doc = values.next_doc()?;
         while doc != NO_MORE_DOCS {
             doc_count += 1;
@@ -504,7 +519,9 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
 
         let mut value_count = 0i32;
         let mut max_length = -1i32;
-        let mut terms = sorted()?.terms_enum()?;
+        let mut terms = sorted()?
+            .ok_or_else(|| npe_terms_enum("SortedDocValues", "getSorted"))?
+            .terms_enum()?;
         while let Some(value) = terms.next()? {
             max_length = max_length.max(value.length as i32);
             value_count += 1;
@@ -529,13 +546,21 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
         self.line(ORDPATTERN, &ord_pattern)?;
 
         // for asserts:
-        let values_seen =
-            self.write_sorted_values(sorted()?.terms_enum()?, max_bytes_length, max_length)?;
+        let values_seen = self.write_sorted_values(
+            sorted()?
+                .ok_or_else(|| npe_terms_enum("SortedDocValues", "getSorted"))?
+                .terms_enum()?,
+            max_bytes_length,
+            max_length,
+        )?;
 
         debug_assert_eq!(values_seen, i64::from(value_count));
 
         let mut values = sorted()?;
         for i in 0..self.num_docs {
+            let values = values
+                .as_deref_mut()
+                .ok_or_else(|| npe_invoke("SortedDocValues", "docID", "values"))?;
             if values.doc_id() < i {
                 values.next_doc()?;
                 debug_assert!(values.doc_id() >= i);
@@ -561,17 +586,14 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
         debug_assert_eq!(field.get_doc_values_type(), DocValuesType::SORTED_NUMERIC);
         self.write_field_entry(field, DocValuesType::SORTED_NUMERIC)?;
 
-        let sorted_numeric = || {
-            values_producer
-                .get_sorted_numeric(field)?
-                .ok_or_else(|| missing("sorted numeric", field))
-        };
+        let sorted_numeric = || values_producer.get_sorted_numeric(field);
 
         let mut min_value = i64::MAX;
         let mut max_value = i64::MIN;
         let mut max_value_count = 0i32;
         let mut skip = SkipIntervals::new();
-        let mut values = sorted_numeric()?;
+        let mut values = sorted_numeric()?
+            .ok_or_else(|| npe_invoke("SortedNumericDocValues", "nextDoc", "values"))?;
         let mut doc = values.next_doc()?;
         while doc != NO_MORE_DOCS {
             let value_count = values.doc_value_count()?;
@@ -592,13 +614,21 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
         self.line(MINVALUE, &min_value.to_string())?;
         self.line(MAXVALUE, &max_value.to_string())?;
 
-        let binary = || -> Result<Box<dyn BinaryDocValues>> {
-            Ok(Box::new(SortedNumericAsBinary {
-                values: sorted_numeric()?,
-                binary_value: BytesRef::default(),
+        // The anonymous `BinaryDocValues` dereferences the captured
+        // `values`, which a `null` dereference names `this.val$values`.
+        let binary = || -> Result<Option<Box<dyn BinaryDocValues>>> {
+            Ok(sorted_numeric()?.map(|values| {
+                Box::new(SortedNumericAsBinary {
+                    values,
+                    binary_value: BytesRef::default(),
+                }) as Box<dyn BinaryDocValues>
             }))
         };
-        self.do_add_binary_field(&binary, max_value_count)?;
+        self.do_add_binary_field(
+            &binary,
+            max_value_count,
+            ("SortedNumericDocValues", "this.val$values"),
+        )?;
 
         self.write_skip_data(&skip_intervals)
     }
@@ -613,16 +643,13 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
         debug_assert_eq!(field.get_doc_values_type(), DocValuesType::SORTED_SET);
         self.write_field_entry(field, DocValuesType::SORTED_SET)?;
 
-        let sorted_set = || {
-            values_producer
-                .get_sorted_set(field)?
-                .ok_or_else(|| missing("sorted set", field))
-        };
+        let sorted_set = || values_producer.get_sorted_set(field);
 
         let mut doc_count = 0i32;
         let mut max_value_count = 0i32;
         let mut skip = SkipIntervals::new();
-        let mut values = sorted_set()?;
+        let mut values =
+            sorted_set()?.ok_or_else(|| npe_invoke("SortedSetDocValues", "nextDoc", "values"))?;
         let mut doc = values.next_doc()?;
         while doc != NO_MORE_DOCS {
             doc_count += 1;
@@ -643,7 +670,9 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
 
         let mut value_count = 0i64;
         let mut max_length = 0i32;
-        let mut terms = sorted_set()?.terms_enum()?;
+        let mut terms = sorted_set()?
+            .ok_or_else(|| npe_terms_enum("SortedSetDocValues", "getSortedSet"))?
+            .terms_enum()?;
         while let Some(value) = terms.next()? {
             max_length = max_length.max(value.length as i32);
             value_count += 1;
@@ -665,7 +694,8 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
         // docs to find the maximum length
         let mut max_ord_list_length = 0usize;
         let mut sb2 = String::new();
-        let mut values = sorted_set()?;
+        let mut values =
+            sorted_set()?.ok_or_else(|| npe_invoke("SortedSetDocValues", "nextDoc", "values"))?;
         let mut doc = values.next_doc()?;
         while doc != NO_MORE_DOCS {
             sb2.clear();
@@ -687,8 +717,13 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
         self.line(ORDPATTERN, &ord_pattern)?;
 
         // for asserts:
-        let values_seen =
-            self.write_sorted_values(sorted_set()?.terms_enum()?, max_bytes_length, max_length)?;
+        let values_seen = self.write_sorted_values(
+            sorted_set()?
+                .ok_or_else(|| npe_terms_enum("SortedSetDocValues", "getSortedSet"))?
+                .terms_enum()?,
+            max_bytes_length,
+            max_length,
+        )?;
 
         debug_assert_eq!(values_seen, value_count);
 
@@ -696,6 +731,9 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
 
         // write the ords for each doc comma-separated
         for i in 0..self.num_docs {
+            let values = values
+                .as_deref_mut()
+                .ok_or_else(|| npe_invoke("SortedSetDocValues", "docID", "values"))?;
             if values.doc_id() < i {
                 values.next_doc()?;
                 debug_assert!(values.doc_id() >= i);
@@ -803,5 +841,108 @@ impl DocValuesIterator for SortedNumericAsBinary {
 impl BinaryDocValues for SortedNumericAsBinary {
     fn binary_value(&self) -> Result<BytesRef> {
         Ok(self.binary_value.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, segment_info, unchecked};
+    use rucene::codecs::DocValuesConsumer;
+    use rucene::index::documents_writer::BufferedUpdates;
+    use rucene::index::{
+        DocValuesSkipper, FieldInfos, NumericDocValues, SortedDocValues, SortedSetDocValues,
+    };
+    use rucene::store::DefaultIOContext;
+    use rucene::util::NoOutputInfoStream;
+    use std::sync::Arc;
+
+    /// A producer with no values for any field.
+    #[derive(Debug)]
+    struct NullProducer;
+
+    impl DocValuesProducer for NullProducer {
+        fn get_numeric(&self, _f: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+            Ok(None)
+        }
+        fn get_binary(&self, _f: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted(&self, _f: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted_numeric(
+            &self,
+            _f: &FieldInfo,
+        ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+            Ok(None)
+        }
+        fn get_sorted_set(&self, _f: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+            Ok(None)
+        }
+        fn get_skipper(&self, _f: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+            Ok(None)
+        }
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
+            Ok(Box::new(NullProducer))
+        }
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Regression (rmp #526): a producer answering `null` makes the first
+    /// `values.nextDoc()` throw `NullPointerException`
+    /// (`SimpleTextDocValuesWriter.java:93-104`); the port invented an
+    /// `IllegalStateException`. Once closed, writes fail in
+    /// `SimpleTextUtil.write` on the `null` output.
+    #[test]
+    fn null_producer_values_are_null_pointers() {
+        let dir = directory();
+        let si = segment_info(&dir, "_0", 1);
+        let field_infos = FieldInfos::new(Vec::new()).unwrap();
+        let updates = BufferedUpdates::default();
+        let context = DefaultIOContext::default();
+        let state = SegmentWriteState::new(
+            &NoOutputInfoStream,
+            Arc::clone(&dir),
+            &si,
+            &field_infos,
+            &updates,
+            &context,
+        );
+        let mut writer = SimpleTextDocValuesWriter::new(&state, "dat").unwrap();
+        let mut numeric = FieldInfo::new("n", 0);
+        numeric.set_doc_values_type(DocValuesType::NUMERIC).unwrap();
+        let error = writer
+            .add_numeric_field(&numeric, &NullProducer)
+            .unwrap_err();
+        assert_eq!(
+            unchecked(&error),
+            (
+                "java.lang.NullPointerException",
+                "Cannot invoke \"org.apache.lucene.index.NumericDocValues.nextDoc()\" because \
+                 \"values\" is null"
+                    .to_string()
+            )
+        );
+        let mut set = FieldInfo::new("s", 1);
+        set.set_doc_values_type(DocValuesType::SORTED_SET).unwrap();
+        let error = writer
+            .add_sorted_set_field(&set, &NullProducer)
+            .unwrap_err();
+        assert_eq!(
+            unchecked(&error).1,
+            "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.nextDoc()\" because \
+             \"values\" is null"
+        );
+        writer.close().unwrap();
+        let mut binary = FieldInfo::new("b", 2);
+        binary.set_doc_values_type(DocValuesType::BINARY).unwrap();
+        let error = writer.add_binary_field(&binary, &NullProducer).unwrap_err();
+        assert_eq!(unchecked(&error).1, util::WRITE_AFTER_CLOSE_NPE);
     }
 }

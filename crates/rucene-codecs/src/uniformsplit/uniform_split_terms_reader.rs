@@ -468,7 +468,10 @@ pub fn read_unencoded_fields_metadata(
     field_metadata_reader: &field_metadata::Serializer,
     max_num_docs: i32,
 ) -> Result<Vec<FieldMetadata>> {
-    let mut field_metadata_collection = Vec::with_capacity(num_fields.max(0) as usize);
+    // `new ArrayList<>(numFields)`: the capacity is not observable, and a
+    // huge count read from a corrupt file must fail on its reads, not abort
+    // on the allocation.
+    let mut field_metadata_collection = Vec::new();
     for _ in 0..num_fields {
         field_metadata_collection.push(field_metadata_reader.read(
             metadata_input,

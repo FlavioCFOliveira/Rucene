@@ -218,6 +218,12 @@ impl Impacts for SimpleTextImpacts {
 }
 
 /// `scratchUTF16.copyUTF8Bytes(...)` then `ArrayUtil.parseInt`.
+/// `ArrayUtil.grow`'s assertion on `scratch.length() - prefix.length`.
+fn debug_assert_grow(scratch: &[u8], prefix: &[u8]) {
+    let length = scratch.len() as i64 - prefix.len() as i64;
+    debug_assert!(length >= 0, "{}", util::negative_grow_message(length));
+}
+
 fn parse_int_after(scratch: &[u8], prefix: &[u8]) -> Result<i32> {
     parse_int_at(scratch, prefix.len())
 }
@@ -281,6 +287,10 @@ impl SkipDataReader for SkipReaderData {
     fn read_level_length(&self, skip_stream: &mut dyn IndexInput) -> Result<i64> {
         let mut scratch = Vec::new();
         read_line(skip_stream, &mut scratch)?;
+        // No prefix check: a shorter line reaches `CharsRefBuilder.grow`
+        // with a negative length, whose `ArrayUtil.grow` asserts
+        // (`ArrayUtil.java:483`).
+        debug_assert_grow(&scratch, LEVEL_LENGTH);
         parse_long(&read_string(&scratch, LEVEL_LENGTH.len()))
     }
 
@@ -288,6 +298,31 @@ impl SkipDataReader for SkipReaderData {
     fn read_child_pointer(&self, skip_stream: &mut dyn IndexInput) -> Result<i64> {
         let mut scratch = Vec::new();
         read_line(skip_stream, &mut scratch)?;
+        debug_assert_grow(&scratch, CHILD_POINTER);
         parse_long(&read_string(&scratch, CHILD_POINTER.len()))
+    }
+}
+
+#[cfg(all(test, debug_assertions))]
+mod tests {
+    use super::*;
+    use rucene::store::{ByteBuffersDataInput, ByteBuffersIndexInput};
+
+    /// Regression (rmp #526): a level-length line shorter than its prefix
+    /// trips `ArrayUtil.grow`'s assertion under `-ea`
+    /// (`SimpleTextSkipReader.java:174-180`, `ArrayUtil.java:483`); the
+    /// port reported a `NumberFormatException` for `""`.
+    #[test]
+    #[should_panic(expected = "size must be positive (got -15): likely integer overflow?")]
+    fn short_level_length_line_trips_the_grow_assertion() {
+        let data = SkipReaderData {
+            per_level_impacts: Vec::new(),
+            next_skip_doc_fp: -1,
+        };
+        let mut input = ByteBuffersIndexInput::new(
+            ByteBuffersDataInput::new(vec![b"abc\n".to_vec()]).unwrap(),
+            "skip",
+        );
+        let _ = data.read_level_length(&mut input);
     }
 }

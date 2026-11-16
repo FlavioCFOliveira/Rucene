@@ -153,7 +153,10 @@ fn read_string(offset: usize, scratch: &[u8]) -> String {
 impl TermVectors for SimpleTextTermVectorsReader {
     /// Port of `SimpleTextTermVectorsReader.get`.
     fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
-        let offsets = self.offsets.as_ref().ok_or_else(closed)?;
+        // `in.seek(offsets[doc])` once `close()` set `offsets` to `null`.
+        let offsets = self.offsets.as_ref().ok_or_else(|| {
+            util::null_pointer("Cannot load from long array because \"this.offsets\" is null")
+        })?;
         let offset = *offsets
             .get(usize::try_from(doc).unwrap_or(usize::MAX))
             .ok_or_else(|| array_index_out_of_bounds(i64::from(doc), offsets.len()))?;
@@ -202,6 +205,15 @@ impl TermVectors for SimpleTextTermVectorsReader {
             for _ in 0..term_count {
                 read_line(input, scratch)?;
                 debug_assert!(scratch.starts_with(TERMTEXT));
+                // `System.arraycopy(scratch.bytes(), TERMTEXT.length, term.bytes(),
+                // 0, termLength)` (`SimpleTextTermVectorsReader.java:131-136`).
+                let term_length = scratch.len() as i64 - TERMTEXT.len() as i64;
+                if term_length < 0 {
+                    return Err(LuceneError::unchecked(
+                        "java.lang.ArrayIndexOutOfBoundsException",
+                        format!("arraycopy: length {term_length} is negative"),
+                    ));
+                }
                 let term = BytesRef::new(scratch[TERMTEXT.len()..].to_vec());
 
                 let mut postings = SimpleTVPostings::default();
@@ -211,7 +223,11 @@ impl TermVectors for SimpleTextTermVectorsReader {
                 postings.freq = parse_int_at(scratch, TERMFREQ.len())?;
 
                 if positions || offsets {
-                    let freq = postings.freq.max(0) as usize;
+                    // `new int[postings.freq]` (`SimpleTextTermVectorsReader.java:146-157`).
+                    if postings.freq < 0 {
+                        return Err(util::negative_array_size(postings.freq));
+                    }
+                    let freq = postings.freq as usize;
                     if positions {
                         postings.positions = Some(vec![0; freq]);
                         if payloads {
@@ -235,8 +251,12 @@ impl TermVectors for SimpleTextTermVectorsReader {
                             if payloads {
                                 read_line(input, scratch)?;
                                 debug_assert!(scratch.starts_with(PAYLOAD));
-                                let payload = if scratch.len() - PAYLOAD.len() == 0 {
+                                let payload_length = scratch.len() as i64 - PAYLOAD.len() as i64;
+                                let payload = if payload_length == 0 {
                                     None
+                                } else if payload_length < 0 {
+                                    // `new byte[scratch.length() - PAYLOAD.length]`.
+                                    return Err(util::negative_array_size(payload_length));
                                 } else {
                                     Some(BytesRef::new(scratch[PAYLOAD.len()..].to_vec()))
                                 };
@@ -693,9 +713,14 @@ impl PostingsEnum for SimpleTVPostingsEnum {
                 self.next_pos < positions.len(),
                 "nextPosition() called more than freq() times!"
             );
-            let position = positions[self.next_pos];
+            // `positions[nextPos++]`: the increment happens before the
+            // access, which throws past the end.
+            let index = self.next_pos;
             self.next_pos += 1;
-            Ok(position)
+            positions
+                .get(index)
+                .copied()
+                .ok_or_else(|| util::array_index_out_of_bounds(index as i64, positions.len()))
         } else {
             debug_assert!(
                 self.next_pos < self.start_offsets.as_ref().map_or(0, Vec::len),
@@ -723,7 +748,17 @@ impl PostingsEnum for SimpleTVPostingsEnum {
     fn get_payload(&self) -> Result<Option<&[u8]>> {
         Ok(match &self.payloads {
             None => None,
-            Some(payloads) => payloads[self.next_pos - 1].as_ref().map(BytesRef::slice),
+            Some(payloads) => {
+                // `payloads[nextPos - 1]`, out of bounds before the first
+                // `nextPosition()`.
+                let index = self.next_pos as i64 - 1;
+                usize::try_from(index)
+                    .ok()
+                    .and_then(|i| payloads.get(i))
+                    .ok_or_else(|| util::array_index_out_of_bounds(index, payloads.len()))?
+                    .as_ref()
+                    .map(BytesRef::slice)
+            }
         })
     }
 }
@@ -732,4 +767,108 @@ impl PostingsEnum for SimpleTVPostingsEnum {
 #[allow(dead_code)]
 fn utf8(bytes: &[u8]) -> String {
     java_utf8_to_string(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, segment_info, unchecked, write_file};
+    use rucene::store::DEFAULT_IO_CONTEXT;
+
+    /// One document with one field `f` (positions and payloads) holding the
+    /// term `a` with `freq`, followed by `tail`.
+    fn reader(freq: &str, tail: &[&str]) -> SimpleTextTermVectorsReader {
+        let dir = directory();
+        let freq = format!("      freq {freq}");
+        let mut lines = vec![
+            "doc 0",
+            "  numfields 1",
+            "  field 0",
+            "    name f",
+            "    positions true",
+            "    offsets   false",
+            "    payloads  true",
+            "    numterms 1",
+            "    term a",
+            freq.as_str(),
+        ];
+        lines.extend_from_slice(tail);
+        lines.push("END");
+        write_file(dir.as_ref(), "_0.tvc", &lines, true);
+        let si = segment_info(&dir, "_0", 1);
+        SimpleTextTermVectorsReader::new(dir.as_ref(), &si, &*DEFAULT_IO_CONTEXT).unwrap()
+    }
+
+    /// Regression (rmp #526): `new int[postings.freq]` rejects a negative
+    /// frequency (the port read zero positions).
+    #[test]
+    fn negative_freq_is_a_negative_array_size() {
+        let reader = reader("-2", &[]);
+        let error = reader.get(0).err().expect("an error");
+        assert_eq!(
+            unchecked(&error),
+            ("java.lang.NegativeArraySizeException", "-2".to_string())
+        );
+    }
+
+    /// Regression (rmp #526): `getPayload()` before `nextPosition()` reads
+    /// `payloads[-1]` (the port panicked on the subtraction).
+    #[test]
+    fn payload_before_next_position_is_out_of_bounds() {
+        let reader = reader("1", &["      position 3", "        payload x"]);
+        let fields = reader.get(0).unwrap().expect("vectors");
+        let terms = fields.terms("f").unwrap().expect("terms");
+        let mut terms_enum = terms.iterator().unwrap();
+        terms_enum.next().unwrap().expect("a term");
+        let postings = terms_enum
+            .postings(None, rucene::index::POSTINGS_ENUM_PAYLOADS)
+            .unwrap()
+            .expect("postings");
+        let error = postings.get_payload().unwrap_err();
+        assert_eq!(
+            unchecked(&error),
+            (
+                "java.lang.ArrayIndexOutOfBoundsException",
+                "Index -1 out of bounds for length 1".to_string()
+            )
+        );
+    }
+
+    /// Regression (rmp #526): after `close()`, `get` reads the `null`
+    /// `offsets` array.
+    #[test]
+    fn get_after_close_reads_null_offsets() {
+        let mut reader = reader("1", &["      position 3", "        payload x"]);
+        reader.close().unwrap();
+        let error = reader.get(0).err().expect("an error");
+        assert_eq!(
+            unchecked(&error),
+            (
+                "java.lang.NullPointerException",
+                "Cannot load from long array because \"this.offsets\" is null".to_string()
+            )
+        );
+    }
+
+    /// Regression (rmp #526), release builds (no `-ea`): `positions[nextPos++]`
+    /// past `freq()` is `ArrayIndexOutOfBoundsException`, not a panic.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn next_position_past_freq_is_out_of_bounds() {
+        let reader = reader("1", &["      position 3", "        payload x"]);
+        let fields = reader.get(0).unwrap().expect("vectors");
+        let terms = fields.terms("f").unwrap().expect("terms");
+        let mut terms_enum = terms.iterator().unwrap();
+        terms_enum.next().unwrap().expect("a term");
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_POSITIONS)
+            .unwrap()
+            .expect("postings");
+        assert_eq!(postings.next_position().unwrap(), 3);
+        let error = postings.next_position().unwrap_err();
+        assert_eq!(
+            unchecked(&error).1,
+            "Index 1 out of bounds for length 1".to_string()
+        );
+    }
 }

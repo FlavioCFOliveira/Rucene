@@ -1,0 +1,1027 @@
+	123	Long 123 123 123	BD 123 0 128
+	-123	Long -123 -123 -123	BD -123 0 -118
+	1,234	Long 1234 1234 1234	BD 1234 0 1239
+	1,234.5	Double 1234.5 1234 1234	BD 12345 1 AE Rounding necessary
+	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+	1E3	Long 1000 1000 1000	BD 1 -3 1005
+	50%	Long 50 50 50	BD 50 0 55
+	50	Long 50 50 50	BD 50 0 55
+	200	Long 200 200 200	BD 200 0 205
+	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+	3-	Long 3 3 3	BD 3 0 8
+	-3	Long -3 -3 -3	BD -3 0 2
+	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+	5 apples	Long 5 5 5	BD 5 0 10
+	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+	-\u221e	Double -Infinity -9223372036854775808 -2147483648	CCE
+	NaN	Double NaN 0 0	CCE
+		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+	1,2,3	Long 123 123 123	BD 123 0 128
+	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+	3\u2030	Long 3 3 3	BD 3 0 8
+	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+	,5	Long 5 5 5	BD 5 0 10
+	-0	Double -0.0 0 0	BD 0 0 5
+	7x	Long 7 7 7	BD 7 0 12
+	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+	9 apples	Long 9 9 9	BD 9 0 14
+0	123	Long 123 123 123	BD 123 0 128
+0	-123	Long -123 -123 -123	BD -123 0 -118
+0	1,234	Long 1 1 1	BD 1 0 6
+0	1,234.5	Long 1 1 1	BD 1 0 6
+0	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+0	1E3	Long 1000 1000 1000	BD 1 -3 1005
+0	50%	Long 50 50 50	BD 50 0 55
+0	50	Long 50 50 50	BD 50 0 55
+0	200	Long 200 200 200	BD 200 0 205
+0	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+0	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+0	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+0	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+0	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+0	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+0	3-	Long 3 3 3	BD 3 0 8
+0	-3	Long -3 -3 -3	BD -3 0 2
+0	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+0	5 apples	Long 5 5 5	BD 5 0 10
+0	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+0	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+0	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+0	-\u221e	Double -Infinity -9223372036854775808 -2147483648	CCE
+0	NaN	Double NaN 0 0	CCE
+0		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+0	1,2,3	Long 1 1 1	BD 1 0 6
+0	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+0	3\u2030	Long 3 3 3	BD 3 0 8
+0	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+0	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+0	-0	Double -0.0 0 0	BD 0 0 5
+0	7x	Long 7 7 7	BD 7 0 12
+0	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+0	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+0	9 apples	Long 9 9 9	BD 9 0 14
+000	123	Long 123 123 123	BD 123 0 128
+000	-123	Long -123 -123 -123	BD -123 0 -118
+000	1,234	Long 1 1 1	BD 1 0 6
+000	1,234.5	Long 1 1 1	BD 1 0 6
+000	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+000	1E3	Long 1000 1000 1000	BD 1 -3 1005
+000	50%	Long 50 50 50	BD 50 0 55
+000	50	Long 50 50 50	BD 50 0 55
+000	200	Long 200 200 200	BD 200 0 205
+000	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+000	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+000	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+000	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+000	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+000	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+000	3-	Long 3 3 3	BD 3 0 8
+000	-3	Long -3 -3 -3	BD -3 0 2
+000	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+000	5 apples	Long 5 5 5	BD 5 0 10
+000	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+000	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+000	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+000	-\u221e	Double -Infinity -9223372036854775808 -2147483648	CCE
+000	NaN	Double NaN 0 0	CCE
+000		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+000	1,2,3	Long 1 1 1	BD 1 0 6
+000	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+000	3\u2030	Long 3 3 3	BD 3 0 8
+000	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+000	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+000	-0	Double -0.0 0 0	BD 0 0 5
+000	7x	Long 7 7 7	BD 7 0 12
+000	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+000	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+000	9 apples	Long 9 9 9	BD 9 0 14
+#	123	Long 123 123 123	BD 123 0 128
+#	-123	Long -123 -123 -123	BD -123 0 -118
+#	1,234	Long 1 1 1	BD 1 0 6
+#	1,234.5	Long 1 1 1	BD 1 0 6
+#	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+#	1E3	Long 1000 1000 1000	BD 1 -3 1005
+#	50%	Long 50 50 50	BD 50 0 55
+#	50	Long 50 50 50	BD 50 0 55
+#	200	Long 200 200 200	BD 200 0 205
+#	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+#	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+#	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+#	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+#	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+#	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+#	3-	Long 3 3 3	BD 3 0 8
+#	-3	Long -3 -3 -3	BD -3 0 2
+#	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+#	5 apples	Long 5 5 5	BD 5 0 10
+#	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+#	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+#	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+#	-\u221e	Double -Infinity -9223372036854775808 -2147483648	CCE
+#	NaN	Double NaN 0 0	CCE
+#		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+#	1,2,3	Long 1 1 1	BD 1 0 6
+#	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+#	3\u2030	Long 3 3 3	BD 3 0 8
+#	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+#	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+#	-0	Double -0.0 0 0	BD 0 0 5
+#	7x	Long 7 7 7	BD 7 0 12
+#	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+#	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+#	9 apples	Long 9 9 9	BD 9 0 14
+#,##0	123	Long 123 123 123	BD 123 0 128
+#,##0	-123	Long -123 -123 -123	BD -123 0 -118
+#,##0	1,234	Long 1234 1234 1234	BD 1234 0 1239
+#,##0	1,234.5	Double 1234.5 1234 1234	BD 12345 1 AE Rounding necessary
+#,##0	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+#,##0	1E3	Long 1000 1000 1000	BD 1 -3 1005
+#,##0	50%	Long 50 50 50	BD 50 0 55
+#,##0	50	Long 50 50 50	BD 50 0 55
+#,##0	200	Long 200 200 200	BD 200 0 205
+#,##0	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+#,##0	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+#,##0	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+#,##0	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+#,##0	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+#,##0	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+#,##0	3-	Long 3 3 3	BD 3 0 8
+#,##0	-3	Long -3 -3 -3	BD -3 0 2
+#,##0	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+#,##0	5 apples	Long 5 5 5	BD 5 0 10
+#,##0	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+#,##0	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+#,##0	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+#,##0	-\u221e	Double -Infinity -9223372036854775808 -2147483648	CCE
+#,##0	NaN	Double NaN 0 0	CCE
+#,##0		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+#,##0	1,2,3	Long 123 123 123	BD 123 0 128
+#,##0	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+#,##0	3\u2030	Long 3 3 3	BD 3 0 8
+#,##0	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+#,##0	,5	Long 5 5 5	BD 5 0 10
+#,##0	-0	Double -0.0 0 0	BD 0 0 5
+#,##0	7x	Long 7 7 7	BD 7 0 12
+#,##0	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+#,##0	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+#,##0	9 apples	Long 9 9 9	BD 9 0 14
+#,##0.00	123	Long 123 123 123	BD 123 0 128
+#,##0.00	-123	Long -123 -123 -123	BD -123 0 -118
+#,##0.00	1,234	Long 1234 1234 1234	BD 1234 0 1239
+#,##0.00	1,234.5	Double 1234.5 1234 1234	BD 12345 1 AE Rounding necessary
+#,##0.00	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+#,##0.00	1E3	Long 1000 1000 1000	BD 1 -3 1005
+#,##0.00	50%	Long 50 50 50	BD 50 0 55
+#,##0.00	50	Long 50 50 50	BD 50 0 55
+#,##0.00	200	Long 200 200 200	BD 200 0 205
+#,##0.00	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+#,##0.00	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+#,##0.00	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+#,##0.00	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+#,##0.00	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+#,##0.00	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+#,##0.00	3-	Long 3 3 3	BD 3 0 8
+#,##0.00	-3	Long -3 -3 -3	BD -3 0 2
+#,##0.00	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+#,##0.00	5 apples	Long 5 5 5	BD 5 0 10
+#,##0.00	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+#,##0.00	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+#,##0.00	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+#,##0.00	-\u221e	Double -Infinity -9223372036854775808 -2147483648	CCE
+#,##0.00	NaN	Double NaN 0 0	CCE
+#,##0.00		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+#,##0.00	1,2,3	Long 123 123 123	BD 123 0 128
+#,##0.00	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+#,##0.00	3\u2030	Long 3 3 3	BD 3 0 8
+#,##0.00	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+#,##0.00	,5	Long 5 5 5	BD 5 0 10
+#,##0.00	-0	Double -0.0 0 0	BD 0 0 5
+#,##0.00	7x	Long 7 7 7	BD 7 0 12
+#,##0.00	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+#,##0.00	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+#,##0.00	9 apples	Long 9 9 9	BD 9 0 14
+0.###	123	Long 123 123 123	BD 123 0 128
+0.###	-123	Long -123 -123 -123	BD -123 0 -118
+0.###	1,234	Long 1 1 1	BD 1 0 6
+0.###	1,234.5	Long 1 1 1	BD 1 0 6
+0.###	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+0.###	1E3	Long 1000 1000 1000	BD 1 -3 1005
+0.###	50%	Long 50 50 50	BD 50 0 55
+0.###	50	Long 50 50 50	BD 50 0 55
+0.###	200	Long 200 200 200	BD 200 0 205
+0.###	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+0.###	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+0.###	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+0.###	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+0.###	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+0.###	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+0.###	3-	Long 3 3 3	BD 3 0 8
+0.###	-3	Long -3 -3 -3	BD -3 0 2
+0.###	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+0.###	5 apples	Long 5 5 5	BD 5 0 10
+0.###	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+0.###	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+0.###	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+0.###	-\u221e	Double -Infinity -9223372036854775808 -2147483648	CCE
+0.###	NaN	Double NaN 0 0	CCE
+0.###		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+0.###	1,2,3	Long 1 1 1	BD 1 0 6
+0.###	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+0.###	3\u2030	Long 3 3 3	BD 3 0 8
+0.###	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+0.###	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+0.###	-0	Double -0.0 0 0	BD 0 0 5
+0.###	7x	Long 7 7 7	BD 7 0 12
+0.###	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+0.###	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+0.###	9 apples	Long 9 9 9	BD 9 0 14
+.00	123	Long 123 123 123	BD 123 0 128
+.00	-123	Long -123 -123 -123	BD -123 0 -118
+.00	1,234	Long 1 1 1	BD 1 0 6
+.00	1,234.5	Long 1 1 1	BD 1 0 6
+.00	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+.00	1E3	Long 1000 1000 1000	BD 1 -3 1005
+.00	50%	Long 50 50 50	BD 50 0 55
+.00	50	Long 50 50 50	BD 50 0 55
+.00	200	Long 200 200 200	BD 200 0 205
+.00	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+.00	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+.00	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+.00	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+.00	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+.00	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+.00	3-	Long 3 3 3	BD 3 0 8
+.00	-3	Long -3 -3 -3	BD -3 0 2
+.00	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+.00	5 apples	Long 5 5 5	BD 5 0 10
+.00	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+.00	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+.00	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+.00	-\u221e	Double -Infinity -9223372036854775808 -2147483648	CCE
+.00	NaN	Double NaN 0 0	CCE
+.00		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+.00	1,2,3	Long 1 1 1	BD 1 0 6
+.00	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+.00	3\u2030	Long 3 3 3	BD 3 0 8
+.00	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+.00	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+.00	-0	Double -0.0 0 0	BD 0 0 5
+.00	7x	Long 7 7 7	BD 7 0 12
+.00	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+.00	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+.00	9 apples	Long 9 9 9	BD 9 0 14
+##0.#E0	123	Long 123 123 123	BD 123 0 128
+##0.#E0	-123	Long -123 -123 -123	BD -123 0 -118
+##0.#E0	1,234	Long 1 1 1	BD 1 0 6
+##0.#E0	1,234.5	Long 1 1 1	BD 1 0 6
+##0.#E0	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+##0.#E0	1E3	Long 1000 1000 1000	BD 1 -3 1005
+##0.#E0	50%	Long 50 50 50	BD 50 0 55
+##0.#E0	50	Long 50 50 50	BD 50 0 55
+##0.#E0	200	Long 200 200 200	BD 200 0 205
+##0.#E0	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+##0.#E0	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+##0.#E0	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+##0.#E0	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+##0.#E0	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+##0.#E0	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+##0.#E0	3-	Long 3 3 3	BD 3 0 8
+##0.#E0	-3	Long -3 -3 -3	BD -3 0 2
+##0.#E0	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+##0.#E0	5 apples	Long 5 5 5	BD 5 0 10
+##0.#E0	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+##0.#E0	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+##0.#E0	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+##0.#E0	-\u221e	Double -Infinity -9223372036854775808 -2147483648	CCE
+##0.#E0	NaN	Double NaN 0 0	CCE
+##0.#E0		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+##0.#E0	1,2,3	Long 1 1 1	BD 1 0 6
+##0.#E0	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+##0.#E0	3\u2030	Long 3 3 3	BD 3 0 8
+##0.#E0	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+##0.#E0	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+##0.#E0	-0	Double -0.0 0 0	BD 0 0 5
+##0.#E0	7x	Long 7 7 7	BD 7 0 12
+##0.#E0	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+##0.#E0	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+##0.#E0	9 apples	Long 9 9 9	BD 9 0 14
+0%	123	PE Unparseable number: "123"@3	PE Unparseable number: "123"@3
+0%	-123	PE Unparseable number: "-123"@4	PE Unparseable number: "-123"@4
+0%	1,234	PE Unparseable number: "1,234"@1	PE Unparseable number: "1,234"@1
+0%	1,234.5	PE Unparseable number: "1,234.5"@1	PE Unparseable number: "1,234.5"@1
+0%	12.50	PE Unparseable number: "12.50"@5	PE Unparseable number: "12.50"@5
+0%	1E3	PE Unparseable number: "1E3"@3	PE Unparseable number: "1E3"@3
+0%	50%	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+0%	50	PE Unparseable number: "50"@2	PE Unparseable number: "50"@2
+0%	200	PE Unparseable number: "200"@3	PE Unparseable number: "200"@3
+0%	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+0%	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+0%	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+0%	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+0%	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+0%	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+0%	3-	PE Unparseable number: "3-"@1	PE Unparseable number: "3-"@1
+0%	-3	PE Unparseable number: "-3"@2	PE Unparseable number: "-3"@2
+0%	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+0%	5 apples	PE Unparseable number: "5 apples"@1	PE Unparseable number: "5 apples"@1
+0%	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+0%	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+0%	\u221e	PE Unparseable number: "\u221e"@1	PE Unparseable number: "\u221e"@1
+0%	-\u221e	PE Unparseable number: "-\u221e"@2	PE Unparseable number: "-\u221e"@2
+0%	NaN	Double NaN 0 0	CCE
+0%		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+0%	1,2,3	PE Unparseable number: "1,2,3"@1	PE Unparseable number: "1,2,3"@1
+0%	1.2,3	PE Unparseable number: "1.2,3"@3	PE Unparseable number: "1.2,3"@3
+0%	3\u2030	PE Unparseable number: "3\u2030"@1	PE Unparseable number: "3\u2030"@1
+0%	0.5	PE Unparseable number: "0.5"@3	PE Unparseable number: "0.5"@3
+0%	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+0%	-0	PE Unparseable number: "-0"@2	PE Unparseable number: "-0"@2
+0%	7x	PE Unparseable number: "7x"@1	PE Unparseable number: "7x"@1
+0%	1E-2%	Double 1.0E-4 0 0	BD 1 4 AE Rounding necessary
+0%	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+0%	9 apples	PE Unparseable number: "9 apples"@1	PE Unparseable number: "9 apples"@1
+0\u2030	123	PE Unparseable number: "123"@3	PE Unparseable number: "123"@3
+0\u2030	-123	PE Unparseable number: "-123"@4	PE Unparseable number: "-123"@4
+0\u2030	1,234	PE Unparseable number: "1,234"@1	PE Unparseable number: "1,234"@1
+0\u2030	1,234.5	PE Unparseable number: "1,234.5"@1	PE Unparseable number: "1,234.5"@1
+0\u2030	12.50	PE Unparseable number: "12.50"@5	PE Unparseable number: "12.50"@5
+0\u2030	1E3	PE Unparseable number: "1E3"@3	PE Unparseable number: "1E3"@3
+0\u2030	50%	PE Unparseable number: "50%"@2	PE Unparseable number: "50%"@2
+0\u2030	50	PE Unparseable number: "50"@2	PE Unparseable number: "50"@2
+0\u2030	200	PE Unparseable number: "200"@3	PE Unparseable number: "200"@3
+0\u2030	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+0\u2030	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+0\u2030	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+0\u2030	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+0\u2030	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+0\u2030	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+0\u2030	3-	PE Unparseable number: "3-"@1	PE Unparseable number: "3-"@1
+0\u2030	-3	PE Unparseable number: "-3"@2	PE Unparseable number: "-3"@2
+0\u2030	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+0\u2030	5 apples	PE Unparseable number: "5 apples"@1	PE Unparseable number: "5 apples"@1
+0\u2030	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+0\u2030	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+0\u2030	\u221e	PE Unparseable number: "\u221e"@1	PE Unparseable number: "\u221e"@1
+0\u2030	-\u221e	PE Unparseable number: "-\u221e"@2	PE Unparseable number: "-\u221e"@2
+0\u2030	NaN	Double NaN 0 0	CCE
+0\u2030		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+0\u2030	1,2,3	PE Unparseable number: "1,2,3"@1	PE Unparseable number: "1,2,3"@1
+0\u2030	1.2,3	PE Unparseable number: "1.2,3"@3	PE Unparseable number: "1.2,3"@3
+0\u2030	3\u2030	Double 0.003 0 0	BD 3 3 AE Rounding necessary
+0\u2030	0.5	PE Unparseable number: "0.5"@3	PE Unparseable number: "0.5"@3
+0\u2030	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+0\u2030	-0	PE Unparseable number: "-0"@2	PE Unparseable number: "-0"@2
+0\u2030	7x	PE Unparseable number: "7x"@1	PE Unparseable number: "7x"@1
+0\u2030	1E-2%	PE Unparseable number: "1E-2%"@4	PE Unparseable number: "1E-2%"@4
+0\u2030	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+0\u2030	9 apples	PE Unparseable number: "9 apples"@1	PE Unparseable number: "9 apples"@1
+#,##0;(#,##0)	123	Long 123 123 123	BD 123 0 128
+#,##0;(#,##0)	-123	PE Unparseable number: "-123"@0	PE Unparseable number: "-123"@0
+#,##0;(#,##0)	1,234	Long 1234 1234 1234	BD 1234 0 1239
+#,##0;(#,##0)	1,234.5	Double 1234.5 1234 1234	BD 12345 1 AE Rounding necessary
+#,##0;(#,##0)	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+#,##0;(#,##0)	1E3	Long 1000 1000 1000	BD 1 -3 1005
+#,##0;(#,##0)	50%	Long 50 50 50	BD 50 0 55
+#,##0;(#,##0)	50	Long 50 50 50	BD 50 0 55
+#,##0;(#,##0)	200	Long 200 200 200	BD 200 0 205
+#,##0;(#,##0)	(7)	Long -7 -7 -7	BD -7 0 -2
+#,##0;(#,##0)	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+#,##0;(#,##0)	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+#,##0;(#,##0)	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+#,##0;(#,##0)	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+#,##0;(#,##0)	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+#,##0;(#,##0)	3-	Long 3 3 3	BD 3 0 8
+#,##0;(#,##0)	-3	PE Unparseable number: "-3"@0	PE Unparseable number: "-3"@0
+#,##0;(#,##0)	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+#,##0;(#,##0)	5 apples	Long 5 5 5	BD 5 0 10
+#,##0;(#,##0)	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+#,##0;(#,##0)	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+#,##0;(#,##0)	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+#,##0;(#,##0)	-\u221e	PE Unparseable number: "-\u221e"@0	PE Unparseable number: "-\u221e"@0
+#,##0;(#,##0)	NaN	Double NaN 0 0	CCE
+#,##0;(#,##0)		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+#,##0;(#,##0)	1,2,3	Long 123 123 123	BD 123 0 128
+#,##0;(#,##0)	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+#,##0;(#,##0)	3\u2030	Long 3 3 3	BD 3 0 8
+#,##0;(#,##0)	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+#,##0;(#,##0)	,5	Long 5 5 5	BD 5 0 10
+#,##0;(#,##0)	-0	PE Unparseable number: "-0"@0	PE Unparseable number: "-0"@0
+#,##0;(#,##0)	7x	Long 7 7 7	BD 7 0 12
+#,##0;(#,##0)	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+#,##0;(#,##0)	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+#,##0;(#,##0)	9 apples	Long 9 9 9	BD 9 0 14
+'x'0'y'	123	PE Unparseable number: "123"@0	PE Unparseable number: "123"@0
+'x'0'y'	-123	PE Unparseable number: "-123"@0	PE Unparseable number: "-123"@0
+'x'0'y'	1,234	PE Unparseable number: "1,234"@0	PE Unparseable number: "1,234"@0
+'x'0'y'	1,234.5	PE Unparseable number: "1,234.5"@0	PE Unparseable number: "1,234.5"@0
+'x'0'y'	12.50	PE Unparseable number: "12.50"@0	PE Unparseable number: "12.50"@0
+'x'0'y'	1E3	PE Unparseable number: "1E3"@0	PE Unparseable number: "1E3"@0
+'x'0'y'	50%	PE Unparseable number: "50%"@0	PE Unparseable number: "50%"@0
+'x'0'y'	50	PE Unparseable number: "50"@0	PE Unparseable number: "50"@0
+'x'0'y'	200	PE Unparseable number: "200"@0	PE Unparseable number: "200"@0
+'x'0'y'	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+'x'0'y'	x5y	Long 5 5 5	BD 5 0 10
+'x'0'y'	x5	PE Unparseable number: "x5"@2	PE Unparseable number: "x5"@2
+'x'0'y'	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+'x'0'y'	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+'x'0'y'	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+'x'0'y'	3-	PE Unparseable number: "3-"@0	PE Unparseable number: "3-"@0
+'x'0'y'	-3	PE Unparseable number: "-3"@0	PE Unparseable number: "-3"@0
+'x'0'y'	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+'x'0'y'	5 apples	PE Unparseable number: "5 apples"@0	PE Unparseable number: "5 apples"@0
+'x'0'y'	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+'x'0'y'	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+'x'0'y'	\u221e	PE Unparseable number: "\u221e"@0	PE Unparseable number: "\u221e"@0
+'x'0'y'	-\u221e	PE Unparseable number: "-\u221e"@0	PE Unparseable number: "-\u221e"@0
+'x'0'y'	NaN	Double NaN 0 0	CCE
+'x'0'y'		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+'x'0'y'	1,2,3	PE Unparseable number: "1,2,3"@0	PE Unparseable number: "1,2,3"@0
+'x'0'y'	1.2,3	PE Unparseable number: "1.2,3"@0	PE Unparseable number: "1.2,3"@0
+'x'0'y'	3\u2030	PE Unparseable number: "3\u2030"@0	PE Unparseable number: "3\u2030"@0
+'x'0'y'	0.5	PE Unparseable number: "0.5"@0	PE Unparseable number: "0.5"@0
+'x'0'y'	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+'x'0'y'	-0	PE Unparseable number: "-0"@0	PE Unparseable number: "-0"@0
+'x'0'y'	7x	PE Unparseable number: "7x"@0	PE Unparseable number: "7x"@0
+'x'0'y'	1E-2%	PE Unparseable number: "1E-2%"@0	PE Unparseable number: "1E-2%"@0
+'x'0'y'	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+'x'0'y'	9 apples	PE Unparseable number: "9 apples"@0	PE Unparseable number: "9 apples"@0
+'it''s'0	123	PE Unparseable number: "123"@0	PE Unparseable number: "123"@0
+'it''s'0	-123	PE Unparseable number: "-123"@0	PE Unparseable number: "-123"@0
+'it''s'0	1,234	PE Unparseable number: "1,234"@0	PE Unparseable number: "1,234"@0
+'it''s'0	1,234.5	PE Unparseable number: "1,234.5"@0	PE Unparseable number: "1,234.5"@0
+'it''s'0	12.50	PE Unparseable number: "12.50"@0	PE Unparseable number: "12.50"@0
+'it''s'0	1E3	PE Unparseable number: "1E3"@0	PE Unparseable number: "1E3"@0
+'it''s'0	50%	PE Unparseable number: "50%"@0	PE Unparseable number: "50%"@0
+'it''s'0	50	PE Unparseable number: "50"@0	PE Unparseable number: "50"@0
+'it''s'0	200	PE Unparseable number: "200"@0	PE Unparseable number: "200"@0
+'it''s'0	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+'it''s'0	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+'it''s'0	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+'it''s'0	it's9	Long 9 9 9	BD 9 0 14
+'it''s'0	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+'it''s'0	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+'it''s'0	3-	PE Unparseable number: "3-"@0	PE Unparseable number: "3-"@0
+'it''s'0	-3	PE Unparseable number: "-3"@0	PE Unparseable number: "-3"@0
+'it''s'0	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+'it''s'0	5 apples	PE Unparseable number: "5 apples"@0	PE Unparseable number: "5 apples"@0
+'it''s'0	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+'it''s'0	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+'it''s'0	\u221e	PE Unparseable number: "\u221e"@0	PE Unparseable number: "\u221e"@0
+'it''s'0	-\u221e	PE Unparseable number: "-\u221e"@0	PE Unparseable number: "-\u221e"@0
+'it''s'0	NaN	Double NaN 0 0	CCE
+'it''s'0		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+'it''s'0	1,2,3	PE Unparseable number: "1,2,3"@0	PE Unparseable number: "1,2,3"@0
+'it''s'0	1.2,3	PE Unparseable number: "1.2,3"@0	PE Unparseable number: "1.2,3"@0
+'it''s'0	3\u2030	PE Unparseable number: "3\u2030"@0	PE Unparseable number: "3\u2030"@0
+'it''s'0	0.5	PE Unparseable number: "0.5"@0	PE Unparseable number: "0.5"@0
+'it''s'0	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+'it''s'0	-0	PE Unparseable number: "-0"@0	PE Unparseable number: "-0"@0
+'it''s'0	7x	PE Unparseable number: "7x"@0	PE Unparseable number: "7x"@0
+'it''s'0	1E-2%	PE Unparseable number: "1E-2%"@0	PE Unparseable number: "1E-2%"@0
+'it''s'0	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+'it''s'0	9 apples	PE Unparseable number: "9 apples"@0	PE Unparseable number: "9 apples"@0
+\u00a40	123	PE Unparseable number: "123"@0	PE Unparseable number: "123"@0
+\u00a40	-123	PE Unparseable number: "-123"@0	PE Unparseable number: "-123"@0
+\u00a40	1,234	PE Unparseable number: "1,234"@0	PE Unparseable number: "1,234"@0
+\u00a40	1,234.5	PE Unparseable number: "1,234.5"@0	PE Unparseable number: "1,234.5"@0
+\u00a40	12.50	PE Unparseable number: "12.50"@0	PE Unparseable number: "12.50"@0
+\u00a40	1E3	PE Unparseable number: "1E3"@0	PE Unparseable number: "1E3"@0
+\u00a40	50%	PE Unparseable number: "50%"@0	PE Unparseable number: "50%"@0
+\u00a40	50	PE Unparseable number: "50"@0	PE Unparseable number: "50"@0
+\u00a40	200	PE Unparseable number: "200"@0	PE Unparseable number: "200"@0
+\u00a40	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+\u00a40	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+\u00a40	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+\u00a40	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+\u00a40	\u00a43	Long 3 3 3	BD 3 0 8
+\u00a40	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+\u00a40	3-	PE Unparseable number: "3-"@0	PE Unparseable number: "3-"@0
+\u00a40	-3	PE Unparseable number: "-3"@0	PE Unparseable number: "-3"@0
+\u00a40	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+\u00a40	5 apples	PE Unparseable number: "5 apples"@0	PE Unparseable number: "5 apples"@0
+\u00a40	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+\u00a40	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+\u00a40	\u221e	PE Unparseable number: "\u221e"@0	PE Unparseable number: "\u221e"@0
+\u00a40	-\u221e	PE Unparseable number: "-\u221e"@0	PE Unparseable number: "-\u221e"@0
+\u00a40	NaN	Double NaN 0 0	CCE
+\u00a40		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+\u00a40	1,2,3	PE Unparseable number: "1,2,3"@0	PE Unparseable number: "1,2,3"@0
+\u00a40	1.2,3	PE Unparseable number: "1.2,3"@0	PE Unparseable number: "1.2,3"@0
+\u00a40	3\u2030	PE Unparseable number: "3\u2030"@0	PE Unparseable number: "3\u2030"@0
+\u00a40	0.5	PE Unparseable number: "0.5"@0	PE Unparseable number: "0.5"@0
+\u00a40	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+\u00a40	-0	PE Unparseable number: "-0"@0	PE Unparseable number: "-0"@0
+\u00a40	7x	PE Unparseable number: "7x"@0	PE Unparseable number: "7x"@0
+\u00a40	1E-2%	PE Unparseable number: "1E-2%"@0	PE Unparseable number: "1E-2%"@0
+\u00a40	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+\u00a40	9 apples	PE Unparseable number: "9 apples"@0	PE Unparseable number: "9 apples"@0
+\u00a4\u00a40	123	PE Unparseable number: "123"@0	PE Unparseable number: "123"@0
+\u00a4\u00a40	-123	PE Unparseable number: "-123"@0	PE Unparseable number: "-123"@0
+\u00a4\u00a40	1,234	PE Unparseable number: "1,234"@0	PE Unparseable number: "1,234"@0
+\u00a4\u00a40	1,234.5	PE Unparseable number: "1,234.5"@0	PE Unparseable number: "1,234.5"@0
+\u00a4\u00a40	12.50	PE Unparseable number: "12.50"@0	PE Unparseable number: "12.50"@0
+\u00a4\u00a40	1E3	PE Unparseable number: "1E3"@0	PE Unparseable number: "1E3"@0
+\u00a4\u00a40	50%	PE Unparseable number: "50%"@0	PE Unparseable number: "50%"@0
+\u00a4\u00a40	50	PE Unparseable number: "50"@0	PE Unparseable number: "50"@0
+\u00a4\u00a40	200	PE Unparseable number: "200"@0	PE Unparseable number: "200"@0
+\u00a4\u00a40	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+\u00a4\u00a40	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+\u00a4\u00a40	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+\u00a4\u00a40	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+\u00a4\u00a40	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+\u00a4\u00a40	XXX3	Long 3 3 3	BD 3 0 8
+\u00a4\u00a40	3-	PE Unparseable number: "3-"@0	PE Unparseable number: "3-"@0
+\u00a4\u00a40	-3	PE Unparseable number: "-3"@0	PE Unparseable number: "-3"@0
+\u00a4\u00a40	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+\u00a4\u00a40	5 apples	PE Unparseable number: "5 apples"@0	PE Unparseable number: "5 apples"@0
+\u00a4\u00a40	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+\u00a4\u00a40	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+\u00a4\u00a40	\u221e	PE Unparseable number: "\u221e"@0	PE Unparseable number: "\u221e"@0
+\u00a4\u00a40	-\u221e	PE Unparseable number: "-\u221e"@0	PE Unparseable number: "-\u221e"@0
+\u00a4\u00a40	NaN	Double NaN 0 0	CCE
+\u00a4\u00a40		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+\u00a4\u00a40	1,2,3	PE Unparseable number: "1,2,3"@0	PE Unparseable number: "1,2,3"@0
+\u00a4\u00a40	1.2,3	PE Unparseable number: "1.2,3"@0	PE Unparseable number: "1.2,3"@0
+\u00a4\u00a40	3\u2030	PE Unparseable number: "3\u2030"@0	PE Unparseable number: "3\u2030"@0
+\u00a4\u00a40	0.5	PE Unparseable number: "0.5"@0	PE Unparseable number: "0.5"@0
+\u00a4\u00a40	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+\u00a4\u00a40	-0	PE Unparseable number: "-0"@0	PE Unparseable number: "-0"@0
+\u00a4\u00a40	7x	PE Unparseable number: "7x"@0	PE Unparseable number: "7x"@0
+\u00a4\u00a40	1E-2%	PE Unparseable number: "1E-2%"@0	PE Unparseable number: "1E-2%"@0
+\u00a4\u00a40	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+\u00a4\u00a40	9 apples	PE Unparseable number: "9 apples"@0	PE Unparseable number: "9 apples"@0
+0-	123	PE Unparseable number: "123"@3	PE Unparseable number: "123"@3
+0-	-123	PE Unparseable number: "-123"@4	PE Unparseable number: "-123"@4
+0-	1,234	PE Unparseable number: "1,234"@1	PE Unparseable number: "1,234"@1
+0-	1,234.5	PE Unparseable number: "1,234.5"@1	PE Unparseable number: "1,234.5"@1
+0-	12.50	PE Unparseable number: "12.50"@5	PE Unparseable number: "12.50"@5
+0-	1E3	PE Unparseable number: "1E3"@3	PE Unparseable number: "1E3"@3
+0-	50%	PE Unparseable number: "50%"@2	PE Unparseable number: "50%"@2
+0-	50	PE Unparseable number: "50"@2	PE Unparseable number: "50"@2
+0-	200	PE Unparseable number: "200"@3	PE Unparseable number: "200"@3
+0-	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+0-	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+0-	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+0-	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+0-	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+0-	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+0-	3-	Long 3 3 3	BD 3 0 8
+0-	-3	PE Unparseable number: "-3"@2	PE Unparseable number: "-3"@2
+0-	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+0-	5 apples	PE Unparseable number: "5 apples"@1	PE Unparseable number: "5 apples"@1
+0-	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+0-	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+0-	\u221e	PE Unparseable number: "\u221e"@1	PE Unparseable number: "\u221e"@1
+0-	-\u221e	PE Unparseable number: "-\u221e"@2	PE Unparseable number: "-\u221e"@2
+0-	NaN	Double NaN 0 0	CCE
+0-		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+0-	1,2,3	PE Unparseable number: "1,2,3"@1	PE Unparseable number: "1,2,3"@1
+0-	1.2,3	PE Unparseable number: "1.2,3"@3	PE Unparseable number: "1.2,3"@3
+0-	3\u2030	PE Unparseable number: "3\u2030"@1	PE Unparseable number: "3\u2030"@1
+0-	0.5	PE Unparseable number: "0.5"@3	PE Unparseable number: "0.5"@3
+0-	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+0-	-0	PE Unparseable number: "-0"@2	PE Unparseable number: "-0"@2
+0-	7x	PE Unparseable number: "7x"@1	PE Unparseable number: "7x"@1
+0-	1E-2%	PE Unparseable number: "1E-2%"@4	PE Unparseable number: "1E-2%"@4
+0-	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+0-	9 apples	PE Unparseable number: "9 apples"@1	PE Unparseable number: "9 apples"@1
+-0	123	PE Unparseable number: "123"@0	PE Unparseable number: "123"@0
+-0	-123	Long 123 123 123	BD 123 0 128
+-0	1,234	PE Unparseable number: "1,234"@0	PE Unparseable number: "1,234"@0
+-0	1,234.5	PE Unparseable number: "1,234.5"@0	PE Unparseable number: "1,234.5"@0
+-0	12.50	PE Unparseable number: "12.50"@0	PE Unparseable number: "12.50"@0
+-0	1E3	PE Unparseable number: "1E3"@0	PE Unparseable number: "1E3"@0
+-0	50%	PE Unparseable number: "50%"@0	PE Unparseable number: "50%"@0
+-0	50	PE Unparseable number: "50"@0	PE Unparseable number: "50"@0
+-0	200	PE Unparseable number: "200"@0	PE Unparseable number: "200"@0
+-0	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+-0	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+-0	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+-0	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+-0	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+-0	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+-0	3-	PE Unparseable number: "3-"@0	PE Unparseable number: "3-"@0
+-0	-3	Long 3 3 3	BD 3 0 8
+-0	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+-0	5 apples	PE Unparseable number: "5 apples"@0	PE Unparseable number: "5 apples"@0
+-0	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+-0	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+-0	\u221e	PE Unparseable number: "\u221e"@0	PE Unparseable number: "\u221e"@0
+-0	-\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+-0	NaN	Double NaN 0 0	CCE
+-0		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+-0	1,2,3	PE Unparseable number: "1,2,3"@0	PE Unparseable number: "1,2,3"@0
+-0	1.2,3	PE Unparseable number: "1.2,3"@0	PE Unparseable number: "1.2,3"@0
+-0	3\u2030	PE Unparseable number: "3\u2030"@0	PE Unparseable number: "3\u2030"@0
+-0	0.5	PE Unparseable number: "0.5"@0	PE Unparseable number: "0.5"@0
+-0	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+-0	-0	Long 0 0 0	BD 0 0 5
+-0	7x	PE Unparseable number: "7x"@0	PE Unparseable number: "7x"@0
+-0	1E-2%	PE Unparseable number: "1E-2%"@0	PE Unparseable number: "1E-2%"@0
+-0	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+-0	9 apples	PE Unparseable number: "9 apples"@0	PE Unparseable number: "9 apples"@0
+0;0	123	Long 123 123 123	BD 123 0 128
+0;0	-123	Long -123 -123 -123	BD -123 0 -118
+0;0	1,234	Long 1 1 1	BD 1 0 6
+0;0	1,234.5	Long 1 1 1	BD 1 0 6
+0;0	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+0;0	1E3	Long 1000 1000 1000	BD 1 -3 1005
+0;0	50%	Long 50 50 50	BD 50 0 55
+0;0	50	Long 50 50 50	BD 50 0 55
+0;0	200	Long 200 200 200	BD 200 0 205
+0;0	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+0;0	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+0;0	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+0;0	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+0;0	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+0;0	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+0;0	3-	Long 3 3 3	BD 3 0 8
+0;0	-3	Long -3 -3 -3	BD -3 0 2
+0;0	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+0;0	5 apples	Long 5 5 5	BD 5 0 10
+0;0	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+0;0	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+0;0	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+0;0	-\u221e	Double -Infinity -9223372036854775808 -2147483648	CCE
+0;0	NaN	Double NaN 0 0	CCE
+0;0		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+0;0	1,2,3	Long 1 1 1	BD 1 0 6
+0;0	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+0;0	3\u2030	Long 3 3 3	BD 3 0 8
+0;0	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+0;0	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+0;0	-0	Double -0.0 0 0	BD 0 0 5
+0;0	7x	Long 7 7 7	BD 7 0 12
+0;0	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+0;0	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+0;0	9 apples	Long 9 9 9	BD 9 0 14
++0;-0	123	PE Unparseable number: "123"@0	PE Unparseable number: "123"@0
++0;-0	-123	Long -123 -123 -123	BD -123 0 -118
++0;-0	1,234	PE Unparseable number: "1,234"@0	PE Unparseable number: "1,234"@0
++0;-0	1,234.5	PE Unparseable number: "1,234.5"@0	PE Unparseable number: "1,234.5"@0
++0;-0	12.50	PE Unparseable number: "12.50"@0	PE Unparseable number: "12.50"@0
++0;-0	1E3	PE Unparseable number: "1E3"@0	PE Unparseable number: "1E3"@0
++0;-0	50%	PE Unparseable number: "50%"@0	PE Unparseable number: "50%"@0
++0;-0	50	PE Unparseable number: "50"@0	PE Unparseable number: "50"@0
++0;-0	200	PE Unparseable number: "200"@0	PE Unparseable number: "200"@0
++0;-0	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
++0;-0	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
++0;-0	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
++0;-0	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
++0;-0	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
++0;-0	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
++0;-0	3-	PE Unparseable number: "3-"@0	PE Unparseable number: "3-"@0
++0;-0	-3	Long -3 -3 -3	BD -3 0 2
++0;-0	+3	Long 3 3 3	BD 3 0 8
++0;-0	5 apples	PE Unparseable number: "5 apples"@0	PE Unparseable number: "5 apples"@0
++0;-0	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
++0;-0	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
++0;-0	\u221e	PE Unparseable number: "\u221e"@0	PE Unparseable number: "\u221e"@0
++0;-0	-\u221e	Double -Infinity -9223372036854775808 -2147483648	CCE
++0;-0	NaN	Double NaN 0 0	CCE
++0;-0		PE Unparseable number: ""@0	PE Unparseable number: ""@0
++0;-0	1,2,3	PE Unparseable number: "1,2,3"@0	PE Unparseable number: "1,2,3"@0
++0;-0	1.2,3	PE Unparseable number: "1.2,3"@0	PE Unparseable number: "1.2,3"@0
++0;-0	3\u2030	PE Unparseable number: "3\u2030"@0	PE Unparseable number: "3\u2030"@0
++0;-0	0.5	PE Unparseable number: "0.5"@0	PE Unparseable number: "0.5"@0
++0;-0	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
++0;-0	-0	Double -0.0 0 0	BD 0 0 5
++0;-0	7x	PE Unparseable number: "7x"@0	PE Unparseable number: "7x"@0
++0;-0	1E-2%	PE Unparseable number: "1E-2%"@0	PE Unparseable number: "1E-2%"@0
++0;-0	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
++0;-0	9 apples	PE Unparseable number: "9 apples"@0	PE Unparseable number: "9 apples"@0
+0 apples	123	PE Unparseable number: "123"@3	PE Unparseable number: "123"@3
+0 apples	-123	PE Unparseable number: "-123"@4	PE Unparseable number: "-123"@4
+0 apples	1,234	PE Unparseable number: "1,234"@1	PE Unparseable number: "1,234"@1
+0 apples	1,234.5	PE Unparseable number: "1,234.5"@1	PE Unparseable number: "1,234.5"@1
+0 apples	12.50	PE Unparseable number: "12.50"@5	PE Unparseable number: "12.50"@5
+0 apples	1E3	PE Unparseable number: "1E3"@3	PE Unparseable number: "1E3"@3
+0 apples	50%	PE Unparseable number: "50%"@2	PE Unparseable number: "50%"@2
+0 apples	50	PE Unparseable number: "50"@2	PE Unparseable number: "50"@2
+0 apples	200	PE Unparseable number: "200"@3	PE Unparseable number: "200"@3
+0 apples	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+0 apples	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+0 apples	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+0 apples	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+0 apples	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+0 apples	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+0 apples	3-	PE Unparseable number: "3-"@1	PE Unparseable number: "3-"@1
+0 apples	-3	PE Unparseable number: "-3"@2	PE Unparseable number: "-3"@2
+0 apples	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+0 apples	5 apples	Long 5 5 5	BD 5 0 10
+0 apples	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+0 apples	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+0 apples	\u221e	PE Unparseable number: "\u221e"@1	PE Unparseable number: "\u221e"@1
+0 apples	-\u221e	PE Unparseable number: "-\u221e"@2	PE Unparseable number: "-\u221e"@2
+0 apples	NaN	Double NaN 0 0	CCE
+0 apples		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+0 apples	1,2,3	PE Unparseable number: "1,2,3"@1	PE Unparseable number: "1,2,3"@1
+0 apples	1.2,3	PE Unparseable number: "1.2,3"@3	PE Unparseable number: "1.2,3"@3
+0 apples	3\u2030	PE Unparseable number: "3\u2030"@1	PE Unparseable number: "3\u2030"@1
+0 apples	0.5	PE Unparseable number: "0.5"@3	PE Unparseable number: "0.5"@3
+0 apples	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+0 apples	-0	PE Unparseable number: "-0"@2	PE Unparseable number: "-0"@2
+0 apples	7x	PE Unparseable number: "7x"@1	PE Unparseable number: "7x"@1
+0 apples	1E-2%	PE Unparseable number: "1E-2%"@4	PE Unparseable number: "1E-2%"@4
+0 apples	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+0 apples	9 apples	Long 9 9 9	BD 9 0 14
+abc	123	PE Unparseable number: "123"@0	PE Unparseable number: "123"@0
+abc	-123	PE Unparseable number: "-123"@0	PE Unparseable number: "-123"@0
+abc	1,234	PE Unparseable number: "1,234"@0	PE Unparseable number: "1,234"@0
+abc	1,234.5	PE Unparseable number: "1,234.5"@0	PE Unparseable number: "1,234.5"@0
+abc	12.50	PE Unparseable number: "12.50"@0	PE Unparseable number: "12.50"@0
+abc	1E3	PE Unparseable number: "1E3"@0	PE Unparseable number: "1E3"@0
+abc	50%	PE Unparseable number: "50%"@0	PE Unparseable number: "50%"@0
+abc	50	PE Unparseable number: "50"@0	PE Unparseable number: "50"@0
+abc	200	PE Unparseable number: "200"@0	PE Unparseable number: "200"@0
+abc	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+abc	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+abc	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+abc	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+abc	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+abc	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+abc	3-	PE Unparseable number: "3-"@0	PE Unparseable number: "3-"@0
+abc	-3	PE Unparseable number: "-3"@0	PE Unparseable number: "-3"@0
+abc	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+abc	5 apples	PE Unparseable number: "5 apples"@0	PE Unparseable number: "5 apples"@0
+abc	abc12	Long 12 12 12	BD 12 0 17
+abc	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+abc	\u221e	PE Unparseable number: "\u221e"@0	PE Unparseable number: "\u221e"@0
+abc	-\u221e	PE Unparseable number: "-\u221e"@0	PE Unparseable number: "-\u221e"@0
+abc	NaN	Double NaN 0 0	CCE
+abc		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+abc	1,2,3	PE Unparseable number: "1,2,3"@0	PE Unparseable number: "1,2,3"@0
+abc	1.2,3	PE Unparseable number: "1.2,3"@0	PE Unparseable number: "1.2,3"@0
+abc	3\u2030	PE Unparseable number: "3\u2030"@0	PE Unparseable number: "3\u2030"@0
+abc	0.5	PE Unparseable number: "0.5"@0	PE Unparseable number: "0.5"@0
+abc	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+abc	-0	PE Unparseable number: "-0"@0	PE Unparseable number: "-0"@0
+abc	7x	PE Unparseable number: "7x"@0	PE Unparseable number: "7x"@0
+abc	1E-2%	PE Unparseable number: "1E-2%"@0	PE Unparseable number: "1E-2%"@0
+abc	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+abc	9 apples	PE Unparseable number: "9 apples"@0	PE Unparseable number: "9 apples"@0
+0.0.0		IAE Multiple decimal separators in pattern "0.0.0"	
+0#0		IAE Unexpected '0' in pattern "0#0"	
+0E		IAE Malformed exponential pattern "0E"	
+0%%		IAE Too many percent/per mille characters in pattern "0%%"	
+0%\u2030		IAE Too many percent/per mille characters in pattern "0%\u2030"	
+;0		IAE Unquoted special character ';' in pattern ";0"	
+0;;		IAE Unquoted special character ';' in pattern "0;;"	
+'abc		IAE Malformed pattern "'abc"	
+#,#,##0	123	Long 123 123 123	BD 123 0 128
+#,#,##0	-123	Long -123 -123 -123	BD -123 0 -118
+#,#,##0	1,234	Long 1234 1234 1234	BD 1234 0 1239
+#,#,##0	1,234.5	Double 1234.5 1234 1234	BD 12345 1 AE Rounding necessary
+#,#,##0	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+#,#,##0	1E3	Long 1000 1000 1000	BD 1 -3 1005
+#,#,##0	50%	Long 50 50 50	BD 50 0 55
+#,#,##0	50	Long 50 50 50	BD 50 0 55
+#,#,##0	200	Long 200 200 200	BD 200 0 205
+#,#,##0	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+#,#,##0	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+#,#,##0	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+#,#,##0	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+#,#,##0	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+#,#,##0	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+#,#,##0	3-	Long 3 3 3	BD 3 0 8
+#,#,##0	-3	Long -3 -3 -3	BD -3 0 2
+#,#,##0	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+#,#,##0	5 apples	Long 5 5 5	BD 5 0 10
+#,#,##0	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+#,#,##0	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+#,#,##0	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+#,#,##0	-\u221e	Double -Infinity -9223372036854775808 -2147483648	CCE
+#,#,##0	NaN	Double NaN 0 0	CCE
+#,#,##0		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+#,#,##0	1,2,3	Long 123 123 123	BD 123 0 128
+#,#,##0	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+#,#,##0	3\u2030	Long 3 3 3	BD 3 0 8
+#,#,##0	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+#,#,##0	,5	Long 5 5 5	BD 5 0 10
+#,#,##0	-0	Double -0.0 0 0	BD 0 0 5
+#,#,##0	7x	Long 7 7 7	BD 7 0 12
+#,#,##0	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+#,#,##0	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+#,#,##0	9 apples	Long 9 9 9	BD 9 0 14
+0,		IAE Malformed pattern "0,"	
+0;0;0		IAE Unquoted special character ';' in pattern "0;0;0"	
+00.##E00	123	Long 123 123 123	BD 123 0 128
+00.##E00	-123	Long -123 -123 -123	BD -123 0 -118
+00.##E00	1,234	Long 1 1 1	BD 1 0 6
+00.##E00	1,234.5	Long 1 1 1	BD 1 0 6
+00.##E00	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+00.##E00	1E3	Long 1000 1000 1000	BD 1 -3 1005
+00.##E00	50%	Long 50 50 50	BD 50 0 55
+00.##E00	50	Long 50 50 50	BD 50 0 55
+00.##E00	200	Long 200 200 200	BD 200 0 205
+00.##E00	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+00.##E00	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+00.##E00	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+00.##E00	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+00.##E00	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+00.##E00	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+00.##E00	3-	Long 3 3 3	BD 3 0 8
+00.##E00	-3	Long -3 -3 -3	BD -3 0 2
+00.##E00	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+00.##E00	5 apples	Long 5 5 5	BD 5 0 10
+00.##E00	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+00.##E00	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+00.##E00	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+00.##E00	-\u221e	Double -Infinity -9223372036854775808 -2147483648	CCE
+00.##E00	NaN	Double NaN 0 0	CCE
+00.##E00		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+00.##E00	1,2,3	Long 1 1 1	BD 1 0 6
+00.##E00	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+00.##E00	3\u2030	Long 3 3 3	BD 3 0 8
+00.##E00	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+00.##E00	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+00.##E00	-0	Double -0.0 0 0	BD 0 0 5
+00.##E00	7x	Long 7 7 7	BD 7 0 12
+00.##E00	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+00.##E00	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+00.##E00	9 apples	Long 9 9 9	BD 9 0 14
+.E0		IAE Malformed exponential pattern ".E0"	
+0;x	123	Long 123 123 123	BD 123 0 128
+0;x	-123	PE Unparseable number: "-123"@0	PE Unparseable number: "-123"@0
+0;x	1,234	Long 1 1 1	BD 1 0 6
+0;x	1,234.5	Long 1 1 1	BD 1 0 6
+0;x	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+0;x	1E3	Long 1000 1000 1000	BD 1 -3 1005
+0;x	50%	Long 50 50 50	BD 50 0 55
+0;x	50	Long 50 50 50	BD 50 0 55
+0;x	200	Long 200 200 200	BD 200 0 205
+0;x	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+0;x	x5y	Long -5 -5 -5	BD -5 0 0
+0;x	x5	Long -5 -5 -5	BD -5 0 0
+0;x	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+0;x	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+0;x	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+0;x	3-	Long 3 3 3	BD 3 0 8
+0;x	-3	PE Unparseable number: "-3"@0	PE Unparseable number: "-3"@0
+0;x	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+0;x	5 apples	Long 5 5 5	BD 5 0 10
+0;x	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+0;x	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+0;x	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+0;x	-\u221e	PE Unparseable number: "-\u221e"@0	PE Unparseable number: "-\u221e"@0
+0;x	NaN	Double NaN 0 0	CCE
+0;x		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+0;x	1,2,3	Long 1 1 1	BD 1 0 6
+0;x	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+0;x	3\u2030	Long 3 3 3	BD 3 0 8
+0;x	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+0;x	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+0;x	-0	PE Unparseable number: "-0"@0	PE Unparseable number: "-0"@0
+0;x	7x	Long 7 7 7	BD 7 0 12
+0;x	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+0;x	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+0;x	9 apples	Long 9 9 9	BD 9 0 14
+#,##,###0	123	Long 123 123 123	BD 123 0 128
+#,##,###0	-123	Long -123 -123 -123	BD -123 0 -118
+#,##,###0	1,234	Long 1234 1234 1234	BD 1234 0 1239
+#,##,###0	1,234.5	Double 1234.5 1234 1234	BD 12345 1 AE Rounding necessary
+#,##,###0	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+#,##,###0	1E3	Long 1000 1000 1000	BD 1 -3 1005
+#,##,###0	50%	Long 50 50 50	BD 50 0 55
+#,##,###0	50	Long 50 50 50	BD 50 0 55
+#,##,###0	200	Long 200 200 200	BD 200 0 205
+#,##,###0	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+#,##,###0	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+#,##,###0	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+#,##,###0	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+#,##,###0	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+#,##,###0	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+#,##,###0	3-	Long 3 3 3	BD 3 0 8
+#,##,###0	-3	Long -3 -3 -3	BD -3 0 2
+#,##,###0	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+#,##,###0	5 apples	Long 5 5 5	BD 5 0 10
+#,##,###0	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+#,##,###0	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+#,##,###0	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+#,##,###0	-\u221e	Double -Infinity -9223372036854775808 -2147483648	CCE
+#,##,###0	NaN	Double NaN 0 0	CCE
+#,##,###0		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+#,##,###0	1,2,3	Long 123 123 123	BD 123 0 128
+#,##,###0	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+#,##,###0	3\u2030	Long 3 3 3	BD 3 0 8
+#,##,###0	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+#,##,###0	,5	Long 5 5 5	BD 5 0 10
+#,##,###0	-0	Double -0.0 0 0	BD 0 0 5
+#,##,###0	7x	Long 7 7 7	BD 7 0 12
+#,##,###0	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+#,##,###0	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+#,##,###0	9 apples	Long 9 9 9	BD 9 0 14
+0'%'	123	PE Unparseable number: "123"@3	PE Unparseable number: "123"@3
+0'%'	-123	PE Unparseable number: "-123"@4	PE Unparseable number: "-123"@4
+0'%'	1,234	PE Unparseable number: "1,234"@1	PE Unparseable number: "1,234"@1
+0'%'	1,234.5	PE Unparseable number: "1,234.5"@1	PE Unparseable number: "1,234.5"@1
+0'%'	12.50	PE Unparseable number: "12.50"@5	PE Unparseable number: "12.50"@5
+0'%'	1E3	PE Unparseable number: "1E3"@3	PE Unparseable number: "1E3"@3
+0'%'	50%	Long 50 50 50	BD 50 0 55
+0'%'	50	PE Unparseable number: "50"@2	PE Unparseable number: "50"@2
+0'%'	200	PE Unparseable number: "200"@3	PE Unparseable number: "200"@3
+0'%'	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+0'%'	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+0'%'	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+0'%'	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+0'%'	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+0'%'	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+0'%'	3-	PE Unparseable number: "3-"@1	PE Unparseable number: "3-"@1
+0'%'	-3	PE Unparseable number: "-3"@2	PE Unparseable number: "-3"@2
+0'%'	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+0'%'	5 apples	PE Unparseable number: "5 apples"@1	PE Unparseable number: "5 apples"@1
+0'%'	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+0'%'	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+0'%'	\u221e	PE Unparseable number: "\u221e"@1	PE Unparseable number: "\u221e"@1
+0'%'	-\u221e	PE Unparseable number: "-\u221e"@2	PE Unparseable number: "-\u221e"@2
+0'%'	NaN	Double NaN 0 0	CCE
+0'%'		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+0'%'	1,2,3	PE Unparseable number: "1,2,3"@1	PE Unparseable number: "1,2,3"@1
+0'%'	1.2,3	PE Unparseable number: "1.2,3"@3	PE Unparseable number: "1.2,3"@3
+0'%'	3\u2030	PE Unparseable number: "3\u2030"@1	PE Unparseable number: "3\u2030"@1
+0'%'	0.5	PE Unparseable number: "0.5"@3	PE Unparseable number: "0.5"@3
+0'%'	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+0'%'	-0	PE Unparseable number: "-0"@2	PE Unparseable number: "-0"@2
+0'%'	7x	PE Unparseable number: "7x"@1	PE Unparseable number: "7x"@1
+0'%'	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+0'%'	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+0'%'	9 apples	PE Unparseable number: "9 apples"@1	PE Unparseable number: "9 apples"@1
+0;-0x	123	Long 123 123 123	BD 123 0 128
+0;-0x	-123	PE Unparseable number: "-123"@4	PE Unparseable number: "-123"@4
+0;-0x	1,234	Long 1 1 1	BD 1 0 6
+0;-0x	1,234.5	Long 1 1 1	BD 1 0 6
+0;-0x	12.50	Double 12.5 12 12	BD 1250 2 AE Rounding necessary
+0;-0x	1E3	Long 1000 1000 1000	BD 1 -3 1005
+0;-0x	50%	Long 50 50 50	BD 50 0 55
+0;-0x	50	Long 50 50 50	BD 50 0 55
+0;-0x	200	Long 200 200 200	BD 200 0 205
+0;-0x	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+0;-0x	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+0;-0x	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+0;-0x	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+0;-0x	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+0;-0x	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+0;-0x	3-	Long 3 3 3	BD 3 0 8
+0;-0x	-3	PE Unparseable number: "-3"@2	PE Unparseable number: "-3"@2
+0;-0x	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+0;-0x	5 apples	Long 5 5 5	BD 5 0 10
+0;-0x	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+0;-0x	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+0;-0x	\u221e	Double Infinity 9223372036854775807 2147483647	CCE
+0;-0x	-\u221e	PE Unparseable number: "-\u221e"@2	PE Unparseable number: "-\u221e"@2
+0;-0x	NaN	Double NaN 0 0	CCE
+0;-0x		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+0;-0x	1,2,3	Long 1 1 1	BD 1 0 6
+0;-0x	1.2,3	Double 1.2 1 1	BD 12 1 AE Rounding necessary
+0;-0x	3\u2030	Long 3 3 3	BD 3 0 8
+0;-0x	0.5	Double 0.5 0 0	BD 5 1 AE Rounding necessary
+0;-0x	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+0;-0x	-0	PE Unparseable number: "-0"@2	PE Unparseable number: "-0"@2
+0;-0x	7x	Long 7 7 7	BD 7 0 12
+0;-0x	1E-2%	Double 0.01 0 0	BD 1 2 AE Rounding necessary
+0;-0x	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+0;-0x	9 apples	Long 9 9 9	BD 9 0 14
+''0	123	PE Unparseable number: "123"@0	PE Unparseable number: "123"@0
+''0	-123	PE Unparseable number: "-123"@0	PE Unparseable number: "-123"@0
+''0	1,234	PE Unparseable number: "1,234"@0	PE Unparseable number: "1,234"@0
+''0	1,234.5	PE Unparseable number: "1,234.5"@0	PE Unparseable number: "1,234.5"@0
+''0	12.50	PE Unparseable number: "12.50"@0	PE Unparseable number: "12.50"@0
+''0	1E3	PE Unparseable number: "1E3"@0	PE Unparseable number: "1E3"@0
+''0	50%	PE Unparseable number: "50%"@0	PE Unparseable number: "50%"@0
+''0	50	PE Unparseable number: "50"@0	PE Unparseable number: "50"@0
+''0	200	PE Unparseable number: "200"@0	PE Unparseable number: "200"@0
+''0	(7)	PE Unparseable number: "(7)"@0	PE Unparseable number: "(7)"@0
+''0	x5y	PE Unparseable number: "x5y"@0	PE Unparseable number: "x5y"@0
+''0	x5	PE Unparseable number: "x5"@0	PE Unparseable number: "x5"@0
+''0	it's9	PE Unparseable number: "it's9"@0	PE Unparseable number: "it's9"@0
+''0	\u00a43	PE Unparseable number: "\u00a43"@0	PE Unparseable number: "\u00a43"@0
+''0	XXX3	PE Unparseable number: "XXX3"@0	PE Unparseable number: "XXX3"@0
+''0	3-	PE Unparseable number: "3-"@0	PE Unparseable number: "3-"@0
+''0	-3	PE Unparseable number: "-3"@0	PE Unparseable number: "-3"@0
+''0	+3	PE Unparseable number: "+3"@0	PE Unparseable number: "+3"@0
+''0	5 apples	PE Unparseable number: "5 apples"@0	PE Unparseable number: "5 apples"@0
+''0	abc12	PE Unparseable number: "abc12"@0	PE Unparseable number: "abc12"@0
+''0	abc	PE Unparseable number: "abc"@0	PE Unparseable number: "abc"@0
+''0	\u221e	PE Unparseable number: "\u221e"@0	PE Unparseable number: "\u221e"@0
+''0	-\u221e	PE Unparseable number: "-\u221e"@0	PE Unparseable number: "-\u221e"@0
+''0	NaN	Double NaN 0 0	CCE
+''0		PE Unparseable number: ""@0	PE Unparseable number: ""@0
+''0	1,2,3	PE Unparseable number: "1,2,3"@0	PE Unparseable number: "1,2,3"@0
+''0	1.2,3	PE Unparseable number: "1.2,3"@0	PE Unparseable number: "1.2,3"@0
+''0	3\u2030	PE Unparseable number: "3\u2030"@0	PE Unparseable number: "3\u2030"@0
+''0	0.5	PE Unparseable number: "0.5"@0	PE Unparseable number: "0.5"@0
+''0	,5	PE Unparseable number: ",5"@0	PE Unparseable number: ",5"@0
+''0	-0	PE Unparseable number: "-0"@0	PE Unparseable number: "-0"@0
+''0	7x	PE Unparseable number: "7x"@0	PE Unparseable number: "7x"@0
+''0	1E-2%	PE Unparseable number: "1E-2%"@0	PE Unparseable number: "1E-2%"@0
+''0	-(7)	PE Unparseable number: "-(7)"@0	PE Unparseable number: "-(7)"@0
+''0	9 apples	PE Unparseable number: "9 apples"@0	PE Unparseable number: "9 apples"@0
+0.#E0E0		IAE Unexpected '0' in pattern "0.#E0E0"	

@@ -28,6 +28,7 @@ use rucene::store::{ByteBuffersDataOutput, DataOutput, IndexOutput};
 use rucene::util::{BytesRef, FixedBitSet, IOUtils};
 
 use super::terms_index_writer_base::{FieldWriter, TermsIndexWriterBase};
+use crate::java_util::{null_pointer, null_receiver};
 
 pub(crate) const CODEC_NAME: &str = "BlockTermsWriter";
 
@@ -64,8 +65,14 @@ pub struct BlockTermsWriter {
     fields: Vec<FieldMetaData>,
 }
 
-fn closed() -> LuceneError {
-    LuceneError::already_closed("this IndexOutput is closed")
+/// The `NullPointerException` of `out.<method>` once `close()` has set
+/// `out = null`, `receiver` being how the calling class reaches `out`
+/// (`this.out` here, `this.this$0.out` in `TermsWriter`).
+fn closed(method: &str, receiver: &str) -> LuceneError {
+    null_receiver(
+        &format!("org.apache.lucene.store.IndexOutput.{method}"),
+        receiver,
+    )
 }
 
 impl BlockTermsWriter {
@@ -126,28 +133,31 @@ impl BlockTermsWriter {
                 fields: Vec::new(),
             }),
             Err(e) => {
-                // The callers' `finally { docs.close(); indexWriter.close(); }`.
+                // The callers' `finally { try { docs.close(); } finally {
+                // indexWriter.close(); } }`: a `finally` that throws
+                // replaces the exception of its `try`.
                 let docs = postings_writer.close();
                 let index = terms_index_writer.close();
-                docs?;
                 index?;
+                docs?;
                 Err(e)
             }
         }
     }
 
-    fn out(&mut self) -> Result<&mut Box<dyn IndexOutput>> {
-        self.out.as_mut().ok_or_else(closed)
+    /// `out`, for an `out.<method>` call reached through `receiver`.
+    fn out(&mut self, method: &str, receiver: &str) -> Result<&mut Box<dyn IndexOutput>> {
+        self.out.as_mut().ok_or_else(|| closed(method, receiver))
     }
 
     /// Port of the private `BlockTermsWriter.addField(FieldInfo)`.
     fn add_field(&mut self, field: &FieldInfo) -> Result<TermsWriter> {
-        debug_assert!(self
-            .current_field
-            .as_deref()
-            .is_none_or(|current| current < field.name.as_str()));
+        debug_assert!(self.current_field.as_deref().is_none_or(|current| {
+            rucene::util::java_collections::java_compare_to(current, &field.name)
+                == std::cmp::Ordering::Less
+        }));
         self.current_field = Some(field.name.clone());
-        let fp = self.out()?.file_pointer();
+        let fp = self.out("getFilePointer()", "this.out")?.file_pointer();
         let field_index_writer = self.terms_index_writer.add_field(field, fp)?;
         TermsWriter::new(self, field_index_writer, field)
     }
@@ -160,16 +170,24 @@ impl FieldsConsumer for BlockTermsWriter {
                 continue;
             };
             let mut terms_enum = terms.iterator()?;
-            let field_info = self
-                .field_infos
-                .field_info(&field)
-                .cloned()
-                .ok_or_else(|| {
-                    LuceneError::unchecked(
-                        "java.lang.NullPointerException",
-                        "Cannot read field \"name\" because \"field\" is null",
-                    )
-                })?;
+            let field_info = self.field_infos.field_info(&field).cloned();
+            // `addField(null)`: its assertion reads `field.name` under `-ea`
+            // once a field was added; then `out.getFilePointer()` is
+            // evaluated; the null first meets a dereference in
+            // `postingsWriter.setField(fieldInfo)`
+            // (`PushPostingsWriterBase.java:86-88`).
+            if cfg!(debug_assertions) && field_info.is_none() && self.current_field.is_some() {
+                return Err(null_pointer(
+                    "Cannot read field \"name\" because \"field\" is null",
+                ));
+            }
+            self.out("getFilePointer()", "this.out")?;
+            let field_info = field_info.ok_or_else(|| {
+                null_pointer(
+                    "Cannot invoke \"org.apache.lucene.index.FieldInfo.getIndexOptions()\" \
+                     because \"fieldInfo\" is null",
+                )
+            })?;
             let mut terms_writer = self.add_field(&field_info)?;
             while let Some(term) = terms_enum.next()? {
                 terms_writer.write(self, &term, terms_enum.as_mut(), norms)?;
@@ -248,7 +266,7 @@ impl TermsWriter {
         field_info: &FieldInfo,
     ) -> Result<Self> {
         let docs_seen = FixedBitSet::new(w.max_doc as usize);
-        let terms_start_pointer = w.out()?.file_pointer();
+        let terms_start_pointer = w.out("getFilePointer()", "this$0.out")?.file_pointer();
         w.postings_writer.set_field(field_info)?;
         Ok(Self {
             field_info: field_info.clone(),
@@ -294,7 +312,7 @@ impl TermsWriter {
                 // entire block in between index terms:
                 self.flush_block(w)?;
             }
-            let fp = w.out()?.file_pointer();
+            let fp = w.out("getFilePointer()", "this.this$0.out")?.file_pointer();
             self.field_index_writer.add(text, &stats, fp)?;
         }
 
@@ -312,7 +330,7 @@ impl TermsWriter {
             self.flush_block(w)?;
         }
         // EOF marker:
-        let out = w.out()?;
+        let out = w.out("writeVInt(int)", "this.this$0.out")?;
         out.write_v_int(0)?;
         let fp = out.file_pointer();
         self.field_index_writer.finish(fp)?;
@@ -350,7 +368,9 @@ impl TermsWriter {
             postings_writer,
             ..
         } = w;
-        let out = out.as_mut().ok_or_else(closed)?;
+        let out = out
+            .as_mut()
+            .ok_or_else(|| closed("writeVInt(int)", "this.this$0.out"))?;
         out.write_v_int(self.pending_terms.len() as i32)?;
         out.write_v_int(common_prefix as i32)?;
 
@@ -405,5 +425,158 @@ impl TermsWriter {
         self.last_prev_term = last.term;
         self.pending_terms.clear();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod constructor_failure_tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, segment_info};
+    use rucene::codecs::NormsProducer;
+    use rucene::index::documents_writer::BufferedUpdates;
+    use rucene::index::{FieldInfos, TermsEnum};
+    use rucene::store::{DataOutput, DefaultIOContext, DEFAULT_IO_CONTEXT};
+    use rucene::util::{BytesRef, NoOutputInfoStream};
+    use std::sync::Arc;
+
+    struct FailingPostingsWriter;
+
+    impl PostingsWriterBase for FailingPostingsWriter {
+        fn init(&mut self, _: &mut dyn IndexOutput, _: &SegmentWriteState) -> Result<()> {
+            Ok(())
+        }
+        fn write_term(
+            &mut self,
+            _: &BytesRef,
+            _: &mut dyn TermsEnum,
+            _: &mut FixedBitSet,
+            _: Option<&dyn NormsProducer>,
+        ) -> Result<Option<BlockTermState>> {
+            unreachable!("not reached by the test")
+        }
+        fn encode_term(
+            &mut self,
+            _: &mut dyn DataOutput,
+            _: &FieldInfo,
+            _: &BlockTermState,
+            _: bool,
+        ) -> Result<()> {
+            unreachable!("not reached by the test")
+        }
+        fn set_field(&mut self, _: &FieldInfo) -> Result<()> {
+            Ok(())
+        }
+        fn close(&mut self) -> Result<()> {
+            Err(LuceneError::illegal_state(
+                "postings close failed".to_string(),
+            ))
+        }
+    }
+
+    struct FailingIndexWriter;
+
+    impl TermsIndexWriterBase for FailingIndexWriter {
+        fn add_field(&mut self, _: &FieldInfo, _: i64) -> Result<Box<dyn FieldWriter>> {
+            unreachable!("not reached by the test")
+        }
+        fn close(&mut self) -> Result<()> {
+            Err(LuceneError::illegal_state("index close failed".to_string()))
+        }
+    }
+
+    /// Regression (rmp #527): when the constructor fails, Java's callers run
+    /// `try { docs.close(); } finally { indexWriter.close(); }`, so the index
+    /// writer's exception is the one that propagates.
+    #[test]
+    fn failed_open_raises_the_index_writers_close_error() {
+        let dir = directory();
+        // The terms file exists already, so `createOutput` fails.
+        dir.create_output("_0.tib", &*DEFAULT_IO_CONTEXT)
+            .unwrap()
+            .close()
+            .unwrap();
+        let si = segment_info(&dir, "_0", 1);
+        let field_infos = FieldInfos::new(Vec::new()).unwrap();
+        let updates = BufferedUpdates::default();
+        let context = DefaultIOContext::default();
+        let state = SegmentWriteState::new(
+            &NoOutputInfoStream,
+            Arc::clone(&dir),
+            &si,
+            &field_infos,
+            &updates,
+            &context,
+        );
+        let err = BlockTermsWriter::new(
+            Box::new(FailingIndexWriter),
+            &state,
+            Box::new(FailingPostingsWriter),
+        )
+        .err()
+        .expect("the terms file already exists");
+        assert!(err.to_string().contains("index close failed"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod use_after_close_tests {
+    use super::*;
+    use crate::blockterms::FixedGapTermsIndexWriter;
+    use crate::simpletext::test_support::{directory, segment_info};
+    use rucene::codecs::Lucene104PostingsWriter;
+    use rucene::index::documents_writer::BufferedUpdates;
+    use rucene::index::{EmptyTerms, Terms};
+    use rucene::store::DefaultIOContext;
+    use rucene::util::NoOutputInfoStream;
+    use std::sync::Arc;
+
+    /// One field, `f`, with no terms.
+    struct OneField;
+
+    impl Fields for OneField {
+        fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            Box::new(std::iter::once("f".to_string()))
+        }
+        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+            Ok(Some(Box::new(EmptyTerms::new())))
+        }
+        fn size(&self) -> i32 {
+            1
+        }
+    }
+
+    /// Regression (rmp #527): after `close()` set `out = null`, `write`
+    /// reaches `addField`'s `out.getFilePointer()` and raises Java's
+    /// `NullPointerException`, not an `AlreadyClosedException`.
+    #[test]
+    fn write_after_close_is_javas_null_pointer_exception() {
+        let dir = directory();
+        let si = segment_info(&dir, "_0", 1);
+        let field_infos = FieldInfos::new(Vec::new()).unwrap();
+        let updates = BufferedUpdates::default();
+        let context = DefaultIOContext::default();
+        let state = SegmentWriteState::new(
+            &NoOutputInfoStream,
+            Arc::clone(&dir),
+            &si,
+            &field_infos,
+            &updates,
+            &context,
+        );
+        let index_writer = Box::new(FixedGapTermsIndexWriter::new(&state).unwrap());
+        let postings_writer = Box::new(Lucene104PostingsWriter::new(&state).unwrap());
+        let mut writer = BlockTermsWriter::new(index_writer, &state, postings_writer).unwrap();
+        writer.close().unwrap();
+        let err = writer
+            .write(&OneField, None)
+            .expect_err("out is null")
+            .to_string();
+        assert!(
+            err.contains(
+                "Cannot invoke \"org.apache.lucene.store.IndexOutput.getFilePointer()\" \
+                 because \"this.out\" is null"
+            ),
+            "{err}"
+        );
     }
 }

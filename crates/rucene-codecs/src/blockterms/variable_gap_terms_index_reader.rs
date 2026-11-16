@@ -117,7 +117,6 @@ impl VariableGapTermsIndexReader {
         let mut field = meta_in.read_int()?;
         while field != -1 {
             let index_start = meta_in.read_v_long()?;
-            let field_info = field_info_by_number(state, field)?;
             if index_in.file_pointer()? != index_start {
                 return Err(LuceneError::corrupt_index(
                     format!(
@@ -129,6 +128,9 @@ impl VariableGapTermsIndexReader {
             }
             let metadata = FST::read_metadata(meta_in, PositiveIntOutputs::get_singleton())?;
             let fst = FST::new(metadata, index_in)?;
+            // `fields.put(fieldInfo.name, fst)`: a missing field's `null` is
+            // dereferenced only here, after the gap check and the FST read.
+            let field_info = field_info_by_number(state, field)?;
             if fields
                 .insert(field_info.name.clone(), Arc::new(fst))
                 .is_some()
@@ -223,5 +225,53 @@ impl fmt::Display for VariableGapTermsIndexReader {
             "VariableGapTermsIndexReader(fields={})",
             self.fields.len()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, segment_info};
+    use rucene::codecs::codec_util::{write_footer, write_index_header};
+    use rucene::index::FieldInfos;
+    use rucene::store::{Directory, IndexOutput, DEFAULT_IO_CONTEXT};
+
+    fn write(
+        dir: &dyn Directory,
+        name: &str,
+        codec: &str,
+        body: impl FnOnce(&mut dyn IndexOutput),
+    ) {
+        let mut out = dir.create_output(name, &*DEFAULT_IO_CONTEXT).unwrap();
+        write_index_header(out.as_mut(), codec, VERSION_CURRENT, &[0u8; 16], "").unwrap();
+        body(out.as_mut());
+        write_footer(out.as_mut()).unwrap();
+        out.close().unwrap();
+    }
+
+    /// Regression (rmp #527): Java looks the field up without dereferencing
+    /// it, checks the FST position, reads the FST, and only then reads
+    /// `fieldInfo.name`; so a meta file whose unknown field also has a gap
+    /// raises the gap's `CorruptIndexException`, not a `NullPointerException`.
+    #[test]
+    fn gap_is_reported_before_the_missing_field() {
+        let dir = directory();
+        let si = segment_info(&dir, "_0", 1);
+        write(dir.as_ref(), "_0.tmv", META_CODEC_NAME, |out| {
+            out.write_int(99).unwrap();
+            out.write_v_long(12345).unwrap();
+        });
+        write(dir.as_ref(), "_0.tiv", CODEC_NAME, |_| {});
+        let infos = FieldInfos::new(Vec::new()).unwrap();
+        let state = SegmentReadState::new(dir.as_ref(), &si, &infos, &*DEFAULT_IO_CONTEXT);
+        let err = VariableGapTermsIndexReader::new(&state)
+            .err()
+            .expect("the gap is corrupt");
+        let message = err.to_string();
+        assert!(
+            message.contains("Gap in FST, expected position"),
+            "{message}"
+        );
+        assert!(message.contains("got 12345"), "{message}");
     }
 }

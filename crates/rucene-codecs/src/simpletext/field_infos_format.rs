@@ -27,7 +27,7 @@ use rucene::index::{
 use rucene::store::{Directory, IOContext};
 use rucene::util::java_collections::{JavaHashMap, JavaStringMap};
 
-use super::util::{self, bool_str, parse_boolean, parse_int, parse_long, read_line, read_string};
+use super::util::{self, bool_str, parse_boolean, parse_int, parse_long, JavaScratch};
 
 /// Extension of field infos.
 pub(crate) const FIELD_INFOS_EXTENSION: &str = "inf";
@@ -171,10 +171,6 @@ pub(crate) fn enum_name<T: std::fmt::Debug>(value: T) -> String {
     format!("{value:?}")
 }
 
-fn read_str(offset: usize, scratch: &[u8]) -> String {
-    read_string(scratch, offset)
-}
-
 impl FieldInfosFormat for SimpleTextFieldInfosFormat {
     fn name(&self) -> &str {
         "SimpleTextFieldInfosFormat"
@@ -194,102 +190,106 @@ impl FieldInfosFormat for SimpleTextFieldInfosFormat {
         // `success ? input.close() : IOUtils.closeWhileHandlingException(input)`
         // in the `finally` (`SimpleTextFieldInfosFormat.java:85-218`).
         let result = (|| -> Result<_> {
-            let mut scratch = Vec::new();
+            let mut scratch = JavaScratch::new();
 
-            read_line(input.as_mut(), &mut scratch)?;
+            scratch.read_line(input.as_mut())?;
             debug_assert!(scratch.starts_with(NUMFIELDS));
-            let size = parse_int(&read_str(NUMFIELDS.len(), &scratch))?;
+            let size = parse_int(&scratch.new_string(NUMFIELDS.len())?)?;
+            // `new FieldInfo[size]` (`SimpleTextFieldInfosFormat.java:91`).
+            if size < 0 {
+                return Err(util::negative_array_size(size));
+            }
             let mut infos = Vec::with_capacity(size.max(0) as usize);
 
             for _ in 0..size {
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(NAME));
-                let name = read_str(NAME.len(), &scratch);
+                let name = scratch.new_string(NAME.len())?;
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(NUMBER));
-                let field_number = parse_int(&read_str(NUMBER.len(), &scratch))?;
+                let field_number = parse_int(&scratch.new_string(NUMBER.len())?)?;
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(INDEXOPTIONS));
-                let s = read_str(INDEXOPTIONS.len(), &scratch);
+                let s = scratch.new_string(INDEXOPTIONS.len())?;
                 let index_options = index_options_value_of(&s)?;
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(STORETV));
-                let store_term_vector = parse_boolean(&read_str(STORETV.len(), &scratch));
+                let store_term_vector = parse_boolean(&scratch.new_string(STORETV.len())?);
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(PAYLOADS));
-                let store_payloads = parse_boolean(&read_str(PAYLOADS.len(), &scratch));
+                let store_payloads = parse_boolean(&scratch.new_string(PAYLOADS.len())?);
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(NORMS));
-                let omit_norms = !parse_boolean(&read_str(NORMS.len(), &scratch));
+                let omit_norms = !parse_boolean(&scratch.new_string(NORMS.len())?);
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(DOCVALUES));
-                let dv_type = read_str(DOCVALUES.len(), &scratch);
+                let dv_type = scratch.new_string(DOCVALUES.len())?;
                 let doc_values_type = self.doc_values_type(&dv_type)?;
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(DOCVALUES_SKIP_INDEX));
                 let doc_value_skipper = self
-                    .doc_values_skip_index_type(&read_str(DOCVALUES_SKIP_INDEX.len(), &scratch))?;
+                    .doc_values_skip_index_type(&scratch.new_string(DOCVALUES_SKIP_INDEX.len())?)?;
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(DOCVALUES_GEN));
-                let dv_gen = parse_long(&read_str(DOCVALUES_GEN.len(), &scratch))?;
+                let dv_gen = parse_long(&scratch.new_string(DOCVALUES_GEN.len())?)?;
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(NUM_ATTS));
-                let num_atts = parse_int(&read_str(NUM_ATTS.len(), &scratch))?;
+                let num_atts = parse_int(&scratch.new_string(NUM_ATTS.len())?)?;
                 let mut atts = JavaHashMap::new();
 
                 for _ in 0..num_atts {
-                    read_line(input.as_mut(), &mut scratch)?;
+                    scratch.read_line(input.as_mut())?;
                     debug_assert!(scratch.starts_with(ATT_KEY));
-                    let key = read_str(ATT_KEY.len(), &scratch);
+                    let key = scratch.new_string(ATT_KEY.len())?;
 
-                    read_line(input.as_mut(), &mut scratch)?;
+                    scratch.read_line(input.as_mut())?;
                     debug_assert!(scratch.starts_with(ATT_VALUE));
-                    let value = read_str(ATT_VALUE.len(), &scratch);
+                    let value = scratch.new_string(ATT_VALUE.len())?;
                     atts.insert(key, value);
                 }
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(DATA_DIM_COUNT));
-                let dimensional_count = parse_int(&read_str(DATA_DIM_COUNT.len(), &scratch))?;
+                let dimensional_count = parse_int(&scratch.new_string(DATA_DIM_COUNT.len())?)?;
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(INDEX_DIM_COUNT));
                 let index_dimensional_count =
-                    parse_int(&read_str(INDEX_DIM_COUNT.len(), &scratch))?;
+                    parse_int(&scratch.new_string(INDEX_DIM_COUNT.len())?)?;
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(DIM_NUM_BYTES));
-                let dimensional_num_bytes = parse_int(&read_str(DIM_NUM_BYTES.len(), &scratch))?;
+                let dimensional_num_bytes = parse_int(&scratch.new_string(DIM_NUM_BYTES.len())?)?;
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(VECTOR_NUM_DIMS));
-                let vector_num_dimensions = parse_int(&read_str(VECTOR_NUM_DIMS.len(), &scratch))?;
+                let vector_num_dimensions = parse_int(&scratch.new_string(VECTOR_NUM_DIMS.len())?)?;
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(VECTOR_ENCODING));
-                let encoding = read_str(VECTOR_ENCODING.len(), &scratch);
+                let encoding = scratch.new_string(VECTOR_ENCODING.len())?;
                 let vector_encoding = self.vector_encoding(&encoding)?;
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(VECTOR_SIMILARITY));
-                let score_function = read_str(VECTOR_SIMILARITY.len(), &scratch);
+                let score_function = scratch.new_string(VECTOR_SIMILARITY.len())?;
                 let vector_dist_func = self.distance_function(&score_function)?;
 
-                read_line(input.as_mut(), &mut scratch)?;
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(SOFT_DELETES));
-                let is_soft_deletes_field = parse_boolean(&read_str(SOFT_DELETES.len(), &scratch));
-                read_line(input.as_mut(), &mut scratch)?;
+                let is_soft_deletes_field = parse_boolean(&scratch.new_string(SOFT_DELETES.len())?);
+                scratch.read_line(input.as_mut())?;
                 debug_assert!(scratch.starts_with(PARENT));
-                let is_parent_field = parse_boolean(&read_str(PARENT.len(), &scratch));
+                let is_parent_field = parse_boolean(&scratch.new_string(PARENT.len())?);
 
                 infos.push(FieldInfo::new_full(
                     name,
@@ -441,5 +441,30 @@ impl FieldInfosFormat for SimpleTextFieldInfosFormat {
                 Err(error)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simpletext::test_support::{directory, segment_info, unchecked, write_file};
+    use rucene::store::DEFAULT_IO_CONTEXT;
+
+    /// Regression (rmp #526): `new FieldInfo[size]` rejects a negative field
+    /// count with `NegativeArraySizeException`
+    /// (`SimpleTextFieldInfosFormat.java:91`); the port read zero fields and
+    /// failed on the footer instead.
+    #[test]
+    fn negative_field_count_is_a_negative_array_size() {
+        let dir = directory();
+        write_file(dir.as_ref(), "_0.inf", &["number of fields -2"], true);
+        let si = segment_info(&dir, "_0", 1);
+        let error = SimpleTextFieldInfosFormat::new()
+            .read(dir.as_ref(), &si, "", &*DEFAULT_IO_CONTEXT)
+            .unwrap_err();
+        assert_eq!(
+            unchecked(&error),
+            ("java.lang.NegativeArraySizeException", "-2".to_string())
+        );
     }
 }

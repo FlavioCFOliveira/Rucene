@@ -300,10 +300,18 @@ impl<'o, L: WriterLine> BlockWriter<'o, L> {
         }
         let delta_start = num_lines - self.delta_num_lines * 2;
         java_assert!(delta_start >= 1, "blockLines size: {num_lines}");
+        if delta_start < 0 {
+            // `blockLines.get(deltaStart)` without `-ea` (`ArrayList.get`'s
+            // `Objects.checkIndex`).
+            return Err(LuceneError::unchecked(
+                "java.lang.IndexOutOfBoundsException",
+                format!("Index {delta_start} out of bounds for length {num_lines}"),
+            ));
+        }
         let mut min_mdp_length = i32::MAX;
         let mut min_mdp_end_index = 0usize;
 
-        for i in delta_start.max(0)..num_lines {
+        for i in delta_start..num_lines {
             let term = self.block_lines[i as usize].block_line().get_term_bytes();
             let mdp_length = term.get_mdp_length();
             if mdp_length <= min_mdp_length {
@@ -378,8 +386,11 @@ impl<'o, L: WriterLine> BlockWriter<'o, L> {
                     &mut self.block_write_buffer.to_data_input()?,
                     self.block_write_buffer.size() as i64,
                 )?;
-                let size = usize::try_from(encoded_bytes.size()).unwrap_or(usize::MAX);
-                self.block_output.write_v_int(to_int_exact(size)?)?;
+                // `Math.toIntExact(encodedBytes.size())` on the `long`.
+                let size = i32::try_from(encoded_bytes.size()).map_err(|_| {
+                    LuceneError::unchecked("java.lang.ArithmeticException", "integer overflow")
+                })?;
+                self.block_output.write_v_int(size)?;
                 encoded_bytes.write_to(&mut *self.block_output)?;
             }
         }
