@@ -31,24 +31,20 @@
 //!
 //! # Divergences
 //!
-//! Rust's [`DocIdSetIterator::doc_id`], [`DocIdSetIterator::cost`],
-//! [`DocIdSetIterator::doc_id_run_end`] and [`TwoPhaseIterator::match_cost`]
-//! take `&self`, while the wrapped scorer only lends its iterator and its
-//! two-phase view through `&mut self`. So:
+//! Rust's [`DocIdSetIterator::doc_id`], [`DocIdSetIterator::cost`] and
+//! [`TwoPhaseIterator::match_cost`] take `&self`, while the wrapped scorer
+//! only lends its iterator and its two-phase view through `&mut self`. So:
 //!
-//! * the iterator view's `docID()` returns the wrapped scorer's
-//!   [`Scorer::doc_id`] and cannot assert Java's
+//! * the iterator view's `docID()`, called from outside, returns the wrapped
+//!   scorer's [`Scorer::doc_id`] and cannot assert Java's
 //!   `AssertingScorer.this.in.docID() == in.docID()`; the two are the same
-//!   position under the `Scorer` contract, and `nextDoc`/`advance` still
-//!   assert it;
+//!   position under the `Scorer` contract. The `docID()` calls inside
+//!   `nextDoc`, `intoBitSet` and `docIDRunEnd` run that assertion and read
+//!   the wrapped iterator, as Java's do;
 //! * the costs and the match cost are read from the wrapped iterator when the
 //!   view is handed out (`wrap` for the iterator, `two_phase_iterator` for the
 //!   approximation and the match cost), and the match cost assertions run when
-//!   the cached value is read;
-//! * the iterator view's `docIDRunEnd()` asserts the state as Java does, then
-//!   returns [`DocIdSetIterator`]'s default `docID() + 1` instead of the
-//!   wrapped iterator's run end, as the core's `ScorerAsIterator` does; the
-//!   value is a valid run end, only a shorter one.
+//!   the cached value is read.
 //!
 //! The messages that embed the wrapped scorer's `toString()` (`" " + in`) end
 //! with `<scorer>`: Rust's [`Scorer`] has no string form.
@@ -220,7 +216,9 @@ impl DocIdSetIterator for AssertingApproximation<'_> {
             self.core.state != IteratorState::Finished,
             "advance() called after NO_MORE_DOCS"
         );
-        java_assert!(self.doc_id() + 1 >= self.core.last_shallow_target);
+        // `docID()`: the filter's `inApproximation.docID()`.
+        let in_approximation_doc = self.in_approximation().doc_id();
+        java_assert!(in_approximation_doc.wrapping_add(1) >= self.core.last_shallow_target);
         let next_doc = self.in_approximation().next_doc()?;
         java_assert!(
             next_doc > self.core.doc,
@@ -601,8 +599,8 @@ impl DocIdSetIterator for AssertingScorer<'_> {
             self.core().state != IteratorState::Finished,
             "nextDoc() called after NO_MORE_DOCS"
         );
-        let in_doc = self.core_mut().inner.iterator().doc_id();
-        java_assert!(in_doc + 1 >= self.core().last_shallow_target);
+        let in_doc = self.checked_doc_id()?;
+        java_assert!(in_doc.wrapping_add(1) >= self.core().last_shallow_target);
         let core = self.core_mut();
         let next_doc = core.inner.iterator().next_doc()?;
         java_assert!(
@@ -660,23 +658,64 @@ impl DocIdSetIterator for AssertingScorer<'_> {
     }
 
     fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
-        let doc_id = DocIdSetIterator::doc_id(self);
-        java_assert!(doc_id != -1);
-        java_assert!(offset <= doc_id);
+        if cfg!(debug_assertions) {
+            let doc_id = self.checked_doc_id()?;
+            java_assert!(doc_id != -1);
+            let doc_id = self.checked_doc_id()?;
+            java_assert!(offset <= doc_id);
+        }
         self.core_mut()
             .inner
             .iterator()
             .into_bit_set(up_to, bit_set, offset)?;
-        java_assert!(DocIdSetIterator::doc_id(self) >= up_to);
+        if cfg!(debug_assertions) {
+            let doc_id = self.checked_doc_id()?;
+            java_assert!(doc_id >= up_to);
+        }
         Ok(())
     }
 
     fn doc_id_run_end(&mut self) -> Result<i32> {
         java_assert!(self.core().state == IteratorState::Iterating);
-        // See the module divergences: the wrapped iterator's run end is not
-        // reachable from `&self`; `docID() + 1` is the default run end.
-        let next_non_matching_doc_id = DocIdSetIterator::doc_id(self) + 1;
-        java_assert!(next_non_matching_doc_id > DocIdSetIterator::doc_id(self));
+        let next_non_matching_doc_id = self.core_mut().inner.iterator().doc_id_run_end()?;
+        if cfg!(debug_assertions) {
+            let doc_id = self.checked_doc_id()?;
+            java_assert!(next_non_matching_doc_id > doc_id);
+        }
         Ok(next_non_matching_doc_id)
+    }
+}
+
+impl AssertingScorer<'_> {
+    /// The iterator view's `docID()` as Java's filter runs it from its own
+    /// methods: `assert AssertingScorer.this.in.docID() == in.docID();
+    /// return in.docID();`.
+    fn checked_doc_id(&mut self) -> Result<i32> {
+        let core = self.core_mut();
+        let in_doc = core.inner.iterator().doc_id();
+        java_assert!(core.inner.doc_id() == in_doc);
+        Ok(in_doc)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rucene::search::doc_id_set_iterator::range;
+    use rucene::search::{ConstantScoreScorer, ScoreMode};
+
+    use super::*;
+
+    /// Java's iterator view returns `in.docIDRunEnd()`: the run end of a
+    /// range iterator is its end, not `docID() + 1`.
+    #[test]
+    fn doc_id_run_end_is_the_wrapped_iterators() {
+        let inner = ConstantScoreScorer::from_iterator(
+            1.0,
+            ScoreMode::COMPLETE,
+            Box::new(range(0, 10).expect("a valid range")),
+        );
+        let mut scorer = AssertingScorer::wrap(Box::new(inner), true, false);
+        assert_eq!(scorer.iterator().next_doc().expect("nextDoc"), 0);
+        assert_eq!(scorer.iterator().doc_id_run_end().expect("docIDRunEnd"), 10);
     }
 }

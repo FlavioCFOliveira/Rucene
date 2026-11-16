@@ -258,6 +258,12 @@ impl Similarity for RandomSimilarity {
         "org.apache.lucene.tests.search.similarities.RandomSimilarity"
     }
 
+    /// `toString()`: `"RandomSimilarity(queryNorm=" + shouldQueryNorm + "): "
+    /// + previousMappings`.
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     /// `RandomSimilarity extends PerFieldSimilarityWrapper`.
     fn as_per_field_similarity_wrapper(&self) -> Option<&dyn PerFieldSimilarityWrapper> {
         Some(self)
@@ -274,5 +280,24 @@ impl Similarity for RandomSimilarity {
         term_stats: &[TermStatistics],
     ) -> Box<dyn SimScorer + 'a> {
         per_field_scorer(self, boost, collection_stats, term_stats)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use randomizedtesting::jdk::random::JdkRandom;
+
+    use super::*;
+
+    /// Java's `toString()` is the class's own, not `Object.toString()`.
+    #[test]
+    fn to_java_string_is_the_class_rendering() {
+        let sim = RandomSimilarity::new(&JdkRandom::new(7));
+        let rendered = Similarity::to_java_string(&sim);
+        assert!(
+            rendered.starts_with("RandomSimilarity(queryNorm="),
+            "{rendered}"
+        );
+        assert_eq!(rendered, sim.to_string());
     }
 }

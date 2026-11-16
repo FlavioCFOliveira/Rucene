@@ -38,7 +38,7 @@ use randomizedtesting::jdk::exception::{throw, RUNTIME_EXCEPTION};
 use randomizedtesting::jdk::lang::float_to_string;
 use randomizedtesting::jdk::random::Random;
 use randomizedtesting::junit::Assert;
-use rucene::error::Result;
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::{IndexReader, LeafReaderContext};
 use rucene::search::similarities::Explanation;
 use rucene::search::{
@@ -66,11 +66,18 @@ fn set_string(set: &BTreeSet<i32>) -> String {
     format!("[{}]", items.join(", "))
 }
 
-/// `assertEquals(message, Set, Set)`.
+/// `assertEquals(message, Set, Set)`: JUnit's `format` puts `message + " "`
+/// first only when the message is not empty (two different sets of integers
+/// never print the same, so the `expected: Class<…>` form cannot occur).
 fn assert_set_equals(message: &str, expected: &BTreeSet<i32>, actual: &BTreeSet<i32>) {
     if expected != actual {
+        let prefix = if message.is_empty() {
+            String::new()
+        } else {
+            format!("{message} ")
+        };
         Assert::fail(&format!(
-            "{message} expected:<{}> but was:<{}>",
+            "{prefix}expected:<{}> but was:<{}>",
             set_string(expected),
             set_string(actual)
         ));
@@ -1086,13 +1093,21 @@ impl LeafCollector for ExplanationAsserter {
         let doc = doc + self.base;
         let exp = match self.s.explain(Arc::clone(&self.q), doc) {
             Ok(exp) => exp,
-            Err(e) => throw(
-                RUNTIME_EXCEPTION,
-                format!(
-                    "exception in hitcollector of [[{}]] for #{doc}: {e}",
-                    self.d
-                ),
-            ),
+            // `catch (IOException e) { throw new RuntimeException("exception
+            // in hitcollector of [[" + d + "]] for #" + doc, e); }`: only an
+            // `IOException` is wrapped, and it is the cause.
+            Err(e) if e.is_io_exception() => {
+                return Err(LuceneError::from(LuceneErrorKind::Unchecked {
+                    class: RUNTIME_EXCEPTION,
+                    message: Some(format!(
+                        "exception in hitcollector of [[{}]] for #{doc}",
+                        self.d
+                    )),
+                    cause: Some(Arc::new(e)),
+                })
+                .into());
+            }
+            Err(e) => return Err(e.into()),
         };
 
         CheckHits::verify_explanation(&self.d, doc, scorer.score()?, self.deep, &exp);
@@ -1242,5 +1257,27 @@ impl Collector for MatchesAsserter {
 
     fn score_mode(&self) -> ScoreMode {
         ScoreMode::COMPLETE_NO_SCORES
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use randomizedtesting::jdk::exception::Throwable;
+
+    use super::*;
+
+    /// JUnit's `format` omits the message and its space when the message is
+    /// empty.
+    #[test]
+    fn set_mismatch_with_empty_message_has_no_leading_space() {
+        let payload = catch_unwind(AssertUnwindSafe(|| {
+            assert_set_equals("", &BTreeSet::from([1]), &BTreeSet::from([2]));
+        }))
+        .expect_err("the AssertionError");
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+        assert_eq!(t.message(), Some("expected:<[1]> but was:<[2]>"));
     }
 }

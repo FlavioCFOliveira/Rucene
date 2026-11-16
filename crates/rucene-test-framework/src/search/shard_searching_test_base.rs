@@ -40,6 +40,12 @@
 //!   ([`searcher_expired`], [`is_searcher_expired`]).
 //! * `ConcurrentHashMap` caches are `Mutex<HashMap>`; the `volatile
 //!   currentShardSearcher` is an `RwLock<Option<Arc<…>>>`.
+//! * `protected NodeState[] nodes` is set once (`OnceLock`), because
+//!   [`ShardSearchingTestBase::nodes`] lends the array to the node threads
+//!   for the instance's lifetime: a second `start()` returns an
+//!   `IllegalStateException` (`start was already called`) where Java would
+//!   replace the array (`ShardSearchingTestBase.java`, `start`). Lucene's
+//!   subclasses call `start` once.
 //! * `QueryVisitor.termCollector(Set<Term>)` fills the port's
 //!   `BTreeSet<Term>`; the iteration order of the set draws no randomness
 //!   and only decides the order of cache insertions.
@@ -314,7 +320,7 @@ impl ShardSearchingTestBase {
                     }
                 }
                 Some(sort) => {
-                    assert!(search_after.is_none()); // not supported yet
+                    java_assert!(search_after.is_none()); // not supported yet
                     Ok(NodeHits::Fields(
                         s.local_search_with_sort(q, num_hits, sort)?,
                     ))
@@ -419,10 +425,12 @@ impl ShardSearchingTestBase {
 
         for node_id in 0..num_nodes as usize {
             let s = nodes[node_id].mgr().acquire()?;
-            assert_eq!(
-                node_versions[node_id],
-                nodes[node_id].searchers().record(&s)?
-            );
+            // `assert nodeVersions[nodeID] == nodes[nodeID].searchers.record(s);`:
+            // `record` runs only under -ea.
+            if cfg!(debug_assertions) {
+                let recorded = nodes[node_id].searchers().record(&s)?;
+                java_assert!(node_versions[node_id] == recorded);
+            }
             let result =
                 self.broadcast_node_reopen(node_id as i32, node_versions[node_id], s.searcher());
             let released = nodes[node_id].mgr().release(s);
@@ -542,8 +550,37 @@ fn change_indices_run(base: &Arc<ShardSearchingTestBase>) {
     };
     if let Some(t) = failure {
         randomizedtesting::jdk::system::out_println("FAILED:");
-        randomizedtesting::jdk::system::out_println(&format!("{t:?}"));
+        // `t.printStackTrace(System.out)`
+        randomizedtesting::jdk::system::out_println(
+            &randomizedtesting::jdk::system::format_stack_trace(&t),
+        );
         Throwable::from_cause("java.lang.RuntimeException", t).throw();
+    }
+}
+
+/// A `java.io.PrintStream` over the `System.out` captured at construction
+/// (`None`: the process's standard output), as `new
+/// PrintStreamInfoStream(System.out)` holds it.
+struct SystemOut(Option<randomizedtesting::jdk::system::PrintSink>);
+
+impl std::io::Write for SystemOut {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let text = String::from_utf8_lossy(buf);
+        match &self.0 {
+            Some(sink) => sink(&text),
+            None => {
+                let mut out = std::io::stdout().lock();
+                std::io::Write::write_all(&mut out, text.as_bytes())?;
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.0.is_none() {
+            std::io::Write::flush(&mut std::io::stdout())?;
+        }
+        Ok(())
     }
 }
 
@@ -606,8 +643,10 @@ impl NodeState {
         let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(analyzer)));
         iwc.set_open_mode(OpenMode::CREATE)?;
         if *VERBOSE {
-            iwc.set_info_stream(Arc::new(PrintStreamInfoStream::new(Box::new(
-                std::io::stdout(),
+            // `new PrintStreamInfoStream(System.out)`: the stream `System.out`
+            // is when the node is built.
+            iwc.set_info_stream(Arc::new(PrintStreamInfoStream::system(Box::new(
+                SystemOut(randomizedtesting::jdk::system::out()),
             ))))?;
         }
         let writer = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -736,8 +775,9 @@ impl NodeState {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
                 .unwrap_or_else(|| {
-                    randomizedtesting::jdk::exception::throw_without_message(
+                    randomizedtesting::jdk::exception::throw(
                         "java.lang.NullPointerException",
+                        "Cannot invoke \"org.apache.lucene.tests.search.ShardSearchingTestBase$NodeState$ShardIndexSearcher.getIndexReader()\" because \"s\" is null",
                     )
                 });
             // In theory the reader could get decRef'd to 0
@@ -879,8 +919,8 @@ impl ShardIndexSearcher {
         base: Weak<ShardSearchingTestBase>,
     ) -> Result<Self> {
         let mut searcher = IndexSearcher::new(local_reader)?;
-        assert_eq!(
-            node_id, enclosing_node_id,
+        java_assert!(
+            node_id == enclosing_node_id,
             "myNodeID={node_id} NodeState.this.myNodeID={enclosing_node_id}"
         );
         let overrides = Arc::new(ShardIndexSearcherOverrides {
@@ -1106,7 +1146,7 @@ impl IndexSearcherOverrides for ShardIndexSearcherOverrides {
             let node_total_term_freq = sub_stats.total_term_freq();
             distributed_total_term_freq += node_total_term_freq;
         }
-        assert!(distributed_doc_freq > 0);
+        java_assert!(distributed_doc_freq > 0);
         TermStatistics::new(
             term.bytes().clone(),
             distributed_doc_freq,
@@ -1151,7 +1191,7 @@ impl IndexSearcherOverrides for ShardIndexSearcherOverrides {
             let node_sum_doc_freq = node_stats.sum_doc_freq();
             sum_doc_freq += node_sum_doc_freq;
 
-            assert!(node_stats.max_doc() >= 0);
+            java_assert!(node_stats.max_doc() >= 0);
             max_doc += node_stats.max_doc();
         }
 

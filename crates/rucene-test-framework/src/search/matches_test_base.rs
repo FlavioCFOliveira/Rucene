@@ -275,11 +275,31 @@ fn assert_null_iterator(it: &Option<Box<dyn MatchesIterator>>) {
     }
 }
 
-/// The `NullPointerException` Java throws when a method is called on a
-/// `null` matches iterator (`it.next()` in `checkFieldMatches` and
-/// `checkTerms`).
+/// The `NullPointerException` the JVM throws for `<variable>.<method>` on a
+/// `null` receiver: its helpful message, which names the local variable (the
+/// Lucene 10.5.0 test-framework jar carries a `LocalVariableTable`).
+fn null_receiver(method: &str, variable: &str) -> ! {
+    randomizedtesting::jdk::exception::throw(
+        "java.lang.NullPointerException",
+        format!("Cannot invoke \"{method}\" because \"{variable}\" is null"),
+    )
+}
+
+/// `it.next()` on a `null` iterator, in `checkFieldMatches` and `checkTerms`
+/// (whose parameter is `it`).
 fn null_iterator() -> ! {
-    randomizedtesting::jdk::exception::throw_without_message("java.lang.NullPointerException")
+    null_receiver("org.apache.lucene.search.MatchesIterator.next()", "it")
+}
+
+/// `array[index]`: the element, or the JVM's `ArrayIndexOutOfBoundsException`
+/// (JDK 25 text).
+fn element<T>(array: &[T], index: usize) -> &T {
+    array.get(index).unwrap_or_else(|| {
+        randomizedtesting::jdk::exception::throw(
+            "java.lang.ArrayIndexOutOfBoundsException",
+            format!("Index {index} out of bounds for length {}", array.len()),
+        )
+    })
 }
 
 /// `AbstractCollection.toString()` of a `HashSet<String>`: `[a, b]`, in the
@@ -335,7 +355,7 @@ impl MatchesState {
     ) -> Result<()> {
         let w = self.weight(q, ScoreMode::COMPLETE)?;
         for e in expected {
-            let Some(matches) = self.matches_of(&*w, e[0])? else {
+            let Some(matches) = self.matches_of(&*w, *element(e, 0))? else {
                 Assert::assert_equals(e.len(), 1);
                 continue;
             };
@@ -388,7 +408,8 @@ impl MatchesState {
                         .map_or(0, |q| Arc::as_ptr(&q) as *const () as usize),
                 );
             }
-            Assert::assert_equals(e as usize, labels.len());
+            // `assertEquals(long, long)`.
+            Assert::assert_equals(i64::from(e), labels.len() as i64);
         }
         Ok(())
     }
@@ -405,22 +426,22 @@ impl MatchesState {
         while it.next()? {
             Assert::assert_equals_msg(
                 Some("Wrong start position"),
-                expected[pos],
+                *element(expected, pos),
                 it.start_position(),
             );
             Assert::assert_equals_msg(
                 Some("Wrong end position"),
-                expected[pos + 1],
+                *element(expected, pos + 1),
                 it.end_position(),
             );
             Assert::assert_equals_msg(
                 Some("Wrong start offset"),
-                expected[pos + 2],
+                *element(expected, pos + 2),
                 it.start_offset()?,
             );
             Assert::assert_equals_msg(
                 Some("Wrong end offset"),
-                expected[pos + 3],
+                *element(expected, pos + 3),
                 it.end_offset()?,
             );
             pos += 4;
@@ -441,14 +462,13 @@ impl MatchesState {
             let matches = self.matches_of(&*w, i as i32)?;
             if e {
                 let matches = matches.unwrap_or_else(|| {
-                    randomizedtesting::jdk::exception::throw_without_message(
-                        "java.lang.NullPointerException",
+                    null_receiver(
+                        "org.apache.lucene.search.Matches.getMatches(String)",
+                        "matches",
                     )
                 });
                 let mut mi = matches.get_matches(field)?.unwrap_or_else(|| {
-                    randomizedtesting::jdk::exception::throw_without_message(
-                        "java.lang.NullPointerException",
-                    )
+                    null_receiver("org.apache.lucene.search.MatchesIterator.next()", "mi")
                 });
                 Assert::assert_true(mi.next()?);
                 Assert::assert_equals(-1, mi.start_position());
@@ -568,10 +588,11 @@ impl MatchesState {
 fn check_terms(expected: &[Vec<TermMatch>], it: &mut dyn MatchesIterator) -> Result<()> {
     let mut up_to = 0;
     while it.next()? {
-        let mut expected_matches = term_match_set(&expected[up_to]);
+        let mut expected_matches = term_match_set(element(expected, up_to));
         let mut submatches = it.get_sub_matches()?.unwrap_or_else(|| {
-            randomizedtesting::jdk::exception::throw_without_message(
-                "java.lang.NullPointerException",
+            null_receiver(
+                "org.apache.lucene.search.MatchesIterator.next()",
+                "submatches",
             )
         });
         while submatches.next()? {
@@ -594,4 +615,83 @@ fn check_terms(expected: &[Vec<TermMatch>], it: &mut dyn MatchesIterator) -> Res
         Assert::fail("Missing expected match");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use randomizedtesting::jdk::exception::Throwable;
+
+    use super::*;
+
+    /// An iterator with one match and no sub-matches.
+    struct OneMatch {
+        done: bool,
+    }
+
+    impl MatchesIterator for OneMatch {
+        fn next(&mut self) -> Result<bool> {
+            let more = !self.done;
+            self.done = true;
+            Ok(more)
+        }
+
+        fn start_position(&self) -> i32 {
+            0
+        }
+
+        fn end_position(&self) -> i32 {
+            0
+        }
+
+        fn start_offset(&self) -> Result<i32> {
+            Ok(0)
+        }
+
+        fn end_offset(&self) -> Result<i32> {
+            Ok(1)
+        }
+
+        fn get_sub_matches(&self) -> Result<Option<Box<dyn MatchesIterator>>> {
+            Ok(None)
+        }
+
+        fn get_query(&self) -> Option<Arc<dyn Query>> {
+            None
+        }
+    }
+
+    /// `checkTerms` dereferences `it.getSubMatches()`: the JVM's helpful
+    /// message names the local `submatches`.
+    #[test]
+    fn null_sub_matches_is_the_helpful_npe() {
+        let expected = vec![vec![TermMatch::new(0, 0, 1)]];
+        let payload = catch_unwind(AssertUnwindSafe(|| {
+            let _ = check_terms(&expected, &mut OneMatch { done: false });
+        }))
+        .expect_err("the NPE");
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.NullPointerException");
+        assert_eq!(
+            t.message(),
+            Some(
+                "Cannot invoke \"org.apache.lucene.search.MatchesIterator.next()\" because \"submatches\" is null"
+            )
+        );
+    }
+
+    /// More matches than expected entries: `expected[upTo]` is the JVM's
+    /// `ArrayIndexOutOfBoundsException`.
+    #[test]
+    fn more_matches_than_expected_is_an_array_index_out_of_bounds() {
+        let expected: Vec<Vec<TermMatch>> = Vec::new();
+        let payload = catch_unwind(AssertUnwindSafe(|| {
+            let _ = check_terms(&expected, &mut OneMatch { done: false });
+        }))
+        .expect_err("the AIOOBE");
+        let t = Throwable::from_panic(payload);
+        assert_eq!(t.class_name(), "java.lang.ArrayIndexOutOfBoundsException");
+        assert_eq!(t.message(), Some("Index 0 out of bounds for length 0"));
+    }
 }

@@ -101,7 +101,7 @@ impl Query for RandomApproximationQuery {
                 .is_some_and(|other| self.query.query_eq(&*other.query))
     }
 
-    /// `31 * classHash() + query.hashCode()`.
+    /// `getClass().getName()`.
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.tests.search.RandomApproximationQuery"
     }
@@ -243,7 +243,8 @@ impl<D: ApproximatedIterator> DocIdSetIterator for RandomApproximation<D> {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        self.advance(self.doc + 1)
+        // `advance(doc + 1)`: Java's int addition wraps.
+        self.advance(self.doc.wrapping_add(1))
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
@@ -437,5 +438,27 @@ impl Scorer for RandomApproximationScorer {
 
     fn get_max_score(&mut self, up_to: i32) -> Result<f32> {
         self.scorer().get_max_score(up_to)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use randomizedtesting::jdk::random::JdkRandom;
+    use rucene::search::doc_id_set_iterator::range;
+
+    use super::*;
+
+    /// `nextDoc()` on an exhausted approximation is `advance(NO_MORE_DOCS +
+    /// 1)`: Java's addition wraps, `disi.docID() < Integer.MIN_VALUE` is
+    /// false, and `NO_MORE_DOCS` comes back.
+    #[test]
+    fn next_doc_after_exhaustion_wraps_as_java_int() {
+        let random: Arc<dyn Random> = Arc::new(JdkRandom::new(42));
+        let disi: Box<dyn DocIdSetIterator> = Box::new(range(0, 1).expect("a valid range"));
+        let mut view = RandomTwoPhaseView::new(random, disi);
+        let approximation = view.approximation();
+        assert_eq!(approximation.next_doc().expect("nextDoc"), 0);
+        assert_eq!(approximation.next_doc().expect("nextDoc"), NO_MORE_DOCS);
+        assert_eq!(approximation.next_doc().expect("nextDoc"), NO_MORE_DOCS);
     }
 }
