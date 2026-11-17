@@ -558,10 +558,15 @@ impl MemorySegment {
     }
 
     /// Reads the byte at `pos`, or `None` if `pos` is out of bounds.
+    #[inline]
     pub fn get_u8(&self, pos: i64) -> Option<u8> {
-        let bytes = self.bytes();
+        // PERF: one range check against `len`; the slice `bytes()` builds is
+        // not materialised per byte.
         let pos = usize::try_from(pos).ok()?;
-        bytes.get(pos).copied()
+        if pos >= self.len {
+            return None;
+        }
+        self.mapping.as_ref()?.get(self.offset + pos).copied()
     }
 
     /// Reads a little-endian `i16` at `pos`, or `None` if the two bytes are not
@@ -609,16 +614,20 @@ impl MemorySegment {
     }
 
     /// Returns the `N` bytes starting at `pos`, if they fit in this segment.
+    #[inline]
     fn window<const N: usize>(&self, pos: i64) -> Option<[u8; N]> {
-        let bytes = self.bytes();
+        // PERF: as in `get_u8`.
         let pos = usize::try_from(pos).ok()?;
         let end = pos.checked_add(N)?;
-        if end > bytes.len() {
+        if end > self.len {
             return None;
         }
-        let mut buffer = [0u8; N];
-        buffer.copy_from_slice(&bytes[pos..end]);
-        Some(buffer)
+        let start = self.offset + pos;
+        self.mapping
+            .as_ref()?
+            .get(start..start + N)?
+            .try_into()
+            .ok()
     }
 }
 

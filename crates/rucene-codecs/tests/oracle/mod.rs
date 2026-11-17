@@ -1299,7 +1299,7 @@ impl StoredFieldVisitor for DumpVisitor {
         Ok(StoredFieldVisitorStatus::Yes)
     }
 
-    fn string_field(&mut self, fi: &FieldInfo, value: &str) -> rucene::error::Result<()> {
+    fn string_field(&mut self, fi: &FieldInfo, value: String) -> rucene::error::Result<()> {
         self.sb
             .push_str(&format!(" {}=string:{}", fi.name, hex(value.as_bytes())));
         Ok(())

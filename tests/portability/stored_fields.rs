@@ -963,7 +963,7 @@ impl StoredFieldVisitor for RecordingVisitor {
         Ok(())
     }
 
-    fn string_field(&mut self, info: &FieldInfo, value: &str) -> rucene::error::Result<()> {
+    fn string_field(&mut self, info: &FieldInfo, value: String) -> rucene::error::Result<()> {
         self.seen.push(format!(
             "{}=str{}",
             info.name,

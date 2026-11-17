@@ -388,7 +388,7 @@ impl StoredFieldVisitor for FieldFilterVisitor<'_> {
         self.visitor.binary_field(field_info, value)
     }
 
-    fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> Result<()> {
+    fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
         self.visitor.string_field(field_info, value)
     }
 

@@ -146,7 +146,7 @@ impl SimpleTextStoredFieldsReader {
         }
         let value = &state.scratch[VALUE.len().min(state.scratch.len())..];
         match type_ {
-            StoredType::String => visitor.string_field(field_info, &java_utf8_to_string(value)),
+            StoredType::String => visitor.string_field(field_info, java_utf8_to_string(value)),
             StoredType::Binary => visitor.binary_field(field_info, value),
             StoredType::Int => {
                 let v = parse_int(&java_utf8_to_string(value))?;

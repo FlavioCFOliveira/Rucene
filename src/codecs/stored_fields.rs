@@ -441,9 +441,9 @@ impl<W: StoredFieldsWriter + ?Sized> StoredFieldVisitor for MergeVisitor<'_, W> 
         self.writer.write_field_bytes(&remapped, value)
     }
 
-    fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> Result<()> {
+    fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
         let remapped = self.remap(field_info)?.clone();
-        self.writer.write_field_string(&remapped, value)
+        self.writer.write_field_string(&remapped, &value)
     }
 
     fn int_field(&mut self, field_info: &FieldInfo, value: i32) -> Result<()> {

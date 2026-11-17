@@ -348,7 +348,7 @@ fn a_valid_segment_still_reads_after_all_that() {
             self.values += 1;
             Ok(())
         }
-        fn string_field(&mut self, _i: &FieldInfo, _v: &str) -> rucene::error::Result<()> {
+        fn string_field(&mut self, _i: &FieldInfo, _v: String) -> rucene::error::Result<()> {
             self.values += 1;
             Ok(())
         }

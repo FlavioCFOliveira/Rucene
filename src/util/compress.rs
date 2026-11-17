@@ -619,8 +619,14 @@ impl Lz4 {
     /// Returns the final destination offset.
     ///
     /// Equivalent to `org.apache.lucene.util.compress.LZ4.decompress`.
-    pub fn decompress(
-        input: &mut dyn DataInput,
+    ///
+    /// Generic over the input so that a caller holding a concrete input type
+    /// gets its `read_byte`/`read_short`/`read_bytes` calls statically
+    /// dispatched and inlined, as the JIT devirtualises Java's monomorphic
+    /// call site; a caller holding `dyn DataInput` instantiates it with the
+    /// trait object and keeps dynamic dispatch.
+    pub fn decompress<I: DataInput + ?Sized>(
+        input: &mut I,
         decompressed_len: usize,
         dest: &mut [u8],
         d_off: usize,
@@ -1273,5 +1279,141 @@ mod tests {
             Lz4::decompress(&mut input, data.len(), &mut dest, 0).unwrap();
             assert_eq!(&dest[..data.len()], &data[..], "length {length}");
         }
+    }
+
+    /// An input that implements only the required `DataInput` methods, so
+    /// `read_short` takes the trait's byte-by-byte default.
+    struct ReadsOnly<'a> {
+        bytes: &'a [u8],
+        pos: usize,
+    }
+
+    impl DataInput for ReadsOnly<'_> {
+        fn to_java_string(&self) -> String {
+            "ReadsOnly".to_string()
+        }
+
+        fn read_byte(&mut self) -> Result<u8> {
+            let b = *self.bytes.get(self.pos).ok_or_else(|| {
+                crate::store::array_index_out_of_bounds(self.pos as i64, self.bytes.len())
+            })?;
+            self.pos += 1;
+            Ok(b)
+        }
+
+        fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+            let b = crate::store::require_array(b)?;
+            for i in 0..len {
+                let v = self.read_byte()?;
+                if offset + i >= b.len() {
+                    return Err(crate::store::array_index_out_of_bounds(
+                        (offset + i) as i64,
+                        b.len(),
+                    ));
+                }
+                b[offset + i] = v;
+            }
+            Ok(())
+        }
+
+        fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+            self.pos += num_bytes as usize;
+            Ok(())
+        }
+    }
+
+    fn outcome(result: Result<usize>, dest: Vec<u8>, consumed: usize) -> (String, Vec<u8>, usize) {
+        let result = match result {
+            Ok(d) => format!("ok {d}"),
+            Err(e) => format!("err {:?}", e.to_string().split(':').next()),
+        };
+        (result, dest, consumed)
+    }
+
+    /// The monomorphised instantiation (concrete `ByteArrayDataInput`) and the
+    /// trait-object one decode, write, consume and fail identically, on valid,
+    /// corrupted and truncated blocks; so does an input with the default
+    /// byte-by-byte `read_short`, up to the bytes consumed.
+    #[test]
+    fn concrete_and_dyn_inputs_decode_identically() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut compared = 0;
+        let mut errors = 0;
+        for length in [0usize, 1, 5, 13, 16, 17, 100, 255, 300, 4096, 70_000] {
+            let data: Vec<u8> = (0..length)
+                .map(|i| match (i / 97) % 4 {
+                    0 => (i % 3) as u8,
+                    1 => (next() % 256) as u8,
+                    2 => b"abcdefgh"[i % 8],
+                    _ => 0,
+                })
+                .collect();
+            let mut out = VecDataOutput::new();
+            let mut ht = FastCompressionHashTable::new();
+            Lz4::compress(&data, 0, data.len(), &mut out, &mut ht).unwrap();
+            let compressed = out.into_inner();
+            let mut variants = vec![compressed.clone()];
+            for _ in 0..40 {
+                let mut corrupt = compressed.clone();
+                if !corrupt.is_empty() {
+                    let at = (next() as usize) % corrupt.len();
+                    corrupt[at] = (next() % 256) as u8;
+                }
+                variants.push(corrupt);
+            }
+            for cut in [1usize, 2, 3, 9] {
+                if compressed.len() > cut {
+                    variants.push(compressed[..compressed.len() - cut].to_vec());
+                }
+            }
+            for variant in &variants {
+                for (dest_len, d_off) in
+                    [(data.len() + 7, 0), (data.len() + 20, 5), (data.len(), 0)]
+                {
+                    let mut concrete = ByteArrayDataInput::new(variant);
+                    let mut dest = vec![0xA5u8; dest_len];
+                    let r = Lz4::decompress(&mut concrete, data.len(), &mut dest, d_off);
+                    let a = outcome(r, dest, concrete.position());
+
+                    let mut boxed = ByteArrayDataInput::new(variant);
+                    let dyn_input: &mut dyn DataInput = &mut boxed;
+                    let mut dest = vec![0xA5u8; dest_len];
+                    let r = Lz4::decompress(dyn_input, data.len(), &mut dest, d_off);
+                    let b = outcome(r, dest, boxed.position());
+                    assert_eq!(a, b, "block of {length} bytes");
+
+                    let mut plain = ReadsOnly {
+                        bytes: variant,
+                        pos: 0,
+                    };
+                    let mut dest = vec![0xA5u8; dest_len];
+                    let r = Lz4::decompress(&mut plain, data.len(), &mut dest, d_off);
+                    let c = outcome(r, dest, plain.pos);
+                    assert_eq!(a.0.starts_with("ok"), c.0.starts_with("ok"));
+                    if a.0.starts_with("ok") {
+                        assert_eq!(a, c, "block of {length} bytes");
+                    }
+                    if a.0.starts_with("err") {
+                        errors += 1;
+                    }
+                    compared += 1;
+                }
+            }
+            let mut input = ByteArrayDataInput::new(&compressed);
+            let mut dest = vec![0u8; data.len() + 7];
+            assert_eq!(
+                Lz4::decompress(&mut input, data.len(), &mut dest, 0).unwrap(),
+                data.len()
+            );
+            assert_eq!(&dest[..data.len()], &data[..]);
+        }
+        // Non-vacuity: the corrupted blocks reach the error paths.
+        assert!(compared > 1000 && errors > 100, "{compared} {errors}");
     }
 }

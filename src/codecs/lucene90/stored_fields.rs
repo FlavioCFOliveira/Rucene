@@ -2987,8 +2987,9 @@ impl Lucene90CompressingStoredFieldsReader {
                 visitor.binary_field_data_input(info, &mut value)
             }
             TYPE_STRING => {
-                let s = input.read_string()?;
-                visitor.string_field(info, &s)
+                // `visitor.stringField(info, in.readString())`: the visitor
+                // receives the one decoded string.
+                visitor.string_field(info, input.read_string()?)
             }
             TYPE_NUMERIC_INT => visitor.int_field(info, input.read_z_int()?),
             TYPE_NUMERIC_FLOAT => visitor.float_field(info, Self::read_z_float(input)?),
@@ -3528,9 +3529,9 @@ mod tests {
             Ok(())
         }
 
-        fn string_field(&mut self, info: &FieldInfo, value: &str) -> Result<()> {
+        fn string_field(&mut self, info: &FieldInfo, value: String) -> Result<()> {
             self.fields
-                .push((info.name.clone(), StoredValue::String(value.to_string())));
+                .push((info.name.clone(), StoredValue::String(value)));
             Ok(())
         }
 

@@ -1741,7 +1741,7 @@ impl StoredFieldVisitor for RemappingStoredFieldVisitor<'_> {
         self.visitor.binary_field(&info, value)
     }
 
-    fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> Result<()> {
+    fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
         let info = remap(self.field_infos, field_info)?;
         self.visitor.string_field(&info, value)
     }
@@ -4570,12 +4570,9 @@ mod tests {
             Ok(StoredFieldVisitorStatus::Yes)
         }
 
-        fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> Result<()> {
-            self.0.push((
-                field_info.name.clone(),
-                field_info.number,
-                value.to_string(),
-            ));
+        fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
+            self.0
+                .push((field_info.name.clone(), field_info.number, value));
             Ok(())
         }
     }

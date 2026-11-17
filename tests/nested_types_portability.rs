@@ -1249,7 +1249,7 @@ fn rust_sorted_full(variant: &str, merge: bool) -> Arc<dyn Directory> {
 struct StoredLines(Vec<String>);
 
 impl StoredFieldVisitor for StoredLines {
-    fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> rucene::error::Result<()> {
+    fn string_field(&mut self, field_info: &FieldInfo, value: String) -> rucene::error::Result<()> {
         self.0.push(format!("{}={value}", field_info.name));
         Ok(())
     }

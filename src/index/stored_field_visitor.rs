@@ -106,12 +106,15 @@ pub trait StoredFieldVisitor {
 
     /// Processes a string field.
     ///
-    /// Equivalent to `StoredFieldVisitor.stringField(FieldInfo, String)`.
+    /// Equivalent to `StoredFieldVisitor.stringField(FieldInfo, String)`. The
+    /// visitor receives the decoded string itself, as Java hands over the
+    /// `String` that `readString()` produced, so a visitor that keeps it does
+    /// not copy it again.
     ///
     /// # Errors
     ///
     /// Propagates any error the implementation raises.
-    fn string_field(&mut self, _field_info: &FieldInfo, _value: &str) -> Result<()> {
+    fn string_field(&mut self, _field_info: &FieldInfo, _value: String) -> Result<()> {
         Ok(())
     }
 
@@ -214,7 +217,7 @@ mod tests {
             Ok(())
         }
 
-        fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> Result<()> {
+        fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
             self.seen
                 .push(format!("string {} {value}", field_info.name));
             Ok(())
@@ -383,7 +386,7 @@ mod tests {
         let info = FieldInfo::new("f", 0);
         let mut visitor = OnlyNeedsField;
         visitor.binary_field(&info, b"x").unwrap();
-        visitor.string_field(&info, "x").unwrap();
+        visitor.string_field(&info, "x".to_string()).unwrap();
         visitor.int_field(&info, 1).unwrap();
         visitor.long_field(&info, 1).unwrap();
         visitor.float_field(&info, 1.0).unwrap();

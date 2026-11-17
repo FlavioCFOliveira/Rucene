@@ -1342,7 +1342,7 @@ fn misuse(rows: &mut Rows, c: &str, reader: &Arc<dyn DirectoryReader>) {
         let fi = infos.field_info("s_str").unwrap();
         let empty = FieldInfos::new(Vec::new())?;
         let mut yes = YesVisitor;
-        MismatchedVisitor::new(&mut yes, &empty).string_field(fi, "x")?;
+        MismatchedVisitor::new(&mut yes, &empty).string_field(fi, "x".to_string())?;
         Ok("visited".to_string())
     });
     rows.rec(c, "misuse", "merging_dir_cast", || {

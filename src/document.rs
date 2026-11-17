@@ -2786,7 +2786,7 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
         Ok(())
     }
 
-    fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> Result<()> {
+    fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
         // Lucene rebuilds a `TextField.TYPE_STORED` and copies back the three
         // properties the segment's FieldInfo does carry, so that a document
         // round-tripped through the index keeps them.
@@ -2796,7 +2796,7 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
         field_type.set_index_options(field_info.index_options)?;
         self.doc.add(StoredField::new_with_field_type(
             &field_info.name,
-            value.to_string(),
+            value,
             field_type,
         )?);
         Ok(())
@@ -9277,7 +9277,9 @@ mod tests {
     #[test]
     fn the_document_visitor_adds_stored_field_instances() {
         let mut visitor = DocumentStoredFieldVisitor::new();
-        visitor.string_field(&info("s", 0), "text").unwrap();
+        visitor
+            .string_field(&info("s", 0), "text".to_string())
+            .unwrap();
         visitor.float_field(&info("f", 1), 0.5).unwrap();
         visitor.binary_field(&info("b", 2), &[7]).unwrap();
         let document = visitor.into_document();
@@ -9289,7 +9291,9 @@ mod tests {
     #[test]
     fn the_document_visitor_rebuilds_every_stored_type() {
         let mut visitor = DocumentStoredFieldVisitor::new();
-        visitor.string_field(&info("s", 0), "text").unwrap();
+        visitor
+            .string_field(&info("s", 0), "text".to_string())
+            .unwrap();
         visitor.int_field(&info("i", 1), -1).unwrap();
         visitor.long_field(&info("l", 2), -2).unwrap();
         visitor.float_field(&info("f", 3), 0.5).unwrap();
@@ -9361,7 +9365,9 @@ mod tests {
         .expect("field info");
 
         let mut visitor = DocumentStoredFieldVisitor::new();
-        visitor.string_field(&field_info, "text").unwrap();
+        visitor
+            .string_field(&field_info, "text".to_string())
+            .unwrap();
         let document = visitor.into_document();
         let field_type = document.get_fields()[0].field_type();
         assert!(field_type.stored());
