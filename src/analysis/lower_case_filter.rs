@@ -11,27 +11,38 @@ use std::fmt::Debug;
 
 use crate::analysis::character_utils::to_lower_case;
 use crate::analysis::tokenattributes::CharTermAttribute;
-use crate::analysis::{TokenFilter, TokenFilterLogic, TokenStream};
+use crate::analysis::{AttributeHandle, TokenFilter, TokenFilterLogic, TokenStream};
 use crate::error::Result;
 use crate::util::attribute::AttributeSource;
 
 /// Lowercases each token's term text.
 ///
 /// Equivalent to `org.apache.lucene.analysis.LowerCaseFilter`.
-#[derive(Debug, Default)]
-pub struct LowerCaseFilterLogic;
+#[derive(Debug)]
+pub struct LowerCaseFilterLogic {
+    /// `private final CharTermAttribute termAtt = addAttribute(CharTermAttribute.class)`.
+    term_att: AttributeHandle<dyn CharTermAttribute>,
+}
 
 impl LowerCaseFilterLogic {
-    /// Creates a new lowercase filter logic instance.
-    pub fn new() -> Self {
-        Self
+    /// Creates the logic of a filter whose source is `source`, adding the
+    /// `CharTermAttribute` its field holds (`LowerCaseFilter.java:24`).
+    ///
+    /// # Errors
+    ///
+    /// What the source's attribute factory raises for an interface it cannot
+    /// implement, as Java's `addAttribute` throws.
+    pub fn new(source: &mut AttributeSource) -> Result<Self> {
+        Ok(Self {
+            term_att: AttributeHandle::add(source)?,
+        })
     }
 }
 
 impl TokenFilterLogic for LowerCaseFilterLogic {
     fn increment_token(
         &mut self,
-        source: &mut AttributeSource,
+        _source: &mut AttributeSource,
         input: &mut dyn TokenStream,
     ) -> Result<bool> {
         // `CharacterUtils.toLowerCase(termAtt.buffer(), 0, termAtt.length())`
@@ -39,9 +50,7 @@ impl TokenFilterLogic for LowerCaseFilterLogic {
         if !input.increment_token()? {
             return Ok(false);
         }
-        let mut att = source
-            .get_attribute_interface_mut::<dyn CharTermAttribute>()
-            .expect("INVARIANT: the constructor added the CharTermAttribute");
+        let mut att = self.term_att.borrow_mut();
         let length = att.length();
         to_lower_case(att.buffer_mut(), 0, length);
         Ok(true)
@@ -61,11 +70,7 @@ pub type LowerCaseFilter = TokenFilter<LowerCaseFilterLogic>;
 /// What the stream's attribute factory raises for an interface it cannot
 /// implement, as Java's `addAttribute` throws.
 pub fn new_lower_case_filter(input: Box<dyn TokenStream>) -> Result<LowerCaseFilter> {
-    let mut filter = TokenFilter::new(input, LowerCaseFilterLogic::new());
-    filter
-        .attribute_source_mut()
-        .add_attribute_interface::<dyn CharTermAttribute>()?;
-    Ok(filter)
+    TokenFilter::with_logic(input, LowerCaseFilterLogic::new)
 }
 
 #[cfg(test)]

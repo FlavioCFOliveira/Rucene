@@ -38,8 +38,8 @@ pub use character_utils::{
     to_lower_case_utf16, to_upper_case, to_upper_case_utf16, CharacterBuffer,
 };
 pub use filtering_token_filter::{
-    new_filtering_token_filter, FilteringTokenFilter, FilteringTokenFilterAdapter,
-    FilteringTokenFilterLogic,
+    new_filtering_token_filter, new_filtering_token_filter_with, FilteringTokenFilter,
+    FilteringTokenFilterAdapter, FilteringTokenFilterLogic,
 };
 pub use lower_case_filter::{new_lower_case_filter, LowerCaseFilter, LowerCaseFilterLogic};
 pub use reusable_string_reader::ReusableStringReader;
@@ -64,11 +64,15 @@ pub use wordlist_loader::{
 };
 
 use crate::error::{LuceneError, Result};
+use crate::util::atomic_ref_cell::{AtomicRef, AtomicRefMut};
 use crate::util::attribute::{
-    AsUnwrappable, AttributeFactory, AttributeReflector, AttributeSource, CloseableThreadLocal,
-    DefaultAttributeFactory, Unwrappable,
+    AsUnwrappable, AttributeCell, AttributeFactory, AttributeImpl, AttributeInterface,
+    AttributeReflector, AttributeSource, CloseableThreadLocal, DefaultAttributeFactory,
+    Unwrappable,
 };
 use crate::util::BytesRef;
+use std::any::TypeId;
+use std::marker::PhantomData;
 
 // -----------------------------------------------------------------------------
 // CharReader
@@ -740,6 +744,120 @@ impl<T: TokenizerLogic> TokenStream for Tokenizer<T> {
 }
 
 // -----------------------------------------------------------------------------
+// AttributeHandle
+// -----------------------------------------------------------------------------
+
+/// The instance of the attribute interface `I` a token stream holds, kept by
+/// the stream (or its consumer) across tokens.
+///
+/// Equivalent to a Java field such as `private final CharTermAttribute
+/// termAtt = addAttribute(CharTermAttribute.class)`: the attribute is
+/// resolved once, when the stream is built (or, for a consumer, when the
+/// source is set), and every token is then read and written through the
+/// instance itself, never through the source's attribute map. An
+/// [`AttributeSource`] never replaces an implementation it registered (state
+/// restoration and copying write into it), so the handle stays the source's
+/// instance for the source's lifetime.
+pub struct AttributeHandle<I: AttributeInterface + ?Sized> {
+    cell: AttributeCell,
+    _interface: PhantomData<fn() -> Box<I>>,
+}
+
+impl<I: AttributeInterface + ?Sized> AttributeHandle<I> {
+    /// `addAttribute(I.class)`: the source's instance of `I`, created through
+    /// its factory when missing.
+    ///
+    /// # Errors
+    ///
+    /// What the factory raises for an interface it cannot implement.
+    pub fn add(source: &mut AttributeSource) -> Result<Self> {
+        Ok(Self::from_cell(
+            source.add_attribute_by_id(TypeId::of::<I>())?,
+        ))
+    }
+
+    /// `getAttribute(I.class)`: the source's instance of `I`, or `None`.
+    pub fn get(source: &AttributeSource) -> Option<Self> {
+        source
+            .get_attribute_by_id(TypeId::of::<I>())
+            .map(Self::from_cell)
+    }
+
+    fn from_cell(cell: AttributeCell) -> Self {
+        Self {
+            cell,
+            _interface: PhantomData,
+        }
+    }
+
+    /// Borrows the instance as `I`.
+    ///
+    /// # Panics
+    ///
+    /// When the instance is borrowed mutably, or does not answer the cast to
+    /// `I` it is registered for.
+    #[inline]
+    pub fn borrow(&self) -> AtomicRef<'_, I> {
+        AtomicRef::map(self.cell.borrow(), |att| {
+            I::cast(&**att).expect("INVARIANT: an implementation answers the casts it is keyed by")
+        })
+    }
+
+    /// Borrows the instance mutably as `I`.
+    ///
+    /// # Panics
+    ///
+    /// When the instance is borrowed, or does not answer the cast to `I` it
+    /// is registered for.
+    #[inline]
+    pub fn borrow_mut(&self) -> AtomicRefMut<'_, I> {
+        AtomicRefMut::map(self.cell.borrow_mut(), |att| {
+            I::cast_mut(&mut **att)
+                .expect("INVARIANT: an implementation answers the casts it is keyed by")
+        })
+    }
+
+    /// Whether `self` and `other` are the same instance.
+    pub fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cell, &other.cell)
+    }
+
+    /// Whether `self` and `other`, possibly of different interfaces, are
+    /// provided by the same implementation instance (as the default token
+    /// attribute factory's `PackedTokenAttributeImpl` provides every core
+    /// token attribute).
+    pub fn same_impl_as<J: AttributeInterface + ?Sized>(&self, other: &AttributeHandle<J>) -> bool {
+        Arc::ptr_eq(&self.cell, &other.cell)
+    }
+
+    /// Borrows the implementation mutably, for a caller that sets several
+    /// interfaces of one implementation (see [`same_impl_as`](Self::same_impl_as))
+    /// under one borrow, casting with [`AttributeInterface::cast_mut`].
+    ///
+    /// # Panics
+    ///
+    /// When the instance is borrowed.
+    #[inline]
+    pub fn borrow_impl_mut(&self) -> AtomicRefMut<'_, Box<dyn AttributeImpl>> {
+        self.cell.borrow_mut()
+    }
+}
+
+impl<I: AttributeInterface + ?Sized> Clone for AttributeHandle<I> {
+    fn clone(&self) -> Self {
+        Self::from_cell(Arc::clone(&self.cell))
+    }
+}
+
+impl<I: AttributeInterface + ?Sized> Debug for AttributeHandle<I> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("AttributeHandle")
+            .field(&std::any::type_name::<I>())
+            .finish()
+    }
+}
+
+// -----------------------------------------------------------------------------
 // TokenFilter
 // -----------------------------------------------------------------------------
 
@@ -785,6 +903,32 @@ impl<T: TokenFilterLogic> TokenFilter<T> {
             input,
             logic,
         }
+    }
+
+    /// Creates a filter over `input` whose logic is built from the filter's
+    /// own source.
+    ///
+    /// Equivalent to a Java subclass constructor: `super(in)` builds the
+    /// source over the input's, then the field initializers run
+    /// (`termAtt = addAttribute(CharTermAttribute.class)`). `make_logic`
+    /// receives that source, adds the attributes in the subclass's order and
+    /// keeps their [`AttributeHandle`]s, as Java's fields keep the instances.
+    ///
+    /// # Errors
+    ///
+    /// What `make_logic` returns, such as the factory's failure to implement
+    /// an interface `addAttribute` asks for.
+    pub fn with_logic(
+        input: Box<dyn TokenStream>,
+        make_logic: impl FnOnce(&mut AttributeSource) -> Result<T>,
+    ) -> Result<Self> {
+        let mut source = AttributeSource::new_from(input.attribute_source());
+        let logic = make_logic(&mut source)?;
+        Ok(Self {
+            source,
+            input,
+            logic,
+        })
     }
 
     /// Returns a reference to the filter logic.
@@ -2058,6 +2202,37 @@ mod tests {
         }
     }
     use crate::util::attribute::unwrap_all;
+
+    /// An `AttributeHandle` is the source's own instance, as a Java field
+    /// assigned from `addAttribute` is: writes through either are seen by
+    /// the other, `add` again answers the same instance, `get` answers
+    /// `None` for an absent interface, and a filter's source, which shares
+    /// the input's maps, answers the input's instance.
+    #[test]
+    fn attribute_handle_is_the_sources_instance() -> Result<()> {
+        let mut source = AttributeSource::new();
+        let handle = AttributeHandle::<dyn CharTermAttribute>::add(&mut source)?;
+        source
+            .get_attribute_interface_mut::<dyn CharTermAttribute>()
+            .unwrap()
+            .append_string(Some("abc"));
+        assert_eq!(handle.borrow().term(), "abc");
+        handle.borrow_mut().set_empty();
+        assert_eq!(
+            source
+                .get_attribute_interface::<dyn CharTermAttribute>()
+                .unwrap()
+                .length(),
+            0
+        );
+        let again = AttributeHandle::<dyn CharTermAttribute>::add(&mut source)?;
+        assert!(handle.same_instance(&again));
+        assert!(AttributeHandle::<dyn PayloadAttribute>::get(&source).is_none());
+        let filter_source = AttributeSource::new_from(&source);
+        let shared = AttributeHandle::<dyn CharTermAttribute>::get(&filter_source).unwrap();
+        assert!(shared.same_instance(&handle));
+        Ok(())
+    }
 
     #[derive(Debug, Default)]
     struct WhitespaceTokenizer {

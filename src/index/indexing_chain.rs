@@ -73,7 +73,7 @@ use crate::analysis::tokenattributes::{
     OffsetAttribute, PayloadAttribute, PositionIncrementAttribute, TermFrequencyAttribute,
     TermToBytesRefAttribute,
 };
-use crate::analysis::{Analyzer, TokenStream};
+use crate::analysis::{Analyzer, AttributeHandle, TokenStream};
 use crate::codecs::doc_values::DocValuesConsumer;
 use crate::codecs::knn_vectors::FieldVectorWriter;
 use crate::codecs::points::PointsWriter;
@@ -109,9 +109,7 @@ use crate::store::TrackingDirectoryWrapper;
 use crate::util::byte_block_pool::MAX_TERM_LENGTH;
 use crate::util::java_collections::JavaStringMap;
 use crate::util::NumericUtils;
-use crate::util::{
-    Accountable, AttributeSource, ByteBlockPool, BytesRef, IOUtils, InfoStream, Version,
-};
+use crate::util::{Accountable, ByteBlockPool, BytesRef, IOUtils, InfoStream, Version};
 
 /// Highest position a token may occupy.
 ///
@@ -256,9 +254,31 @@ pub struct FieldInvertState {
     /// The attribute source of the token stream being inverted.
     ///
     /// Equivalent to `FieldInvertState.attributeSource`
-    /// (`FieldInvertState.java:47`); the attributes Java caches from it
-    /// (`FieldInvertState.java:49-53`) are read through this source.
+    /// (`FieldInvertState.java:47`).
     attribute_source: Option<crate::util::attribute::AttributeSource>,
+    /// The attributes Java caches from `attributeSource`
+    /// (`FieldInvertState.java:49-53`), resolved when the source changes;
+    /// `None` with no source.
+    attributes: Option<InvertAttributes>,
+}
+
+/// `FieldInvertState`'s cached attributes (`FieldInvertState.java:49-53`):
+/// every token is read through these instances, never through the source's
+/// attribute map.
+#[derive(Debug, Clone)]
+struct InvertAttributes {
+    /// `termAttribute = attributeSource.getAttribute(TermToBytesRefAttribute.class)`,
+    /// `None` where Java's is `null`.
+    term: Option<AttributeHandle<dyn TermToBytesRefAttribute>>,
+    /// `termFreqAttribute = attributeSource.addAttribute(TermFrequencyAttribute.class)`.
+    term_freq: AttributeHandle<dyn TermFrequencyAttribute>,
+    /// `posIncrAttribute = attributeSource.addAttribute(PositionIncrementAttribute.class)`.
+    pos_incr: AttributeHandle<dyn PositionIncrementAttribute>,
+    /// `offsetAttribute = attributeSource.addAttribute(OffsetAttribute.class)`.
+    offset: AttributeHandle<dyn OffsetAttribute>,
+    /// `payloadAttribute = attributeSource.getAttribute(PayloadAttribute.class)`,
+    /// `None` where Java's is `null`.
+    payload: Option<AttributeHandle<dyn PayloadAttribute>>,
 }
 
 impl FieldInvertState {
@@ -281,6 +301,7 @@ impl FieldInvertState {
             last_start_offset: 0,
             last_position: 0,
             attribute_source: None,
+            attributes: None,
         }
     }
 
@@ -363,15 +384,52 @@ impl FieldInvertState {
             return Ok(());
         }
         match attribute_source {
-            None => self.attribute_source = None,
+            None => {
+                self.attribute_source = None;
+                self.attributes = None;
+            }
             Some(mut source) => {
-                source.add_attribute_interface::<dyn TermFrequencyAttribute>()?;
-                source.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
-                source.add_attribute_interface::<dyn OffsetAttribute>()?;
+                let term = AttributeHandle::get(&source);
+                let term_freq = AttributeHandle::add(&mut source)?;
+                let pos_incr = AttributeHandle::add(&mut source)?;
+                let offset = AttributeHandle::add(&mut source)?;
+                let payload = AttributeHandle::get(&source);
+                self.attributes = Some(InvertAttributes {
+                    term,
+                    term_freq,
+                    pos_incr,
+                    offset,
+                    payload,
+                });
                 self.attribute_source = Some(source);
             }
         }
         Ok(())
+    }
+
+    /// [`set_attribute_source`](Self::set_attribute_source) with the token
+    /// stream's own source, which is copied only when it is not the source
+    /// already set: `invertState.setAttributeSource(stream)`
+    /// (`IndexingChain.java:1911`) for a reused stream is a no-op in Java.
+    ///
+    /// # Errors
+    ///
+    /// What `addAttribute` raises for an interface the source's factory
+    /// cannot implement.
+    fn set_stream_attribute_source(
+        &mut self,
+        source: &crate::util::attribute::AttributeSource,
+    ) -> Result<()> {
+        // PERF: the identity test first, so that a reused stream's source
+        // (every instance of a field after the first) is not cloned.
+        if self
+            .attribute_source
+            .as_ref()
+            .is_some_and(|current| current.shares_attributes_with(source))
+        {
+            return Ok(());
+        }
+        self.set_attribute_source(Some(source.clone()))
     }
 
     /// Returns the attribute source of the token stream being inverted.
@@ -382,13 +440,12 @@ impl FieldInvertState {
         self.attribute_source.as_ref()
     }
 
-    /// The attribute source set by `invert_token_stream`, which reads every
-    /// token through it, as Java reads through the attributes
-    /// `setAttributeSource` cached.
-    fn attribute_source(&self) -> Result<&crate::util::attribute::AttributeSource> {
+    /// The attributes `setAttributeSource` cached, which `invert_token_stream`
+    /// reads every token through.
+    fn attributes(&self) -> Result<&InvertAttributes> {
         // A `null` `attributeSource` throws `NullPointerException` where Java
         // dereferences one of the attributes it caches.
-        self.attribute_source
+        self.attributes
             .as_ref()
             .ok_or_else(LuceneError::null_pointer)
     }
@@ -1032,42 +1089,6 @@ impl FieldSchema {
     }
 }
 
-/// Which attribute interfaces a field instance's token stream actually
-/// carries.
-///
-/// Resolved once per field instance, exactly where Lucene caches its
-/// `Attribute` references in `FieldInvertState.setAttributeSource`
-/// (`FieldInvertState.java:95-111`). The attributes are held by interface, as
-/// Java's fields are, whatever implementation the stream's factory chose.
-#[derive(Debug, Default, Clone, Copy)]
-struct TokenAttributeLayout {
-    term: bool,
-    position_increment: bool,
-    offset: bool,
-    payload: bool,
-    /// The stream carries a `TermFrequencyAttribute`.
-    ///
-    /// `FieldInvertState.setAttributeSource` calls
-    /// `addAttribute(TermFrequencyAttribute.class)`, which resolves to the
-    /// stream's own instance when it has one (the `PackedTokenAttributeImpl`
-    /// of the default factory implements the interface) and otherwise adds a
-    /// fresh `TermFrequencyAttributeImpl` whose frequency stays at its
-    /// default of one.
-    term_freq: bool,
-}
-
-impl TokenAttributeLayout {
-    fn resolve(source: &AttributeSource) -> Self {
-        Self {
-            term: source.has_attribute_interface::<dyn TermToBytesRefAttribute>(),
-            position_increment: source.has_attribute_interface::<dyn PositionIncrementAttribute>(),
-            offset: source.has_attribute_interface::<dyn OffsetAttribute>(),
-            payload: source.has_attribute_interface::<dyn PayloadAttribute>(),
-            term_freq: source.has_attribute_interface::<dyn TermFrequencyAttribute>(),
-        }
-    }
-}
-
 /// One token as read from the attributes of a token stream.
 #[derive(Debug)]
 struct RawToken {
@@ -1084,71 +1105,40 @@ struct RawToken {
     has_term_freq_attribute: bool,
 }
 
-/// Reads the current token off `source`.
+/// Reads the current token off the attributes `FieldInvertState` cached.
 ///
 /// Lucene reaches for `TermToBytesRefAttribute`, `PositionIncrementAttribute`,
-/// `OffsetAttribute`, `PayloadAttribute` and `TermFrequencyAttribute`; the
-/// position-increment, offset and term-frequency attributes are added to the
-/// stream if missing (`FieldInvertState.java:107-109`), which is why the
-/// defaults here (increment one, offsets zero, frequency one) match the
-/// attribute defaults.
-fn read_token(
-    source: &AttributeSource,
-    layout: &TokenAttributeLayout,
-    term: &mut BytesRef,
-) -> Result<RawToken> {
+/// `OffsetAttribute`, `PayloadAttribute` and `TermFrequencyAttribute` through
+/// the fields `setAttributeSource` set (`FieldInvertState.java:107-111`); the
+/// position-increment, offset and term-frequency attributes were added to
+/// the stream there, so only the term and the payload may be absent.
+fn read_token(attributes: &InvertAttributes, term: &mut BytesRef) -> Result<RawToken> {
     // `termAttribute = attributeSource.getAttribute(...)` is `null` without
     // the attribute (`FieldInvertState.java:106`); the dereference happens in
     // `termsHashPerField.add(invertState.termAttribute.getBytesRef(), docID)`
     // (`IndexingChain.java:2002`), which reads the attribute's own `BytesRef`.
     // The term is written into `term`, a buffer reused across tokens, instead
     // of into a new `BytesRef` per token.
-    if layout.term {
-        source
-            .get_attribute_interface::<dyn TermToBytesRefAttribute>()
-            .expect("INVARIANT: presence checked in TokenAttributeLayout::resolve")
-            .copy_bytes_ref_to(term);
+    if let Some(term_attribute) = &attributes.term {
+        term_attribute.borrow().copy_bytes_ref_to(term);
     }
 
-    let position_increment = if layout.position_increment {
-        source
-            .get_attribute_interface::<dyn PositionIncrementAttribute>()
-            .expect("INVARIANT: presence checked above")
-            .get_position_increment()
-    } else {
-        1
-    };
+    let position_increment = attributes.pos_incr.borrow().get_position_increment();
 
-    let (start_offset, end_offset) = if layout.offset {
-        let attribute = source
-            .get_attribute_interface::<dyn OffsetAttribute>()
-            .expect("INVARIANT: presence checked above");
+    let (start_offset, end_offset) = {
+        let attribute = attributes.offset.borrow();
         (attribute.start_offset(), attribute.end_offset())
-    } else {
-        (0, 0)
     };
 
-    let payload = if layout.payload {
-        source
-            .get_attribute_interface::<dyn PayloadAttribute>()
-            .expect("INVARIANT: presence checked above")
-            .get_payload()
-            .cloned()
-    } else {
-        None
-    };
+    let payload = attributes
+        .payload
+        .as_ref()
+        .and_then(|attribute| attribute.borrow().get_payload().cloned());
 
-    let term_freq = if layout.term_freq {
-        source
-            .get_attribute_interface::<dyn TermFrequencyAttribute>()
-            .expect("INVARIANT: presence checked above")
-            .get_term_frequency()
-    } else {
-        1
-    };
+    let term_freq = attributes.term_freq.borrow().get_term_frequency();
 
     Ok(RawToken {
-        has_term: layout.term,
+        has_term: attributes.term.is_some(),
         position_increment,
         start_offset,
         end_offset,
@@ -1162,24 +1152,11 @@ fn read_token(
 }
 
 /// Reads the end-of-stream position increment and end offset.
-fn read_stream_end(source: &AttributeSource, layout: &TokenAttributeLayout) -> (i32, i32) {
-    let position_increment = if layout.position_increment {
-        source
-            .get_attribute_interface::<dyn PositionIncrementAttribute>()
-            .map(|attribute| attribute.get_position_increment())
-            .unwrap_or(0)
-    } else {
-        0
-    };
-    let end_offset = if layout.offset {
-        source
-            .get_attribute_interface::<dyn OffsetAttribute>()
-            .map(|attribute| attribute.end_offset())
-            .unwrap_or(0)
-    } else {
-        0
-    };
-    (position_increment, end_offset)
+fn read_stream_end(attributes: &InvertAttributes) -> (i32, i32) {
+    (
+        attributes.pos_incr.borrow().get_position_increment(),
+        attributes.offset.borrow().end_offset(),
+    )
 }
 
 /// Keeps `error` as the chain's aborting exception unless one is already
@@ -2602,8 +2579,7 @@ impl DefaultIndexingChain {
             // the tokens are then read through the attributes it caches.
             per_field
                 .invert_state
-                .set_attribute_source(Some(stream.attribute_source().clone()))?;
-            let layout = TokenAttributeLayout::resolve(per_field.invert_state.attribute_source()?);
+                .set_stream_attribute_source(stream.attribute_source())?;
             // Lucene calls `termsHashPerField.start(field, first)` here, right
             // after `stream.reset()` and `invertState.setAttributeSource`
             // (`IndexingChain.java:1908-1912`).
@@ -2611,11 +2587,7 @@ impl DefaultIndexingChain {
 
             let mut term_bytes = BytesRef::default();
             while stream.increment_token()? {
-                let token = read_token(
-                    per_field.invert_state.attribute_source()?,
-                    &layout,
-                    &mut term_bytes,
-                )?;
+                let token = read_token(per_field.invert_state.attributes()?, &mut term_bytes)?;
                 let state = &mut per_field.invert_state;
 
                 let position_increment = token.position_increment;
@@ -2736,7 +2708,7 @@ impl DefaultIndexingChain {
 
             stream.end()?;
             let (end_position_increment, end_offset) =
-                read_stream_end(per_field.invert_state.attribute_source()?, &layout);
+                read_stream_end(per_field.invert_state.attributes()?);
             per_field.invert_state.position += end_position_increment;
             per_field.invert_state.offset += end_offset;
             Ok(())
@@ -5253,6 +5225,7 @@ mod tests {
     use crate::store::{
         flush_io_context, ByteBuffersDirectory, Directory, FlushInfo, TrackingDirectoryWrapper,
     };
+    use crate::util::attribute::AttributeSource;
     use crate::util::{NoOutputInfoStream, Version};
 
     // -- Scripted token stream --------------------------------------------
@@ -6688,6 +6661,50 @@ mod tests {
     /// (`FieldInvertState.java:96-113`), `getAttributeSource` returns it
     /// (`FieldInvertState.java:176-179`), and `Similarity.computeNorm` sees
     /// the source of the stream that was inverted.
+    #[test]
+    fn field_invert_state_caches_the_attributes_once_per_source() {
+        use crate::analysis::tokenattributes::{CharTermAttribute, OffsetAttribute};
+        let mut state = FieldInvertState::new(10, "f".to_string(), IndexOptions::DOCS);
+        assert!(matches!(
+            state.attributes().map_err(|e| e.kind),
+            Err(LuceneErrorKind::Unchecked {
+                class: "java.lang.NullPointerException",
+                ..
+            })
+        ));
+
+        let mut stream_source = crate::util::attribute::AttributeSource::new();
+        stream_source
+            .add_attribute_interface::<dyn CharTermAttribute>()
+            .unwrap();
+        state.set_stream_attribute_source(&stream_source).unwrap();
+        let first = state.attributes().unwrap().clone();
+        // `getAttribute(TermToBytesRefAttribute)` finds the term; there is
+        // no `PayloadAttribute`, so Java's field is `null`.
+        assert!(first.term.is_some());
+        assert!(first.payload.is_none());
+        // `addAttribute` put the offset attribute into the stream's own maps.
+        assert!(stream_source.has_attribute_interface::<dyn OffsetAttribute>());
+
+        // The same stream again (a reused stream, the next instance of the
+        // field): Java's `this.attributeSource != attributeSource` is false,
+        // so the cached instances are kept.
+        state.set_stream_attribute_source(&stream_source).unwrap();
+        let second = state.attributes().unwrap();
+        assert!(second.pos_incr.same_instance(&first.pos_incr));
+        assert!(second.offset.same_instance(&first.offset));
+
+        // Another stream: the attributes are resolved again, on its source.
+        let other = crate::util::attribute::AttributeSource::new();
+        state.set_stream_attribute_source(&other).unwrap();
+        let third = state.attributes().unwrap();
+        assert!(!third.offset.same_instance(&first.offset));
+        assert!(third.term.is_none());
+
+        state.set_attribute_source(None).unwrap();
+        assert!(state.attributes().is_err());
+    }
+
     #[test]
     fn gap_g004_field_invert_state_exposes_the_attribute_source() {
         use crate::analysis::tokenattributes::{

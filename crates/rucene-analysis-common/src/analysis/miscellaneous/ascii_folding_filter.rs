@@ -22,7 +22,8 @@
 //! `tools/translate/ascii_folding_filter.py`; do not edit it by hand.
 
 use rucene::analysis::{
-    CharTermAttribute, PositionIncrementAttribute, TokenFilter, TokenFilterLogic, TokenStream,
+    AttributeHandle, CharTermAttribute, PositionIncrementAttribute, TokenFilter, TokenFilterLogic,
+    TokenStream,
 };
 use rucene::error::Result;
 use rucene::util::attribute::{AttributeSource, CapturedState};
@@ -40,6 +41,11 @@ pub struct ASCIIFoldingFilterLogic {
     output: Vec<char>,
     output_pos: usize,
     state: Option<CapturedState>,
+    /// `private final CharTermAttribute termAtt = addAttribute(CharTermAttribute.class)`.
+    term_att: AttributeHandle<dyn CharTermAttribute>,
+    /// `private final PositionIncrementAttribute posIncAttr =
+    /// addAttribute(PositionIncrementAttribute.class)`.
+    pos_inc_attr: AttributeHandle<dyn PositionIncrementAttribute>,
 }
 
 impl ASCIIFoldingFilterLogic {
@@ -63,28 +69,55 @@ impl ASCIIFoldingFilterLogic {
     /// is one `char` here, where Java sees two surrogates; neither form is
     /// below U+0080 nor matched by the `switch`, so both are copied unchanged.
     pub fn fold_to_ascii_term(&mut self, source: &AttributeSource, input: &[char], length: usize) {
-        // Worst-case length required:
-        let max_size_needed = 4 * length;
-        if self.output.len() < max_size_needed {
-            self.output = vec!['\0'; ArrayUtil::oversize(max_size_needed, CHARACTER_BYTES)];
-        }
-
-        self.output_pos = fold_to_ascii(input, 0, &mut self.output, 0, length);
-        if self.preserve_original && self.need_to_preserve(input, length) {
+        if Self::fold_into_output(
+            &mut self.output,
+            &mut self.output_pos,
+            self.preserve_original,
+            input,
+            length,
+        ) {
             self.state = source.capture_state();
         }
+    }
+
+    /// The folding half of [`fold_to_ascii_term`](Self::fold_to_ascii_term):
+    /// folds `input` into the output buffer and answers whether the original
+    /// token must be preserved, whose state the caller then captures.
+    ///
+    /// The fields are passed one by one so that `input` may be borrowed from
+    /// the filter's own term attribute.
+    fn fold_into_output(
+        output: &mut Vec<char>,
+        output_pos: &mut usize,
+        preserve_original: bool,
+        input: &[char],
+        length: usize,
+    ) -> bool {
+        // Worst-case length required:
+        let max_size_needed = 4 * length;
+        if output.len() < max_size_needed {
+            *output = vec!['\0'; ArrayUtil::oversize(max_size_needed, CHARACTER_BYTES)];
+        }
+
+        *output_pos = fold_to_ascii(input, 0, output, 0, length);
+        preserve_original && Self::need_to_preserve(output, *output_pos, input, length)
     }
 
     /// Check if foldToASCII generated a different token.
     ///
     /// Equivalent to the private `ASCIIFoldingFilter.needToPreserve(char[], int)`.
-    fn need_to_preserve(&self, input: &[char], input_length: usize) -> bool {
-        if input_length != self.output_pos {
+    fn need_to_preserve(
+        output: &[char],
+        output_pos: usize,
+        input: &[char],
+        input_length: usize,
+    ) -> bool {
+        if input_length != output_pos {
             return true;
         }
         input[..input_length]
             .iter()
-            .zip(&self.output[..input_length])
+            .zip(&output[..input_length])
             .any(|(i, o)| i != o)
     }
 }
@@ -102,33 +135,39 @@ impl TokenFilterLogic for ASCIIFoldingFilterLogic {
                 "state should only be captured if preserveOriginal is true"
             );
             source.restore_state(&state)?;
-            source
-                .get_attribute_interface_mut::<dyn PositionIncrementAttribute>()
-                .expect("INVARIANT: the constructor added the PositionIncrementAttribute")
-                .set_position_increment(0);
+            self.pos_inc_attr.borrow_mut().set_position_increment(0);
             return Ok(true);
         }
         if input.increment_token()? {
-            let buffer: Vec<char> = {
-                let term_att = source
-                    .get_attribute_interface::<dyn CharTermAttribute>()
-                    .expect("INVARIANT: the constructor added the CharTermAttribute");
-                term_att.buffer()[..term_att.length()].to_vec()
-            };
-            let length = buffer.len();
+            // `final char[] buffer = termAtt.buffer(); final int length =
+            // termAtt.length();`: the term is read in place.
+            let preserve = {
+                let term_att = self.term_att.borrow();
+                let length = term_att.length();
+                let buffer = &term_att.buffer()[..length];
 
-            // If no characters actually require rewriting then we
-            // just return token as-is:
-            for &c in &buffer[..length] {
-                if c >= '\u{0080}' {
-                    self.fold_to_ascii_term(source, &buffer, length);
-                    source
-                        .get_attribute_interface_mut::<dyn CharTermAttribute>()
-                        .expect("INVARIANT: the constructor added the CharTermAttribute")
-                        .copy_buffer(&self.output, 0, self.output_pos);
-                    break;
+                // If no characters actually require rewriting then we
+                // just return token as-is:
+                if !buffer.iter().any(|&c| c >= '\u{0080}') {
+                    return Ok(true);
                 }
+                Self::fold_into_output(
+                    &mut self.output,
+                    &mut self.output_pos,
+                    self.preserve_original,
+                    buffer,
+                    length,
+                )
+            };
+            // `foldToASCII(buffer, length)` captures the state of the
+            // unfolded token before `termAtt.copyBuffer(output, 0,
+            // outputPos)` overwrites it.
+            if preserve {
+                self.state = source.capture_state();
             }
+            self.term_att
+                .borrow_mut()
+                .copy_buffer(&self.output, 0, self.output_pos);
             Ok(true)
         } else {
             Ok(false)
@@ -191,19 +230,16 @@ pub fn new_ascii_folding_filter_preserving(
     input: Box<dyn TokenStream>,
     preserve_original: bool,
 ) -> Result<ASCIIFoldingFilter> {
-    let mut filter = TokenFilter::new(
-        input,
-        ASCIIFoldingFilterLogic {
+    TokenFilter::with_logic(input, |source| {
+        Ok(ASCIIFoldingFilterLogic {
             preserve_original,
             output: vec!['\0'; 512],
             output_pos: 0,
             state: None,
-        },
-    );
-    let source = filter.attribute_source_mut();
-    source.add_attribute_interface::<dyn CharTermAttribute>()?;
-    source.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
-    Ok(filter)
+            term_att: AttributeHandle::add(source)?,
+            pos_inc_attr: AttributeHandle::add(source)?,
+        })
+    })
 }
 
 /// Converts characters above ASCII to their ASCII equivalents. For example,

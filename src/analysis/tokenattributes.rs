@@ -417,17 +417,30 @@ impl TermToBytesRefAttribute for CharTermAttributeImpl {
         builder.get()
     }
 
-    /// The builder is refilled exactly as by `get_bytes_ref`, and its content
-    /// is copied into `bytes`, whose buffer only grows when a term needs
-    /// more room.
+    /// The UTF-8 encoding of the term, the bytes `get_bytes_ref` answers,
+    /// written straight into `bytes`, whose buffer only grows when a term
+    /// needs more room.
+    ///
+    /// The builder is not refilled: nothing reads it but `get_bytes_ref`,
+    /// which refills it first, so the encoding is done once, into the
+    /// caller's buffer, as Java's `getBytesRef()` does it once, into the
+    /// builder whose bytes the caller then reads.
     fn copy_bytes_ref_to(&self, bytes: &mut BytesRef) {
-        let mut builder = self.builder.lock().unwrap_or_else(PoisonError::into_inner);
-        builder.copy_char_array(&self.term_buffer[..self.term_length]);
-        let length = builder.length();
-        bytes.bytes.clear();
-        bytes.bytes.extend_from_slice(&builder.bytes()[..length]);
+        // PERF: one UTF-8 encoding, with no lock and no second copy.
+        let text = &self.term_buffer[..self.term_length];
+        let out = &mut bytes.bytes;
+        out.clear();
+        if text.iter().all(char::is_ascii) {
+            out.extend(text.iter().map(|&c| c as u8));
+        } else {
+            out.reserve(text.len());
+            let mut utf8 = [0u8; 4];
+            for &c in text {
+                out.extend_from_slice(c.encode_utf8(&mut utf8).as_bytes());
+            }
+        }
         bytes.offset = 0;
-        bytes.length = length;
+        bytes.length = out.len();
     }
 }
 

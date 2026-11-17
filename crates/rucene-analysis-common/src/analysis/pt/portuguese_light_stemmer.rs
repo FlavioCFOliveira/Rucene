@@ -55,6 +55,50 @@
 
 use crate::analysis::util::stemmer_util::StemmerUtil;
 
+/// The UTF-16 unit of a `char` literal of the Java source, all of which are
+/// in the Basic Multilingual Plane.
+const fn unit(c: char) -> u16 {
+    c as u16
+}
+
+// PERF: the Java `switch`es compare `char`s directly; these constants let the
+// port compare the UTF-16 units the same way, where converting each unit to a
+// Rust `char` first (`char::from_u32`, with its surrogate check) was extra
+// work on every unit of every token (profile of task #546, round 3).
+const LOWER_A: u16 = unit('a');
+const LOWER_C: u16 = unit('c');
+const LOWER_E: u16 = unit('e');
+const LOWER_I: u16 = unit('i');
+const LOWER_L: u16 = unit('l');
+const LOWER_O: u16 = unit('o');
+const LOWER_R: u16 = unit('r');
+const LOWER_S: u16 = unit('s');
+const LOWER_U: u16 = unit('u');
+const LOWER_Z: u16 = unit('z');
+const A_GRAVE: u16 = unit('à');
+const A_ACUTE: u16 = unit('á');
+const A_CIRCUMFLEX: u16 = unit('â');
+const A_DIAERESIS: u16 = unit('ä');
+const A_TILDE: u16 = unit('ã');
+const O_GRAVE: u16 = unit('ò');
+const O_ACUTE: u16 = unit('ó');
+const O_CIRCUMFLEX: u16 = unit('ô');
+const O_DIAERESIS: u16 = unit('ö');
+const O_TILDE: u16 = unit('õ');
+const E_GRAVE: u16 = unit('è');
+const E_ACUTE: u16 = unit('é');
+const E_CIRCUMFLEX: u16 = unit('ê');
+const E_DIAERESIS: u16 = unit('ë');
+const U_GRAVE: u16 = unit('ù');
+const U_ACUTE: u16 = unit('ú');
+const U_CIRCUMFLEX: u16 = unit('û');
+const U_DIAERESIS: u16 = unit('ü');
+const I_GRAVE: u16 = unit('ì');
+const I_ACUTE: u16 = unit('í');
+const I_CIRCUMFLEX: u16 = unit('î');
+const I_DIAERESIS: u16 = unit('ï');
+const C_CEDILLA: u16 = unit('ç');
+
 /// `StemmerUtil.endsWith(char[], int, String)`, statically imported by the
 /// Java class.
 fn ends_with(s: &[u16], len: usize, suffix: &str) -> bool {
@@ -89,22 +133,22 @@ impl PortugueseLightStemmer {
 
         len = self.remove_suffix(s, len);
 
-        if len > 3 && s[len - 1] == 'a' as u16 {
+        if len > 3 && s[len - 1] == LOWER_A {
             len = self.norm_feminine(s, len);
         }
 
-        if len > 4 && matches!(char::from_u32(u32::from(s[len - 1])), Some('e' | 'a' | 'o')) {
+        if len > 4 && matches!(s[len - 1], LOWER_E | LOWER_A | LOWER_O) {
             len -= 1;
         }
 
         for c in s.iter_mut().take(len) {
-            match char::from_u32(u32::from(*c)) {
-                Some('à' | 'á' | 'â' | 'ä' | 'ã') => *c = 'a' as u16,
-                Some('ò' | 'ó' | 'ô' | 'ö' | 'õ') => *c = 'o' as u16,
-                Some('è' | 'é' | 'ê' | 'ë') => *c = 'e' as u16,
-                Some('ù' | 'ú' | 'û' | 'ü') => *c = 'u' as u16,
-                Some('ì' | 'í' | 'î' | 'ï') => *c = 'i' as u16,
-                Some('ç') => *c = 'c' as u16,
+            match *c {
+                A_GRAVE | A_ACUTE | A_CIRCUMFLEX | A_DIAERESIS | A_TILDE => *c = LOWER_A,
+                O_GRAVE | O_ACUTE | O_CIRCUMFLEX | O_DIAERESIS | O_TILDE => *c = LOWER_O,
+                E_GRAVE | E_ACUTE | E_CIRCUMFLEX | E_DIAERESIS => *c = LOWER_E,
+                U_GRAVE | U_ACUTE | U_CIRCUMFLEX | U_DIAERESIS => *c = LOWER_U,
+                I_GRAVE | I_ACUTE | I_CIRCUMFLEX | I_DIAERESIS => *c = LOWER_I,
+                C_CEDILLA => *c = LOWER_C,
                 _ => {}
             }
         }
@@ -116,10 +160,7 @@ impl PortugueseLightStemmer {
     fn remove_suffix(&self, s: &mut [u16], mut len: usize) -> usize {
         if len > 4
             && ends_with(s, len, "es")
-            && matches!(
-                char::from_u32(u32::from(s[len - 3])),
-                Some('r' | 's' | 'l' | 'z')
-            )
+            && matches!(s[len - 3], LOWER_R | LOWER_S | LOWER_L | LOWER_Z)
         {
             return len - 2;
         }
@@ -162,7 +203,7 @@ impl PortugueseLightStemmer {
             return len - 5;
         }
 
-        if len > 3 && s[len - 1] == 's' as u16 {
+        if len > 3 && s[len - 1] == LOWER_S {
             return len - 1;
         }
         len
