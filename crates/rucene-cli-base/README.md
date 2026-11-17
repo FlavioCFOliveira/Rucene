@@ -581,6 +581,16 @@ Java-oracle harness of `rucene-analysis-common` and needs a JDK (`java` on the
 path) and the Lucene 10.5.0 jars `lucene-core` and `lucene-analysis-common` in
 the local Maven repository (`~/.m2/repository/org/apache/lucene/`).
 
+**Question set** ([`perguntas-portal-base.md`](perguntas-portal-base.md)): 100 pt-PT
+questions on public-procurement transparency, each answered from at least two
+indices, with its request plan, complexity (R requests, I indices) and the
+answer validated on the full root. From the repository root,
+`python3 -I crates/rucene-cli-base/scripts/perguntas_portal_base.py [--only ID,...] [--write-md]`
+runs every plan (read-only commands only); `--write-md` regenerates the document.
+
 The script's tests (`scripts/tests/`) cover cleaning, deduplication, merging,
 the derived aggregates, the bulk format, the load against a fake CLI and
-`fetch`/`status` on local `file://` resources.
+`fetch`/`status` on local `file://` resources; `test_perguntas_portal_base.py`
+checks the structure of the question set (count, ids, order, R and I,
+read-only commands, the document, NIF masking) without the binary or the
+indices.
