@@ -208,9 +208,7 @@ mod tests {
         let w = IndexWriter::new(dir, c).unwrap();
         for i in 0..n {
             let mut d = Document::new();
-            d.add(Box::new(
-                StringField::new("id", i.to_string(), Store::YES).unwrap(),
-            ));
+            d.add(StringField::new("id", i.to_string(), Store::YES).unwrap());
             w.add_document(&d).unwrap();
             w.flush().unwrap();
         }

@@ -171,7 +171,7 @@ fn test_crazy_spans(f: &mut SpanSimilarity) -> Result<()> {
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let ft = FieldType::new_from(TextField::type_not_stored());
-    doc.add(Box::new(LuceneTestCase::new_field("foo", "bar", &ft)));
+    doc.add(LuceneTestCase::new_field("foo", "bar", &ft));
     iw.add_document(&doc)?;
     let ir = iw.get_reader()?;
     iw.close()?;

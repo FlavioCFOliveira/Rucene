@@ -402,7 +402,7 @@ pub trait DataInput {
             self.read_bytes(Some(&mut bytes), filled, take)?;
             remaining -= take;
         }
-        Ok(crate::util::java_fmt::java_utf8_to_string(&bytes))
+        Ok(crate::util::java_fmt::java_utf8_vec_to_string(bytes))
     }
 
     /// Reads the map previously written with

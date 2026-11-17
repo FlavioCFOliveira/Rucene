@@ -1588,11 +1588,7 @@ fn test_multi_phrase_query(_t: &mut TestQPHelper) -> Result<()> {
         LuceneTestCase::new_index_writer_config_analyzer(Some(canned_analyzer())),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "field",
-        "",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("field", "", Store::NO));
     w.add_document(&doc)?;
     let r = directory_reader::open_with_writer(&*w)?;
     let s = LuceneTestCase::new_searcher(Arc::clone(&r));

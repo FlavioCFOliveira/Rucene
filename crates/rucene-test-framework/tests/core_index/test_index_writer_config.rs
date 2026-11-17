@@ -499,20 +499,12 @@ fn test_live_change_to_cfs() -> Result<()> {
     };
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "field",
-        "foo",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("field", "foo", Store::NO));
     w.add_document(&doc)?;
     w.commit()?;
     Assert::assert_true_msg("Expected CFS after commit", newest_uses_cfs(&w)?);
 
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "field",
-        "foo",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("field", "foo", Store::NO));
     w.add_document(&doc)?;
     w.commit()?;
     w.force_merge(1)?;

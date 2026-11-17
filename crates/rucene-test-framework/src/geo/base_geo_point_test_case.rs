@@ -1020,11 +1020,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             let mut doc = Document::new();
             lats[2 * id] = self.quantize_lat(self.next_latitude());
             lons[2 * id] = self.quantize_lon(self.next_longitude());
-            doc.add(Box::new(StringField::new(
-                "id",
-                id.to_string(),
-                Store::YES,
-            )?));
+            doc.add(StringField::new("id", id.to_string(), Store::YES)?);
             self.add_point_to_doc(FIELD_NAME, &mut doc, lats[2 * id], lons[2 * id])?;
             lats[2 * id + 1] = self.quantize_lat(self.next_latitude());
             lons[2 * id + 1] = self.quantize_lon(self.next_longitude());
@@ -1600,8 +1596,8 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
     ) -> Result<()> {
         for id in 0..lats.len() {
             let mut doc = Document::new();
-            doc.add(Box::new(StringField::new("id", id.to_string(), Store::NO)?));
-            doc.add(Box::new(NumericDocValuesField::new("id", id as i64)));
+            doc.add(StringField::new("id", id.to_string(), Store::NO)?);
+            doc.add(NumericDocValuesField::new("id", id as i64));
             if !lats[id].is_nan() {
                 self.add_point_to_doc(FIELD_NAME, &mut doc, lats[id], lons[id])?;
             }
@@ -1807,14 +1803,8 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             let lon = self.quantize_lon(lon_raw);
             let mut doc = Document::new();
             self.add_point_to_doc("field", &mut doc, lat, lon)?;
-            doc.add(Box::new(StoredField::new_number(
-                "lat",
-                NumericValue::Double(lat),
-            )?));
-            doc.add(Box::new(StoredField::new_number(
-                "lon",
-                NumericValue::Double(lon),
-            )?));
+            doc.add(StoredField::new_number("lat", NumericValue::Double(lat))?);
+            doc.add(StoredField::new_number("lon", NumericValue::Double(lon))?);
             writer.add_document(&doc)?;
         }
         let reader = writer.get_reader()?;
@@ -1986,11 +1976,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
         let mut i = 0;
         while i < random().next_int_bound(10) {
             let mut doc = Document::new();
-            doc.add(Box::new(StringField::new(
-                "string",
-                i.to_string(),
-                Store::NO,
-            )?));
+            doc.add(StringField::new("string", i.to_string(), Store::NO)?);
             writer.add_document(&doc)?;
             i += 1;
         }

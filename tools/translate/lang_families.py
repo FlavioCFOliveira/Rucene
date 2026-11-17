@@ -8,7 +8,9 @@ Three families of near-identical Java classes are generated into
   keyword-aware `TokenFilter` holding a stemmer and calling
   `stemmer.stem(termAtt.buffer(), termAtt.length())` (or, in the variant,
   `stemmer.stem(termAtt.resizeBuffer(len + 1), len)`) on every non-keyword
-  term; and, by a general template, the stem and normalization filters
+  term (for the stemmers of `IN_PLACE_STEMMERS`, the term buffer itself is
+  stemmed in place when every character is one UTF-16 unit); and, by a
+  general template, the stem and normalization filters
   (`XNormalizationFilter`) that call a stemmer's `stem` or a normalizer's
   `normalize` the same way on every term or every non-keyword term, with the
   fields in any order and the call in either of its Java spellings;
@@ -494,6 +496,13 @@ STEM_PLAIN = "final int newlen = stemmer . stem ( termAtt . buffer ( ) , termAtt
 STEM_RESIZE = ("final int len = termAtt . length ( ) ; "
                "final int newlen = stemmer . stem ( termAtt . resizeBuffer ( len + 1 ) , len ) ;")
 
+# Stemmers whose `stem` is generic over `TermUnit` (`analysis/util/stemmer_util.rs`):
+# their filters (the plain template only) hold their attributes once and stem
+# the `char` term buffer in place when every character is one UTF-16 unit, as
+# Java stems `termAtt.buffer()` (`emit_in_place_stem_filter`). The other
+# filters keep the conversion to UTF-16 and back (`emit_term_filter`).
+IN_PLACE_STEMMERS = {"PortugueseLightStemmer"}
+
 
 def stem_filter(jc: JavaClass, pkg: str) -> str:
     if jc.header != ["public", "final", "class", jc.name, "extends", "TokenFilter"]:
@@ -525,8 +534,118 @@ def stem_filter(jc: JavaClass, pkg: str) -> str:
     if (len(comments) != (1 if resize else 0)) or any(not c.startswith("//") for c in comments):
         raise Deviation(f"comments in the class body: {comments}")
 
+    if stemmer in IN_PLACE_STEMMERS:
+        if resize:
+            raise SystemExit(f"{jc.name}: the in-place template has no resizeBuffer variant")
+        return emit_in_place_stem_filter(jc, pkg, stemmer)
     return emit_term_filter(jc, pkg, stemmer, "stemmer", "stem", True, ("term", "keyword"),
                             resize, comments)
+
+
+def emit_in_place_stem_filter(jc, pkg, stemmer):
+    """Emits a plain-template stem filter (`stemmer.stem(termAtt.buffer(),
+    termAtt.length())` on every non-keyword term) whose stemmer is generic
+    over `TermUnit`: the attributes are held once (`AttributeHandle`, Java's
+    `addAttribute` fields), and the stemmer edits the `char` term buffer in
+    place when every character is in the Basic Multilingual Plane, else the
+    term's UTF-16 units in a buffer kept across tokens."""
+    fqn = f"org.apache.lucene.analysis.{pkg}.{jc.name}"
+    blocks, tags = doc_blocks(jc.class_javadoc)
+    dep = deprecated_attr(tags, jc.annotations)
+    logic = f"{jc.name}Logic"
+    ctor = f"new_{snake(jc.name)}"
+    first_sentence = blocks[0][1] if blocks and blocks[0][0] == "p" else jc.name
+    module_doc = first_sentence.split(". ")[0].rstrip(".")
+    out = [ASF_HEADER, "", GENERATED_NOTE.format(java=f"{jc.name}.java"), ""]
+    out += wrap(f"{module_doc}, ported from `{fqn}`.", 76, "//! ", "//! ")
+    out += pre_comments(jc)
+    if dep:
+        out += ["", "// Lucene deprecates this class; its uses of the deprecated types are the", "// Java class's own.", "#![allow(deprecated)]"]
+    out += ["",
+            "use rucene::analysis::character_utils::{set_term_utf16, term_to_utf16};",
+            "use rucene::analysis::{",
+            "    AttributeHandle, CharTermAttribute, KeywordAttribute, TokenFilter, TokenFilterLogic,",
+            "    TokenStream,",
+            "};",
+            "use rucene::error::Result;",
+            "use rucene::util::attribute::AttributeSource;",
+            "",
+            f"use super::{snake(stemmer)}::{stemmer};",
+            ""]
+    out += [f"/// The body of [`{jc.name}`]: what Lucene's", f"/// `{jc.name}` adds to `TokenFilter`."]
+    out += dep + ["#[derive(Debug)]", f"pub struct {logic} {{",
+                  f"    stemmer: {stemmer},",
+                  "    /// `private final CharTermAttribute termAtt = addAttribute(CharTermAttribute.class)`.",
+                  "    term_att: AttributeHandle<dyn CharTermAttribute>,",
+                  "    /// `private final KeywordAttribute keywordAttr = addAttribute(KeywordAttribute.class)`.",
+                  "    keyword_attr: AttributeHandle<dyn KeywordAttribute>,",
+                  "    /// The term's UTF-16 units when it holds a character beyond the Basic",
+                  "    /// Multilingual Plane, which the stemmer then edits; kept across tokens",
+                  "    /// so that no token allocates.",
+                  "    buffer: Vec<u16>,",
+                  "}", ""]
+    out += [f"impl TokenFilterLogic for {logic} {{",
+            f"    /// Equivalent to `{jc.name}.incrementToken()`. The stemmer",
+            "    /// edits Java's `termAtt.buffer()` in place, and the first `newlen` units",
+            "    /// become the term, as Java's `termAtt.setLength(newlen)` keeps them.",
+            "    ///",
+            "    /// The term buffer holds `char`s (the divergence declared on",
+            "    /// `CharTermAttribute`). When every one is in the Basic Multilingual",
+            "    /// Plane, each is one UTF-16 unit and the stemmer edits the buffer",
+            "    /// itself, as Java's does; otherwise it edits the term's UTF-16 units,",
+            "    /// which then become the term.",
+            "    fn increment_token(",
+            "        &mut self,",
+            "        _source: &mut AttributeSource,",
+            "        input: &mut dyn TokenStream,",
+            "    ) -> Result<bool> {",
+            "        if input.increment_token()? {",
+            "            let is_keyword = self.keyword_attr.borrow().is_keyword();",
+            "            if !is_keyword {",
+            "                let mut term_att = self.term_att.borrow_mut();",
+            "                let length = term_att.length();",
+            "                if term_att.buffer()[..length]",
+            "                    .iter()",
+            "                    .all(|&c| (c as u32) < 0x1_0000)",
+            "                {",
+            "                    // PERF: in place, as Java, with no conversion of the",
+            "                    // term to UTF-16 and back (task #546, round 4).",
+            "                    let newlen = self.stemmer.stem(term_att.buffer_mut(), length);",
+            "                    term_att.set_length(newlen);",
+            "                } else {",
+            "                    term_to_utf16(&term_att.buffer()[..length], &mut self.buffer);",
+            "                    let length = self.buffer.len();",
+            "                    let newlen = self.stemmer.stem(&mut self.buffer, length);",
+            "                    // `termAtt.setLength(newlen)` over the edited buffer.",
+            "                    set_term_utf16(&mut *term_att, &self.buffer[..newlen]);",
+            "                }",
+            "            }",
+            "            Ok(true)",
+            "        } else {",
+            "            Ok(false)",
+            "        }",
+            "    }",
+            "}", ""]
+    out += render_doc(blocks, 0)
+    out += ["///", "/// " + claim(fqn, tags)]
+    out += dep + [f"pub type {jc.name} = TokenFilter<{logic}>;", ""]
+    out += [f"/// Equivalent to `{jc.name}(TokenStream)`, whose fields add the",
+            "/// `CharTermAttribute` and the `KeywordAttribute`, in that order.",
+            "///", "/// # Errors", "///",
+            "/// What the stream's attribute factory raises for an interface it cannot",
+            "/// implement, as Java's `addAttribute` throws."]
+    out += dep
+    out += [f"pub fn {ctor}(input: Box<dyn TokenStream>) -> Result<{jc.name}> {{",
+            "    TokenFilter::with_logic(input, |source| {",
+            f"        Ok({logic} {{",
+            f"            stemmer: {stemmer}::new(),",
+            "            term_att: AttributeHandle::add(source)?,",
+            "            keyword_attr: AttributeHandle::add(source)?,",
+            "            buffer: Vec::new(),",
+            "        })",
+            "    })",
+            "}"]
+    return "\n".join(out) + "\n"
 
 
 def emit_term_filter(jc, pkg, worker, field, method, keyword, attr_order, resize, comments):

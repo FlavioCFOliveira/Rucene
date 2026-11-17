@@ -51,45 +51,33 @@ fn sort_rescorer_set_up(f: &mut SortRescorerTest) -> Result<()> {
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "1",
-        Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_string_field("id", "1", Store::YES));
+    doc.add(LuceneTestCase::new_text_field(
         "body",
         "some contents and more contents",
         Store::NO,
-    )));
-    doc.add(Box::new(NumericDocValuesField::new("popularity", 5)));
+    ));
+    doc.add(NumericDocValuesField::new("popularity", 5));
     iw.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "2",
-        Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_string_field("id", "2", Store::YES));
+    doc.add(LuceneTestCase::new_text_field(
         "body",
         "another document with different contents",
         Store::NO,
-    )));
-    doc.add(Box::new(NumericDocValuesField::new("popularity", 20)));
+    ));
+    doc.add(NumericDocValuesField::new("popularity", 20));
     iw.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "3",
-        Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_string_field("id", "3", Store::YES));
+    doc.add(LuceneTestCase::new_text_field(
         "body",
         "crappy contents",
         Store::NO,
-    )));
-    doc.add(Box::new(NumericDocValuesField::new("popularity", 2)));
+    ));
+    doc.add(NumericDocValuesField::new("popularity", 2));
     iw.add_document(&doc)?;
 
     let reader = iw.get_reader()?;
@@ -222,26 +210,22 @@ fn test_random(_f: &mut SortRescorerTest) -> Result<()> {
     let max_value = TestUtil::next_int(&*random(), 10, 1000000);
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::YES,
-        )));
+        ));
         let num_tokens = TestUtil::next_int(&*random(), 1, 10);
         let mut b = String::new();
         for _j in 0..num_tokens {
             b.push_str("a ");
         }
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "field",
-            &b,
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_text_field("field", &b, Store::NO));
         id_to_num[i as usize] = random().next_int_bound(max_value);
-        doc.add(Box::new(NumericDocValuesField::new(
+        doc.add(NumericDocValuesField::new(
             "num",
             i64::from(id_to_num[i as usize]),
-        )));
+        ));
         w.add_document(&doc)?;
     }
     let r = w.get_reader()?;

@@ -2577,12 +2577,8 @@ pub(crate) mod tests {
         for i in 0..4u8 {
             let mut doc = Document::new();
             if i != 1 {
-                doc.add(Box::new(
-                    KnnFloatVectorField::with_euclidean("f", &[f32::from(i), 1.0]).unwrap(),
-                ));
-                doc.add(Box::new(
-                    KnnByteVectorField::with_euclidean("b", &[i, 1]).unwrap(),
-                ));
+                doc.add(KnnFloatVectorField::with_euclidean("f", &[f32::from(i), 1.0]).unwrap());
+                doc.add(KnnByteVectorField::with_euclidean("b", &[i, 1]).unwrap());
             }
             writer.add_document(&doc).unwrap();
         }

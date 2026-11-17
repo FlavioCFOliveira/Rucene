@@ -75,11 +75,11 @@ fn fixture_set_up(f: &mut Fixture) -> Result<()> {
     let directory = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         FN,
         "the quick brown fox jumps over the lazy ??? dog 493432 49344 [foo] 12.3 \\ ς",
         Store::NO,
-    )));
+    ));
     writer.add_document(&doc)?;
     let reader = writer.get_reader()?;
     writer.close()?;

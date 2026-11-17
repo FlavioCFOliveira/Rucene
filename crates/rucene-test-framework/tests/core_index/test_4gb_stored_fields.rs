@@ -86,7 +86,7 @@ fn test_() -> Result<()> {
         value[i] = random().next_int_bound(256) as u8;
     }
     let f = Field::new_with_bytes("fld", BytesRef::new(value.clone()), ft)?;
-    doc.add(Box::new(f));
+    doc.add(f);
 
     let num_docs = ((1i64 << 32) / value_length as i64 + 100) as i32;
     for i in 0..num_docs {

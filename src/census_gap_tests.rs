@@ -75,8 +75,8 @@ mod search {
     #[test]
     fn gap_g012_values_sort_field_missing_value_and_to_string() {
         let mut with_value = Document::new();
-        with_value.add(Box::new(DoubleDocValuesField::new("d", 1.0)));
-        with_value.add(Box::new(NumericDocValuesField::new("l", 1)));
+        with_value.add(DoubleDocValuesField::new("d", 1.0));
+        with_value.add(NumericDocValuesField::new("l", 1));
         let index = TestIndex::new(vec![with_value, Document::new()]);
         let searcher = index.searcher();
         let order = |sort_field: crate::search::SortField| -> Vec<i32> {
@@ -144,10 +144,10 @@ mod search {
             .iter()
             .map(|v| {
                 let mut doc = Document::new();
-                doc.add(Box::new(SortedDocValuesField::indexed_field(
+                doc.add(SortedDocValuesField::indexed_field(
                     "s",
                     BytesRef::from_char_sequence(v),
-                )));
+                ));
                 doc
             })
             .collect();
@@ -182,7 +182,7 @@ mod search {
     #[test]
     fn gap_g019_doc_values_rewrite_rejects_another_doc_values_type() {
         let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::new("n", 3)));
+        doc.add(NumericDocValuesField::new("n", 3));
         let index = TestIndex::new(vec![doc]);
         let error = index
             .searcher()
@@ -631,22 +631,16 @@ mod oracle {
         let docs = (0..3)
             .map(|i| {
                 let mut d = Document::new();
-                d.add(Box::new(
-                    StringField::new("s", format!("t{i}"), Store::NO).unwrap(),
-                ));
-                d.add(Box::new(NumericDocValuesField::new("n", i)));
+                d.add(StringField::new("s", format!("t{i}"), Store::NO).unwrap());
+                d.add(NumericDocValuesField::new("n", i));
                 let value = || BytesRef::new(format!("v{i}").into_bytes());
-                d.add(Box::new(SortedDocValuesField::new("sd", value())));
-                d.add(Box::new(BinaryDocValuesField::new("b", value())));
-                d.add(Box::new(SortedNumericDocValuesField::new("sn", i)));
-                d.add(Box::new(SortedSetDocValuesField::new("ss", value())));
-                d.add(Box::new(IntPoint::new("p", &[i as i32]).unwrap()));
-                d.add(Box::new(
-                    KnnFloatVectorField::new("fv", &[i as f32, 1.0], EUCLIDEAN).unwrap(),
-                ));
-                d.add(Box::new(
-                    KnnByteVectorField::new("bv", &[i as u8, 1], EUCLIDEAN).unwrap(),
-                ));
+                d.add(SortedDocValuesField::new("sd", value()));
+                d.add(BinaryDocValuesField::new("b", value()));
+                d.add(SortedNumericDocValuesField::new("sn", i));
+                d.add(SortedSetDocValuesField::new("ss", value()));
+                d.add(IntPoint::new("p", &[i as i32]).unwrap());
+                d.add(KnnFloatVectorField::new("fv", &[i as f32, 1.0], EUCLIDEAN).unwrap());
+                d.add(KnnByteVectorField::new("bv", &[i as u8, 1], EUCLIDEAN).unwrap());
                 d
             })
             .collect();
@@ -1206,10 +1200,8 @@ mod corrupt_files {
         config.set_use_compound_file(false).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", "a".to_string(), Store::NO).unwrap(),
-        ));
-        doc.add(Box::new(IntPoint::new("p", &[7]).unwrap()));
+        doc.add(StringField::new("id", "a".to_string(), Store::NO).unwrap());
+        doc.add(IntPoint::new("p", &[7]).unwrap());
         writer.add_document(&doc).unwrap();
         writer.commit().unwrap();
         writer.close().unwrap();
@@ -1323,11 +1315,11 @@ mod index_read_path {
         let docs = (0..2)
             .map(|i| {
                 let mut doc = Document::new();
-                doc.add(Box::new(SortedDocValuesField::new(
+                doc.add(SortedDocValuesField::new(
                     "s",
                     BytesRef::from_char_sequence(&i.to_string()),
-                )));
-                doc.add(Box::new(NumericDocValuesField::new("n", i)));
+                ));
+                doc.add(NumericDocValuesField::new("n", i));
                 doc
             })
             .collect();
@@ -1386,9 +1378,7 @@ mod index_read_path {
         config.set_use_compound_file(false).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", "a".to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(StringField::new("id", "a".to_string(), Store::NO).unwrap());
         writer.add_document(&doc).unwrap();
         writer.commit().unwrap();
         writer.close().unwrap();
@@ -1498,9 +1488,7 @@ mod term_vectors {
         field_type.set_store_term_vector_positions(true).unwrap();
         field_type.set_store_term_vector_offsets(true).unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            Field::new("body", "alpha beta".to_string(), field_type).unwrap(),
-        ));
+        doc.add(Field::new("body", "alpha beta".to_string(), field_type).unwrap());
         let index = TestIndex::new(vec![doc]);
         let leaves = Arc::clone(&index.reader).leaves().unwrap();
         let vectors = leaves[0].leaf_reader().term_vectors().unwrap();
@@ -1538,9 +1526,7 @@ mod check_index {
             .iter()
             .map(|v| {
                 let mut doc = Document::new();
-                doc.add(Box::new(
-                    StringField::new("id", v.to_string(), Store::YES).unwrap(),
-                ));
+                doc.add(StringField::new("id", v.to_string(), Store::YES).unwrap());
                 doc
             })
             .collect();
@@ -1620,9 +1606,7 @@ mod index_writer {
 
     fn id_doc(id: &str) -> Document {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", id.to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(StringField::new("id", id.to_string(), Store::NO).unwrap());
         doc
     }
 
@@ -1688,7 +1672,7 @@ mod index_writer {
     fn gap_g304_numeric_update_with_an_int_value_is_a_class_cast() {
         let (_dir, writer) = new_writer(IndexWriterConfig::new());
         let mut doc = id_doc("a");
-        doc.add(Box::new(NumericDocValuesField::new("n", 1)));
+        doc.add(NumericDocValuesField::new("n", 1));
         writer.add_document(&doc).unwrap();
         let field_type = FieldType::new();
         field_type
@@ -1905,9 +1889,7 @@ mod terms_and_queries {
         let docs = (0..3000)
             .map(|i| {
                 let mut doc = Document::new();
-                doc.add(Box::new(
-                    StringField::new("f", format!("t{i:04}"), Store::NO).unwrap(),
-                ));
+                doc.add(StringField::new("f", format!("t{i:04}"), Store::NO).unwrap());
                 doc
             })
             .collect();
@@ -2157,9 +2139,7 @@ mod members {
             .iter()
             .map(|v| {
                 let mut doc = Document::new();
-                doc.add(Box::new(
-                    StringField::new("id", v.to_string(), Store::NO).unwrap(),
-                ));
+                doc.add(StringField::new("id", v.to_string(), Store::NO).unwrap());
                 doc
             })
             .collect();

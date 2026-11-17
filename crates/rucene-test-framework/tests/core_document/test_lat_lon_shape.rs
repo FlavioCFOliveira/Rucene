@@ -117,7 +117,7 @@ fn add_polygons_to_doc(field: &str, doc: &mut Document, polygon: &Polygon) -> Re
         random().next_boolean(),
     )?;
     for f in fields {
-        doc.add(Box::new(f));
+        doc.add(f);
     }
     Ok(())
 }
@@ -125,7 +125,7 @@ fn add_polygons_to_doc(field: &str, doc: &mut Document, polygon: &Polygon) -> Re
 /// `addLineToDoc(field, doc, line)`.
 fn add_line_to_doc(field: &str, doc: &mut Document, line: &Line) -> Result<()> {
     for f in LatLonShape::create_indexable_fields_line(field, line)? {
-        doc.add(Box::new(f));
+        doc.add(f);
     }
     Ok(())
 }
@@ -659,7 +659,7 @@ fn test_point_index_and_query() -> Result<()> {
     p = Point::new(q_lat, q_lon)?;
     let fields = LatLonShape::create_indexable_fields_point(FIELDNAME, p.lat(), p.lon())?;
     for f in fields {
-        document.add(Box::new(f));
+        document.add(f);
     }
     writer.add_document(&document)?;
 
@@ -1028,7 +1028,7 @@ fn test_point_index_and_distance_query() -> Result<()> {
     let p = geo_test_util::next_point();
     let fields = LatLonShape::create_indexable_fields_point(FIELDNAME, p.lat(), p.lon())?;
     for f in fields {
-        document.add(Box::new(f));
+        document.add(f);
     }
     writer.add_document(&document)?;
 

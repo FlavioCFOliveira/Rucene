@@ -1575,7 +1575,7 @@ fn add_shape_to_doc<C: SpatialCase>(
     shape: &Shape,
 ) -> Result<()> {
     for f in case.create_indexable_fields(field, shape)? {
-        doc.add(f);
+        doc.add_shared(std::sync::Arc::from(f));
     }
     Ok(())
 }
@@ -1618,8 +1618,8 @@ pub fn index_random_shapes<C: SpatialCase>(
     for (id, shape) in shapes.iter().enumerate() {
         let id = id as i32;
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new("id", id.to_string(), Store::NO)?));
-        doc.add(Box::new(NumericDocValuesField::new("id", i64::from(id))));
+        doc.add(StringField::new("id", id.to_string(), Store::NO)?);
+        doc.add(NumericDocValuesField::new("id", i64::from(id)));
         if let Some(shape) = shape {
             add_shape_to_doc(case, FIELD_NAME, &mut doc, shape)?;
         }

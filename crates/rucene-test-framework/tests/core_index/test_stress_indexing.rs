@@ -89,16 +89,16 @@ fn indexer_do_work(writer: &IndexWriter, next_id: &AtomicI32) -> Result<()> {
     for _ in 0..10 {
         let mut d = Document::new();
         let n = random().next_int();
-        d.add(Box::new(LuceneTestCase::new_string_field(
+        d.add(LuceneTestCase::new_string_field(
             "id",
             &next_id.fetch_add(1, Ordering::SeqCst).to_string(),
             Store::YES,
-        )));
-        d.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        d.add(LuceneTestCase::new_text_field(
             "contents",
             &English::int_to_english(n),
             Store::NO,
-        )));
+        ));
         writer.add_document(&d)?;
     }
 

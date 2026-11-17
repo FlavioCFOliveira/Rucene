@@ -203,22 +203,18 @@ fn build_doc(parts: &[DocPart]) -> Document {
     let mut doc = Document::new();
     for part in parts {
         match part {
-            DocPart::Sorted(v) => doc.add(Box::new(SortedDocValuesField::new(
+            DocPart::Sorted(v) => doc.add(SortedDocValuesField::new(
                 "value",
                 LuceneTestCase::new_bytes_ref_str(v),
-            ))),
-            DocPart::Binary(v) => doc.add(Box::new(BinaryDocValuesField::new(
+            )),
+            DocPart::Binary(v) => doc.add(BinaryDocValuesField::new(
                 "value",
                 LuceneTestCase::new_bytes_ref_str(v),
-            ))),
-            DocPart::Numeric(v) => doc.add(Box::new(NumericDocValuesField::new("value", *v))),
-            DocPart::Float(v) => doc.add(Box::new(FloatDocValuesField::new("value", *v))),
-            DocPart::Double(v) => doc.add(Box::new(DoubleDocValuesField::new("value", *v))),
-            DocPart::Stored(v) => doc.add(Box::new(LuceneTestCase::new_string_field(
-                "value",
-                v,
-                Store::YES,
-            ))),
+            )),
+            DocPart::Numeric(v) => doc.add(NumericDocValuesField::new("value", *v)),
+            DocPart::Float(v) => doc.add(FloatDocValuesField::new("value", *v)),
+            DocPart::Double(v) => doc.add(DoubleDocValuesField::new("value", *v)),
+            DocPart::Stored(v) => doc.add(LuceneTestCase::new_string_field("value", v, Store::YES)),
         }
     }
     doc
@@ -698,21 +694,21 @@ fn test_multi_sort() -> Result<()> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for (value1, value2) in [("foo", 0), ("bar", 1), ("bar", 0), ("foo", 1)] {
         let mut doc = Document::new();
-        doc.add(Box::new(SortedDocValuesField::new(
+        doc.add(SortedDocValuesField::new(
             "value1",
             LuceneTestCase::new_bytes_ref_str(value1),
-        )));
-        doc.add(Box::new(NumericDocValuesField::new("value2", value2)));
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        ));
+        doc.add(NumericDocValuesField::new("value2", value2));
+        doc.add(LuceneTestCase::new_string_field(
             "value1",
             value1,
             Store::YES,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        ));
+        doc.add(LuceneTestCase::new_string_field(
             "value2",
             &value2.to_string(),
             Store::YES,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     let ir = writer.get_reader()?;
@@ -832,11 +828,7 @@ fn do_test_ghost(
     let writer = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
     let mut doc = Document::new();
     add(&mut doc, indexed)?;
-    doc.add(Box::new(StringField::new(
-        "id",
-        "0".to_string(),
-        Store::NO,
-    )?));
+    doc.add(StringField::new("id", "0".to_string(), Store::NO)?);
     writer.add_document(&doc)?;
     writer.add_document(&Document::new())?;
     writer.flush()?;
@@ -875,16 +867,12 @@ fn test_string_ghost() -> Result<()> {
 fn do_test_string_ghost(indexed: bool) -> Result<()> {
     do_test_ghost(
         |doc, indexed| {
-            doc.add(Box::new(SortedDocValuesField::new(
+            doc.add(SortedDocValuesField::new(
                 "value",
                 LuceneTestCase::new_bytes_ref_str("foo"),
-            )));
+            ));
             if indexed {
-                doc.add(Box::new(LuceneTestCase::new_string_field(
-                    "value",
-                    "foo",
-                    Store::YES,
-                )));
+                doc.add(LuceneTestCase::new_string_field("value", "foo", Store::YES));
             }
             Ok(())
         },
@@ -905,9 +893,9 @@ fn test_int_ghost() -> Result<()> {
 fn do_test_int_ghost(indexed: bool) -> Result<()> {
     do_test_ghost(
         |doc, indexed| {
-            doc.add(Box::new(NumericDocValuesField::new("value", 3)));
+            doc.add(NumericDocValuesField::new("value", 3));
             if indexed {
-                doc.add(Box::new(IntPoint::new("value", &[3])?));
+                doc.add(IntPoint::new("value", &[3])?);
             }
             Ok(())
         },
@@ -927,9 +915,9 @@ fn test_long_ghost() -> Result<()> {
 fn do_test_long_ghost(indexed: bool) -> Result<()> {
     do_test_ghost(
         |doc, indexed| {
-            doc.add(Box::new(NumericDocValuesField::new("value", 3)));
+            doc.add(NumericDocValuesField::new("value", 3));
             if indexed {
-                doc.add(Box::new(LongPoint::new("value", &[3])?));
+                doc.add(LongPoint::new("value", &[3])?);
             }
             Ok(())
         },
@@ -949,9 +937,9 @@ fn test_double_ghost() -> Result<()> {
 fn do_test_double_ghost(indexed: bool) -> Result<()> {
     do_test_ghost(
         |doc, indexed| {
-            doc.add(Box::new(DoubleDocValuesField::new("value", 1.25)));
+            doc.add(DoubleDocValuesField::new("value", 1.25));
             if indexed {
-                doc.add(Box::new(DoublePoint::new("value", &[1.25])?));
+                doc.add(DoublePoint::new("value", &[1.25])?);
             }
             Ok(())
         },
@@ -971,9 +959,9 @@ fn test_float_ghost() -> Result<()> {
 fn do_test_float_ghost(indexed: bool) -> Result<()> {
     do_test_ghost(
         |doc, indexed| {
-            doc.add(Box::new(FloatDocValuesField::new("value", 1.25)));
+            doc.add(FloatDocValuesField::new("value", 1.25));
             if indexed {
-                doc.add(Box::new(FloatPoint::new("value", &[1.25])?));
+                doc.add(FloatPoint::new("value", &[1.25])?);
             }
             Ok(())
         },

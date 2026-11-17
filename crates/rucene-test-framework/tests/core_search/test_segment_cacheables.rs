@@ -73,12 +73,8 @@ fn test_multiple_doc_values_delegates() -> Result<()> {
     iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("field3", 1)));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "text",
-        "text",
-        Store::NO,
-    )));
+    doc.add(NumericDocValuesField::new("field3", 1));
+    doc.add(LuceneTestCase::new_text_field("text", "text", Store::NO));
     w.add_document(&doc)?;
     w.commit()?;
     let reader = directory_reader::open_with_writer(&*w)?;

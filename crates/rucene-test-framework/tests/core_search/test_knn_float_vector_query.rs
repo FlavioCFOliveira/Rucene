@@ -201,18 +201,22 @@ fn test_score_negative_dot_product() -> Result<()> {
     let d = LuceneTestCase::new_directory();
     let w = IndexWriter::new(d.as_directory(), IndexWriterConfig::new())?;
     let mut doc = Document::new();
-    doc.add(KnnFloatCase::get_knn_vector_field_with(
-        "field",
-        &[-1.0, 0.0],
-        VectorSimilarityFunction::DOT_PRODUCT,
-    )?);
+    doc.add_shared(std::sync::Arc::from(
+        KnnFloatCase::get_knn_vector_field_with(
+            "field",
+            &[-1.0, 0.0],
+            VectorSimilarityFunction::DOT_PRODUCT,
+        )?,
+    ));
     w.add_document(&doc)?;
     doc = Document::new();
-    doc.add(KnnFloatCase::get_knn_vector_field_with(
-        "field",
-        &[1.0, 0.0],
-        VectorSimilarityFunction::DOT_PRODUCT,
-    )?);
+    doc.add_shared(std::sync::Arc::from(
+        KnnFloatCase::get_knn_vector_field_with(
+            "field",
+            &[1.0, 0.0],
+            VectorSimilarityFunction::DOT_PRODUCT,
+        )?,
+    ));
     w.add_document(&doc)?;
     w.close()?;
     let reader = directory_reader::open(d.as_directory())?;
@@ -252,11 +256,13 @@ fn test_score_dot_product() -> Result<()> {
     let written = (|| -> Result<()> {
         for j in 1..=5 {
             let mut doc = Document::new();
-            doc.add(KnnFloatCase::get_knn_vector_field_with(
-                "field",
-                &l2normalize(vec![j as f32, (j * j) as f32])?,
-                VectorSimilarityFunction::DOT_PRODUCT,
-            )?);
+            doc.add_shared(std::sync::Arc::from(
+                KnnFloatCase::get_knn_vector_field_with(
+                    "field",
+                    &l2normalize(vec![j as f32, (j * j) as f32])?,
+                    VectorSimilarityFunction::DOT_PRODUCT,
+                )?,
+            ));
             w.add_document(&doc)?;
         }
         Ok(())
@@ -329,11 +335,7 @@ fn test_doc_and_score_query_basics() -> Result<()> {
         let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
         for i in 0..50 {
             let mut doc = Document::new();
-            doc.add(Box::new(StringField::new(
-                "field",
-                format!("value{i}"),
-                Store::NO,
-            )?));
+            doc.add(StringField::new("field", format!("value{i}"), Store::NO)?);
             iw.add_document(&doc)?;
             if i % 10 == 0 {
                 iw.flush()?;

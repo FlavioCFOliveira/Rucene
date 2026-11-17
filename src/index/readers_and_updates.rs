@@ -4898,9 +4898,7 @@ mod needs_refresh_tests {
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for i in 0..3 {
             let mut d = Document::new();
-            d.add(Box::new(
-                StringField::new("id", format!("{i}"), Store::NO).unwrap(),
-            ));
+            d.add(StringField::new("id", format!("{i}"), Store::NO).unwrap());
             writer.add_document(&d).unwrap();
         }
         writer.commit().unwrap();
@@ -4935,9 +4933,7 @@ mod needs_refresh_tests {
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let doc = |id: &str| {
             let mut d = Document::new();
-            d.add(Box::new(
-                StringField::new("id", id.to_string(), Store::NO).unwrap(),
-            ));
+            d.add(StringField::new("id", id.to_string(), Store::NO).unwrap());
             d
         };
         writer.add_document(&doc("a")).unwrap();
@@ -5096,10 +5092,10 @@ mod needs_refresh_tests {
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for id in ["a", "b"] {
             let mut doc = crate::document::Document::new();
-            doc.add(Box::new(
+            doc.add(
                 crate::document::StringField::new("id", id.to_string(), crate::document::Store::NO)
                     .unwrap(),
-            ));
+            );
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();

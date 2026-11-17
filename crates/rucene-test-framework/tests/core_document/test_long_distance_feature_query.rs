@@ -70,7 +70,7 @@ fn writer(dir: &TestDirectory) -> Result<RandomIndexWriter> {
 fn field_doc() -> Document {
     let mut doc = Document::new();
     let field = LongField::new("foo", 0, Store::NO);
-    doc.add(Box::new(field));
+    doc.add(field);
     doc
 }
 
@@ -85,7 +85,7 @@ fn set_long_value(doc: &mut Document, v: i64) {
 fn doc(values: &[i64]) -> Document {
     let mut doc = Document::new();
     for &v in values {
-        doc.add(Box::new(LongField::new("foo", v, Store::NO)));
+        doc.add(LongField::new("foo", v, Store::NO));
     }
     doc
 }

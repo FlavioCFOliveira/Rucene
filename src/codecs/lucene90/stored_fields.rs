@@ -2521,7 +2521,10 @@ impl Lucene90CompressingStoredFieldsReader {
             check_footer(meta_in.as_mut())?;
             meta_in.close()?;
 
-            let cloned_field_infos = FieldInfos::new(field_infos.iter().cloned().collect())?;
+            // PERF: share the one `FieldInfos`, as Java stores the reference
+            // (`Lucene90CompressingStoredFieldsReader.java:137`, and `:106` for
+            // the clone constructor).
+            let cloned_field_infos = field_infos.clone();
             Ok((
                 version,
                 chunk_size,
@@ -2661,7 +2664,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
         self.ensure_open()?;
         Ok(Box::new(Self {
             version: self.version,
-            field_infos: FieldInfos::new(self.field_infos.iter().cloned().collect())?,
+            field_infos: self.field_infos.clone(),
             index_reader: self.index_reader.clone_index()?,
             max_pointer: self.max_pointer,
             chunk_size: self.chunk_size,
@@ -2691,7 +2694,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
         self.ensure_open()?;
         Ok(Box::new(Self {
             version: self.version,
-            field_infos: FieldInfos::new(self.field_infos.iter().cloned().collect())?,
+            field_infos: self.field_infos.clone(),
             index_reader: self.index_reader.clone_index()?,
             max_pointer: self.max_pointer,
             chunk_size: self.chunk_size,
@@ -2984,8 +2987,9 @@ impl Lucene90CompressingStoredFieldsReader {
                 visitor.binary_field_data_input(info, &mut value)
             }
             TYPE_STRING => {
-                let s = input.read_string()?;
-                visitor.string_field(info, &s)
+                // `visitor.stringField(info, in.readString())`: the visitor
+                // receives the one decoded string.
+                visitor.string_field(info, input.read_string()?)
             }
             TYPE_NUMERIC_INT => visitor.int_field(info, input.read_z_int()?),
             TYPE_NUMERIC_FLOAT => visitor.float_field(info, Self::read_z_float(input)?),
@@ -3452,9 +3456,7 @@ mod tests {
         config.set_use_compound_file(false).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StoredField::new_string("f", "x".repeat(200_000)).unwrap(),
-        ));
+        doc.add(StoredField::new_string("f", "x".repeat(200_000)).unwrap());
         writer.add_document(&doc).unwrap();
         writer.close().unwrap();
 
@@ -3527,9 +3529,9 @@ mod tests {
             Ok(())
         }
 
-        fn string_field(&mut self, info: &FieldInfo, value: &str) -> Result<()> {
+        fn string_field(&mut self, info: &FieldInfo, value: String) -> Result<()> {
             self.fields
-                .push((info.name.clone(), StoredValue::String(value.to_string())));
+                .push((info.name.clone(), StoredValue::String(value)));
             Ok(())
         }
 

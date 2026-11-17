@@ -1741,7 +1741,7 @@ impl StoredFieldVisitor for RemappingStoredFieldVisitor<'_> {
         self.visitor.binary_field(&info, value)
     }
 
-    fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> Result<()> {
+    fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
         let info = remap(self.field_infos, field_info)?;
         self.visitor.string_field(&info, value)
     }
@@ -4434,24 +4434,15 @@ mod tests {
     /// One document per global number `doc`, every kind of data keyed by it.
     fn doc(doc: i32) -> Document {
         let mut d = Document::new();
-        d.add(Box::new(
-            StringField::new("id", format!("d{doc}"), Store::NO).unwrap(),
-        ));
-        d.add(Box::new(NumericDocValuesField::new(
-            "n",
-            i64::from(doc) * 10,
-        )));
-        d.add(Box::new(SortedDocValuesField::new(
+        d.add(StringField::new("id", format!("d{doc}"), Store::NO).unwrap());
+        d.add(NumericDocValuesField::new("n", i64::from(doc) * 10));
+        d.add(SortedDocValuesField::new(
             "s",
             BytesRef::new(format!("s{doc}").into_bytes()),
-        )));
-        d.add(Box::new(
-            StoredField::new_string("sv", format!("v{doc}")).unwrap(),
         ));
-        d.add(Box::new(IntPoint::new("p", &[doc]).unwrap()));
-        d.add(Box::new(
-            KnnFloatVectorField::with_euclidean("v", &[doc as f32, 1.0]).unwrap(),
-        ));
+        d.add(StoredField::new_string("sv", format!("v{doc}")).unwrap());
+        d.add(IntPoint::new("p", &[doc]).unwrap());
+        d.add(KnnFloatVectorField::with_euclidean("v", &[doc as f32, 1.0]).unwrap());
         d
     }
 
@@ -4579,12 +4570,9 @@ mod tests {
             Ok(StoredFieldVisitorStatus::Yes)
         }
 
-        fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> Result<()> {
-            self.0.push((
-                field_info.name.clone(),
-                field_info.number,
-                value.to_string(),
-            ));
+        fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
+            self.0
+                .push((field_info.name.clone(), field_info.number, value));
             Ok(())
         }
     }

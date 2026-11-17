@@ -115,23 +115,23 @@ fn test_ram_bytes_used() -> Result<()> {
     for _ in 0..max_doc {
         let mut d = Document::new();
         if random().next_boolean() {
-            d.add(Box::new(SortedDocValuesField::new(
+            d.add(SortedDocValuesField::new(
                 "sdv",
                 BytesRef::from_char_sequence(&TestUtil::random_simple_string_max(
                     &*random(),
                     max_term_length,
                 )),
-            )));
+            ));
         }
         let num_sorted_set = random().next_int_bound(3);
         for _ in 0..num_sorted_set {
-            d.add(Box::new(SortedSetDocValuesField::new(
+            d.add(SortedSetDocValuesField::new(
                 "ssdv",
                 BytesRef::from_char_sequence(&TestUtil::random_simple_string_max(
                     &*random(),
                     max_term_length,
                 )),
-            )));
+            ));
         }
         iw.add_document(&d)?;
         if LuceneTestCase::rarely() {
@@ -178,10 +178,10 @@ fn test_one_segment_with_all_values() -> Result<()> {
     for i in 0..num_terms {
         let mut d = Document::new();
         let term = i.to_string();
-        d.add(Box::new(SortedDocValuesField::new(
+        d.add(SortedDocValuesField::new(
             "sdv",
             BytesRef::from_char_sequence(&term),
-        )));
+        ));
         iw.add_document(&d)?;
     }
     iw.force_merge(1)?;
@@ -189,10 +189,10 @@ fn test_one_segment_with_all_values() -> Result<()> {
     for _ in 0..10 {
         let mut d = Document::new();
         let term = random().next_int_bound(num_terms).to_string();
-        d.add(Box::new(SortedDocValuesField::new(
+        d.add(SortedDocValuesField::new(
             "sdv",
             BytesRef::from_char_sequence(&term),
-        )));
+        ));
         iw.add_document(&d)?;
     }
     iw.commit()?;

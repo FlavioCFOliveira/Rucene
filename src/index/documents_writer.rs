@@ -7190,12 +7190,8 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("a", "z".to_string(), Store::NO).unwrap(),
-        ));
-        doc.add(Box::new(
-            StringField::new("b", "0".to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(StringField::new("a", "z".to_string(), Store::NO).unwrap());
+        doc.add(StringField::new("b", "0".to_string(), Store::NO).unwrap());
         writer.add_document(&doc).unwrap();
         writer.close().unwrap();
         let reader = crate::index::directory_reader::open(dir).unwrap();
@@ -7233,9 +7229,7 @@ mod tests {
 
     fn doc(body: &str) -> Document {
         let mut document = Document::new();
-        document.add(Box::new(
-            TextField::new("body", body.to_string(), Store::NO).expect("text field"),
-        ));
+        document.add(TextField::new("body", body.to_string(), Store::NO).expect("text field"));
         document
     }
 

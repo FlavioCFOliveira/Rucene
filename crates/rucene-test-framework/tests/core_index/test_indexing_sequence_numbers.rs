@@ -157,15 +157,11 @@ fn test_stress_update_same_id() -> Result<()> {
             let thread = Thread::unnamed(move || {
                 run_or_rethrow(|| {
                     let mut doc = Document::new();
-                    doc.add(Box::new(StoredField::new_number(
+                    doc.add(StoredField::new_number(
                         "thread",
                         NumericValue::Int(thread_id as i32),
-                    )?));
-                    doc.add(Box::new(StringField::new(
-                        "id",
-                        "id".to_string(),
-                        Store::NO,
-                    )?));
+                    )?);
+                    doc.add(StringField::new("id", "id".to_string(), Store::NO)?);
                     starting_gun.await_();
                     for _ in 0..100 {
                         let seq_no = if random().next_boolean() {
@@ -331,15 +327,11 @@ fn test_stress_concurrent_commit() -> Result<()> {
                             }
                         } else {
                             let mut doc = Document::new();
-                            doc.add(Box::new(StoredField::new_number(
+                            doc.add(StoredField::new_number(
                                 "thread",
                                 NumericValue::Int(thread_id),
-                            )?));
-                            doc.add(Box::new(StringField::new(
-                                "id",
-                                op.id.to_string(),
-                                Store::NO,
-                            )?));
+                            )?);
+                            doc.add(StringField::new("id", op.id.to_string(), Store::NO)?);
                             if random().next_boolean() {
                                 let docs = vec![doc];
                                 op.seq_no = w.update_documents(id_term, &docs)?;
@@ -481,15 +473,12 @@ fn test_stress_concurrent_doc_values_updates_commit() -> Result<()> {
         };
 
         let mut doc = Document::new();
-        doc.add(Box::new(StoredField::new_number(
+        doc.add(StoredField::new_number(
             "thread",
             NumericValue::Int(thread_id),
-        )?));
-        doc.add(Box::new(NumericDocValuesField::new(
-            "thread",
-            thread_id as i64,
-        )));
-        doc.add(Box::new(StringField::new("id", id.to_string(), Store::NO)?));
+        )?);
+        doc.add(NumericDocValuesField::new("thread", thread_id as i64));
+        doc.add(StringField::new("id", id.to_string(), Store::NO)?);
         op.seq_no = w.add_document(&doc)?;
         ops1.lock().unwrap_or_else(|e| e.into_inner()).push(op);
     }
@@ -662,15 +651,11 @@ fn test_stress_concurrent_add_and_delete_and_commit() -> Result<()> {
                         } else {
                             let ops_size = ops.lock().unwrap_or_else(|e| e.into_inner()).len();
                             let mut doc = Document::new();
-                            doc.add(Box::new(StoredField::new_string(
+                            doc.add(StoredField::new_string(
                                 "threadop",
                                 format!("{thread_id}-{ops_size}"),
-                            )?));
-                            doc.add(Box::new(StringField::new(
-                                "id",
-                                op.id.to_string(),
-                                Store::NO,
-                            )?));
+                            )?);
+                            doc.add(StringField::new("id", op.id.to_string(), Store::NO)?);
                             if random().next_boolean() {
                                 let docs = vec![doc];
                                 op.seq_no = w.add_documents(&docs)?;

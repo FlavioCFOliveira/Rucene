@@ -77,9 +77,7 @@ fn run_java() -> String {
 /// `WriterStateFixture.doc(int)`.
 fn doc(id: i32) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", id.to_string(), Store::YES).unwrap(),
-    ));
+    d.add(StringField::new("id", id.to_string(), Store::YES).unwrap());
     d
 }
 

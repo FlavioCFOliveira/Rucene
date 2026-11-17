@@ -153,7 +153,7 @@ pub fn before_class() -> Result<()> {
         RandomIndexWriter::new_with_mock_analyzer(&*LuceneTestCase::random(), dir.as_directory())?
     };
     let mut doc = Document::new();
-    doc.add(Box::new(field));
+    doc.add(field);
     writer.add_document(&doc)?;
     let reader = writer.get_reader()?;
     let reader = LuceneTestCase::get_only_leaf_reader(reader as Arc<dyn IndexReader>)?;

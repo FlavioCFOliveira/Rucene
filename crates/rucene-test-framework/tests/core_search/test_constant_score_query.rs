@@ -110,18 +110,10 @@ fn test_constant_score_query_and_filter() -> Result<()> {
     let d = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "field",
-        "a",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("field", "a", Store::NO));
     w.add_document(&doc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "field",
-        "b",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("field", "b", Store::NO));
     w.add_document(&doc)?;
     let r = w.get_reader()?;
     w.close()?;
@@ -160,7 +152,7 @@ fn test_propagates_approximations() -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let f = LuceneTestCase::new_text_field("field", "a b", Store::NO);
-    doc.add(Box::new(f));
+    doc.add(f);
     w.add_document(&doc)?;
     w.commit()?;
 

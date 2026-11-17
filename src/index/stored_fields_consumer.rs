@@ -779,7 +779,7 @@ mod tests {
             self.seen.push(format!("{}=bin{value:?}", info.name));
             Ok(())
         }
-        fn string_field(&mut self, info: &FieldInfo, value: &str) -> Result<()> {
+        fn string_field(&mut self, info: &FieldInfo, value: String) -> Result<()> {
             self.seen.push(format!("{}=str:{value}", info.name));
             Ok(())
         }

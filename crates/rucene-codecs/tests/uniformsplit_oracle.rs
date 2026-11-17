@@ -429,16 +429,9 @@ fn shared_terms_sorted_merge_falls_back_to_the_default_merge() {
     for batch in 0..3 {
         for i in batch * 50..batch * 50 + 50 {
             let mut d = Document::new();
-            d.add(Box::new(NumericDocValuesField::new(
-                "rank",
-                (i * 7919) % 151,
-            )));
-            d.add(Box::new(
-                Field::new("sa", format!("t{}", i % 13), docs.clone()).unwrap(),
-            ));
-            d.add(Box::new(
-                Field::new("sb", format!("t{}", i % 17), positions.clone()).unwrap(),
-            ));
+            d.add(NumericDocValuesField::new("rank", (i * 7919) % 151));
+            d.add(Field::new("sa", format!("t{}", i % 13), docs.clone()).unwrap());
+            d.add(Field::new("sb", format!("t{}", i % 17), positions.clone()).unwrap());
             w.add_document(&d).unwrap();
         }
         w.commit().unwrap();
@@ -474,9 +467,7 @@ fn negative_delta_start_is_javas_failure() {
     let w = IndexWriter::new(open_dir(&dir.0), new_config(codec)).unwrap();
     for t in ["a", "b", "c", "d", "e"] {
         let mut d = Document::new();
-        d.add(Box::new(
-            StringField::new("f", t.to_string(), Store::NO).unwrap(),
-        ));
+        d.add(StringField::new("f", t.to_string(), Store::NO).unwrap());
         w.add_document(&d).unwrap();
     }
     let err = w.commit().expect_err("the last block cannot be split");
@@ -506,9 +497,7 @@ fn seek_exact_with_a_foreign_term_state_is_rejected() {
     let dir = TempDir::new("uniformsplit-foreign-state");
     let w = IndexWriter::new(open_dir(&dir.0), new_config(codec)).unwrap();
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("f", "a".to_string(), Store::NO).unwrap(),
-    ));
+    d.add(StringField::new("f", "a".to_string(), Store::NO).unwrap());
     w.add_document(&d).unwrap();
     w.commit().unwrap();
     w.close().unwrap();

@@ -672,21 +672,15 @@ mod tests {
         for d in 0..4096i32 {
             let mut doc = Document::new();
             if d % 2 == 0 {
-                doc.add(Box::new(
-                    StringField::new("a", "x".to_string(), Store::NO).unwrap(),
-                ));
+                doc.add(StringField::new("a", "x".to_string(), Store::NO).unwrap());
             }
             if d % 3 == 0 {
-                doc.add(Box::new(
-                    StringField::new("b", "x".to_string(), Store::NO).unwrap(),
-                ));
+                doc.add(StringField::new("b", "x".to_string(), Store::NO).unwrap());
             }
             if d % 5 == 0 {
-                doc.add(Box::new(
-                    StringField::new("del", "x".to_string(), Store::NO).unwrap(),
-                ));
+                doc.add(StringField::new("del", "x".to_string(), Store::NO).unwrap());
             }
-            doc.add(Box::new(IntPoint::new("rank", &[d]).unwrap()));
+            doc.add(IntPoint::new("rank", &[d]).unwrap());
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();

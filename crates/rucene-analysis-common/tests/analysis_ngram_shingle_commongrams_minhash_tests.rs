@@ -3669,11 +3669,7 @@ fn saw_set_up() -> Result<()> {
         "a sentence which contains no test",
     ] {
         let mut doc = Document::new();
-        doc.add(Box::new(TextField::new(
-            "content",
-            text.to_string(),
-            Store::YES,
-        )?));
+        doc.add(TextField::new("content", text.to_string(), Store::YES)?);
         writer.add_document(&doc)?;
     }
     writer.close()?;

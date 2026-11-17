@@ -58,7 +58,7 @@ fn int_field(d: &FieldDoc, i: usize) -> i32 {
 /// A document of one `LatLonDocValuesField("location", lat, lon)`.
 fn location(lat: f64, lon: f64) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(LatLonDocValuesField::new("location", lat, lon)?));
+    doc.add(LatLonDocValuesField::new("location", lat, lon)?);
     Ok(doc)
 }
 
@@ -201,11 +201,8 @@ fn do_random_test(num_docs: i32, num_queries: i32) -> Result<()> {
 
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(StoredField::new_number(
-            "id",
-            NumericValue::Int(i),
-        )?));
-        doc.add(Box::new(NumericDocValuesField::new("id", i as i64)));
+        doc.add(StoredField::new_number("id", NumericValue::Int(i))?);
+        doc.add(NumericDocValuesField::new("id", i as i64));
         if random().next_int_bound(10) > 7 {
             let lat_raw = geo_test_util::next_latitude();
             let lon_raw = geo_test_util::next_longitude();
@@ -216,15 +213,9 @@ fn do_random_test(num_docs: i32, num_queries: i32) -> Result<()> {
             let lon =
                 GeoEncodingUtils::decode_longitude(GeoEncodingUtils::encode_longitude(lon_raw)?);
 
-            doc.add(Box::new(LatLonDocValuesField::new("field", lat, lon)?));
-            doc.add(Box::new(StoredField::new_number(
-                "lat",
-                NumericValue::Double(lat),
-            )?));
-            doc.add(Box::new(StoredField::new_number(
-                "lon",
-                NumericValue::Double(lon),
-            )?));
+            doc.add(LatLonDocValuesField::new("field", lat, lon)?);
+            doc.add(StoredField::new_number("lat", NumericValue::Double(lat))?);
+            doc.add(StoredField::new_number("lon", NumericValue::Double(lon))?);
         } // otherwise "missing"
         writer.add_document(&doc)?;
     }

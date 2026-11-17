@@ -217,53 +217,44 @@ fn test_basics() -> Result<()> {
         for i in 0..num_docs {
             // TODO: add crankyDocValuesFields, etc
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_string_field(
+            doc.add(LuceneTestCase::new_string_field(
                 "id",
                 &i.to_string(),
                 Store::NO,
-            )));
-            doc.add(Box::new(NumericDocValuesField::new("dv", i as i64)));
-            doc.add(Box::new(BinaryDocValuesField::new("dv2", br(i))));
-            doc.add(Box::new(SortedDocValuesField::new("dv3", br(i))));
-            doc.add(Box::new(SortedSetDocValuesField::new("dv4", br(i))));
-            doc.add(Box::new(SortedSetDocValuesField::new("dv4", br(i - 1))));
-            doc.add(Box::new(SortedNumericDocValuesField::new("dv5", i as i64)));
-            doc.add(Box::new(SortedNumericDocValuesField::new(
-                "dv5",
-                (i - 1) as i64,
-            )));
-            doc.add(Box::new(LuceneTestCase::new_text_field(
+            ));
+            doc.add(NumericDocValuesField::new("dv", i as i64));
+            doc.add(BinaryDocValuesField::new("dv2", br(i)));
+            doc.add(SortedDocValuesField::new("dv3", br(i)));
+            doc.add(SortedSetDocValuesField::new("dv4", br(i)));
+            doc.add(SortedSetDocValuesField::new("dv4", br(i - 1)));
+            doc.add(SortedNumericDocValuesField::new("dv5", i as i64));
+            doc.add(SortedNumericDocValuesField::new("dv5", (i - 1) as i64));
+            doc.add(LuceneTestCase::new_text_field(
                 "text1",
                 &TestUtil::random_analysis_string(&*random(), 20, true),
                 Store::NO,
-            )));
+            ));
             // ensure we store something
-            doc.add(Box::new(StoredField::new_string(
-                "stored1",
-                "foo".to_string(),
-            )?));
-            doc.add(Box::new(StoredField::new_string(
-                "stored1",
-                "bar".to_string(),
-            )?));
+            doc.add(StoredField::new_string("stored1", "foo".to_string())?);
+            doc.add(StoredField::new_string("stored1", "bar".to_string())?);
             // ensure we get some payloads
-            doc.add(Box::new(LuceneTestCase::new_text_field(
+            doc.add(LuceneTestCase::new_text_field(
                 "text_payloads",
                 &TestUtil::random_analysis_string(&*random(), 6, true),
                 Store::NO,
-            )));
+            ));
             // ensure we get some vectors
             let ft = FieldType::new_from(TextField::type_not_stored());
             ft.set_store_term_vectors(true)?;
-            doc.add(Box::new(LuceneTestCase::new_field(
+            doc.add(LuceneTestCase::new_field(
                 "text_vectors",
                 &TestUtil::random_analysis_string(&*random(), 6, true),
                 &ft,
-            )));
-            doc.add(Box::new(IntPoint::new("point", &[random().next_int()])?));
+            ));
+            doc.add(IntPoint::new("point", &[random().next_int()])?);
             let p0 = random().next_int();
             let p1 = random().next_int();
-            doc.add(Box::new(IntPoint::new("point2d", &[p0, p1])?));
+            doc.add(IntPoint::new("point2d", &[p0, p1])?);
 
             if random().next_int_bound(10) > 0 {
                 // single doc
@@ -300,29 +291,23 @@ fn test_basics() -> Result<()> {
             } else {
                 // block docs
                 let mut doc2 = Document::new();
-                doc2.add(Box::new(LuceneTestCase::new_string_field(
+                doc2.add(LuceneTestCase::new_string_field(
                     "id",
                     &(-i).to_string(),
                     Store::NO,
-                )));
-                doc2.add(Box::new(LuceneTestCase::new_text_field(
+                ));
+                doc2.add(LuceneTestCase::new_text_field(
                     "text1",
                     &TestUtil::random_analysis_string(&*random(), 20, true),
                     Store::NO,
-                )));
-                doc2.add(Box::new(StoredField::new_string(
-                    "stored1",
-                    "foo".to_string(),
-                )?));
-                doc2.add(Box::new(StoredField::new_string(
-                    "stored1",
-                    "bar".to_string(),
-                )?));
-                doc2.add(Box::new(LuceneTestCase::new_field(
+                ));
+                doc2.add(StoredField::new_string("stored1", "foo".to_string())?);
+                doc2.add(StoredField::new_string("stored1", "bar".to_string())?);
+                doc2.add(LuceneTestCase::new_field(
                     "text_vectors",
                     &TestUtil::random_analysis_string(&*random(), 6, true),
                     &ft,
-                )));
+                ));
 
                 let docs = vec![doc, doc2];
                 let r = (|| -> Result<()> {

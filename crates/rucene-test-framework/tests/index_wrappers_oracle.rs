@@ -1342,7 +1342,7 @@ fn misuse(rows: &mut Rows, c: &str, reader: &Arc<dyn DirectoryReader>) {
         let fi = infos.field_info("s_str").unwrap();
         let empty = FieldInfos::new(Vec::new())?;
         let mut yes = YesVisitor;
-        MismatchedVisitor::new(&mut yes, &empty).string_field(fi, "x")?;
+        MismatchedVisitor::new(&mut yes, &empty).string_field(fi, "x".to_string())?;
         Ok("visited".to_string())
     });
     rows.rec(c, "misuse", "merging_dir_cast", || {
@@ -1358,11 +1358,7 @@ fn add_one(dir: &Arc<dyn Directory>) -> Result<()> {
     config.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     let iw = IndexWriter::new(Arc::clone(dir), config)?;
     let mut d = Document::new();
-    d.add(Box::new(StringField::new(
-        "id",
-        "id-9999".to_string(),
-        Store::YES,
-    )?));
+    d.add(StringField::new("id", "id-9999".to_string(), Store::YES)?);
     iw.add_document(&d)?;
     iw.commit()?;
     iw.close()
@@ -1555,9 +1551,7 @@ fn pk_duplicates(rows: &mut Rows) {
     for batch in [&["a", "b"][..], &["a", "c", "d", "b"][..]] {
         for id in batch {
             let mut d = Document::new();
-            d.add(Box::new(
-                StringField::new("id", id.to_string(), Store::YES).unwrap(),
-            ));
+            d.add(StringField::new("id", id.to_string(), Store::YES).unwrap());
             iw.add_document(&d).unwrap();
         }
         iw.commit().unwrap();
@@ -1586,12 +1580,8 @@ fn points_index() -> Arc<dyn Directory> {
     let iw = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for i in 0..5000i32 {
         let mut d = Document::new();
-        d.add(Box::new(
-            IntPoint::new("p", &[(i * 7919) % 10007, (i * 104729) % 10009]).unwrap(),
-        ));
-        d.add(Box::new(
-            LongPoint::new("q", &[(i64::from(i) * 2654435761) % 1000003 - 500000]).unwrap(),
-        ));
+        d.add(IntPoint::new("p", &[(i * 7919) % 10007, (i * 104729) % 10009]).unwrap());
+        d.add(LongPoint::new("q", &[(i64::from(i) * 2654435761) % 1000003 - 500000]).unwrap());
         iw.add_document(&d).unwrap();
     }
     iw.force_merge(1).unwrap();

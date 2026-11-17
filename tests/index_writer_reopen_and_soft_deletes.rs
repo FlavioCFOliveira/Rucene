@@ -41,10 +41,8 @@ fn id_term(id: &str) -> Term {
 
 fn doc(id: &str, price: i64) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", id.to_string(), Store::NO).unwrap(),
-    ));
-    d.add(Box::new(NumericDocValuesField::new("price", price)));
+    d.add(StringField::new("id", id.to_string(), Store::NO).unwrap());
+    d.add(NumericDocValuesField::new("price", price));
     d
 }
 
@@ -157,7 +155,7 @@ fn a_flushed_segment_of_self_soft_deleted_documents_is_dropped() {
     writer.commit().unwrap();
     for id in ["t1", "t2"] {
         let mut tombstone = doc(id, 0);
-        tombstone.add(Box::new(NumericDocValuesField::new("soft", 1)));
+        tombstone.add(NumericDocValuesField::new("soft", 1));
         writer.add_document(&tombstone).unwrap();
     }
     writer.commit().unwrap();
@@ -180,18 +178,16 @@ fn a_flushed_segment_of_self_soft_deleted_documents_is_dropped() {
 /// `SoftDeletesToMergeFixture.doc(int, int)`.
 fn retention_doc(i: i32, version: i64) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", format!("id{i}"), Store::NO).unwrap(),
-    ));
-    d.add(Box::new(
+    d.add(StringField::new("id", format!("id{i}"), Store::NO).unwrap());
+    d.add(
         StringField::new(
             "keep",
             if i % 2 == 0 { "yes" } else { "no" }.to_string(),
             Store::NO,
         )
         .unwrap(),
-    ));
-    d.add(Box::new(NumericDocValuesField::new("version", version)));
+    );
+    d.add(NumericDocValuesField::new("version", version));
     d
 }
 

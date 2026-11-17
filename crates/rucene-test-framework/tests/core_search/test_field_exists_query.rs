@@ -161,8 +161,8 @@ fn test_doc_values_rewrite_with_terms_present() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(100);
     for _ in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(DoubleDocValuesField::new("f", 2.0)));
-        doc.add(string_field(
+        doc.add(DoubleDocValuesField::new("f", 2.0));
+        doc.add(*string_field(
             "f",
             if random().next_boolean() { "yes" } else { "no" },
         )?);
@@ -187,8 +187,8 @@ fn test_doc_values_rewrite_with_point_values_present() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(100);
     for _ in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(binary_point()?);
-        doc.add(Box::new(DoubleDocValuesField::new("dim", 2.0)));
+        doc.add(*binary_point()?);
+        doc.add(DoubleDocValuesField::new("dim", 2.0));
         iw.add_document(&doc)?;
     }
     iw.commit()?;
@@ -210,7 +210,7 @@ fn test_doc_values_rewrite_with_doc_values_skipper_present() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(100);
     for _ in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::indexed_field("dim", 2)));
+        doc.add(NumericDocValuesField::indexed_field("dim", 2));
         iw.add_document(&doc)?;
     }
     iw.commit()?;
@@ -236,14 +236,14 @@ fn test_doc_values_no_rewrite() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(100);
     for _ in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(DoubleDocValuesField::new("dim", 2.0)));
-        doc.add(binary_point()?);
+        doc.add(DoubleDocValuesField::new("dim", 2.0));
+        doc.add(*binary_point()?);
         iw.add_document(&doc)?;
     }
     for _ in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(DoubleDocValuesField::new("f", 2.0)));
-        doc.add(string_field(
+        doc.add(DoubleDocValuesField::new("f", 2.0));
+        doc.add(*string_field(
             "f",
             if random().next_boolean() { "yes" } else { "no" },
         )?);
@@ -268,9 +268,9 @@ fn test_doc_values_no_rewrite_with_doc_values() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(100);
     for _ in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::new("dv1", 1)));
-        doc.add(Box::new(SortedNumericDocValuesField::new("dv2", 1)));
-        doc.add(Box::new(SortedNumericDocValuesField::new("dv2", 2)));
+        doc.add(NumericDocValuesField::new("dv1", 1));
+        doc.add(SortedNumericDocValuesField::new("dv2", 1));
+        doc.add(SortedNumericDocValuesField::new("dv2", 2));
         iw.add_document(&doc)?;
     }
     iw.commit()?;
@@ -296,12 +296,12 @@ fn doc_values_index(dir: &TestDirectory) -> Result<(Arc<dyn DirectoryReader>, In
         let mut doc = Document::new();
         let has_value = random().next_boolean();
         if has_value {
-            doc.add(Box::new(NumericDocValuesField::new("dv1", 1)));
-            doc.add(Box::new(SortedNumericDocValuesField::new("dv2", 1)));
-            doc.add(Box::new(SortedNumericDocValuesField::new("dv2", 2)));
-            doc.add(string_field("has_value", "yes")?);
+            doc.add(NumericDocValuesField::new("dv1", 1));
+            doc.add(SortedNumericDocValuesField::new("dv2", 1));
+            doc.add(SortedNumericDocValuesField::new("dv2", 2));
+            doc.add(*string_field("has_value", "yes")?);
         }
-        doc.add(string_field(
+        doc.add(*string_field(
             "f",
             if random().next_boolean() { "yes" } else { "no" },
         )?);
@@ -425,7 +425,7 @@ fn test_doc_values_all_docs_have_field() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let iw = riw(&dir)?;
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("f", 1)));
+    doc.add(NumericDocValuesField::new("f", 1));
     iw.add_document(&doc)?;
     iw.commit()?;
     let reader = iw.get_reader()?;
@@ -443,7 +443,7 @@ fn test_doc_values_field_exists_but_no_docs_have_field() -> Result<()> {
     let iw = riw(&dir)?;
     // 1st segment has the field, but 2nd one does not
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("f", 1)));
+    doc.add(NumericDocValuesField::new("f", 1));
     iw.add_document(&doc)?;
     iw.commit()?;
     iw.add_document(&Document::new())?;
@@ -471,13 +471,13 @@ fn test_doc_values_query_matches_count() -> Result<()> {
         //  * #0 ensures we will delete at least one document (with long between 0 and 9)
         //  * #10 ensures we will keep at least one document (with long greater than 9)
         if i == 0 || i == 10 || random().next_boolean() {
-            doc.add(Box::new(LongPoint::new("long", &[i64::from(i)])?));
-            doc.add(Box::new(NumericDocValuesField::new("long", i64::from(i))));
-            doc.add(string_field("string", "value")?);
-            doc.add(Box::new(SortedDocValuesField::new(
+            doc.add(LongPoint::new("long", &[i64::from(i)])?);
+            doc.add(NumericDocValuesField::new("long", i64::from(i)));
+            doc.add(*string_field("string", "value")?);
+            doc.add(SortedDocValuesField::new(
                 "string",
                 BytesRef::from_char_sequence("value"),
-            )));
+            ));
             num_matching_docs += 1;
         }
         w.add_document(&doc)?;
@@ -519,10 +519,10 @@ fn norms_index(dir: &TestDirectory) -> Result<(Arc<dyn DirectoryReader>, IndexSe
         let mut doc = Document::new();
         let has_value = random().next_boolean();
         if has_value {
-            doc.add(text_field("text1", "value")?);
-            doc.add(string_field("has_value", "yes")?);
+            doc.add(*text_field("text1", "value")?);
+            doc.add(*string_field("has_value", "yes")?);
         }
-        doc.add(string_field(
+        doc.add(*string_field(
             "f",
             if random().next_boolean() { "yes" } else { "no" },
         )?);
@@ -607,7 +607,7 @@ fn test_norms_all_docs_have_field() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let iw = riw(&dir)?;
     let mut doc = Document::new();
-    doc.add(text_field("f", "value")?);
+    doc.add(*text_field("f", "value")?);
     iw.add_document(&doc)?;
     iw.commit()?;
     let reader = iw.get_reader()?;
@@ -625,7 +625,7 @@ fn test_norms_field_exists_but_no_docs_have_field() -> Result<()> {
     let iw = riw(&dir)?;
     // 1st segment has the field, but 2nd one does not
     let mut doc = Document::new();
-    doc.add(text_field("f", "value")?);
+    doc.add(*text_field("f", "value")?);
     iw.add_document(&doc)?;
     iw.commit()?;
     iw.add_document(&Document::new())?;
@@ -651,24 +651,24 @@ fn test_norms_query_matches_count() -> Result<()> {
     no_norms_field_type.set_index_options(IndexOptions::DOCS)?;
 
     let mut doc = Document::new();
-    doc.add(text_field("text", "always here")?);
-    doc.add(text_field("text_s", "")?);
-    doc.add(Box::new(Field::new(
+    doc.add(*text_field("text", "always here")?);
+    doc.add(*text_field("text_s", "")?);
+    doc.add(Field::new(
         "text_n",
         "always here".to_string(),
         no_norms_field_type.clone(),
-    )?));
+    )?);
     w.add_document(&doc)?;
 
     for _ in 1..random_num_docs {
         doc.clear();
-        doc.add(text_field("text", "some text")?);
-        doc.add(text_field("text_s", "some text")?);
-        doc.add(Box::new(Field::new(
+        doc.add(*text_field("text", "some text")?);
+        doc.add(*text_field("text_s", "some text")?);
+        doc.add(Field::new(
             "text_n",
             "some here".to_string(),
             no_norms_field_type.clone(),
-        )?));
+        )?);
         w.add_document(&doc)?;
     }
     w.force_merge(1)?;
@@ -750,10 +750,10 @@ fn test_knn_vector_random() -> Result<()> {
                 let mut doc = Document::new();
                 let has_value = random().next_boolean();
                 if has_value {
-                    doc.add(knn("vector", &random_vector(5)?)?);
-                    doc.add(string_field("has_value", "yes")?);
+                    doc.add(*knn("vector", &random_vector(5)?)?);
+                    doc.add(*string_field("has_value", "yes")?);
                 }
-                doc.add(string_field("field", "value")?);
+                doc.add(*string_field("field", "value")?);
                 iw.add_document(&doc)?;
             }
             if random().next_boolean() {
@@ -809,7 +809,7 @@ fn test_knn_vector_all_docs_have_field() -> Result<()> {
         let iw = riw(&dir)?;
         for _ in 0..100 {
             let mut doc = Document::new();
-            doc.add(knn("vector", &random_vector(5)?)?);
+            doc.add(*knn("vector", &random_vector(5)?)?);
             iw.add_document(&doc)?;
         }
         iw.commit()?;
@@ -845,10 +845,10 @@ fn test_delete_knn_vector() -> Result<()> {
         for i in 0..num_docs {
             let mut doc = Document::new();
             if all_docs_have_vector || random().next_boolean() {
-                doc.add(knn("vector", &random_vector(5)?)?);
+                doc.add(*knn("vector", &random_vector(5)?)?);
                 doc_with_vector.set(i as usize);
             }
-            doc.add(string_field("id", &i.to_string())?);
+            doc.add(*string_field("id", &i.to_string())?);
             iw.add_document(&doc)?;
         }
         if random().next_boolean() {
@@ -885,10 +885,10 @@ fn test_knn_vector_conjunction() -> Result<()> {
         for i in 0..num_docs {
             let mut doc = Document::new();
             if all_docs_have_vector || random().next_boolean() {
-                doc.add(knn("vector", &random_vector(5)?)?);
+                doc.add(*knn("vector", &random_vector(5)?)?);
                 num_vectors += 1;
             }
-            doc.add(string_field("field", &format!("value{}", i % 2))?);
+            doc.add(*string_field("field", &format!("value{}", i % 2))?);
             iw.add_document(&doc)?;
         }
         {
@@ -924,7 +924,7 @@ fn test_knn_vector_field_exists_but_no_docs_have_field() -> Result<()> {
         let iw = riw(&dir)?;
         // 1st segment has the field, but 2nd one does not
         let mut doc = Document::new();
-        doc.add(knn("vector", &random_vector(3)?)?);
+        doc.add(*knn("vector", &random_vector(3)?)?);
         iw.add_document(&doc)?;
         iw.commit()?;
         iw.add_document(&Document::new())?;
@@ -962,13 +962,10 @@ fn test_delete_doc_values() -> Result<()> {
         for i in 0..num_docs {
             let mut doc = Document::new();
             if all_docs_have_value || random().next_boolean() {
-                doc.add(Box::new(NumericDocValuesField::indexed_field(
-                    "num",
-                    i64::from(i),
-                )));
+                doc.add(NumericDocValuesField::indexed_field("num", i64::from(i)));
                 doc_with_value.set(i as usize);
             }
-            doc.add(string_field("id", &i.to_string())?);
+            doc.add(*string_field("id", &i.to_string())?);
             iw.add_document(&doc)?;
         }
 
@@ -1002,9 +999,9 @@ fn test_delete_all_point_docs() -> Result<()> {
         let iw = riw(&dir)?;
 
         let mut doc = Document::new();
-        doc.add(string_field("id", "0")?);
-        doc.add(Box::new(LongPoint::new("long", &[17])?));
-        doc.add(Box::new(NumericDocValuesField::new("long", 17)));
+        doc.add(*string_field("id", "0")?);
+        doc.add(LongPoint::new("long", &[17])?);
+        doc.add(NumericDocValuesField::new("long", 17));
         iw.add_document(&doc)?;
         // add another document before the flush, otherwise the segment only has the document that
         // we are going to delete and the merge simply ignores the segment without carrying over its
@@ -1039,12 +1036,12 @@ fn test_delete_all_term_docs() -> Result<()> {
         let iw = riw(&dir)?;
 
         let mut doc = Document::new();
-        doc.add(string_field("id", "0")?);
-        doc.add(string_field("str", "foo")?);
-        doc.add(Box::new(SortedDocValuesField::new(
+        doc.add(*string_field("id", "0")?);
+        doc.add(*string_field("str", "foo")?);
+        doc.add(SortedDocValuesField::new(
             "str",
             BytesRef::from_char_sequence("foo"),
-        )));
+        ));
         iw.add_document(&doc)?;
         // add another document before the flush, otherwise the segment only has the document that
         // we are going to delete and the merge simply ignores the segment without carrying over its
@@ -1130,11 +1127,8 @@ fn test_doc_values_count_with_deletions_all_docs_have_field() -> Result<()> {
         let mut doc = Document::new();
         // Use indexedField to ensure a DocValuesSkipper is available, which provides
         // an exact doc count for doc values that we can use even with deletions.
-        doc.add(Box::new(NumericDocValuesField::indexed_field(
-            "dv",
-            i64::from(i),
-        )));
-        doc.add(string_field("id", &i.to_string())?);
+        doc.add(NumericDocValuesField::indexed_field("dv", i64::from(i)));
+        doc.add(*string_field("id", &i.to_string())?);
         w.add_document(&doc)?;
     }
     w.force_merge(1)?;
@@ -1181,8 +1175,8 @@ fn test_vector_count_with_deletions_all_docs_have_field() -> Result<()> {
             (i + 4) as f32,
         ];
         vector_util::l2normalize(&mut vector, true)?;
-        doc.add(knn("vector", &vector)?);
-        doc.add(string_field("id", &i.to_string())?);
+        doc.add(*knn("vector", &vector)?);
+        doc.add(*string_field("id", &i.to_string())?);
         w.add_document(&doc)?;
     }
     w.force_merge(1)?;

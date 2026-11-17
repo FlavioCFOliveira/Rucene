@@ -421,11 +421,7 @@ fn test_end_offset_position_standard_empty_field2() -> Result<()> {
 
     let f = shared_field("field", "abcd", &custom_type);
     doc.add_shared(f);
-    doc.add(Box::new(LuceneTestCase::new_field(
-        "field",
-        "",
-        &custom_type,
-    )));
+    doc.add(LuceneTestCase::new_field("field", "", &custom_type));
 
     let f2 = shared_field("field", "crunch", &custom_type);
     doc.add_shared(f2);
@@ -591,18 +587,10 @@ fn test_no_term_vector_after_term_vector() -> Result<()> {
     let iw = plain_writer(&dir.as_directory())?;
     let mut document = Document::new();
     let custom_type2 = tv_pos_off_type(TextField::type_not_stored())?;
-    document.add(Box::new(LuceneTestCase::new_field(
-        "tvtest",
-        "a b c",
-        &custom_type2,
-    )));
+    document.add(LuceneTestCase::new_field("tvtest", "a b c", &custom_type2));
     iw.add_document(&document)?;
     let mut document = Document::new();
-    document.add(Box::new(LuceneTestCase::new_text_field(
-        "tvtest",
-        "x y z",
-        Store::NO,
-    )));
+    document.add(LuceneTestCase::new_text_field("tvtest", "x y z", Store::NO));
     iw.add_document(&document)?;
     // Make first segment
     iw.commit()?;
@@ -610,11 +598,7 @@ fn test_no_term_vector_after_term_vector() -> Result<()> {
     let custom_type = FieldType::new_from(TextField::type_not_stored());
     custom_type.set_store_term_vectors(true)?;
     let mut document = Document::new();
-    document.add(Box::new(LuceneTestCase::new_field(
-        "tvtest",
-        "a b c",
-        &custom_type,
-    )));
+    document.add(LuceneTestCase::new_field("tvtest", "a b c", &custom_type));
     iw.add_document(&document)?;
     // Make 2nd segment
     iw.commit()?;
@@ -633,20 +617,12 @@ fn test_no_term_vector_after_term_vector_merge() -> Result<()> {
     let mut document = Document::new();
     let custom_type = FieldType::new_from(TextField::type_not_stored());
     custom_type.set_store_term_vectors(true)?;
-    document.add(Box::new(LuceneTestCase::new_field(
-        "tvtest",
-        "a b c",
-        &custom_type,
-    )));
+    document.add(LuceneTestCase::new_field("tvtest", "a b c", &custom_type));
     iw.add_document(&document)?;
     iw.commit()?;
 
     let mut document = Document::new();
-    document.add(Box::new(LuceneTestCase::new_text_field(
-        "tvtest",
-        "x y z",
-        Store::NO,
-    )));
+    document.add(LuceneTestCase::new_text_field("tvtest", "x y z", Store::NO));
     iw.add_document(&document)?;
     // Make first segment
     iw.commit()?;
@@ -655,11 +631,7 @@ fn test_no_term_vector_after_term_vector_merge() -> Result<()> {
 
     let custom_type2 = FieldType::new_from(TextField::type_not_stored());
     custom_type2.set_store_term_vectors(true)?;
-    document.add(Box::new(LuceneTestCase::new_field(
-        "tvtest",
-        "a b c",
-        &custom_type2,
-    )));
+    document.add(LuceneTestCase::new_field("tvtest", "a b c", &custom_type2));
     let document = Document::new();
     iw.add_document(&document)?;
     // Make 2nd segment
@@ -725,14 +697,14 @@ fn do_test_mixup(ft1: FieldType, ft2: FieldType) -> Result<()> {
     // add 3 good docs
     for i in 0..3 {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+        doc.add(StringField::new("id", i.to_string(), Store::NO)?);
         iw.add_document(&doc)?;
     }
 
     // add broken doc
     let mut doc = Document::new();
-    doc.add(Box::new(Field::new("field", "value1".to_string(), ft1)?));
-    doc.add(Box::new(Field::new("field", "value2".to_string(), ft2)?));
+    doc.add(Field::new("field", "value1".to_string(), ft1)?);
+    doc.add(Field::new("field", "value2".to_string(), ft2)?);
 
     // ensure broken doc hits exception
     let expected = expect_throws("java.lang.IllegalArgumentException", || {
@@ -775,7 +747,7 @@ fn test_no_abort_on_bad_tv_settings() -> Result<()> {
     let ft = FieldType::new_from(StoredField::type_());
     ft.set_store_term_vectors(true)?;
     ft.freeze();
-    doc.add(Box::new(Field::new("field", "value".to_string(), ft)?));
+    doc.add(Field::new("field", "value".to_string(), ft)?);
 
     expect_throws("java.lang.IllegalArgumentException", || {
         iw.add_document(&doc)

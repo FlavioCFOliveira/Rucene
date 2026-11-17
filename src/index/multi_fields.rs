@@ -3567,9 +3567,7 @@ mod tests {
         for segment in [["aaaa", "cccc"], ["bbbb", "cccc"]] {
             for text in segment {
                 let mut doc = Document::new();
-                doc.add(Box::new(
-                    StringField::new("f", text.to_string(), Store::NO).unwrap(),
-                ));
+                doc.add(StringField::new("f", text.to_string(), Store::NO).unwrap());
                 writer.add_document(&doc).unwrap();
             }
             writer.commit().unwrap();

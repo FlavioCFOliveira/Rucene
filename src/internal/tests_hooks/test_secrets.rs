@@ -3,7 +3,7 @@
 #![deny(unsafe_code)]
 
 use std::panic::Location;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use crate::error::{LuceneError, Result};
 use crate::internal::tests_hooks::{
@@ -31,7 +31,10 @@ use crate::internal::tests_hooks::{
 ///   the two checks resolve to the call site of the getter or setter, which is
 ///   the very frame Java's `skip(2).limit(1)` selects. The comparison is then
 ///   made against a *source file* rather than a class name — `TEST_FRAMEWORK_DIRS`
-///   for the getters, `Owner::file` for the setters. The *set-once* half of
+///   for the getters, `Owner::file` for the setters, both relative to the
+///   rucene tree in whatever form the compiler spells its paths
+///   (`CRATE_ROOT_PREFIX`), so the checks also hold when rucene and the test
+///   framework are dependencies of another workspace. The *set-once* half of
 ///   `ensureCallerForSetter` is reproduced exactly.
 /// * **Registration is run on first use, not by the class loader.** Java calls
 ///   `MethodHandles.Lookup.ensureInitialized(Class)` so that the owning class's
@@ -148,6 +151,47 @@ fn caller_file(location: &Location<'static>) -> String {
     location.file().replace('\\', "/")
 }
 
+/// This file's path relative to the rucene crate root, forward-slashed.
+const THIS_FILE_IN_CRATE: &str = "src/internal/tests_hooks/test_secrets.rs";
+
+/// The prefix the compiler puts before every path of the rucene source tree.
+///
+/// [`Location::caller`] and [`file!`] report paths in the same form: relative
+/// to the workspace root when rucene is a workspace member (`""`, since rucene
+/// is the root), and absolute when rucene and the test framework are built as
+/// dependencies of another workspace (`/…/rucene/`). The paths of
+/// [`TEST_FRAMEWORK_DIRS`] and of every [`Owner::file`] are relative to that
+/// root, so a caller matches exactly when its path is this prefix followed by
+/// one of them.
+static CRATE_ROOT_PREFIX: LazyLock<String> = LazyLock::new(|| {
+    let this_file = file!().replace('\\', "/");
+    match this_file.strip_suffix(THIS_FILE_IN_CRATE) {
+        Some(prefix) => prefix.to_owned(),
+        // Unreachable while this file stays at `THIS_FILE_IN_CRATE` (a unit
+        // test pins it); every caller is then refused, as Java would refuse an
+        // unknown class.
+        None => this_file,
+    }
+});
+
+/// Decides whether `file`, a caller path normalised by [`caller_file`], lies
+/// under one of [`TEST_FRAMEWORK_DIRS`] of the rucene tree whose compiler
+/// prefix is `crate_root_prefix`.
+fn is_test_framework_file(file: &str, crate_root_prefix: &str) -> bool {
+    file.strip_prefix(crate_root_prefix).is_some_and(|in_tree| {
+        TEST_FRAMEWORK_DIRS
+            .iter()
+            .any(|dir| in_tree.starts_with(dir))
+    })
+}
+
+/// Decides whether `file`, a caller path normalised by [`caller_file`], is
+/// exactly `owner_file` of the rucene tree whose compiler prefix is
+/// `crate_root_prefix`.
+fn is_owner_file(file: &str, owner_file: &str, crate_root_prefix: &str) -> bool {
+    file.strip_prefix(crate_root_prefix) == Some(owner_file)
+}
+
 impl TestSecrets {
     /// Forces the type that owns an accessor to register it, the way Java's
     /// `MethodHandles.Lookup.ensureInitialized(Class)` forces a class's static
@@ -181,7 +225,8 @@ impl TestSecrets {
     /// source file or when an accessor is already registered.
     #[track_caller]
     fn ensure_caller_for_setter(owner: Owner, already_registered: bool) -> Result<()> {
-        let valid_caller = caller_file(Location::caller()) == owner.file;
+        let caller = caller_file(Location::caller());
+        let valid_caller = is_owner_file(&caller, owner.file, &CRATE_ROOT_PREFIX);
         if !valid_caller || already_registered {
             return Err(already_set(owner.name));
         }
@@ -203,9 +248,7 @@ impl TestSecrets {
     #[track_caller]
     fn ensure_caller_for_getter() -> Result<()> {
         let caller = caller_file(Location::caller());
-        let valid_caller = TEST_FRAMEWORK_DIRS
-            .iter()
-            .any(|dir| caller.starts_with(dir));
+        let valid_caller = is_test_framework_file(&caller, &CRATE_ROOT_PREFIX);
         if !valid_caller {
             return Err(LuceneError::from(
                 crate::error::LuceneErrorKind::Unchecked {
@@ -434,5 +477,69 @@ impl TestSecrets {
         FILTER_INDEX_INPUT_ACCESS
             .set(access)
             .map_err(|_| already_set(FILTER_INDEX_INPUT.name))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `THIS_FILE_IN_CRATE` names this file, so the prefix derivation holds.
+    #[test]
+    fn this_file_in_crate_is_a_suffix_of_file_macro() {
+        let this_file = file!().replace('\\', "/");
+        assert_eq!(
+            format!("{}{THIS_FILE_IN_CRATE}", *CRATE_ROOT_PREFIX),
+            this_file
+        );
+    }
+
+    /// Regression for the caller checks outside the workspace: Cargo reports
+    /// absolute source paths for path or registry dependencies, and the checks
+    /// compared them with workspace-relative ones, so every getter called from
+    /// `rucene-test-framework` built as a dependency failed.
+    #[test]
+    fn callers_match_relative_and_absolute_tree_paths() {
+        for prefix in ["", "/data/checkout/Rucene/"] {
+            let framework = format!("{prefix}crates/rucene-test-framework/src/store/mock.rs");
+            assert!(is_test_framework_file(&framework, prefix));
+            assert!(is_test_framework_file(
+                &format!("{prefix}tests/a.rs"),
+                prefix
+            ));
+            let core_test = format!("{prefix}crates/rucene-test-framework/tests/core_x.rs");
+            assert!(!is_test_framework_file(&core_test, prefix));
+            let owner = format!("{prefix}{}", INDEX_WRITER.file);
+            assert!(is_owner_file(&owner, INDEX_WRITER.file, prefix));
+            assert!(!is_owner_file(&owner, SEGMENT_READER.file, prefix));
+        }
+    }
+
+    /// Not weakened to a suffix match: another tree whose paths end like the
+    /// test framework's or an owner's is refused, and so is a relative path
+    /// when the tree's paths are absolute.
+    #[test]
+    fn callers_from_another_tree_are_refused() {
+        let prefix = "/data/checkout/Rucene/";
+        let foreign = "/home/u/app/crates/rucene-test-framework/src/x.rs";
+        assert!(!is_test_framework_file(foreign, prefix));
+        assert!(!is_test_framework_file("/home/u/app/tests/t.rs", prefix));
+        assert!(!is_test_framework_file("tests/t.rs", prefix));
+        let foreign_owner = "/home/u/app/src/index/index_writer.rs";
+        assert!(!is_owner_file(foreign_owner, INDEX_WRITER.file, prefix));
+        assert!(!is_owner_file(INDEX_WRITER.file, INDEX_WRITER.file, prefix));
+    }
+
+    /// The live getter check reads the real call site: this module is not
+    /// part of the test framework, so it is refused with Lucene's message.
+    #[test]
+    fn getter_check_refuses_a_core_call_site() {
+        let error = TestSecrets::ensure_caller_for_getter()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Lucene TestSecrets can only be used by the test-framework."),
+            "{error}"
+        );
     }
 }

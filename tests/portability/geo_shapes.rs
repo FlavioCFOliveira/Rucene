@@ -188,20 +188,18 @@ fn xy_shape(i: i32) -> Vec<Triangle> {
 /// `GeoShapeFixture.doc(int)`.
 fn doc(i: i32, perturbed: bool) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(StringField::new("id", id(i), Store::YES).unwrap()));
+    d.add(StringField::new("id", id(i), Store::YES).unwrap());
     if has_location(i) {
         let a = lat(i, perturbed);
-        d.add(Box::new(LatLonPoint::new("loc", a, lon(i)).unwrap()));
-        d.add(Box::new(
-            LatLonDocValuesField::new("loc", a, lon(i)).unwrap(),
-        ));
-        d.add(Box::new(XYPointField::new("xy", x(i), y(i)).unwrap()));
+        d.add(LatLonPoint::new("loc", a, lon(i)).unwrap());
+        d.add(LatLonDocValuesField::new("loc", a, lon(i)).unwrap());
+        d.add(XYPointField::new("xy", x(i), y(i)).unwrap());
     }
     for t in lat_lon_shape(i, perturbed) {
-        d.add(Box::new(t));
+        d.add(t);
     }
     for t in xy_shape(i) {
-        d.add(Box::new(t));
+        d.add(t);
     }
     d
 }

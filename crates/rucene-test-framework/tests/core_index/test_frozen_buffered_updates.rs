@@ -220,11 +220,11 @@ fn test_term_docs_iterator() -> Result<()> {
             let as_list = random_ids.to_vec();
             for r#ref in random_ids.iter() {
                 let mut doc = Document::new();
-                doc.add(Box::new(StringField::new_with_bytes(
+                doc.add(StringField::new_with_bytes(
                     "field",
                     r#ref.clone(),
                     Store::NO,
-                )?));
+                )?);
                 array.append(r#ref)?;
                 if duplicates && LuceneTestCase::rarely() {
                     array.append(RandomPicks::random_from(&*random(), &as_list))?;

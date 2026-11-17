@@ -86,7 +86,7 @@ fn check(
     let iw = null_analyzer_writer(&dir.as_directory())?;
     let mut doc = Document::new();
     if let Some(field) = field {
-        doc.add(field);
+        doc.add_shared(std::sync::Arc::from(field));
     }
     iw.add_document(&doc)?;
     let dr = directory_reader::open_with_writer(iw.as_ref())?;
@@ -220,9 +220,9 @@ fn test_add_null_numeric_doc_values() -> Result<()> {
     let iw = null_analyzer_writer(&dir.as_directory())?;
     let mut doc = Document::new();
     if random().next_boolean() {
-        doc.add(Box::new(NumericDocValuesField::new_nullable("foo", None)));
+        doc.add(NumericDocValuesField::new_nullable("foo", None));
     } else {
-        doc.add(Box::new(BinaryDocValuesField::new_nullable("foo", None)));
+        doc.add(BinaryDocValuesField::new_nullable("foo", None));
     }
     let iae = expect_throws("java.lang.IllegalArgumentException", || {
         iw.add_document(&doc)

@@ -18,23 +18,26 @@
 //! A filter that replaces regular expression matches in each token, ported
 //! from `org.apache.lucene.analysis.pattern.PatternReplaceFilter`.
 
+use rucene::analysis::character_utils::set_term_utf16;
 use rucene::analysis::java_regex::{JavaMatcher, JavaPattern};
-use rucene::analysis::{CharTermAttribute, TokenFilter, TokenFilterLogic, TokenStream};
+use rucene::analysis::{
+    AttributeHandle, CharTermAttribute, TokenFilter, TokenFilterLogic, TokenStream,
+};
 use rucene::error::Result;
 use rucene::util::attribute::AttributeSource;
-
-use crate::jdk::character::{chars_to_utf16, utf16_to_term_chars};
 
 /// The body of [`PatternReplaceFilter`]: what Lucene's
 /// `PatternReplaceFilter` adds to `TokenFilter`.
 ///
 /// Java's matcher reads the `CharTermAttribute` itself, a live
-/// `CharSequence`; here `m.reset()` hands it the term's current units.
+/// `CharSequence`; here `m.reset()` hands it the term's current characters.
 #[derive(Debug)]
 pub struct PatternReplaceFilterLogic {
     replacement: String,
     all: bool,
     m: JavaMatcher,
+    /// `private final CharTermAttribute termAtt = addAttribute(CharTermAttribute.class)`.
+    term_att: AttributeHandle<dyn CharTermAttribute>,
 }
 
 impl TokenFilterLogic for PatternReplaceFilterLogic {
@@ -46,20 +49,29 @@ impl TokenFilterLogic for PatternReplaceFilterLogic {
     /// `replaceFirst` throw for a malformed replacement.
     fn increment_token(
         &mut self,
-        source: &mut AttributeSource,
+        _source: &mut AttributeSource,
         input: &mut dyn TokenStream,
     ) -> Result<bool> {
         if !input.increment_token()? {
             return Ok(false);
         }
 
-        let units = {
-            let term = source
-                .get_attribute_interface::<dyn CharTermAttribute>()
-                .expect("INVARIANT: the constructor added the CharTermAttribute");
-            chars_to_utf16(&term.buffer()[..term.length()])
-        };
-        self.m.reset_input(&units);
+        // `m.reset()` of the matcher over the live `termAtt`
+        // (`PatternReplaceFilter.java:63`): the term's current characters.
+        {
+            let term = self.term_att.borrow();
+            let chars = &term.buffer()[..term.length()];
+            // PERF: when the pattern cannot match the term, Java's `reset()`
+            // and failing `find()` build nothing and leave the token as it
+            // is; here the matcher's input (UTF-16 text and engine haystack)
+            // is not built either, and the token is left as it is (task
+            // #546, round 4). The matcher is the filter's own and the next
+            // token resets it, so the skipped state is never read.
+            if !self.m.may_find_in_chars(chars) {
+                return Ok(true);
+            }
+            self.m.reset_input_chars(chars);
+        }
         if self.m.find() {
             // replaceAll/replaceFirst will reset() this previous find.
             let transformed = if self.all {
@@ -67,11 +79,8 @@ impl TokenFilterLogic for PatternReplaceFilterLogic {
             } else {
                 self.m.replace_first(&self.replacement)?
             };
-            let chars = utf16_to_term_chars(&transformed);
-            source
-                .get_attribute_interface_mut::<dyn CharTermAttribute>()
-                .expect("INVARIANT: the constructor added the CharTermAttribute")
-                .copy_buffer(&chars, 0, chars.len());
+            // `termAtt.setEmpty().append(transformed)` (`PatternReplaceFilter.java:67`).
+            set_term_utf16(&mut *self.term_att.borrow_mut(), &transformed);
         }
 
         Ok(true)
@@ -111,14 +120,12 @@ pub fn new_pattern_replace_filter(
     replacement: Option<&str>,
     all: bool,
 ) -> Result<PatternReplaceFilter> {
-    let logic = PatternReplaceFilterLogic {
-        replacement: replacement.unwrap_or("").to_string(),
-        all,
-        m: p.matcher(&[]),
-    };
-    let mut filter = TokenFilter::new(input, logic);
-    filter
-        .attribute_source_mut()
-        .add_attribute_interface::<dyn CharTermAttribute>()?;
-    Ok(filter)
+    TokenFilter::with_logic(input, |source| {
+        Ok(PatternReplaceFilterLogic {
+            replacement: replacement.unwrap_or("").to_string(),
+            all,
+            m: p.matcher(&[]),
+            term_att: AttributeHandle::add(source)?,
+        })
+    })
 }

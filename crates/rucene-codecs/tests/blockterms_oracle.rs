@@ -278,9 +278,7 @@ fn seek_exact_with_a_foreign_term_state_is_rejected() {
     let dir = TempDir::new("blockterms-foreign-state");
     let w = IndexWriter::new(open_dir(&dir.0), new_config(fixed_gap_codec())).unwrap();
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("f", "a".to_string(), Store::NO).unwrap(),
-    ));
+    d.add(StringField::new("f", "a".to_string(), Store::NO).unwrap());
     w.add_document(&d).unwrap();
     w.commit().unwrap();
     w.close().unwrap();

@@ -52,7 +52,7 @@ fn writer(dir: &TestDirectory) -> Result<RandomIndexWriter> {
 fn feature_doc(feature: Option<(&str, f32)>) -> Result<Document> {
     let mut doc = Document::new();
     if let Some((name, value)) = feature {
-        doc.add(Box::new(FeatureField::new("field", name, value)?));
+        doc.add(FeatureField::new("field", name, value)?);
     }
     Ok(doc)
 }

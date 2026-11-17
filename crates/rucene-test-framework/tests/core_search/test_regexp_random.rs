@@ -57,7 +57,7 @@ fn fixture_set_up(f: &mut Fixture) -> Result<()> {
     custom_type.set_omit_norms(true)?;
     let mut doc = Document::new();
     let field = LuceneTestCase::new_field("field", "", &custom_type);
-    doc.add(Box::new(field));
+    doc.add(field);
 
     // `new DecimalFormat("000", new DecimalFormatSymbols(Locale.ROOT))`
     for i in 0..1000 {

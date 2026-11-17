@@ -274,8 +274,8 @@ fn v6(i: i32) -> Vec<u8> {
 /// one more address.
 fn doc(i: i32, perturbed: bool) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(StringField::new("id", id(i), Store::YES).unwrap()));
-    let mut add = |a: IpAddr| d.add(Box::new(InetAddressPoint::new("ip", a)));
+    d.add(StringField::new("id", id(i), Store::YES).unwrap());
+    let mut add = |a: IpAddr| d.add(InetAddressPoint::new("ip", a));
     match i % 5 {
         1 => add(inet(&v4(i))),
         2 => add(inet(&v6(i))),

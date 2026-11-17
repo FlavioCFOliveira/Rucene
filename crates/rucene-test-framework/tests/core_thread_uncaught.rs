@@ -94,9 +94,7 @@ fn test_merge_thread_throws() {
     let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     for i in 0..2 {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StoredField::new_string("f", format!("v{i}")).unwrap(),
-        ));
+        doc.add(StoredField::new_string("f", format!("v{i}")).unwrap());
         writer.add_document(&doc).unwrap();
         writer.commit().unwrap();
     }

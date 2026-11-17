@@ -59,20 +59,20 @@ fn index(
     let iw = RandomIndexWriter::new_with_config(&*self::random(), dir.as_directory(), iwc)?;
     for i in 0..100 {
         let mut doc = rucene::document::Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "field",
             &i.to_string(),
             Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        ));
+        doc.add(LuceneTestCase::new_string_field(
             "field2",
             &(i % 2 == 0).to_string(),
             Store::NO,
-        )));
-        doc.add(Box::new(SortedDocValuesField::new(
+        ));
+        doc.add(SortedDocValuesField::new(
             "field2",
             BytesRef::from_char_sequence(&(i % 2 == 0).to_string()),
-        )));
+        ));
         iw.add_document(&doc)?;
         if random.next_boolean() {
             between(&iw)?;

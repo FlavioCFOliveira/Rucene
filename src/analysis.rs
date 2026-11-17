@@ -38,8 +38,8 @@ pub use character_utils::{
     to_lower_case_utf16, to_upper_case, to_upper_case_utf16, CharacterBuffer,
 };
 pub use filtering_token_filter::{
-    new_filtering_token_filter, FilteringTokenFilter, FilteringTokenFilterAdapter,
-    FilteringTokenFilterLogic,
+    new_filtering_token_filter, new_filtering_token_filter_with, FilteringTokenFilter,
+    FilteringTokenFilterAdapter, FilteringTokenFilterLogic,
 };
 pub use lower_case_filter::{new_lower_case_filter, LowerCaseFilter, LowerCaseFilterLogic};
 pub use reusable_string_reader::ReusableStringReader;
@@ -64,11 +64,15 @@ pub use wordlist_loader::{
 };
 
 use crate::error::{LuceneError, Result};
+use crate::util::atomic_ref_cell::{AtomicRef, AtomicRefMut};
 use crate::util::attribute::{
-    AsUnwrappable, AttributeFactory, AttributeReflector, AttributeSource, CloseableThreadLocal,
-    DefaultAttributeFactory, Unwrappable,
+    AsUnwrappable, AttributeCell, AttributeFactory, AttributeImpl, AttributeInterface,
+    AttributeReflector, AttributeSource, CloseableThreadLocal, DefaultAttributeFactory,
+    Unwrappable,
 };
 use crate::util::BytesRef;
+use std::any::TypeId;
+use std::marker::PhantomData;
 
 // -----------------------------------------------------------------------------
 // CharReader
@@ -740,6 +744,120 @@ impl<T: TokenizerLogic> TokenStream for Tokenizer<T> {
 }
 
 // -----------------------------------------------------------------------------
+// AttributeHandle
+// -----------------------------------------------------------------------------
+
+/// The instance of the attribute interface `I` a token stream holds, kept by
+/// the stream (or its consumer) across tokens.
+///
+/// Equivalent to a Java field such as `private final CharTermAttribute
+/// termAtt = addAttribute(CharTermAttribute.class)`: the attribute is
+/// resolved once, when the stream is built (or, for a consumer, when the
+/// source is set), and every token is then read and written through the
+/// instance itself, never through the source's attribute map. An
+/// [`AttributeSource`] never replaces an implementation it registered (state
+/// restoration and copying write into it), so the handle stays the source's
+/// instance for the source's lifetime.
+pub struct AttributeHandle<I: AttributeInterface + ?Sized> {
+    cell: AttributeCell,
+    _interface: PhantomData<fn() -> Box<I>>,
+}
+
+impl<I: AttributeInterface + ?Sized> AttributeHandle<I> {
+    /// `addAttribute(I.class)`: the source's instance of `I`, created through
+    /// its factory when missing.
+    ///
+    /// # Errors
+    ///
+    /// What the factory raises for an interface it cannot implement.
+    pub fn add(source: &mut AttributeSource) -> Result<Self> {
+        Ok(Self::from_cell(
+            source.add_attribute_by_id(TypeId::of::<I>())?,
+        ))
+    }
+
+    /// `getAttribute(I.class)`: the source's instance of `I`, or `None`.
+    pub fn get(source: &AttributeSource) -> Option<Self> {
+        source
+            .get_attribute_by_id(TypeId::of::<I>())
+            .map(Self::from_cell)
+    }
+
+    fn from_cell(cell: AttributeCell) -> Self {
+        Self {
+            cell,
+            _interface: PhantomData,
+        }
+    }
+
+    /// Borrows the instance as `I`.
+    ///
+    /// # Panics
+    ///
+    /// When the instance is borrowed mutably, or does not answer the cast to
+    /// `I` it is registered for.
+    #[inline]
+    pub fn borrow(&self) -> AtomicRef<'_, I> {
+        AtomicRef::map(self.cell.borrow(), |att| {
+            I::cast(&**att).expect("INVARIANT: an implementation answers the casts it is keyed by")
+        })
+    }
+
+    /// Borrows the instance mutably as `I`.
+    ///
+    /// # Panics
+    ///
+    /// When the instance is borrowed, or does not answer the cast to `I` it
+    /// is registered for.
+    #[inline]
+    pub fn borrow_mut(&self) -> AtomicRefMut<'_, I> {
+        AtomicRefMut::map(self.cell.borrow_mut(), |att| {
+            I::cast_mut(&mut **att)
+                .expect("INVARIANT: an implementation answers the casts it is keyed by")
+        })
+    }
+
+    /// Whether `self` and `other` are the same instance.
+    pub fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cell, &other.cell)
+    }
+
+    /// Whether `self` and `other`, possibly of different interfaces, are
+    /// provided by the same implementation instance (as the default token
+    /// attribute factory's `PackedTokenAttributeImpl` provides every core
+    /// token attribute).
+    pub fn same_impl_as<J: AttributeInterface + ?Sized>(&self, other: &AttributeHandle<J>) -> bool {
+        Arc::ptr_eq(&self.cell, &other.cell)
+    }
+
+    /// Borrows the implementation mutably, for a caller that sets several
+    /// interfaces of one implementation (see [`same_impl_as`](Self::same_impl_as))
+    /// under one borrow, casting with [`AttributeInterface::cast_mut`].
+    ///
+    /// # Panics
+    ///
+    /// When the instance is borrowed.
+    #[inline]
+    pub fn borrow_impl_mut(&self) -> AtomicRefMut<'_, Box<dyn AttributeImpl>> {
+        self.cell.borrow_mut()
+    }
+}
+
+impl<I: AttributeInterface + ?Sized> Clone for AttributeHandle<I> {
+    fn clone(&self) -> Self {
+        Self::from_cell(Arc::clone(&self.cell))
+    }
+}
+
+impl<I: AttributeInterface + ?Sized> Debug for AttributeHandle<I> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("AttributeHandle")
+            .field(&std::any::type_name::<I>())
+            .finish()
+    }
+}
+
+// -----------------------------------------------------------------------------
 // TokenFilter
 // -----------------------------------------------------------------------------
 
@@ -785,6 +903,32 @@ impl<T: TokenFilterLogic> TokenFilter<T> {
             input,
             logic,
         }
+    }
+
+    /// Creates a filter over `input` whose logic is built from the filter's
+    /// own source.
+    ///
+    /// Equivalent to a Java subclass constructor: `super(in)` builds the
+    /// source over the input's, then the field initializers run
+    /// (`termAtt = addAttribute(CharTermAttribute.class)`). `make_logic`
+    /// receives that source, adds the attributes in the subclass's order and
+    /// keeps their [`AttributeHandle`]s, as Java's fields keep the instances.
+    ///
+    /// # Errors
+    ///
+    /// What `make_logic` returns, such as the factory's failure to implement
+    /// an interface `addAttribute` asks for.
+    pub fn with_logic(
+        input: Box<dyn TokenStream>,
+        make_logic: impl FnOnce(&mut AttributeSource) -> Result<T>,
+    ) -> Result<Self> {
+        let mut source = AttributeSource::new_from(input.attribute_source());
+        let logic = make_logic(&mut source)?;
+        Ok(Self {
+            source,
+            input,
+            logic,
+        })
     }
 
     /// Returns a reference to the filter logic.
@@ -847,13 +991,54 @@ impl<T: TokenFilterLogic> Unwrappable<dyn TokenStream> for TokenFilter<T> {
 pub struct SharedTokenStream {
     inner: Arc<AtomicRefCell<dyn TokenStream>>,
     source: AttributeSource,
+    /// The shared maps' removal count when `source` was built (see
+    /// [`reuse_or_new`](Self::reuse_or_new)).
+    removals: u64,
 }
 
 impl SharedTokenStream {
     /// Wraps `inner` in a stream that shares its attributes.
     pub fn new(inner: Arc<AtomicRefCell<dyn TokenStream>>) -> Self {
         let source = AttributeSource::new_from(inner.borrow().attribute_source());
-        Self { inner, source }
+        let removals = source.shared_removals();
+        Self {
+            inner,
+            source,
+            removals,
+        }
+    }
+
+    /// `stream` wrapped for one more use: the wrapper `reuse` holds, taken
+    /// out of the slot, when it wraps `stream` itself; otherwise a new
+    /// wrapper, and `reuse` is left as it was.
+    ///
+    /// Java's `Field.tokenStream` returns the stream object of the
+    /// analyzer's reused components itself (`Field.java:465-498`,
+    /// `Analyzer.java:153-198`), so every value of a field is inverted
+    /// through the one object `IndexingChain` keeps in its `tokenStream`
+    /// (`IndexingChain.java:1908`); here that object is this wrapper. A reused
+    /// wrapper's view of the shared attributes is first brought up to date,
+    /// so it is exactly the view a new wrapper would build, or rebuilt when
+    /// the attributes were removed since.
+    // PERF: a new wrapper per text value cloned the attribute map of the
+    // chain and dropped it after the inversion, about 3.5 % of the add phase
+    // of the CLI's documents (profile of task #546, lane G).
+    pub(crate) fn reuse_or_new(
+        stream: Arc<AtomicRefCell<dyn TokenStream>>,
+        reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Box<dyn TokenStream> {
+        if let Some(wrapper) = reuse
+            .as_mut()
+            .and_then(|reuse| reuse.as_any_mut())
+            .and_then(|any| any.downcast_mut::<SharedTokenStream>())
+            .filter(|wrapper| Arc::ptr_eq(&wrapper.inner, &stream))
+        {
+            if !wrapper.source.sync_view_unless_emptied(wrapper.removals) {
+                *wrapper = SharedTokenStream::new(stream);
+            }
+            return reuse.take().expect("INVARIANT: matched above");
+        }
+        Box::new(SharedTokenStream::new(stream))
     }
 }
 
@@ -880,6 +1065,14 @@ impl TokenStream for SharedTokenStream {
 
     fn attribute_source_mut(&mut self) -> &mut AttributeSource {
         &mut self.source
+    }
+
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
     }
 }
 
@@ -1095,7 +1288,39 @@ impl TokenStream for BinaryTokenStream {
 pub struct TokenStreamComponents {
     source: Box<dyn FnMut(Box<dyn CharReader>) -> Result<()> + Send + Sync>,
     sink: Arc<AtomicRefCell<dyn TokenStream>>,
-    reusable_string_reader: Option<ReusableStringReader>,
+    /// The reader `Analyzer.tokenStream(String, String)` last read a string
+    /// through, shared with the source as Java shares the object, so the
+    /// next call reuses it (`Analyzer.java:184-198`).
+    reusable_string_reader: Option<Arc<AtomicRefCell<ReusableStringReader>>>,
+}
+
+/// A [`CharReader`] handle to the [`ReusableStringReader`] of a
+/// [`TokenStreamComponents`]: the same reader, as Java passes the
+/// `ReusableStringReader` object itself to `initReader`
+/// (`Analyzer.java:189`).
+#[derive(Debug)]
+struct SharedStringReader(Arc<AtomicRefCell<ReusableStringReader>>);
+
+impl CharReader for SharedStringReader {
+    fn read(&mut self, buf: &mut [u16]) -> Result<usize> {
+        self.0.borrow_mut().read(buf)
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.0.borrow_mut().close()
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        self.0.borrow_mut().reset()
+    }
+
+    fn mark_supported(&self) -> bool {
+        self.0.borrow().mark_supported()
+    }
+
+    fn ready(&mut self) -> Result<bool> {
+        self.0.borrow_mut().ready()
+    }
 }
 
 impl TokenStreamComponents {
@@ -1491,9 +1716,17 @@ pub trait Analyzer: Debug + Send + Sync {
             .analyzer_state()
             .reuse_strategy()
             .get_reusable_components(self.analyzer_state(), field_name);
-        let mut reusable_reader = ReusableStringReader::new();
-        reusable_reader.set_value(text);
-        let reader = self.init_reader(field_name, Box::new(reusable_reader));
+        // PERF: the components' reader is reused, as Java reuses it
+        // (`Analyzer.java:184-188`), and its buffer with it.
+        let str_reader = components
+            .as_ref()
+            .and_then(|c| c.borrow().reusable_string_reader.clone())
+            .unwrap_or_else(|| Arc::new(AtomicRefCell::new(ReusableStringReader::new())));
+        str_reader.borrow_mut().set_value(text);
+        let reader = self.init_reader(
+            field_name,
+            Box::new(SharedStringReader(Arc::clone(&str_reader))),
+        );
         let components = match components {
             Some(c) => c,
             None => {
@@ -1507,6 +1740,7 @@ pub trait Analyzer: Debug + Send + Sync {
         {
             let mut components = components.borrow_mut();
             components.set_reader(reader)?;
+            components.reusable_string_reader = Some(str_reader);
         }
         let stream = components.borrow().token_stream();
         Ok(stream)
@@ -2017,6 +2251,37 @@ mod tests {
         }
     }
     use crate::util::attribute::unwrap_all;
+
+    /// An `AttributeHandle` is the source's own instance, as a Java field
+    /// assigned from `addAttribute` is: writes through either are seen by
+    /// the other, `add` again answers the same instance, `get` answers
+    /// `None` for an absent interface, and a filter's source, which shares
+    /// the input's maps, answers the input's instance.
+    #[test]
+    fn attribute_handle_is_the_sources_instance() -> Result<()> {
+        let mut source = AttributeSource::new();
+        let handle = AttributeHandle::<dyn CharTermAttribute>::add(&mut source)?;
+        source
+            .get_attribute_interface_mut::<dyn CharTermAttribute>()
+            .unwrap()
+            .append_string(Some("abc"));
+        assert_eq!(handle.borrow().term(), "abc");
+        handle.borrow_mut().set_empty();
+        assert_eq!(
+            source
+                .get_attribute_interface::<dyn CharTermAttribute>()
+                .unwrap()
+                .length(),
+            0
+        );
+        let again = AttributeHandle::<dyn CharTermAttribute>::add(&mut source)?;
+        assert!(handle.same_instance(&again));
+        assert!(AttributeHandle::<dyn PayloadAttribute>::get(&source).is_none());
+        let filter_source = AttributeSource::new_from(&source);
+        let shared = AttributeHandle::<dyn CharTermAttribute>::get(&filter_source).unwrap();
+        assert!(shared.same_instance(&handle));
+        Ok(())
+    }
 
     #[derive(Debug, Default)]
     struct WhitespaceTokenizer {
@@ -2614,6 +2879,99 @@ mod tests {
         Ok(terms)
     }
 
+    /// Drains a boxed stream, as [`collect_terms`] drains a shared one.
+    fn collect_boxed_terms(stream: &mut dyn TokenStream) -> Result<Vec<String>> {
+        let mut terms = Vec::new();
+        stream.reset()?;
+        while stream.increment_token()? {
+            let term = stream
+                .attribute_source()
+                .get_attribute_interface::<dyn CharTermAttribute>()
+                .unwrap()
+                .term();
+            terms.push(term);
+        }
+        stream.end()?;
+        stream.close()?;
+        Ok(terms)
+    }
+
+    /// The address of a boxed stream, for identity checks.
+    fn stream_address(stream: &dyn TokenStream) -> *const () {
+        (stream as *const dyn TokenStream).cast::<()>()
+    }
+
+    /// `SharedTokenStream::reuse_or_new` hands back the wrapper `reuse`
+    /// holds when it wraps the same stream, as Java's `Field.tokenStream`
+    /// hands back the analyzer's one stream object: the reused wrapper reads
+    /// the next value, sees an attribute the chain added since it was built,
+    /// and has its view rebuilt when the chain's attributes were removed. A
+    /// wrapper of another stream stays in `reuse` and a new one is returned.
+    #[test]
+    fn shared_token_stream_reuses_the_wrapper_of_the_same_stream() -> Result<()> {
+        let analyzer = WhitespaceAnalyzer::new();
+        let mut reuse: Option<Box<dyn TokenStream>> = None;
+        let stream = analyzer.token_stream_from_str("field", "hello world")?;
+        let mut wrapper = SharedTokenStream::reuse_or_new(stream, &mut reuse);
+        assert_eq!(
+            collect_boxed_terms(wrapper.as_mut())?,
+            vec!["hello", "world"]
+        );
+        assert!(wrapper
+            .attribute_source()
+            .get_attribute_interface::<dyn PayloadAttribute>()
+            .is_none());
+        let address = stream_address(wrapper.as_ref());
+        reuse = Some(wrapper);
+
+        // The same components' stream, with an attribute added since.
+        let stream = analyzer.token_stream_from_str("field", "second value")?;
+        stream
+            .borrow_mut()
+            .attribute_source_mut()
+            .add_attribute_interface::<dyn PayloadAttribute>()?;
+        let mut wrapper = SharedTokenStream::reuse_or_new(Arc::clone(&stream), &mut reuse);
+        assert!(reuse.is_none(), "the wrapper is taken out of the slot");
+        assert_eq!(stream_address(wrapper.as_ref()), address);
+        assert!(wrapper
+            .attribute_source()
+            .get_attribute_interface::<dyn PayloadAttribute>()
+            .is_some());
+        assert_eq!(
+            collect_boxed_terms(wrapper.as_mut())?,
+            vec!["second", "value"]
+        );
+        reuse = Some(wrapper);
+
+        // The chain's attributes removed: the reused wrapper's view is rebuilt
+        // and no longer lends the removed attribute.
+        stream
+            .borrow_mut()
+            .attribute_source_mut()
+            .remove_all_attributes();
+        let wrapper = SharedTokenStream::reuse_or_new(Arc::clone(&stream), &mut reuse);
+        assert_eq!(stream_address(wrapper.as_ref()), address);
+        assert!(wrapper
+            .attribute_source()
+            .get_attribute_interface::<dyn PayloadAttribute>()
+            .is_none());
+        assert!(wrapper
+            .attribute_source()
+            .get_attribute_interface::<dyn CharTermAttribute>()
+            .is_none());
+        reuse = Some(wrapper);
+
+        // Another stream: a new wrapper, and the held one stays in the slot.
+        let other = WhitespaceAnalyzer::new().token_stream_from_str("field", "other")?;
+        let mut wrapper = SharedTokenStream::reuse_or_new(other, &mut reuse);
+        assert!(reuse
+            .as_deref()
+            .is_some_and(|held| stream_address(held) == address));
+        assert_ne!(stream_address(wrapper.as_ref()), address);
+        assert_eq!(collect_boxed_terms(wrapper.as_mut())?, vec!["other"]);
+        Ok(())
+    }
+
     #[test]
     fn analyzer_tokenizes_string_and_closes() -> Result<()> {
         let analyzer = WhitespaceAnalyzer::new();
@@ -2801,6 +3159,31 @@ mod tests {
         assert_eq!(collect_terms(Arc::clone(&second))?, vec!["z"]);
         assert_eq!(wrapped.created.load(Ordering::SeqCst), 1);
         assert!(Arc::ptr_eq(&first, &second));
+        Ok(())
+    }
+
+    /// `tokenStream(String, String)` reuses the components' string reader,
+    /// as `Analyzer.java:184-198` does, and each call reads its own text.
+    #[test]
+    fn token_stream_from_str_reuses_the_string_reader() -> Result<()> {
+        let analyzer = WhitespaceAnalyzer::new();
+        let reader_of = |analyzer: &WhitespaceAnalyzer| {
+            analyzer
+                .analyzer_state()
+                .reuse_strategy()
+                .get_reusable_components(analyzer.analyzer_state(), Some("field"))
+                .expect("components are stored")
+                .borrow()
+                .reusable_string_reader
+                .clone()
+                .expect("the string reader is kept")
+        };
+        let stream = analyzer.token_stream_from_str("field", "hello big world")?;
+        assert_eq!(collect_terms(stream)?, vec!["hello", "big", "world"]);
+        let first = reader_of(&analyzer);
+        let stream = analyzer.token_stream_from_str("field", "x")?;
+        assert_eq!(collect_terms(stream)?, vec!["x"]);
+        assert!(Arc::ptr_eq(&first, &reader_of(&analyzer)));
         Ok(())
     }
 

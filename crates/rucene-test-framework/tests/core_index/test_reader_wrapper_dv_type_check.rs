@@ -45,17 +45,17 @@ fn test_no_dv_field_on_segment() -> Result<()> {
 
         for i in 0..docs {
             let mut d = Document::new();
-            d.add(Box::new(LuceneTestCase::new_string_field(
+            d.add(LuceneTestCase::new_string_field(
                 "id",
                 &i.to_string(),
                 Store::NO,
-            )));
+            ));
             if LuceneTestCase::rarely_with(&index_random) {
                 // System.out.println("on:"+i+" rarely: true");
-                d.add(Box::new(SortedDocValuesField::new(
+                d.add(SortedDocValuesField::new(
                     "sdv",
                     BytesRef::new(i.to_string().into_bytes()),
-                )));
+                ));
                 sdv_exist = true;
             } else {
                 // System.out.println("on:"+i+" rarely: false");
@@ -63,10 +63,10 @@ fn test_no_dv_field_on_segment() -> Result<()> {
             let num_sorted_set = index_random.next_int_bound(5) - 3;
             for j in 0..num_sorted_set {
                 // System.out.println("on:"+i+" add ssdv:"+j);
-                d.add(Box::new(SortedSetDocValuesField::new(
+                d.add(SortedSetDocValuesField::new(
                     "ssdv",
                     BytesRef::new(j.to_string().into_bytes()),
-                )));
+                ));
                 ssdv_exist = true;
             }
             iw.add_document(&d)?;

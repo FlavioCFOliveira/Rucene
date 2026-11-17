@@ -162,44 +162,38 @@ fn test_check_index_all_valid() -> Result<()> {
             let mut doc = Document::new();
 
             // stored field
-            doc.add(Box::new(StringField::new(
+            doc.add(StringField::new(
                 "id",
                 random().next_int().to_string(),
                 Store::YES,
-            )?));
-            doc.add(Box::new(StoredField::new_string(
+            )?);
+            doc.add(StoredField::new_string(
                 "field",
                 format!("value{}", TestUtil::random_simple_string(&*random())),
-            )?));
+            )?);
 
             // vector
-            doc.add(Box::new(KnnFloatVectorField::with_euclidean(
+            doc.add(KnnFloatVectorField::with_euclidean(
                 "v1",
                 &random_vector(3)?,
-            )?));
-            doc.add(Box::new(KnnFloatVectorField::with_euclidean(
+            )?);
+            doc.add(KnnFloatVectorField::with_euclidean(
                 "v2",
                 &random_vector(3)?,
-            )?));
+            )?);
 
             // doc value
-            doc.add(Box::new(NumericDocValuesField::new(
-                "dv",
-                random().next_long(),
-            )));
+            doc.add(NumericDocValuesField::new("dv", random().next_long()));
             // doc value with skip index
-            doc.add(Box::new(NumericDocValuesField::indexed_field(
+            doc.add(NumericDocValuesField::indexed_field(
                 "dv_skip",
                 random().next_long(),
-            )));
+            ));
 
             // point value
             let mut point = vec![0u8; 4];
             NumericUtils::int_to_sortable_bytes(random().next_int(), &mut point, 0);
-            doc.add(Box::new(BinaryPoint::new(
-                "point",
-                &[BytesRef::new(point)],
-            )?));
+            doc.add(BinaryPoint::new("point", &[BytesRef::new(point)])?);
 
             // term vector
             let token1 = token_with_payload("bar", 0, 3, "pay1");
@@ -212,17 +206,13 @@ fn test_check_index_all_valid() -> Result<()> {
                 Arc::new(AtomicRefCell::new(CannedTokenStream::new(vec![
                     token1, token2,
                 ])));
-            doc.add(Box::new(Field::new_with_token_stream(
-                "termvector",
-                stream,
-                ft,
-            )?));
+            doc.add(Field::new_with_token_stream("termvector", stream, ft)?);
 
             w.add_document(&doc)?;
         }
 
         let mut tombstone = Document::new();
-        tombstone.add(Box::new(NumericDocValuesField::new("soft_delete", 1)));
+        tombstone.add(NumericDocValuesField::new("soft_delete", 1));
         w.soft_update_document(
             Term::from_text("id", "1"),
             &tombstone,
@@ -417,7 +407,7 @@ fn test_prior_broken_commit_point() -> Result<()> {
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         // create first segment, and commit point referencing only segment 0
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new("id", "a".into(), Store::NO)?));
+        doc.add(StringField::new("id", "a".into(), Store::NO)?);
         iw.add_document(&doc)?;
         iw.commit()?;
 
@@ -429,7 +419,7 @@ fn test_prior_broken_commit_point() -> Result<()> {
         )?);
 
         // create second segment, and another commit point referencing only segment 1
-        doc.add(Box::new(StringField::new("id", "a".into(), Store::NO)?));
+        doc.add(StringField::new("id", "a".into(), Store::NO)?);
         iw.update_document(Term::from_text("id", "a"), &doc)?;
         iw.commit()?;
 

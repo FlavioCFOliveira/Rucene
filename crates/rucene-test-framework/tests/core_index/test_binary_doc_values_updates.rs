@@ -179,12 +179,8 @@ fn bdv_update(name: &str, value: BytesRef) -> Result<Field> {
 /// `private Document doc(int id)`.
 fn doc(id: i32) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "id",
-        format!("doc-{id}"),
-        Store::NO,
-    )?));
-    doc.add(bdv_field("val", to_bytes((id + 1) as i64)));
+    doc.add(StringField::new("id", format!("doc-{id}"), Store::NO)?);
+    doc.add(*bdv_field("val", to_bytes((id + 1) as i64)));
     Ok(doc)
 }
 
@@ -480,28 +476,24 @@ fn test_multiple_doc_values_types() -> Result<()> {
 
     for i in 0..4 {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "dvUpdateKey",
-            "dv".into(),
-            Store::NO,
-        )?));
-        doc.add(Box::new(NumericDocValuesField::new("ndv", i as i64)));
-        doc.add(bdv_field(
+        doc.add(StringField::new("dvUpdateKey", "dv".into(), Store::NO)?);
+        doc.add(NumericDocValuesField::new("ndv", i as i64));
+        doc.add(*bdv_field(
             "bdv",
             LuceneTestCase::new_bytes_ref_str(&i.to_string()),
         ));
-        doc.add(Box::new(SortedDocValuesField::new(
+        doc.add(SortedDocValuesField::new(
             "sdv",
             LuceneTestCase::new_bytes_ref_str(&i.to_string()),
-        )));
-        doc.add(Box::new(SortedSetDocValuesField::new(
+        ));
+        doc.add(SortedSetDocValuesField::new(
             "ssdv",
             LuceneTestCase::new_bytes_ref_str(&i.to_string()),
-        )));
-        doc.add(Box::new(SortedSetDocValuesField::new(
+        ));
+        doc.add(SortedSetDocValuesField::new(
             "ssdv",
             LuceneTestCase::new_bytes_ref_str(&(i * 2).to_string()),
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     writer.commit()?;
@@ -571,13 +563,9 @@ fn test_multiple_binary_doc_values() -> Result<()> {
 
     for i in 0..2 {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "dvUpdateKey",
-            "dv".into(),
-            Store::NO,
-        )?));
-        doc.add(bdv_field("bdv1", to_bytes(i)));
-        doc.add(bdv_field("bdv2", to_bytes(i)));
+        doc.add(StringField::new("dvUpdateKey", "dv".into(), Store::NO)?);
+        doc.add(*bdv_field("bdv1", to_bytes(i)));
+        doc.add(*bdv_field("bdv2", to_bytes(i)));
         writer.add_document(&doc)?;
     }
     writer.commit()?;
@@ -610,14 +598,10 @@ fn test_document_with_no_value() -> Result<()> {
 
     for i in 0..2 {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "dvUpdateKey",
-            "dv".into(),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("dvUpdateKey", "dv".into(), Store::NO)?);
         if i == 0 {
             // index only one document with value
-            doc.add(bdv_field("bdv", to_bytes(5)));
+            doc.add(*bdv_field("bdv", to_bytes(5)));
         }
         writer.add_document(&doc)?;
     }
@@ -648,8 +632,8 @@ fn test_update_non_binary_doc_values_field() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("key", "doc".into(), Store::NO)?));
-    doc.add(Box::new(StringField::new("foo", "bar".into(), Store::NO)?));
+    doc.add(StringField::new("key", "doc".into(), Store::NO)?);
+    doc.add(StringField::new("foo", "bar".into(), Store::NO)?);
     writer.add_document(&doc)?; // flushed document
     writer.commit()?;
     writer.add_document(&doc)?; // in-memory document
@@ -689,12 +673,12 @@ fn test_different_dv_format_per_field() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("key", "doc".into(), Store::NO)?));
-    doc.add(bdv_field("bdv", to_bytes(5)));
-    doc.add(Box::new(SortedDocValuesField::new(
+    doc.add(StringField::new("key", "doc".into(), Store::NO)?);
+    doc.add(*bdv_field("bdv", to_bytes(5)));
+    doc.add(SortedDocValuesField::new(
         "sorted",
         LuceneTestCase::new_bytes_ref_str("value"),
-    )));
+    ));
     writer.add_document(&doc)?; // flushed document
     writer.commit()?;
     writer.add_document(&doc)?; // in-memory document
@@ -727,8 +711,8 @@ fn test_update_same_doc_multiple_times() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("key", "doc".into(), Store::NO)?));
-    doc.add(bdv_field("bdv", to_bytes(5)));
+    doc.add(StringField::new("key", "doc".into(), Store::NO)?);
+    doc.add(*bdv_field("bdv", to_bytes(5)));
     writer.add_document(&doc)?; // flushed document
     writer.commit()?;
     writer.add_document(&doc)?; // in-memory document
@@ -758,16 +742,12 @@ fn test_segment_merges() -> Result<()> {
     let num_rounds = LuceneTestCase::at_least(10);
     for rnd in 0..num_rounds {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new("key", "doc".into(), Store::NO)?));
-        doc.add(bdv_field("bdv", to_bytes(-1)));
+        doc.add(StringField::new("key", "doc".into(), Store::NO)?);
+        doc.add(*bdv_field("bdv", to_bytes(-1)));
         let num_docs = LuceneTestCase::at_least(30);
         for _ in 0..num_docs {
             doc.remove_field("id");
-            doc.add(Box::new(StringField::new(
-                "id",
-                docid.to_string(),
-                Store::NO,
-            )?));
+            doc.add(StringField::new("id", docid.to_string(), Store::NO)?);
             docid += 1;
             writer.add_document(&doc)?;
         }
@@ -799,14 +779,10 @@ fn test_segment_merges() -> Result<()> {
         // and some MPs might now merge it, thereby invalidating test's
         // assumption that the reader has no deletes).
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "id",
-            docid.to_string(),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("id", docid.to_string(), Store::NO)?);
         docid += 1;
-        doc.add(Box::new(StringField::new("key", "doc".into(), Store::NO)?));
-        doc.add(bdv_field("bdv", to_bytes(value)));
+        doc.add(StringField::new("key", "doc".into(), Store::NO)?);
+        doc.add(*bdv_field("bdv", to_bytes(value)));
         writer.add_document(&doc)?;
 
         writer.force_merge_with(1, true)?;
@@ -845,9 +821,9 @@ fn test_update_document_by_multiple_terms() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("k1", "v1".into(), Store::NO)?));
-    doc.add(Box::new(StringField::new("k2", "v2".into(), Store::NO)?));
-    doc.add(bdv_field("bdv", to_bytes(5)));
+    doc.add(StringField::new("k1", "v1".into(), Store::NO)?);
+    doc.add(StringField::new("k2", "v2".into(), Store::NO)?);
+    doc.add(*bdv_field("bdv", to_bytes(5)));
     writer.add_document(&doc)?; // flushed document
     writer.commit()?;
     writer.add_document(&doc)?; // in-memory document
@@ -930,17 +906,14 @@ fn test_sorted_index() -> Result<()> {
             let id = docs.len() as i32;
             // add new doc
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_string_field(
+            doc.add(LuceneTestCase::new_string_field(
                 "id",
                 &id.to_string(),
                 Store::YES,
-            )));
-            doc.add(bdv_field("number", value.clone()));
+            ));
+            doc.add(*bdv_field("number", value.clone()));
             let sort_value = random().next_int_bound(sort_value_range);
-            doc.add(Box::new(NumericDocValuesField::new(
-                "sort",
-                sort_value as i64,
-            )));
+            doc.add(NumericDocValuesField::new("sort", sort_value as i64));
             if verbose() {
                 println!("TEST: iter={iter} add doc id={id} sortValue={sort_value} value={value}");
             }
@@ -1064,15 +1037,11 @@ fn test_many_reopens_and_fields() -> Result<()> {
         let num_docs = LuceneTestCase::at_least(5);
         for _ in 0..num_docs {
             let mut doc = Document::new();
-            doc.add(Box::new(StringField::new(
-                "id",
-                format!("doc-{doc_id}"),
-                Store::NO,
-            )?));
-            doc.add(Box::new(StringField::new("key", "all".into(), Store::NO)?)); // update key
-                                                                                  // add all fields with their current value
+            doc.add(StringField::new("id", format!("doc-{doc_id}"), Store::NO)?);
+            doc.add(StringField::new("key", "all".into(), Store::NO)?); // update key
+                                                                        // add all fields with their current value
             for f in 0..field_values.len() {
-                doc.add(bdv_field(&format!("f{f}"), to_bytes(field_values[f])));
+                doc.add(*bdv_field(&format!("f{f}"), to_bytes(field_values[f])));
             }
             writer.add_document(&doc)?;
             doc_id += 1;
@@ -1149,20 +1118,20 @@ fn test_update_segment_with_no_doc_values() -> Result<()> {
 
     // first segment with BDV
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("id", "doc0".into(), Store::NO)?));
-    doc.add(bdv_field("bdv", to_bytes(3)));
+    doc.add(StringField::new("id", "doc0".into(), Store::NO)?);
+    doc.add(*bdv_field("bdv", to_bytes(3)));
     writer.add_document(&doc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("id", "doc4".into(), Store::NO)?)); // document without 'bdv' field
+    doc.add(StringField::new("id", "doc4".into(), Store::NO)?); // document without 'bdv' field
     writer.add_document(&doc)?;
     writer.commit()?;
 
     // second segment with no BDV
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("id", "doc1".into(), Store::NO)?));
+    doc.add(StringField::new("id", "doc1".into(), Store::NO)?);
     writer.add_document(&doc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("id", "doc2".into(), Store::NO)?)); // document that isn't updated
+    doc.add(StringField::new("id", "doc2".into(), Store::NO)?); // document that isn't updated
     writer.add_document(&doc)?;
     writer.commit()?;
 
@@ -1200,30 +1169,22 @@ fn test_update_segment_with_posting_but_no_doc_values() -> Result<()> {
 
     // first segment with BDV
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("id", "doc0".into(), Store::NO)?));
-    doc.add(Box::new(StringField::new(
-        "bdv",
-        "mock-value".into(),
-        Store::NO,
-    )?));
-    doc.add(bdv_field("bdv", to_bytes(5)));
+    doc.add(StringField::new("id", "doc0".into(), Store::NO)?);
+    doc.add(StringField::new("bdv", "mock-value".into(), Store::NO)?);
+    doc.add(*bdv_field("bdv", to_bytes(5)));
     writer.add_document(&doc)?;
     writer.commit()?;
 
     // second segment with no BDV
     let mut doc2 = Document::new();
-    doc2.add(Box::new(StringField::new("id", "doc1".into(), Store::NO)?));
-    doc2.add(Box::new(StringField::new(
-        "bdv",
-        "mock-value".into(),
-        Store::NO,
-    )?));
+    doc2.add(StringField::new("id", "doc1".into(), Store::NO)?);
+    doc2.add(StringField::new("bdv", "mock-value".into(), Store::NO)?);
     let exception = expect_throws(IAE, || writer.add_document(&doc2));
     let expected_err_msg =
         "cannot change field \"bdv\" from doc values type=BINARY to inconsistent doc values type=NONE";
     assert_equals(&Some(expected_err_msg), &exception.message());
 
-    doc2.add(bdv_field("bdv", to_bytes(10)));
+    doc2.add(*bdv_field("bdv", to_bytes(10)));
     writer.add_document(&doc2)?;
 
     // update doc values of bdv field in the second segment
@@ -1259,12 +1220,8 @@ fn test_update_binary_dv_field_with_same_name_as_posting_field() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "f",
-        "mock-value".into(),
-        Store::NO,
-    )?));
-    doc.add(bdv_field("f", to_bytes(5)));
+    doc.add(StringField::new("f", "mock-value".into(), Store::NO)?);
+    doc.add(*bdv_field("f", to_bytes(5)));
     writer.add_document(&doc)?;
     writer.commit()?;
 
@@ -1312,18 +1269,14 @@ fn test_stress_multi_threading() -> Result<()> {
     };
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "id",
-            format!("doc{i}"),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("id", format!("doc{i}"), Store::NO)?);
         let group = random().next_double();
         let g = group_of(group);
-        doc.add(Box::new(StringField::new("updKey", g.into(), Store::NO)?));
+        doc.add(StringField::new("updKey", g.into(), Store::NO)?);
         for j in 0..num_fields {
             let value = random().next_int() as i64;
-            doc.add(bdv_field(&format!("f{j}"), to_bytes(value)));
-            doc.add(bdv_field(
+            doc.add(*bdv_field(&format!("f{j}"), to_bytes(value)));
+            doc.add(*bdv_field(
                 &format!("cf{j}"),
                 to_bytes(value.wrapping_mul(2)),
             )); // control, always updated to f * 2
@@ -1466,14 +1419,10 @@ fn test_update_different_docs_in_different_gens() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(10);
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "id",
-            format!("doc{i}"),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("id", format!("doc{i}"), Store::NO)?);
         let value = random().next_int() as i64;
-        doc.add(bdv_field("f", to_bytes(value)));
-        doc.add(bdv_field("cf", to_bytes(value * 2)));
+        doc.add(*bdv_field("f", to_bytes(value)));
+        doc.add(*bdv_field("cf", to_bytes(value * 2)));
         writer.add_document(&doc)?;
     }
 
@@ -1516,9 +1465,9 @@ fn test_change_codec() -> Result<()> {
     )))?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("id", "d0".into(), Store::NO)?));
-    doc.add(bdv_field("f1", to_bytes(5)));
-    doc.add(bdv_field("f2", to_bytes(13)));
+    doc.add(StringField::new("id", "d0".into(), Store::NO)?);
+    doc.add(*bdv_field("f1", to_bytes(5)));
+    doc.add(*bdv_field("f2", to_bytes(13)));
     writer.add_document(&doc)?;
     writer.close()?;
 
@@ -1530,9 +1479,9 @@ fn test_change_codec() -> Result<()> {
     })))?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("id", "d1".into(), Store::NO)?));
-    doc.add(bdv_field("f1", to_bytes(17)));
-    doc.add(bdv_field("f2", to_bytes(2)));
+    doc.add(StringField::new("id", "d1".into(), Store::NO)?);
+    doc.add(*bdv_field("f1", to_bytes(17)));
+    doc.add(*bdv_field("f2", to_bytes(2)));
     writer.add_document(&doc)?;
     writer.update_binary_doc_value(Term::from_text("id", "d0"), "f1", to_bytes(12))?;
     writer.close()?;
@@ -1574,13 +1523,13 @@ fn test_add_indexes() -> Result<()> {
     // create first index
     for _ in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
+        doc.add(StringField::new(
             "id",
             random_from_set(&*random(), &random_terms),
             Store::NO,
-        )?));
-        doc.add(bdv_field("bdv", to_bytes(4)));
-        doc.add(bdv_field("control", to_bytes(8)));
+        )?);
+        doc.add(*bdv_field("bdv", to_bytes(4)));
+        doc.add(*bdv_field("control", to_bytes(8)));
         writer.add_document(&doc)?;
     }
 
@@ -1638,9 +1587,9 @@ fn test_delete_unused_updates_files() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("id", "d0".into(), Store::NO)?));
-    doc.add(bdv_field("f1", to_bytes(1)));
-    doc.add(bdv_field("f2", to_bytes(1)));
+    doc.add(StringField::new("id", "d0".into(), Store::NO)?);
+    doc.add(*bdv_field("f1", to_bytes(1)));
+    doc.add(*bdv_field("f2", to_bytes(1)));
     writer.add_document(&doc)?;
 
     // update each field twice to make sure all unneeded files are deleted
@@ -1685,16 +1634,16 @@ fn test_tons_of_updates() -> Result<()> {
         let mut doc = Document::new();
         let num_update_terms = TestUtil::next_int(&*random, 1, num_terms / 10);
         for _ in 0..num_update_terms {
-            doc.add(Box::new(StringField::new(
+            doc.add(StringField::new(
                 "upd",
                 random_from_set(&*random, &update_terms),
                 Store::NO,
-            )?));
+            )?);
         }
         for j in 0..num_binary_fields {
             let val = random.next_int() as i64;
-            doc.add(bdv_field(&format!("f{j}"), to_bytes(val)));
-            doc.add(bdv_field(&format!("cf{j}"), to_bytes(val * 2)));
+            doc.add(*bdv_field(&format!("f{j}"), to_bytes(val)));
+            doc.add(*bdv_field(&format!("cf{j}"), to_bytes(val * 2)));
         }
         writer.add_document(&doc)?;
     }
@@ -1751,10 +1700,10 @@ fn test_updates_order() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("upd", "t1".into(), Store::NO)?));
-    doc.add(Box::new(StringField::new("upd", "t2".into(), Store::NO)?));
-    doc.add(bdv_field("f1", to_bytes(1)));
-    doc.add(bdv_field("f2", to_bytes(1)));
+    doc.add(StringField::new("upd", "t1".into(), Store::NO)?);
+    doc.add(StringField::new("upd", "t2".into(), Store::NO)?);
+    doc.add(*bdv_field("f1", to_bytes(1)));
+    doc.add(*bdv_field("f2", to_bytes(1)));
     writer.add_document(&doc)?;
     writer.update_binary_doc_value(Term::from_text("upd", "t1"), "f1", to_bytes(2))?; // update f1 to 2
     writer.update_binary_doc_value(Term::from_text("upd", "t1"), "f2", to_bytes(2))?; // update f2 to 2
@@ -1782,8 +1731,8 @@ fn test_update_all_deleted_segment() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("id", "doc".into(), Store::NO)?));
-    doc.add(bdv_field("f1", to_bytes(1)));
+    doc.add(StringField::new("id", "doc".into(), Store::NO)?);
+    doc.add(*bdv_field("f1", to_bytes(1)));
     writer.add_document(&doc)?;
     writer.add_document(&doc)?;
     writer.commit()?;
@@ -1809,8 +1758,8 @@ fn test_update_two_nonexisting_terms() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("id", "doc".into(), Store::NO)?));
-    doc.add(bdv_field("f1", to_bytes(1)));
+    doc.add(StringField::new("id", "doc".into(), Store::NO)?);
+    doc.add(*bdv_field("f1", to_bytes(1)));
     writer.add_document(&doc)?;
     // update w/ multiple nonexisting terms in same field
     writer.update_binary_doc_value(Term::from_text("c", "foo"), "f1", to_bytes(2))?;

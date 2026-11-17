@@ -151,11 +151,11 @@ fn before_class() -> Result<()> {
     // writer.infoStream = System.out;
     for i in 0..2000 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             "field",
             &English::int_to_english(i),
             Store::YES,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     let reader = writer.get_reader()?;
@@ -609,11 +609,11 @@ fn test_boolean_span_query() -> Result<()> {
     let writer = IndexWriter::new(directory.as_directory(), config)?;
     let field = "content";
     let mut d = Document::new();
-    d.add(Box::new(TextField::new(
+    d.add(TextField::new(
         field,
         "clockwork orange".to_string(),
         Store::YES,
-    )?));
+    )?);
     writer.add_document(&d)?;
     writer.close()?;
 
@@ -650,11 +650,11 @@ fn test_dismax_span_query() -> Result<()> {
     let writer = IndexWriter::new(directory.as_directory(), config)?;
     let field = "content";
     let mut d = Document::new();
-    d.add(Box::new(TextField::new(
+    d.add(TextField::new(
         field,
         "clockwork orange".to_string(),
         Store::YES,
-    )?));
+    )?);
     writer.add_document(&d)?;
     writer.close()?;
 

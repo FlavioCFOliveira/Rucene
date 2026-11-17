@@ -193,13 +193,13 @@ fn test_force_merge_fully_deleted() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), index_writer_config)?;
 
     let mut doc = Document::new();
-    doc.add(stored_string("id", "1")?);
-    doc.add(Box::new(NumericDocValuesField::new("soft_delete", 1)));
+    doc.add(*stored_string("id", "1")?);
+    doc.add(NumericDocValuesField::new("soft_delete", 1));
     writer.add_document(&doc)?;
     writer.commit()?;
     let mut doc = Document::new();
-    doc.add(stored_string("id", "2")?);
-    doc.add(Box::new(NumericDocValuesField::new("soft_delete", 1)));
+    doc.add(*stored_string("id", "2")?);
+    doc.add(NumericDocValuesField::new("soft_delete", 1));
     writer.add_document(&doc)?;
     let reader = directory_reader::open_with_writer(&*writer)?;
     {
@@ -260,8 +260,8 @@ fn test_keep_fully_deleted_segments() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), index_writer_config)?;
 
     let mut doc = Document::new();
-    doc.add(stored_string("id", "1")?);
-    doc.add(Box::new(NumericDocValuesField::new("soft_delete", 1)));
+    doc.add(*stored_string("id", "1")?);
+    doc.add(NumericDocValuesField::new("soft_delete", 1));
     writer.add_document(&doc)?;
     let reader = directory_reader::open_with_writer(&*writer)?;
     assert_equals(&1, &Arc::clone(&reader).leaves()?.len());
@@ -277,9 +277,9 @@ fn test_keep_fully_deleted_segments() -> Result<()> {
     reader.close()?;
 
     let mut doc = Document::new();
-    doc.add(stored_string("id", "1")?);
-    doc.add(Box::new(NumericDocValuesField::new("keep_around", 1)));
-    doc.add(Box::new(NumericDocValuesField::new("soft_delete", 1)));
+    doc.add(*stored_string("id", "1")?);
+    doc.add(NumericDocValuesField::new("keep_around", 1));
+    doc.add(NumericDocValuesField::new("soft_delete", 1));
     writer.add_document(&doc)?;
 
     let reader1 = directory_reader::open_with_writer(&*writer)?;
@@ -312,9 +312,9 @@ fn now_millis() -> i64 {
 /// `creation_date`.
 fn dated_doc(version: &str, creation_date: i64) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(stored_string("id", "1")?);
-    doc.add(stored_string("version", version)?);
-    doc.add(Box::new(LongPoint::new("creation_date", &[creation_date])?));
+    doc.add(*stored_string("id", "1")?);
+    doc.add(*stored_string("version", version)?);
+    doc.add(LongPoint::new("creation_date", &[creation_date])?);
     Ok(doc)
 }
 
@@ -419,18 +419,18 @@ fn test_keep_all_docs_across_merges() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), index_writer_config)?;
 
     let mut doc = Document::new();
-    doc.add(stored_string("id", "1")?);
+    doc.add(*stored_string("id", "1")?);
     writer.soft_update_document(Term::from_text("id", "1"), &doc, &[ndv("soft_delete", 1)?])?;
 
     writer.commit()?;
     let mut doc = Document::new();
-    doc.add(stored_string("id", "1")?);
+    doc.add(*stored_string("id", "1")?);
     writer.soft_update_document(Term::from_text("id", "1"), &doc, &[ndv("soft_delete", 1)?])?;
 
     writer.commit()?;
     let mut doc = Document::new();
-    doc.add(stored_string("id", "1")?);
-    doc.add(Box::new(NumericDocValuesField::new("soft_delete", 1))); // already deleted
+    doc.add(*stored_string("id", "1")?);
+    doc.add(NumericDocValuesField::new("soft_delete", 1)); // already deleted
     writer.soft_update_document(Term::from_text("id", "1"), &doc, &[ndv("soft_delete", 1)?])?;
     writer.commit()?;
     let reader = directory_reader::open_with_writer(&*writer)?;
@@ -556,8 +556,8 @@ fn test_soft_delete_with_retention() -> Result<()> {
                     let seq_id = seq_ids.fetch_add(1, Ordering::SeqCst) + 1;
                     if update_several_docs {
                         let mut doc = Document::new();
-                        doc.add(stored_string("id", &id)?);
-                        doc.add(Box::new(IntPoint::new("seq_id", &[seq_id])?));
+                        doc.add(*stored_string("id", &id)?);
+                        doc.add(IntPoint::new("seq_id", &[seq_id])?);
                         // `Arrays.asList(doc, doc)`: the same document twice.
                         writer.soft_update_documents(
                             Term::from_text("id", &id),
@@ -566,8 +566,8 @@ fn test_soft_delete_with_retention() -> Result<()> {
                         )?;
                     } else {
                         let mut doc = Document::new();
-                        doc.add(stored_string("id", &id)?);
-                        doc.add(Box::new(IntPoint::new("seq_id", &[seq_id])?));
+                        doc.add(*stored_string("id", &id)?);
+                        doc.add(IntPoint::new("seq_id", &[seq_id])?);
                         writer.soft_update_document(
                             Term::from_text("id", &id),
                             &doc,
@@ -692,13 +692,13 @@ fn test_force_merge_deletes() -> Result<()> {
     // The first segment includes d1 and d2
     for i in 0..2 {
         let mut d = Document::new();
-        d.add(stored_string("id", &i.to_string())?);
+        d.add(*stored_string("id", &i.to_string())?);
         writer.add_document(&d)?;
     }
     writer.flush()?;
     // The second segment includes only the tombstone
     let mut tombstone = Document::new();
-    tombstone.add(Box::new(NumericDocValuesField::new("soft_delete", 1)));
+    tombstone.add(NumericDocValuesField::new("soft_delete", 1));
     writer.soft_update_document(
         Term::from_text("id", "1"),
         &tombstone,
@@ -742,7 +742,7 @@ fn test_drop_fully_soft_deleted_segment() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), config)?;
     for i in 0..2 {
         let mut d = Document::new();
-        d.add(stored_string("id", &i.to_string())?);
+        d.add(*stored_string("id", &i.to_string())?);
         writer.add_document(&d)?;
     }
     writer.flush()?;
@@ -753,7 +753,7 @@ fn test_drop_fully_soft_deleted_segment() -> Result<()> {
         // deleted docs).
         if random().next_boolean() {
             let mut tombstone = Document::new();
-            tombstone.add(Box::new(NumericDocValuesField::new(soft_delete, 1)));
+            tombstone.add(NumericDocValuesField::new(soft_delete, 1));
             writer.soft_update_document(
                 Term::from_text("id", "1"),
                 &tombstone,
@@ -761,7 +761,7 @@ fn test_drop_fully_soft_deleted_segment() -> Result<()> {
             )?;
         } else {
             let mut doc = Document::new();
-            doc.add(stored_string("id", "1")?);
+            doc.add(*stored_string("id", "1")?);
             if random().next_boolean() {
                 writer.soft_update_document(
                     Term::from_text("id", "1"),
@@ -775,7 +775,7 @@ fn test_drop_fully_soft_deleted_segment() -> Result<()> {
         }
     } else {
         let mut d = Document::new();
-        d.add(stored_string("id", "1")?);
+        d.add(*stored_string("id", "1")?);
         writer.add_document(&d)?;
         writer.delete_documents_by_terms(vec![Term::from_text("id", "1")])?;
     }
@@ -877,14 +877,14 @@ fn test_soft_delete_while_merge_survives() -> Result<()> {
     let pre_existing_deletes = random().next_boolean();
     for i in 0..2 {
         let mut d = Document::new();
-        d.add(stored_string("id", &i.to_string())?);
+        d.add(*stored_string("id", &i.to_string())?);
         if pre_existing_deletes && random().next_boolean() {
             writer.add_document(&d)?; // randomly add a preexisting hard-delete that we don't carry over
             writer.delete_documents_by_terms(vec![Term::from_text("id", &i.to_string())])?;
-            d.add(Box::new(NumericDocValuesField::new("keep", 1)));
+            d.add(NumericDocValuesField::new("keep", 1));
             writer.add_document(&d)?;
         } else {
-            d.add(Box::new(NumericDocValuesField::new("keep", 1)));
+            d.add(NumericDocValuesField::new("keep", 1));
             writer.add_document(&d)?;
         }
         writer.flush()?;
@@ -918,15 +918,15 @@ fn test_delete_doc_while_merge_that_is_soft_deleted() -> Result<()> {
     config.set_merge_policy(Some(log_doc()))?;
     let writer = IndexWriter::new(dir.as_directory(), config)?;
     let mut d = Document::new();
-    d.add(stored_string("id", "0")?);
+    d.add(*stored_string("id", "0")?);
     writer.add_document(&d)?;
     let mut d = Document::new();
-    d.add(stored_string("id", "1")?);
+    d.add(*stored_string("id", "1")?);
     writer.add_document(&d)?;
     if random().next_boolean() {
         // randomly run with a preexisting hard delete
         let mut d = Document::new();
-        d.add(stored_string("id", "2")?);
+        d.add(*stored_string("id", "2")?);
         writer.add_document(&d)?;
         writer.delete_documents_by_terms(vec![Term::from_text("id", "2")])?;
     }
@@ -998,11 +998,11 @@ fn test_undelete_document() -> Result<()> {
     config.set_merge_policy(Some(log_doc()))?;
     let writer = IndexWriter::new(dir.as_directory(), config)?;
     let mut d = Document::new();
-    d.add(stored_string("id", "0")?);
-    d.add(stored_string("seq_id", "0")?);
+    d.add(*stored_string("id", "0")?);
+    d.add(*stored_string("seq_id", "0")?);
     writer.add_document(&d)?;
     let mut d = Document::new();
-    d.add(stored_string("id", "1")?);
+    d.add(*stored_string("id", "1")?);
     writer.add_document(&d)?;
     writer.update_doc_values(Term::from_text("id", "0"), &[ndv("soft_delete", 1)?])?;
     check_counts(&writer, 2, 1)?;
@@ -1032,11 +1032,11 @@ fn test_merge_soft_delete_and_hard_delete() -> Result<()> {
     config.set_reader_pooling(true);
     let writer = IndexWriter::new(dir.as_directory(), config)?;
     let mut d = Document::new();
-    d.add(stored_string("id", "0")?);
+    d.add(*stored_string("id", "0")?);
     writer.add_document(&d)?;
     let mut d = Document::new();
-    d.add(stored_string("id", "1")?);
-    d.add(Box::new(NumericDocValuesField::new("soft_delete", 1)));
+    d.add(*stored_string("id", "1")?);
+    d.add(NumericDocValuesField::new("soft_delete", 1));
     writer.add_document(&d)?;
     check_counts(&writer, 2, 1)?;
     loop {
@@ -1087,7 +1087,7 @@ fn test_soft_delete_with_try_update_doc_value() -> Result<()> {
         None,
     )?;
     let mut d = Document::new();
-    d.add(stored_string("id", "0")?);
+    d.add(*stored_string("id", "0")?);
     writer.add_document(&d)?;
     sm.maybe_refresh_blocking()?;
     do_update(
@@ -1128,7 +1128,7 @@ fn test_mixed_soft_deletes_and_hard_deletes() -> Result<()> {
     for i in 0..num_docs {
         let id = i.to_string();
         let mut doc = Document::new();
-        doc.add(stored_string("id", &id)?);
+        doc.add(*stored_string("id", &id)?);
         writer.add_document(&doc)?;
         live_docs.add(id);
     }
@@ -1143,7 +1143,7 @@ fn test_mixed_soft_deletes_and_hard_deletes() -> Result<()> {
                 )?;
             } else {
                 let mut doc = Document::new();
-                doc.add(stored_string("id", &format!("v{id}"))?);
+                doc.add(*stored_string("id", &format!("v{id}"))?);
                 writer.soft_update_document(
                     Term::from_text("id", &id),
                     &doc,
@@ -1199,10 +1199,10 @@ fn test_rewrite_retention_query() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), config)?;
 
     let mut d = Document::new();
-    d.add(stored_string("id", "foo-1")?);
+    d.add(*stored_string("id", "foo-1")?);
     writer.add_document(&d)?;
     let mut d = Document::new();
-    d.add(stored_string("id", "foo-2")?);
+    d.add(*stored_string("id", "foo-2")?);
     writer.soft_update_document(
         Term::from_text("id", "foo-1"),
         &d,
@@ -1210,9 +1210,9 @@ fn test_rewrite_retention_query() -> Result<()> {
     )?;
 
     let mut d = Document::new();
-    d.add(stored_string("id", "bar-1")?);
+    d.add(*stored_string("id", "bar-1")?);
     writer.add_document(&d)?;
-    d.add(stored_string("id", "bar-2")?);
+    d.add(*stored_string("id", "bar-2")?);
     writer.soft_update_document(
         Term::from_text("id", "bar-1"),
         &d,

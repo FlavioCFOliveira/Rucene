@@ -170,11 +170,11 @@ fn demo_test_demo() -> Result<()> {
                 IndexWriterConfig::with_analyzer(Some(analyzer)),
             )?;
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_text_field(
+            doc.add(LuceneTestCase::new_text_field(
                 "fieldname",
                 &text,
                 Store::YES,
-            )));
+            ));
             iw.add_document(&doc)?;
             iw.close()?;
         }
@@ -303,21 +303,21 @@ fn external_codecs_test_per_field_codec() -> Result<()> {
     let w = IndexWriter::new(dir.as_directory(), config)?;
     let mut doc = Document::new();
     // uses default codec:
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field1",
         "this field uses the standard codec as the test",
         Store::NO,
-    )));
+    ));
     // uses memory codec:
     let field2 = LuceneTestCase::new_text_field(
         "field2",
         "this field uses the memory codec as the test",
         Store::NO,
     );
-    doc.add(Box::new(field2));
+    doc.add(field2);
 
     let id_field = LuceneTestCase::new_string_field("id", "", Store::NO);
-    doc.add(Box::new(id_field));
+    doc.add(id_field);
 
     for i in 0..num_docs {
         doc.get_field_mut_as::<Field>("id")
@@ -519,7 +519,7 @@ fn merge_scheduler_external_test_subclass_concurrent_merge_scheduler() -> Result
 
     let mut doc = Document::new();
     let id_field = LuceneTestCase::new_string_field("id", "", Store::YES);
-    doc.add(Box::new(id_field));
+    doc.add(id_field);
 
     let merge_scheduler = my_merge_scheduler();
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
@@ -695,16 +695,16 @@ fn do_test_duplicates(
 
     for j in 0..max_docs {
         let mut d = Document::new();
-        d.add(Box::new(LuceneTestCase::new_text_field(
+        d.add(LuceneTestCase::new_text_field(
             PRIORITY_FIELD,
             HIGH_PRIORITY,
             Store::YES,
-        )));
-        d.add(Box::new(StoredField::new_number(
+        ));
+        d.add(StoredField::new_number(
             ID_FIELD,
             rucene::document::NumericValue::Int(j),
-        )?));
-        d.add(Box::new(NumericDocValuesField::new(ID_FIELD, j as i64)));
+        )?);
+        d.add(NumericDocValuesField::new(ID_FIELD, j as i64));
         writer.add_document(&d)?;
     }
     writer.close()?;
@@ -859,12 +859,8 @@ fn do_test_search(random: &dyn Random, out: &mut String, use_compound_file: bool
     ];
     for (j, text) in docs.iter().enumerate() {
         let mut d = Document::new();
-        d.add(Box::new(LuceneTestCase::new_text_field(
-            "contents",
-            text,
-            Store::YES,
-        )));
-        d.add(Box::new(NumericDocValuesField::new("id", j as i64)));
+        d.add(LuceneTestCase::new_text_field("contents", text, Store::YES));
+        d.add(NumericDocValuesField::new("id", j as i64));
         writer.add_document(&d)?;
     }
     writer.close()?;

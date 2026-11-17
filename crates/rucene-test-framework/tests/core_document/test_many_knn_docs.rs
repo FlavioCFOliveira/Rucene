@@ -52,11 +52,11 @@ fn test_same_vector_indexed_multiple_times() -> Result<()> {
         let written = (|| -> Result<()> {
             for j in 1..=100_000 {
                 let mut doc = Document::new();
-                doc.add(Box::new(KnnFloatVectorField::new(
+                doc.add(KnnFloatVectorField::new(
                     "field",
                     &vector,
                     VectorSimilarityFunction::DOT_PRODUCT,
-                )?));
+                )?);
                 w.add_document(&doc)?;
                 if j % 1000 == 0 {
                     w.flush()?;
@@ -103,11 +103,11 @@ fn test_large_segment() -> Result<()> {
         for i in 0..num_vectors {
             vector[0] = (i % 256) as f32;
             let mut doc = Document::new();
-            doc.add(Box::new(KnnFloatVectorField::new(
+            doc.add(KnnFloatVectorField::new(
                 field_name,
                 &vector,
                 similarity_function,
-            )?));
+            )?);
             iw.add_document(&doc)?;
         }
 

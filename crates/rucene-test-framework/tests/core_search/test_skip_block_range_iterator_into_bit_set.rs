@@ -173,22 +173,19 @@ fn into_bit_set_set_up(f: &mut IntoBitSet) -> Result<()> {
     for i in 0..DOC_COUNT as usize {
         f.values[i] = (i % 100) as i64; // deterministic: 0..99 repeating
         let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::indexed_field(
-            "age",
-            f.values[i],
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+        doc.add(NumericDocValuesField::indexed_field("age", f.values[i]));
+        doc.add(SortedNumericDocValuesField::indexed_field(
             "multi_age",
             f.values[i] - 1000,
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+        ));
+        doc.add(SortedNumericDocValuesField::indexed_field(
             "multi_age",
             f.values[i],
-        )));
-        doc.add(Box::new(NumericDocValuesField::indexed_field(
+        ));
+        doc.add(NumericDocValuesField::indexed_field(
             "score",
             (i as i64 * 7) % 1000,
-        )));
+        ));
         w.add_document(&doc)?;
     }
     w.force_merge(1)?;
@@ -622,9 +619,7 @@ fn do_test_into_bit_set_sparse_field(num_docs: i32) -> Result<()> {
             if i % 2 == 0 {
                 // All values within [20, 40] so blocks are YES_IF_PRESENT (not MAYBE)
                 let val = 20 + i64::from(i % 21);
-                doc.add(Box::new(NumericDocValuesField::indexed_field(
-                    "sparse", val,
-                )));
+                doc.add(NumericDocValuesField::indexed_field("sparse", val));
                 expected_docs.push(i);
             }
             w.add_document(&doc)?;
@@ -803,10 +798,10 @@ fn build_index(dir: &Arc<dyn Directory>, num_docs: i32) -> Result<()> {
     let result = (|| -> Result<()> {
         for i in 0..num_docs {
             let mut doc = Document::new();
-            doc.add(Box::new(NumericDocValuesField::indexed_field(
+            doc.add(NumericDocValuesField::indexed_field(
                 "age",
                 i64::from(i % 100),
-            )));
+            ));
             w.add_document(&doc)?;
         }
         w.force_merge(1)
@@ -950,10 +945,10 @@ fn test_range_into_bit_set_matches_per_doc_evaluation(_f: &mut IntoBitSet) -> Re
                 let written = (|| -> Result<()> {
                     for _i in 0..num_docs {
                         let mut doc = Document::new();
-                        doc.add(Box::new(NumericDocValuesField::indexed_field(
+                        doc.add(NumericDocValuesField::indexed_field(
                             "val",
                             rng.next_long_range(0, max_value),
-                        )));
+                        ));
                         w.add_document(&doc)?;
                     }
                     w.force_merge(1)
@@ -1055,10 +1050,10 @@ fn do_test_sorted_numeric_range_into_bit_set(dense: bool, fixed_cardinality: boo
                         };
                         let first_value = (i64::from(doc_id) * 13) % 100;
                         for i in 0..value_count {
-                            doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+                            doc.add(SortedNumericDocValuesField::indexed_field(
                                 "sn",
                                 first_value + i64::from(i) * 3,
-                            )));
+                            ));
                         }
                     }
                     w.add_document(&doc)?;

@@ -361,12 +361,12 @@ fn test_add_batch_over_max_docs_rolls_back_reservations() -> Result<()> {
         // to the cap and then verify the next addDocument is the one that fails.
         for i in 0..MAX_DOCS {
             let mut doc = Document::new();
-            doc.add(Box::new(NumericDocValuesField::new("v", i as i64)));
+            doc.add(NumericDocValuesField::new("v", i as i64));
             c.w.add_document(&doc)?;
         }
         let overflow = expect_throws(IAE, || {
             let mut doc = Document::new();
-            doc.add(Box::new(NumericDocValuesField::new("v", 999)));
+            doc.add(NumericDocValuesField::new("v", 999));
             c.w.add_document(&doc)
         });
         let message = overflow.message().unwrap_or_default().to_string();
@@ -720,11 +720,11 @@ fn test_sparse_batch_matches_doc_by_doc() -> Result<()> {
         for d in 0..total_docs {
             let mut doc = Document::new();
             if next < doc_ids.len() && doc_ids[next] == d {
-                doc.add(Box::new(StringField::new(
+                doc.add(StringField::new(
                     "field",
                     values[next].to_string(),
                     Store::YES,
-                )?));
+                )?);
                 next += 1;
             }
             single_w.add_document(&doc)?;
@@ -980,7 +980,7 @@ fn test_long_tuple_cursor_throw_mid_batch_recovers() -> Result<()> {
         vec![ArrayLongColumn::new("v", ndv(), recovery_ids, recovery_vals)?.into()],
     ))?;
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("v", 999)));
+    doc.add(NumericDocValuesField::new("v", 999));
     c.w.add_document(&doc)?;
 
     // The failed batch's 5 reserved doc-ids are all marked deleted, the resulting
@@ -1019,7 +1019,7 @@ fn test_long_values_cursor_throw_mid_batch_recovers() -> Result<()> {
 
     // Recovery via a single addDocument followed by another addBatch.
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("v", 777)));
+    doc.add(NumericDocValuesField::new("v", 777));
     c.w.add_document(&doc)?;
     let recovery_ids = vec![0, 1];
     let recovery_vals = vec![111i64, 222];
@@ -1303,14 +1303,14 @@ fn test_add_batch_interleaved_with_add_document() -> Result<()> {
         vec![ArrayLongColumn::new("v", ndv(), vec![0, 1, 2], vec![10, 20, 30])?.into()],
     ))?;
     let mut d3 = Document::new();
-    d3.add(Box::new(NumericDocValuesField::new("v", 40)));
+    d3.add(NumericDocValuesField::new("v", 40));
     c.w.add_document(&d3)?;
     c.add_batch(&simple_batch(
         2,
         vec![ArrayLongColumn::new("v", ndv(), vec![0, 1], vec![50, 60])?.into()],
     ))?;
     let mut d6 = Document::new();
-    d6.add(Box::new(NumericDocValuesField::new("v", 70)));
+    d6.add(NumericDocValuesField::new("v", 70));
     c.w.add_document(&d6)?;
 
     c.w.force_merge(1)?;
@@ -1395,7 +1395,7 @@ fn test_force_merge_mixed_origin_segments() -> Result<()> {
     // Segment A via addDocument: values 10, 20, 30.
     for i in 0..3i64 {
         let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::new("v", 10 * (i + 1))));
+        doc.add(NumericDocValuesField::new("v", 10 * (i + 1)));
         c.w.add_document(&doc)?;
     }
     c.w.commit()?;
@@ -1569,40 +1569,30 @@ fn build_doc_by_doc_index(
     for d in docs {
         let mut doc = Document::new();
         if let Some(num) = d.num {
-            doc.add(Box::new(NumericDocValuesField::new("num", num)));
+            doc.add(NumericDocValuesField::new("num", num));
         }
         if let Some(snum) = &d.snum {
             for &v in snum {
-                doc.add(Box::new(SortedNumericDocValuesField::new("snum", v)));
+                doc.add(SortedNumericDocValuesField::new("snum", v));
             }
         }
         if let Some(bin_stored) = &d.bin_stored {
-            doc.add(Box::new(BinaryDocValuesField::new(
-                "bin_stored",
-                bin_stored.clone(),
-            )));
-            doc.add(Box::new(StoredField::new_bytes(
-                "bin_stored",
-                bin_stored.clone(),
-            )?));
+            doc.add(BinaryDocValuesField::new("bin_stored", bin_stored.clone()));
+            doc.add(StoredField::new_bytes("bin_stored", bin_stored.clone())?);
         }
         if let Some(set) = &d.set {
             for v in set {
-                doc.add(Box::new(SortedSetDocValuesField::new("set", v.clone())));
+                doc.add(SortedSetDocValuesField::new("set", v.clone()));
             }
         }
         if let Some(lpoint) = d.lpoint {
-            doc.add(Box::new(LongPoint::new("lpoint", &[lpoint])?));
+            doc.add(LongPoint::new("lpoint", &[lpoint])?);
         }
         if let Some(tag) = &d.tag {
-            doc.add(Box::new(StringField::new_with_bytes(
-                "tag",
-                tag.clone(),
-                Store::NO,
-            )?));
+            doc.add(StringField::new_with_bytes("tag", tag.clone(), Store::NO)?);
         }
         if let Some(vec) = &d.vec {
-            doc.add(Box::new(KnnFloatVectorField::with_euclidean("vec", vec)?));
+            doc.add(KnnFloatVectorField::with_euclidean("vec", vec)?);
         }
         w.add_document(&doc)?;
     }

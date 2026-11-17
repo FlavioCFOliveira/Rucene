@@ -395,7 +395,7 @@ fn test_compose_mixed_with_add_document() -> Result<()> {
     })?;
     // doc 0 via addDocument establishes the FieldInfo (and the frozen-field fast path).
     let mut doc = Document::new();
-    doc.add(Box::new(Field::new("body", "alpha".to_string(), combined)?));
+    doc.add(Field::new("body", "alpha".to_string(), combined)?);
     c.w.add_document(&doc)?;
     // doc 1 via a composed batch for the same field name, in the same segment.
     c.add_batch(&simple_batch(

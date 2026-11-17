@@ -60,41 +60,37 @@ fn block(b: i32) -> Vec<Document> {
     for k in 0..size {
         let i = b * 10 + k;
         let mut d = Document::new();
-        d.add(Box::new(
-            StringField::new("id", format!("id{i}"), Store::YES).unwrap(),
-        ));
-        d.add(Box::new(
-            TextField::new("body", format!("w{} x{}", i % 7, b % 5), Store::NO).unwrap(),
-        ));
-        d.add(Box::new(SortedDocValuesField::new(
+        d.add(StringField::new("id", format!("id{i}"), Store::YES).unwrap());
+        d.add(TextField::new("body", format!("w{} x{}", i % 7, b % 5), Store::NO).unwrap());
+        d.add(SortedDocValuesField::new(
             "kind",
             bytes(format!("k{}", i % 6)),
-        )));
-        d.add(Box::new(BinaryDocValuesField::new(
+        ));
+        d.add(BinaryDocValuesField::new(
             "blob",
             bytes(format!("b{}", i * 31 % 97)),
-        )));
-        d.add(Box::new(SortedNumericDocValuesField::new(
+        ));
+        d.add(SortedNumericDocValuesField::new(
             "multi",
             i64::from((i * 13) % 50),
-        )));
-        d.add(Box::new(SortedNumericDocValuesField::new(
+        ));
+        d.add(SortedNumericDocValuesField::new(
             "multi",
             i64::from((i * 7) % 50),
-        )));
-        d.add(Box::new(SortedSetDocValuesField::new(
+        ));
+        d.add(SortedSetDocValuesField::new(
             "tags",
             bytes(format!("t{}", i % 4)),
-        )));
-        d.add(Box::new(SortedSetDocValuesField::new(
+        ));
+        d.add(SortedSetDocValuesField::new(
             "tags",
             bytes(format!("t{}", i % 3)),
-        )));
+        ));
         if k == size - 1 {
-            d.add(Box::new(NumericDocValuesField::new(
+            d.add(NumericDocValuesField::new(
                 "rank",
                 (i64::from(b) * 7919) % 101,
-            )));
+            ));
         }
         docs.push(d);
     }

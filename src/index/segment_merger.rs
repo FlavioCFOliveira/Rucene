@@ -578,9 +578,7 @@ mod tests {
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for i in 0..segments {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StoredField::new_string("id", format!("doc-{i}")).unwrap(),
-            ));
+            doc.add(StoredField::new_string("id", format!("doc-{i}")).unwrap());
             writer.add_document(&doc).unwrap();
             writer.commit().unwrap();
         }
@@ -601,10 +599,10 @@ mod tests {
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..segments {
             let mut doc = Document::new();
-            doc.add(Box::new(SortedDocValuesField::new(
+            doc.add(SortedDocValuesField::new(
                 "id",
                 BytesRef::new(format!("doc-{i}").into_bytes()),
-            )));
+            ));
             writer.add_document(&doc).unwrap();
             writer.commit().unwrap();
         }
@@ -1030,10 +1028,8 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StoredField::new_string("stored", "x".to_string()).unwrap(),
-        ));
-        doc.add(Box::new(NumericDocValuesField::new("numeric", 1)));
+        doc.add(StoredField::new_string("stored", "x".to_string()).unwrap());
+        doc.add(NumericDocValuesField::new("numeric", 1));
         writer.add_document(&doc).unwrap();
         writer.close().unwrap();
         let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
@@ -1142,9 +1138,7 @@ mod tests {
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for i in 0..2 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", format!("doc-{i}"), Store::NO).unwrap(),
-            ));
+            doc.add(StringField::new("id", format!("doc-{i}"), Store::NO).unwrap());
             writer.add_document(&doc).unwrap();
             writer.commit().unwrap();
         }
@@ -1236,18 +1230,12 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            KnnFloatVectorField::with_euclidean("v1", &[0.0, 1.0]).unwrap(),
-        ));
-        doc.add(Box::new(
-            KnnFloatVectorField::with_euclidean("v2", &[1.0, 0.0]).unwrap(),
-        ));
+        doc.add(KnnFloatVectorField::with_euclidean("v1", &[0.0, 1.0]).unwrap());
+        doc.add(KnnFloatVectorField::with_euclidean("v2", &[1.0, 0.0]).unwrap());
         writer.add_document(&doc).unwrap();
         writer.commit().unwrap();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            KnnFloatVectorField::with_euclidean("v1", &[0.0, 2.0]).unwrap(),
-        ));
+        doc.add(KnnFloatVectorField::with_euclidean("v1", &[0.0, 2.0]).unwrap());
         writer.add_document(&doc).unwrap();
         writer.commit().unwrap();
         writer.close().unwrap();
@@ -1309,14 +1297,10 @@ mod tests {
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for i in 0..5i32 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", format!("doc-{i}"), Store::NO).unwrap(),
-            ));
-            doc.add(Box::new(IntPoint::new("rank", &[i * 3]).unwrap()));
-            doc.add(Box::new(NumericDocValuesField::new("dv", i64::from(i) * 7)));
-            doc.add(Box::new(
-                KnnFloatVectorField::with_euclidean("v", &[i as f32, 1.0]).unwrap(),
-            ));
+            doc.add(StringField::new("id", format!("doc-{i}"), Store::NO).unwrap());
+            doc.add(IntPoint::new("rank", &[i * 3]).unwrap());
+            doc.add(NumericDocValuesField::new("dv", i64::from(i) * 7));
+            doc.add(KnnFloatVectorField::with_euclidean("v", &[i as f32, 1.0]).unwrap());
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();

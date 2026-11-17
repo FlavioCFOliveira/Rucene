@@ -62,11 +62,7 @@ fn test_basics_filter() -> Result<()> {
 fn string_doc(field: &str, values: &[&str]) -> Result<Document> {
     let mut doc = Document::new();
     for value in values {
-        doc.add(Box::new(StringField::new(
-            field,
-            value.to_string(),
-            Store::NO,
-        )?));
+        doc.add(StringField::new(field, value.to_string(), Store::NO)?);
     }
     Ok(doc)
 }
@@ -188,9 +184,9 @@ fn test_max_block() -> Result<()> {
     for i in 0..1024 {
         // create documents with an increasing number of As and one B
         let mut doc = Document::new();
-        doc.add(Box::new(term_freq_field("a", i + 1, &ft)?));
+        doc.add(term_freq_field("a", i + 1, &ft)?);
         if random().next_float() < 0.5 {
-            doc.add(Box::new(term_freq_field("b", 1, &ft)?));
+            doc.add(term_freq_field("b", 1, &ft)?);
         }
         w.add_document(&doc)?;
     }
@@ -365,13 +361,13 @@ fn do_test_random(req_occur: Occur, opt_freq: f64) -> Result<()> {
         };
         let mut doc = Document::new();
         for _j in 0..num_as {
-            doc.add(Box::new(StringField::new("f", "A".to_string(), Store::NO)?));
+            doc.add(StringField::new("f", "A".to_string(), Store::NO)?);
         }
         for _j in 0..num_bs {
-            doc.add(Box::new(StringField::new("f", "B".to_string(), Store::NO)?));
+            doc.add(StringField::new("f", "B".to_string(), Store::NO)?);
         }
         if random().next_boolean() {
-            doc.add(Box::new(StringField::new("f", "C".to_string(), Store::NO)?));
+            doc.add(StringField::new("f", "C".to_string(), Store::NO)?);
         }
         w.add_document(&doc)?;
     }

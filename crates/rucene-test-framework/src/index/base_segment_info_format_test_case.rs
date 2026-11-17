@@ -215,10 +215,10 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// `addRandomFields(Document)`: the override a subclass's
     /// `add_random_fields` calls.
     fn segment_infos_add_random_fields(&self, doc: &mut Document) {
-        doc.add(Box::new(
+        doc.add(
             StoredField::new_string("foobar", TestUtil::random_simple_string(&*random()))
                 .unwrap_or_else(|e| rethrow(e)),
-        ));
+        );
     }
 
     /// `new SegmentInfo(dir, getVersions()[0], getVersions()[0], "_123", 1,

@@ -111,16 +111,16 @@ fn update(writer: &IndexWriter, next_id: &AtomicI32) -> Result<()> {
     for _ in 0..10 {
         let mut d = Document::new();
         let n = random().next_int();
-        d.add(Box::new(LuceneTestCase::new_field(
+        d.add(LuceneTestCase::new_field(
             "id",
             &next_id.fetch_add(1, Ordering::SeqCst).to_string(),
             &custom_type,
-        )));
-        d.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        d.add(LuceneTestCase::new_text_field(
             "contents",
             &English::int_to_english(n),
             Store::NO,
-        )));
+        ));
         writer.add_document(&d)?;
     }
 
@@ -261,11 +261,11 @@ fn init_index(dir: &Arc<dyn Directory>) -> Result<()> {
     for _ in 0..7 {
         let mut d = Document::new();
         let n = random().next_int();
-        d.add(Box::new(LuceneTestCase::new_text_field(
+        d.add(LuceneTestCase::new_text_field(
             "contents",
             &English::int_to_english(n),
             Store::NO,
-        )));
+        ));
         writer.add_document(&d)?;
     }
     writer.close()

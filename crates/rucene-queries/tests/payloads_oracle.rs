@@ -183,16 +183,12 @@ fn payload_index() -> OracleIndex {
     let docs: Vec<Document> = (0..num_docs)
         .map(|i| {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", format!("d{i}"), Store::YES).expect("id"),
-            ));
+            doc.add(StringField::new("id", format!("d{i}"), Store::YES).expect("id"));
             let n = 1 + random.next_int_bound(25);
             let text: Vec<&str> = (0..n).map(|_| word(&mut random)).collect();
             let text = text.join(" ");
             for field in FIELDS {
-                doc.add(Box::new(
-                    TextField::new(field, text.clone(), Store::NO).expect("a text field"),
-                ));
+                doc.add(TextField::new(field, text.clone(), Store::NO).expect("a text field"));
             }
             doc
         })

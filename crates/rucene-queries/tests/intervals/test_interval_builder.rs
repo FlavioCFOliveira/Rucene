@@ -271,11 +271,11 @@ fn test_empty_intervals() -> Result<()> {
     let directory = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         "field",
         "value",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     w.close()?;
 

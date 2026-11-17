@@ -459,10 +459,10 @@ impl DocValuesWrapper for SortedSetWrapper {
 fn numeric_skipper() -> TestDocValueSkipper {
     TestDocValueSkipper {
         populate_doc: |doc| {
-            doc.add(Box::new(NumericDocValuesField::indexed_field(
+            doc.add(NumericDocValuesField::indexed_field(
                 "test",
                 random().next_long(),
-            )));
+            ));
         },
         doc_values_wrapper: |leaf| {
             Ok(leaf
@@ -478,10 +478,10 @@ fn sorted_numeric_skipper() -> TestDocValueSkipper {
         populate_doc: |doc| {
             let mut j = 0;
             while j < random().next_int_range(1, 5) {
-                doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+                doc.add(SortedNumericDocValuesField::indexed_field(
                     "test",
                     random().next_long(),
-                )));
+                ));
                 j += 1;
             }
         },
@@ -501,10 +501,10 @@ fn sorted_numeric_skipper() -> TestDocValueSkipper {
 fn sorted_skipper() -> TestDocValueSkipper {
     TestDocValueSkipper {
         populate_doc: |doc| {
-            doc.add(Box::new(SortedDocValuesField::indexed_field(
+            doc.add(SortedDocValuesField::indexed_field(
                 "test",
                 TestUtil::random_binary_term(&*random()),
-            )));
+            ));
         },
         doc_values_wrapper: |leaf| {
             Ok(leaf
@@ -520,10 +520,10 @@ fn sorted_set_skipper() -> TestDocValueSkipper {
         populate_doc: |doc| {
             let mut j = 0;
             while j < random().next_int_range(1, 5) {
-                doc.add(Box::new(SortedSetDocValuesField::indexed_field(
+                doc.add(SortedSetDocValuesField::indexed_field(
                     "test",
                     TestUtil::random_binary_term(&*random()),
-                )));
+                ));
                 j += 1;
             }
         },
@@ -873,47 +873,41 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
                 RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
 
             let mut doc = Document::new();
-            doc.add(Box::new(NumericDocValuesField::indexed_field("numeric", 1)));
-            doc.add(Box::new(SortedDocValuesField::indexed_field(
-                "sorted",
-                nbr("a"),
-            )));
-            doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+            doc.add(NumericDocValuesField::indexed_field("numeric", 1));
+            doc.add(SortedDocValuesField::indexed_field("sorted", nbr("a")));
+            doc.add(SortedNumericDocValuesField::indexed_field(
                 "sorted_numeric",
                 1,
-            )));
-            doc.add(Box::new(SortedSetDocValuesField::indexed_field(
+            ));
+            doc.add(SortedSetDocValuesField::indexed_field(
                 "sorted_set",
                 nbr("a"),
-            )));
+            ));
             writer.add_document(&doc)?;
 
             let mut doc = Document::new();
-            doc.add(Box::new(NumericDocValuesField::indexed_field("numeric", 2)));
-            doc.add(Box::new(SortedDocValuesField::indexed_field(
-                "sorted",
-                nbr("b"),
-            )));
-            doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+            doc.add(NumericDocValuesField::indexed_field("numeric", 2));
+            doc.add(SortedDocValuesField::indexed_field("sorted", nbr("b")));
+            doc.add(SortedNumericDocValuesField::indexed_field(
                 "sorted_numeric",
                 1,
-            )));
-            doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+            ));
+            doc.add(SortedNumericDocValuesField::indexed_field(
                 "sorted_numeric",
                 2,
-            )));
-            doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+            ));
+            doc.add(SortedNumericDocValuesField::indexed_field(
                 "sorted_numeric",
                 3,
-            )));
-            doc.add(Box::new(SortedSetDocValuesField::indexed_field(
+            ));
+            doc.add(SortedSetDocValuesField::indexed_field(
                 "sorted_set",
                 nbr("a"),
-            )));
-            doc.add(Box::new(SortedSetDocValuesField::indexed_field(
+            ));
+            doc.add(SortedSetDocValuesField::indexed_field(
                 "sorted_set",
                 nbr("b"),
-            )));
+            ));
             writer.add_document(&doc)?;
 
             writer.force_merge(1)?;
@@ -1028,23 +1022,20 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
                     LuceneTestCase::new_index_writer_config(),
                 )?;
                 let mut doc = Document::new();
-                doc.add(Box::new(BinaryDocValuesField::new(
+                doc.add(BinaryDocValuesField::new(
                     "binary",
                     BytesRef::from_char_sequence("lucene"),
-                )));
-                doc.add(Box::new(NumericDocValuesField::new("numeric", 0)));
-                doc.add(Box::new(SortedDocValuesField::new(
+                ));
+                doc.add(NumericDocValuesField::new("numeric", 0));
+                doc.add(SortedDocValuesField::new(
                     "sorted",
                     BytesRef::from_char_sequence("search"),
-                )));
-                doc.add(Box::new(SortedNumericDocValuesField::new(
-                    "sorted_numeric",
-                    1,
-                )));
-                doc.add(Box::new(SortedSetDocValuesField::new(
+                ));
+                doc.add(SortedNumericDocValuesField::new("sorted_numeric", 1));
+                doc.add(SortedSetDocValuesField::new(
                     "sorted_set",
                     BytesRef::from_char_sequence("engine"),
-                )));
+                ));
                 w1.add_document(&doc)?;
 
                 dir2 = LuceneTestCase::new_directory();
@@ -1150,12 +1141,7 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
     /// `testRandomDenseNumericIntoBitSet()`.
     fn test_random_dense_numeric_into_bit_set(&self) -> Result<()> {
         self.do_test_random_into_bit_set(
-            &|doc| {
-                doc.add(Box::new(NumericDocValuesField::new(
-                    "num",
-                    random().next_long(),
-                )))
-            },
+            &|doc| doc.add(NumericDocValuesField::new("num", random().next_long())),
             &|reader| {
                 Ok(reader
                     .get_numeric_doc_values("num")?
@@ -1168,12 +1154,7 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
     /// `testRandomSparseNumericIntoBitSet()`.
     fn test_random_sparse_numeric_into_bit_set(&self) -> Result<()> {
         self.do_test_random_into_bit_set(
-            &|doc| {
-                doc.add(Box::new(NumericDocValuesField::new(
-                    "num",
-                    random().next_long(),
-                )))
-            },
+            &|doc| doc.add(NumericDocValuesField::new("num", random().next_long())),
             &|reader| {
                 Ok(reader
                     .get_numeric_doc_values("num")?
@@ -1193,14 +1174,14 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
     fn test_random_dense_sorted_numeric_into_bit_set(&self) -> Result<()> {
         self.do_test_random_into_bit_set(
             &|doc| {
-                doc.add(Box::new(SortedNumericDocValuesField::new(
+                doc.add(SortedNumericDocValuesField::new(
                     "num",
                     random().next_long(),
-                )));
-                doc.add(Box::new(SortedNumericDocValuesField::new(
+                ));
+                doc.add(SortedNumericDocValuesField::new(
                     "num",
                     random().next_long(),
-                )));
+                ));
             },
             &|reader| {
                 Ok(reader
@@ -1216,14 +1197,14 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
         let n = random().next_int_bound(50) + 1;
         self.do_test_random_into_bit_set(
             &|doc| {
-                doc.add(Box::new(SortedNumericDocValuesField::new(
+                doc.add(SortedNumericDocValuesField::new(
                     "num",
                     random().next_long(),
-                )));
-                doc.add(Box::new(SortedNumericDocValuesField::new(
+                ));
+                doc.add(SortedNumericDocValuesField::new(
                     "num",
                     random().next_long(),
-                )));
+                ));
             },
             &|reader| {
                 Ok(reader
@@ -1238,10 +1219,10 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
     fn test_random_dense_sorted_into_bit_set(&self) -> Result<()> {
         self.do_test_random_into_bit_set(
             &|doc| {
-                doc.add(Box::new(SortedDocValuesField::new(
+                doc.add(SortedDocValuesField::new(
                     "num",
                     BytesRef::from_char_sequence(&random().next_long().to_string()),
-                )))
+                ))
             },
             &|reader| {
                 Ok(reader
@@ -1257,10 +1238,10 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
         let n = random().next_int_bound(50) + 1;
         self.do_test_random_into_bit_set(
             &|doc| {
-                doc.add(Box::new(SortedDocValuesField::new(
+                doc.add(SortedDocValuesField::new(
                     "num",
                     BytesRef::from_char_sequence(&random().next_long().to_string()),
-                )))
+                ))
             },
             &|reader| {
                 Ok(reader
@@ -1275,14 +1256,14 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
     fn test_random_dense_sorted_set_into_bit_set(&self) -> Result<()> {
         self.do_test_random_into_bit_set(
             &|doc| {
-                doc.add(Box::new(SortedSetDocValuesField::new(
+                doc.add(SortedSetDocValuesField::new(
                     "num",
                     BytesRef::from_char_sequence(&random().next_long().to_string()),
-                )));
-                doc.add(Box::new(SortedSetDocValuesField::new(
+                ));
+                doc.add(SortedSetDocValuesField::new(
                     "num",
                     BytesRef::from_char_sequence(&random().next_long().to_string()),
-                )));
+                ));
             },
             &|reader| {
                 Ok(reader
@@ -1298,14 +1279,14 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
         let n = random().next_int_bound(50) + 1;
         self.do_test_random_into_bit_set(
             &|doc| {
-                doc.add(Box::new(SortedSetDocValuesField::new(
+                doc.add(SortedSetDocValuesField::new(
                     "num",
                     BytesRef::from_char_sequence(&random().next_long().to_string()),
-                )));
-                doc.add(Box::new(SortedSetDocValuesField::new(
+                ));
+                doc.add(SortedSetDocValuesField::new(
                     "num",
                     BytesRef::from_char_sequence(&random().next_long().to_string()),
-                )));
+                ));
             },
             &|reader| {
                 Ok(reader
@@ -1322,10 +1303,7 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
             &|doc| {
                 let mut bytes = vec![0u8; 10];
                 random().next_bytes(&mut bytes);
-                doc.add(Box::new(BinaryDocValuesField::new(
-                    "num",
-                    BytesRef::new(bytes),
-                )));
+                doc.add(BinaryDocValuesField::new("num", BytesRef::new(bytes)));
             },
             &|reader| {
                 Ok(reader
@@ -1343,10 +1321,7 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
             &|doc| {
                 let mut bytes = vec![0u8; 10];
                 random().next_bytes(&mut bytes);
-                doc.add(Box::new(BinaryDocValuesField::new(
-                    "num",
-                    BytesRef::new(bytes),
-                )));
+                doc.add(BinaryDocValuesField::new("num", BytesRef::new(bytes)));
             },
             &|reader| {
                 Ok(reader

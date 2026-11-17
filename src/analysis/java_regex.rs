@@ -35,7 +35,7 @@ pub use matcher::JavaMatcher;
 
 use std::collections::HashMap;
 use std::fmt::{self, Write as _};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 /// `Pattern.UNIX_LINES`, `(?d)`.
 pub const UNIX_LINES: u32 = 0x01;
@@ -126,16 +126,31 @@ impl PatternSyntaxError {
 /// match must span the whole input, as `matches()` requires. The dialect
 /// differences the translation cannot reproduce are declared on
 /// [`AbstractAnalysisFactory::get_pattern`](crate::analysis::factories::AbstractAnalysisFactory::get_pattern).
+///
+/// A clone shares everything it holds with the original (each field is
+/// shared or copied), as a Java `Matcher` refers to its `Pattern`.
 #[derive(Debug, Clone)]
 pub struct JavaPattern {
-    regex: String,
+    regex: Arc<str>,
     flags: u32,
-    whole: fancy_regex::Regex,
+    /// The translation anchored at both ends, which only `matches()` runs:
+    /// built on its first use and shared by every clone (see
+    /// [`whole_regex`](Self::whole_regex)).
+    whole: Arc<OnceLock<fancy_regex::Regex>>,
     find: fancy_regex::Regex,
+    /// A pattern matching wherever `find` can match (see
+    /// [`may_match_from`](Self::may_match_from)); `None` when the
+    /// translation has no such pattern. Derived on the first search and
+    /// shared by every clone, so a pattern never searched costs nothing.
+    precheck: Arc<OnceLock<Option<Precheck>>>,
     /// The number of capturing groups, `Matcher.groupCount()`.
     group_count: usize,
     /// The named groups and their numbers, `Pattern.namedGroups()`.
-    named_groups: HashMap<String, usize>,
+    // PERF: shared, as `regex` is, because `matcher` clones the pattern for
+    // each matcher, where Java's `Matcher` refers to its `Pattern`: copying
+    // the string and the map was about 2.5 % of the analysis of a one-word
+    // query (profile of task #546, round 3).
+    named_groups: Arc<HashMap<String, usize>>,
 }
 
 impl JavaPattern {
@@ -151,17 +166,21 @@ impl JavaPattern {
     /// `PatternSyntaxException`, or where the pattern needs a construct the
     /// translation or the engine cannot reproduce.
     pub fn compile(regex: &str, flags: u32) -> Result<Self, PatternSyntaxError> {
-        let build = |pattern: &str| -> Result<(fancy_regex::Regex, fancy_regex::Regex), fancy_regex::Error> {
-            let whole = fancy_regex::RegexBuilder::new(&format!(r"\A(?:{pattern})\z"))
-                .backtrack_limit(usize::MAX)
-                .build()?;
+        // PERF: `Pattern.compile` builds one node tree for `find()` and
+        // `matches()`. The engine needs two programs, and the anchored one
+        // is built on the first `matches()` (most callers only `find()`).
+        // What is checked here instead is that it parses: the anchors add a
+        // group, so a translation nested to the engine's limit parses
+        // unanchored but not anchored, and `compile` refuses it as before.
+        let build = |pattern: &str| -> Result<fancy_regex::Regex, fancy_regex::Error> {
             let find = fancy_regex::RegexBuilder::new(pattern)
                 .backtrack_limit(usize::MAX)
                 .build()?;
-            Ok((whole, find))
+            fancy_regex::Expr::parse_tree(&whole_pattern(pattern))?;
+            Ok(find)
         };
         let translation = translate_for_engine_with_flags(regex, flags, false)?;
-        let (whole, find) = match build(&translation.pattern) {
+        let find = match build(&translation.pattern) {
             Ok(compiled) => compiled,
             Err(engine) => {
                 // A counted repetition the engine's automaton cannot hold is
@@ -174,12 +193,13 @@ impl JavaPattern {
             }
         };
         Ok(Self {
-            regex: regex.to_string(),
+            regex: Arc::from(regex),
             flags,
-            whole,
+            whole: Arc::new(OnceLock::new()),
             find,
+            precheck: Arc::new(OnceLock::new()),
             group_count: translation.group_count,
-            named_groups: translation.named_groups,
+            named_groups: Arc::new(translation.named_groups),
         })
     }
 
@@ -200,9 +220,65 @@ impl JavaPattern {
         &self.find
     }
 
-    /// The compiled pattern a [`JavaMatcher`] matches the whole input with.
+    /// The compiled pattern a [`JavaMatcher`] matches the whole input with,
+    /// built from the translation `find` runs on the first call.
+    ///
+    /// The anchored form adds only the two anchors to a translation the
+    /// engine already took and `compile` checked to parse, so the engine can
+    /// refuse it only for its automaton size limit (10 MiB), when the
+    /// unanchored automaton sits within a few states of that limit. That
+    /// build is retried without the size limit: `Pattern.compile` accepted
+    /// the pattern, so `matches()` must answer rather than fail.
     pub(crate) fn whole_regex(&self) -> &fancy_regex::Regex {
-        &self.whole
+        self.whole.get_or_init(|| {
+            let anchored = whole_pattern(self.find.as_str());
+            fancy_regex::RegexBuilder::new(&anchored)
+                .backtrack_limit(usize::MAX)
+                .build()
+                .or_else(|_| {
+                    fancy_regex::RegexBuilder::new(&anchored)
+                        .backtrack_limit(usize::MAX)
+                        .delegate_size_limit(usize::MAX)
+                        .build()
+                })
+                .expect("INVARIANT: the anchored translation parses (checked by `compile`)")
+        })
+    }
+
+    /// The pre-check, derived on the first call (see `superset_precheck`).
+    fn precheck(&self) -> Option<&Precheck> {
+        self.precheck
+            .get_or_init(|| superset_precheck(self.find.as_str()))
+            .as_ref()
+    }
+
+    /// Whether `find` can match in `haystack` at or after byte `pos`: false
+    /// only when it cannot.
+    ///
+    /// The answer comes from the pre-check (see `superset_precheck`), which
+    /// matches wherever `find` matches: a literal searched as a substring,
+    /// or a pattern the engine runs as a plain automaton, without the set-up
+    /// of its backtracking machine; a pattern with no pre-check may always
+    /// match.
+    pub(crate) fn may_match_from(&self, haystack: &str, pos: usize) -> bool {
+        match self.precheck() {
+            Some(Precheck::Literal(literal)) => match haystack.get(pos..) {
+                Some(rest) => contains_literal(rest, literal),
+                // Not reached: the matcher searches from a character
+                // boundary. A byte search answers the same: the UTF-8 bytes
+                // of a literal match a valid haystack only at a boundary.
+                None => {
+                    literal.is_empty()
+                        || haystack.as_bytes()[pos..]
+                            .windows(literal.len())
+                            .any(|window| window == literal.as_bytes())
+                }
+            },
+            Some(Precheck::Automaton(precheck)) => precheck
+                .is_match_input(fancy_regex::RegexInput::new(haystack).from_pos(pos))
+                .expect("INVARIANT: the pre-check pattern runs no backtracking engine"),
+            None => true,
+        }
     }
 
     /// Creates a matcher that will match `input` against this pattern.
@@ -289,7 +365,7 @@ impl JavaPattern {
     /// When the engine fails at run time, which it cannot with no
     /// backtracking limit; Java's matcher would overflow its stack instead.
     pub fn matches(&self, input: &str) -> bool {
-        self.whole
+        self.whole_regex()
             .is_match(input)
             .expect("INVARIANT: the engine has no backtracking limit")
     }
@@ -314,6 +390,224 @@ impl JavaPattern {
                 .map(|i| captures.get(i).map(|m| m.as_str().to_string()))
                 .collect(),
         )
+    }
+}
+
+/// A pre-check: a necessary condition for a match of the translation from a
+/// position (see `superset_precheck`).
+#[derive(Debug)]
+enum Precheck {
+    /// The pre-check pattern matches exactly this string: a substring search
+    /// answers it, with no automaton built.
+    Literal(String),
+    /// The pre-check pattern, run by the engine as a plain automaton.
+    Automaton(fancy_regex::Regex),
+}
+
+/// Whether `needle` occurs in `haystack`: [`str::contains`], with a haystack
+/// too short for its vectorised search scanned here.
+///
+/// Both answer the same question by byte comparison (a valid UTF-8 needle
+/// occurs in a valid UTF-8 haystack only at character boundaries), so the
+/// answer is `str::contains`'s for every input.
+// PERF: for a haystack shorter than 16 bytes plus the needle,
+// `str::contains` compares every window through a `bcmp` call
+// (`core::str::pattern::simd_contains`); analysis tokens average about 6
+// bytes, and those calls were 8.9 % of the analysis of the CLI's documents
+// (profile of task #546, lane G). The scan tests the first byte inline and
+// compares the rest only where it matches.
+#[inline]
+fn contains_literal(haystack: &str, needle: &str) -> bool {
+    let (bytes, wanted) = (haystack.as_bytes(), needle.as_bytes());
+    if bytes.len() >= 16 + wanted.len() {
+        return haystack.contains(needle);
+    }
+    let Some((&first, rest)) = wanted.split_first() else {
+        return true;
+    };
+    let Some(last_start) = bytes.len().checked_sub(wanted.len()) else {
+        return false;
+    };
+    (0..=last_start).any(|start| {
+        bytes[start] == first
+            && bytes[start + 1..start + wanted.len()]
+                .iter()
+                .zip(rest)
+                .all(|(a, b)| a == b)
+    })
+}
+
+/// The translation `pattern` anchored at both ends of the input, the
+/// pattern `matches()` runs.
+fn whole_pattern(pattern: &str) -> String {
+    format!(r"\A(?:{pattern})\z")
+}
+
+/// The pre-check of the engine pattern `pattern`: a pattern with no
+/// look-around, assertion or atomic group, which therefore matches wherever
+/// `pattern` matches, or `None` when `pattern` holds a construct with no
+/// such counterpart.
+///
+/// **Soundness.** The pre-check is `pattern` with every assertion
+/// (`^`, `$`, `\A`, `\z`, `\b`, ...), every look-around, `\K` and `\G`
+/// replaced by the empty pattern, and every atomic group by a plain group.
+/// Each of those constructs only removes matches: a zero-width condition
+/// rejects positions, an atomic group forbids backtracking into it, `\K`
+/// and `\G` move or restrict a match's bounds. Every match of `pattern` that
+/// starts at or after a position is therefore a match of the pre-check from
+/// that position, and a pre-check with no match there proves `pattern` has
+/// none. Back references, conditionals, subroutine calls, backtracking
+/// verbs, absent operators, `.` and case-insensitive leaves (whose meaning
+/// is the backtracking engine's own) have no counterpart here, and give
+/// `None`; the translation spells classes out explicitly, so it writes
+/// neither `.` nor a case-insensitive leaf outside a back reference.
+/// The pre-check is written with `fancy-regex`'s own rendering of a plain
+/// pattern (`Expr::to_str`, which the engine uses to delegate such a
+/// pattern to its automaton), and is used only when reading it back gives
+/// the same plain pattern, so the engine runs exactly the tree derived here.
+///
+/// A pre-check made only of literal characters (see `literal_of`) matches
+/// exactly where that string occurs, and is kept as the string.
+fn superset_precheck(pattern: &str) -> Option<Precheck> {
+    let tree = fancy_regex::Expr::parse_tree(pattern).ok()?;
+    let superset = superset_expr(&tree.expr)?;
+    // PERF: a literal pre-check (`oes$` gives `[o][e][s]`) needs no
+    // automaton; building one cost a regex-automata build per pattern on the
+    // first search, a tenth of the analysis of a one-word query (profile of
+    // task #546, round 3).
+    if let Some(literal) = literal_of(&superset) {
+        return Some(Precheck::Literal(literal));
+    }
+    let mut rendered = String::new();
+    superset.to_str(&mut rendered, 0);
+    let reread = fancy_regex::Expr::parse_tree(&rendered).ok()?;
+    if !is_plain(&reread.expr) {
+        return None;
+    }
+    let mut rerendered = String::new();
+    reread.expr.to_str(&mut rerendered, 0);
+    if rerendered != rendered {
+        return None;
+    }
+    fancy_regex::RegexBuilder::new(&rendered)
+        .build()
+        .ok()
+        .map(Precheck::Automaton)
+}
+
+/// The string a plain pre-check pattern matches, when it matches exactly one
+/// string: a concatenation, possibly grouped, of case-sensitive literals, of
+/// classes of one code point (the translation writes a literal character as
+/// such a class, `[\x{6F}]`, which `fancy-regex` keeps as `[o]`) and of
+/// alternations whose branches all match the same string; `None` for
+/// anything else.
+fn literal_of(expr: &fancy_regex::Expr) -> Option<String> {
+    use fancy_regex::Expr;
+    match expr {
+        Expr::Empty => Some(String::new()),
+        Expr::Literal { val, casei: false } => Some(val.clone()),
+        Expr::Delegate {
+            inner,
+            casei: false,
+        } => one_code_point_class(inner).map(String::from),
+        Expr::Concat(children) => {
+            let mut literal = String::new();
+            for child in children {
+                literal.push_str(&literal_of(child)?);
+            }
+            Some(literal)
+        }
+        // An alternation of one string (`\b` leaves `(?:|)`) matches it.
+        Expr::Alt(children) => {
+            let (first, rest) = children.split_first()?;
+            let literal = literal_of(first)?;
+            for child in rest {
+                if literal_of(child)? != literal {
+                    return None;
+                }
+            }
+            Some(literal)
+        }
+        Expr::Group(child) => literal_of(child),
+        _ => None,
+    }
+}
+
+/// The code point of a `fancy-regex` class delegate that is the class of one
+/// code point, written `[c]` with `c` a letter or a digit, or `[\c]` with `c`
+/// an ASCII punctuation character (how `fancy-regex` writes a member that is
+/// a metacharacter); `None` for any other class.
+fn one_code_point_class(inner: &str) -> Option<char> {
+    let body = inner.strip_prefix('[')?.strip_suffix(']')?;
+    let mut chars = body.chars();
+    match (chars.next()?, chars.next(), chars.next()) {
+        (c, None, None) if c.is_alphanumeric() => Some(c),
+        ('\\', Some(c), None) if c.is_ascii_punctuation() => Some(c),
+        _ => None,
+    }
+}
+
+/// `expr` with its assertions, look-arounds, `\K` and `\G` replaced by the
+/// empty pattern and its atomic groups by plain ones; `None` when `expr`
+/// holds a construct with no plain counterpart. See `superset_precheck`.
+fn superset_expr(expr: &fancy_regex::Expr) -> Option<fancy_regex::Expr> {
+    use fancy_regex::Expr;
+    Some(match expr {
+        Expr::Empty => Expr::Empty,
+        Expr::Literal { casei: false, .. } | Expr::Delegate { casei: false, .. } => expr.clone(),
+        // An empty concatenation renders as `(?:)` under a quantifier, where
+        // `Expr::Empty` would render as nothing and bind the quantifier to
+        // the previous atom.
+        Expr::Assertion(_)
+        | Expr::LookAround(..)
+        | Expr::KeepOut
+        | Expr::ContinueFromPreviousMatchEnd => Expr::Concat(Vec::new()),
+        // The empty concatenations a removed node leaves are dropped from a
+        // concatenation, where they match the empty string at no cost, so
+        // the rendering reads back unchanged.
+        Expr::Concat(children) => {
+            let mut kept = Vec::with_capacity(children.len());
+            for child in children {
+                match superset_expr(child)? {
+                    Expr::Concat(empty) if empty.is_empty() => {}
+                    child => kept.push(child),
+                }
+            }
+            Expr::Concat(kept)
+        }
+        Expr::Alt(children) => {
+            Expr::Alt(children.iter().map(superset_expr).collect::<Option<_>>()?)
+        }
+        Expr::Group(child) => Expr::Group(Arc::new(superset_expr(child)?)),
+        // A one-element concatenation renders its child grouped wherever
+        // precedence needs it, as a non-capturing group.
+        Expr::AtomicGroup(child) => Expr::Concat(vec![superset_expr(child)?]),
+        Expr::Repeat {
+            child,
+            lo,
+            hi,
+            greedy,
+        } => Expr::Repeat {
+            child: Box::new(superset_expr(child)?),
+            lo: *lo,
+            hi: *hi,
+            greedy: *greedy,
+        },
+        _ => return None,
+    })
+}
+
+/// Whether `expr` is built only of the constructs a pre-check keeps.
+fn is_plain(expr: &fancy_regex::Expr) -> bool {
+    use fancy_regex::Expr;
+    match expr {
+        Expr::Empty | Expr::Literal { casei: false, .. } | Expr::Delegate { casei: false, .. } => {
+            true
+        }
+        Expr::Concat(children) | Expr::Alt(children) => children.iter().all(is_plain),
+        Expr::Group(child) => is_plain(child),
+        Expr::Repeat { child, .. } => is_plain(child),
+        _ => false,
     }
 }
 
@@ -965,8 +1259,21 @@ impl Parser {
             (false, true) => format!(r"(?:\z|(?={LINE_TERMINATORS}))(?!(?<=\r)\n)"),
             // At the end, or before a line terminator, `\r\n` included, that
             // ends the input; never between `\r` and `\n`.
+            //
+            //
+            // PERF: the look-ahead accepts what `(?=(?:\r\n|T)?\z)` accepts
+            // (`T` the line terminators): the end, one terminator then the
+            // end, or `\r\n` then the end. Each single character sits in an
+            // atomic group, which changes nothing (one character matches at
+            // most one way, so there is nothing to backtrack into) and nests
+            // no deeper than that form's `(?:`, but makes the body a construct
+            // `fancy-regex` compiles itself, matching the class natively.
+            // That form's body went whole to a regex-automata engine, whose
+            // non-ASCII class costs a UTF-8 automaton build on every compile:
+            // about 19 µs of the 34 µs of `oes$` (profile of task #546,
+            // round 3).
             (false, false) => {
-                format!(r"(?=(?:\r\n|{LINE_TERMINATORS})?\z)(?!(?<=\r)\n)")
+                format!(r"(?=(?>{LINE_TERMINATORS})?\z|\r(?>\n)\z)(?!(?<=\r)\n)")
             }
         })
     }
@@ -4041,6 +4348,568 @@ mod tests {
             (error.description.as_str(), error.index),
             ("Unknown character name [NOPE]", 7)
         );
+    }
+
+    /// Every `find()` of a matcher, with each group's bounds, until it fails.
+    fn finds(pattern: &JavaPattern, input: &[u16]) -> Vec<Vec<i32>> {
+        let mut matcher = pattern.matcher(input);
+        let mut found = Vec::new();
+        while matcher.find() {
+            found.push(
+                (0..=matcher.group_count() as i32)
+                    .flat_map(|g| {
+                        [
+                            matcher.start_group(g).expect("a match"),
+                            matcher.end_group(g).expect("a match"),
+                        ]
+                    })
+                    .collect(),
+            );
+        }
+        found
+    }
+
+    /// `$` and `\Z` outside `MULTILINE` and `UNIX_LINES` mode (Java's
+    /// `Dollar`), each row pinned to what JDK 25.0.5 printed for it (oracle
+    /// `DollarOracle.java` of rmp task #546, round 3): the end of the input,
+    /// before a final line terminator of each kind (`\r\n` as one), never
+    /// between `\r` and `\n`, never before a terminator that does not end
+    /// the input, and never before `\u{b}` or `\u{c}`. The matcher, with its
+    /// pre-check, finds the same matches.
+    #[test]
+    fn dollar_matches_the_jdk() {
+        let rows: &[(&str, &str, &str)] = &[
+            ("$", "", "OK|0:"),
+            ("$", "a", "OK|1:"),
+            ("$", "oes", "OK|3:"),
+            ("$", "a\u{a}", "OK|1:,2:"),
+            ("$", "a\u{d}", "OK|1:,2:"),
+            ("$", "a\u{d}\u{a}", "OK|1:,3:"),
+            ("$", "a\u{85}", "OK|1:,2:"),
+            ("$", "a\u{2028}", "OK|1:,2:"),
+            ("$", "a\u{2029}", "OK|1:,2:"),
+            ("$", "a\u{a}\u{a}", "OK|2:,3:"),
+            ("$", "a\u{d}\u{d}", "OK|2:,3:"),
+            ("$", "a\u{a}\u{d}", "OK|2:,3:"),
+            ("$", "\u{d}\u{a}", "OK|0:,2:"),
+            ("$", "\u{a}", "OK|0:,1:"),
+            ("$", "\u{d}", "OK|0:,1:"),
+            ("$", "a\u{b}", "OK|2:"),
+            ("$", "a\u{c}", "OK|2:"),
+            ("$", "oes\u{d}\u{a}", "OK|3:,5:"),
+            ("$", "oes\u{2029}", "OK|3:,4:"),
+            ("$", "contratacoes", "OK|12:"),
+            ("$", "a\u{a}b", "OK|3:"),
+            ("$", "b\u{d}\u{a}a\u{d}\u{a}", "OK|4:,6:"),
+            ("$", "ab\u{2028}", "OK|2:,3:"),
+            ("$", "x\u{85}", "OK|1:,2:"),
+            ("$", "y", "OK|1:"),
+            ("$", "a\u{d}\u{a}b", "OK|4:"),
+            ("a$", "", "OK|"),
+            ("a$", "a", "OK|0:61"),
+            ("a$", "oes", "OK|"),
+            ("a$", "a\u{a}", "OK|0:61"),
+            ("a$", "a\u{d}", "OK|0:61"),
+            ("a$", "a\u{d}\u{a}", "OK|0:61"),
+            ("a$", "a\u{85}", "OK|0:61"),
+            ("a$", "a\u{2028}", "OK|0:61"),
+            ("a$", "a\u{2029}", "OK|0:61"),
+            ("a$", "a\u{a}\u{a}", "OK|"),
+            ("a$", "a\u{d}\u{d}", "OK|"),
+            ("a$", "a\u{a}\u{d}", "OK|"),
+            ("a$", "\u{d}\u{a}", "OK|"),
+            ("a$", "\u{a}", "OK|"),
+            ("a$", "\u{d}", "OK|"),
+            ("a$", "a\u{b}", "OK|"),
+            ("a$", "a\u{c}", "OK|"),
+            ("a$", "oes\u{d}\u{a}", "OK|"),
+            ("a$", "oes\u{2029}", "OK|"),
+            ("a$", "contratacoes", "OK|"),
+            ("a$", "a\u{a}b", "OK|"),
+            ("a$", "b\u{d}\u{a}a\u{d}\u{a}", "OK|3:61"),
+            ("a$", "ab\u{2028}", "OK|"),
+            ("a$", "x\u{85}", "OK|"),
+            ("a$", "y", "OK|"),
+            ("a$", "a\u{d}\u{a}b", "OK|"),
+            ("oes$", "", "OK|"),
+            ("oes$", "a", "OK|"),
+            ("oes$", "oes", "OK|0:6f6573"),
+            ("oes$", "a\u{a}", "OK|"),
+            ("oes$", "a\u{d}", "OK|"),
+            ("oes$", "a\u{d}\u{a}", "OK|"),
+            ("oes$", "a\u{85}", "OK|"),
+            ("oes$", "a\u{2028}", "OK|"),
+            ("oes$", "a\u{2029}", "OK|"),
+            ("oes$", "a\u{a}\u{a}", "OK|"),
+            ("oes$", "a\u{d}\u{d}", "OK|"),
+            ("oes$", "a\u{a}\u{d}", "OK|"),
+            ("oes$", "\u{d}\u{a}", "OK|"),
+            ("oes$", "\u{a}", "OK|"),
+            ("oes$", "\u{d}", "OK|"),
+            ("oes$", "a\u{b}", "OK|"),
+            ("oes$", "a\u{c}", "OK|"),
+            ("oes$", "oes\u{d}\u{a}", "OK|0:6f6573"),
+            ("oes$", "oes\u{2029}", "OK|0:6f6573"),
+            ("oes$", "contratacoes", "OK|9:6f6573"),
+            ("oes$", "a\u{a}b", "OK|"),
+            ("oes$", "b\u{d}\u{a}a\u{d}\u{a}", "OK|"),
+            ("oes$", "ab\u{2028}", "OK|"),
+            ("oes$", "x\u{85}", "OK|"),
+            ("oes$", "y", "OK|"),
+            ("oes$", "a\u{d}\u{a}b", "OK|"),
+            ("\u{5c}Z", "", "OK|0:"),
+            ("\u{5c}Z", "a", "OK|1:"),
+            ("\u{5c}Z", "oes", "OK|3:"),
+            ("\u{5c}Z", "a\u{a}", "OK|1:,2:"),
+            ("\u{5c}Z", "a\u{d}", "OK|1:,2:"),
+            ("\u{5c}Z", "a\u{d}\u{a}", "OK|1:,3:"),
+            ("\u{5c}Z", "a\u{85}", "OK|1:,2:"),
+            ("\u{5c}Z", "a\u{2028}", "OK|1:,2:"),
+            ("\u{5c}Z", "a\u{2029}", "OK|1:,2:"),
+            ("\u{5c}Z", "a\u{a}\u{a}", "OK|2:,3:"),
+            ("\u{5c}Z", "a\u{d}\u{d}", "OK|2:,3:"),
+            ("\u{5c}Z", "a\u{a}\u{d}", "OK|2:,3:"),
+            ("\u{5c}Z", "\u{d}\u{a}", "OK|0:,2:"),
+            ("\u{5c}Z", "\u{a}", "OK|0:,1:"),
+            ("\u{5c}Z", "\u{d}", "OK|0:,1:"),
+            ("\u{5c}Z", "a\u{b}", "OK|2:"),
+            ("\u{5c}Z", "a\u{c}", "OK|2:"),
+            ("\u{5c}Z", "oes\u{d}\u{a}", "OK|3:,5:"),
+            ("\u{5c}Z", "oes\u{2029}", "OK|3:,4:"),
+            ("\u{5c}Z", "contratacoes", "OK|12:"),
+            ("\u{5c}Z", "a\u{a}b", "OK|3:"),
+            ("\u{5c}Z", "b\u{d}\u{a}a\u{d}\u{a}", "OK|4:,6:"),
+            ("\u{5c}Z", "ab\u{2028}", "OK|2:,3:"),
+            ("\u{5c}Z", "x\u{85}", "OK|1:,2:"),
+            ("\u{5c}Z", "y", "OK|1:"),
+            ("\u{5c}Z", "a\u{d}\u{a}b", "OK|4:"),
+            ("a\u{5c}Z", "", "OK|"),
+            ("a\u{5c}Z", "a", "OK|0:61"),
+            ("a\u{5c}Z", "oes", "OK|"),
+            ("a\u{5c}Z", "a\u{a}", "OK|0:61"),
+            ("a\u{5c}Z", "a\u{d}", "OK|0:61"),
+            ("a\u{5c}Z", "a\u{d}\u{a}", "OK|0:61"),
+            ("a\u{5c}Z", "a\u{85}", "OK|0:61"),
+            ("a\u{5c}Z", "a\u{2028}", "OK|0:61"),
+            ("a\u{5c}Z", "a\u{2029}", "OK|0:61"),
+            ("a\u{5c}Z", "a\u{a}\u{a}", "OK|"),
+            ("a\u{5c}Z", "a\u{d}\u{d}", "OK|"),
+            ("a\u{5c}Z", "a\u{a}\u{d}", "OK|"),
+            ("a\u{5c}Z", "\u{d}\u{a}", "OK|"),
+            ("a\u{5c}Z", "\u{a}", "OK|"),
+            ("a\u{5c}Z", "\u{d}", "OK|"),
+            ("a\u{5c}Z", "a\u{b}", "OK|"),
+            ("a\u{5c}Z", "a\u{c}", "OK|"),
+            ("a\u{5c}Z", "oes\u{d}\u{a}", "OK|"),
+            ("a\u{5c}Z", "oes\u{2029}", "OK|"),
+            ("a\u{5c}Z", "contratacoes", "OK|"),
+            ("a\u{5c}Z", "a\u{a}b", "OK|"),
+            ("a\u{5c}Z", "b\u{d}\u{a}a\u{d}\u{a}", "OK|3:61"),
+            ("a\u{5c}Z", "ab\u{2028}", "OK|"),
+            ("a\u{5c}Z", "x\u{85}", "OK|"),
+            ("a\u{5c}Z", "y", "OK|"),
+            ("a\u{5c}Z", "a\u{d}\u{a}b", "OK|"),
+            ("(?:a|b)$", "", "OK|"),
+            ("(?:a|b)$", "a", "OK|0:61"),
+            ("(?:a|b)$", "oes", "OK|"),
+            ("(?:a|b)$", "a\u{a}", "OK|0:61"),
+            ("(?:a|b)$", "a\u{d}", "OK|0:61"),
+            ("(?:a|b)$", "a\u{d}\u{a}", "OK|0:61"),
+            ("(?:a|b)$", "a\u{85}", "OK|0:61"),
+            ("(?:a|b)$", "a\u{2028}", "OK|0:61"),
+            ("(?:a|b)$", "a\u{2029}", "OK|0:61"),
+            ("(?:a|b)$", "a\u{a}\u{a}", "OK|"),
+            ("(?:a|b)$", "a\u{d}\u{d}", "OK|"),
+            ("(?:a|b)$", "a\u{a}\u{d}", "OK|"),
+            ("(?:a|b)$", "\u{d}\u{a}", "OK|"),
+            ("(?:a|b)$", "\u{a}", "OK|"),
+            ("(?:a|b)$", "\u{d}", "OK|"),
+            ("(?:a|b)$", "a\u{b}", "OK|"),
+            ("(?:a|b)$", "a\u{c}", "OK|"),
+            ("(?:a|b)$", "oes\u{d}\u{a}", "OK|"),
+            ("(?:a|b)$", "oes\u{2029}", "OK|"),
+            ("(?:a|b)$", "contratacoes", "OK|"),
+            ("(?:a|b)$", "a\u{a}b", "OK|2:62"),
+            ("(?:a|b)$", "b\u{d}\u{a}a\u{d}\u{a}", "OK|3:61"),
+            ("(?:a|b)$", "ab\u{2028}", "OK|1:62"),
+            ("(?:a|b)$", "x\u{85}", "OK|"),
+            ("(?:a|b)$", "y", "OK|"),
+            ("(?:a|b)$", "a\u{d}\u{a}b", "OK|3:62"),
+            ("$\u{5c}n", "", "OK|"),
+            ("$\u{5c}n", "a", "OK|"),
+            ("$\u{5c}n", "oes", "OK|"),
+            ("$\u{5c}n", "a\u{a}", "OK|1:0a"),
+            ("$\u{5c}n", "a\u{d}", "OK|"),
+            ("$\u{5c}n", "a\u{d}\u{a}", "OK|"),
+            ("$\u{5c}n", "a\u{85}", "OK|"),
+            ("$\u{5c}n", "a\u{2028}", "OK|"),
+            ("$\u{5c}n", "a\u{2029}", "OK|"),
+            ("$\u{5c}n", "a\u{a}\u{a}", "OK|2:0a"),
+            ("$\u{5c}n", "a\u{d}\u{d}", "OK|"),
+            ("$\u{5c}n", "a\u{a}\u{d}", "OK|"),
+            ("$\u{5c}n", "\u{d}\u{a}", "OK|"),
+            ("$\u{5c}n", "\u{a}", "OK|0:0a"),
+            ("$\u{5c}n", "\u{d}", "OK|"),
+            ("$\u{5c}n", "a\u{b}", "OK|"),
+            ("$\u{5c}n", "a\u{c}", "OK|"),
+            ("$\u{5c}n", "oes\u{d}\u{a}", "OK|"),
+            ("$\u{5c}n", "oes\u{2029}", "OK|"),
+            ("$\u{5c}n", "contratacoes", "OK|"),
+            ("$\u{5c}n", "a\u{a}b", "OK|"),
+            ("$\u{5c}n", "b\u{d}\u{a}a\u{d}\u{a}", "OK|"),
+            ("$\u{5c}n", "ab\u{2028}", "OK|"),
+            ("$\u{5c}n", "x\u{85}", "OK|"),
+            ("$\u{5c}n", "y", "OK|"),
+            ("$\u{5c}n", "a\u{d}\u{a}b", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "a", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "oes", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "a\u{a}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "a\u{d}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "a\u{d}\u{a}", "OK|0:610d0a"),
+            ("a$\u{5c}r\u{5c}n", "a\u{85}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "a\u{2028}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "a\u{2029}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "a\u{a}\u{a}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "a\u{d}\u{d}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "a\u{a}\u{d}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "\u{d}\u{a}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "\u{a}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "\u{d}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "a\u{b}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "a\u{c}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "oes\u{d}\u{a}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "oes\u{2029}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "contratacoes", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "a\u{a}b", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "b\u{d}\u{a}a\u{d}\u{a}", "OK|3:610d0a"),
+            ("a$\u{5c}r\u{5c}n", "ab\u{2028}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "x\u{85}", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "y", "OK|"),
+            ("a$\u{5c}r\u{5c}n", "a\u{d}\u{a}b", "OK|"),
+            ("x$|y", "", "OK|"),
+            ("x$|y", "a", "OK|"),
+            ("x$|y", "oes", "OK|"),
+            ("x$|y", "a\u{a}", "OK|"),
+            ("x$|y", "a\u{d}", "OK|"),
+            ("x$|y", "a\u{d}\u{a}", "OK|"),
+            ("x$|y", "a\u{85}", "OK|"),
+            ("x$|y", "a\u{2028}", "OK|"),
+            ("x$|y", "a\u{2029}", "OK|"),
+            ("x$|y", "a\u{a}\u{a}", "OK|"),
+            ("x$|y", "a\u{d}\u{d}", "OK|"),
+            ("x$|y", "a\u{a}\u{d}", "OK|"),
+            ("x$|y", "\u{d}\u{a}", "OK|"),
+            ("x$|y", "\u{a}", "OK|"),
+            ("x$|y", "\u{d}", "OK|"),
+            ("x$|y", "a\u{b}", "OK|"),
+            ("x$|y", "a\u{c}", "OK|"),
+            ("x$|y", "oes\u{d}\u{a}", "OK|"),
+            ("x$|y", "oes\u{2029}", "OK|"),
+            ("x$|y", "contratacoes", "OK|"),
+            ("x$|y", "a\u{a}b", "OK|"),
+            ("x$|y", "b\u{d}\u{a}a\u{d}\u{a}", "OK|"),
+            ("x$|y", "ab\u{2028}", "OK|"),
+            ("x$|y", "x\u{85}", "OK|0:78"),
+            ("x$|y", "y", "OK|0:79"),
+            ("x$|y", "a\u{d}\u{a}b", "OK|"),
+        ];
+        for &(pattern, sample, java) in rows {
+            assert_eq!(
+                outcome(pattern, sample),
+                java,
+                "{pattern:?} over {sample:?}"
+            );
+            // The matcher (with its pre-check) finds the same starts.
+            let units: Vec<u16> = sample.encode_utf16().collect();
+            let pattern = JavaPattern::compile(pattern, 0).expect("the pattern compiles");
+            let mut matcher = pattern.matcher(&units);
+            let mut starts = Vec::new();
+            while matcher.find() {
+                starts.push(matcher.start().expect("a match"));
+            }
+            let java_starts: Vec<i32> = java["OK|".len()..]
+                .split(',')
+                .filter(|m| !m.is_empty())
+                .map(|m| {
+                    m.split(':')
+                        .next()
+                        .expect("a start")
+                        .parse()
+                        .expect("a number")
+                })
+                .collect();
+            assert_eq!(
+                starts,
+                java_starts,
+                "matcher: {:?} over {sample:?}",
+                pattern.pattern()
+            );
+        }
+    }
+
+    /// The pre-check changes no `find()`: over anchors, boundaries,
+    /// look-arounds, atomic groups, possessive and counted repetitions, line
+    /// terminators, supplementary characters and unpaired surrogates, a
+    /// matcher with the pre-check finds exactly what the backtracking engine
+    /// alone finds. It is derived for the CLI's `oes$`-style patterns and
+    /// rejects inputs there (so the comparison is not vacuous), and is not
+    /// derived for a back reference.
+    #[test]
+    fn precheck_changes_no_find() {
+        let patterns = [
+            "oes$",
+            "aes$",
+            "ois$",
+            "^a",
+            "(?m)^a$",
+            "a$",
+            "\\bfoo\\b",
+            "\\Bo",
+            "(?<=a)b",
+            "a(?=b)",
+            "(?!a)b",
+            "(?<!x)y+",
+            "(?>a|ab)c",
+            "a*+b",
+            "a{2,3}?",
+            "\\Ga",
+            "\\R",
+            "x\\z",
+            "x\\Z",
+            "[a-c&&b]+",
+            "(?i)oes$",
+            "(?u)(?i)\u{e7}\u{f5}es$",
+            "\u{1F600}$",
+            "(a)|b",
+            "(?<n>o)(e)s$",
+            "(a)\\1",
+            "a.c",
+            "",
+            "x*",
+        ];
+        let samples: Vec<Vec<u16>> = [
+            "",
+            "a",
+            "b",
+            "ab",
+            "aab",
+            "abc",
+            "oes",
+            "contratacoes",
+            "OES",
+            "oesx",
+            "oes\n",
+            "oes\r\n",
+            "oes\r",
+            "oes\n\n",
+            "oes\u{85}",
+            "foo bar foo",
+            "xfoo",
+            "aaab",
+            "abab",
+            "aaaa",
+            "x\u{1F600}",
+            "\u{1F600}oes",
+            "\u{e7}\u{f5}es",
+            "y\r\ny",
+            "xy",
+            "xxy",
+            "a\nb\r\na",
+        ]
+        .iter()
+        .map(|s| s.encode_utf16().collect())
+        .chain([
+            vec![0xD800, 0x61],
+            vec![0x6F, 0x65, 0x73, 0xDC00],
+            vec![0xDBFF],
+        ])
+        .collect();
+        let mut rejected = 0;
+        let mut compiled = 0;
+        for regex in patterns {
+            // A construct the translation refuses is declared elsewhere.
+            let Ok(pattern) = JavaPattern::compile(regex, 0) else {
+                continue;
+            };
+            compiled += 1;
+            let mut engine_only = pattern.clone();
+            engine_only.precheck = Arc::new(OnceLock::from(None));
+            for sample in &samples {
+                assert_eq!(
+                    finds(&pattern, sample),
+                    finds(&engine_only, sample),
+                    "{regex:?} over {sample:?}"
+                );
+                let haystack = String::from_utf16_lossy(sample);
+                if !pattern.may_match_from(&haystack, 0) {
+                    rejected += 1;
+                }
+            }
+        }
+        for regex in ["oes$", "aes$", "ois$"] {
+            let pattern = JavaPattern::compile(regex, 0).expect("the pattern compiles");
+            assert!(pattern.precheck().is_some(), "{regex:?} has a pre-check");
+            assert!(!pattern.may_match_from("contratacao", 0));
+        }
+        for regex in ["(a)\\1", "(?i)(a)\\1"] {
+            let pattern = JavaPattern::compile(regex, 0).expect("the pattern compiles");
+            assert!(pattern.precheck().is_none(), "{regex:?} has no pre-check");
+        }
+        assert!(rejected > 0, "the pre-check rejected no input");
+        assert!(
+            compiled >= patterns.len() - 2,
+            "only {compiled} patterns compiled"
+        );
+    }
+
+    /// A literal pre-check answers as the automaton it replaces: over every
+    /// sample and every character boundary of it, the substring search
+    /// agrees with the plain automaton built from the same pre-check
+    /// pattern. The CLI's patterns, an escaped metacharacter and accented
+    /// letters give a literal; a class of two code points, a
+    /// case-insensitive leaf and a repetition do not.
+    #[test]
+    fn literal_precheck_answers_as_the_automaton() {
+        let literal_patterns = [
+            ("oes$", "oes"),
+            ("aes$", "aes"),
+            ("ois$", "ois"),
+            ("^abc", "abc"),
+            ("a\\.b$", "a.b"),
+            ("\u{e7}\u{f5}es$", "\u{e7}\u{f5}es"),
+            ("x\\z", "x"),
+            ("(a)(?=b)c", "ac"),
+            ("\\bfoo\\b", "foo"),
+        ];
+        let samples = [
+            "",
+            "a",
+            "oes",
+            "contratacoes",
+            "OES",
+            "oes\r\n",
+            "xoesx",
+            "a.b",
+            "axb",
+            "abc",
+            "zabc",
+            "ac",
+            "foo bar",
+            "\u{e7}\u{f5}es",
+            "\u{1F600}oes\u{e7}",
+            "x\u{85}",
+        ];
+        for (regex, expected) in literal_patterns {
+            let pattern = JavaPattern::compile(regex, 0).expect("the pattern compiles");
+            match pattern.precheck() {
+                Some(Precheck::Literal(literal)) => assert_eq!(literal, expected, "{regex:?}"),
+                other => panic!("{regex:?} has no literal pre-check: {other:?}"),
+            }
+            let tree = fancy_regex::Expr::parse_tree(pattern.find_regex().as_str())
+                .expect("the translation parses");
+            let superset = superset_expr(&tree.expr).expect("a pre-check exists");
+            let mut rendered = String::new();
+            superset.to_str(&mut rendered, 0);
+            let automaton = fancy_regex::Regex::new(&rendered).expect("the pre-check compiles");
+            for sample in samples {
+                for pos in (0..=sample.len()).filter(|&pos| sample.is_char_boundary(pos)) {
+                    assert_eq!(
+                        pattern.may_match_from(sample, pos),
+                        automaton
+                            .is_match_input(fancy_regex::RegexInput::new(sample).from_pos(pos))
+                            .expect("a plain automaton"),
+                        "{regex:?} over {sample:?} from {pos}"
+                    );
+                }
+            }
+        }
+        for regex in ["[ab]c$", "(?i)oes$", "a+$"] {
+            let pattern = JavaPattern::compile(regex, 0).expect("the pattern compiles");
+            assert!(
+                !matches!(pattern.precheck(), Some(Precheck::Literal(_))),
+                "{regex:?} has a literal pre-check"
+            );
+        }
+        assert_eq!(one_code_point_class("[o]"), Some('o'));
+        assert_eq!(one_code_point_class("[\\.]"), Some('.'));
+        assert_eq!(one_code_point_class("[^o]"), None);
+        assert_eq!(one_code_point_class("[a-c]"), None);
+        assert_eq!(one_code_point_class("[\\d]"), None);
+        assert_eq!(one_code_point_class("[ ]"), None);
+    }
+
+    /// `contains_literal` answers as `str::contains` on both sides of its
+    /// short-haystack threshold: every needle (empty, one byte, the CLI's
+    /// literals, multi-byte, repeated bytes) over every suffix, from each
+    /// character boundary, of haystacks shorter and longer than 16 bytes plus
+    /// the needle.
+    #[test]
+    fn contains_literal_answers_as_str_contains() {
+        let needles = [
+            "",
+            "o",
+            "oes",
+            "aes",
+            "ois",
+            "a.b",
+            "aaa",
+            "ab",
+            "\u{e7}\u{f5}es",
+            "\u{1F600}",
+        ];
+        let haystacks = [
+            "",
+            "a",
+            "oes",
+            "OES",
+            "xoesx",
+            "contratacoes",
+            "aaaaab",
+            "abababab",
+            "a.b",
+            "axb",
+            "\u{e7}\u{f5}es",
+            "\u{1F600}oes\u{e7}",
+            "xxxxxxxxxxxxxxxxxxoe",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+            "administracao central do sistema de saude oes",
+            "\u{e7}\u{e7}\u{e7}\u{e7}\u{e7}\u{e7}\u{e7}\u{e7}\u{e7}\u{e7}\u{f5}es",
+        ];
+        let (mut short, mut long) = (0, 0);
+        for needle in needles {
+            for haystack in haystacks {
+                for start in (0..=haystack.len()).filter(|&i| haystack.is_char_boundary(i)) {
+                    let rest = &haystack[start..];
+                    if rest.len() >= 16 + needle.len() {
+                        long += 1;
+                    } else {
+                        short += 1;
+                    }
+                    assert_eq!(
+                        contains_literal(rest, needle),
+                        rest.contains(needle),
+                        "{needle:?} in {rest:?}"
+                    );
+                }
+            }
+        }
+        assert!(short > 0 && long > 0, "both paths ran: {short} / {long}");
+    }
+
+    /// The anchored pattern is built on the first `matches()`, shared by the
+    /// pattern's clones, and answers as `Matcher.matches()`.
+    #[test]
+    fn anchored_pattern_is_built_on_first_matches() {
+        let pattern = JavaPattern::compile("a|ab", 0).expect("the pattern compiles");
+        assert!(pattern.whole.get().is_none());
+        let clone = pattern.clone();
+        assert!(pattern.matches("ab"));
+        assert!(!pattern.matches("abc"));
+        assert!(clone.whole.get().is_some(), "the clone shares the build");
+        let mut matcher = clone.matcher(&"ab".encode_utf16().collect::<Vec<_>>());
+        assert!(matcher.matches());
+        assert_eq!((matcher.start().unwrap(), matcher.end().unwrap()), (0, 2));
     }
 
     #[test]

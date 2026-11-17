@@ -99,37 +99,25 @@ fn before_class() -> Result<()> {
     };
     for i in 0..num_docs {
         let mut document = rucene::document::Document::new();
-        document.add(Box::new(LuceneTestCase::new_text_field(
+        document.add(LuceneTestCase::new_text_field(
             "english",
             &English::int_to_english(i),
             Store::NO,
-        )));
-        document.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        document.add(LuceneTestCase::new_text_field(
             "oddeven",
             if i % 2 == 0 { "even" } else { "odd" },
             Store::NO,
-        )));
-        document.add(Box::new(NumericDocValuesField::new(
+        ));
+        document.add(NumericDocValuesField::new(
             "int",
             i64::from(random().next_int()),
-        )));
-        document.add(Box::new(NumericDocValuesField::new(
-            "long",
-            random().next_long(),
-        )));
-        document.add(Box::new(FloatDocValuesField::new(
-            "float",
-            random().next_float(),
-        )));
-        document.add(Box::new(DoubleDocValuesField::new(
-            "double",
-            random().next_double(),
-        )));
+        ));
+        document.add(NumericDocValuesField::new("long", random().next_long()));
+        document.add(FloatDocValuesField::new("float", random().next_float()));
+        document.add(DoubleDocValuesField::new("double", random().next_double()));
         if i == 545 {
-            document.add(Box::new(DoubleDocValuesField::new(
-                "onefield",
-                LEAST_DOUBLE_VALUE,
-            )));
+            document.add(DoubleDocValuesField::new("onefield", LEAST_DOUBLE_VALUE));
         }
         iw.add_document(&document)?;
     }

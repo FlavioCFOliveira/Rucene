@@ -174,11 +174,7 @@ fn do_tear_down(f: &mut MoreLikeThisTest) -> Result<()> {
 
 fn add_doc(writer: &RandomIndexWriter, field_name: &str, text: &str) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        field_name,
-        text,
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_text_field(field_name, text, Store::YES));
     writer.add_document(&doc)?;
     Ok(())
 }
@@ -186,11 +182,7 @@ fn add_doc(writer: &RandomIndexWriter, field_name: &str, text: &str) -> Result<(
 fn add_doc_texts(writer: &RandomIndexWriter, field_name: &str, texts: &[String]) -> Result<()> {
     let mut doc = Document::new();
     for text in texts {
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            field_name,
-            text,
-            Store::YES,
-        )));
+        doc.add(LuceneTestCase::new_text_field(field_name, text, Store::YES));
     }
     writer.add_document(&doc)?;
     Ok(())
@@ -249,16 +241,16 @@ fn test_small_sample_from_corpus(_f: &mut MoreLikeThisTest) -> Result<()> {
     }
     for _ in 0..2 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             "one_percent",
             "all",
             Store::YES,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        doc.add(LuceneTestCase::new_text_field(
             "one_percent",
             "tenth",
             Store::YES,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     let reader: Arc<dyn IndexReader> = writer.get_reader()?;
@@ -605,24 +597,16 @@ fn add_shop_doc(
     we_dont_sell: &[&str],
 ) -> Result<i32> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        SHOP_TYPE,
-        type_,
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_text_field(SHOP_TYPE, type_, Store::YES));
     for item in we_sell {
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            FOR_SALE,
-            item,
-            Store::YES,
-        )));
+        doc.add(LuceneTestCase::new_text_field(FOR_SALE, item, Store::YES));
     }
     for item in we_dont_sell {
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             NOT_FOR_SALE,
             item,
             Store::YES,
-        )));
+        ));
     }
     writer.add_document(&doc)?;
     Ok(writer.get_doc_stats()?.num_docs - 1)

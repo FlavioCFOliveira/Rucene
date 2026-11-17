@@ -490,11 +490,7 @@ fn test_merge_doc_count0() -> Result<()> {
 /// `private void addDoc(IndexWriter writer)`.
 fn add_doc(writer: &IndexWriter) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "content",
-        "aaa",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("content", "aaa", Store::NO));
     writer.add_document(&doc)?;
     Ok(())
 }
@@ -672,7 +668,7 @@ fn soft_field(name: &str, value: i64) -> Result<Field> {
 /// A document with one `StringField("id", id, Store.NO)`.
 fn id_doc(id: &str) -> Result<Document> {
     let mut d = Document::new();
-    d.add(Box::new(StringField::new("id", id.to_string(), Store::NO)?));
+    d.add(StringField::new("id", id.to_string(), Store::NO)?);
     Ok(d)
 }
 
@@ -1437,16 +1433,12 @@ fn assert_file_exist_directory(name: &str) -> (TestDirectory, Arc<dyn Directory>
 /// A document with `StringField("id", id, YES)` and `StringField("version", version, YES)`.
 fn id_version_doc(id: &str, version: &str) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "id",
-        id.to_string(),
-        Store::YES,
-    )?));
-    doc.add(Box::new(StringField::new(
+    doc.add(StringField::new("id", id.to_string(), Store::YES)?);
+    doc.add(StringField::new(
         "version",
         version.to_string(),
         Store::YES,
-    )?));
+    )?);
     Ok(doc)
 }
 

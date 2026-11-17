@@ -59,16 +59,16 @@ fn test_indexing() -> Result<()> {
                 let mut doc_count = 0;
                 while doc_count < stop_iterations {
                     let mut doc = Document::new();
-                    doc.add(Box::new(LuceneTestCase::new_string_field(
+                    doc.add(LuceneTestCase::new_string_field(
                         "dc",
                         &doc_count.to_string(),
                         Store::YES,
-                    )));
-                    doc.add(Box::new(LuceneTestCase::new_text_field(
+                    ));
+                    doc.add(LuceneTestCase::new_text_field(
                         "field",
                         "here is some text",
                         Store::YES,
-                    )));
+                    ));
                     w.add_document(&doc)?;
 
                     if doc_count % 13 == 0 {

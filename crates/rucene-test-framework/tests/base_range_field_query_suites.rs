@@ -78,7 +78,7 @@ fn do_test_basics<T: RangeNumber>(
 
     for (min, max) in docs {
         let mut document = rucene::document::Document::new();
-        document.add(T::new_field(min, max)?);
+        document.add_shared(std::sync::Arc::from(T::new_field(min, max)?));
         writer.add_document(&document)?;
     }
 

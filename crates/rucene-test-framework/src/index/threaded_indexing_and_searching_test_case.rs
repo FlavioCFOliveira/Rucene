@@ -592,12 +592,11 @@ fn indexing_thread_body(
         // Maybe add randomly named field
         let added_field = if random().next_boolean() {
             let added_field = format!("extra{}", random().next_int_bound(40));
-            doc.borrow_mut()
-                .add(Box::new(LuceneTestCase::new_text_field(
-                    &added_field,
-                    "a random field",
-                    Store::YES,
-                )));
+            doc.borrow_mut().add(LuceneTestCase::new_text_field(
+                &added_field,
+                "a random field",
+                Store::YES,
+            ));
             Some(added_field)
         } else {
             None
@@ -646,7 +645,7 @@ fn indexing_thread_body(
                 let mut doc_ids: Vec<String> = Vec::new();
                 let mut docs_list: Vec<Document> = Vec::new();
 
-                doc.borrow_mut().add(Box::new(pack_id_field));
+                doc.borrow_mut().add(pack_id_field);
                 docs_list.push(TestUtil::clone_document(&doc.borrow())?);
                 doc_ids.push(doc_get(&doc.borrow(), "docid").unwrap_or_default());
 

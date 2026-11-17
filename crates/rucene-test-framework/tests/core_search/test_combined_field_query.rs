@@ -173,11 +173,11 @@ fn test_same_score() -> Result<()> {
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("f", "a".into(), Store::NO)?));
+    doc.add(StringField::new("f", "a".into(), Store::NO)?);
     w.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("g", "a".into(), Store::NO)?));
+    doc.add(StringField::new("g", "a".into(), Store::NO)?);
     for _i in 0..10 {
         w.add_document(&doc)?;
     }
@@ -217,36 +217,36 @@ fn add_multiple_field_terms_docs(w: &RandomIndexWriter, num_match_doc: i32) -> R
 
         let mut freq_a = random().next_int_bound(20) + 1;
         for _j in 0..freq_a {
-            doc.add(text("a", "foo")?);
+            doc.add(*text("a", "foo")?);
         }
 
         freq_a = random().next_int_bound(20) + 1;
         if RandomizedTest::random_boolean() {
             for j in 0..freq_a {
-                doc.add(text("a", &format!("foo{j}"))?);
+                doc.add(*text("a", &format!("foo{j}"))?);
             }
         }
 
         freq_a = random().next_int_bound(20) + 1;
         for _j in 0..freq_a {
-            doc.add(text("a", "zoo")?);
+            doc.add(*text("a", "zoo")?);
         }
 
         let mut freq_b = random().next_int_bound(20) + 1;
         for _j in 0..freq_b {
-            doc.add(text("b", "zoo")?);
+            doc.add(*text("b", "zoo")?);
         }
 
         freq_b = random().next_int_bound(20) + 1;
         if RandomizedTest::random_boolean() {
             for j in 0..freq_b {
-                doc.add(text("b", &format!("zoo{j}"))?);
+                doc.add(*text("b", &format!("zoo{j}"))?);
             }
         }
 
         let freq_c = random().next_int_bound(20) + 1;
         for j in 0..freq_c {
-            doc.add(text("c", &format!("bla{j}"))?);
+            doc.add(*text("c", &format!("bla{j}"))?);
         }
         w.add_document(&doc)?;
     }
@@ -294,15 +294,15 @@ fn test_norms_disabled() -> Result<()> {
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("a", "value".into(), Store::NO)?));
-    doc.add(Box::new(StringField::new("b", "value".into(), Store::NO)?));
-    doc.add(text("c", "value")?);
+    doc.add(StringField::new("a", "value".into(), Store::NO)?);
+    doc.add(StringField::new("b", "value".into(), Store::NO)?);
+    doc.add(*text("c", "value")?);
     w.add_document(&doc)?;
     w.commit()?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("a", "value".into(), Store::NO)?));
-    doc.add(text("c", "value")?);
+    doc.add(StringField::new("a", "value".into(), Store::NO)?);
+    doc.add(*text("c", "value")?);
     w.add_document(&doc)?;
 
     let reader = w.get_reader()?;
@@ -348,25 +348,25 @@ fn test_copy_field() -> Result<()> {
     for _i in 0..num_match {
         let mut doc = Document::new();
         if random().next_boolean() {
-            doc.add(text("a", "baz")?);
-            doc.add(text("b", "baz")?);
+            doc.add(*text("a", "baz")?);
+            doc.add(*text("b", "baz")?);
             for _k in 0..boost1 + boost2 {
-                doc.add(text("ab", "baz")?);
+                doc.add(*text("ab", "baz")?);
             }
             w.add_document(&doc)?;
             doc.clear();
         }
         let freq_a = random().next_int_bound(5) + 1;
         for _j in 0..freq_a {
-            doc.add(text("a", "foo")?);
+            doc.add(*text("a", "foo")?);
         }
         let freq_b = random().next_int_bound(5) + 1;
         for _j in 0..freq_b {
-            doc.add(text("b", "foo")?);
+            doc.add(*text("b", "foo")?);
         }
         let freq_ab = freq_a * boost1 + freq_b * boost2;
         for _j in 0..freq_ab {
-            doc.add(text("ab", "foo")?);
+            doc.add(*text("ab", "foo")?);
         }
         w.add_document(&doc)?;
     }
@@ -413,12 +413,12 @@ fn test_copy_field_with_single_field() -> Result<()> {
         let mut doc = Document::new();
         let freq_a = random().next_int_bound(5) + 1;
         for _j in 0..freq_a {
-            doc.add(text("a", "foo")?);
+            doc.add(*text("a", "foo")?);
         }
 
         let freq_b = freq_a * boost;
         for _j in 0..freq_b {
-            doc.add(text("b", "foo")?);
+            doc.add(*text("b", "foo")?);
         }
 
         w.add_document(&doc)?;
@@ -454,18 +454,18 @@ fn test_copy_field_with_missing_fields() -> Result<()> {
         let mut doc = Document::new();
         let freq_a = random().next_int_bound(5) + 1;
         for _j in 0..freq_a {
-            doc.add(text("a", "foo")?);
+            doc.add(*text("a", "foo")?);
         }
 
         // Choose frequencies such that sometimes we don't add field B
         let freq_b = random().next_int_bound(3);
         for _j in 0..freq_b {
-            doc.add(text("b", "foo")?);
+            doc.add(*text("b", "foo")?);
         }
 
         let freq_ab = freq_a * boost1 + freq_b * boost2;
         for _j in 0..freq_ab {
-            doc.add(text("ab", "foo")?);
+            doc.add(*text("ab", "foo")?);
         }
 
         w.add_document(&doc)?;
@@ -535,8 +535,8 @@ fn negative_norms(docs: &[(&str, &str)], expected: &[i32]) -> Result<()> {
 
     for (f, g) in docs {
         let mut doc = Document::new();
-        doc.add(text("f", f)?);
-        doc.add(text("g", g)?);
+        doc.add(*text("f", f)?);
+        doc.add(*text("g", g)?);
         w.add_document(&doc)?;
     }
 
@@ -645,25 +645,25 @@ fn test_override_collection_statistics() -> Result<()> {
     for _i in 0..num_match {
         let mut doc = Document::new();
         if random().next_boolean() {
-            doc.add(text("a", "baz")?);
-            doc.add(text("b", "baz")?);
+            doc.add(*text("a", "baz")?);
+            doc.add(*text("b", "baz")?);
             for _k in 0..2 {
-                doc.add(text("ab", "baz")?);
+                doc.add(*text("ab", "baz")?);
             }
             w.add_document(&doc)?;
             doc.clear();
         }
         let freq_a = random().next_int_bound(5) + 1;
         for _j in 0..freq_a {
-            doc.add(text("a", "foo")?);
+            doc.add(*text("a", "foo")?);
         }
         let freq_b = random().next_int_bound(5) + 1;
         for _j in 0..freq_b {
-            doc.add(text("b", "foo")?);
+            doc.add(*text("b", "foo")?);
         }
         let freq_ab = freq_a + freq_b;
         for _j in 0..freq_ab {
-            doc.add(text("ab", "foo")?);
+            doc.add(*text("ab", "foo")?);
         }
         w.add_document(&doc)?;
     }

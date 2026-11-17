@@ -6850,9 +6850,7 @@ mod compound_reader_close_tests {
         {
             let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
             let mut doc = Document::new();
-            doc.add(Box::new(
-                LongPoint::new("ts", &[1_700_000_000_000]).unwrap(),
-            ));
+            doc.add(LongPoint::new("ts", &[1_700_000_000_000]).unwrap());
             writer.add_document(&doc).unwrap();
             writer.commit().unwrap();
             writer.rollback().unwrap();

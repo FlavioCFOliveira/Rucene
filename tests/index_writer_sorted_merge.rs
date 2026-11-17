@@ -37,19 +37,13 @@ const SIZES: [i32; 3] = [300, 300, 300];
 /// `SortedMergeFixture.doc(int)`, field for field and in the same order.
 fn doc(i: i32) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", format!("id{i:05}"), Store::NO).unwrap(),
-    ));
-    d.add(Box::new(NumericDocValuesField::new(
+    d.add(StringField::new("id", format!("id{i:05}"), Store::NO).unwrap());
+    d.add(NumericDocValuesField::new(
         "rank",
         (i64::from(i) * 7919) % 1000,
-    )));
-    d.add(Box::new(
-        StoredField::new_string("sv", format!("v{i}")).unwrap(),
     ));
-    d.add(Box::new(
-        TextField::new("body", format!("all w{} x{i}", i % 31), Store::NO).unwrap(),
-    ));
+    d.add(StoredField::new_string("sv", format!("v{i}")).unwrap());
+    d.add(TextField::new("body", format!("all w{} x{i}", i % 31), Store::NO).unwrap());
     d
 }
 

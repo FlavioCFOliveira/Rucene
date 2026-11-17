@@ -121,11 +121,7 @@ pub fn get_directory(analyzer: &Arc<dyn Analyzer>, vals: &[&str]) -> Result<Test
 
     for s in vals {
         let mut d = Document::new();
-        d.add(Box::new(LuceneTestCase::new_text_field(
-            FIELD,
-            s,
-            Store::YES,
-        )));
+        d.add(LuceneTestCase::new_text_field(FIELD, s, Store::YES));
         writer.add_document(&d)?;
     }
     writer.close()?;

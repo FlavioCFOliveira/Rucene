@@ -58,38 +58,30 @@ fn test_single_valued_numeric_sorts() -> Result<()> {
 
     for i in 0..500 {
         let mut doc = Document::new();
-        doc.add(Box::new(LongField::new(
-            "long_points",
-            i64::from(i),
-            Store::NO,
-        )));
-        doc.add(Box::new(NumericDocValuesField::indexed_field(
+        doc.add(LongField::new("long_points", i64::from(i), Store::NO));
+        doc.add(NumericDocValuesField::indexed_field(
             "long_skipper",
             i64::from(i),
-        )));
-        doc.add(Box::new(DoubleField::new(
+        ));
+        doc.add(DoubleField::new(
             "double_points",
             f64::from(i) * 1.5,
             Store::NO,
-        )));
-        doc.add(Box::new(NumericDocValuesField::indexed_field(
+        ));
+        doc.add(NumericDocValuesField::indexed_field(
             "double_skipper",
             NumericUtils::double_to_sortable_long(f64::from(i) * 1.5),
-        )));
-        doc.add(Box::new(IntField::new("int_points", i, Store::NO)));
-        doc.add(Box::new(NumericDocValuesField::indexed_field(
+        ));
+        doc.add(IntField::new("int_points", i, Store::NO));
+        doc.add(NumericDocValuesField::indexed_field(
             "int_skipper",
             i64::from(i),
-        )));
-        doc.add(Box::new(FloatField::new(
-            "float_points",
-            i as f32 * 1.5,
-            Store::NO,
-        )));
-        doc.add(Box::new(NumericDocValuesField::indexed_field(
+        ));
+        doc.add(FloatField::new("float_points", i as f32 * 1.5, Store::NO));
+        doc.add(NumericDocValuesField::indexed_field(
             "float_skipper",
             i64::from(NumericUtils::float_to_sortable_int(i as f32 * 1.5)),
-        )));
+        ));
         writer.add_document(&doc)?;
         if i % 125 == 0 {
             writer.commit()?;
@@ -174,72 +166,60 @@ fn test_multi_valued_segment_sorts() -> Result<()> {
     let mut i = 0;
     while i < 1000 {
         let mut doc = Document::new();
-        doc.add(Box::new(LongField::new(
-            "long_points",
-            i64::from(i),
-            Store::NO,
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+        doc.add(LongField::new("long_points", i64::from(i), Store::NO));
+        doc.add(SortedNumericDocValuesField::indexed_field(
             "long_skipper",
             i64::from(i),
-        )));
-        doc.add(Box::new(LongField::new(
-            "long_points",
-            i64::from(i + 1),
-            Store::NO,
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+        ));
+        doc.add(LongField::new("long_points", i64::from(i + 1), Store::NO));
+        doc.add(SortedNumericDocValuesField::indexed_field(
             "long_skipper",
             i64::from(i + 1),
-        )));
+        ));
 
-        doc.add(Box::new(DoubleField::new(
+        doc.add(DoubleField::new(
             "double_points",
             f64::from(i) * 1.5,
             Store::NO,
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+        ));
+        doc.add(SortedNumericDocValuesField::indexed_field(
             "double_skipper",
             NumericUtils::double_to_sortable_long(f64::from(i) * 1.5),
-        )));
-        doc.add(Box::new(DoubleField::new(
+        ));
+        doc.add(DoubleField::new(
             "double_points",
             f64::from(i) * 1.5 + 1.0,
             Store::NO,
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+        ));
+        doc.add(SortedNumericDocValuesField::indexed_field(
             "double_skipper",
             NumericUtils::double_to_sortable_long(f64::from(i) * 1.5 + 1.0),
-        )));
-        doc.add(Box::new(IntField::new("int_points", i, Store::NO)));
-        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+        ));
+        doc.add(IntField::new("int_points", i, Store::NO));
+        doc.add(SortedNumericDocValuesField::indexed_field(
             "int_skipper",
             i64::from(i),
-        )));
-        doc.add(Box::new(IntField::new("int_points", i + 1, Store::NO)));
-        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+        ));
+        doc.add(IntField::new("int_points", i + 1, Store::NO));
+        doc.add(SortedNumericDocValuesField::indexed_field(
             "int_skipper",
             i64::from(i + 1),
-        )));
+        ));
 
-        doc.add(Box::new(FloatField::new(
-            "float_points",
-            i as f32 * 1.5,
-            Store::NO,
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+        doc.add(FloatField::new("float_points", i as f32 * 1.5, Store::NO));
+        doc.add(SortedNumericDocValuesField::indexed_field(
             "float_skipper",
             i64::from(NumericUtils::float_to_sortable_int(i as f32 * 1.5)),
-        )));
-        doc.add(Box::new(FloatField::new(
+        ));
+        doc.add(FloatField::new(
             "float_points",
             i as f32 * 1.5 + 1.0,
             Store::NO,
-        )));
-        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+        ));
+        doc.add(SortedNumericDocValuesField::indexed_field(
             "float_skipper",
             i64::from(NumericUtils::float_to_sortable_int(i as f32 * 1.5 + 1.0)),
-        )));
+        ));
 
         writer.add_document(&doc)?;
         if i % 250 == 0 {
@@ -356,44 +336,32 @@ fn test_numeric_segment_sorts_with_missing_values() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), no_merge_config()?)?;
     for i in 0..500 {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "string",
-            "foo".to_string(),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("string", "foo".to_string(), Store::NO)?);
         if i != 200 {
-            doc.add(Box::new(LongField::new(
-                "long_points",
-                i64::from(i),
-                Store::NO,
-            )));
-            doc.add(Box::new(NumericDocValuesField::indexed_field(
+            doc.add(LongField::new("long_points", i64::from(i), Store::NO));
+            doc.add(NumericDocValuesField::indexed_field(
                 "long_skipper",
                 i64::from(i),
-            )));
-            doc.add(Box::new(DoubleField::new(
+            ));
+            doc.add(DoubleField::new(
                 "double_points",
                 f64::from(i) * 1.5,
                 Store::NO,
-            )));
-            doc.add(Box::new(NumericDocValuesField::indexed_field(
+            ));
+            doc.add(NumericDocValuesField::indexed_field(
                 "double_skipper",
                 NumericUtils::double_to_sortable_long(f64::from(i) * 1.5),
-            )));
-            doc.add(Box::new(IntField::new("int_points", i, Store::NO)));
-            doc.add(Box::new(NumericDocValuesField::indexed_field(
+            ));
+            doc.add(IntField::new("int_points", i, Store::NO));
+            doc.add(NumericDocValuesField::indexed_field(
                 "int_skipper",
                 i64::from(i),
-            )));
-            doc.add(Box::new(FloatField::new(
-                "float_points",
-                i as f32 * 1.5,
-                Store::NO,
-            )));
-            doc.add(Box::new(NumericDocValuesField::indexed_field(
+            ));
+            doc.add(FloatField::new("float_points", i as f32 * 1.5, Store::NO));
+            doc.add(NumericDocValuesField::indexed_field(
                 "float_skipper",
                 i64::from(NumericUtils::float_to_sortable_int(i as f32 * 1.5)),
-            )));
+            ));
         }
         writer.add_document(&doc)?;
         if i % 125 == 0 {

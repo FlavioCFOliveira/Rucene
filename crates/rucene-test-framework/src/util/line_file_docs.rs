@@ -382,26 +382,23 @@ impl LineFileDocs {
             let title_length = title.encode_utf16().count() as i32;
             if self.random.next_int_bound(3) == 1 {
                 let x = self.random.next_int_bound(4);
-                doc.add(Box::new(IntPoint::new(
-                    &format!("docLength{x}"),
-                    &[line_length],
-                )?));
+                doc.add(IntPoint::new(&format!("docLength{x}"), &[line_length])?);
             }
 
             if self.random.next_int_bound(3) == 1 {
                 let x = self.random.next_int_bound(4);
-                doc.add(Box::new(IntPoint::new(
+                doc.add(IntPoint::new(
                     &format!("docTitleLength{x}"),
                     &[title_length],
-                )?));
+                )?);
             }
 
             if self.random.next_int_bound(3) == 1 {
                 let x = self.random.next_int_bound(4);
-                doc.add(Box::new(NumericDocValuesField::new(
+                doc.add(NumericDocValuesField::new(
                     &format!("docLength{x}"),
                     i64::from(line_length),
-                )));
+                ));
             }
 
             // TODO: more random sparse fields here too

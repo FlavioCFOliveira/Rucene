@@ -49,7 +49,7 @@ fn test_basic() -> Result<()> {
     let mut doc = Document::new();
     let ft = text_type(IndexOptions::DOCS_AND_FREQS)?;
     let f = LuceneTestCase::new_field("foo", "this is a test test", &ft);
-    doc.add(Box::new(f));
+    doc.add(f);
     for _ in 0..100 {
         w.add_document(&doc)?;
     }
@@ -105,19 +105,19 @@ fn test_positions() -> Result<()> {
     let ft = text_type(IndexOptions::DOCS)?;
 
     let f1 = LuceneTestCase::new_field("f1", "This field has docs only", &ft);
-    d.add(Box::new(f1));
+    d.add(f1);
 
     let ft2 = text_type(IndexOptions::DOCS_AND_FREQS)?;
 
     // f2: docs and freqs
     let f2 = LuceneTestCase::new_field("f2", "This field has docs and freqs", &ft2);
-    d.add(Box::new(f2));
+    d.add(f2);
 
     let ft3 = text_type(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)?;
 
     // f3: docs/freqs/positions
     let f3 = LuceneTestCase::new_field("f3", "This field has docs and freqs and positions", &ft3);
-    d.add(Box::new(f3));
+    d.add(f3);
 
     writer.add_document(&d)?;
     writer.force_merge(1)?;
@@ -178,7 +178,7 @@ fn test_no_prx_file() -> Result<()> {
 
     let ft = text_type(IndexOptions::DOCS_AND_FREQS)?;
     let f1 = LuceneTestCase::new_field("f1", "This field has term freqs", &ft);
-    d.add(Box::new(f1));
+    d.add(f1);
 
     for _ in 0..30 {
         writer.add_document(&d)?;

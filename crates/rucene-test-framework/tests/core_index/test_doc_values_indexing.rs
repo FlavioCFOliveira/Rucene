@@ -169,7 +169,7 @@ fn log_mp_iwc(analyzer: Arc<dyn Analyzer>) -> Result<IndexWriterConfig> {
 fn doc_of(fields: Vec<Box<dyn IndexableField>>) -> Document {
     let mut doc = Document::new();
     for field in fields {
-        doc.add(field);
+        doc.add_shared(std::sync::Arc::from(field));
     }
     doc
 }
@@ -230,12 +230,8 @@ fn test_add_indexes() -> Result<()> {
     let d1 = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d1.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "1",
-        Store::YES,
-    )));
-    doc.add(ndv("dv", 1));
+    doc.add(LuceneTestCase::new_string_field("id", "1", Store::YES));
+    doc.add_shared(std::sync::Arc::from(ndv("dv", 1)));
     w.add_document(&doc)?;
     let r1 = w.get_reader()?;
     w.close()?;
@@ -243,12 +239,8 @@ fn test_add_indexes() -> Result<()> {
     let d2 = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d2.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "2",
-        Store::YES,
-    )));
-    doc.add(ndv("dv", 2));
+    doc.add(LuceneTestCase::new_string_field("id", "2", Store::YES));
+    doc.add_shared(std::sync::Arc::from(ndv("dv", 2)));
     w.add_document(&doc)?;
     let r2 = w.get_reader()?;
     w.close()?;
@@ -314,7 +306,7 @@ fn test_different_typed_doc_values_field() -> Result<()> {
 
     // Index doc values are single-valued so we should not
     // be able to add same field more than once:
-    doc.add(bdv("field", "blah"));
+    doc.add_shared(std::sync::Arc::from(bdv("field", "blah")));
     expect_throws(IAE, || w.add_document(&doc));
 
     let r = w.get_reader()?;
@@ -333,7 +325,7 @@ fn test_different_typed_doc_values_field2() -> Result<()> {
 
     // Index doc values are single-valued so we should not
     // be able to add same field more than once:
-    doc.add(sdv("field", "hello"));
+    doc.add_shared(std::sync::Arc::from(sdv("field", "hello")));
     expect_throws(IAE, || w.add_document(&doc));
 
     let r = w.get_reader()?;
@@ -395,12 +387,8 @@ fn test_doc_values_unstored() -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), iwconfig)?;
     for i in 0..50 {
         let mut doc = Document::new();
-        doc.add(ndv("dv", i));
-        doc.add(Box::new(TextField::new(
-            "docId",
-            i.to_string(),
-            Store::YES,
-        )?));
+        doc.add_shared(std::sync::Arc::from(ndv("dv", i)));
+        doc.add(TextField::new("docId", i.to_string(), Store::YES)?);
         writer.add_document(&doc)?;
     }
     let r = directory_reader::open_with_writer(writer.as_ref())?;
@@ -473,7 +461,7 @@ fn add_twice(
     let mut doc = doc_of(vec![first()]);
     iwriter.add_document(&doc)?;
 
-    doc.add(second());
+    doc.add_shared(std::sync::Arc::from(second()));
     expect_throws(IAE, || iwriter.add_document(&doc));
 
     assert_one_doc(&iwriter)?;

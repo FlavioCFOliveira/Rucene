@@ -110,11 +110,11 @@ fn test_token_stream(inst: &Instance) -> Result<()> {
         let mut doc = Document::new();
         if random().next_boolean() {
             // totally ok short field value
-            doc.add(Box::new(Field::new(
+            doc.add(Field::new(
                 &TestUtil::random_simple_string_between(&*random(), 1, 10),
                 TestUtil::random_simple_string_between(&*random(), 1, 10),
                 ft.clone(),
-            )?));
+            )?);
         }
         // problematic field
         let name = TestUtil::random_simple_string_between(&*random(), 1, 50);
@@ -126,13 +126,13 @@ fn test_token_stream(inst: &Instance) -> Result<()> {
         let f = Field::new(&name, value, ft.clone())?;
         if random().next_boolean() {
             // totally ok short field value
-            doc.add(Box::new(Field::new(
+            doc.add(Field::new(
                 &TestUtil::random_simple_string_between(&*random(), 1, 10),
                 TestUtil::random_simple_string_between(&*random(), 1, 10),
                 ft.clone(),
-            )?));
+            )?);
         }
-        doc.add(Box::new(f));
+        doc.add(f);
 
         let expected = expect_throws(IAE, || w.add_document(&doc));
         let msg = expected.message().unwrap_or_default().to_string();
@@ -160,11 +160,11 @@ fn test_binary_value(inst: &Instance) -> Result<()> {
         let mut doc = Document::new();
         if random().next_boolean() {
             // totally ok short field value
-            doc.add(Box::new(Field::new_with_bytes(
+            doc.add(Field::new_with_bytes(
                 &TestUtil::random_simple_string_between(&*random(), 1, 10),
                 TestUtil::random_binary_term_with(&*random(), 10),
                 ft.clone(),
-            )?));
+            )?);
         }
         // problematic field
         let name = TestUtil::random_simple_string_between(&*random(), 1, 50);
@@ -175,13 +175,13 @@ fn test_binary_value(inst: &Instance) -> Result<()> {
         let f = Field::new_with_bytes(&name, value, ft.clone())?;
         if random().next_boolean() {
             // totally ok short field value
-            doc.add(Box::new(Field::new_with_bytes(
+            doc.add(Field::new_with_bytes(
                 &TestUtil::random_simple_string_between(&*random(), 1, 10),
                 TestUtil::random_binary_term_with(&*random(), 10),
                 ft.clone(),
-            )?));
+            )?);
         }
-        doc.add(Box::new(f));
+        doc.add(f);
 
         let expected = expect_throws(IAE, || w.add_document(&doc));
         let msg = expected.message().unwrap_or_default().to_string();

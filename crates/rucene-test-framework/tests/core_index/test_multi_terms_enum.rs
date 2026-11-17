@@ -57,11 +57,7 @@ fn test_no_terms_in_field() -> Result<()> {
     let directory = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&directory) as _, plain_iwc())?;
     let mut document = Document::new();
-    document.add(Box::new(StringField::new(
-        "deleted",
-        "0".into(),
-        Store::YES,
-    )?));
+    document.add(StringField::new("deleted", "0".into(), Store::YES)?);
     writer.add_document(&document)?;
 
     let reader = directory_reader::open_with_writer(&*writer)?;

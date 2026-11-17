@@ -22,12 +22,12 @@ use std::sync::Arc;
 
 use crate::analysis::{
     get_buffered_reader, get_word_set, new_lower_case_filter, new_stop_filter, Analyzer,
-    AnalyzerState, CharArraySet, CharReader, CharTermAttribute, GlobalReuseStrategy,
-    OffsetAttribute, PositionIncrementAttribute, SharedTokenStream, StringCharReader, TokenStream,
-    TokenStreamComponents, Tokenizer, TokenizerLogic, TypeAttribute,
+    AnalyzerState, AttributeHandle, CharArraySet, CharReader, CharTermAttribute,
+    GlobalReuseStrategy, OffsetAttribute, PositionIncrementAttribute, SharedTokenStream,
+    StringCharReader, TokenStream, TokenStreamComponents, Tokenizer, TokenizerLogic, TypeAttribute,
 };
 use crate::error::{LuceneError, Result};
-use crate::util::attribute::AttributeSource;
+use crate::util::attribute::{AttributeImpl, AttributeInterface, AttributeSource};
 use crate::util::IOUtils;
 
 /// Alpha/numeric token type.
@@ -81,6 +81,72 @@ pub struct StandardTokenizerLogic {
     scanner: StandardTokenizerImpl,
     skipped_positions: i32,
     max_token_length: i32,
+    /// The attributes `StandardTokenizer`'s fields hold
+    /// (`StandardTokenizer.java:140-144`), set by
+    /// [`new_standard_tokenizer_with_factory`]; a logic built with
+    /// [`new`](Self::new) and given to another tokenizer takes its source's
+    /// instances the first time it needs them.
+    attributes: Option<StandardTokenizerAttributes>,
+}
+
+/// `StandardTokenizer`'s attribute fields (`StandardTokenizer.java:140-144`),
+/// resolved once, as Java's `addAttribute` field initializers are.
+#[derive(Debug)]
+struct StandardTokenizerAttributes {
+    term_att: AttributeHandle<dyn CharTermAttribute>,
+    offset_att: AttributeHandle<dyn OffsetAttribute>,
+    pos_incr_att: AttributeHandle<dyn PositionIncrementAttribute>,
+    type_att: AttributeHandle<dyn TypeAttribute>,
+    /// Whether one implementation provides the four attributes, as the
+    /// default token attribute factory's `PackedTokenAttributeImpl` does, so
+    /// that a token is written under one borrow of it.
+    packed: bool,
+}
+
+impl StandardTokenizerAttributes {
+    fn new(
+        term_att: AttributeHandle<dyn CharTermAttribute>,
+        offset_att: AttributeHandle<dyn OffsetAttribute>,
+        pos_incr_att: AttributeHandle<dyn PositionIncrementAttribute>,
+        type_att: AttributeHandle<dyn TypeAttribute>,
+    ) -> Self {
+        let packed = term_att.same_impl_as(&offset_att)
+            && term_att.same_impl_as(&pos_incr_att)
+            && term_att.same_impl_as(&type_att);
+        Self {
+            term_att,
+            offset_att,
+            pos_incr_att,
+            type_att,
+            packed,
+        }
+    }
+
+    /// `termAtt`, `offsetAtt`, `posIncrAtt` and `typeAtt`, added to `source`
+    /// in their declaration order (`StandardTokenizer.java:140-144`).
+    fn add(source: &mut AttributeSource) -> Result<Self> {
+        let term_att = AttributeHandle::add(source)?;
+        let offset_att = AttributeHandle::add(source)?;
+        let pos_incr_att = AttributeHandle::add(source)?;
+        let type_att = AttributeHandle::add(source)?;
+        Ok(Self::new(term_att, offset_att, pos_incr_att, type_att))
+    }
+
+    /// The instances `source` already holds.
+    fn get(source: &AttributeSource) -> Self {
+        fn get<I: crate::util::attribute::AttributeInterface + ?Sized>(
+            source: &AttributeSource,
+        ) -> AttributeHandle<I> {
+            AttributeHandle::get(source)
+                .expect("INVARIANT: new_standard_tokenizer_with_factory added the attribute")
+        }
+        Self::new(get(source), get(source), get(source), get(source))
+    }
+}
+
+/// The interface `I` of an implementation borrowed whole.
+fn cast_mut<I: AttributeInterface + ?Sized>(att: &mut dyn AttributeImpl) -> &mut I {
+    I::cast_mut(att).expect("INVARIANT: the implementation provides the interface it is held for")
 }
 
 impl StandardTokenizerLogic {
@@ -93,6 +159,7 @@ impl StandardTokenizerLogic {
             scanner: StandardTokenizerImpl::new(),
             skipped_positions: 0,
             max_token_length: DEFAULT_MAX_TOKEN_LENGTH as i32,
+            attributes: None,
         }
     }
 
@@ -151,6 +218,9 @@ impl TokenizerLogic for StandardTokenizerLogic {
     ) -> Result<bool> {
         source.clear_attributes();
         self.skipped_positions = 0;
+        let attributes = self
+            .attributes
+            .get_or_insert_with(|| StandardTokenizerAttributes::get(source));
 
         loop {
             let token_type = self.scanner.get_next_token(reader)?;
@@ -160,10 +230,7 @@ impl TokenizerLogic for StandardTokenizerLogic {
             }
 
             if self.scanner.yylength() <= self.max_token_length {
-                interface_mut::<dyn PositionIncrementAttribute>(source)?
-                    .set_position_increment(self.skipped_positions + 1);
-                self.scanner
-                    .get_text(&mut *interface_mut::<dyn CharTermAttribute>(source)?);
+                let position_increment = self.skipped_positions + 1;
                 let start = self.scanner.yychar();
                 // `correctOffset(start + termAtt.length())`: the term's length
                 // in UTF-16 code units, `yylength()`, as Java's `char` length
@@ -171,10 +238,36 @@ impl TokenizerLogic for StandardTokenizerLogic {
                 let input: &dyn CharReader = reader;
                 let correct =
                     |offset: i32| Tokenizer::<Self>::correct_offset_of(Some(input), offset);
-                interface_mut::<dyn OffsetAttribute>(source)?
-                    .set_offset(correct(start), correct(start + self.scanner.yylength()));
-                interface_mut::<dyn TypeAttribute>(source)?
-                    .set_type_static(TOKEN_TYPES[token_type as usize]);
+                let (start_offset, end_offset) =
+                    (correct(start), correct(start + self.scanner.yylength()));
+                let token_type_name = TOKEN_TYPES[token_type as usize];
+                if attributes.packed {
+                    // PERF: one borrow of the implementation for the four
+                    // attributes it provides.
+                    let mut att = attributes.term_att.borrow_impl_mut();
+                    cast_mut::<dyn PositionIncrementAttribute>(&mut **att)
+                        .set_position_increment(position_increment);
+                    self.scanner
+                        .get_text(cast_mut::<dyn CharTermAttribute>(&mut **att));
+                    cast_mut::<dyn OffsetAttribute>(&mut **att)
+                        .set_offset(start_offset, end_offset);
+                    cast_mut::<dyn TypeAttribute>(&mut **att).set_type_static(token_type_name);
+                } else {
+                    attributes
+                        .pos_incr_att
+                        .borrow_mut()
+                        .set_position_increment(position_increment);
+                    self.scanner
+                        .get_text(&mut *attributes.term_att.borrow_mut());
+                    attributes
+                        .offset_att
+                        .borrow_mut()
+                        .set_offset(start_offset, end_offset);
+                    attributes
+                        .type_att
+                        .borrow_mut()
+                        .set_type_static(token_type_name);
+                }
                 return Ok(true);
             } else {
                 // When we skip a too-long term, we still increment the
@@ -192,9 +285,15 @@ impl TokenizerLogic for StandardTokenizerLogic {
             input,
             self.scanner.yychar() + self.scanner.yylength(),
         );
-        interface_mut::<dyn OffsetAttribute>(source)?.set_offset(final_offset, final_offset);
+        let attributes = self
+            .attributes
+            .get_or_insert_with(|| StandardTokenizerAttributes::get(source));
+        attributes
+            .offset_att
+            .borrow_mut()
+            .set_offset(final_offset, final_offset);
         // adjust any skipped tokens
-        let mut pos_incr_att = interface_mut::<dyn PositionIncrementAttribute>(source)?;
+        let mut pos_incr_att = attributes.pos_incr_att.borrow_mut();
         let current = pos_incr_att.get_position_increment();
         pos_incr_att.set_position_increment(current + self.skipped_positions);
         Ok(())
@@ -225,16 +324,6 @@ impl TokenizerLogic for StandardTokenizerLogic {
 /// Equivalent to `org.apache.lucene.analysis.standard.StandardTokenizer`.
 pub type StandardTokenizer = Tokenizer<StandardTokenizerLogic>;
 
-/// The attribute interface `I` of a `StandardTokenizer`'s source, which
-/// [`new_standard_tokenizer_with_factory`] added.
-fn interface_mut<I: crate::util::attribute::AttributeInterface + ?Sized>(
-    source: &AttributeSource,
-) -> Result<crate::util::atomic_ref_cell::AtomicRefMut<'_, I>> {
-    Ok(source
-        .get_attribute_interface_mut::<I>()
-        .expect("INVARIANT: new_standard_tokenizer_with_factory added the attribute"))
-}
-
 /// Creates a new `StandardTokenizer` with default settings.
 ///
 /// Equivalent to `StandardTokenizer()`, whose attributes come from
@@ -258,23 +347,10 @@ pub fn new_standard_tokenizer() -> StandardTokenizer {
 pub fn new_standard_tokenizer_with_factory(
     factory: Arc<dyn crate::util::attribute::AttributeFactory>,
 ) -> Result<StandardTokenizer> {
-    Ok(StandardTokenizer::with_source(
-        standard_tokenizer_source(factory)?,
-        StandardTokenizerLogic::new(),
-    ))
-}
-
-/// The source of a `StandardTokenizer` over `factory`, holding the attributes
-/// its fields add, in their declaration order (`StandardTokenizer.java:140-144`).
-fn standard_tokenizer_source(
-    factory: Arc<dyn crate::util::attribute::AttributeFactory>,
-) -> Result<AttributeSource> {
     let mut source = AttributeSource::new_with_factory(factory);
-    source.add_attribute_interface::<dyn CharTermAttribute>()?;
-    source.add_attribute_interface::<dyn OffsetAttribute>()?;
-    source.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
-    source.add_attribute_interface::<dyn TypeAttribute>()?;
-    Ok(source)
+    let mut logic = StandardTokenizerLogic::new();
+    logic.attributes = Some(StandardTokenizerAttributes::add(&mut source)?);
+    Ok(StandardTokenizer::with_source(source, logic))
 }
 
 // -----------------------------------------------------------------------------
@@ -1074,11 +1150,10 @@ impl crate::analysis::factories::TokenizerFactory for StandardTokenizerFactory {
         &self,
         factory: Arc<dyn crate::util::attribute::AttributeFactory>,
     ) -> crate::error::Result<crate::analysis::factories::FactoryTokenizer> {
+        let mut source = AttributeSource::new_with_factory(factory);
         let mut logic = StandardTokenizerLogic::new();
+        logic.attributes = Some(StandardTokenizerAttributes::add(&mut source)?);
         logic.set_max_token_length(self.max_token_length)?;
-        Ok(Tokenizer::with_source(
-            standard_tokenizer_source(factory)?,
-            Box::new(logic),
-        ))
+        Ok(Tokenizer::with_source(source, Box::new(logic)))
     }
 }

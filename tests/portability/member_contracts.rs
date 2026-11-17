@@ -601,9 +601,7 @@ fn phrase_scorer_reaches_the_impacts_approximation_as_java() {
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for text in ["x y", "a b", "a b a b", "b a"] {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                TextField::new("body", text.to_string(), Store::NO).unwrap(),
-            ));
+            doc.add(TextField::new("body", text.to_string(), Store::NO).unwrap());
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();
@@ -831,9 +829,7 @@ fn top_field_collector_manager_returns_the_collectors_it_created() {
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for text in ["a", "a b", "b", "a a", "c"] {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                TextField::new("body", text.to_string(), Store::NO).unwrap(),
-            ));
+            doc.add(TextField::new("body", text.to_string(), Store::NO).unwrap());
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();

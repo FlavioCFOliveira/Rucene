@@ -91,17 +91,13 @@ fn content_range(beg: &BytesRef, end: &BytesRef) -> Result<Arc<dyn Query>> {
 /// `false`.
 fn farsi_document(body: bool) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(
+    doc.add(TextField::new(
         "content",
         "\u{0633}\u{0627}\u{0628}".to_string(),
         Store::YES,
-    )?));
+    )?);
     if body {
-        doc.add(Box::new(StringField::new(
-            "body",
-            "body".to_string(),
-            Store::YES,
-        )?));
+        doc.add(StringField::new("body", "body".to_string(), Store::YES)?);
     }
     Ok(doc)
 }

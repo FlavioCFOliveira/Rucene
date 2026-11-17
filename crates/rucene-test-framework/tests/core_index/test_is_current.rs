@@ -76,11 +76,7 @@ fn set_up(inst: &mut Instance) -> Result<()> {
 
     // write document
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "UUID",
-        "1",
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_text_field("UUID", "1", Store::YES));
     writer.add_document(&doc)?;
     writer.commit()?;
     Ok(())

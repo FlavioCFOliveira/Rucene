@@ -99,7 +99,7 @@ fn dir_size(d: &dyn Directory) -> Result<i64> {
 /// A document holding `dvf` with the value `value`.
 fn dv_doc(value: i64) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("dv", value)));
+    doc.add(NumericDocValuesField::new("dv", value));
     doc
 }
 

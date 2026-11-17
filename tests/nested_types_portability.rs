@@ -285,46 +285,39 @@ fn no_norms_type(options: IndexOptions) -> FieldType {
 /// `NestedTypesFixture.sortedDoc(int)`, field for field and in the same order.
 fn sorted_doc(i: i32) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", format!("id{i:04}"), Store::NO).unwrap(),
-    ));
+    d.add(StringField::new("id", format!("id{i:04}"), Store::NO).unwrap());
     if let Some(key) = key(i) {
-        d.add(Box::new(BinaryDocValuesField::new(
-            "key",
-            BytesRef::new(key),
-        )));
+        d.add(BinaryDocValuesField::new("key", BytesRef::new(key)));
     }
-    d.add(Box::new(
-        StringField::new("tag", format!("t{}", i % 17), Store::NO).unwrap(),
-    ));
+    d.add(StringField::new("tag", format!("t{}", i % 17), Store::NO).unwrap());
     let mut body = format!("all w{} x{i}", i % 31);
     for _ in 0..=(i % 4) {
         body.push_str(" rep");
     }
-    d.add(Box::new(
+    d.add(
         Field::new(
             "body",
             body,
             no_norms_type(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS),
         )
         .unwrap(),
-    ));
-    d.add(Box::new(
+    );
+    d.add(
         Field::new(
             "freq",
             format!("f{} f{} g{}", i % 5, i % 5, i % 9),
             no_norms_type(IndexOptions::DOCS_AND_FREQS),
         )
         .unwrap(),
-    ));
-    d.add(Box::new(
+    );
+    d.add(
         Field::new(
             "pos",
             format!("p{} q p{}", i % 3, i % 3),
             no_norms_type(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS),
         )
         .unwrap(),
-    ));
+    );
     d
 }
 
@@ -556,7 +549,7 @@ fn binary_index_sort_refuses_a_numeric_key() {
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("key", 3)));
+    doc.add(NumericDocValuesField::new("key", 3));
     let error = writer
         .add_document(&doc)
         .expect_err("a numeric key cannot feed a binary sort");
@@ -605,27 +598,17 @@ fn feature_value(i: i32) -> f32 {
 /// `NestedTypesFixture.featureDoc(int, int)`.
 fn feature_doc(i: i32, segment: usize) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", format!("f{i}"), Store::NO).unwrap(),
-    ));
+    d.add(StringField::new("id", format!("f{i}"), Store::NO).unwrap());
     if segment == 0 {
         if i == 3 {
-            d.add(Box::new(
-                FeatureField::new("features", "other", 2.0).unwrap(),
-            ));
+            d.add(FeatureField::new("features", "other", 2.0).unwrap());
         } else {
-            d.add(Box::new(
-                FeatureField::new("features", "pagerank", feature_value(i)).unwrap(),
-            ));
+            d.add(FeatureField::new("features", "pagerank", feature_value(i)).unwrap());
         }
     } else if segment == 2 {
-        d.add(Box::new(
-            FeatureField::new("features", "other", 1.0 + i as f32).unwrap(),
-        ));
+        d.add(FeatureField::new("features", "other", 1.0 + i as f32).unwrap());
         if i % 3 == 0 {
-            d.add(Box::new(
-                FeatureField::new("features", "pagerank", 2.5 + i as f32).unwrap(),
-            ));
+            d.add(FeatureField::new("features", "pagerank", 2.5 + i as f32).unwrap());
         }
     }
     d
@@ -920,16 +903,9 @@ fn rust_dv_update(variant: &str) -> Arc<dyn Directory> {
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for i in 0..50 {
         let mut d = Document::new();
-        d.add(Box::new(
-            StringField::new("id", format!("d{i}"), Store::NO).unwrap(),
-        ));
-        d.add(Box::new(
-            StringField::new("group", format!("g{}", i % 5), Store::NO).unwrap(),
-        ));
-        d.add(Box::new(NumericDocValuesField::new(
-            "price",
-            i64::from(i) * 3,
-        )));
+        d.add(StringField::new("id", format!("d{i}"), Store::NO).unwrap());
+        d.add(StringField::new("group", format!("g{}", i % 5), Store::NO).unwrap());
+        d.add(NumericDocValuesField::new("price", i64::from(i) * 3));
         writer.add_document(&d).unwrap();
     }
     writer.commit().unwrap();
@@ -1050,22 +1026,12 @@ fn rust_dv_update_multi_field() -> Arc<dyn Directory> {
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for i in 0..50i64 {
         let mut d = Document::new();
-        d.add(Box::new(
-            StringField::new("id", format!("d{i}"), Store::NO).unwrap(),
-        ));
-        d.add(Box::new(
-            StringField::new("group", format!("g{}", i % 5), Store::NO).unwrap(),
-        ));
+        d.add(StringField::new("id", format!("d{i}"), Store::NO).unwrap());
+        d.add(StringField::new("group", format!("g{}", i % 5), Store::NO).unwrap());
         for (f, field) in MULTI_NUMERIC.iter().enumerate() {
-            d.add(Box::new(NumericDocValuesField::new(
-                field,
-                i * (f as i64 + 2),
-            )));
+            d.add(NumericDocValuesField::new(field, i * (f as i64 + 2)));
         }
-        d.add(Box::new(BinaryDocValuesField::new(
-            "label",
-            bytes(&format!("l{i}")),
-        )));
+        d.add(BinaryDocValuesField::new("label", bytes(&format!("l{i}"))));
         writer.add_document(&d).unwrap();
     }
     writer.commit().unwrap();
@@ -1167,68 +1133,55 @@ fn term_vector_type() -> FieldType {
 /// `NestedTypesFixture.fullDoc(int)`, field for field and in the same order.
 fn full_doc(i: i32) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", format!("id{i:04}"), Store::YES).unwrap(),
-    ));
-    d.add(Box::new(
-        StringField::new("tag", format!("t{}", i % 17), Store::NO).unwrap(),
-    ));
+    d.add(StringField::new("id", format!("id{i:04}"), Store::YES).unwrap());
+    d.add(StringField::new("tag", format!("t{}", i % 17), Store::NO).unwrap());
     let mut body = format!("all w{}", i % 31);
     for r in 0..=((i * 7) % 9) {
         body.push_str(&format!(" rep{}", r % 3));
     }
-    d.add(Box::new(TextField::new("body", body, Store::NO).unwrap()));
+    d.add(TextField::new("body", body, Store::NO).unwrap());
     if i % 4 != 1 {
-        d.add(Box::new(
-            StoredField::new_string("sv", format!("value-{}", i * 13 % 97)).unwrap(),
-        ));
+        d.add(StoredField::new_string("sv", format!("value-{}", i * 13 % 97)).unwrap());
     }
-    d.add(Box::new(
-        StoredField::new_number("sn", NumericValue::Int(i * 3)).unwrap(),
-    ));
-    d.add(Box::new(IntPoint::new("ip", &[(i * 37) % 101]).unwrap()));
-    d.add(Box::new(
-        IntPoint::new("p2", &[i % 23, (i * 11) % 29]).unwrap(),
-    ));
+    d.add(StoredField::new_number("sn", NumericValue::Int(i * 3)).unwrap());
+    d.add(IntPoint::new("ip", &[(i * 37) % 101]).unwrap());
+    d.add(IntPoint::new("p2", &[i % 23, (i * 11) % 29]).unwrap());
     if i % 3 != 2 {
-        d.add(Box::new(
+        d.add(
             Field::new(
                 "tv",
                 format!("tv{} common tv{}", i % 5, i % 5),
                 term_vector_type(),
             )
             .unwrap(),
-        ));
+        );
     }
     if i % 13 != 4 {
-        d.add(Box::new(NumericDocValuesField::new(
+        d.add(NumericDocValuesField::new(
             "rank",
             i64::from((i * 37) % 101),
-        )));
+        ));
     }
     if i % 7 != 3 {
-        d.add(Box::new(SortedDocValuesField::new(
+        d.add(SortedDocValuesField::new(
             "skey",
             bytes(&format!("s{}", (i * 53) % 71)),
-        )));
+        ));
     }
     if let Some(key) = key(i) {
-        d.add(Box::new(BinaryDocValuesField::new(
-            "key",
-            BytesRef::new(key),
-        )));
+        d.add(BinaryDocValuesField::new("key", BytesRef::new(key)));
     }
     for v in 0..(i % 3) {
-        d.add(Box::new(SortedNumericDocValuesField::new(
+        d.add(SortedNumericDocValuesField::new(
             "snum",
             i64::from((i * (v + 5)) % 19 - 7),
-        )));
+        ));
     }
     for v in 0..(i % 4) {
-        d.add(Box::new(SortedSetDocValuesField::new(
+        d.add(SortedSetDocValuesField::new(
             "sset",
             bytes(&format!("ss{}", (i + v * 7) % 11)),
-        )));
+        ));
     }
     d
 }
@@ -1296,7 +1249,7 @@ fn rust_sorted_full(variant: &str, merge: bool) -> Arc<dyn Directory> {
 struct StoredLines(Vec<String>);
 
 impl StoredFieldVisitor for StoredLines {
-    fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> rucene::error::Result<()> {
+    fn string_field(&mut self, field_info: &FieldInfo, value: String) -> rucene::error::Result<()> {
         self.0.push(format!("{}={value}", field_info.name));
         Ok(())
     }
@@ -1698,18 +1651,16 @@ fn rust_merge_observer(variant: &str) -> Vec<String> {
     for segment in 0..2 {
         for k in 0..20 {
             let mut d = Document::new();
-            d.add(Box::new(
-                StringField::new("id", format!("s{segment}d{k}"), Store::NO).unwrap(),
-            ));
+            d.add(StringField::new("id", format!("s{segment}d{k}"), Store::NO).unwrap());
             let deleted = variant != "none" && k < 3 - segment;
-            d.add(Box::new(
+            d.add(
                 StringField::new(
                     "del",
                     if deleted { "yes" } else { "no" }.to_string(),
                     Store::NO,
                 )
                 .unwrap(),
-            ));
+            );
             writer.add_document(&d).unwrap();
         }
         writer.commit().unwrap();
@@ -1808,19 +1759,15 @@ fn delegating_cache_helper_matches_lucene() {
     // soft deletion; the second segment has none.
     for i in 0..10 {
         let mut d = Document::new();
-        d.add(Box::new(
-            StringField::new("id", format!("c{i}"), Store::NO).unwrap(),
-        ));
+        d.add(StringField::new("id", format!("c{i}"), Store::NO).unwrap());
         if i == 3 {
-            d.add(Box::new(NumericDocValuesField::new("soft", 1)));
+            d.add(NumericDocValuesField::new("soft", 1));
         }
         writer.add_document(&d).unwrap();
     }
     writer.commit().unwrap();
     let mut last = Document::new();
-    last.add(Box::new(
-        StringField::new("id", "c10".to_string(), Store::NO).unwrap(),
-    ));
+    last.add(StringField::new("id", "c10".to_string(), Store::NO).unwrap());
     writer.add_document(&last).unwrap();
     writer.commit().unwrap();
     writer.close().unwrap();

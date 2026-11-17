@@ -170,20 +170,20 @@ fn build(
     let rand_dv_field = SortedDocValuesField::new("rand", BytesRef::new(Vec::new()));
     let body_field = LuceneTestCase::new_string_field_with(random, "body", "", Store::NO);
     let body_dv_field = SortedDocValuesField::new("body", BytesRef::new(Vec::new()));
-    doc.add(Box::new(id_field));
-    doc.add(Box::new(id_dv_field));
-    doc.add(Box::new(int_id_field));
-    doc.add(Box::new(int_dv_field));
-    doc.add(Box::new(float_id_field));
-    doc.add(Box::new(float_dv_field));
-    doc.add(Box::new(long_id_field));
-    doc.add(Box::new(long_dv_field));
-    doc.add(Box::new(double_id_field));
-    doc.add(Box::new(double_dv_field));
-    doc.add(Box::new(rand_field));
-    doc.add(Box::new(rand_dv_field));
-    doc.add(Box::new(body_field));
-    doc.add(Box::new(body_dv_field));
+    doc.add(id_field);
+    doc.add(id_dv_field);
+    doc.add(int_id_field);
+    doc.add(int_dv_field);
+    doc.add(float_id_field);
+    doc.add(float_dv_field);
+    doc.add(long_id_field);
+    doc.add(long_dv_field);
+    doc.add(double_id_field);
+    doc.add(double_dv_field);
+    doc.add(rand_field);
+    doc.add(rand_dv_field);
+    doc.add(body_field);
+    doc.add(body_dv_field);
 
     let config = LuceneTestCase::new_index_writer_config_with(
         random,

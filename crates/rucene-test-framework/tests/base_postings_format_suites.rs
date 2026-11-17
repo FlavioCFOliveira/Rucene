@@ -137,16 +137,16 @@ fn test_final_block() -> Result<()> {
     for i in 0..25u8 {
         let mut doc = Document::new();
         let c = char::from(97 + i);
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "field",
             &c.to_string(),
             Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        ));
+        doc.add(LuceneTestCase::new_string_field(
             "field",
             &format!("z{c}"),
             Store::NO,
-        )));
+        ));
         w.add_document(&doc)?;
     }
     w.force_merge(1)?;

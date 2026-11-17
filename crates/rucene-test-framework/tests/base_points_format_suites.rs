@@ -286,10 +286,10 @@ fn test_estimate_point_count(max_points_in_leaf_node: i32) -> Result<()> {
         let mut doc = Document::new();
         if i == num_docs / 2 {
             total_values += 1;
-            doc.add(Box::new(BinaryPoint::new(
+            doc.add(BinaryPoint::new(
                 "f",
                 &[BytesRef::new(unique_point_value.clone())],
-            )?));
+            )?);
         } else {
             let num_values = if multi_values {
                 TestUtil::next_int(&*LuceneTestCase::random(), 2, 100)
@@ -303,10 +303,10 @@ fn test_estimate_point_count(max_points_in_leaf_node: i32) -> Result<()> {
                         break;
                     }
                 }
-                doc.add(Box::new(BinaryPoint::new(
+                doc.add(BinaryPoint::new(
                     "f",
                     &[BytesRef::new(point_value.clone())],
-                )?));
+                )?);
                 total_values += 1;
             }
         }
@@ -401,13 +401,13 @@ fn test_estimate_point_count_2_dims(max_points_in_leaf_node: i32) -> Result<()> 
     for i in 0..num_docs {
         let mut doc = Document::new();
         if i == num_docs / 2 {
-            doc.add(Box::new(BinaryPoint::new(
+            doc.add(BinaryPoint::new(
                 "f",
                 &[
                     BytesRef::new(unique_point_value[0].clone()),
                     BytesRef::new(unique_point_value[1].clone()),
                 ],
-            )?));
+            )?);
             total_values += 1;
         } else {
             let num_values = if multi_values {
@@ -425,13 +425,13 @@ fn test_estimate_point_count_2_dims(max_points_in_leaf_node: i32) -> Result<()> 
                         break;
                     }
                 }
-                doc.add(Box::new(BinaryPoint::new(
+                doc.add(BinaryPoint::new(
                     "f",
                     &[
                         BytesRef::new(point_value[0].clone()),
                         BytesRef::new(point_value[1].clone()),
                     ],
-                )?));
+                )?);
                 total_values += 1;
             }
         }

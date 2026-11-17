@@ -75,9 +75,9 @@ pub fn index_values(f: &mut AutomatonFixture, initial: &str, values: &[&str]) ->
     let title_field = LuceneTestCase::new_text_field("title", "some title", Store::NO);
     let field: Field = LuceneTestCase::new_text_field(FN, initial, Store::NO);
     let footer_field = LuceneTestCase::new_text_field("footer", "a footer", Store::NO);
-    doc.add(Box::new(title_field));
-    doc.add(Box::new(field));
-    doc.add(Box::new(footer_field));
+    doc.add(title_field);
+    doc.add(field);
+    doc.add(footer_field);
     for (i, value) in values.iter().enumerate() {
         if i > 0 || initial != *value {
             field_mut(&mut doc, FN).set_string_value(value.to_string())?;

@@ -79,20 +79,16 @@ impl CoreParserTestIndexData {
             let date = java_trim(&line[..end_of_date]);
             let content = java_trim(&line[end_of_date..]);
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_text_field(
-                "date",
-                date,
-                Store::YES,
-            )));
-            doc.add(Box::new(LuceneTestCase::new_text_field(
+            doc.add(LuceneTestCase::new_text_field("date", date, Store::YES));
+            doc.add(LuceneTestCase::new_text_field(
                 "contents",
                 content,
                 Store::YES,
-            )));
+            ));
             let date3 = rucene::util::extra::java_parse_int(date).ok_or_else(|| {
                 LuceneError::number_format(format!("For input string: \"{date}\""))
             })?;
-            doc.add(Box::new(IntPoint::new("date3", &[date3])?));
+            doc.add(IntPoint::new("date3", &[date3])?);
             writer.add_document(&doc)?;
         }
         writer.close()?;

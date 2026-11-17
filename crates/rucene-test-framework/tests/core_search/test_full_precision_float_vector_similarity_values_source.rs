@@ -118,18 +118,18 @@ fn index_segments(
             let mut doc = Document::new();
             if random().next_int_bound(100) < 30 {
                 // skip vector for some docs to create sparse vector field
-                doc.add(Box::new(IntField::new("has_vector", 0, Store::YES)));
+                doc.add(IntField::new("has_vector", 0, Store::YES));
             } else {
                 let vector = random_vector(VECTOR_DIMENSION);
-                doc.add(Box::new(IntField::new("id", *id, Store::YES)));
+                doc.add(IntField::new("id", *id, Store::YES));
                 *id += 1;
-                doc.add(Box::new(KnnFloatVectorField::new(
+                doc.add(KnnFloatVectorField::new(
                     KNN_FIELD,
                     &vector,
                     indexing_similarity_function,
-                )?));
+                )?);
                 vectors.push(vector);
-                doc.add(Box::new(IntField::new("has_vector", 1, Store::YES)));
+                doc.add(IntField::new("has_vector", 1, Store::YES));
             }
             w.add_document(&doc)?;
             w.flush()?;
@@ -138,7 +138,7 @@ fn index_segments(
     // add a segment with no vectors
     for _ in 0..100 {
         let mut doc = Document::new();
-        doc.add(Box::new(IntField::new("has_vector", 0, Store::YES)));
+        doc.add(IntField::new("has_vector", 0, Store::YES));
         w.add_document(&doc)?;
     }
     w.flush()?;

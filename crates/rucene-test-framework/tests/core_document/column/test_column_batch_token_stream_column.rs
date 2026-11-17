@@ -174,11 +174,11 @@ fn test_parity_with_add_document() -> Result<()> {
     )))?;
     for doc in docs {
         let mut d = Document::new();
-        d.add(Box::new(Field::new_with_token_stream(
+        d.add(Field::new_with_token_stream(
             "body",
             canned(doc),
             inverted_type()?,
-        )?));
+        )?);
         docw.w.add_document(&d)?;
     }
     let dr = docw.reader()?;

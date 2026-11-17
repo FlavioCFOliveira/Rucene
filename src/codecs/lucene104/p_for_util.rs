@@ -4,8 +4,9 @@
 //! blocks of 256 positive integers, optionally patching up to seven outliers
 //! that exceed the bit width chosen for the bulk of the block.
 
-use crate::error::{LuceneError, Result};
+use crate::error::Result;
 use crate::store::{DataInput, DataOutput};
+use crate::util::packed::PackedInts;
 
 use super::for_util::{ForUtil, BLOCK_SIZE};
 use crate::internal::vectorization::PostingDecodingUtil;
@@ -44,14 +45,10 @@ impl PForUtil {
         let mut histogram = [0i32; 32];
         let mut max_bits_required = 0;
         for &v in ints.iter() {
-            // `PackedInts.bitsRequired(v)` rejects a negative value.
-            if v < 0 {
-                return Err(LuceneError::illegal_argument(format!(
-                    "maxValue must be non-negative (got: {v})"
-                )));
-            }
-            let bits = 32 - (v as u32).leading_zeros() as i32;
-            let bits = if v == 0 { 0 } else { bits };
+            // `PForUtil.java:57`: `PackedInts.bitsRequired(v)` rejects a negative
+            // value and returns at least 1, so a zero lands in bucket 1 and
+            // `patchedBitsRequired` never drops to 0 (`PackedInts.java:803-820`).
+            let bits = PackedInts::bits_required_i32(v)?;
             histogram[bits as usize] += 1;
             max_bits_required = max_bits_required.max(bits);
         }
@@ -206,6 +203,75 @@ mod tests {
         pfor.decode(&mut pdu, &mut decoded).unwrap();
 
         assert!(decoded.iter().all(|&v| v == 42));
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Portability regression for the `.pos` byte divergence: the expected
+    /// bytes were printed by Lucene 10.5.0's own `PForUtil.encode` (the
+    /// `PForProbe` oracle, run against `lucene-core-10.5.0.jar`). Each case
+    /// sets the listed `(index, value)` pairs in an otherwise all-zero block.
+    ///
+    /// Before the fix the port treated `bitsRequired(0)` as 0 and chose the
+    /// all-equal encoding where Lucene writes a 1-bit block; for example the
+    /// first case encoded as `20 00 79 35`.
+    #[test]
+    fn encode_matches_lucene_bytes() {
+        let cases: &[(&[(usize, i32)], &str)] = &[
+            (
+                &[(121, 53)],
+                "210000000000000100000000000000000000000000000000000000000000000000791a",
+            ),
+            (&[], "0000"),
+            (
+                &[(3, 1), (50, 1)],
+                "010000000000000000000000020000008000000000000000000000000000000000",
+            ),
+            (
+                &[(0, 7), (255, 200), (17, 1)],
+                "4100000080000000200000000000000000000000000000000000000000000000000003ff64",
+            ),
+            (
+                &[(121, 53), (122, 9), (7, 255)],
+                "610000000000000100000001000000000000000000000000000000000000000080077f791a7a04",
+            ),
+        ];
+        let mut pfor = PForUtil::new();
+        for (set, expected) in cases {
+            let mut original = [0i32; BLOCK_SIZE];
+            for &(i, v) in set.iter() {
+                original[i] = v;
+            }
+            let mut ints = original;
+            let mut out = VecDataOutput::new();
+            pfor.encode(&mut ints, &mut out).unwrap();
+            let data = out.into_inner();
+            assert_eq!(hex(&data), *expected, "block {set:?}");
+
+            // The bytes Lucene writes decode back to the original values.
+            let input = MockIndexInput::new(data, "pfor-lucene");
+            let mut pdu = PostingDecodingUtil::new(Box::new(input));
+            let mut decoded = [0i32; BLOCK_SIZE];
+            pfor.decode(&mut pdu, &mut decoded).unwrap();
+            assert_eq!(&decoded[..], &original[..], "block {set:?}");
+        }
+    }
+
+    /// Lucene's decoder reads an all-equal block with exceptions (token bits
+    /// 0) by OR-ing each exception unshifted (`PForUtil.java:108-121`), so the
+    /// port's decoder keeps accepting that form, which earlier rucene writers
+    /// produced for the first case above.
+    #[test]
+    fn decode_accepts_all_equal_block_with_exceptions() {
+        let input = MockIndexInput::new(vec![0x20, 0x00, 0x79, 0x35], "pfor-old");
+        let mut pdu = PostingDecodingUtil::new(Box::new(input));
+        let mut decoded = [0i32; BLOCK_SIZE];
+        PForUtil::new().decode(&mut pdu, &mut decoded).unwrap();
+        let mut expected = [0i32; BLOCK_SIZE];
+        expected[121] = 53;
+        assert_eq!(&decoded[..], &expected[..]);
     }
 
     #[test]

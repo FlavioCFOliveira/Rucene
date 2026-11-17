@@ -110,22 +110,14 @@ fn before_class() -> Result<()> {
     custom_type.set_tokenized(false)?;
     for (i, d) in data.iter().enumerate() {
         let mut doc = rucene::document::Document::new();
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             "id",
             &i.to_string(),
             &custom_type,
-        ))); // Field.Keyword("id",String.valueOf(i)));
-        doc.add(Box::new(LuceneTestCase::new_field(
-            "all",
-            "all",
-            &custom_type,
-        ))); // Field.Keyword("all","all"));
+        )); // Field.Keyword("id",String.valueOf(i)));
+        doc.add(LuceneTestCase::new_field("all", "all", &custom_type)); // Field.Keyword("all","all"));
         if let Some(d) = d {
-            doc.add(Box::new(LuceneTestCase::new_text_field(
-                "data",
-                d,
-                Store::YES,
-            ))); // Field.Text("data",data[i]));
+            doc.add(LuceneTestCase::new_text_field("data", d, Store::YES)); // Field.Text("data",data[i]));
         }
         writer.add_document(&doc)?;
     }

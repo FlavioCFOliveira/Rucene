@@ -205,20 +205,20 @@ fn add_norms_documents(
         let id_field = StringField::new("id", i.to_string(), Store::NO)?;
         if !docs_with_field.get(i as usize) {
             let mut doc2 = Document::new();
-            doc2.add(Box::new(id_field));
+            doc2.add(id_field);
             writer.add_document(&doc2)?;
         } else {
             let value = norms[j];
             j += 1;
             let mut doc = Document::new();
-            doc.add(Box::new(id_field));
+            doc.add(id_field);
             // only empty fields may have 0 as a norm
-            doc.add(Box::new(TextField::new(
+            doc.add(TextField::new(
                 "indexed",
                 if value == 0 { "" } else { "a" }.to_string(),
                 Store::NO,
-            )?));
-            doc.add(Box::new(NumericDocValuesField::new("dv", value)));
+            )?);
+            doc.add(NumericDocValuesField::new("dv", value));
             writer.add_document(&doc)?;
         }
         if random().next_int_bound(31) == 0 {
@@ -415,14 +415,14 @@ pub trait BaseNormsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `add_random_fields` calls.
     fn norms_add_random_fields(&self, doc: &mut Document) {
         // TODO: improve
-        doc.add(Box::new(
+        doc.add(
             TextField::new(
                 "foobar",
                 TestUtil::random_simple_string(&*random()),
                 Store::NO,
             )
             .unwrap_or_else(|e| super::base_index_file_format_test_case::rethrow(e)),
-        ));
+        );
     }
 
     /// `testMergeStability()`, overridden.
@@ -772,14 +772,14 @@ pub trait BaseNormsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut to_delete: Vec<i32> = Vec::new();
         for i in 0..num_docs {
             let mut doc = Document::new();
-            doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+            doc.add(StringField::new("id", i.to_string(), Store::NO)?);
             if random().next_int_bound(5) == 1 {
                 to_delete.push(i);
-                doc.add(Box::new(TextField::new(
+                doc.add(TextField::new(
                     "content",
                     "some content".to_string(),
                     Store::NO,
-                )?));
+                )?);
             }
             w.add_document(&doc)?;
         }
@@ -919,11 +919,7 @@ fn independant_iterators<C: BaseNormsFormatTestCase + ?Sized>(
     conf.set_similarity(Some(sim))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(
-        "indexed",
-        "a".to_string(),
-        Store::NO,
-    )?));
+    doc.add(TextField::new("indexed", "a".to_string(), Store::NO)?);
     let empty_doc = Document::new();
     for _ in 0..3 {
         writer.add_document(&doc)?;

@@ -383,11 +383,8 @@ fn test_merges_work_with_uncommitted_segments() -> Result<()> {
         for doc in 0..10i64 {
             let mut d = Document::new();
             let timestamp = now_micros + (doc * 1000000);
-            d.add(Box::new(LongPoint::new("timestamp_tl", &[timestamp])?));
-            d.add(Box::new(NumericDocValuesField::new(
-                "timestamp_tl",
-                timestamp,
-            )));
+            d.add(LongPoint::new("timestamp_tl", &[timestamp])?);
+            d.add(NumericDocValuesField::new("timestamp_tl", timestamp));
             writer.add_document(&d)?;
         }
         writer.flush()?; // Flush to create segment but DON'T commit

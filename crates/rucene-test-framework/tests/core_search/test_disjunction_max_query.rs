@@ -227,102 +227,70 @@ fn dmq_set_up(f: &mut DisjunctionMax) -> Result<()> {
     // d1 is an "ok" match for: albino elephant
     {
         let mut d1 = Document::new();
-        d1.add(Box::new(LuceneTestCase::new_field(
-            "id",
-            "d1",
-            &NON_ANALYZED_TYPE,
-        ))); // Field.Keyword("id",
-             // "d1"));
-        d1.add(Box::new(LuceneTestCase::new_text_field(
+        d1.add(LuceneTestCase::new_field("id", "d1", &NON_ANALYZED_TYPE)); // Field.Keyword("id",
+                                                                           // "d1"));
+        d1.add(LuceneTestCase::new_text_field(
             "hed",
             "elephant",
             Store::YES,
-        ))); // Field.Text("hed", "elephant"));
-        d1.add(Box::new(LuceneTestCase::new_text_field(
+        )); // Field.Text("hed", "elephant"));
+        d1.add(LuceneTestCase::new_text_field(
             "dek",
             "elephant",
             Store::YES,
-        ))); // Field.Text("dek", "elephant"));
+        )); // Field.Text("dek", "elephant"));
         writer.add_document(&d1)?;
     }
 
     // d2 is a "good" match for: albino elephant
     {
         let mut d2 = Document::new();
-        d2.add(Box::new(LuceneTestCase::new_field(
-            "id",
-            "d2",
-            &NON_ANALYZED_TYPE,
-        ))); // Field.Keyword("id",
-             // "d2"));
-        d2.add(Box::new(LuceneTestCase::new_text_field(
+        d2.add(LuceneTestCase::new_field("id", "d2", &NON_ANALYZED_TYPE)); // Field.Keyword("id",
+                                                                           // "d2"));
+        d2.add(LuceneTestCase::new_text_field(
             "hed",
             "elephant",
             Store::YES,
-        ))); // Field.Text("hed", "elephant"));
-        d2.add(Box::new(LuceneTestCase::new_text_field(
-            "dek",
-            "albino",
-            Store::YES,
-        ))); // Field.Text("dek",
-             // "albino"));
-        d2.add(Box::new(LuceneTestCase::new_text_field(
+        )); // Field.Text("hed", "elephant"));
+        d2.add(LuceneTestCase::new_text_field("dek", "albino", Store::YES)); // Field.Text("dek",
+                                                                             // "albino"));
+        d2.add(LuceneTestCase::new_text_field(
             "dek",
             "elephant",
             Store::YES,
-        ))); // Field.Text("dek", "elephant"));
+        )); // Field.Text("dek", "elephant"));
         writer.add_document(&d2)?;
     }
 
     // d3 is a "better" match for: albino elephant
     {
         let mut d3 = Document::new();
-        d3.add(Box::new(LuceneTestCase::new_field(
-            "id",
-            "d3",
-            &NON_ANALYZED_TYPE,
-        ))); // Field.Keyword("id",
-             // "d3"));
-        d3.add(Box::new(LuceneTestCase::new_text_field(
-            "hed",
-            "albino",
-            Store::YES,
-        ))); // Field.Text("hed",
-             // "albino"));
-        d3.add(Box::new(LuceneTestCase::new_text_field(
+        d3.add(LuceneTestCase::new_field("id", "d3", &NON_ANALYZED_TYPE)); // Field.Keyword("id",
+                                                                           // "d3"));
+        d3.add(LuceneTestCase::new_text_field("hed", "albino", Store::YES)); // Field.Text("hed",
+                                                                             // "albino"));
+        d3.add(LuceneTestCase::new_text_field(
             "hed",
             "elephant",
             Store::YES,
-        ))); // Field.Text("hed", "elephant"));
+        )); // Field.Text("hed", "elephant"));
         writer.add_document(&d3)?;
     }
 
     // d4 is the "best" match for: albino elephant
     {
         let mut d4 = Document::new();
-        d4.add(Box::new(LuceneTestCase::new_field(
-            "id",
-            "d4",
-            &NON_ANALYZED_TYPE,
-        ))); // Field.Keyword("id",
-             // "d4"));
-        d4.add(Box::new(LuceneTestCase::new_text_field(
-            "hed",
-            "albino",
-            Store::YES,
-        ))); // Field.Text("hed",
-             // "albino"));
-        d4.add(Box::new(LuceneTestCase::new_field(
+        d4.add(LuceneTestCase::new_field("id", "d4", &NON_ANALYZED_TYPE)); // Field.Keyword("id",
+                                                                           // "d4"));
+        d4.add(LuceneTestCase::new_text_field("hed", "albino", Store::YES)); // Field.Text("hed",
+                                                                             // "albino"));
+        d4.add(LuceneTestCase::new_field(
             "hed",
             "elephant",
             &NON_ANALYZED_TYPE,
-        ))); // Field.Text("hed", "elephant"));
-        d4.add(Box::new(LuceneTestCase::new_text_field(
-            "dek",
-            "albino",
-            Store::YES,
-        ))); // Field.Text("dek",
-             // "albino"));
+        )); // Field.Text("hed", "elephant"));
+        d4.add(LuceneTestCase::new_text_field("dek", "albino", Store::YES)); // Field.Text("dek",
+                                                                             // "albino"));
         writer.add_document(&d4)?;
     }
 
@@ -934,11 +902,7 @@ fn do_test_random_top_docs(num_fields: usize, freqs: &[f64]) -> Result<()> {
                 builder.push('a');
             }
             if random().next_boolean() {
-                doc.add(Box::new(StringField::new(
-                    "field",
-                    "c".to_string(),
-                    Store::NO,
-                )?));
+                doc.add(StringField::new("field", "c".to_string(), Store::NO)?);
             }
             let num_others = if random().next_boolean() {
                 0
@@ -951,10 +915,10 @@ fn do_test_random_top_docs(num_fields: usize, freqs: &[f64]) -> Result<()> {
                 }
                 builder.push_str(&random().next_int().to_string());
             }
-            doc.add(Box::new(TextField::new_with_reader(
+            doc.add(TextField::new_with_reader(
                 &j.to_string(),
                 Box::new(StringCharReader::new(&builder)),
-            )?));
+            )?);
         }
         w.add_document(&doc)?;
     }

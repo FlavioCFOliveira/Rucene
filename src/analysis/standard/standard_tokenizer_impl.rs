@@ -153,10 +153,6 @@ pub struct StandardTokenizerImpl {
     /// Whether the user-EOF-code has already been executed.
     #[allow(dead_code)] // `@SuppressWarnings("unused")`, as in Java
     zz_eof_done: bool,
-    /// The current token decoded to `char`s for [`get_text`](Self::get_text),
-    /// kept across tokens. Java has no such buffer: its term holds the UTF-16
-    /// code units `zzBuffer` holds.
-    text_scratch: Vec<char>,
 }
 
 impl Default for StandardTokenizerImpl {
@@ -190,7 +186,6 @@ impl StandardTokenizerImpl {
             yychar: 0,
             zz_at_bol: true,
             zz_eof_done: false,
-            text_scratch: Vec::new(),
         }
     }
 
@@ -209,19 +204,21 @@ impl StandardTokenizerImpl {
     /// attribute holds characters, so the token's UTF-16 code units are
     /// decoded first; a token is a sequence of whole code points of the
     /// buffer, so it holds no unpaired surrogate.
-    pub fn get_text(&mut self, t: &mut dyn CharTermAttribute) {
+    pub fn get_text(&self, t: &mut dyn CharTermAttribute) {
         // Java copies `zzBuffer` straight into the term
         // (`StandardTokenizerImpl.java:723-725`: `t.copyBuffer(zzBuffer,
         // zzStartRead, zzMarkedPos-zzStartRead)`). The port's term holds
-        // `char`s, so the code units are decoded first, into a buffer kept
-        // across tokens rather than one allocated per token.
+        // `char`s, so the code units are decoded straight into the term's
+        // buffer, sized for the units as Java's `copyBuffer` sizes it.
+        // PERF: one pass and no intermediate buffer, as Java's one copy.
         let units = &self.zz_buffer[self.zz_start_read..self.zz_marked_pos];
-        self.text_scratch.clear();
-        self.text_scratch.extend(
-            char::decode_utf16(units.iter().copied())
-                .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)),
-        );
-        t.copy_buffer(&self.text_scratch, 0, self.text_scratch.len());
+        let buffer = t.resize_buffer(units.len());
+        let mut length = 0;
+        for c in char::decode_utf16(units.iter().copied()) {
+            buffer[length] = c.unwrap_or(char::REPLACEMENT_CHARACTER);
+            length += 1;
+        }
+        t.set_length(length);
     }
 
     /// Sets the scanner buffer size in chars.

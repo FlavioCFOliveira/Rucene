@@ -38,9 +38,7 @@ fn ensure_codec() {
 
 fn add_doc(writer: &IndexWriter, id: &str) {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StringField::new("id", id.to_string(), Store::YES).unwrap(),
-    ));
+    doc.add(StringField::new("id", id.to_string(), Store::YES).unwrap());
     writer.add_document(&doc).unwrap();
 }
 

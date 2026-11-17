@@ -87,14 +87,8 @@ fn writer(
 /// A document with `timestamp * 1000` as a `LongPoint` and a `NumericDocValuesField`.
 fn timestamp_doc(timestamp: i64) -> Result<Document> {
     let mut d = Document::new();
-    d.add(Box::new(LongPoint::new(
-        "timestamp_tl",
-        &[timestamp * 1000],
-    )?));
-    d.add(Box::new(NumericDocValuesField::new(
-        "timestamp_tl",
-        timestamp * 1000,
-    )));
+    d.add(LongPoint::new("timestamp_tl", &[timestamp * 1000])?);
+    d.add(NumericDocValuesField::new("timestamp_tl", timestamp * 1000));
     Ok(d)
 }
 

@@ -370,21 +370,9 @@ fn set_up_impl(t: &mut TestComplexPhraseQuery) -> Result<()> {
     )?;
     for d in &DOCS_CONTENT {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "name",
-            d.name,
-            Store::YES,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "id",
-            d.id,
-            Store::YES,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "role",
-            d.role,
-            Store::YES,
-        )));
+        doc.add(LuceneTestCase::new_text_field("name", d.name, Store::YES));
+        doc.add(LuceneTestCase::new_text_field("id", d.id, Store::YES));
+        doc.add(LuceneTestCase::new_text_field("role", d.role, Store::YES));
         w.add_document(&doc)?;
     }
     w.close()?;

@@ -53,7 +53,7 @@ fn wildcard_random_set_up(f: &mut WildcardRandomTest) -> Result<()> {
 
     let mut doc = Document::new();
     let field = LuceneTestCase::new_string_field("field", "", Store::NO);
-    doc.add(Box::new(field));
+    doc.add(field);
 
     // `new DecimalFormat("000", new DecimalFormatSymbols(Locale.ROOT))`.
     for i in 0..1000 {

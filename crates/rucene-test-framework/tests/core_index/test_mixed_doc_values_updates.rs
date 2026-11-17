@@ -132,20 +132,20 @@ fn test_many_reopens_and_fields() -> Result<()> {
         let num_docs = LuceneTestCase::at_least(5);
         for _ in 0..num_docs {
             let mut doc = Document::new();
-            doc.add(string_field("id", format!("doc-{doc_id}"), Store::NO)?);
-            doc.add(string_field("key", "all".into(), Store::NO)?); // update key
-                                                                    // add all fields with their current value
+            doc.add(*string_field("id", format!("doc-{doc_id}"), Store::NO)?);
+            doc.add(*string_field("key", "all".into(), Store::NO)?); // update key
+                                                                     // add all fields with their current value
             for f in 0..field_values.len() {
                 if (f as i32) < num_ndv_fields {
-                    doc.add(Box::new(NumericDocValuesField::new(
+                    doc.add(NumericDocValuesField::new(
                         &format!("f{f}"),
                         field_values[f],
-                    )));
+                    ));
                 } else {
-                    doc.add(Box::new(BinaryDocValuesField::new(
+                    doc.add(BinaryDocValuesField::new(
                         &format!("f{f}"),
                         to_bytes(field_values[f]),
-                    )));
+                    ));
                 }
             }
             writer.add_document(&doc)?;
@@ -265,20 +265,17 @@ fn test_stress_multi_threading() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(2000);
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(string_field("id", format!("doc{i}"), Store::NO)?);
+        doc.add(*string_field("id", format!("doc{i}"), Store::NO)?);
         let group = random().next_double();
         let g = group_of(group);
-        doc.add(string_field("updKey", g.into(), Store::NO)?);
+        doc.add(*string_field("updKey", g.into(), Store::NO)?);
         for j in 0..num_fields {
             let value = i64::from(random().next_int());
-            doc.add(Box::new(BinaryDocValuesField::new(
-                &format!("f{j}"),
-                to_bytes(value),
-            )));
-            doc.add(Box::new(NumericDocValuesField::new(
+            doc.add(BinaryDocValuesField::new(&format!("f{j}"), to_bytes(value)));
+            doc.add(NumericDocValuesField::new(
                 &format!("cf{j}"),
                 value.wrapping_mul(2),
-            ))); // control, always updated to f * 2
+            )); // control, always updated to f * 2
         }
         writer.add_document(&doc)?;
     }
@@ -420,13 +417,10 @@ fn test_update_different_docs_in_different_gens() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(10);
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(string_field("id", format!("doc{i}"), Store::NO)?);
+        doc.add(*string_field("id", format!("doc{i}"), Store::NO)?);
         let value = i64::from(random().next_int());
-        doc.add(Box::new(BinaryDocValuesField::new("f", to_bytes(value))));
-        doc.add(Box::new(NumericDocValuesField::new(
-            "cf",
-            value.wrapping_mul(2),
-        )));
+        doc.add(BinaryDocValuesField::new("f", to_bytes(value)));
+        doc.add(NumericDocValuesField::new("cf", value.wrapping_mul(2)));
         writer.add_document(&doc)?;
     }
 
@@ -505,7 +499,7 @@ fn test_tons_of_updates() -> Result<()> {
         let mut doc = Document::new();
         let num_update_terms = TestUtil::next_int(&*random, 1, num_terms / 10);
         for _ in 0..num_update_terms {
-            doc.add(string_field(
+            doc.add(*string_field(
                 "upd",
                 random_from_set(&*random, &update_terms),
                 Store::NO,
@@ -513,14 +507,11 @@ fn test_tons_of_updates() -> Result<()> {
         }
         for j in 0..num_binary_fields {
             let val = i64::from(random.next_int());
-            doc.add(Box::new(BinaryDocValuesField::new(
-                &format!("f{j}"),
-                to_bytes(val),
-            )));
-            doc.add(Box::new(NumericDocValuesField::new(
+            doc.add(BinaryDocValuesField::new(&format!("f{j}"), to_bytes(val)));
+            doc.add(NumericDocValuesField::new(
                 &format!("cf{j}"),
                 val.wrapping_mul(2),
-            )));
+            ));
         }
         writer.add_document(&doc)?;
     }
@@ -587,15 +578,12 @@ fn test_try_update_doc_values() -> Result<()> {
     let num_docs = 1 + random().next_int_bound(128);
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(string_field("id", i.to_string(), Store::YES)?);
-        doc.add(Box::new(NumericDocValuesField::new(
-            "numericId",
-            i64::from(i),
-        )));
-        doc.add(Box::new(BinaryDocValuesField::new(
+        doc.add(*string_field("id", i.to_string(), Store::YES)?);
+        doc.add(NumericDocValuesField::new("numericId", i64::from(i)));
+        doc.add(BinaryDocValuesField::new(
             "binaryId",
             BytesRef::new(vec![i as u8]),
-        )));
+        ));
         writer.add_document(&doc)?;
         if random().next_boolean() {
             writer.flush()?;
@@ -698,8 +686,8 @@ fn test_try_update_multi_threaded() -> Result<()> {
         let mut doc = Document::new();
         let value = random().next_long();
         *values[i].lock().unwrap_or_else(|p| p.into_inner()) = Some(value);
-        doc.add(string_field("id", i.to_string(), Store::NO)?);
-        doc.add(Box::new(NumericDocValuesField::new("value", value)));
+        doc.add(*string_field("id", i.to_string(), Store::NO)?);
+        doc.add(NumericDocValuesField::new("value", value));
         writer.add_document(&doc)?;
     }
 
@@ -854,12 +842,9 @@ fn test_reset_value() -> Result<()> {
     let conf = mock_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     let mut doc = Document::new();
-    doc.add(string_field("id", "0".into(), Store::NO)?);
-    doc.add(Box::new(NumericDocValuesField::new("val", 5)));
-    doc.add(Box::new(BinaryDocValuesField::new(
-        "val-bin",
-        BytesRef::new(vec![5]),
-    )));
+    doc.add(*string_field("id", "0".into(), Store::NO)?);
+    doc.add(NumericDocValuesField::new("val", 5));
+    doc.add(BinaryDocValuesField::new("val-bin", BytesRef::new(vec![5])));
     writer.add_document(&doc)?;
 
     if random().next_boolean() {
@@ -933,13 +918,13 @@ fn test_reset_value_multiple_docs() -> Result<()> {
         let mut doc = Document::new();
         let id = random().next_int_bound(5);
         seq_id[id as usize] = current_seq_id;
-        doc.add(string_field("id", id.to_string(), Store::YES)?);
-        doc.add(Box::new(NumericDocValuesField::new(
+        doc.add(*string_field("id", id.to_string(), Store::YES)?);
+        doc.add(NumericDocValuesField::new(
             "seqID",
             i64::from(current_seq_id),
-        )));
+        ));
         current_seq_id += 1;
-        doc.add(Box::new(NumericDocValuesField::new("is_live", 1)));
+        doc.add(NumericDocValuesField::new("is_live", 1));
         if i > 0 {
             writer.update_doc_values(
                 Term::from_text("id", &id.to_string()),
@@ -1032,8 +1017,8 @@ fn test_update_not_existing_field_dv() -> Result<()> {
     let conf = mock_iwc();
     with_dir_and_writer(conf, |writer| {
         let mut doc = Document::new();
-        doc.add(string_field("id", "1".into(), Store::YES)?);
-        doc.add(Box::new(NumericDocValuesField::new("test", 1)));
+        doc.add(*string_field("id", "1".into(), Store::YES)?);
+        doc.add(NumericDocValuesField::new("test", 1));
         writer.add_document(&doc)?;
         if random().next_boolean() {
             writer.commit()?;
@@ -1044,11 +1029,11 @@ fn test_update_not_existing_field_dv() -> Result<()> {
         )?;
 
         let mut doc1 = Document::new();
-        doc1.add(string_field("id", "2".into(), Store::YES)?);
-        doc1.add(Box::new(BinaryDocValuesField::new(
+        doc1.add(*string_field("id", "2".into(), Store::YES)?);
+        doc1.add(BinaryDocValuesField::new(
             "not_existing",
             BytesRef::default(),
-        )));
+        ));
         let iae = expect_throws(IAE, || writer.add_document(&doc1));
         assert_equals(
             "cannot change field \"not_existing\" from doc values type=NUMERIC to inconsistent doc values type=BINARY",
@@ -1074,7 +1059,7 @@ fn test_update_field_with_no_previous_doc_values_throws_error() -> Result<()> {
     let conf = mock_iwc();
     with_dir_and_writer(conf, |writer| {
         let mut doc = Document::new();
-        doc.add(string_field("id", "1".into(), Store::YES)?);
+        doc.add(*string_field("id", "1".into(), Store::YES)?);
         writer.add_document(&doc)?;
         if random().next_boolean() {
             let reader = directory_reader::open_with_writer(writer)?;
@@ -1109,9 +1094,9 @@ fn test_long_run_values_reset() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(65536);
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(string_field("id", i.to_string(), Store::NO)?);
+        doc.add(*string_field("id", i.to_string(), Store::NO)?);
         if i == 0 || i == num_docs - 1 || random().next_boolean() {
-            doc.add(Box::new(NumericDocValuesField::new("numeric", 1)));
+            doc.add(NumericDocValuesField::new("numeric", 1));
         }
         writer.add_document(&doc)?;
     }

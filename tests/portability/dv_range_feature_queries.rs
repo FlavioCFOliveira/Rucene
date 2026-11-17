@@ -132,31 +132,31 @@ fn sndv(field: &str, value: i64) -> Box<SortedNumericDocValuesField> {
 /// third `sn` value, 7, and the `num` value 100.
 fn doc(i: i32, perturbed: bool) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(StringField::new("id", id(i), Store::YES).unwrap()));
+    d.add(StringField::new("id", id(i), Store::YES).unwrap());
     if i % 7 != 6 {
-        d.add(sndv("sn", ((i * 37) % 101 - 50) as i64));
+        d.add(*sndv("sn", ((i * 37) % 101 - 50) as i64));
     }
     if i % 3 == 0 {
-        d.add(sndv("sn", ((i * 13) % 97) as i64));
+        d.add(*sndv("sn", ((i * 13) % 97) as i64));
     }
     if perturbed && i == 0 {
-        d.add(sndv("sn", 7));
+        d.add(*sndv("sn", 7));
     }
     if i % 5 != 4 {
         let f = ((i * 17) % 89) as f32 / 4.0 - 10.0;
-        d.add(sndv("snf", NumericUtils::float_to_sortable_int(f) as i64));
+        d.add(*sndv("snf", NumericUtils::float_to_sortable_int(f) as i64));
     }
     if i % 4 == 0 {
         let f = ((i * 29) % 71) as f32 / 2.0 - 5.0;
-        d.add(sndv("snf", NumericUtils::float_to_sortable_int(f) as i64));
+        d.add(*sndv("snf", NumericUtils::float_to_sortable_int(f) as i64));
     }
     if i % 6 != 5 {
         let v = ((i * 23) % 103) as f64 / 8.0 - 6.0;
-        d.add(sndv("snd", NumericUtils::double_to_sortable_long(v)));
+        d.add(*sndv("snd", NumericUtils::double_to_sortable_long(v)));
     }
     if i % 4 == 1 {
         let v = ((i * 19) % 61) as f64 / 3.0 - 9.0;
-        d.add(sndv("snd", NumericUtils::double_to_sortable_long(v)));
+        d.add(*sndv("snd", NumericUtils::double_to_sortable_long(v)));
     }
     if i % 11 != 10 {
         let num = if perturbed && i == 0 {
@@ -164,89 +164,81 @@ fn doc(i: i32, perturbed: bool) -> Document {
         } else {
             ((i * 41) % 211) as i64
         };
-        d.add(Box::new(NumericDocValuesField::new("num", num)));
+        d.add(NumericDocValuesField::new("num", num));
     }
     if i % 9 != 8 {
-        d.add(Box::new(SortedSetDocValuesField::new(
+        d.add(SortedSetDocValuesField::new(
             "ss",
             bytes(WORDS[(i % 20) as usize]),
-        )));
-        d.add(Box::new(SortedSetDocValuesField::new(
+        ));
+        d.add(SortedSetDocValuesField::new(
             "ss",
             bytes(WORDS[((i * 7 + 3) % 20) as usize]),
-        )));
+        ));
         if i % 5 == 0 {
-            d.add(Box::new(SortedSetDocValuesField::new(
+            d.add(SortedSetDocValuesField::new(
                 "ss",
                 bytes(WORDS[((i * 3 + 1) % 20) as usize]),
-            )));
+            ));
         }
     }
     if i % 10 != 9 {
-        d.add(Box::new(IntPoint::new("ip", &[(i * 31) % 500]).unwrap()));
+        d.add(IntPoint::new("ip", &[(i * 31) % 500]).unwrap());
     }
     let lv = ((i * 53) % 1000) as i64;
-    d.add(Box::new(LongPoint::new("lv", &[lv]).unwrap()));
-    d.add(sndv("lv", lv));
+    d.add(LongPoint::new("lv", &[lv]).unwrap());
+    d.add(*sndv("lv", lv));
     let ir_min = (i * 7) % 100;
-    d.add(Box::new(
-        IntRange::new("ir", &[ir_min], &[ir_min + i % 13]).unwrap(),
-    ));
+    d.add(IntRange::new("ir", &[ir_min], &[ir_min + i % 13]).unwrap());
     let lr_min = ((i * 11) % 1000 - 500) as i64;
-    d.add(Box::new(
-        LongRange::new("lr", &[lr_min], &[lr_min + ((i % 17) * 3) as i64]).unwrap(),
-    ));
+    d.add(LongRange::new("lr", &[lr_min], &[lr_min + ((i % 17) * 3) as i64]).unwrap());
     let fr_min = (i % 50) as f32 / 2.0;
-    d.add(Box::new(
-        FloatRange::new("fr", &[fr_min], &[fr_min + (i % 7) as f32 / 4.0]).unwrap(),
-    ));
+    d.add(FloatRange::new("fr", &[fr_min], &[fr_min + (i % 7) as f32 / 4.0]).unwrap());
     let a = ((i * 3) % 40) as f64;
     let b = ((i * 7) % 30) as f64;
-    d.add(Box::new(
+    d.add(
         DoubleRange::new(
             "dr",
             &[a, b],
             &[a + (i % 5 + 1) as f64, b + (i % 4) as f64 + 0.5],
         )
         .unwrap(),
-    ));
-    d.add(Box::new(InetAddressPoint::new("inet", inet(&ipv4(i)))));
+    );
+    d.add(InetAddressPoint::new("inet", inet(&ipv4(i))));
     if i % 10 == 0 {
-        d.add(Box::new(InetAddressPoint::new("inet", inet(&ipv6(i)))));
+        d.add(InetAddressPoint::new("inet", inet(&ipv6(i))));
     }
     if i % 8 != 7 {
-        d.add(Box::new(
+        d.add(
             FeatureField::new("features", "pagerank", 1.0 + ((i * 13) % 50) as f32 / 2.0).unwrap(),
-        ));
+        );
     }
     if i % 2 == 0 {
-        d.add(Box::new(
-            FeatureField::new("features", "recency", 0.5 + (i % 30) as f32).unwrap(),
-        ));
+        d.add(FeatureField::new("features", "recency", 0.5 + (i % 30) as f32).unwrap());
     }
     if i % 12 != 11 {
         let ts = TS_BASE + ((i as i64 * 7919) % 100_000) * 1000;
-        d.add(Box::new(LongField::new("ts", ts, Store::NO)));
+        d.add(LongField::new("ts", ts, Store::NO));
     }
     if i % 4 != 3 {
-        d.add(Box::new(
+        d.add(
             Field::new(
                 "body",
                 format!("w{} w{}", i % 10, (i * 3) % 10),
                 text_type(),
             )
             .unwrap(),
-        ));
+        );
     }
     if i % 3 != 2 {
-        d.add(Box::new(
+        d.add(
             KnnFloatVectorField::new(
                 "vec",
                 &[(i % 10) as f32, (i % 7) as f32 + 1.0],
                 VectorSimilarityFunction::EUCLIDEAN,
             )
             .unwrap(),
-        ));
+        );
     }
     d
 }
@@ -254,11 +246,8 @@ fn doc(i: i32, perturbed: bool) -> Document {
 /// `DvRangeFeatureFixture.sortedDoc(int)`.
 fn sorted_doc(i: i32) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(StringField::new("id", id(i), Store::YES).unwrap()));
-    d.add(Box::new(NumericDocValuesField::new(
-        "ns",
-        ((i * 41) % 211) as i64,
-    )));
+    d.add(StringField::new("id", id(i), Store::YES).unwrap());
+    d.add(NumericDocValuesField::new("ns", ((i * 41) % 211) as i64));
     d
 }
 

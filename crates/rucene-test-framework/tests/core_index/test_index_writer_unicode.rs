@@ -345,18 +345,14 @@ fn test_embedded_ffff() -> Result<()> {
         )))),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "a a\u{ffff}b",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "field",
-        "a",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("field", "a", Store::NO));
     w.add_document(&doc)?;
     let r = directory_reader::open_with_writer(&*w)?;
     assert_equals(&1, &r.doc_freq(&Term::from_text("field", "a\u{ffff}b"))?);
@@ -381,11 +377,11 @@ fn test_invalid_utf16() -> Result<()> {
 
     let count = UTF8_DATA.len() / 2;
     for i in 0..count {
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             &format!("f{i}"),
             &utf8_data(2 * i),
             Store::YES,
-        )));
+        ));
     }
     w.add_document(&doc)?;
     w.close()?;
@@ -422,11 +418,7 @@ fn test_term_utf16_sort_order() -> Result<()> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*rnd, dir.as_directory())?;
     let mut d = Document::new();
     // Single segment
-    d.add(Box::new(LuceneTestCase::new_string_field(
-        "f",
-        "",
-        Store::NO,
-    )));
+    d.add(LuceneTestCase::new_string_field("f", "", Store::NO));
     let mut chars = [0u16; 2];
     let mut all_terms: HashSet<String> = HashSet::new();
 

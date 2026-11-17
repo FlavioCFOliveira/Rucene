@@ -56,11 +56,11 @@ fn test_() -> Result<()> {
             docs_left_in_this_segment = TestUtil::next_int(&*random(), 10, 100);
         }
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &doc_upto.to_string(),
             Store::YES,
-        )));
+        ));
         w.as_ref().unwrap_or_else(|| npe("w")).add_document(&doc)?;
         doc_upto += 1;
         docs_left_in_this_segment -= 1;

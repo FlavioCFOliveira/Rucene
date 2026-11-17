@@ -54,11 +54,7 @@ fn create_index() -> Result<Arc<dyn Directory>> {
 
     for i in 0..10 {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "foo",
-            i.to_string(),
-            Store::YES,
-        )?));
+        doc.add(StringField::new("foo", i.to_string(), Store::YES)?);
         writer.add_document(&doc)?;
     }
 

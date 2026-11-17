@@ -62,7 +62,7 @@ fn before_class() -> Result<()> {
 
     let mut doc = Document::new();
     let field = LuceneTestCase::new_string_field(FIELD, "meaninglessnames", Store::NO);
-    doc.add(Box::new(field));
+    doc.add(field);
 
     for _ in 0..5137 {
         writer.add_document(&doc)?;

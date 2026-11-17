@@ -89,61 +89,61 @@ fn indri_set_up(f: &mut IndriAnd) -> Result<()> {
     // Query is "President Washington"
     {
         let mut d1 = Document::new();
-        d1.add(Box::new(LuceneTestCase::new_field(
+        d1.add(LuceneTestCase::new_field(
             "id",
             "d1",
             TextField::type_stored(),
-        )));
-        d1.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        d1.add(LuceneTestCase::new_text_field(
             "body",
             "President Washington was the first leader of the US",
             Store::YES,
-        )));
+        ));
         writer.add_document(&d1)?;
     }
 
     {
         let mut d2 = Document::new();
-        d2.add(Box::new(LuceneTestCase::new_field(
+        d2.add(LuceneTestCase::new_field(
             "id",
             "d2",
             TextField::type_stored(),
-        )));
-        d2.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        d2.add(LuceneTestCase::new_text_field(
             "body",
             "The president is head of the executive branch of government",
             Store::YES,
-        )));
+        ));
         writer.add_document(&d2)?;
     }
 
     {
         let mut d3 = Document::new();
-        d3.add(Box::new(LuceneTestCase::new_field(
+        d3.add(LuceneTestCase::new_field(
             "id",
             "d3",
             TextField::type_stored(),
-        )));
-        d3.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        d3.add(LuceneTestCase::new_text_field(
             "body",
             "George Washington was a general in the Revolutionary War",
             Store::YES,
-        )));
+        ));
         writer.add_document(&d3)?;
     }
 
     {
         let mut d4 = Document::new();
-        d4.add(Box::new(LuceneTestCase::new_field(
+        d4.add(LuceneTestCase::new_field(
             "id",
             "d4",
             TextField::type_stored(),
-        )));
-        d4.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        d4.add(LuceneTestCase::new_text_field(
             "body",
             "A company or college can have a president",
             Store::YES,
-        )));
+        ));
         writer.add_document(&d4)?;
     }
 

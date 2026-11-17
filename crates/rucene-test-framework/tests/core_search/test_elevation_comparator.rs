@@ -217,16 +217,16 @@ fn adoc(vals: &[&str]) -> Result<Document> {
     let mut doc = Document::new();
     let mut i = 0;
     while i + 2 < vals.len() {
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             vals[i],
             vals[i + 1],
             Store::YES,
-        )));
+        ));
         if vals[i] == "id" {
-            doc.add(Box::new(SortedDocValuesField::new(
+            doc.add(SortedDocValuesField::new(
                 vals[i],
                 BytesRef::from_char_sequence(vals[i + 1]),
-            )));
+            ));
         }
         i += 2;
     }

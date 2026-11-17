@@ -42,21 +42,9 @@ fn test_sum_doc_freq() -> Result<()> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "",
-        Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "foo",
-        "",
-        Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "bar",
-        "",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("id", "", Store::NO));
+    doc.add(LuceneTestCase::new_text_field("foo", "", Store::NO));
+    doc.add(LuceneTestCase::new_text_field("bar", "", Store::NO));
     for i in 0..num_docs {
         field_mut(&mut doc, "id").set_string_value(i.to_string())?;
         let ch1 = random_letter();

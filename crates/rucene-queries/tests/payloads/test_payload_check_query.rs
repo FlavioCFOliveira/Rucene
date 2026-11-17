@@ -123,11 +123,11 @@ fn before_class() -> Result<()> {
     // writer.infoStream = System.out;
     for i in 0..2000 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             "field",
             &English::int_to_english(i),
             Store::YES,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     let reader = writer.get_reader()?;

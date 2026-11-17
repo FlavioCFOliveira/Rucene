@@ -27,11 +27,7 @@ pub fn class_def() -> Arc<Class> {
 
 fn body_doc(text: &str) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "body",
-        text,
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_text_field("body", text, Store::YES));
     doc
 }
 

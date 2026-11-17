@@ -60,7 +60,7 @@ fn test_too_big_position() -> Result<()> {
     if random().next_boolean() {
         t2.set_payload(Some(BytesRef::new(vec![0x1])));
     }
-    doc.add(Box::new(canned_text_field(vec![t1, t2])?));
+    doc.add(canned_text_field(vec![t1, t2])?);
     expect_throws(IAE, || iw.add_document(&doc));
 
     // Document should not be visible:
@@ -90,7 +90,7 @@ fn test_max_position() -> Result<()> {
     if random().next_boolean() {
         t2.set_payload(Some(BytesRef::new(vec![0x1])));
     }
-    doc.add(Box::new(canned_text_field(vec![t1, t2])?));
+    doc.add(canned_text_field(vec![t1, t2])?);
     iw.add_document(&doc)?;
 
     // Document should be visible:

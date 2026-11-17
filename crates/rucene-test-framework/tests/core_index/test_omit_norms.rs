@@ -81,7 +81,7 @@ fn test_mixed_merge_throws_error() -> Result<()> {
         "This field has norms".into(),
         Arc::clone(&field_type1),
     )?;
-    d.add(Box::new(f1));
+    d.add(f1);
 
     // this field will NOT have norms
     let field_type2 = text_type(true, Some(false))?;
@@ -90,7 +90,7 @@ fn test_mixed_merge_throws_error() -> Result<()> {
         "This field has NO norms in all docs".into(),
         Arc::clone(&field_type2),
     )?;
-    d.add(Box::new(f2));
+    d.add(f2);
 
     for _ in 0..30 {
         writer.add_document(&d)?;
@@ -98,16 +98,16 @@ fn test_mixed_merge_throws_error() -> Result<()> {
 
     // reverse omitNorms options for f1 and f2
     let mut d2 = Document::new();
-    d2.add(Box::new(Field::new(
+    d2.add(Field::new(
         "f1",
         "This field has NO norms".into(),
         Arc::clone(&field_type2),
-    )?));
-    d2.add(Box::new(Field::new(
+    )?);
+    d2.add(Field::new(
         "f2",
         "This field has norms".into(),
         Arc::clone(&field_type1),
-    )?));
+    )?);
 
     let exception = expect_throws(IAE, || writer.add_document(&d2));
     assert_equals(
@@ -146,13 +146,13 @@ fn test_mixed_ram() -> Result<()> {
 
     // this field will have norms
     let f1 = LuceneTestCase::new_text_field("f1", "This field has norms", Store::NO);
-    d.add(Box::new(f1));
+    d.add(f1);
 
     // this field will NOT have norms
 
     let custom_type = text_type(true, None)?;
     let f2 = LuceneTestCase::new_field("f2", "This field has NO norms in all docs", &custom_type);
-    d.add(Box::new(f2));
+    d.add(f2);
 
     for _ in 0..5 {
         writer.add_document(&d)?;
@@ -218,7 +218,7 @@ fn test_no_nrm_file() -> Result<()> {
 
     let custom_type = text_type(true, None)?;
     let f1 = LuceneTestCase::new_field("f1", "This field has no norms", &custom_type);
-    d.add(Box::new(f1));
+    d.add(f1);
 
     for _ in 0..30 {
         writer.add_document(&d)?;

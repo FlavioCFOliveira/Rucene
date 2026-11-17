@@ -49,10 +49,8 @@ fn numeric_doc_values_written_by_the_index_writer_are_read_back() {
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
     for d in 0..4i64 {
         let mut document = Document::new();
-        document.add(Box::new(
-            StringField::new("id", format!("doc-{d}"), Store::YES).expect("id"),
-        ));
-        document.add(Box::new(NumericDocValuesField::new("num", d * 10)));
+        document.add(StringField::new("id", format!("doc-{d}"), Store::YES).expect("id"));
+        document.add(NumericDocValuesField::new("num", d * 10));
         writer.add_document(&document).expect("add document");
     }
     writer.commit().expect("commit");
@@ -91,11 +89,9 @@ fn a_flushed_segment_records_how_many_documents_it_soft_deletes() {
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
     for d in 0..6 {
         let mut document = Document::new();
-        document.add(Box::new(
-            StringField::new("id", format!("doc-{d}"), Store::YES).expect("id"),
-        ));
+        document.add(StringField::new("id", format!("doc-{d}"), Store::YES).expect("id"));
         if d % 2 == 1 {
-            document.add(Box::new(NumericDocValuesField::new(SOFT_DELETES_FIELD, 1)));
+            document.add(NumericDocValuesField::new(SOFT_DELETES_FIELD, 1));
         }
         writer.add_document(&document).expect("add document");
     }
@@ -129,10 +125,8 @@ fn a_segment_with_no_soft_deletes_field_configured_records_none() {
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
     for d in 0..4 {
         let mut document = Document::new();
-        document.add(Box::new(
-            StringField::new("id", format!("doc-{d}"), Store::YES).expect("id"),
-        ));
-        document.add(Box::new(NumericDocValuesField::new(SOFT_DELETES_FIELD, 1)));
+        document.add(StringField::new("id", format!("doc-{d}"), Store::YES).expect("id"));
+        document.add(NumericDocValuesField::new(SOFT_DELETES_FIELD, 1));
         writer.add_document(&document).expect("add document");
     }
     writer.commit().expect("commit");
@@ -163,11 +157,11 @@ fn search_reads_doc_values_through_doc_values_get_numeric_and_get_sorted() {
     let dir = fresh_directory("rucene-269-dv-check-field");
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).expect("writer");
     let mut document = Document::new();
-    document.add(Box::new(SortedDocValuesField::new(
+    document.add(SortedDocValuesField::new(
         "sorted",
         BytesRef::new(b"x".to_vec()),
-    )));
-    document.add(Box::new(NumericDocValuesField::new("num", 7)));
+    ));
+    document.add(NumericDocValuesField::new("num", 7));
     writer.add_document(&document).expect("add document");
     writer.commit().expect("commit");
     writer.close().expect("close");

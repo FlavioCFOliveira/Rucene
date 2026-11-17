@@ -39,11 +39,11 @@ fn test_prefix_query() -> Result<()> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
     for category in categories {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "category",
             category,
             Store::YES,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     let reader = writer.get_reader()?;
@@ -76,11 +76,11 @@ fn test_match_all() -> Result<()> {
     let directory = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         "field",
         "field",
         Store::YES,
-    )));
+    ));
     writer.add_document(&doc)?;
     let reader = writer.get_reader()?;
 
@@ -114,11 +114,11 @@ fn test_random_binary_prefix() -> Result<()> {
     shuffle(&mut terms_list, &*random());
     for t in &terms_list {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field_bytes(
+        doc.add(LuceneTestCase::new_string_field_bytes(
             "field",
             t.clone(),
             Store::NO,
-        )));
+        ));
         w.add_document(&doc)?;
     }
 

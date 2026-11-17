@@ -1608,16 +1608,16 @@ fn qasw_set_up() -> Result<()> {
         let mut doc = Document::new();
         let varied_field_value = VARIED_FIELD_VALUES[i % VARIED_FIELD_VALUES.len()];
         let repetitive_field_value = REPETITIVE_FIELD_VALUES[i % REPETITIVE_FIELD_VALUES.len()];
-        doc.add(Box::new(TextField::new(
+        doc.add(TextField::new(
             "variedField",
             varied_field_value.to_string(),
             Store::YES,
-        )?));
-        doc.add(Box::new(TextField::new(
+        )?);
+        doc.add(TextField::new(
             "repetitiveField",
             repetitive_field_value.to_string(),
             Store::YES,
-        )?));
+        )?);
         writer.add_document(&doc)?;
     }
     writer.close()?;
@@ -2010,8 +2010,8 @@ fn tstf_test_end_offset_position_with_tee_sink_token_filter() -> Result<()> {
     let sink: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(sink));
     let f1 = Field::new_with_token_stream("field", tee, Arc::clone(&ft))?;
     let f2 = Field::new_with_token_stream("field", sink, Arc::clone(&ft))?;
-    doc.add(Box::new(f1));
-    doc.add(Box::new(f2));
+    doc.add(f1);
+    doc.add(f2);
     w.add_document(&doc)?;
     w.close()?;
 

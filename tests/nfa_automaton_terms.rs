@@ -99,7 +99,7 @@ fn field_terms() -> (Arc<dyn directory_reader::DirectoryReader>, Box<dyn Terms>)
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for term in terms() {
         let mut document = Document::new();
-        document.add(Box::new(StringField::new("f", term, Store::NO).unwrap()));
+        document.add(StringField::new("f", term, Store::NO).unwrap());
         writer.add_document(&document).unwrap();
     }
     writer.commit().unwrap();

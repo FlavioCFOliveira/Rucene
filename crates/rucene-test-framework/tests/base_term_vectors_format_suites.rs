@@ -161,7 +161,7 @@ fn test_skip_redundant_prefetches() -> Result<()> {
         let ft = term_vectors_type()?;
         for i in 0..100 {
             let mut doc = Document::new();
-            doc.add(Box::new(Field::new("content", i.to_string(), ft.clone())?));
+            doc.add(Field::new("content", i.to_string(), ft.clone())?);
             w.add_document(&doc)?;
         }
         w.force_merge(1)?;
@@ -223,11 +223,7 @@ fn test_no_ords() -> Result<()> {
         RandomIndexWriter::new_with_mock_analyzer(&*LuceneTestCase::random(), dir.as_directory())?;
     let mut doc = Document::new();
     let ft = term_vectors_type()?;
-    doc.add(Box::new(Field::new(
-        "foo",
-        "this is a test".to_string(),
-        ft,
-    )?));
+    doc.add(Field::new("foo", "this is a test".to_string(), ft)?);
     iw.add_document(&doc)?;
     let ir = LuceneTestCase::get_only_leaf_reader(iw.get_reader()? as Arc<dyn IndexReader>)?;
     let terms = ir.term_vectors()?.get_field(0, "foo")?;
@@ -309,11 +305,7 @@ fn test_chunk_cleanup() -> Result<()> {
     for _ in 0..5 {
         let mut doc = Document::new();
         let ft = term_vectors_type()?;
-        doc.add(Box::new(Field::new(
-            "text",
-            "not very long at all".to_string(),
-            ft,
-        )?));
+        doc.add(Field::new("text", "not very long at all".to_string(), ft)?);
         iw.add_document(&doc)?;
         // force flush
         let ir2 = directory_reader::open_if_changed(Arc::clone(&ir))?;
@@ -335,11 +327,7 @@ fn test_chunk_cleanup() -> Result<()> {
     // add one more doc and merge again
     let mut doc = Document::new();
     let ft = term_vectors_type()?;
-    doc.add(Box::new(Field::new(
-        "text",
-        "not very long at all".to_string(),
-        ft,
-    )?));
+    doc.add(Field::new("text", "not very long at all".to_string(), ft)?);
     iw.add_document(&doc)?;
     iw.force_merge(1)?;
     let ir2 = directory_reader::open_if_changed(Arc::clone(&ir))?;

@@ -76,29 +76,21 @@ fn rescore_with_span_near() -> Result<()> {
     )?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "0",
-        Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_string_field("id", "0", Store::YES));
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "wizard the the the the the oz",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "1",
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_string_field("id", "1", Store::YES));
     // 1 extra token, but wizard and oz are close;
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "wizard oz the the the the the the",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     let r = w.get_reader()?;
     w.close()?;

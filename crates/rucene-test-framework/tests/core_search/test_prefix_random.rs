@@ -68,7 +68,7 @@ fn fixture_set_up(f: &mut Fixture) -> Result<()> {
 
     let mut doc = Document::new();
     let field = LuceneTestCase::new_string_field("field", "", Store::NO);
-    doc.add(Box::new(field));
+    doc.add(field);
     let num = LuceneTestCase::at_least(1000);
     for _ in 0..num {
         field_mut(&mut doc, "field")

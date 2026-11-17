@@ -446,7 +446,7 @@ fn test_commit_thread_safety() -> Result<()> {
                 let mut doc = Document::new();
                 let mut r = directory_reader::open(Arc::clone(&d))?;
                 let f = LuceneTestCase::new_string_field("f", "", Store::NO);
-                doc.add(Box::new(f));
+                doc.add(f);
                 let mut iterations = 0;
                 let mut count = 0;
                 loop {

@@ -635,11 +635,7 @@ fn test_corruption_after_disk_full_during_merge() -> Result<()> {
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
 
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "f",
-        "doctor who",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("f", "doctor who", Store::NO));
     w.add_document(&doc)?;
     w.commit()?;
 
@@ -680,11 +676,11 @@ fn test_immediate_disk_full() -> Result<()> {
     dir.set_max_size_in_bytes(1.max(dir.size_in_bytes()?));
     let mut doc = Document::new();
     let custom_type = FieldType::new_from(TextField::type_stored());
-    doc.add(Box::new(LuceneTestCase::new_field(
+    doc.add(LuceneTestCase::new_field(
         "field",
         "aaa bbb ccc ddd eee fff ggg hhh iii jjj",
         &custom_type,
-    )));
+    ));
     expect_throws(IOE, || writer.add_document(&doc));
     Assert::assert_true(writer.is_deleter_closed()?);
     Assert::assert_true(writer.is_closed());
@@ -698,14 +694,10 @@ fn test_immediate_disk_full() -> Result<()> {
 /// The private `addDoc(IndexWriter)`.
 fn add_doc(writer: &IndexWriter) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "content",
-        "aaa",
-        Store::NO,
-    )));
-    doc.add(Box::new(NumericDocValuesField::new("numericdv", 1)));
-    doc.add(Box::new(IntPoint::new("point", &[1])?));
-    doc.add(Box::new(IntPoint::new("point2d", &[1, 1])?));
+    doc.add(LuceneTestCase::new_text_field("content", "aaa", Store::NO));
+    doc.add(NumericDocValuesField::new("numericdv", 1));
+    doc.add(IntPoint::new("point", &[1])?);
+    doc.add(IntPoint::new("point2d", &[1, 1])?);
     writer.add_document(&doc)?;
     Ok(())
 }
@@ -713,19 +705,19 @@ fn add_doc(writer: &IndexWriter) -> Result<()> {
 /// The private `addDocWithIndex(IndexWriter, int)`.
 fn add_doc_with_index(writer: &IndexWriter, index: i32) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "content",
         &format!("aaa {index}"),
         Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    ));
+    doc.add(LuceneTestCase::new_text_field(
         "id",
         &index.to_string(),
         Store::NO,
-    )));
-    doc.add(Box::new(NumericDocValuesField::new("numericdv", 1)));
-    doc.add(Box::new(IntPoint::new("point", &[1])?));
-    doc.add(Box::new(IntPoint::new("point2d", &[1, 1])?));
+    ));
+    doc.add(NumericDocValuesField::new("numericdv", 1));
+    doc.add(IntPoint::new("point", &[1])?);
+    doc.add(IntPoint::new("point2d", &[1, 1])?);
     writer.add_document(&doc)?;
     Ok(())
 }

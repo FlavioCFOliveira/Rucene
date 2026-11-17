@@ -184,10 +184,7 @@ fn index_doc(
     let mut doc = Document::new();
     let bytes = Files::read_all_bytes(&path)?;
     let is = StringCharReader::new(String::from_utf8_lossy(&bytes).into_owned());
-    doc.add(Box::new(TextField::new_with_reader(
-        "contents",
-        Box::new(is),
-    )?));
+    doc.add(TextField::new_with_reader("contents", Box::new(is))?);
     writer.add_document(&doc)?;
     writer.commit()?;
     Ok(writer

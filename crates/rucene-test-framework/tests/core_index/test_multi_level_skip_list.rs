@@ -95,11 +95,11 @@ fn test_simple_skip(this: &mut Instance) -> Result<()> {
     let term = Term::from_text("test", "a");
     for _ in 0..5000 {
         let mut d1 = Document::new();
-        d1.add(Box::new(LuceneTestCase::new_text_field(
+        d1.add(LuceneTestCase::new_text_field(
             term.field(),
             &term.text(),
             Store::NO,
-        )));
+        ));
         writer.add_document(&d1)?;
     }
     writer.commit()?;

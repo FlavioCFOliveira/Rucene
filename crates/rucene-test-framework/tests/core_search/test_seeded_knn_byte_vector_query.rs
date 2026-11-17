@@ -148,12 +148,12 @@ pub fn index_tagged_docs<C: KnnVectorCase>(
     let w = RandomIndexWriter::new_with_config(&*random(), d.as_directory(), iwc)?;
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(C::get_knn_vector_field(
+        doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
             "field",
             &C::random_vector(dimension),
-        )?);
-        doc.add(Box::new(NumericDocValuesField::new("tag", i64::from(i))));
-        doc.add(Box::new(IntPoint::new("tag", &[i])?));
+        )?));
+        doc.add(NumericDocValuesField::new("tag", i64::from(i)));
+        doc.add(IntPoint::new("tag", &[i])?);
         w.add_document(&doc)?;
     }
     w.close()
@@ -251,14 +251,14 @@ pub fn index_random_with_seed<C: KnnVectorCase>(
         let mut doc = Document::new();
         if random().next_boolean() {
             // Randomly skip some vectors to test the mapping from docid to ordinals
-            doc.add(C::get_knn_vector_field(
+            doc.add_shared(std::sync::Arc::from(C::get_knn_vector_field(
                 "field",
                 &C::random_vector(dimension),
-            )?);
+            )?));
             num_docs_with_vector += 1;
         }
-        doc.add(Box::new(NumericDocValuesField::new("tag", i64::from(i))));
-        doc.add(Box::new(IntPoint::new("tag", &[i])?));
+        doc.add(NumericDocValuesField::new("tag", i64::from(i)));
+        doc.add(IntPoint::new("tag", &[i])?);
         w.add_document(&doc)?;
     }
     w.force_merge(1)?;

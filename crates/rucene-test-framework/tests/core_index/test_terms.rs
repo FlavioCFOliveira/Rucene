@@ -35,11 +35,11 @@ fn test_term_min_max_basic() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "a b c cc ddd",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     let r: Arc<dyn IndexReader> = w.get_reader()?;
     let terms = MultiTerms::get_terms(&r, "field")?.unwrap_or_else(|| npe("terms"));
@@ -88,7 +88,7 @@ fn test_term_min_max_random() -> Result<()> {
             Arc::new(AtomicRefCell::new(CannedBinaryTokenStream::new(tokens))),
             TextField::type_not_stored().clone(),
         )?;
-        doc.add(Box::new(field));
+        doc.add(field);
         w.add_document(&doc)?;
     }
 

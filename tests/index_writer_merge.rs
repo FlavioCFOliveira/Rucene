@@ -420,25 +420,15 @@ const LUCENE_SQ_DELETIONS: &[(&str, &str)] = &[
 /// and in the same order, so that field numbers agree with Lucene's.
 fn vec_doc(i: i32, deletable: bool) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StoredField::new_string("id", format!("doc-{i}")).unwrap(),
-    ));
-    doc.add(Box::new(
-        KnnFloatVectorField::with_euclidean("f", &[i as f32, 1.0 + i as f32 * 0.5]).unwrap(),
-    ));
-    doc.add(Box::new(
-        KnnByteVectorField::with_euclidean("b", &[i as u8, (200 - i) as u8]).unwrap(),
-    ));
+    doc.add(StoredField::new_string("id", format!("doc-{i}")).unwrap());
+    doc.add(KnnFloatVectorField::with_euclidean("f", &[i as f32, 1.0 + i as f32 * 0.5]).unwrap());
+    doc.add(KnnByteVectorField::with_euclidean("b", &[i as u8, (200 - i) as u8]).unwrap());
     if i % 2 == 0 {
         // Java's `-i` is an `int`, so document 0 stores +0.0, not -0.0.
-        doc.add(Box::new(
-            KnnFloatVectorField::with_euclidean("s", &[i as f32 * 2.0, (-i) as f32]).unwrap(),
-        ));
+        doc.add(KnnFloatVectorField::with_euclidean("s", &[i as f32 * 2.0, (-i) as f32]).unwrap());
     }
     if deletable && (i == 1 || i == 4) {
-        doc.add(Box::new(
-            KnnFloatVectorField::with_euclidean("del", &[1.0]).unwrap(),
-        ));
+        doc.add(KnnFloatVectorField::with_euclidean("del", &[1.0]).unwrap());
     }
     doc
 }
@@ -698,9 +688,7 @@ fn force_merge_turns_two_commits_into_one_segment_with_every_document() {
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for id in ["a", "b"] {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StoredField::new_string("id", id.to_string()).unwrap(),
-        ));
+        doc.add(StoredField::new_string("id", id.to_string()).unwrap());
         writer.add_document(&doc).unwrap();
         writer.commit().unwrap();
     }
@@ -760,9 +748,7 @@ fn the_committed_segment_info_carries_every_change_the_merge_made() {
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for id in ["a", "b"] {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StoredField::new_string("id", id.to_string()).unwrap(),
-        ));
+        doc.add(StoredField::new_string("id", id.to_string()).unwrap());
         writer.add_document(&doc).unwrap();
         writer.commit().unwrap();
     }
@@ -810,10 +796,8 @@ fn the_committed_segment_info_carries_every_change_the_merge_made() {
 /// so the vectors are exactly Lucene's.
 fn graph_doc(i: i32) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StoredField::new_string("id", format!("doc-{i}")).unwrap(),
-    ));
-    doc.add(Box::new(
+    doc.add(StoredField::new_string("id", format!("doc-{i}")).unwrap());
+    doc.add(
         KnnFloatVectorField::with_euclidean(
             "f",
             &[
@@ -822,11 +806,11 @@ fn graph_doc(i: i32) -> Document {
             ],
         )
         .unwrap(),
-    ));
-    doc.add(Box::new(
+    );
+    doc.add(
         KnnByteVectorField::with_euclidean("b", &[((i * 31) % 251) as u8, ((i * 17) % 241) as u8])
             .unwrap(),
-    ));
+    );
     doc
 }
 
@@ -846,19 +830,15 @@ const WIDE_DIMENSIONS: i32 = 16;
 /// sixteen do not, which is what tells the two merge branches apart.
 fn wide_graph_doc(i: i32) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StoredField::new_string("id", format!("doc-{i}")).unwrap(),
-    ));
+    doc.add(StoredField::new_string("id", format!("doc-{i}")).unwrap());
     let f: Vec<f32> = (0..WIDE_DIMENSIONS)
         .map(|j| ((i * 7919 + j * 104729) % 1009) as f32 / 7.0)
         .collect();
-    doc.add(Box::new(
-        KnnFloatVectorField::with_euclidean("f", &f).unwrap(),
-    ));
-    doc.add(Box::new(
+    doc.add(KnnFloatVectorField::with_euclidean("f", &f).unwrap());
+    doc.add(
         KnnByteVectorField::with_euclidean("b", &[((i * 31) % 251) as u8, ((i * 17) % 241) as u8])
             .unwrap(),
-    ));
+    );
     doc
 }
 
@@ -1181,20 +1161,14 @@ fn a_merged_field_no_source_holds_fails_the_merge_without_a_panic() {
         let writer = IndexWriter::new(Arc::clone(&dir), config()).unwrap();
         for i in 0..2 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                KnnFloatVectorField::with_euclidean("v", &[i as f32, 1.0]).unwrap(),
-            ));
-            doc.add(Box::new(
-                KnnFloatVectorField::with_euclidean("w", &[1.0, i as f32]).unwrap(),
-            ));
+            doc.add(KnnFloatVectorField::with_euclidean("v", &[i as f32, 1.0]).unwrap());
+            doc.add(KnnFloatVectorField::with_euclidean("w", &[1.0, i as f32]).unwrap());
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();
         for i in 0..2 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                KnnFloatVectorField::with_euclidean("w", &[i as f32, 2.0]).unwrap(),
-            ));
+            doc.add(KnnFloatVectorField::with_euclidean("w", &[i as f32, 2.0]).unwrap());
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();
@@ -1317,20 +1291,14 @@ fn segments_that_do_not_share_their_vector_fields_merge() {
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..2 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                KnnFloatVectorField::with_euclidean("v1", &[i as f32, 1.0]).unwrap(),
-            ));
-            doc.add(Box::new(
-                KnnFloatVectorField::with_euclidean("v2", &[1.0, i as f32]).unwrap(),
-            ));
+            doc.add(KnnFloatVectorField::with_euclidean("v1", &[i as f32, 1.0]).unwrap());
+            doc.add(KnnFloatVectorField::with_euclidean("v2", &[1.0, i as f32]).unwrap());
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();
         for i in 0..2 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                KnnFloatVectorField::with_euclidean("v1", &[i as f32, 2.0]).unwrap(),
-            ));
+            doc.add(KnnFloatVectorField::with_euclidean("v1", &[i as f32, 2.0]).unwrap());
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();
@@ -1414,10 +1382,8 @@ const FLUSH_DOCS: i32 = 800;
 /// [`sort_reversing_the_documents`].
 fn flush_doc(i: i32) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StoredField::new_string("id", format!("doc-{i}")).unwrap(),
-    ));
-    doc.add(Box::new(
+    doc.add(StoredField::new_string("id", format!("doc-{i}")).unwrap());
+    doc.add(
         KnnFloatVectorField::with_euclidean(
             "f",
             &[
@@ -1426,8 +1392,8 @@ fn flush_doc(i: i32) -> Document {
             ],
         )
         .unwrap(),
-    ));
-    doc.add(Box::new(
+    );
+    doc.add(
         KnnFloatVectorField::new(
             "c",
             &[
@@ -1438,12 +1404,12 @@ fn flush_doc(i: i32) -> Document {
             VectorSimilarityFunction::COSINE,
         )
         .unwrap(),
-    ));
-    doc.add(Box::new(
+    );
+    doc.add(
         KnnByteVectorField::with_euclidean("b", &[((i * 31) % 251) as u8, ((i * 17) % 241) as u8])
             .unwrap(),
-    ));
-    doc.add(Box::new(NumericDocValuesField::new("sort", -i64::from(i))));
+    );
+    doc.add(NumericDocValuesField::new("sort", -i64::from(i)));
     doc
 }
 

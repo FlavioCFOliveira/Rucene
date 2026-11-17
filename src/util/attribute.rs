@@ -794,6 +794,11 @@ struct SharedAttributes {
     interface_order: Vec<TypeId>,
     /// Concrete implementation `TypeId` -> implementation, in insertion order.
     impls: Vec<(TypeId, AttributeCell)>,
+    /// How many times `remove_all_attributes` emptied these maps. While it
+    /// is unchanged the maps only grew (an entry, once added, is never
+    /// replaced), so a source's view of them is a subset that
+    /// [`AttributeSource::sync_view_unless_emptied`] completes.
+    removals: u64,
 }
 
 impl SharedAttributes {
@@ -893,6 +898,34 @@ impl AttributeSource {
     /// Equivalent to `org.apache.lucene.util.AttributeSource#getAttributeFactory`.
     pub fn attribute_factory(&self) -> Arc<dyn AttributeFactory> {
         Arc::clone(&self.factory)
+    }
+
+    /// The number of times [`remove_all_attributes`](Self::remove_all_attributes)
+    /// emptied the shared maps, for
+    /// [`sync_view_unless_emptied`](Self::sync_view_unless_emptied).
+    pub(crate) fn shared_removals(&self) -> u64 {
+        self.shared.borrow().removals
+    }
+
+    /// Brings this source's view up to date with the shared maps when they
+    /// were not emptied since [`shared_removals`](Self::shared_removals)
+    /// returned `removals`, and returns whether they were not.
+    ///
+    /// The maps then only grew since, so the view becomes exactly the one
+    /// [`new_from`](Self::new_from) gives a source built from this one now.
+    pub(crate) fn sync_view_unless_emptied(&mut self, removals: u64) -> bool {
+        let shared = self.shared.borrow();
+        if shared.removals != removals {
+            return false;
+        }
+        if self.attributes.len() != shared.attributes.len() {
+            for (id, cell) in &shared.attributes {
+                self.attributes
+                    .entry(*id)
+                    .or_insert_with(|| Arc::clone(cell));
+            }
+        }
+        true
     }
 
     /// Brings this source's view up to date with the shared maps.
@@ -1219,6 +1252,7 @@ impl AttributeSource {
             shared.attributes.clear();
             shared.interface_order.clear();
             shared.impls.clear();
+            shared.removals = shared.removals.wrapping_add(1);
         }
         self.attributes.clear();
     }

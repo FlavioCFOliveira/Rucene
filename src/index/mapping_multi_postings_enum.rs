@@ -322,16 +322,6 @@ impl MappingMultiPostingsEnum {
         }
         self.doc_id_merger.current_sub().ok_or_else(null_current)
     }
-
-    /// Mutable counterpart of [`Self::current`].
-    fn current_mut(&mut self) -> Result<&mut MappingPostingsSub> {
-        if !self.positioned {
-            return Err(null_current());
-        }
-        self.doc_id_merger
-            .current_sub_mut()
-            .ok_or_else(null_current)
-    }
 }
 
 /// The `NullPointerException` Java raises when a per-document method reads
@@ -425,8 +415,18 @@ impl PostingsEnum for MappingMultiPostingsEnum {
     /// `CorruptIndexException`s carry Java's messages — the first one's
     /// unbalanced quote included — and the sub's postings as the resource.
     fn next_position(&mut self) -> Result<i32> {
-        let field = self.field.clone();
-        let sub = self.current_mut()?;
+        // PERF: `field` and the merger are disjoint fields, so the name is
+        // borrowed alongside the current sub, as Java reads its `final String
+        // field` reference (`MappingMultiPostingsEnum.java:32`), instead of
+        // being copied on every position.
+        if !self.positioned {
+            return Err(null_current());
+        }
+        let field = &self.field;
+        let sub = self
+            .doc_id_merger
+            .current_sub_mut()
+            .ok_or_else(null_current)?;
         let mapped_doc_id = sub.mapped_doc_id;
         let postings = sub
             .postings

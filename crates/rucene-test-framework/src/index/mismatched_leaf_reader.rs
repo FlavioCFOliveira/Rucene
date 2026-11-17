@@ -229,7 +229,7 @@ impl StoredFieldVisitor for MismatchedVisitor<'_> {
         self.r#in.binary_field(renumbered, value)
     }
 
-    fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> Result<()> {
+    fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
         let renumbered = self.renumber(field_info)?;
         self.r#in.string_field(renumbered, value)
     }

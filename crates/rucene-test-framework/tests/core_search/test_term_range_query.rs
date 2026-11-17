@@ -126,16 +126,16 @@ impl TermRangeQueryTest {
     fn insert_doc(&mut self, writer: &IndexWriter, content: &str) -> Result<()> {
         let mut doc = Document::new();
 
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &format!("id{}", self.doc_count),
             Store::YES,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        doc.add(LuceneTestCase::new_text_field(
             "content",
             content,
             Store::NO,
-        )));
+        ));
 
         writer.add_document(&doc)?;
         self.doc_count += 1;

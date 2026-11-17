@@ -300,11 +300,11 @@ fn test_null_or_sub_scorer() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "a b c d",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
 
     let r = w.get_reader()?;
@@ -342,11 +342,11 @@ fn test_de_morgan() -> Result<()> {
     let dir1 = LuceneTestCase::new_directory();
     let iw1 = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir1.as_directory())?;
     let mut doc1 = Document::new();
-    doc1.add(Box::new(LuceneTestCase::new_text_field(
+    doc1.add(LuceneTestCase::new_text_field(
         "field",
         "foo bar",
         Store::NO,
-    )));
+    ));
     iw1.add_document(&doc1)?;
     let reader1 = iw1.get_reader()?;
     iw1.close()?;
@@ -354,11 +354,11 @@ fn test_de_morgan() -> Result<()> {
     let dir2 = LuceneTestCase::new_directory();
     let iw2 = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir2.as_directory())?;
     let mut doc2 = Document::new();
-    doc2.add(Box::new(LuceneTestCase::new_text_field(
+    doc2.add(LuceneTestCase::new_text_field(
         "field",
         "foo baz",
         Store::NO,
-    )));
+    ));
     iw2.add_document(&doc2)?;
     let reader2 = iw2.get_reader()?;
     iw2.close()?;
@@ -427,7 +427,7 @@ fn test_bs2_disjunction_next_vs_advance() -> Result<()> {
             contents += " f";
         }
         let mut doc = Document::new();
-        doc.add(Box::new(TextField::new("field", contents, Store::NO)?));
+        doc.add(TextField::new("field", contents, Store::NO)?);
         w.add_document(&doc)?;
     }
     w.force_merge(1)?;
@@ -528,11 +528,11 @@ fn test_min_should_match_leniency() -> Result<()> {
         )))),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "a b c d",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     let r = directory_reader::open_with_writer(&*w)?;
     let s = LuceneTestCase::new_searcher(Arc::clone(&r));
@@ -567,7 +567,7 @@ fn test_filter_clause_behaves_like_must() -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let f = text_field("field", "a b c d");
-    doc.add(Box::new(f));
+    doc.add(f);
     w.add_document(&doc)?;
     field_mut(&mut doc, "field").set_string_value("b d".to_string())?;
     w.add_document(&doc)?;
@@ -693,7 +693,7 @@ fn test_filter_clause_does_not_impact_score() -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let f = text_field("field", "a b c d");
-    doc.add(Box::new(f));
+    doc.add(f);
     w.add_document(&doc)?;
     field_mut(&mut doc, "field").set_string_value("b d".to_string())?;
     w.add_document(&doc)?;
@@ -767,7 +767,7 @@ fn propagates_approximations(
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let f = text_field("field", "a b c");
-    doc.add(Box::new(f));
+    doc.add(f);
     w.add_document(&doc)?;
     w.commit()?;
 
@@ -851,7 +851,7 @@ fn test_query_matches_count() -> Result<()> {
                 Store::NO,
             );
         }
-        doc.add(Box::new(f));
+        doc.add(f);
         w.add_document(&doc)?;
     }
     w.commit()?;
@@ -889,15 +889,11 @@ fn two_doc_index(
     let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LongPoint::new("long", &[3])?));
+    doc.add(LongPoint::new("long", &[3])?);
     if three_dim {
-        doc.add(Box::new(LongPoint::new("long3dim", &[3, 4, 5])?));
+        doc.add(LongPoint::new("long3dim", &[3, 4, 5])?);
     }
-    doc.add(Box::new(StringField::new(
-        "string",
-        "abc".into(),
-        Store::NO,
-    )?));
+    doc.add(StringField::new("string", "abc".into(), Store::NO)?);
     writer.add_document(&doc)?;
     field_mut_as::<LongPoint>(&mut doc, "long").set_long_value(10)?;
     if three_dim {
@@ -1119,7 +1115,7 @@ fn index_string_docs(
         for values in doc_content {
             let mut doc = Document::new();
             for value in values {
-                doc.add(Box::new(StringField::new(field, value.clone(), Store::NO)?));
+                doc.add(StringField::new(field, value.clone(), Store::NO)?);
             }
             w.add_document(&doc)?;
         }

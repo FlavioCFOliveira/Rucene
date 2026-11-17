@@ -267,7 +267,7 @@ fn test_2b_terms() -> Result<()> {
         custom_type.set_omit_norms(true)?;
         let stream: Arc<AtomicRefCell<dyn TokenStream>> = ts.clone();
         let field = Field::new_with_token_stream("field", stream, custom_type)?;
-        doc.add(Box::new(field));
+        doc.add(field);
         // w.setInfoStream(System.out);
         let num_docs = (term_count / terms_per_doc as i64) as i32;
 

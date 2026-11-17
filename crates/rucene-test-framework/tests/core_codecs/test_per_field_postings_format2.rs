@@ -90,11 +90,11 @@ fn new_writer(dir: Arc<dyn Directory>, conf: IndexWriterConfig) -> Result<Arc<In
 fn add_content_docs(writer: &IndexWriter, num_docs: i32, content: &str) -> Result<()> {
     for _ in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             "content",
             content,
             Store::NO,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     Ok(())
@@ -114,16 +114,12 @@ fn add_docs2(writer: &IndexWriter, num_docs: i32) -> Result<()> {
 fn add_docs3(writer: &IndexWriter, num_docs: i32) -> Result<()> {
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "content",
-            "ccc",
-            Store::NO,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_text_field("content", "ccc", Store::NO));
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::YES,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     Ok(())
@@ -290,7 +286,7 @@ fn test_stress_per_field_codec() -> Result<()> {
                     &TestUtil::random_realistic_unicode_string_max(&*random(), 128),
                     &custom_type,
                 );
-                doc.add(Box::new(field));
+                doc.add(field);
             }
             writer.add_document(&doc)?;
         }
@@ -371,8 +367,8 @@ fn do_test_mixed_postings(codec: Arc<dyn Codec>) -> Result<()> {
     ft.set_store_term_vector_positions(true)?;
     let id_field = Field::new("id", String::new(), Arc::clone(&ft))?;
     let date_field = Field::new("date", String::new(), Arc::clone(&ft))?;
-    doc.add(Box::new(id_field));
-    doc.add(Box::new(date_field));
+    doc.add(id_field);
+    doc.add(date_field);
     for _ in 0..100 {
         field_mut(&mut doc, "id").set_string_value(random().next_int_bound(50).to_string())?;
         field_mut(&mut doc, "date").set_string_value(random().next_int_bound(100).to_string())?;
@@ -419,18 +415,18 @@ fn test_merge_called_on_two_formats() -> Result<()> {
     let iwriter = IndexWriter::new(directory.as_directory(), iwc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("f1", "val1".into(), Store::NO)?));
-    doc.add(Box::new(StringField::new("f2", "val2".into(), Store::YES)?));
-    doc.add(Box::new(IntPoint::new("f3", &[3])?)); // Points are not indexed as postings and should not appear in the merge fields
-    doc.add(Box::new(StringField::new("f4", "val4".into(), Store::NO)?));
+    doc.add(StringField::new("f1", "val1".into(), Store::NO)?);
+    doc.add(StringField::new("f2", "val2".into(), Store::YES)?);
+    doc.add(IntPoint::new("f3", &[3])?); // Points are not indexed as postings and should not appear in the merge fields
+    doc.add(StringField::new("f4", "val4".into(), Store::NO)?);
     iwriter.add_document(&doc)?;
     iwriter.commit()?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("f1", "val5".into(), Store::NO)?));
-    doc.add(Box::new(StringField::new("f2", "val6".into(), Store::YES)?));
-    doc.add(Box::new(IntPoint::new("f3", &[7])?));
-    doc.add(Box::new(StringField::new("f4", "val8".into(), Store::NO)?));
+    doc.add(StringField::new("f1", "val5".into(), Store::NO)?);
+    doc.add(StringField::new("f2", "val6".into(), Store::YES)?);
+    doc.add(IntPoint::new("f3", &[7])?);
+    doc.add(StringField::new("f4", "val8".into(), Store::NO)?);
     iwriter.add_document(&doc)?;
     iwriter.commit()?;
 

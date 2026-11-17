@@ -311,11 +311,7 @@ fn make_filler_doc() -> Document {
         create_doc(
             TestUtil::next_int(&*LuceneTestCase::random(), 0, DOC_FIELDS.len() as i32 - 1) as usize,
         );
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        extra,
-        extra,
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field(extra, extra, Store::NO));
     doc
 }
 

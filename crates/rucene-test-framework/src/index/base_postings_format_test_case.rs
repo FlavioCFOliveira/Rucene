@@ -656,11 +656,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             iwc,
         )?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "",
-            "something",
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_string_field("", "something", Store::NO));
         iw.add_document(&doc)?;
         let ir = iw.get_reader()?;
         let ar = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ir) as _)?;
@@ -694,11 +690,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             iwc,
         )?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "",
-            "",
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_string_field("", "", Store::NO));
         iw.add_document(&doc)?;
         let ir = iw.get_reader()?;
         let ar = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ir) as _)?;
@@ -731,11 +723,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             iwc,
         )?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "field",
-            "value",
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_text_field("field", "value", Store::NO));
         iw.add_document(&doc)?;
         iw.add_document(&doc)?;
         let ir = iw.get_reader()?;
@@ -772,11 +760,11 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             iwc,
         )?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "field",
             "value",
             Store::NO,
-        )));
+        ));
         iw.add_document(&doc)?;
         iw.add_document(&doc)?;
         let ir = iw.get_reader()?;
@@ -814,11 +802,11 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         )?;
         let mut doc = Document::new();
         iw.add_document(&doc)?;
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "ghostField",
             "something",
             Store::NO,
-        )));
+        ));
         iw.add_document(&doc)?;
         iw.force_merge(1)?;
         iw.delete_documents(term("ghostField", "something"))?; // delete the only term for the field
@@ -858,7 +846,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
 
         for i in 0..10000 {
             let mut document = Document::new();
-            document.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+            document.add(StringField::new("id", i.to_string(), Store::NO)?);
             iw.add_document(&document)?;
         }
         iw.commit()?;
@@ -909,7 +897,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             // only add odd number
             if i % 2 == 1 {
                 let mut document = Document::new();
-                document.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+                document.add(StringField::new("id", i.to_string(), Store::NO)?);
                 iw.add_document(&document)?;
             }
         }
@@ -980,32 +968,24 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
 
         let mut document = Document::new();
-        document.add(Box::new(StringField::new(
-            "id",
-            "0".to_string(),
-            Store::NO,
-        )?));
-        document.add(Box::new(StringField::new(
+        document.add(StringField::new("id", "0".to_string(), Store::NO)?);
+        document.add(StringField::new(
             "suggest_field",
             "apples".to_string(),
             Store::NO,
-        )?));
+        )?);
         iw.add_document(&document)?;
         // need another document so whole segment isn't deleted
         iw.add_document(&Document::new())?;
         iw.commit()?;
 
         let mut document = Document::new();
-        document.add(Box::new(StringField::new(
-            "id",
-            "1".to_string(),
-            Store::NO,
-        )?));
-        document.add(Box::new(StringField::new(
+        document.add(StringField::new("id", "1".to_string(), Store::NO)?);
+        document.add(StringField::new(
             "suggest_field2",
             "apples".to_string(),
             Store::NO,
-        )?));
+        )?);
         iw.add_document(&document)?;
         iw.commit()?;
 
@@ -1168,11 +1148,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let iwc = IndexWriterConfig::with_analyzer(None);
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "foo",
-            "bar".to_string(),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("foo", "bar".to_string(), Store::NO)?);
         iw.add_document(&doc)?;
         let reader = directory_reader::open_with_writer(&*iw)?;
         let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
@@ -1231,7 +1207,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut doc = Document::new();
         let ft = FieldType::new_from(TextField::type_not_stored());
         ft.set_index_options(IndexOptions::DOCS_AND_FREQS)?;
-        doc.add(Box::new(Field::new("foo", "bar bar".to_string(), ft)?));
+        doc.add(Field::new("foo", "bar bar".to_string(), ft)?);
         iw.add_document(&doc)?;
         let reader = directory_reader::open_with_writer(&*iw)?;
         let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
@@ -1310,11 +1286,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         ))));
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
-        doc.add(Box::new(TextField::new(
-            "foo",
-            "bar bar".to_string(),
-            Store::NO,
-        )?));
+        doc.add(TextField::new("foo", "bar bar".to_string(), Store::NO)?);
         iw.add_document(&doc)?;
         let reader = directory_reader::open_with_writer(&*iw)?;
 
@@ -1350,7 +1322,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut doc = Document::new();
         let ft = FieldType::new_from(TextField::type_not_stored());
         ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)?;
-        doc.add(Box::new(Field::new("foo", "bar bar".to_string(), ft)?));
+        doc.add(Field::new("foo", "bar bar".to_string(), ft)?);
         iw.add_document(&doc)?;
         let reader = directory_reader::open_with_writer(&*iw)?;
 
@@ -1388,7 +1360,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut doc = Document::new();
         let stream: Arc<AtomicRefCell<dyn rucene::analysis::TokenStream>> =
             Arc::new(AtomicRefCell::new(CannedTokenStream::new(payload_tokens())));
-        doc.add(Box::new(TextField::new_with_token_stream("foo", stream)?));
+        doc.add(TextField::new_with_token_stream("foo", stream)?);
         iw.add_document(&doc)?;
         let reader = directory_reader::open_with_writer(&*iw)?;
 
@@ -1428,7 +1400,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)?;
         let stream: Arc<AtomicRefCell<dyn rucene::analysis::TokenStream>> =
             Arc::new(AtomicRefCell::new(CannedTokenStream::new(payload_tokens())));
-        doc.add(Box::new(Field::new_with_token_stream("foo", stream, ft)?));
+        doc.add(Field::new_with_token_stream("foo", stream, ft)?);
         iw.add_document(&doc)?;
         let reader = directory_reader::open_with_writer(&*iw)?;
 
@@ -1507,7 +1479,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
                                         Store::NO,
                                     )?;
                                     let mut single = Document::new();
-                                    single.add(Box::new(body));
+                                    single.add(body);
                                     w.add_document(&single)?;
                                 }
                                 w.force_merge(1)
@@ -1529,8 +1501,8 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             LuceneTestCase::new_index_writer_config(),
         )?;
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new("f", "a".to_string(), Store::NO)?));
-        doc.add(Box::new(StringField::new("g", "b".to_string(), Store::NO)?));
+        doc.add(StringField::new("f", "a".to_string(), Store::NO)?);
+        doc.add(StringField::new("g", "b".to_string(), Store::NO)?);
         w1.add_document(&doc)?;
 
         let dir2 = LuceneTestCase::new_directory();
@@ -1606,11 +1578,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             let iw = IndexWriter::new(dir.as_directory(), iwc)?;
             let empty_doc = Document::new();
             let mut doc = Document::new();
-            doc.add(Box::new(StringField::new(
-                "",
-                "something".to_string(),
-                Store::NO,
-            )?));
+            doc.add(StringField::new("", "something".to_string(), Store::NO)?);
             let num_empty_docs = TestUtil::next_int(&*LuceneTestCase::random(), 0, 5_000);
             let num_docs = TestUtil::next_int(&*LuceneTestCase::random(), 4096, 20_000);
             for _ in 0..num_empty_docs {
@@ -1655,10 +1623,10 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             let num_fields = LuceneTestCase::random().next_int_bound(5);
             for _ in 0..num_fields {
                 let value = TestUtil::random_simple_string_max(&*LuceneTestCase::random(), 2);
-                doc.add(Box::new(
+                doc.add(
                     Field::new(&format!("f_{opts:?}"), value, ft.clone())
                         .unwrap_or_else(|e| rethrow(e)),
-                ));
+                );
             }
         }
     }

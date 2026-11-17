@@ -196,19 +196,19 @@ fn log_odds_set_up(f: &mut LogOddsFusion) -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
 
     let mut doc0 = Document::new();
-    doc0.add(text_field("body", "alpha beta gamma", Store::YES)?);
+    doc0.add(*text_field("body", "alpha beta gamma", Store::YES)?);
     writer.add_document(&doc0)?;
 
     let mut doc1 = Document::new();
-    doc1.add(text_field("body", "alpha gamma delta", Store::YES)?);
+    doc1.add(*text_field("body", "alpha gamma delta", Store::YES)?);
     writer.add_document(&doc1)?;
 
     let mut doc2 = Document::new();
-    doc2.add(text_field("body", "beta gamma delta", Store::YES)?);
+    doc2.add(*text_field("body", "beta gamma delta", Store::YES)?);
     writer.add_document(&doc2)?;
 
     let mut doc3 = Document::new();
-    doc3.add(text_field("body", "gamma delta epsilon", Store::YES)?);
+    doc3.add(*text_field("body", "gamma delta epsilon", Store::YES)?);
     writer.add_document(&doc3)?;
 
     writer.force_merge(1)?;
@@ -512,8 +512,8 @@ fn test_multi_field_hybrid_search(_f: &mut LogOddsFusion) -> Result<()> {
     let writer = IndexWriter::new(hybrid_dir.as_directory(), IndexWriterConfig::new())?;
 
     let mut doc0 = Document::new();
-    doc0.add(text_field("title", "lucene search engine", Store::YES)?);
-    doc0.add(text_field(
+    doc0.add(*text_field("title", "lucene search engine", Store::YES)?);
+    doc0.add(*text_field(
         "body",
         "lucene is a full-text search library",
         Store::YES,
@@ -521,8 +521,8 @@ fn test_multi_field_hybrid_search(_f: &mut LogOddsFusion) -> Result<()> {
     writer.add_document(&doc0)?;
 
     let mut doc1 = Document::new();
-    doc1.add(text_field("title", "lucene search engine", Store::YES)?);
-    doc1.add(text_field(
+    doc1.add(*text_field("title", "lucene search engine", Store::YES)?);
+    doc1.add(*text_field(
         "body",
         "this is about information retrieval",
         Store::YES,
@@ -530,12 +530,12 @@ fn test_multi_field_hybrid_search(_f: &mut LogOddsFusion) -> Result<()> {
     writer.add_document(&doc1)?;
 
     let mut doc2 = Document::new();
-    doc2.add(text_field(
+    doc2.add(*text_field(
         "title",
         "database systems overview",
         Store::YES,
     )?);
-    doc2.add(text_field(
+    doc2.add(*text_field(
         "body",
         "relational databases use SQL",
         Store::YES,
@@ -579,13 +579,13 @@ fn test_more_signals_increase_score(_f: &mut LogOddsFusion) -> Result<()> {
     let writer = IndexWriter::new(signal_dir.as_directory(), IndexWriterConfig::new())?;
 
     let mut doc = Document::new();
-    doc.add(text_field("f1", "search engine optimization", Store::NO)?);
-    doc.add(text_field(
+    doc.add(*text_field("f1", "search engine optimization", Store::NO)?);
+    doc.add(*text_field(
         "f2",
         "search algorithms and data structures",
         Store::NO,
     )?);
-    doc.add(text_field("f3", "search relevance tuning", Store::NO)?);
+    doc.add(*text_field("f3", "search relevance tuning", Store::NO)?);
     writer.add_document(&doc)?;
 
     writer.force_merge(1)?;
@@ -649,55 +649,55 @@ fn build_hybrid_index(f: &mut LogOddsFusion) -> Result<()> {
 
     // doc0: text match + vector near queryA
     let mut doc0 = Document::new();
-    doc0.add(text_field(
+    doc0.add(*text_field(
         "body",
         "lucene search engine optimization library",
         Store::NO,
     )?);
-    doc0.add(knn_field("embedding", &[0.95, 0.05, 0.0])?);
+    doc0.add(*knn_field("embedding", &[0.95, 0.05, 0.0])?);
     writer.add_document(&doc0)?;
 
     // doc1: text match + vector far from queryA
     let mut doc1 = Document::new();
-    doc1.add(text_field(
+    doc1.add(*text_field(
         "body",
         "lucene full text search library index",
         Store::NO,
     )?);
-    doc1.add(knn_field("embedding", &[0.0, 0.0, 1.0])?);
+    doc1.add(*knn_field("embedding", &[0.0, 0.0, 1.0])?);
     writer.add_document(&doc1)?;
 
     // doc2: no text match + vector near queryA
     let mut doc2 = Document::new();
-    doc2.add(text_field(
+    doc2.add(*text_field(
         "body",
         "unrelated topic about cooking recipes",
         Store::NO,
     )?);
-    doc2.add(knn_field("embedding", &[0.90, 0.10, 0.0])?);
+    doc2.add(*knn_field("embedding", &[0.90, 0.10, 0.0])?);
     writer.add_document(&doc2)?;
 
     // doc3: neither
     let mut doc3 = Document::new();
-    doc3.add(text_field(
+    doc3.add(*text_field(
         "body",
         "gardening tips for spring planting",
         Store::NO,
     )?);
-    doc3.add(knn_field("embedding", &[0.0, 1.0, 0.0])?);
+    doc3.add(*knn_field("embedding", &[0.0, 1.0, 0.0])?);
     writer.add_document(&doc3)?;
 
     // Filler docs with vectors away from queryA
     for i in 0..HYBRID_NUM_FILLER {
         let mut filler = Document::new();
-        filler.add(text_field(
+        filler.add(*text_field(
             "body",
             &format!("filler document about topic {i}"),
             Store::NO,
         )?);
         let y = (f64::from(i) * 0.1).sin() as f32;
         let z = (f64::from(i) * 0.1).cos() as f32;
-        filler.add(knn_field("embedding", &[0.0, y, z])?);
+        filler.add(*knn_field("embedding", &[0.0, y, z])?);
         writer.add_document(&filler)?;
     }
 
@@ -822,18 +822,18 @@ fn test_multiple_vector_fields(_f: &mut LogOddsFusion) -> Result<()> {
     let writer = IndexWriter::new(test_dir.as_directory(), config)?;
 
     let mut doc0 = Document::new();
-    doc0.add(knn_field("emb_a", &[0.95, 0.05])?);
-    doc0.add(knn_field("emb_b", &[0.05, 0.95])?);
+    doc0.add(*knn_field("emb_a", &[0.95, 0.05])?);
+    doc0.add(*knn_field("emb_b", &[0.05, 0.95])?);
     writer.add_document(&doc0)?;
 
     let mut doc1 = Document::new();
-    doc1.add(knn_field("emb_a", &[0.90, 0.10])?);
-    doc1.add(knn_field("emb_b", &[1.0, 0.0])?);
+    doc1.add(*knn_field("emb_a", &[0.90, 0.10])?);
+    doc1.add(*knn_field("emb_b", &[1.0, 0.0])?);
     writer.add_document(&doc1)?;
 
     let mut doc2 = Document::new();
-    doc2.add(knn_field("emb_a", &[0.0, 1.0])?);
-    doc2.add(knn_field("emb_b", &[0.10, 0.90])?);
+    doc2.add(*knn_field("emb_a", &[0.0, 1.0])?);
+    doc2.add(*knn_field("emb_b", &[0.10, 0.90])?);
     writer.add_document(&doc2)?;
 
     writer.force_merge(1)?;
@@ -951,15 +951,15 @@ fn test_vector_and_vector(_f: &mut LogOddsFusion) -> Result<()> {
     let writer = IndexWriter::new(test_dir.as_directory(), config)?;
 
     let mut doc0 = Document::new();
-    doc0.add(knn_field("emb", &[0.7, 0.7])?);
+    doc0.add(*knn_field("emb", &[0.7, 0.7])?);
     writer.add_document(&doc0)?;
 
     let mut doc1 = Document::new();
-    doc1.add(knn_field("emb", &[0.95, 0.05])?);
+    doc1.add(*knn_field("emb", &[0.95, 0.05])?);
     writer.add_document(&doc1)?;
 
     let mut doc2 = Document::new();
-    doc2.add(knn_field("emb", &[0.05, 0.95])?);
+    doc2.add(*knn_field("emb", &[0.05, 0.95])?);
     writer.add_document(&doc2)?;
 
     writer.force_merge(1)?;

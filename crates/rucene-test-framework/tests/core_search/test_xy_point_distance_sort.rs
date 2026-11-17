@@ -84,29 +84,29 @@ fn test_distance_sort() -> Result<()> {
 
     // add some docs
     let mut doc = Document::new();
-    doc.add(Box::new(XYDocValuesField::new(
+    doc.add(XYDocValuesField::new(
         "location",
         40.759_01_f32,
         -73.984_474_f32,
-    )?));
+    )?);
     iw.add_document(&doc)?;
     let d1 = cartesian_distance_f(40.759_01, -73.984_474, 40.714_35, -74.005_974);
 
     let mut doc = Document::new();
-    doc.add(Box::new(XYDocValuesField::new(
+    doc.add(XYDocValuesField::new(
         "location",
         40.718266f32,
         -74.007_82_f32,
-    )?));
+    )?);
     iw.add_document(&doc)?;
     let d2 = cartesian_distance_f(40.718266, -74.007_82, 40.714_35, -74.005_974);
 
     let mut doc = Document::new();
-    doc.add(Box::new(XYDocValuesField::new(
+    doc.add(XYDocValuesField::new(
         "location",
         40.705_116_f32,
         -74.008_83_f32,
-    )?));
+    )?);
     iw.add_document(&doc)?;
     let d3 = cartesian_distance_f(40.705_116, -74.008_83, 40.714_35, -74.005_974);
 
@@ -143,20 +143,20 @@ fn test_missing_last() -> Result<()> {
     iw.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(XYDocValuesField::new(
+    doc.add(XYDocValuesField::new(
         "location",
         40.718266f32,
         -74.007_82_f32,
-    )?));
+    )?);
     iw.add_document(&doc)?;
     let d2 = cartesian_distance_f(40.718266, -74.007_82, 40.714_35, -74.005_974);
 
     let mut doc = Document::new();
-    doc.add(Box::new(XYDocValuesField::new(
+    doc.add(XYDocValuesField::new(
         "location",
         40.705_116_f32,
         -74.008_83_f32,
-    )?));
+    )?);
     iw.add_document(&doc)?;
     let d3 = cartesian_distance_f(40.705_116, -74.008_83, 40.714_35, -74.005_974);
 
@@ -263,24 +263,15 @@ fn do_random_test(num_docs: i32, num_queries: i32) -> Result<()> {
 
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(StoredField::new_number(
-            "id",
-            NumericValue::Int(i),
-        )?));
-        doc.add(Box::new(NumericDocValuesField::new("id", i64::from(i))));
+        doc.add(StoredField::new_number("id", NumericValue::Int(i))?);
+        doc.add(NumericDocValuesField::new("id", i64::from(i)));
         if random().next_int_bound(10) > 7 {
             let x = shape_test_util::next_float(&*random());
             let y = shape_test_util::next_float(&*random());
 
-            doc.add(Box::new(XYDocValuesField::new("field", x, y)?));
-            doc.add(Box::new(StoredField::new_number(
-                "x",
-                NumericValue::Float(x),
-            )?));
-            doc.add(Box::new(StoredField::new_number(
-                "y",
-                NumericValue::Float(y),
-            )?));
+            doc.add(XYDocValuesField::new("field", x, y)?);
+            doc.add(StoredField::new_number("x", NumericValue::Float(x))?);
+            doc.add(StoredField::new_number("y", NumericValue::Float(y))?);
         } // otherwise "missing"
         writer.add_document(&doc)?;
     }

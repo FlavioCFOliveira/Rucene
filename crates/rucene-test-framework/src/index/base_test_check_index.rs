@@ -97,11 +97,11 @@ pub fn test_deleted_docs(dir: Arc<dyn Directory>) -> Result<()> {
         custom_type.set_store_term_vectors(true)?;
         custom_type.set_store_term_vector_positions(true)?;
         custom_type.set_store_term_vector_offsets(true)?;
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             "field",
             &format!("aaa{i}"),
             &custom_type,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     writer.force_merge(1)?;

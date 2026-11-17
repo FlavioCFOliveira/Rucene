@@ -715,13 +715,12 @@ fn check_dst(offset: usize, length: usize, len: usize) -> Result<()> {
     Ok(())
 }
 
-impl DataInput for MemorySegmentIndexInput {
-    /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
-    }
-
-    fn read_byte(&mut self) -> Result<u8> {
+impl MemorySegmentIndexInput {
+    /// `read_byte` when the fast path does not apply: a closed input, a
+    /// segment boundary or the end of the file.
+    #[cold]
+    #[inline(never)]
+    fn read_byte_boundary(&mut self) -> Result<u8> {
         self.ensure_open()?;
         let pos = self.cur_position;
         if let Some(value) = self.cur_segment().get_u8(pos) {
@@ -736,6 +735,61 @@ impl DataInput for MemorySegmentIndexInput {
             .ok_or_else(|| self.read_past_eof())?;
         self.cur_position += 1;
         Ok(value)
+    }
+
+    /// `read_short` when the fast path does not apply.
+    #[cold]
+    #[inline(never)]
+    fn read_short_boundary(&mut self) -> Result<i16> {
+        self.ensure_open()?;
+        let pos = self.cur_position;
+        if let Some(value) = self.cur_segment().get_i16_le(pos) {
+            self.cur_position += 2;
+            return Ok(value);
+        }
+        // Crosses a segment boundary, or runs past the end: fall back to the
+        // byte-at-a-time decoding `DataInput` defines.
+        let b1 = self.read_byte()? as u16;
+        let b2 = self.read_byte()? as u16;
+        Ok(((b2 << 8) | b1) as i16)
+    }
+}
+
+impl DataInput for MemorySegmentIndexInput {
+    /// `IndexInput.toString()` returns the resource description.
+    fn to_java_string(&self) -> String {
+        crate::store::IndexInput::resource_description(self).to_string()
+    }
+
+    #[inline]
+    fn read_byte(&mut self) -> Result<u8> {
+        // PERF: the open check (segment present, scope alive) and the bounds
+        // check are made once, on the segment reference itself; every other
+        // case — closed, segment boundary, end of file — takes the full path
+        // below, which re-checks and raises exactly as before.
+        if let Some(segment) = &self.cur_segment {
+            if self.scope.is_alive() {
+                if let Some(value) = segment.get_u8(self.cur_position) {
+                    self.cur_position += 1;
+                    return Ok(value);
+                }
+            }
+        }
+        self.read_byte_boundary()
+    }
+
+    #[inline]
+    fn read_short(&mut self) -> Result<i16> {
+        // PERF: as in `read_byte`.
+        if let Some(segment) = &self.cur_segment {
+            if self.scope.is_alive() {
+                if let Some(value) = segment.get_i16_le(self.cur_position) {
+                    self.cur_position += 2;
+                    return Ok(value);
+                }
+            }
+        }
+        self.read_short_boundary()
     }
 
     /// `readBytes(b, offset, len)` with a negative `offset` or `len`
@@ -799,20 +853,6 @@ impl DataInput for MemorySegmentIndexInput {
         }
         let skip_to = self.file_pointer()? + num_bytes;
         self.seek(skip_to)
-    }
-
-    fn read_short(&mut self) -> Result<i16> {
-        self.ensure_open()?;
-        let pos = self.cur_position;
-        if let Some(value) = self.cur_segment().get_i16_le(pos) {
-            self.cur_position += 2;
-            return Ok(value);
-        }
-        // Crosses a segment boundary, or runs past the end: fall back to the
-        // byte-at-a-time decoding `DataInput` defines.
-        let b1 = self.read_byte()? as u16;
-        let b2 = self.read_byte()? as u16;
-        Ok(((b2 << 8) | b1) as i16)
     }
 
     fn read_int(&mut self) -> Result<i32> {

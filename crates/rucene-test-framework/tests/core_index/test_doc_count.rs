@@ -53,11 +53,7 @@ fn doc() -> Document {
         // `"" + TestUtil.nextInt(random(), 'a', 'z')`: the code, as a number.
         let name = TestUtil::next_int(&*random(), 'a' as i32, 'z' as i32).to_string();
         let value = TestUtil::next_int(&*random(), 'a' as i32, 'z' as i32).to_string();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            &name,
-            &value,
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_string_field(&name, &value, Store::NO));
     }
     doc
 }

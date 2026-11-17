@@ -82,32 +82,21 @@ fn get_index_store(
             for j in 0..v.len() {
                 v[j] = contents[i][j] as i8 as u8;
             }
-            doc.add(Box::new(KnnByteVectorField::new(
+            doc.add(KnnByteVectorField::new(
                 field,
                 &v,
                 VectorSimilarityFunction::EUCLIDEAN,
-            )?));
+            )?);
         } else {
-            doc.add(Box::new(KnnFloatVectorField::with_euclidean(
-                field,
-                contents[i],
-            )?));
+            doc.add(KnnFloatVectorField::with_euclidean(field, contents[i])?);
         }
-        doc.add(Box::new(StringField::new(
-            "id",
-            format!("id{i}"),
-            Store::YES,
-        )?));
+        doc.add(StringField::new("id", format!("id{i}"), Store::YES)?);
         writer.add_document(&doc)?;
     }
     // Add some documents without a vector
     for _i in 0..5 {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "other",
-            "value".to_string(),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("other", "value".to_string(), Store::NO)?);
         writer.add_document(&doc)?;
     }
     writer.force_merge(1)?;

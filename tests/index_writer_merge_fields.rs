@@ -141,113 +141,74 @@ fn n_value(seg: usize, i: i32) -> i64 {
 fn doc(features: u32, seg: usize, i: i32) -> Document {
     let mut d = Document::new();
     if features & POSTINGS != 0 {
-        d.add(Box::new(
-            StringField::new("id", format!("id{i:05}"), Store::NO).unwrap(),
-        ));
+        d.add(StringField::new("id", format!("id{i:05}"), Store::NO).unwrap());
         let mut body = format!("all m{} w{} x{i}", i % 3, i % 97);
         for _ in 0..=(i % 5) {
             body.push_str(" rep");
         }
-        d.add(Box::new(TextField::new("body", body, Store::NO).unwrap()));
-        d.add(Box::new(
-            StringField::new("tag", format!("t{}", i % 50), Store::NO).unwrap(),
-        ));
-        d.add(Box::new(
-            Field::new("off", format!("alpha beta{} alpha", i % 13), offsets_type()).unwrap(),
-        ));
+        d.add(TextField::new("body", body, Store::NO).unwrap());
+        d.add(StringField::new("tag", format!("t{}", i % 50), Store::NO).unwrap());
+        d.add(Field::new("off", format!("alpha beta{} alpha", i % 13), offsets_type()).unwrap());
     }
     if features & POINTS != 0 && seg < 2 {
-        d.add(Box::new(
-            IntPoint::new("i1", &[((i * 7919) % 2003) - 1000]).unwrap(),
-        ));
-        d.add(Box::new(
+        d.add(IntPoint::new("i1", &[((i * 7919) % 2003) - 1000]).unwrap());
+        d.add(
             LongPoint::new(
                 "l1",
                 &[(i64::from(i) * 1_000_000_007) % 4_000_000_000 - 2_000_000_000],
             )
             .unwrap(),
-        ));
-        d.add(Box::new(
-            IntPoint::new("p2", &[(i * 31) % 257, (i * 17) % 263]).unwrap(),
-        ));
+        );
+        d.add(IntPoint::new("p2", &[(i * 31) % 257, (i * 17) % 263]).unwrap());
         if i % 2 == 0 {
-            d.add(Box::new(
-                IntPoint::new("p2", &[(i * 13) % 251, (i * 7) % 241]).unwrap(),
-            ));
+            d.add(IntPoint::new("p2", &[(i * 13) % 251, (i * 7) % 241]).unwrap());
         }
         if i % 10 == 0 {
-            d.add(Box::new(IntPoint::new("sparse", &[i]).unwrap()));
+            d.add(IntPoint::new("sparse", &[i]).unwrap());
         }
     }
     if features & DOC_VALUES != 0 {
-        d.add(Box::new(NumericDocValuesField::new("n", n_value(seg, i))));
+        d.add(NumericDocValuesField::new("n", n_value(seg, i)));
         if i % 7 == 0 {
-            d.add(Box::new(NumericDocValuesField::new(
-                "nsparse",
-                i64::from(i) * 3,
-            )));
+            d.add(NumericDocValuesField::new("nsparse", i64::from(i) * 3));
         }
-        d.add(Box::new(BinaryDocValuesField::new(
-            "b",
-            bytes(&format!("b{i}")),
-        )));
-        d.add(Box::new(SortedDocValuesField::new(
+        d.add(BinaryDocValuesField::new("b", bytes(&format!("b{i}"))));
+        d.add(SortedDocValuesField::new(
             "s",
             bytes(&format!("s{}", i % 300)),
-        )));
-        d.add(Box::new(SortedSetDocValuesField::new(
+        ));
+        d.add(SortedSetDocValuesField::new(
             "ss",
             bytes(&format!("a{}", i % 40)),
-        )));
-        d.add(Box::new(SortedSetDocValuesField::new(
+        ));
+        d.add(SortedSetDocValuesField::new(
             "ss",
             bytes(&format!("b{}", i % 1100)),
-        )));
-        d.add(Box::new(SortedNumericDocValuesField::new(
-            "sn",
-            i64::from(i % 5),
-        )));
-        d.add(Box::new(SortedNumericDocValuesField::new(
-            "sn",
-            -i64::from(i),
-        )));
+        ));
+        d.add(SortedNumericDocValuesField::new("sn", i64::from(i % 5)));
+        d.add(SortedNumericDocValuesField::new("sn", -i64::from(i)));
     }
     if features & DELETES != 0 {
         let deleted = is_deleted(seg, i);
-        d.add(Box::new(
+        d.add(
             StringField::new("del", if deleted { "yes" } else { "no" }.into(), Store::NO).unwrap(),
-        ));
-        d.add(Box::new(
-            StoredField::new_string("sv", format!("v{i}")).unwrap(),
-        ));
+        );
+        d.add(StoredField::new_string("sv", format!("v{i}")).unwrap());
         if deleted && seg < 2 {
-            d.add(Box::new(
-                StringField::new("qt", format!("qt{}", i % 4), Store::NO).unwrap(),
-            ));
-            d.add(Box::new(IntPoint::new("q", &[i]).unwrap()));
-            d.add(Box::new(NumericDocValuesField::new("qdv", i64::from(i))));
-            d.add(Box::new(BinaryDocValuesField::new(
-                "qb",
-                bytes(&format!("qb{i}")),
-            )));
-            d.add(Box::new(SortedDocValuesField::new(
-                "qs",
-                bytes(&format!("qs{i}")),
-            )));
-            d.add(Box::new(SortedSetDocValuesField::new(
+            d.add(StringField::new("qt", format!("qt{}", i % 4), Store::NO).unwrap());
+            d.add(IntPoint::new("q", &[i]).unwrap());
+            d.add(NumericDocValuesField::new("qdv", i64::from(i)));
+            d.add(BinaryDocValuesField::new("qb", bytes(&format!("qb{i}"))));
+            d.add(SortedDocValuesField::new("qs", bytes(&format!("qs{i}"))));
+            d.add(SortedSetDocValuesField::new(
                 "qss",
                 bytes(&format!("qss{i}")),
-            )));
-            d.add(Box::new(SortedNumericDocValuesField::new(
-                "qsn",
-                i64::from(i),
-            )));
+            ));
+            d.add(SortedNumericDocValuesField::new("qsn", i64::from(i)));
         }
     }
     if features == POINTS && seg == 2 {
-        d.add(Box::new(
-            StringField::new("id", format!("id{i:05}"), Store::NO).unwrap(),
-        ));
+        d.add(StringField::new("id", format!("id{i:05}"), Store::NO).unwrap());
     }
     d
 }
@@ -904,9 +865,7 @@ fn index_with_patched_bit_set_block(patch: impl Fn(&mut [u8])) -> Arc<dyn Direct
     for i in 0..3000 {
         let mut doc = Document::new();
         let value = if i % 6 == 0 { "yes" } else { "no" };
-        doc.add(Box::new(
-            StringField::new("del", value.to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(StringField::new("del", value.to_string(), Store::NO).unwrap());
         writer.add_document(&doc).unwrap();
     }
     writer.commit().unwrap();
@@ -1043,7 +1002,7 @@ fn advance_into_a_bit_set_block_reads_each_documents_frequency() {
         } else {
             vec!["no"; (i % 3) as usize + 1].join(" ")
         };
-        doc.add(Box::new(TextField::new("body", body, Store::NO).unwrap()));
+        doc.add(TextField::new("body", body, Store::NO).unwrap());
         writer.add_document(&doc).unwrap();
     }
     writer.commit().unwrap();
@@ -1081,12 +1040,8 @@ fn indexed_field_without_postings_opens() {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     let mut doc = Document::new();
-    doc.add(Box::new(
-        TextField::new("empty", String::new(), Store::NO).unwrap(),
-    ));
-    doc.add(Box::new(
-        TextField::new("body", "some words".to_string(), Store::NO).unwrap(),
-    ));
+    doc.add(TextField::new("empty", String::new(), Store::NO).unwrap());
+    doc.add(TextField::new("body", "some words".to_string(), Store::NO).unwrap());
     writer.add_document(&doc).unwrap();
     writer.commit().unwrap();
     writer.close().unwrap();

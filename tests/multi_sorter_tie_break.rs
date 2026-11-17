@@ -30,7 +30,7 @@ fn reader(values: &[i64]) -> Arc<dyn LeafReader> {
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for &value in values {
         let mut document = Document::new();
-        document.add(Box::new(NumericDocValuesField::new("n", value)));
+        document.add(NumericDocValuesField::new("n", value));
         writer.add_document(&document).unwrap();
     }
     writer.commit().unwrap();

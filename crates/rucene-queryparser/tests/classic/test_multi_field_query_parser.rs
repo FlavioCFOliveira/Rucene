@@ -401,11 +401,11 @@ fn test_stop_word_searching() -> Result<()> {
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer))),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "body",
         "blah the footest blah",
         Store::NO,
-    )));
+    ));
     iw.add_document(&doc)?;
     iw.close()?;
 

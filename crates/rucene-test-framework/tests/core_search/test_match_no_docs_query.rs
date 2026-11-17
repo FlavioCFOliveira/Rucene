@@ -159,7 +159,7 @@ fn test_equals(_f: &mut MatchNoDocs) -> Result<()> {
 fn add_doc(text: &str, iw: &IndexWriter) -> Result<()> {
     let mut doc = Document::new();
     let f = LuceneTestCase::new_text_field("key", text, Store::YES);
-    doc.add(Box::new(f));
+    doc.add(f);
     iw.add_document(&doc)?;
     Ok(())
 }

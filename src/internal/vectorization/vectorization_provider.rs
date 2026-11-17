@@ -244,6 +244,43 @@ fn caller_file(location: &Location<'static>) -> String {
     location.file().replace('\\', "/")
 }
 
+/// This file's path relative to the rucene crate root, forward-slashed.
+const THIS_FILE_IN_CRATE: &str = "src/internal/vectorization/vectorization_provider.rs";
+
+/// The prefix the compiler puts before every rucene source path.
+///
+/// [`Location::caller`] and [`file!`] report paths in the same form: relative
+/// to the workspace root when rucene is a workspace member (`""` here, since
+/// rucene is the root), and absolute when rucene is built as a path or
+/// registry dependency of another workspace (`/…/rucene/`). Either way, the
+/// prefix is what [`file!`] reports for this file minus
+/// [`THIS_FILE_IN_CRATE`], so a caller is one of rucene's own files exactly
+/// when its path is this prefix followed by one of [`VALID_CALLER_FILES`].
+static CRATE_ROOT_PREFIX: LazyLock<String> = LazyLock::new(|| {
+    let this_file = file!().replace('\\', "/");
+    match this_file.strip_suffix(THIS_FILE_IN_CRATE) {
+        Some(prefix) => prefix.to_owned(),
+        // Unreachable while this file stays at `THIS_FILE_IN_CRATE` (a unit
+        // test pins it); with no prefix every rucene path then mismatches and
+        // the check refuses, which errs on Java's side.
+        None => this_file,
+    }
+});
+
+/// Decides whether `file`, a caller path normalised by [`caller_file`], is the
+/// port of one of Lucene's valid callers, given the compiler's rucene path
+/// prefix `crate_root_prefix` (see [`CRATE_ROOT_PREFIX`]).
+///
+/// The match is exact on the whole path: a file elsewhere whose path merely
+/// ends like one of [`VALID_CALLER_FILES`] is refused, as Java refuses a class
+/// of the same simple name in another package.
+fn is_valid_caller_file(file: &str, crate_root_prefix: &str) -> bool {
+    file.strip_prefix(crate_root_prefix)
+        .is_some_and(|in_crate| {
+            VALID_CALLER_FILES.contains(&in_crate) || in_crate.starts_with(TEST_DIR)
+        })
+}
+
 /// Checks that the singleton getter was called from a known Lucene class.
 ///
 /// Equivalent to the private static
@@ -255,7 +292,10 @@ fn caller_file(location: &Location<'static>) -> String {
 /// and [`get_instance`] makes [`Location::caller`] resolve to the call site of
 /// `get_instance`, the very frame Java's `skip(2).limit(1)` selects, and the
 /// comparison is then made against [`VALID_CALLER_FILES`] rather than against
-/// class names.
+/// class names. The caller's path must be rucene's own source path, whichever
+/// form the compiler gives it (workspace-relative or absolute, see
+/// [`CRATE_ROOT_PREFIX`]), so the check also holds when rucene is a dependency
+/// of another workspace.
 ///
 /// # Errors
 ///
@@ -265,8 +305,7 @@ fn caller_file(location: &Location<'static>) -> String {
 #[track_caller]
 pub fn ensure_caller() -> Result<()> {
     let file = caller_file(Location::caller());
-    let valid_caller = VALID_CALLER_FILES.contains(&file.as_str()) || file.starts_with(TEST_DIR);
-    if !valid_caller {
+    if !is_valid_caller_file(&file, &CRATE_ROOT_PREFIX) {
         return Err(LuceneError::from(crate::error::LuceneErrorKind::Unchecked {
             class: "java.lang.IllegalCallerException",
             message: Some(
@@ -380,4 +419,70 @@ fn new_panama_provider() -> Arc<dyn VectorizationProvider> {
 #[cfg(not(feature = "mmap"))]
 fn new_panama_provider() -> Arc<dyn VectorizationProvider> {
     Arc::new(DefaultVectorizationProvider::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `THIS_FILE_IN_CRATE` names this file, so the prefix derivation holds.
+    #[test]
+    fn this_file_in_crate_is_a_suffix_of_file_macro() {
+        let this_file = file!().replace('\\', "/");
+        assert!(this_file.ends_with(THIS_FILE_IN_CRATE));
+        assert_eq!(
+            format!("{}{THIS_FILE_IN_CRATE}", *CRATE_ROOT_PREFIX),
+            this_file
+        );
+    }
+
+    /// Regression for the caller check outside the workspace: Cargo reports
+    /// absolute source paths for a path or registry dependency, and the check
+    /// compared them with workspace-relative ones, so every search of a crate
+    /// depending on rucene panicked with `IllegalCallerException`.
+    #[test]
+    fn valid_caller_matches_relative_and_absolute_crate_paths() {
+        for prefix in [
+            "",
+            "/home/u/.cargo/registry/src/index.crates.io-0000/rucene-0.1.0/",
+            "/data/checkout/Rucene/",
+        ] {
+            for file in VALID_CALLER_FILES {
+                assert!(is_valid_caller_file(&format!("{prefix}{file}"), prefix));
+            }
+            let test_file = format!("{prefix}tests/portability/x.rs");
+            assert!(is_valid_caller_file(&test_file, prefix));
+            // Not a valid caller, wherever rucene lives.
+            let other = format!("{prefix}src/search/index_searcher.rs");
+            assert!(!is_valid_caller_file(&other, prefix));
+        }
+    }
+
+    /// The check is not weakened to a suffix match: a file of another crate
+    /// whose path ends like a valid caller is refused, and so is a relative
+    /// path when rucene's paths are absolute (and vice versa).
+    #[test]
+    fn valid_caller_refuses_foreign_paths_with_the_same_suffix() {
+        let prefix = "/data/checkout/Rucene/";
+        let foreign = "/home/u/app/src/codecs/lucene104/postings_reader.rs";
+        assert!(!is_valid_caller_file(foreign, prefix));
+        assert!(!is_valid_caller_file("/home/u/app/tests/t.rs", prefix));
+        let relative = "src/codecs/lucene104/postings_reader.rs";
+        assert!(!is_valid_caller_file(relative, prefix));
+        let absolute = "/data/checkout/Rucene/src/codecs/lucene104/postings_reader.rs";
+        assert!(!is_valid_caller_file(absolute, ""));
+    }
+
+    /// The live check reads the real call site: this module is not the port
+    /// of a valid caller, so it is refused with Lucene's message.
+    #[test]
+    fn ensure_caller_refuses_a_non_lucene_call_site() {
+        let error = ensure_caller().unwrap_err().to_string();
+        assert!(
+            error.contains(
+                "VectorizationProvider is internal and can only be used by known Lucene classes."
+            ),
+            "{error}"
+        );
+    }
 }

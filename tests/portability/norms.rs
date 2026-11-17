@@ -725,14 +725,14 @@ fn write_with_rucene(
             let stream: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(
                 ScriptedTokenStream::new(value.tokens.clone()),
             ));
-            document.add(Box::new(
+            document.add(
                 Field::new_with_token_stream(
                     specs[value.spec].name,
                     stream,
                     field_types[value.spec].clone(),
                 )
                 .expect("token stream field"),
-            ));
+            );
         }
         chain
             .process_document(doc_id as i32, Some(&document), true, &mut field_infos)

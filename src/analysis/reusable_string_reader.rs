@@ -29,8 +29,17 @@ impl ReusableStringReader {
     /// is encoded straight into the reader's buffer, which is reused, with no
     /// intermediate copy of the string.
     pub fn set_value(&mut self, value: impl AsRef<str>) {
+        let value = value.as_ref();
         self.chars.clear();
-        self.chars.extend(value.as_ref().encode_utf16());
+        // PERF: an ASCII string is one unit per byte, written by a
+        // length-known extend; `encode_utf16` otherwise.
+        if value.is_ascii() {
+            self.chars.extend(value.bytes().map(u16::from));
+        } else {
+            // A UTF-8 string never has more UTF-16 units than bytes.
+            self.chars.reserve(value.len());
+            self.chars.extend(value.encode_utf16());
+        }
         self.size = self.chars.len();
         self.pos = 0;
     }
@@ -58,6 +67,26 @@ impl CharReader for ReusableStringReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ASCII and non-ASCII values (accents, a supplementary character)
+    /// read back as their UTF-16 units, whichever path encodes them.
+    #[test]
+    fn set_value_reads_the_utf16_units() {
+        let mut reader = ReusableStringReader::new();
+        for value in ["plain ascii", "a\u{e7}\u{e3}o \u{1F600} z", ""] {
+            reader.set_value(value);
+            let mut out = Vec::new();
+            let mut buf = [0u16; 3];
+            loop {
+                let n = reader.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                out.extend_from_slice(&buf[..n]);
+            }
+            assert_eq!(out, value.encode_utf16().collect::<Vec<u16>>());
+        }
+    }
 
     #[test]
     fn reset_and_read() {

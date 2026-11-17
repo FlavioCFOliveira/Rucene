@@ -111,9 +111,7 @@ fn segments(dir: &Arc<dyn Directory>) -> String {
 
 fn id_doc(i: i32) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", format!("id{i}"), Store::NO).unwrap(),
-    ));
+    d.add(StringField::new("id", format!("id{i}"), Store::NO).unwrap());
     d
 }
 
@@ -132,17 +130,13 @@ fn a_retention_policy_keeps_a_fully_soft_deleted_segment_it_still_matches() {
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let mut live = Document::new();
-    live.add(Box::new(
-        StringField::new("id", "live".to_string(), Store::NO).unwrap(),
-    ));
+    live.add(StringField::new("id", "live".to_string(), Store::NO).unwrap());
     writer.add_document(&live).unwrap();
     writer.commit().unwrap();
     for id in ["t1", "t2"] {
         let mut tombstone = Document::new();
-        tombstone.add(Box::new(
-            StringField::new("id", id.to_string(), Store::NO).unwrap(),
-        ));
-        tombstone.add(Box::new(NumericDocValuesField::new("soft", 1)));
+        tombstone.add(StringField::new("id", id.to_string(), Store::NO).unwrap());
+        tombstone.add(NumericDocValuesField::new("soft", 1));
         writer.add_document(&tombstone).unwrap();
     }
     writer.commit().unwrap();
@@ -755,9 +749,7 @@ fn an_aborted_merge_stops_at_the_next_check_as_lucene_does() {
         for _ in 0..2 {
             for _ in 0..50 {
                 let mut d = Document::new();
-                d.add(Box::new(
-                    StringField::new("id", format!("id{id}"), Store::YES).unwrap(),
-                ));
+                d.add(StringField::new("id", format!("id{id}"), Store::YES).unwrap());
                 writer.add_document(&d).unwrap();
                 id += 1;
             }

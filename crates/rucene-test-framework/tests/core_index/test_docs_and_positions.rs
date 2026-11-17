@@ -92,7 +92,7 @@ fn test_positions_simple(inst: &Instance) -> Result<()> {
     for _ in 0..39 {
         let mut doc = Document::new();
         let custom_type = omit_norms_type()?;
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             &inst.field_name,
             &format!(
                 "{}{}{}{}",
@@ -102,7 +102,7 @@ fn test_positions_simple(inst: &Instance) -> Result<()> {
                 "1 2 3 4 5 6 7 8 9 10"
             ),
             &custom_type,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     let reader: Arc<dyn IndexReader> = writer.get_reader()?;
@@ -186,11 +186,11 @@ fn test_random_positions(inst: &Instance) -> Result<()> {
             builder.push_str(&term.to_string());
             positions.push(num);
         }
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             &inst.field_name,
             &builder,
             &custom_type,
-        )));
+        ));
         positions_in_doc[i] = positions;
         writer.add_document(&doc)?;
     }
@@ -278,11 +278,11 @@ fn test_random_docs(inst: &Instance) -> Result<()> {
                 freq_in_doc[i] += 1;
             }
         }
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             &inst.field_name,
             &builder,
             &custom_type,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
 
@@ -387,11 +387,11 @@ fn test_large_number_of_positions(inst: &Instance) -> Result<()> {
                 builder.push_str("odd ");
             }
         }
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             &inst.field_name,
             &builder,
             &custom_type,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
 
@@ -439,11 +439,7 @@ fn test_docs_enum_start(_inst: &Instance) -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "foo",
-        "bar",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("foo", "bar", Store::NO));
     writer.add_document(&doc)?;
     let reader = writer.get_reader()?;
     let r = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as Arc<dyn IndexReader>)?;
@@ -482,11 +478,7 @@ fn test_docs_and_positions_enum_start(_inst: &Instance) -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "foo",
-        "bar",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_text_field("foo", "bar", Store::NO));
     writer.add_document(&doc)?;
     let reader = writer.get_reader()?;
     let r = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as Arc<dyn IndexReader>)?;

@@ -311,11 +311,7 @@ fn ndv_field(name: &str, value: i64) -> Result<Field> {
 fn stored_doc(fields: &[(&str, &str)]) -> Result<Document> {
     let mut doc = Document::new();
     for (name, value) in fields {
-        doc.add(Box::new(StringField::new(
-            name,
-            value.to_string(),
-            Store::YES,
-        )?));
+        doc.add(StringField::new(name, value.to_string(), Store::YES)?);
     }
     Ok(doc)
 }
@@ -468,7 +464,7 @@ fn test_concurrency() -> Result<()> {
         threads.push(Thread::unnamed(move || {
             let mut doc = Document::new();
             let f = unchecked(string_field("color", ""));
-            doc.add(Box::new(f));
+            doc.add(f);
             let mut i = 0;
             while indexing.load(Ordering::SeqCst) && i < num_docs {
                 let color = *RandomPicks::random_from(&*random(), &["blue", "red", "yellow"]);
@@ -577,7 +573,7 @@ fn test_lru_eviction() -> Result<()> {
 
     let mut doc = Document::new();
     let f = string_field("color", "blue")?;
-    doc.add(Box::new(f));
+    doc.add(f);
     w.add_document(&doc)?;
     field_mut_as::<StringField>(&mut doc, "color").set_string_value("red".to_string())?;
     w.add_document(&doc)?;
@@ -665,7 +661,7 @@ fn test_clear_filter() -> Result<()> {
 
     let mut doc = Document::new();
     let f = string_field("color", "")?;
-    doc.add(Box::new(f));
+    doc.add(f);
     let num_docs = LuceneTestCase::at_least(10);
     for _ in 0..num_docs {
         field_mut_as::<StringField>(&mut doc, "color").set_string_value(
@@ -810,7 +806,7 @@ fn test_ram_bytes_used_agrees_with_ram_usage_tester() -> Result<()> {
 
     let mut doc = Document::new();
     let f = string_field("color", "")?;
-    doc.add(Box::new(f));
+    doc.add(f);
     let iters = LuceneTestCase::at_least(5);
     for _ in 0..iters {
         let num_docs = LuceneTestCase::at_least(10);
@@ -1138,7 +1134,7 @@ fn test_on_use() -> Result<()> {
     let colors = ["red", "blue", "green", "yellow"];
     let mut doc = Document::new();
     let f = string_field("color", "")?;
-    doc.add(Box::new(f));
+    doc.add(f);
     let num_docs = LuceneTestCase::at_least(10);
     for _ in 0..num_docs {
         field_mut_as::<StringField>(&mut doc, "color")
@@ -1208,7 +1204,7 @@ fn test_stats() -> Result<()> {
 
     let mut doc = Document::new();
     let f = string_field("color", "")?;
-    doc.add(Box::new(f));
+    doc.add(f);
     for _ in 0..10 {
         field_mut_as::<StringField>(&mut doc, "color")
             .set_string_value(RandomPicks::random_from(&*random(), &colors).to_string())?;
@@ -1395,7 +1391,7 @@ fn test_fine_grained_stats() -> Result<()> {
 
     let mut doc = Document::new();
     let f = string_field("color", "")?;
-    doc.add(Box::new(f));
+    doc.add(f);
     for w in [&w1, &w2] {
         for _ in 0..10 {
             field_mut_as::<StringField>(&mut doc, "color")
@@ -1740,7 +1736,7 @@ fn test_random() -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let f = text_field("foo", "foo")?;
-    doc.add(Box::new(f));
+    doc.add(f);
     w.add_document(&doc)?;
     let mut reader = w.get_reader()?;
 
@@ -2000,14 +1996,14 @@ fn test_on_use_with_random_first_segment_skipping() -> Result<()> {
         let index_writer =
             RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
         let mut doc = Document::new();
-        doc.add(Box::new(string_field("f", "bar")?));
+        doc.add(string_field("f", "bar")?);
         index_writer.add_document(&doc)?;
         if random().next_boolean() {
             index_writer.get_reader()?.close()?;
         }
         let mut doc = Document::new();
-        doc.add(Box::new(string_field("f", "foo")?));
-        doc.add(Box::new(string_field("f", "bar")?));
+        doc.add(string_field("f", "foo")?);
+        doc.add(string_field("f", "bar")?);
         index_writer.add_document(&doc)?;
         index_writer.commit()?;
         index_writer.close()?;
@@ -2719,7 +2715,7 @@ fn test_skip_cache_if_ongoing() -> Result<()> {
     let num_docs = num_threads * 100;
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(string_field("doc", &i.to_string())?));
+        doc.add(string_field("doc", &i.to_string())?);
         w.add_document(&doc)?;
     }
     let reader = directory_reader::open_with_writer(&*w)?;
@@ -3161,12 +3157,8 @@ fn test_doc_values_updates_dont_break_cache() -> Result<()> {
     assert_equals(&1, &count(&query)); // should be cached
 
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("field", 1)));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "text",
-        "text",
-        Store::NO,
-    )));
+    doc.add(NumericDocValuesField::new("field", 1));
+    doc.add(LuceneTestCase::new_text_field("text", "text", Store::NO));
     w.add_document(&doc)?;
     reader.close()?;
     reader = directory_reader::open_with_writer(&*w)?;
@@ -3234,7 +3226,7 @@ fn test_query_cache_soft_update() -> Result<()> {
     let soft_delete = true;
     if soft_delete {
         let mut tombstone = Document::new();
-        tombstone.add(Box::new(NumericDocValuesField::new("soft_delete", 1)));
+        tombstone.add(NumericDocValuesField::new("soft_delete", 1));
         w.soft_update_document(term("id", "1"), &tombstone, &[ndv_field("soft_delete", 1)?])?;
         w.soft_update_document(term("id", "2"), &tombstone, &[ndv_field("soft_delete", 1)?])?;
     } else {
@@ -3274,7 +3266,7 @@ fn test_bulk_scorer_locking() -> Result<()> {
         let mut doc = Document::new();
         for value in ["foo", "bar", "baz"] {
             if random().next_boolean() {
-                doc.add(Box::new(string_field("field", value)?));
+                doc.add(string_field("field", value)?);
             }
         }
     }
@@ -3348,13 +3340,9 @@ fn test_skip_caching_for_range_query() -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let person = |name: &str, age: i64| -> Result<Document> {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "name",
-            name.to_string(),
-            Store::YES,
-        )?));
-        doc.add(Box::new(LongPoint::new("age", &[age])?));
-        doc.add(Box::new(SortedNumericDocValuesField::new("age", age)));
+        doc.add(StringField::new("name", name.to_string(), Store::YES)?);
+        doc.add(LongPoint::new("age", &[age])?);
+        doc.add(SortedNumericDocValuesField::new("age", age));
         Ok(doc)
     };
     let doc1 = person("tom", 15)?;
@@ -3404,7 +3392,7 @@ fn test_count_delegation() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(string_field("foo", "bar")?));
+    doc.add(string_field("foo", "bar")?);
     let num_docs = random().next_int_bound(100) + 20;
     for _ in 0..num_docs {
         w.add_document(&doc)?;
@@ -3532,13 +3520,9 @@ fn test_cache_has_fast_count() -> Result<()> {
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     let words_doc = |words: &str, f: Option<&str>| -> Result<Document> {
         let mut doc = Document::new();
-        doc.add(Box::new(TextField::new(
-            "words",
-            words.to_string(),
-            Store::NO,
-        )?));
+        doc.add(TextField::new("words", words.to_string(), Store::NO)?);
         if let Some(f) = f {
-            doc.add(Box::new(string_field("f", f)?));
+            doc.add(string_field("f", f)?);
         }
         Ok(doc)
     };

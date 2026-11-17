@@ -227,11 +227,7 @@ fn set_up(inst: &mut TestTermVectorsReaderInstance) -> Result<()> {
         } else {
             custom_type.set_store_term_vectors(true)?;
         }
-        doc.add(Box::new(Field::new(
-            inst.test_fields[i],
-            String::new(),
-            custom_type,
-        )?));
+        doc.add(Field::new(inst.test_fields[i], String::new(), custom_type)?);
     }
 
     // Create 5 documents for testing, they all have the same
@@ -539,7 +535,7 @@ fn check_illegal(ft: FieldType, message: &str) -> Result<()> {
     a.set_enable_checks(false);
     let w = RandomIndexWriter::new(&*random(), dir.as_directory(), Arc::new(a))?;
     let mut doc = Document::new();
-    doc.add(Box::new(Field::new("field", "value".to_string(), ft)?));
+    doc.add(Field::new("field", "value".to_string(), ft)?);
 
     let expected = iae_message(|| w.add_document(&doc));
     assert_equals(message, expected.as_str());

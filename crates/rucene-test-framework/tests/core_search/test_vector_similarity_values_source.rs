@@ -118,11 +118,11 @@ fn kb(
 
 /// The `id` fields of each document.
 fn id_fields(doc: &mut Document, id: &str) -> Result<()> {
-    doc.add(Box::new(StringField::new("id", id.to_string(), Store::NO)?));
-    doc.add(Box::new(SortedDocValuesField::new(
+    doc.add(StringField::new("id", id.to_string(), Store::NO)?);
+    doc.add(SortedDocValuesField::new(
         "id",
         BytesRef::from_char_sequence(id),
-    )));
+    ));
     Ok(())
 }
 
@@ -138,19 +138,19 @@ fn before_class() -> Result<()> {
     // vector)` use EUCLIDEAN.
     let mut document = Document::new();
     id_fields(&mut document, "1")?;
-    document.add(kf("knnFloatField1", &[1.0, 2.0, 3.0], EUCLIDEAN)?);
-    document.add(kf("knnFloatField2", &[2.2, -3.2, -3.1], DOT_PRODUCT)?);
-    document.add(kf("knnFloatField3", &[4.5, 10.3, -7.0], COSINE)?);
-    document.add(kf(
+    document.add(*kf("knnFloatField1", &[1.0, 2.0, 3.0], EUCLIDEAN)?);
+    document.add(*kf("knnFloatField2", &[2.2, -3.2, -3.1], DOT_PRODUCT)?);
+    document.add(*kf("knnFloatField3", &[4.5, 10.3, -7.0], COSINE)?);
+    document.add(*kf(
         "knnFloatField4",
         &[-1.3, 1.0, 1.0],
         MAXIMUM_INNER_PRODUCT,
     )?);
-    document.add(kf("knnFloatField5", &[-6.7, -1.0, -0.9], EUCLIDEAN)?);
-    document.add(kb("knnByteField1", &[106, 80, 127], EUCLIDEAN)?);
-    document.add(kb("knnByteField2", &[4, 2, 3], DOT_PRODUCT)?);
-    document.add(kb("knnByteField3", &[-121, -64, -1], COSINE)?);
-    document.add(kb(
+    document.add(*kf("knnFloatField5", &[-6.7, -1.0, -0.9], EUCLIDEAN)?);
+    document.add(*kb("knnByteField1", &[106, 80, 127], EUCLIDEAN)?);
+    document.add(*kb("knnByteField2", &[4, 2, 3], DOT_PRODUCT)?);
+    document.add(*kb("knnByteField3", &[-121, -64, -1], COSINE)?);
+    document.add(*kb(
         "knnByteField4",
         &[-127, 127, 127],
         MAXIMUM_INNER_PRODUCT,
@@ -159,26 +159,30 @@ fn before_class() -> Result<()> {
 
     let mut document2 = Document::new();
     id_fields(&mut document2, "2")?;
-    document2.add(kf("knnFloatField1", &[1.0, 2.0, 3.0], EUCLIDEAN)?);
-    document2.add(kf("knnFloatField2", &[-5.2, 8.7, 3.1], DOT_PRODUCT)?);
-    document2.add(kf("knnFloatField3", &[0.2, -3.2, 3.1], COSINE)?);
-    document2.add(kf("knnFloatField5", &[2.0, 13.2, 9.1], EUCLIDEAN)?);
-    document2.add(kb("knnByteField1", &[1, -2, -30], EUCLIDEAN)?);
-    document2.add(kb("knnByteField2", &[40, 21, 3], DOT_PRODUCT)?);
-    document2.add(kb("knnByteField3", &[9, 2, 3], COSINE)?);
-    document2.add(kb("knnByteField4", &[14, 29, 31], MAXIMUM_INNER_PRODUCT)?);
+    document2.add(*kf("knnFloatField1", &[1.0, 2.0, 3.0], EUCLIDEAN)?);
+    document2.add(*kf("knnFloatField2", &[-5.2, 8.7, 3.1], DOT_PRODUCT)?);
+    document2.add(*kf("knnFloatField3", &[0.2, -3.2, 3.1], COSINE)?);
+    document2.add(*kf("knnFloatField5", &[2.0, 13.2, 9.1], EUCLIDEAN)?);
+    document2.add(*kb("knnByteField1", &[1, -2, -30], EUCLIDEAN)?);
+    document2.add(*kb("knnByteField2", &[40, 21, 3], DOT_PRODUCT)?);
+    document2.add(*kb("knnByteField3", &[9, 2, 3], COSINE)?);
+    document2.add(*kb("knnByteField4", &[14, 29, 31], MAXIMUM_INNER_PRODUCT)?);
     iw.add_document(&document2)?;
 
     let mut document3 = Document::new();
     id_fields(&mut document3, "3")?;
-    document3.add(kf("knnFloatField1", &[1.0, 2.0, 3.0], EUCLIDEAN)?);
-    document3.add(kf("knnFloatField2", &[-8.0, 7.0, -6.0], DOT_PRODUCT)?);
-    document3.add(kf("knnFloatField5", &[5.2, 3.2, 3.1], EUCLIDEAN)?);
-    document3.add(kb("knnByteField1", &[-128, 0, 127], EUCLIDEAN)?);
-    document3.add(kb("knnByteField2", &[-1, -2, -3], DOT_PRODUCT)?);
-    document3.add(kb("knnByteField3", &[4, 2, 3], COSINE)?);
-    document3.add(kb("knnByteField4", &[-4, -2, -128], MAXIMUM_INNER_PRODUCT)?);
-    document3.add(kb("knnByteField5", &[-120, -2, 3], EUCLIDEAN)?);
+    document3.add(*kf("knnFloatField1", &[1.0, 2.0, 3.0], EUCLIDEAN)?);
+    document3.add(*kf("knnFloatField2", &[-8.0, 7.0, -6.0], DOT_PRODUCT)?);
+    document3.add(*kf("knnFloatField5", &[5.2, 3.2, 3.1], EUCLIDEAN)?);
+    document3.add(*kb("knnByteField1", &[-128, 0, 127], EUCLIDEAN)?);
+    document3.add(*kb("knnByteField2", &[-1, -2, -3], DOT_PRODUCT)?);
+    document3.add(*kb("knnByteField3", &[4, 2, 3], COSINE)?);
+    document3.add(*kb(
+        "knnByteField4",
+        &[-4, -2, -128],
+        MAXIMUM_INNER_PRODUCT,
+    )?);
+    document3.add(*kb("knnByteField5", &[-120, -2, 3], EUCLIDEAN)?);
     iw.add_document(&document3)?;
     iw.commit()?;
     iw.force_merge(1)?;

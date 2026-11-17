@@ -107,8 +107,8 @@ fn test_basics() -> Result<()> {
     let mut doc = Document::new();
     let pagerank = FeatureField::new("features", "pagerank", 1.0)?;
     let url_length = FeatureField::new("features", "urlLen", 1.0)?;
-    doc.add(Box::new(pagerank));
-    doc.add(Box::new(url_length));
+    doc.add(pagerank);
+    doc.add(url_length);
 
     set_features(&mut doc, &[10.0, 1.0 / 24.0])?;
     writer.add_document(&doc)?;
@@ -214,7 +214,7 @@ fn test_explanations() -> Result<()> {
     let writer = log_mp_writer(&dir)?;
     let mut doc = Document::new();
     let pagerank = FeatureField::new("features", "pagerank", 1.0)?;
-    doc.add(Box::new(pagerank));
+    doc.add(pagerank);
 
     set_features(&mut doc, &[10.0])?;
     writer.add_document(&doc)?;
@@ -328,7 +328,7 @@ fn test_compute_pivot_feature_value() -> Result<()> {
 
     let mut doc = Document::new();
     let pagerank = FeatureField::new("features", "pagerank", 1.0)?;
-    doc.add(Box::new(pagerank));
+    doc.add(pagerank);
 
     set_features(&mut doc, &[10.0])?;
     writer.add_document(&doc)?;
@@ -361,9 +361,9 @@ fn test_demo() -> Result<()> {
     let writer = log_mp_writer(&dir)?;
     let mut doc = Document::new();
     let pagerank = FeatureField::new("features", "pagerank", 1.0)?;
-    doc.add(Box::new(pagerank));
+    doc.add(pagerank);
     let body = TextField::new("body", String::new(), Store::NO)?;
-    doc.add(Box::new(body));
+    doc.add(body);
 
     set_features(&mut doc, &[10.0])?;
     doc.get_field_mut_as::<TextField>("body")
@@ -432,8 +432,8 @@ fn test_basics_non_scoring_case() -> Result<()> {
         let mut doc = Document::new();
         let pagerank = FeatureField::new("features", "pagerank", 1.0)?;
         let url_length = FeatureField::new("features", "urlLen", 1.0)?;
-        doc.add(Box::new(pagerank));
-        doc.add(Box::new(url_length));
+        doc.add(pagerank);
+        doc.add(url_length);
 
         set_features(&mut doc, &[10.0, 1.0 / 24.0])?;
         writer.add_document(&doc)?;
@@ -508,8 +508,8 @@ fn test_store_term_vectors() -> Result<()> {
     let mut doc = Document::new();
     let pagerank = FeatureField::with_term_vectors("features", "pagerank", 1.0, true)?;
     let url_length = FeatureField::with_term_vectors("features", "urlLen", 1.0, true)?;
-    doc.add(Box::new(pagerank));
-    doc.add(Box::new(url_length));
+    doc.add(pagerank);
+    doc.add(url_length);
 
     set_features(&mut doc, &[10.0, 0.5])?;
     writer.add_document(&doc)?;
@@ -520,9 +520,9 @@ fn test_store_term_vectors() -> Result<()> {
     writer.add_document(&doc)?;
 
     doc.clear();
-    doc.add(Box::new(FeatureField::with_term_vectors(
+    doc.add(FeatureField::with_term_vectors(
         "features", "pagerank", 1.0, false,
-    )?));
+    )?);
     let exc =
         rucene_test_framework::util::java_exceptions::expect_throws("java.lang.Exception", || {
             writer.add_document(&doc)

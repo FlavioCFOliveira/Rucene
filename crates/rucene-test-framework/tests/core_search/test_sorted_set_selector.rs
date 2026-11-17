@@ -79,20 +79,16 @@ fn build_doc(parts: &[DocPart]) -> Result<Document> {
     let mut doc = Document::new();
     for part in parts {
         match part {
-            DocPart::Value(value) => doc.add(Box::new(SortedSetDocValuesField::new(
+            DocPart::Value(value) => doc.add(SortedSetDocValuesField::new(
                 "value",
                 LuceneTestCase::new_bytes_ref_str(value),
-            ))),
-            DocPart::Keyword(value) => doc.add(Box::new(KeywordField::new_with_bytes(
+            )),
+            DocPart::Keyword(value) => doc.add(KeywordField::new_with_bytes(
                 "value",
                 LuceneTestCase::new_bytes_ref_str(value),
                 Store::NO,
-            )?)),
-            DocPart::Id(id) => doc.add(Box::new(LuceneTestCase::new_string_field(
-                "id",
-                id,
-                Store::YES,
-            ))),
+            )?),
+            DocPart::Id(id) => doc.add(LuceneTestCase::new_string_field("id", id, Store::YES)),
         }
     }
     Ok(doc)

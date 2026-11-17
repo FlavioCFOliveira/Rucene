@@ -883,8 +883,64 @@ fn verify_same_vector_options(
 /// Immutable collection of [`FieldInfo`] objects for a segment.
 ///
 /// Equivalent to `org.apache.lucene.index.FieldInfos`.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+///
+/// Java's `FieldInfos` is immutable once built, and every reader of a segment
+/// holds the one object by reference (for example `this.fieldInfos = fn` in
+/// `Lucene90CompressingStoredFieldsReader.java:106`, and
+/// `SegmentReadState.fieldInfos`). The immutable tables therefore live in one
+/// shared `FieldInfosCore`, so that [`Clone`] hands out another handle onto the
+/// same object, as copying a Java reference does, instead of a copy.
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct FieldInfos {
+    /// The immutable tables, shared by every clone of this `FieldInfos`.
+    // PERF: a clone is one reference-count increment, not a rebuild of the
+    // tables and their strings; readers clone the segment's `FieldInfos` at
+    // open.
+    core: Arc<FieldInfosCore>,
+
+    has_freq: bool,
+    has_postings: bool,
+    has_prox: bool,
+    has_payloads: bool,
+    has_offsets: bool,
+    has_term_vectors: bool,
+    has_norms: bool,
+    has_doc_values: bool,
+    has_point_values: bool,
+    has_vector_values: bool,
+
+    /// When present, iteration and lookup are restricted to the named subset
+    /// while internal field numbers are preserved for merge contexts.
+    /// This mirrors the filtered view previously provided by the codec stub.
+    filtered_names: Option<Arc<HashSet<String>>>,
+}
+
+impl std::fmt::Debug for FieldInfos {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FieldInfos")
+            .field("by_number", &self.core.by_number)
+            .field("by_name", &self.core.by_name)
+            .field("values", &self.core.values)
+            .field("has_freq", &self.has_freq)
+            .field("has_postings", &self.has_postings)
+            .field("has_prox", &self.has_prox)
+            .field("has_payloads", &self.has_payloads)
+            .field("has_offsets", &self.has_offsets)
+            .field("has_term_vectors", &self.has_term_vectors)
+            .field("has_norms", &self.has_norms)
+            .field("has_doc_values", &self.has_doc_values)
+            .field("has_point_values", &self.has_point_values)
+            .field("has_vector_values", &self.has_vector_values)
+            .field("soft_deletes_field", &self.core.soft_deletes_field)
+            .field("parent_field", &self.core.parent_field)
+            .field("filtered_names", &self.filtered_names.as_deref())
+            .finish()
+    }
+}
+
+/// The immutable tables of a [`FieldInfos`], shared by all its clones.
+#[derive(Debug, PartialEq, Eq, Default)]
+struct FieldInfosCore {
     /// Field metadata indexed by field number, with a gap for every number no
     /// field was assigned.
     ///
@@ -909,24 +965,8 @@ pub struct FieldInfos {
     /// collection presents them.
     values: Vec<Arc<FieldInfo>>,
 
-    has_freq: bool,
-    has_postings: bool,
-    has_prox: bool,
-    has_payloads: bool,
-    has_offsets: bool,
-    has_term_vectors: bool,
-    has_norms: bool,
-    has_doc_values: bool,
-    has_point_values: bool,
-    has_vector_values: bool,
-
     soft_deletes_field: Option<String>,
     parent_field: Option<String>,
-
-    /// When present, iteration and lookup are restricted to the named subset
-    /// while internal field numbers are preserved for merge contexts.
-    /// This mirrors the filtered view previously provided by the codec stub.
-    filtered_names: Option<HashSet<String>>,
 }
 
 impl FieldInfos {
@@ -1046,9 +1086,13 @@ impl FieldInfos {
             };
 
         Ok(Self {
-            by_number,
-            by_name,
-            values,
+            core: Arc::new(FieldInfosCore {
+                by_number,
+                by_name,
+                values,
+                soft_deletes_field,
+                parent_field,
+            }),
             has_freq,
             has_postings,
             has_prox,
@@ -1059,8 +1103,6 @@ impl FieldInfos {
             has_doc_values,
             has_point_values,
             has_vector_values,
-            soft_deletes_field,
-            parent_field,
             filtered_names: None,
         })
     }
@@ -1095,7 +1137,8 @@ impl FieldInfos {
 
     /// Returns an iterator over the visible fields in ascending field-number order.
     pub fn iter(&self) -> impl Iterator<Item = &FieldInfo> {
-        self.values
+        self.core
+            .values
             .iter()
             .map(Arc::as_ref)
             .filter(move |fi| self.is_visible(&fi.name))
@@ -1106,7 +1149,8 @@ impl FieldInfos {
         if !self.is_visible(name) {
             return None;
         }
-        self.by_name
+        self.core
+            .by_name
             .get(name)
             .and_then(|&number| self.field_info_by_number(number))
     }
@@ -1132,14 +1176,36 @@ impl FieldInfos {
 
     /// Looks up a visible field by number.
     pub fn field_info_by_number(&self, number: i32) -> Option<&FieldInfo> {
-        if number < 0 || number as usize >= self.by_number.len() {
+        self.shared_field_info_by_number(number).map(Arc::as_ref)
+    }
+
+    /// [`field_info_checked`](Self::field_info_checked), answering the shared
+    /// handle onto the field's one `FieldInfo` object rather than a borrow, for
+    /// a reader that keeps the field as Java keeps the reference it got from
+    /// `FieldInfos.fieldInfo(int)` (`FieldInfos.java:341-346`).
+    ///
+    /// # Errors
+    ///
+    /// As [`field_info_checked`](Self::field_info_checked).
+    pub(crate) fn field_info_checked_shared(&self, number: i32) -> Result<Option<Arc<FieldInfo>>> {
+        if number < 0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "Illegal field number: {number}"
+            )));
+        }
+        Ok(self.shared_field_info_by_number(number).cloned())
+    }
+
+    /// The shared handle behind [`field_info_by_number`](Self::field_info_by_number).
+    fn shared_field_info_by_number(&self, number: i32) -> Option<&Arc<FieldInfo>> {
+        if number < 0 || number as usize >= self.core.by_number.len() {
             return None;
         }
-        let fi = self.by_number[number as usize].as_ref()?;
+        let fi = self.core.by_number[number as usize].as_ref()?;
         if !self.is_visible(&fi.name) {
             return None;
         }
-        Some(fi.as_ref())
+        Some(fi)
     }
 
     /// Returns `true` if any visible field has term frequencies.
@@ -1295,12 +1361,12 @@ impl FieldInfos {
     /// Equivalent to `FieldInfos.getSoftDeletesField()`, which returns `null`
     /// where this returns `None`.
     pub fn get_soft_deletes_field(&self) -> Option<&str> {
-        self.soft_deletes_field.as_deref()
+        self.core.soft_deletes_field.as_deref()
     }
 
     /// Returns the parent-document field name if any.
     pub fn get_parent_field(&self) -> Option<&str> {
-        self.parent_field.as_deref()
+        self.core.parent_field.as_deref()
     }
 
     /// Creates a filtered view that keeps all original fields for numbering
@@ -1325,7 +1391,7 @@ impl FieldInfos {
         let filtered_names: HashSet<String> = names.into_iter().collect();
 
         let mut result = self.clone();
-        result.filtered_names = Some(filtered_names);
+        result.filtered_names = Some(Arc::new(filtered_names));
 
         // Recompute aggregate flags for the visible subset.
         result.has_term_vectors = false;
@@ -1341,6 +1407,7 @@ impl FieldInfos {
         // Collect visible field references first to avoid borrowing `result`
         // mutably while the filter closure holds an immutable borrow.
         let visible: Vec<&FieldInfo> = result
+            .core
             .values
             .iter()
             .map(Arc::as_ref)

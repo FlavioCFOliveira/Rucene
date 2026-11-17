@@ -286,11 +286,7 @@ fn run_test(random: &dyn Random, dir: &Arc<dyn Directory>) -> Result<()> {
             let mut iterations = 0;
             let mut doc = Document::new();
             let custom_type = stored_tv_type().unwrap_or_else(|e| rethrow_java(e));
-            doc.add(Box::new(LuceneTestCase::new_field(
-                "content",
-                "aaa",
-                &custom_type,
-            )));
+            doc.add(LuceneTestCase::new_field("content", "aaa", &custom_type));
             loop {
                 for i in 0..27 {
                     if let Err(t) = writer.add_document(&doc) {
@@ -334,11 +330,7 @@ fn run_test(random: &dyn Random, dir: &Arc<dyn Directory>) -> Result<()> {
     // delete again:
     let mut doc = Document::new();
     let custom_type = stored_tv_type()?;
-    doc.add(Box::new(LuceneTestCase::new_field(
-        "content",
-        "aaa",
-        &custom_type,
-    )));
+    doc.add(LuceneTestCase::new_field("content", "aaa", &custom_type));
     writer.add_document(&doc)?;
 
     // Make sure we don't have any leftover files in the

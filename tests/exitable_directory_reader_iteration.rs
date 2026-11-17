@@ -76,17 +76,10 @@ const COUNT_FIELD: &str = "count";
 
 fn doc(d: i32) -> Document {
     let mut document = Document::new();
-    document.add(Box::new(
-        StringField::new("id", format!("doc-{d}"), Store::NO).expect("id"),
-    ));
+    document.add(StringField::new("id", format!("doc-{d}"), Store::NO).expect("id"));
     // One distinct term per document, so a terms enumeration is long.
-    document.add(Box::new(
-        TextField::new("body", format!("t{d:06}"), Store::NO).expect("body"),
-    ));
-    document.add(Box::new(NumericDocValuesField::new(
-        COUNT_FIELD,
-        i64::from(d),
-    )));
+    document.add(TextField::new("body", format!("t{d:06}"), Store::NO).expect("body"));
+    document.add(NumericDocValuesField::new(COUNT_FIELD, i64::from(d)));
     document
 }
 

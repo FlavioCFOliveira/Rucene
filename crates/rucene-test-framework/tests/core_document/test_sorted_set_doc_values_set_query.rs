@@ -44,15 +44,12 @@ fn test_missing_terms() -> Result<()> {
     for i in 0..100 {
         let mut doc = Document::new();
         let term = i * 10; // terms are units of 10;
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             field_name,
             &term.to_string(),
             Store::YES,
-        )));
-        doc.add(Box::new(SortedDocValuesField::new(
-            field_name,
-            br(&term.to_string()),
-        )));
+        ));
+        doc.add(SortedDocValuesField::new(field_name, br(&term.to_string())));
         w.add_document(&doc)?;
     }
     let reader = w.get_reader()?;
@@ -136,15 +133,8 @@ fn duel(filtered: bool) -> Result<()> {
         for _i in 0..num_docs {
             let mut doc = Document::new();
             let term = &all_terms[random().next_int_bound(all_terms.len() as i32) as usize];
-            doc.add(Box::new(StringField::new(
-                term.field(),
-                term.text(),
-                Store::NO,
-            )?));
-            doc.add(Box::new(SortedDocValuesField::new(
-                term.field(),
-                br(&term.text()),
-            )));
+            doc.add(StringField::new(term.field(), term.text(), Store::NO)?);
+            doc.add(SortedDocValuesField::new(term.field(), br(&term.text())));
             iw.add_document(&doc)?;
         }
         if num_terms > 1 && random().next_boolean() {

@@ -609,10 +609,10 @@ fn write_with_rucene(
         for tokens in values {
             let stream: Arc<AtomicRefCell<dyn TokenStream>> =
                 Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens.clone())));
-            document.add(Box::new(
+            document.add(
                 Field::new_with_token_stream(FIELD, stream, field_type.clone())
                     .expect("token stream field"),
-            ));
+            );
         }
         chain
             .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
@@ -744,10 +744,10 @@ fn rucene_invert_states(case: &str, documents: &[Vec<Vec<OwnedTok>>]) -> Vec<Inv
         for tokens in values {
             let stream: Arc<AtomicRefCell<dyn TokenStream>> =
                 Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens.clone())));
-            document.add(Box::new(
+            document.add(
                 Field::new_with_token_stream(FIELD, stream, field_type.clone())
                     .expect("token stream field"),
-            ));
+            );
         }
         chain
             .process_document(doc_id as i32, Some(&document), true, &mut field_infos)

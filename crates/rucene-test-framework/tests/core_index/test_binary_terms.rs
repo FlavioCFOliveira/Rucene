@@ -39,16 +39,16 @@ fn test_binary() -> Result<()> {
         let mut doc = Document::new();
         let custom_type = FieldType::new();
         custom_type.set_stored(true)?;
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             "id",
             &i.to_string(),
             &custom_type,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_string_field_bytes(
+        ));
+        doc.add(LuceneTestCase::new_string_field_bytes(
             "bytes",
             bytes.clone(),
             Store::NO,
-        )));
+        ));
         iw.add_document(&doc)?;
     }
 

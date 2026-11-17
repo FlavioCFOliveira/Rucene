@@ -420,8 +420,8 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
         let mut doc = Document::new();
         let docid = LuceneTestCase::new_string_field("docid", "0", Store::YES);
         let junk = LuceneTestCase::new_string_field("junk", "", Store::YES);
-        doc.add(Box::new(docid));
-        doc.add(Box::new(junk));
+        doc.add(docid);
+        doc.add(junk);
 
         let num_docs = 100;
         for i in 0..num_docs {

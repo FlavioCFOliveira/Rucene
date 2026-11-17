@@ -238,8 +238,8 @@ fn test_duel_point_numeric_sorted_with_skipper_range_query() -> Result<()> {
     for _ in 0..num_docs {
         let mut doc = Document::new();
         let value = TestUtil::next_long(&*random(), -100, 10000);
-        doc.add(Box::new(NumericDocValuesField::indexed_field("dv", value)));
-        doc.add(Box::new(LongPoint::new("idx", &[value])?));
+        doc.add(NumericDocValuesField::indexed_field("dv", value));
+        doc.add(LongPoint::new("idx", &[value])?);
         iw.add_document(&doc)?;
     }
 
@@ -292,18 +292,16 @@ fn do_test_duel_point_range_numeric_range_query(
                 let value = TestUtil::next_long(&*random(), -100, 10000);
                 if sorted_numeric {
                     if skypper {
-                        doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
-                            "dv", value,
-                        )));
+                        doc.add(SortedNumericDocValuesField::indexed_field("dv", value));
                     } else {
-                        doc.add(Box::new(SortedNumericDocValuesField::new("dv", value)));
+                        doc.add(SortedNumericDocValuesField::new("dv", value));
                     }
                 } else if skypper {
-                    doc.add(Box::new(NumericDocValuesField::indexed_field("dv", value)));
+                    doc.add(NumericDocValuesField::indexed_field("dv", value));
                 } else {
-                    doc.add(Box::new(NumericDocValuesField::new("dv", value)));
+                    doc.add(NumericDocValuesField::new("dv", value));
                 }
-                doc.add(Box::new(LongPoint::new("idx", &[value])?));
+                doc.add(LongPoint::new("idx", &[value])?);
             }
             iw.add_document(&doc)?;
         }
@@ -378,22 +376,16 @@ fn do_test_duel_point_range_sorted_range_query(
                 let encoded = encode(value);
                 if sorted_set {
                     if skypper {
-                        doc.add(Box::new(SortedSetDocValuesField::indexed_field(
-                            "dv",
-                            nbr(&encoded),
-                        )));
+                        doc.add(SortedSetDocValuesField::indexed_field("dv", nbr(&encoded)));
                     } else {
-                        doc.add(Box::new(SortedSetDocValuesField::new("dv", nbr(&encoded))));
+                        doc.add(SortedSetDocValuesField::new("dv", nbr(&encoded)));
                     }
                 } else if skypper {
-                    doc.add(Box::new(SortedDocValuesField::indexed_field(
-                        "dv",
-                        nbr(&encoded),
-                    )));
+                    doc.add(SortedDocValuesField::indexed_field("dv", nbr(&encoded)));
                 } else {
-                    doc.add(Box::new(SortedDocValuesField::new("dv", nbr(&encoded))));
+                    doc.add(SortedDocValuesField::new("dv", nbr(&encoded)));
                 }
-                doc.add(Box::new(LongPoint::new("idx", &[value])?));
+                doc.add(LongPoint::new("idx", &[value])?);
             }
             iw.add_document(&doc)?;
         }
@@ -582,10 +574,7 @@ fn assert_sorted_set_range_query_uses_two_phase_range_iterator_with_skipper(
 
 fn add_sorted_set_value(doc: &mut Document, value: i64) {
     let encoded = encode(value);
-    doc.add(Box::new(SortedSetDocValuesField::indexed_field(
-        "dv",
-        nbr(&encoded),
-    )));
+    doc.add(SortedSetDocValuesField::indexed_field("dv", nbr(&encoded)));
 }
 
 fn test_duel_point_range_sorted_range_skipper_query() -> Result<()> {
@@ -607,11 +596,8 @@ fn test_duel_point_sorted_set_sorted_with_skipper_range_query() -> Result<()> {
         let mut doc = Document::new();
         let value = TestUtil::next_long(&*random(), -100, 10000);
         let encoded = encode(value);
-        doc.add(Box::new(SortedDocValuesField::indexed_field(
-            "dv",
-            nbr(&encoded),
-        )));
-        doc.add(Box::new(LongPoint::new("idx", &[value])?));
+        doc.add(SortedDocValuesField::indexed_field("dv", nbr(&encoded)));
+        doc.add(LongPoint::new("idx", &[value])?);
         iw.add_document(&doc)?;
     }
 
@@ -904,10 +890,10 @@ fn test_sorted_numeric_npe() -> Result<()> {
     ];
     for num in nums {
         let mut doc = Document::new();
-        doc.add(Box::new(SortedNumericDocValuesField::new(
+        doc.add(SortedNumericDocValuesField::new(
             "dv",
             NumericUtils::double_to_sortable_long(num),
-        )));
+        ));
         iw.add_document(&doc)?;
     }
     iw.commit()?;
@@ -974,19 +960,13 @@ fn test_duel_set_vs_terms_query() -> Result<()> {
         for _ in 0..num_docs {
             let mut doc = Document::new();
             let number = all_numbers[random().next_int_bound(all_numbers.len() as i32) as usize];
-            doc.add(Box::new(StringField::new(
-                "text",
-                number.to_string(),
-                Store::NO,
-            )?));
-            doc.add(Box::new(NumericDocValuesField::new("long", number)));
-            doc.add(Box::new(SortedNumericDocValuesField::new(
-                "twolongs", number,
-            )));
-            doc.add(Box::new(SortedNumericDocValuesField::new(
+            doc.add(StringField::new("text", number.to_string(), Store::NO)?);
+            doc.add(NumericDocValuesField::new("long", number));
+            doc.add(SortedNumericDocValuesField::new("twolongs", number));
+            doc.add(SortedNumericDocValuesField::new(
                 "twolongs",
                 number.wrapping_mul(2),
-            )));
+            ));
             iw.add_document(&doc)?;
         }
         if num_numbers > 1 && random().next_boolean() {
@@ -1066,19 +1046,16 @@ fn test_sorted_numeric_doc_values_range_query_count() -> Result<()> {
         let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         for i in 0..100 {
             let mut doc = Document::new();
-            doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+            doc.add(SortedNumericDocValuesField::indexed_field(
                 "with_index",
                 100 + i,
-            )));
-            doc.add(Box::new(SortedNumericDocValuesField::new(
-                "without_index",
-                100 + i,
-            )));
+            ));
+            doc.add(SortedNumericDocValuesField::new("without_index", 100 + i));
             if i != 55 {
-                doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+                doc.add(SortedNumericDocValuesField::indexed_field(
                     "sparse",
                     100 + i,
-                )));
+                ));
             }
             iw.add_document(&doc)?;
         }
@@ -1152,19 +1129,16 @@ fn test_sorted_set_doc_values_range_query_count() -> Result<()> {
         for i in 0..100 {
             let val = format!("{i:03}");
             let mut doc = Document::new();
-            doc.add(Box::new(SortedSetDocValuesField::indexed_field(
+            doc.add(SortedSetDocValuesField::indexed_field(
                 "with_index",
                 nbr_str(&val),
-            )));
-            doc.add(Box::new(SortedSetDocValuesField::new(
-                "without_index",
-                nbr_str(&val),
-            )));
+            ));
+            doc.add(SortedSetDocValuesField::new("without_index", nbr_str(&val)));
             if i != 55 {
-                doc.add(Box::new(SortedSetDocValuesField::indexed_field(
+                doc.add(SortedSetDocValuesField::indexed_field(
                     "sparse",
                     nbr_str(&val),
-                )));
+                ));
             }
             iw.add_document(&doc)?;
         }
@@ -1288,28 +1262,25 @@ fn test_sorted_numeric_doc_values_range_query_rewrites(_random: &dyn Random) -> 
         let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         for i in 0..100 {
             let mut doc = Document::new();
-            doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+            doc.add(SortedNumericDocValuesField::indexed_field(
                 "with_index",
                 100 + i,
-            )));
-            doc.add(Box::new(SortedNumericDocValuesField::new(
-                "without_index",
-                100 + i,
-            )));
+            ));
+            doc.add(SortedNumericDocValuesField::new("without_index", 100 + i));
             if i % 17 == 0 {
                 iw.commit()?;
             }
             if i != 55 {
-                doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+                doc.add(SortedNumericDocValuesField::indexed_field(
                     "sparse",
                     100 + i,
-                )));
+                ));
             }
             if i == 74 {
-                doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
+                doc.add(SortedNumericDocValuesField::indexed_field(
                     "super_sparse",
                     174,
-                )));
+                ));
             }
             iw.add_document(&doc)?;
         }
@@ -1374,7 +1345,7 @@ fn test_rewrite_works_with_points_but_no_skip_index() -> Result<()> {
         let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         for i in 0..100 {
             let mut doc = Document::new();
-            doc.add(Box::new(LongField::new("field", 100 + i, Store::NO)));
+            doc.add(LongField::new("field", 100 + i, Store::NO));
             iw.add_document(&doc)?;
         }
         iw.commit()?;
@@ -1459,11 +1430,7 @@ fn do_test_primary_sort_dense_exact_match(
             if deletes && random().next_int_bound(10) == 0 {
                 let mut doc = Document::new();
                 doc.add_shared(field);
-                doc.add(Box::new(StringField::new(
-                    "id",
-                    "to_delete".to_string(),
-                    Store::NO,
-                )?));
+                doc.add(StringField::new("id", "to_delete".to_string(), Store::NO)?);
                 iw.add_document(&doc)?;
                 total_sizes[i] += 1;
             }

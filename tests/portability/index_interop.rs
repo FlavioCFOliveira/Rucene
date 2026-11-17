@@ -158,86 +158,65 @@ fn term(field: &str, text: &str) -> Term {
 /// `IndexInteropFixture.doc(int)`.
 fn doc(i: i32) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(StringField::new("id", id(i), Store::YES).unwrap()));
-    d.add(Box::new(Field::new("body", body(i), body_type()).unwrap()));
+    d.add(StringField::new("id", id(i), Store::YES).unwrap());
+    d.add(Field::new("body", body(i), body_type()).unwrap());
     let stream: Arc<AtomicRefCell<dyn TokenStream>> =
         Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tv_tokens(i))));
-    d.add(Box::new(
-        Field::new_with_token_stream("tv", stream, tv_type()).unwrap(),
-    ));
-    d.add(Box::new(
-        StoredField::new_number("s_int", NumericValue::Int(i * 3 - 100)).unwrap(),
-    ));
-    d.add(Box::new(
-        StoredField::new_number("s_long", NumericValue::Long(i as i64 * 1_000_000_007)).unwrap(),
-    ));
-    d.add(Box::new(
-        StoredField::new_number("s_float", NumericValue::Float(i as f32 / 4.0)).unwrap(),
-    ));
-    d.add(Box::new(
-        StoredField::new_number("s_double", NumericValue::Double(i as f64 / 8.0)).unwrap(),
-    ));
-    d.add(Box::new(
+    d.add(Field::new_with_token_stream("tv", stream, tv_type()).unwrap());
+    d.add(StoredField::new_number("s_int", NumericValue::Int(i * 3 - 100)).unwrap());
+    d.add(StoredField::new_number("s_long", NumericValue::Long(i as i64 * 1_000_000_007)).unwrap());
+    d.add(StoredField::new_number("s_float", NumericValue::Float(i as f32 / 4.0)).unwrap());
+    d.add(StoredField::new_number("s_double", NumericValue::Double(i as f64 / 8.0)).unwrap());
+    d.add(
         StoredField::new_bytes("s_bytes", BytesRef::new(vec![i as u8, (i >> 8) as u8, 7])).unwrap(),
-    ));
-    d.add(Box::new(
-        StoredField::new_string("s_str", format!("stored-{i}")).unwrap(),
-    ));
+    );
+    d.add(StoredField::new_string("s_str", format!("stored-{i}")).unwrap());
     if i % 11 != 0 {
-        d.add(Box::new(NumericDocValuesField::new(
+        d.add(NumericDocValuesField::new(
             "dv_num",
             ((i * 37) % 101 - 50) as i64,
-        )));
-    }
-    if i % 5 != 0 {
-        d.add(Box::new(BinaryDocValuesField::new(
-            "dv_bin",
-            bytes(&format!("bin-{}", i * 7 % 13)),
-        )));
-    }
-    if i % 6 != 0 {
-        d.add(Box::new(SortedDocValuesField::new(
-            "dv_sorted",
-            bytes(&format!("s{}", i * 13 % 29)),
-        )));
-    }
-    d.add(Box::new(SortedNumericDocValuesField::new(
-        "dv_snum",
-        (i % 10) as i64,
-    )));
-    d.add(Box::new(SortedNumericDocValuesField::new(
-        "dv_snum",
-        ((i * 3) % 17) as i64,
-    )));
-    d.add(Box::new(SortedSetDocValuesField::new(
-        "dv_sset",
-        bytes(&format!("a{}", i % 5)),
-    )));
-    d.add(Box::new(SortedSetDocValuesField::new(
-        "dv_sset",
-        bytes(&format!("b{}", i % 3)),
-    )));
-    d.add(Box::new(IntPoint::new("p_int", &[(i * 7) % 200]).unwrap()));
-    d.add(Box::new(
-        LongPoint::new("p_long", &[i as i64 * 100_000 - 5_000_000]).unwrap(),
-    ));
-    d.add(Box::new(
-        FloatPoint::new("p_float", &[i as f32 * 0.5 - 40.0]).unwrap(),
-    ));
-    d.add(Box::new(
-        DoublePoint::new("p_double", &[i as f64 * 0.25 - 10.0]).unwrap(),
-    ));
-    d.add(Box::new(IntPoint::new("p_2d", &[i % 20, i / 20]).unwrap()));
-    if i % 9 != 0 {
-        d.add(Box::new(
-            KnnFloatVectorField::new("vf", &float_vector(i), VectorSimilarityFunction::EUCLIDEAN)
-                .unwrap(),
         ));
     }
-    d.add(Box::new(
+    if i % 5 != 0 {
+        d.add(BinaryDocValuesField::new(
+            "dv_bin",
+            bytes(&format!("bin-{}", i * 7 % 13)),
+        ));
+    }
+    if i % 6 != 0 {
+        d.add(SortedDocValuesField::new(
+            "dv_sorted",
+            bytes(&format!("s{}", i * 13 % 29)),
+        ));
+    }
+    d.add(SortedNumericDocValuesField::new("dv_snum", (i % 10) as i64));
+    d.add(SortedNumericDocValuesField::new(
+        "dv_snum",
+        ((i * 3) % 17) as i64,
+    ));
+    d.add(SortedSetDocValuesField::new(
+        "dv_sset",
+        bytes(&format!("a{}", i % 5)),
+    ));
+    d.add(SortedSetDocValuesField::new(
+        "dv_sset",
+        bytes(&format!("b{}", i % 3)),
+    ));
+    d.add(IntPoint::new("p_int", &[(i * 7) % 200]).unwrap());
+    d.add(LongPoint::new("p_long", &[i as i64 * 100_000 - 5_000_000]).unwrap());
+    d.add(FloatPoint::new("p_float", &[i as f32 * 0.5 - 40.0]).unwrap());
+    d.add(DoublePoint::new("p_double", &[i as f64 * 0.25 - 10.0]).unwrap());
+    d.add(IntPoint::new("p_2d", &[i % 20, i / 20]).unwrap());
+    if i % 9 != 0 {
+        d.add(
+            KnnFloatVectorField::new("vf", &float_vector(i), VectorSimilarityFunction::EUCLIDEAN)
+                .unwrap(),
+        );
+    }
+    d.add(
         KnnByteVectorField::new("vb", &byte_vector(i), VectorSimilarityFunction::EUCLIDEAN)
             .unwrap(),
-    ));
+    );
     d
 }
 

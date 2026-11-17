@@ -116,11 +116,7 @@ fn one_doc_index(
     let dir = LuceneTestCase::new_directory();
     let fw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(
-        "body",
-        text.to_string(),
-        Store::NO,
-    )?));
+    doc.add(TextField::new("body", text.to_string(), Store::NO)?);
     fw.add_document(&doc)?;
     fw.close()?;
     Ok(dir)

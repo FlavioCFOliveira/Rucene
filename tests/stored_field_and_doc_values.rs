@@ -108,18 +108,15 @@ fn doc(kind: &str, i: i32) -> Document {
     let stored = StoredField::new_string("f", format!("v{i}")).unwrap();
     let mut stored = Some(Box::new(stored) as Box<dyn IndexableField>);
     if i % 2 == 0 {
-        d.add(stored.take().unwrap());
+        d.add_shared(std::sync::Arc::from(stored.take().unwrap()));
     }
     for field in doc_values(kind, i) {
-        d.add(field);
+        d.add_shared(std::sync::Arc::from(field));
     }
     if let Some(stored) = stored {
-        d.add(stored);
+        d.add_shared(std::sync::Arc::from(stored));
     }
-    d.add(Box::new(NumericDocValuesField::new(
-        "key",
-        i64::from(2 - i),
-    )));
+    d.add(NumericDocValuesField::new("key", i64::from(2 - i)));
     d
 }
 
@@ -235,7 +232,7 @@ fn java_exception(error: &LuceneError) -> String {
 fn add(out: &mut String, w: &IndexWriter, label: &str, fields: Vec<Box<dyn IndexableField>>) {
     let mut d = Document::new();
     for field in fields {
-        d.add(field);
+        d.add_shared(std::sync::Arc::from(field));
     }
     match w.add_document(&d) {
         Ok(_) => out.push_str(&format!("{label}: ok\n")),

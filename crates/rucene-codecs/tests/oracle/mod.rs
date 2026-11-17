@@ -294,86 +294,65 @@ pub fn term(field: &str, text: &str) -> Term {
 
 pub fn doc(i: i32) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(StringField::new("id", id(i), Store::YES).unwrap()));
-    d.add(Box::new(Field::new("body", body(i), body_type()).unwrap()));
+    d.add(StringField::new("id", id(i), Store::YES).unwrap());
+    d.add(Field::new("body", body(i), body_type()).unwrap());
     let stream: Arc<AtomicRefCell<dyn TokenStream>> =
         Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tv_tokens(i))));
-    d.add(Box::new(
-        Field::new_with_token_stream("tv", stream, tv_type()).unwrap(),
-    ));
-    d.add(Box::new(
-        StoredField::new_number("s_int", NumericValue::Int(i * 3 - 100)).unwrap(),
-    ));
-    d.add(Box::new(
-        StoredField::new_number("s_long", NumericValue::Long(i as i64 * 1_000_000_007)).unwrap(),
-    ));
-    d.add(Box::new(
-        StoredField::new_number("s_float", NumericValue::Float(i as f32 / 4.0)).unwrap(),
-    ));
-    d.add(Box::new(
-        StoredField::new_number("s_double", NumericValue::Double(i as f64 / 8.0)).unwrap(),
-    ));
-    d.add(Box::new(
+    d.add(Field::new_with_token_stream("tv", stream, tv_type()).unwrap());
+    d.add(StoredField::new_number("s_int", NumericValue::Int(i * 3 - 100)).unwrap());
+    d.add(StoredField::new_number("s_long", NumericValue::Long(i as i64 * 1_000_000_007)).unwrap());
+    d.add(StoredField::new_number("s_float", NumericValue::Float(i as f32 / 4.0)).unwrap());
+    d.add(StoredField::new_number("s_double", NumericValue::Double(i as f64 / 8.0)).unwrap());
+    d.add(
         StoredField::new_bytes("s_bytes", BytesRef::new(vec![i as u8, (i >> 8) as u8, 7])).unwrap(),
-    ));
-    d.add(Box::new(
-        StoredField::new_string("s_str", format!("stored-{i}")).unwrap(),
-    ));
+    );
+    d.add(StoredField::new_string("s_str", format!("stored-{i}")).unwrap());
     if i % 11 != 0 {
-        d.add(Box::new(NumericDocValuesField::new(
+        d.add(NumericDocValuesField::new(
             "dv_num",
             ((i * 37) % 101 - 50) as i64,
-        )));
-    }
-    if i % 5 != 0 {
-        d.add(Box::new(BinaryDocValuesField::new(
-            "dv_bin",
-            bytes(&format!("bin-{}", i * 7 % 13)),
-        )));
-    }
-    if i % 6 != 0 {
-        d.add(Box::new(SortedDocValuesField::new(
-            "dv_sorted",
-            bytes(&format!("s{}", i * 13 % 29)),
-        )));
-    }
-    d.add(Box::new(SortedNumericDocValuesField::new(
-        "dv_snum",
-        (i % 10) as i64,
-    )));
-    d.add(Box::new(SortedNumericDocValuesField::new(
-        "dv_snum",
-        ((i * 3) % 17) as i64,
-    )));
-    d.add(Box::new(SortedSetDocValuesField::new(
-        "dv_sset",
-        bytes(&format!("a{}", i % 5)),
-    )));
-    d.add(Box::new(SortedSetDocValuesField::new(
-        "dv_sset",
-        bytes(&format!("b{}", i % 3)),
-    )));
-    d.add(Box::new(IntPoint::new("p_int", &[(i * 7) % 200]).unwrap()));
-    d.add(Box::new(
-        LongPoint::new("p_long", &[i as i64 * 100_000 - 5_000_000]).unwrap(),
-    ));
-    d.add(Box::new(
-        FloatPoint::new("p_float", &[i as f32 * 0.5 - 40.0]).unwrap(),
-    ));
-    d.add(Box::new(
-        DoublePoint::new("p_double", &[i as f64 * 0.25 - 10.0]).unwrap(),
-    ));
-    d.add(Box::new(IntPoint::new("p_2d", &[i % 20, i / 20]).unwrap()));
-    if i % 9 != 0 {
-        d.add(Box::new(
-            KnnFloatVectorField::new("vf", &float_vector(i), VectorSimilarityFunction::EUCLIDEAN)
-                .unwrap(),
         ));
     }
-    d.add(Box::new(
+    if i % 5 != 0 {
+        d.add(BinaryDocValuesField::new(
+            "dv_bin",
+            bytes(&format!("bin-{}", i * 7 % 13)),
+        ));
+    }
+    if i % 6 != 0 {
+        d.add(SortedDocValuesField::new(
+            "dv_sorted",
+            bytes(&format!("s{}", i * 13 % 29)),
+        ));
+    }
+    d.add(SortedNumericDocValuesField::new("dv_snum", (i % 10) as i64));
+    d.add(SortedNumericDocValuesField::new(
+        "dv_snum",
+        ((i * 3) % 17) as i64,
+    ));
+    d.add(SortedSetDocValuesField::new(
+        "dv_sset",
+        bytes(&format!("a{}", i % 5)),
+    ));
+    d.add(SortedSetDocValuesField::new(
+        "dv_sset",
+        bytes(&format!("b{}", i % 3)),
+    ));
+    d.add(IntPoint::new("p_int", &[(i * 7) % 200]).unwrap());
+    d.add(LongPoint::new("p_long", &[i as i64 * 100_000 - 5_000_000]).unwrap());
+    d.add(FloatPoint::new("p_float", &[i as f32 * 0.5 - 40.0]).unwrap());
+    d.add(DoublePoint::new("p_double", &[i as f64 * 0.25 - 10.0]).unwrap());
+    d.add(IntPoint::new("p_2d", &[i % 20, i / 20]).unwrap());
+    if i % 9 != 0 {
+        d.add(
+            KnnFloatVectorField::new("vf", &float_vector(i), VectorSimilarityFunction::EUCLIDEAN)
+                .unwrap(),
+        );
+    }
+    d.add(
         KnnByteVectorField::new("vb", &byte_vector(i), VectorSimilarityFunction::EUCLIDEAN)
             .unwrap(),
-    ));
+    );
     d
 }
 
@@ -540,28 +519,14 @@ pub fn write_shared(path: &Path, codec: Arc<dyn Codec>) {
     for batch in 0..3 {
         for i in batch * 100..batch * 100 + 100 {
             let mut d = Document::new();
-            d.add(Box::new(
-                StringField::new("s_id", format!("{i:04}"), Store::NO).unwrap(),
-            ));
-            d.add(Box::new(
-                Field::new("sa", format!("t{}", i % 37), docs.clone()).unwrap(),
-            ));
-            d.add(Box::new(
-                Field::new("sb", format!("t{}", i % 23), positions.clone()).unwrap(),
-            ));
-            d.add(Box::new(
-                Field::new("sc", format!("t{}", i % 11), offsets.clone()).unwrap(),
-            ));
-            d.add(Box::new(
-                Field::new("sc", format!("u{}", i % 53), offsets.clone()).unwrap(),
-            ));
-            d.add(Box::new(
-                Field::new("sd", format!("t{}", i % 37), freqs.clone()).unwrap(),
-            ));
+            d.add(StringField::new("s_id", format!("{i:04}"), Store::NO).unwrap());
+            d.add(Field::new("sa", format!("t{}", i % 37), docs.clone()).unwrap());
+            d.add(Field::new("sb", format!("t{}", i % 23), positions.clone()).unwrap());
+            d.add(Field::new("sc", format!("t{}", i % 11), offsets.clone()).unwrap());
+            d.add(Field::new("sc", format!("u{}", i % 53), offsets.clone()).unwrap());
+            d.add(Field::new("sd", format!("t{}", i % 37), freqs.clone()).unwrap());
             if i % 3 == 0 {
-                d.add(Box::new(
-                    Field::new("se", format!("t{}", i % 7), docs.clone()).unwrap(),
-                ));
+                d.add(Field::new("se", format!("t{}", i % 7), docs.clone()).unwrap());
             }
             w.add_document(&d).unwrap();
         }
@@ -703,101 +668,77 @@ pub fn edge_doc(i: i32) -> Document {
     });
 
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("e_id", format!("e{i}"), Store::YES).unwrap(),
-    ));
-    d.add(Box::new(
-        TextField::new("e_text", edge_text(i), Store::NO).unwrap(),
-    ));
-    d.add(Box::new(
-        StringField::new("e_str", edge_str(i), Store::YES).unwrap(),
-    ));
-    d.add(Box::new(
-        Field::new("e_docs", format!("d{} shared", i % 3), docs_type).unwrap(),
-    ));
-    d.add(Box::new(
-        Field::new("e_freqs", format!("f{0} f{0} g", i % 2), freqs_type).unwrap(),
-    ));
-    d.add(Box::new(
-        Field::new("e_tvp", format!("tv{} pos", i % 3), tvp_type).unwrap(),
-    ));
-    d.add(Box::new(
-        Field::new("e_tvo", format!("off{} set", i % 2), tvo_type).unwrap(),
-    ));
-    d.add(Box::new(
+    d.add(StringField::new("e_id", format!("e{i}"), Store::YES).unwrap());
+    d.add(TextField::new("e_text", edge_text(i), Store::NO).unwrap());
+    d.add(StringField::new("e_str", edge_str(i), Store::YES).unwrap());
+    d.add(Field::new("e_docs", format!("d{} shared", i % 3), docs_type).unwrap());
+    d.add(Field::new("e_freqs", format!("f{0} f{0} g", i % 2), freqs_type).unwrap());
+    d.add(Field::new("e_tvp", format!("tv{} pos", i % 3), tvp_type).unwrap());
+    d.add(Field::new("e_tvo", format!("off{} set", i % 2), tvo_type).unwrap());
+    d.add(
         StoredField::new_number("e_int", NumericValue::Int(INTS[i as usize % INTS.len()])).unwrap(),
-    ));
-    d.add(Box::new(
+    );
+    d.add(
         StoredField::new_number(
             "e_long",
             NumericValue::Long(LONGS[i as usize % LONGS.len()]),
         )
         .unwrap(),
-    ));
-    d.add(Box::new(
+    );
+    d.add(
         StoredField::new_number(
             "e_float",
             NumericValue::Float(FLOATS[i as usize % FLOATS.len()]),
         )
         .unwrap(),
-    ));
-    d.add(Box::new(
+    );
+    d.add(
         StoredField::new_number(
             "e_double",
             NumericValue::Double(DOUBLES[i as usize % DOUBLES.len()]),
         )
         .unwrap(),
-    ));
-    d.add(Box::new(
-        StoredField::new_bytes("e_bytes", BytesRef::new(edge_bytes(i))).unwrap(),
-    ));
-    d.add(Box::new(
-        StoredField::new_string("e_sstr", edge_stored_str(i)).unwrap(),
-    ));
+    );
+    d.add(StoredField::new_bytes("e_bytes", BytesRef::new(edge_bytes(i))).unwrap());
+    d.add(StoredField::new_string("e_sstr", edge_stored_str(i)).unwrap());
     if i % 7 != 3 {
-        d.add(Box::new(NumericDocValuesField::indexed_field(
+        d.add(NumericDocValuesField::indexed_field(
             "e_num",
             NUMS[i as usize % NUMS.len()],
-        )));
+        ));
     }
-    d.add(Box::new(NumericDocValuesField::new(
-        "e_num2",
-        i64::from(i * 3 - 5),
-    )));
-    d.add(Box::new(NumericDocValuesField::new(
+    d.add(NumericDocValuesField::new("e_num2", i64::from(i * 3 - 5)));
+    d.add(NumericDocValuesField::new(
         "e_sortkey",
         i64::from((i * 7) % 12),
-    )));
+    ));
     if i != 3 {
         let bin = match i {
             0 => Vec::new(),
             1 => vec![0x0a, 0x5c],
             _ => format!("bin{i}").into_bytes(),
         };
-        d.add(Box::new(BinaryDocValuesField::new(
-            "e_bin",
-            BytesRef::new(bin),
-        )));
+        d.add(BinaryDocValuesField::new("e_bin", BytesRef::new(bin)));
     }
     if i != 2 {
-        d.add(Box::new(SortedDocValuesField::indexed_field(
+        d.add(SortedDocValuesField::indexed_field(
             "e_sorted",
             bytes(&format!("\u{fc}{}", i % 3)),
-        )));
+        ));
     }
     if i != 5 {
-        d.add(Box::new(SortedSetDocValuesField::indexed_field(
+        d.add(SortedSetDocValuesField::indexed_field(
             "e_sset",
             bytes(&format!("x{}", i % 4)),
-        )));
-        d.add(Box::new(SortedSetDocValuesField::indexed_field(
+        ));
+        d.add(SortedSetDocValuesField::indexed_field(
             "e_sset",
             bytes(&format!("y{}", i % 2)),
-        )));
-        d.add(Box::new(SortedSetDocValuesField::indexed_field(
+        ));
+        d.add(SortedSetDocValuesField::indexed_field(
             "e_sset",
             bytes(&format!("x{}", i % 4)),
-        )));
+        ));
     }
     if i != 6 {
         let first = match i % 4 {
@@ -805,21 +746,17 @@ pub fn edge_doc(i: i32) -> Document {
             1 => i64::MAX,
             _ => i64::from(i),
         };
-        d.add(Box::new(SortedNumericDocValuesField::indexed_field(
-            "e_snum", first,
-        )));
-        d.add(Box::new(SortedNumericDocValuesField::indexed_field(
+        d.add(SortedNumericDocValuesField::indexed_field("e_snum", first));
+        d.add(SortedNumericDocValuesField::indexed_field(
             "e_snum",
             i64::from(-i),
-        )));
+        ));
     }
     if i == 7 {
-        d.add(Box::new(NumericDocValuesField::new("e_soft", 1)));
+        d.add(NumericDocValuesField::new("e_soft", 1));
     }
-    d.add(Box::new(
-        BinaryPoint::new("e_bp1", &[BytesRef::new(vec![(i * 20) as u8])]).unwrap(),
-    ));
-    d.add(Box::new(
+    d.add(BinaryPoint::new("e_bp1", &[BytesRef::new(vec![(i * 20) as u8])]).unwrap());
+    d.add(
         BinaryPoint::new(
             "e_bp3",
             &[
@@ -828,55 +765,47 @@ pub fn edge_doc(i: i32) -> Document {
             ],
         )
         .unwrap(),
-    ));
+    );
     let b16: Vec<u8> = (0..16).map(|k| (i * 17 + k * 31) as u8).collect();
-    d.add(Box::new(
-        BinaryPoint::new("e_bp16", &[BytesRef::new(b16)]).unwrap(),
-    ));
-    d.add(Box::new(
-        IntPoint::new("e_int3", &[i, -i, i * 1000]).unwrap(),
-    ));
-    d.add(Box::new(
-        LongPoint::new("e_lp", &[LONGS[i as usize % LONGS.len()]]).unwrap(),
-    ));
+    d.add(BinaryPoint::new("e_bp16", &[BytesRef::new(b16)]).unwrap());
+    d.add(IntPoint::new("e_int3", &[i, -i, i * 1000]).unwrap());
+    d.add(LongPoint::new("e_lp", &[LONGS[i as usize % LONGS.len()]]).unwrap());
     let pdata: Vec<u8> = (0..12).map(|k| (i * 5 + k) as u8).collect();
-    d.add(Box::new(
-        BinaryPoint::new_with_packed("e_pdata", BytesRef::new(pdata), pdata_type).unwrap(),
-    ));
+    d.add(BinaryPoint::new_with_packed("e_pdata", BytesRef::new(pdata), pdata_type).unwrap());
     if i != 4 {
-        d.add(Box::new(
+        d.add(
             KnnFloatVectorField::new(
                 "e_vf_euc",
                 &euclidean_vector(i),
                 VectorSimilarityFunction::EUCLIDEAN,
             )
             .unwrap(),
-        ));
+        );
     }
-    d.add(Box::new(
+    d.add(
         KnnFloatVectorField::new(
             "e_vf_dot",
             &UNIT[(i % 6) as usize],
             VectorSimilarityFunction::DOT_PRODUCT,
         )
         .unwrap(),
-    ));
-    d.add(Box::new(
+    );
+    d.add(
         KnnFloatVectorField::new(
             "e_vf_cos",
             &UNIT[((i + 1) % 6) as usize],
             VectorSimilarityFunction::COSINE,
         )
         .unwrap(),
-    ));
-    d.add(Box::new(
+    );
+    d.add(
         KnnFloatVectorField::new(
             "e_vf_mip",
             &UNIT[((i + 2) % 6) as usize],
             VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
         )
         .unwrap(),
-    ));
+    );
     for (name, salt, sim) in [
         ("e_vb_euc", 0, VectorSimilarityFunction::EUCLIDEAN),
         ("e_vb_dot", 1, VectorSimilarityFunction::DOT_PRODUCT),
@@ -887,9 +816,7 @@ pub fn edge_doc(i: i32) -> Document {
             VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
         ),
     ] {
-        d.add(Box::new(
-            KnnByteVectorField::new(name, &edge_byte_vector(i, salt), sim).unwrap(),
-        ));
+        d.add(KnnByteVectorField::new(name, &edge_byte_vector(i, salt), sim).unwrap());
     }
     d
 }
@@ -1372,7 +1299,7 @@ impl StoredFieldVisitor for DumpVisitor {
         Ok(StoredFieldVisitorStatus::Yes)
     }
 
-    fn string_field(&mut self, fi: &FieldInfo, value: &str) -> rucene::error::Result<()> {
+    fn string_field(&mut self, fi: &FieldInfo, value: String) -> rucene::error::Result<()> {
         self.sb
             .push_str(&format!(" {}=string:{}", fi.name, hex(value.as_bytes())));
         Ok(())

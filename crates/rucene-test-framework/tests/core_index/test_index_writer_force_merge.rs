@@ -73,11 +73,11 @@ fn test_partial_merge() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         "content",
         "aaa",
         Store::NO,
-    )));
+    ));
     let incr_min = if *TEST_NIGHTLY { 15 } else { 40 };
     let mut num_docs = 10;
     while num_docs < 500 {
@@ -121,11 +121,11 @@ fn test_max_num_segments2() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         "content",
         "aaa",
         Store::NO,
-    )));
+    ));
 
     let mut ldmp = LogMergePolicy::by_doc_count();
     ldmp.set_min_merge_docs(1);
@@ -324,11 +324,7 @@ fn test_background_force_merge() -> Result<()> {
         )))?;
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "field",
-            "aaa",
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_string_field("field", "aaa", Store::NO));
         for _ in 0..100 {
             writer.add_document(&doc)?;
         }
@@ -410,17 +406,17 @@ fn test_merge_per_field() -> Result<()> {
                     let field = format!("f{f}");
                     let value = format!("v-{}", random().next_int_bound(100));
                     if f % 2 == 0 {
-                        doc.add(Box::new(StringField::new(&field, value, Store::NO)?));
+                        doc.add(StringField::new(&field, value, Store::NO)?);
                     } else {
-                        doc.add(Box::new(BinaryDocValuesField::new(
+                        doc.add(BinaryDocValuesField::new(
                             &field,
                             BytesRef::from_char_sequence(&value),
-                        )));
+                        ));
                     }
-                    doc.add(Box::new(LongPoint::new(
+                    doc.add(LongPoint::new(
                         &format!("p{f}"),
                         &[random().next_int_bound(10000) as i64],
-                    )?));
+                    )?);
                 }
                 writer.add_document(&doc)?;
                 if random().next_int_bound(100) < 10 {

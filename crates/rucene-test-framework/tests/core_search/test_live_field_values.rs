@@ -133,15 +133,12 @@ fn test_live_field_values() -> Result<()> {
                             thread_random.next_int_bound(id_count)
                         );
                         let field = thread_random.next_int_bound(i32::MAX);
-                        doc.add(Box::new(LuceneTestCase::new_string_field_bytes(
+                        doc.add(LuceneTestCase::new_string_field_bytes(
                             "id",
                             LuceneTestCase::new_bytes_ref_str(&id),
                             Store::YES,
-                        )));
-                        doc.add(Box::new(StoredField::new_number(
-                            "field",
-                            NumericValue::Int(field),
-                        )?));
+                        ));
+                        doc.add(StoredField::new_number("field", NumericValue::Int(field))?);
                         w.update_document(term("id", &id), &doc)?;
                         rt.add(id.clone(), field);
                         if values.insert(id.clone(), field).is_none() {

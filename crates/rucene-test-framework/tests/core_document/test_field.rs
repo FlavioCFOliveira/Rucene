@@ -812,7 +812,7 @@ fn test_indexed_binary_field() -> Result<()> {
     let br = LuceneTestCase::new_bytes_ref_bytes(&[0u8; 5]);
     let field = StringField::new_with_bytes("binary", br.clone(), Store::YES)?;
     assert_equals(&Some(br.clone()), &field.binary_value());
-    doc.add(Box::new(field));
+    doc.add(field);
     w.add_document(&doc)?;
     let r = w.get_reader()?;
 
@@ -857,8 +857,8 @@ fn test_knn_vector_field() -> Result<()> {
         let vector = vec![1f32, 2.0];
         let field2 = KnnFloatVectorField::with_euclidean("float", &vector)?;
         assert_null(&field2.binary_value());
-        doc.add(Box::new(field));
-        doc.add(Box::new(field2));
+        doc.add(field);
+        doc.add(field2);
         w.add_document(&doc)?;
         let r: Arc<dyn IndexReader> = rucene::index::directory_reader::open_with_writer(&*w)?;
         let inner = (|| -> Result<()> {

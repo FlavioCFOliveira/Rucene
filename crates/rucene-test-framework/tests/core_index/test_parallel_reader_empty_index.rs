@@ -94,21 +94,13 @@ fn test_empty_index_with_vectors() -> Result<()> {
         let iw = IndexWriter::new(rd1.as_directory(), new_iwc())?;
         let mut doc = Document::new();
         let id_field = LuceneTestCase::new_text_field("id", "", Store::NO);
-        doc.add(Box::new(id_field));
+        doc.add(id_field);
         let custom_type = FieldType::new_from(TextField::type_not_stored());
         custom_type.set_store_term_vectors(true)?;
-        doc.add(Box::new(LuceneTestCase::new_field(
-            "test",
-            "",
-            &custom_type,
-        )));
+        doc.add(LuceneTestCase::new_field("test", "", &custom_type));
         field_mut(&mut doc, "id").set_string_value("1".to_string())?;
         iw.add_document(&doc)?;
-        doc.add(Box::new(LuceneTestCase::new_field(
-            "test",
-            "",
-            &custom_type,
-        )));
+        doc.add(LuceneTestCase::new_field("test", "", &custom_type));
         field_mut(&mut doc, "id").set_string_value("2".to_string())?;
         iw.add_document(&doc)?;
         iw.close()?;

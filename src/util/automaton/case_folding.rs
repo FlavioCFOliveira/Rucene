@@ -756,7 +756,36 @@ pub fn to_upper_case(c: i32) -> i32 {
 ///
 /// Equivalent to `java.lang.Character.toLowerCase(int)`.
 pub fn to_lower_case(c: i32) -> i32 {
+    // PERF: the JDK answers code points below U+0100 from a direct table
+    // (`CharacterDataLatin1`); so does this port, from the same mappings.
+    if (0..0x100).contains(&c) {
+        return LATIN1_LOWERCASE[c as usize] as i32;
+    }
     lookup(SIMPLE_LOWERCASE, c)
+}
+
+/// [`to_lower_case`] of every code point below U+0100, generated at compile
+/// time from [`SIMPLE_LOWERCASE`], so the two answer identically.
+static LATIN1_LOWERCASE: [u32; 0x100] = latin1_table(SIMPLE_LOWERCASE);
+
+/// The mapping of `table` for each code point below U+0100, the code point
+/// itself where `table` has none.
+const fn latin1_table(table: &[(u32, u32)]) -> [u32; 0x100] {
+    let mut out = [0u32; 0x100];
+    let mut c = 0;
+    while c < 0x100 {
+        out[c] = c as u32;
+        c += 1;
+    }
+    let mut i = 0;
+    while i < table.len() {
+        let (from, to) = table[i];
+        if from < 0x100 {
+            out[from as usize] = to;
+        }
+        i += 1;
+    }
+    out
 }
 
 fn lookup(table: &[(u32, u32)], c: i32) -> i32 {
@@ -799,5 +828,22 @@ impl CaseFolding {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Latin-1 table answers as the binary search over the generated
+    /// JDK mappings does, for every code point it covers.
+    #[test]
+    fn latin1_lowercase_table_equals_binary_search() {
+        for c in 0..0x100 {
+            assert_eq!(to_lower_case(c), lookup(SIMPLE_LOWERCASE, c), "U+{c:04X}");
+        }
+        assert_eq!(to_lower_case(-1), -1);
+        assert_eq!(to_lower_case(0x0130), 0x0069);
+        assert_eq!(to_lower_case(0x1E9E), 0x00DF);
     }
 }

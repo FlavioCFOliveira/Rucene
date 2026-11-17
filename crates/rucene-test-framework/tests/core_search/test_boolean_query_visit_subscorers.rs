@@ -166,8 +166,8 @@ fn test_conjunctions(f: &mut VisitSubscorers) -> Result<()> {
 
 fn doc(v1: &str, v2: &str) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(F1, v1.to_string(), Store::YES)?));
-    doc.add(Box::new(TextField::new(F2, v2.to_string(), Store::YES)?));
+    doc.add(TextField::new(F1, v1.to_string(), Store::YES)?);
+    doc.add(TextField::new(F2, v2.to_string(), Store::YES)?);
     Ok(doc)
 }
 

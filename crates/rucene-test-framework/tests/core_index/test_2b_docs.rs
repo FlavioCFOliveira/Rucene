@@ -55,7 +55,7 @@ fn test_2b_docs() -> Result<()> {
         "a".to_string(),
         StringField::type_not_stored().clone(),
     )?;
-    doc.add(Box::new(field));
+    doc.add(field);
 
     for i in 0..MAX_DOCS {
         w.add_document(&doc)?;

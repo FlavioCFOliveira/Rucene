@@ -75,17 +75,17 @@ fn test_use_index_for_selective_queries() -> Result<()> {
     for i in 0..2000 {
         let mut doc = Document::new();
         if i == 42 {
-            doc.add(Box::new(StringField::new("f1", "bar".into(), Store::NO)?));
-            doc.add(Box::new(LongPoint::new("f2", &[42])?));
-            doc.add(Box::new(NumericDocValuesField::new("f2", 42)));
+            doc.add(StringField::new("f1", "bar".into(), Store::NO)?);
+            doc.add(LongPoint::new("f2", &[42])?);
+            doc.add(NumericDocValuesField::new("f2", 42));
         } else if i == 100 {
-            doc.add(Box::new(StringField::new("f1", "foo".into(), Store::NO)?));
-            doc.add(Box::new(LongPoint::new("f2", &[2])?));
-            doc.add(Box::new(NumericDocValuesField::new("f2", 2)));
+            doc.add(StringField::new("f1", "foo".into(), Store::NO)?);
+            doc.add(LongPoint::new("f2", &[2])?);
+            doc.add(NumericDocValuesField::new("f2", 2));
         } else {
-            doc.add(Box::new(StringField::new("f1", "bar".into(), Store::NO)?));
-            doc.add(Box::new(LongPoint::new("f2", &[2])?));
-            doc.add(Box::new(NumericDocValuesField::new("f2", 2)));
+            doc.add(StringField::new("f1", "bar".into(), Store::NO)?);
+            doc.add(LongPoint::new("f2", &[2])?);
+            doc.add(NumericDocValuesField::new("f2", 2));
         }
         w.add_document(&doc)?;
     }
@@ -133,17 +133,17 @@ fn test_use_index_for_selective_multi_value_queries() -> Result<()> {
     for i in 0..num_docs {
         let mut doc = Document::new();
         if i < num_docs / 2 {
-            doc.add(Box::new(StringField::new("f1", "bar".into(), Store::NO)?));
+            doc.add(StringField::new("f1", "bar".into(), Store::NO)?);
             for _j in 0..500 {
-                doc.add(Box::new(LongField::new("f2", 42, Store::NO)));
+                doc.add(LongField::new("f2", 42, Store::NO));
             }
         } else if i == num_docs / 2 {
-            doc.add(Box::new(StringField::new("f1", "foo".into(), Store::NO)?));
-            doc.add(Box::new(LongField::new("f2", 2, Store::NO)));
+            doc.add(StringField::new("f1", "foo".into(), Store::NO)?);
+            doc.add(LongField::new("f2", 2, Store::NO));
         } else {
-            doc.add(Box::new(StringField::new("f1", "bar".into(), Store::NO)?));
+            doc.add(StringField::new("f1", "bar".into(), Store::NO)?);
             for _j in 0..100 {
-                doc.add(Box::new(LongField::new("f2", 2, Store::NO)));
+                doc.add(LongField::new("f2", 2, Store::NO));
             }
         }
         w.add_document(&doc)?;
@@ -203,8 +203,8 @@ fn test_query_matches_count() -> Result<()> {
     let num_docs = random().next_int_bound(5000);
     for _i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(LongPoint::new("f2", &[42])?));
-        doc.add(Box::new(SortedNumericDocValuesField::new("f2", 42)));
+        doc.add(LongPoint::new("f2", &[42])?);
+        doc.add(SortedNumericDocValuesField::new("f2", 42));
         w.add_document(&doc)?;
     }
     w.force_merge(1)?;
@@ -248,11 +248,8 @@ fn test_query_matches_all_or_none() -> Result<()> {
         let num_docs = TestUtil::next_int(&*random(), 1, 100);
         for i in 0..num_docs {
             let mut doc = Document::new();
-            doc.add(Box::new(LongPoint::new("f2", &[i64::from(i)])?));
-            doc.add(Box::new(SortedNumericDocValuesField::new(
-                "f2",
-                i64::from(i),
-            )));
+            doc.add(LongPoint::new("f2", &[i64::from(i)])?);
+            doc.add(SortedNumericDocValuesField::new("f2", i64::from(i)));
             w.add_document(&doc)?;
         }
         w.force_merge(1)?;

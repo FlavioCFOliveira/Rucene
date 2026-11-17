@@ -118,28 +118,20 @@ fn test_all_docs_in_field_term() -> Result<()> {
     let num_docs = 10 * other_terms.len();
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new_with_bytes(
+        doc.add(StringField::new_with_bytes(
             field,
             dense_term.clone(),
             Store::NO,
-        )?));
+        )?);
         let sparse_term = other_terms[i % other_terms.len()].clone();
-        doc.add(Box::new(StringField::new_with_bytes(
-            field,
-            sparse_term,
-            Store::NO,
-        )?));
+        doc.add(StringField::new_with_bytes(field, sparse_term, Store::NO)?);
         iw.add_document(&doc)?;
     }
 
     // Make sure there are some docs in the index that don't contain a value for the field at all:
     for _i in 0..100 {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "foo",
-            "bar".to_string(),
-            Store::NO,
-        )?));
+        doc.add(StringField::new("foo", "bar".to_string(), Store::NO)?);
     }
 
     let reader = iw.get_reader()?;
@@ -176,16 +168,10 @@ fn test_duel() -> Result<()> {
         for _i in 0..num_docs {
             let mut doc = Document::new();
             let term = all_terms[random().next_int_bound(all_terms.len() as i32) as usize].clone();
-            doc.add(Box::new(StringField::new_with_bytes(
-                field,
-                term.clone(),
-                Store::NO,
-            )?));
+            doc.add(StringField::new_with_bytes(field, term.clone(), Store::NO)?);
             // Also include a doc values field with a skip-list so we can test doc-value rewrite as
             // well:
-            doc.add(Box::new(SortedSetDocValuesField::indexed_field(
-                field, term,
-            )));
+            doc.add(SortedSetDocValuesField::indexed_field(field, term));
             iw.add_document(&doc)?;
         }
         if num_terms > 1 && random().next_boolean() {
@@ -262,16 +248,8 @@ fn test_returns_null_score_supplier() -> Result<()> {
             let result = (|| -> Result<()> {
                 for ch in 'a'..='z' {
                     let mut doc = Document::new();
-                    doc.add(Box::new(KeywordField::new(
-                        "id",
-                        ch.to_string(),
-                        Store::YES,
-                    )?));
-                    doc.add(Box::new(KeywordField::new(
-                        "content",
-                        ch.to_string(),
-                        Store::YES,
-                    )?));
+                    doc.add(KeywordField::new("id", ch.to_string(), Store::YES)?);
+                    doc.add(KeywordField::new("content", ch.to_string(), Store::YES)?);
                     writer.add_document(&doc)?;
                 }
                 Ok(())
@@ -360,39 +338,21 @@ fn test_skipper_optimization_gap_assumption() -> Result<()> {
     for _i in 0..10_000 {
         let mut doc = Document::new();
         let term = br("b");
-        doc.add(Box::new(SortedSetDocValuesField::new(
-            "field",
-            term.clone(),
-        )));
-        doc.add(Box::new(SortedSetDocValuesField::indexed_field(
-            "idx_field",
-            term,
-        )));
+        doc.add(SortedSetDocValuesField::new("field", term.clone()));
+        doc.add(SortedSetDocValuesField::indexed_field("idx_field", term));
         iw.add_document(&doc)?;
     }
 
     // Index a couple more docs with terms "a" and "c":
     let mut doc = Document::new();
     let term = br("a");
-    doc.add(Box::new(SortedSetDocValuesField::new(
-        "field",
-        term.clone(),
-    )));
-    doc.add(Box::new(SortedSetDocValuesField::indexed_field(
-        "idx_field",
-        term,
-    )));
+    doc.add(SortedSetDocValuesField::new("field", term.clone()));
+    doc.add(SortedSetDocValuesField::indexed_field("idx_field", term));
     iw.add_document(&doc)?;
     let mut doc = Document::new();
     let term = br("c");
-    doc.add(Box::new(SortedSetDocValuesField::new(
-        "field",
-        term.clone(),
-    )));
-    doc.add(Box::new(SortedSetDocValuesField::indexed_field(
-        "idx_field",
-        term,
-    )));
+    doc.add(SortedSetDocValuesField::new("field", term.clone()));
+    doc.add(SortedSetDocValuesField::indexed_field("idx_field", term));
     iw.add_document(&doc)?;
 
     iw.commit()?;
@@ -810,11 +770,7 @@ fn test_pull_one_terms_enum() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "foo",
-        "1".to_string(),
-        Store::NO,
-    )?));
+    doc.add(StringField::new("foo", "1".to_string(), Store::NO)?);
     w.add_document(&doc)?;
     let reader = w.get_reader()?;
     w.close()?;

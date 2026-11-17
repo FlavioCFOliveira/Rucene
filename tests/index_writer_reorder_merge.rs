@@ -54,51 +54,36 @@ fn bytes(text: String) -> BytesRef {
 /// `ReorderMergeFixture.doc(int)`, field for field and in the same order.
 fn doc(i: i32) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", format!("id{i:04}"), Store::NO).unwrap(),
-    ));
-    d.add(Box::new(
-        TextField::new("body", format!("w{} w{} x{i}", i % 7, i % 13), Store::NO).unwrap(),
-    ));
-    d.add(Box::new(
-        StoredField::new_string("sv", format!("v{i}")).unwrap(),
-    ));
-    d.add(Box::new(NumericDocValuesField::new(
-        "ndv",
-        (i64::from(i) * 31) % 100,
-    )));
-    d.add(Box::new(BinaryDocValuesField::new(
+    d.add(StringField::new("id", format!("id{i:04}"), Store::NO).unwrap());
+    d.add(TextField::new("body", format!("w{} w{} x{i}", i % 7, i % 13), Store::NO).unwrap());
+    d.add(StoredField::new_string("sv", format!("v{i}")).unwrap());
+    d.add(NumericDocValuesField::new("ndv", (i64::from(i) * 31) % 100));
+    d.add(BinaryDocValuesField::new(
         "bdv",
         bytes(format!("b{}", i % 17)),
-    )));
-    d.add(Box::new(SortedDocValuesField::new(
+    ));
+    d.add(SortedDocValuesField::new(
         "sdv",
         bytes(format!("s{}", i % 11)),
-    )));
-    d.add(Box::new(SortedNumericDocValuesField::new(
-        "sndv",
-        i64::from(i % 5),
-    )));
-    d.add(Box::new(SortedNumericDocValuesField::new(
-        "sndv",
-        i64::from(i % 3),
-    )));
-    d.add(Box::new(SortedSetDocValuesField::new(
+    ));
+    d.add(SortedNumericDocValuesField::new("sndv", i64::from(i % 5)));
+    d.add(SortedNumericDocValuesField::new("sndv", i64::from(i % 3)));
+    d.add(SortedSetDocValuesField::new(
         "ssdv",
         bytes(format!("a{}", i % 4)),
-    )));
-    d.add(Box::new(SortedSetDocValuesField::new(
+    ));
+    d.add(SortedSetDocValuesField::new(
         "ssdv",
         bytes(format!("b{}", i % 6)),
-    )));
-    d.add(Box::new(IntPoint::new("pt", &[i, (i * 7) % 50]).unwrap()));
-    d.add(Box::new(
+    ));
+    d.add(IntPoint::new("pt", &[i, (i * 7) % 50]).unwrap());
+    d.add(
         KnnFloatVectorField::with_euclidean(
             "vec",
             &[(i % 9) as f32, ((i * 3) % 7) as f32, 1.0, (i % 4) as f32],
         )
         .unwrap(),
-    ));
+    );
     d
 }
 

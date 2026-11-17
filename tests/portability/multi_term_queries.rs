@@ -112,27 +112,18 @@ fn term(field: &str, text: &str) -> Term {
 /// third keyword, `zebra`.
 fn doc(i: i32, perturbed: bool) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(StringField::new("id", id(i), Store::YES).unwrap()));
-    d.add(Box::new(
-        Field::new("body", body(i, perturbed), text_type()).unwrap(),
-    ));
-    d.add(Box::new(
-        Field::new("title", title(i), text_type()).unwrap(),
-    ));
+    d.add(StringField::new("id", id(i), Store::YES).unwrap());
+    d.add(Field::new("body", body(i, perturbed), text_type()).unwrap());
+    d.add(Field::new("title", title(i), text_type()).unwrap());
     let mut keywords = vec![WORDS[(i % 20) as usize], WORDS[((i * 7 + 3) % 20) as usize]];
     if perturbed && i == 0 {
         keywords.push("zebra");
     }
     for kw in keywords {
-        d.add(Box::new(
-            StringField::new("kw", kw.to_string(), Store::NO).unwrap(),
-        ));
-        d.add(Box::new(SortedSetDocValuesField::new("kw", bytes(kw))));
+        d.add(StringField::new("kw", kw.to_string(), Store::NO).unwrap());
+        d.add(SortedSetDocValuesField::new("kw", bytes(kw)));
     }
-    d.add(Box::new(NumericDocValuesField::new(
-        "rank",
-        ((i * 37) % 101) as i64,
-    )));
+    d.add(NumericDocValuesField::new("rank", ((i * 37) % 101) as i64));
     d
 }
 

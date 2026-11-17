@@ -208,18 +208,18 @@ fn setup_index() -> Result<()> {
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;
     for i in 0..FIELD1_DOCS.len() {
         let mut doc = Document::new();
-        doc.add(Box::new(Field::new(
+        doc.add(Field::new(
             "field1",
             FIELD1_DOCS[i].to_string(),
             Arc::clone(&FIELD_TYPE),
-        )?));
-        doc.add(Box::new(Field::new(
+        )?);
+        doc.add(Field::new(
             "field2",
             FIELD2_DOCS[i].to_string(),
             Arc::clone(&FIELD_TYPE),
-        )?));
-        doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
-        doc.add(Box::new(NumericDocValuesField::new("id", i as i64)));
+        )?);
+        doc.add(StringField::new("id", i.to_string(), Store::NO)?);
+        doc.add(NumericDocValuesField::new("id", i as i64));
         writer.add_document(&doc)?;
     }
     writer.close()?;

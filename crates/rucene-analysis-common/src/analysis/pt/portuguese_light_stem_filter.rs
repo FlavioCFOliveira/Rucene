@@ -21,46 +21,66 @@
 //! words, ported from
 //! `org.apache.lucene.analysis.pt.PortugueseLightStemFilter`.
 
+use rucene::analysis::character_utils::{set_term_utf16, term_to_utf16};
 use rucene::analysis::{
-    CharTermAttribute, KeywordAttribute, TokenFilter, TokenFilterLogic, TokenStream,
+    AttributeHandle, CharTermAttribute, KeywordAttribute, TokenFilter, TokenFilterLogic,
+    TokenStream,
 };
 use rucene::error::Result;
 use rucene::util::attribute::AttributeSource;
 
 use super::portuguese_light_stemmer::PortugueseLightStemmer;
-use crate::jdk::character::{chars_to_utf16, utf16_to_term_chars};
 
 /// The body of [`PortugueseLightStemFilter`]: what Lucene's
 /// `PortugueseLightStemFilter` adds to `TokenFilter`.
 #[derive(Debug)]
 pub struct PortugueseLightStemFilterLogic {
     stemmer: PortugueseLightStemmer,
+    /// `private final CharTermAttribute termAtt = addAttribute(CharTermAttribute.class)`.
+    term_att: AttributeHandle<dyn CharTermAttribute>,
+    /// `private final KeywordAttribute keywordAttr = addAttribute(KeywordAttribute.class)`.
+    keyword_attr: AttributeHandle<dyn KeywordAttribute>,
+    /// The term's UTF-16 units when it holds a character beyond the Basic
+    /// Multilingual Plane, which the stemmer then edits; kept across tokens
+    /// so that no token allocates.
+    buffer: Vec<u16>,
 }
 
 impl TokenFilterLogic for PortugueseLightStemFilterLogic {
     /// Equivalent to `PortugueseLightStemFilter.incrementToken()`. The stemmer
-    /// reads the term's UTF-16 units, Java's `termAtt.buffer()`, and may
-    /// change them in place; the first `newlen` units become the term, as
-    /// Java's `termAtt.setLength(newlen)` keeps them.
+    /// edits Java's `termAtt.buffer()` in place, and the first `newlen` units
+    /// become the term, as Java's `termAtt.setLength(newlen)` keeps them.
+    ///
+    /// The term buffer holds `char`s (the divergence declared on
+    /// `CharTermAttribute`). When every one is in the Basic Multilingual
+    /// Plane, each is one UTF-16 unit and the stemmer edits the buffer
+    /// itself, as Java's does; otherwise it edits the term's UTF-16 units,
+    /// which then become the term.
     fn increment_token(
         &mut self,
-        source: &mut AttributeSource,
+        _source: &mut AttributeSource,
         input: &mut dyn TokenStream,
     ) -> Result<bool> {
         if input.increment_token()? {
-            let is_keyword = source
-                .get_attribute_interface::<dyn KeywordAttribute>()
-                .expect("INVARIANT: the constructor added the KeywordAttribute")
-                .is_keyword();
+            let is_keyword = self.keyword_attr.borrow().is_keyword();
             if !is_keyword {
-                let mut term_att = source
-                    .get_attribute_interface_mut::<dyn CharTermAttribute>()
-                    .expect("INVARIANT: the constructor added the CharTermAttribute");
-                let mut buffer = chars_to_utf16(&term_att.buffer()[..term_att.length()]);
-                let length = buffer.len();
-                let newlen = self.stemmer.stem(&mut buffer, length);
-                let chars = utf16_to_term_chars(&buffer[..newlen]);
-                term_att.copy_buffer(&chars, 0, chars.len());
+                let mut term_att = self.term_att.borrow_mut();
+                let length = term_att.length();
+                if term_att.buffer()[..length]
+                    .iter()
+                    .all(|&c| (c as u32) < 0x1_0000)
+                {
+                    // PERF: in place, as Java, with no conversion of the
+                    // term to UTF-16 and back (task #546, round 4).
+                    let newlen = self.stemmer.stem(term_att.buffer_mut(), length);
+                    term_att.set_length(newlen);
+                } else {
+                    term_to_utf16(&term_att.buffer()[..length], &mut self.buffer);
+                    let length = self.buffer.len();
+                    let newlen = self.stemmer.stem(&mut self.buffer, length);
+                    // `termAtt.setLength(newlen)` over the edited buffer.
+                    set_term_utf16(&mut *term_att, &self.buffer[..newlen]);
+                }
             }
             Ok(true)
         } else {
@@ -89,14 +109,12 @@ pub type PortugueseLightStemFilter = TokenFilter<PortugueseLightStemFilterLogic>
 pub fn new_portuguese_light_stem_filter(
     input: Box<dyn TokenStream>,
 ) -> Result<PortugueseLightStemFilter> {
-    let mut filter = TokenFilter::new(
-        input,
-        PortugueseLightStemFilterLogic {
+    TokenFilter::with_logic(input, |source| {
+        Ok(PortugueseLightStemFilterLogic {
             stemmer: PortugueseLightStemmer::new(),
-        },
-    );
-    let source = filter.attribute_source_mut();
-    source.add_attribute_interface::<dyn CharTermAttribute>()?;
-    source.add_attribute_interface::<dyn KeywordAttribute>()?;
-    Ok(filter)
+            term_att: AttributeHandle::add(source)?,
+            keyword_attr: AttributeHandle::add(source)?,
+            buffer: Vec::new(),
+        })
+    })
 }

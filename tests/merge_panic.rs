@@ -106,9 +106,7 @@ fn force_merge_with(
     let writer = IndexWriter::new(dir, config).unwrap();
     for i in 0..2 {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StoredField::new_string("f", format!("v{i}")).unwrap(),
-        ));
+        doc.add(StoredField::new_string("f", format!("v{i}")).unwrap());
         writer.add_document(&doc).unwrap();
         writer.commit().unwrap();
     }

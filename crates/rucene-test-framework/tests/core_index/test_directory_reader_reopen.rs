@@ -373,17 +373,9 @@ fn do_test_reopen_with_commit(
             for j in 0..m {
                 let mut doc = Document::new();
                 let id = format!("{i}_{j}");
-                doc.add(Box::new(LuceneTestCase::new_field("id", &id, &custom_type)));
-                doc.add(Box::new(LuceneTestCase::new_field(
-                    "id2",
-                    &id,
-                    &custom_type2,
-                )));
-                doc.add(Box::new(LuceneTestCase::new_field(
-                    "id3",
-                    &id,
-                    &custom_type3,
-                )));
+                doc.add(LuceneTestCase::new_field("id", &id, &custom_type));
+                doc.add(LuceneTestCase::new_field("id2", &id, &custom_type2));
+                doc.add(LuceneTestCase::new_field("id3", &id, &custom_type3));
                 iwriter.add_document(&doc)?;
                 if i > 0 {
                     let k = i - 1;
@@ -829,17 +821,17 @@ pub fn create_document(n: i32, num_fields: i32) -> Result<Document> {
     sb.push_str(&n.to_string());
     let custom_type2 = untokenized_stored_type(true)?;
     let custom_type3 = stored_only_type()?;
-    doc.add(Box::new(TextField::new("field1", sb.clone(), Store::YES)?));
-    doc.add(Box::new(Field::new("fielda", sb.clone(), custom_type2)?));
-    doc.add(Box::new(Field::new("fieldb", sb.clone(), custom_type3)?));
+    doc.add(TextField::new("field1", sb.clone(), Store::YES)?);
+    doc.add(Field::new("fielda", sb.clone(), custom_type2)?);
+    doc.add(Field::new("fieldb", sb.clone(), custom_type3)?);
     sb.push_str(" b");
     sb.push_str(&n.to_string());
     for i in 1..num_fields {
-        doc.add(Box::new(TextField::new(
+        doc.add(TextField::new(
             &format!("field{}", i + 1),
             sb.clone(),
             Store::YES,
-        )?));
+        )?);
     }
     Ok(doc)
 }
@@ -926,11 +918,11 @@ fn reopen_on_commit(dir: &Arc<dyn Directory>, executor: &Exec) -> Result<()> {
     let writer = IndexWriter::new(Arc::clone(dir), iwc)?;
     for i in 0..4 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::NO,
-        )));
+        ));
         writer.add_document(&doc)?;
         let mut data = HashMap::new();
         data.insert("index".to_string(), i.to_string());
@@ -995,11 +987,11 @@ fn open_if_changed_nrt_to_commit(dir: &Arc<dyn Directory>, executor: &Exec) -> R
     // Can't use RIW because it randomly commits:
     let w = IndexWriter::new(Arc::clone(dir), mock_iwc())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         "field",
         "value",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     w.commit()?;
     let commits = directory_reader::list_commits(Arc::clone(dir))?;
@@ -1062,18 +1054,10 @@ fn over_dec_ref_during_reopen(executor: &Exec) -> Result<()> {
     iwc.set_codec(TestUtil::get_default_codec())?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "id",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("id", "id", Store::NO));
     w.add_document(&doc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "id2",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("id", "id2", Store::NO));
     w.add_document(&doc)?;
     w.commit()?;
 
@@ -1129,18 +1113,10 @@ fn blow_away(dir: &Arc<dyn Directory>) -> Result<()> {
 fn two_docs_one_deleted(dir: &Arc<dyn Directory>) -> Result<()> {
     let w = IndexWriter::new(Arc::clone(dir), no_merge_iwc()?)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "id",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("id", "id", Store::NO));
     w.add_document(&doc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        "id2",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("id", "id2", Store::NO));
     w.add_document(&doc)?;
     w.delete_documents_by_terms(vec![Term::from_text("id", "id")])?;
     w.commit()?;
@@ -1151,23 +1127,15 @@ fn two_docs_one_deleted(dir: &Arc<dyn Directory>) -> Result<()> {
 /// NumericDocValuesField("ndv", 13));`.
 fn id_ndv_doc(id: &str) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        id,
-        Store::NO,
-    )));
-    doc.add(Box::new(NumericDocValuesField::new("ndv", 13)));
+    doc.add(LuceneTestCase::new_string_field("id", id, Store::NO));
+    doc.add(NumericDocValuesField::new("ndv", 13));
     doc
 }
 
 /// `doc.add(newStringField("id", id, NO))`.
 fn id_doc(id: &str) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        id,
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("id", id, Store::NO));
     doc
 }
 
@@ -1250,11 +1218,7 @@ fn test_npe_after_invalid_reindex2() -> Result<()> {
 /// `new StringField("key", value, Field.Store.YES)` alone in a document.
 fn key_doc(value: &str) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "key",
-        value.to_string(),
-        Store::YES,
-    )?));
+    doc.add(StringField::new("key", value.to_string(), Store::YES)?);
     Ok(doc)
 }
 
@@ -1410,7 +1374,7 @@ fn assert_dv(r: &Arc<dyn DirectoryReader>, expected: i64) -> Result<()> {
 /// A document with `key=value1` and the numeric doc value `dv=1`.
 fn key_dv_doc() -> Result<Document> {
     let mut doc = key_doc("value1")?;
-    doc.add(Box::new(NumericDocValuesField::new("dv", 1)));
+    doc.add(NumericDocValuesField::new("dv", 1));
     Ok(doc)
 }
 
@@ -1516,11 +1480,7 @@ fn test_nrtm_updates2() -> Result<()> {
 /// `doc.add(newStringField("field", value, NO))`.
 fn field_doc(value: &str) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "field",
-        value,
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("field", value, Store::NO));
     doc
 }
 
@@ -1599,13 +1559,13 @@ fn reuse_unchanged_leaf_reader_on_dv_update(executor: &Exec) -> Result<()> {
     let writer = IndexWriter::new(dir.as_directory(), index_writer_config)?;
 
     let mut doc = Document::new();
-    doc.add(stored_string("id", "1")?);
-    doc.add(stored_string("version", "1")?);
-    doc.add(Box::new(NumericDocValuesField::new("some_docvalue", 2)));
+    doc.add(*stored_string("id", "1")?);
+    doc.add(*stored_string("version", "1")?);
+    doc.add(NumericDocValuesField::new("some_docvalue", 2));
     writer.add_document(&doc)?;
     let mut doc = Document::new();
-    doc.add(stored_string("id", "2")?);
-    doc.add(stored_string("version", "1")?);
+    doc.add(*stored_string("id", "2")?);
+    doc.add(*stored_string("version", "1")?);
     writer.add_document(&doc)?;
     writer.commit()?;
     let mut reader = open(&dir.as_directory(), executor)?;
@@ -1615,8 +1575,8 @@ fn reuse_unchanged_leaf_reader_on_dv_update(executor: &Exec) -> Result<()> {
 
     // The document Java builds here is never added.
     let mut doc = Document::new();
-    doc.add(stored_string("id", "1")?);
-    doc.add(stored_string("version", "2")?);
+    doc.add(*stored_string("id", "1")?);
+    doc.add(*stored_string("version", "2")?);
     drop(doc);
     writer.update_doc_values(
         Term::from_text("id", "1"),
@@ -1636,8 +1596,8 @@ fn reuse_unchanged_leaf_reader_on_dv_update(executor: &Exec) -> Result<()> {
     assert_equals(&0, &reader.num_deleted_docs());
 
     let mut doc = Document::new();
-    doc.add(stored_string("id", "3")?);
-    doc.add(stored_string("version", "3")?);
+    doc.add(*stored_string("id", "3")?);
+    doc.add(*stored_string("version", "3")?);
     writer.update_document(Term::from_text("id", "3"), &doc)?;
     writer.commit()?;
 
@@ -1708,17 +1668,9 @@ fn do_test_reopen_with_commit_executor(
             for j in 0..m {
                 let mut doc = Document::new();
                 let id = format!("{i}_{j}");
-                doc.add(Box::new(LuceneTestCase::new_field("id", &id, &custom_type)));
-                doc.add(Box::new(LuceneTestCase::new_field(
-                    "id2",
-                    &id,
-                    &custom_type2,
-                )));
-                doc.add(Box::new(LuceneTestCase::new_field(
-                    "id3",
-                    &id,
-                    &custom_type3,
-                )));
+                doc.add(LuceneTestCase::new_field("id", &id, &custom_type));
+                doc.add(LuceneTestCase::new_field("id2", &id, &custom_type2));
+                doc.add(LuceneTestCase::new_field("id3", &id, &custom_type3));
 
                 if i > 0 {
                     let k = i - 1;

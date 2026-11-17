@@ -48,7 +48,7 @@ pub fn class_def() -> Arc<Class> {
 /// `addPolygonsToDoc(field, doc, polygon)`.
 fn add_polygons_to_doc(field: &str, doc: &mut Document, polygon: &XYPolygon) -> Result<()> {
     for f in XYShape::create_indexable_fields_polygon(field, polygon)? {
-        doc.add(Box::new(f));
+        doc.add(f);
     }
     Ok(())
 }
@@ -56,7 +56,7 @@ fn add_polygons_to_doc(field: &str, doc: &mut Document, polygon: &XYPolygon) -> 
 /// `addLineToDoc(field, doc, line)`.
 fn add_line_to_doc(field: &str, doc: &mut Document, line: &XYLine) -> Result<()> {
     for f in XYShape::create_indexable_fields_line(field, line)? {
-        doc.add(Box::new(f));
+        doc.add(f);
     }
     Ok(())
 }
@@ -232,7 +232,7 @@ fn test_point_index_and_distance_query() -> Result<()> {
     let p_x = shape_test_util::next_float(&*random());
     let py = shape_test_util::next_float(&*random());
     for f in XYShape::create_indexable_fields_point(FIELDNAME, p_x, py)? {
-        document.add(Box::new(f));
+        document.add(f);
     }
     writer.add_document(&document)?;
 

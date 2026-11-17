@@ -68,18 +68,18 @@ fn indexer_do_work(writer: &IndexWriter, current_iteration: i32) -> Result<()> {
     // Update all 100 docs...
     for i in 0..100 {
         let mut d = Document::new();
-        d.add(Box::new(LuceneTestCase::new_string_field(
+        d.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::YES,
-        )));
-        d.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        d.add(LuceneTestCase::new_text_field(
             "contents",
             &English::int_to_english(i + 10 * current_iteration),
             Store::NO,
-        )));
-        d.add(Box::new(IntPoint::new("doc", &[i])?));
-        d.add(Box::new(IntPoint::new("doc2d", &[i, i])?));
+        ));
+        d.add(IntPoint::new("doc", &[i])?);
+        d.add(IntPoint::new("doc2d", &[i, i])?);
         writer.update_document(Term::from_text("id", &i.to_string()), &d)?;
     }
     Ok(())
@@ -114,16 +114,16 @@ fn run_test(directory: Arc<dyn Directory>) -> Result<()> {
     // Establish a base index of 100 docs:
     for i in 0..100 {
         let mut d = Document::new();
-        d.add(Box::new(LuceneTestCase::new_string_field(
+        d.add(LuceneTestCase::new_string_field(
             "id",
             &i.to_string(),
             Store::YES,
-        )));
-        d.add(Box::new(LuceneTestCase::new_text_field(
+        ));
+        d.add(LuceneTestCase::new_text_field(
             "contents",
             &English::int_to_english(i),
             Store::NO,
-        )));
+        ));
         if (i - 1) % 7 == 0 {
             writer.commit()?;
         }

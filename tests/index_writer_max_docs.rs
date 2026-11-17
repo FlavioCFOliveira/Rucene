@@ -80,9 +80,7 @@ fn ensure_codec() {
 
 fn id_doc(id: &str) -> Document {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StringField::new("id", id.to_string(), Store::NO).unwrap(),
-    ));
+    doc.add(StringField::new("id", id.to_string(), Store::NO).unwrap());
     doc
 }
 

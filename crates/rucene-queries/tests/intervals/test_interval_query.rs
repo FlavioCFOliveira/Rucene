@@ -153,11 +153,7 @@ fn do_set_up(f: &mut IntervalQueryTest) -> Result<()> {
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;
     for doc_field in DOC_FIELDS {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            FIELD,
-            doc_field,
-            Store::YES,
-        )));
+        doc.add(LuceneTestCase::new_text_field(FIELD, doc_field, Store::YES));
         writer.add_document(&doc)?;
     }
     let reader = writer.get_reader()?;

@@ -12,7 +12,7 @@
 
 #![deny(unsafe_code)]
 
-use crate::analysis::CharReader;
+use crate::analysis::{CharReader, CharTermAttribute};
 use crate::error::{LuceneError, Result};
 
 /// A reusable character buffer used with [`fill`].
@@ -79,6 +79,54 @@ pub fn new_character_buffer(buffer_size: usize) -> Result<CharacterBuffer> {
         ));
     }
     Ok(CharacterBuffer::new(vec![0u16; buffer_size], 0, 0))
+}
+
+/// Writes into `out` (cleared first) the UTF-16 code units of `term`, a
+/// term buffer of `char`s: what Java's `char[]` term buffer holds for the
+/// same term.
+///
+/// The bridge between this port's `char` term buffer and the UTF-16 units a
+/// Java consumer of `termAtt.buffer()` reads (a `CharArraySet` key, a
+/// `Matcher` input, a stemmer's `char[]`). `out` is meant to be kept across
+/// tokens, so that no token allocates.
+#[inline]
+pub fn term_to_utf16(term: &[char], out: &mut Vec<u16>) {
+    out.clear();
+    // PERF: a term of the Basic Multilingual Plane only (the common case) is
+    // one unit per character, written by a length-known extend.
+    if term.iter().all(|&c| (c as u32) < 0x1_0000) {
+        out.extend(term.iter().map(|&c| c as u16));
+        return;
+    }
+    out.reserve(term.len() + 1);
+    for &c in term {
+        let code_point = c as u32;
+        if code_point < 0x1_0000 {
+            out.push(code_point as u16);
+        } else {
+            let offset = code_point - 0x1_0000;
+            out.push(0xD800 | (offset >> 10) as u16);
+            out.push(0xDC00 | (offset & 0x3FF) as u16);
+        }
+    }
+}
+
+/// Sets the term of `term_att` to the UTF-16 code units `units`, decoded to
+/// `char`s; a lone surrogate, which a `char` cannot hold, becomes U+FFFD.
+///
+/// The inverse of [`term_to_utf16`]: Java's `termAtt.copyBuffer(units, 0,
+/// units.length)` (or an in-place edit followed by `setLength`). The buffer
+/// is sized for `units.len()`, as Java's `copyBuffer` sizes it, and the
+/// units are decoded straight into it.
+#[inline]
+pub fn set_term_utf16(term_att: &mut dyn CharTermAttribute, units: &[u16]) {
+    let buffer = term_att.resize_buffer(units.len());
+    let mut length = 0;
+    for c in char::decode_utf16(units.iter().copied()) {
+        buffer[length] = c.unwrap_or(char::REPLACEMENT_CHARACTER);
+        length += 1;
+    }
+    term_att.set_length(length);
 }
 
 /// Lowercases each code point in `buffer[offset..limit]`, in place.
@@ -385,7 +433,35 @@ pub fn fill_buffer(buffer: &mut CharacterBuffer, reader: &mut dyn CharReader) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::CharTermAttributeImpl;
     use crate::error::LuceneErrorKind;
+
+    /// `term_to_utf16` is `char::encode_utf16` of every character, and
+    /// `set_term_utf16` decodes it back, a lone surrogate becoming U+FFFD.
+    #[test]
+    fn term_utf16_round_trip() {
+        let term: Vec<char> = "aç\u{FFFF}\u{10000}\u{10FFFF}z".chars().collect();
+        let mut units = vec![7u16; 3];
+        term_to_utf16(&term, &mut units);
+        let expected: Vec<u16> = term.iter().collect::<String>().encode_utf16().collect();
+        assert_eq!(units, expected);
+
+        let mut att = CharTermAttributeImpl::new();
+        att.copy_buffer(&['x'; 40], 0, 40);
+        set_term_utf16(&mut att, &units);
+        assert_eq!(&att.buffer()[..att.length()], &term[..]);
+
+        set_term_utf16(&mut att, &[0x61, 0xD800, 0x62, 0xDC00]);
+        assert_eq!(
+            &att.buffer()[..att.length()],
+            &['a', '\u{FFFD}', 'b', '\u{FFFD}']
+        );
+
+        term_to_utf16(&[], &mut units);
+        assert!(units.is_empty());
+        set_term_utf16(&mut att, &[]);
+        assert_eq!(att.length(), 0);
+    }
 
     #[test]
     fn new_character_buffer_rejects_small_size() {

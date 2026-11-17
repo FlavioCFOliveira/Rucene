@@ -72,25 +72,19 @@ fn test_type(type_: DocValuesType) -> Result<()> {
     )));
     let n_docs = LuceneTestCase::at_least(50);
     let mut document = Document::new();
-    document.add(Box::new(NumericDocValuesField::new("id", 0)));
+    document.add(NumericDocValuesField::new("id", 0));
     match type_ {
         DocValuesType::BINARY => {
-            document.add(Box::new(BinaryDocValuesField::new(
-                "dv",
-                BytesRef::default(),
-            )));
+            document.add(BinaryDocValuesField::new("dv", BytesRef::default()));
         }
         DocValuesType::SORTED => {
-            document.add(Box::new(SortedDocValuesField::new(
-                "dv",
-                BytesRef::default(),
-            )));
+            document.add(SortedDocValuesField::new("dv", BytesRef::default()));
         }
         DocValuesType::NUMERIC => {
-            document.add(Box::new(NumericDocValuesField::new("dv", 0)));
+            document.add(NumericDocValuesField::new("dv", 0));
         }
         DocValuesType::SORTED_NUMERIC => {
-            document.add(Box::new(SortedNumericDocValuesField::new("dv", 0)));
+            document.add(SortedNumericDocValuesField::new("dv", 0));
         }
         _ => return Err(assertion_error("")),
     }

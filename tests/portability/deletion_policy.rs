@@ -363,9 +363,7 @@ fn rucene_commit_sequence(commits: usize) -> (Vec<i64>, Vec<i64>) {
     let writer = IndexWriter::new(Arc::clone(&directory), config).expect("writer opens");
     for i in 0..commits {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", format!("doc-{i}"), Store::YES).expect("field"),
-        ));
+        doc.add(StringField::new("id", format!("doc-{i}"), Store::YES).expect("field"));
         writer.add_document(&doc).expect("add_document");
         writer.commit().expect("commit");
         created.push(

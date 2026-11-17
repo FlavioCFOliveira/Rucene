@@ -128,11 +128,11 @@ const TEXT_FIELD: &str = "text";
 /// Gets a document with content "my dog has fleas".
 fn get_document() -> Document {
     let mut document = Document::new();
-    document.add(Box::new(LuceneTestCase::new_text_field(
+    document.add(LuceneTestCase::new_text_field(
         TEXT_FIELD,
         "my dog has fleas",
         Store::NO,
-    )));
+    ));
     document
 }
 

@@ -107,17 +107,11 @@ fn date_tools_strings_match_java() {
 #[test]
 fn document_with_combined_fields_matches_java_types() {
     let mut doc = Document::new();
-    doc.add(Box::new(
-        StringField::new("id", "abc".to_string(), Store::YES).unwrap(),
-    ));
-    doc.add(Box::new(
-        TextField::new("body", "Hello World".to_string(), Store::NO).unwrap(),
-    ));
-    doc.add(Box::new(IntPoint::new("count", &[42]).unwrap()));
-    doc.add(Box::new(
-        StoredField::new_number("stored_count", NumericValue::Int(42)).unwrap(),
-    ));
-    doc.add(Box::new(LongField::new("ts", 123456789i64, Store::YES)));
+    doc.add(StringField::new("id", "abc".to_string(), Store::YES).unwrap());
+    doc.add(TextField::new("body", "Hello World".to_string(), Store::NO).unwrap());
+    doc.add(IntPoint::new("count", &[42]).unwrap());
+    doc.add(StoredField::new_number("stored_count", NumericValue::Int(42)).unwrap());
+    doc.add(LongField::new("ts", 123456789i64, Store::YES));
 
     let id = doc.get_field("id").unwrap();
     assert!(id.field_type().stored());

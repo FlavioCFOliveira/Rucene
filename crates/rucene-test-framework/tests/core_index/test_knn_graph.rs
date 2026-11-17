@@ -270,15 +270,15 @@ fn test_multiple_vector_fields(this: &mut Instance) -> Result<()> {
             let mut doc = Document::new();
             for field in 0..num_vector_fields {
                 if let Some(vector) = &values[field][doc_id] {
-                    doc.add(Box::new(KnnFloatVectorField::with_field_type(
+                    doc.add(KnnFloatVectorField::with_field_type(
                         &format!("{KNN_GRAPH_FIELD}{field}"),
                         vector,
                         field_types[field].clone(),
-                    )?));
+                    )?);
                 }
             }
             let id_string = doc_id.to_string();
-            doc.add(Box::new(StringField::new("id", id_string, Store::YES)?));
+            doc.add(StringField::new("id", id_string, Store::YES)?);
             iw.add_document(&doc)?;
         }
         for (field, field_values) in values.iter().enumerate() {
@@ -805,22 +805,18 @@ fn add_with_similarity(
     if let Some(vector) = vector {
         let field_type =
             KnnFloatVectorField::create_field_type(vector.len() as i32, similarity_function)?;
-        doc.add(Box::new(KnnFloatVectorField::with_field_type(
+        doc.add(KnnFloatVectorField::with_field_type(
             KNN_GRAPH_FIELD,
             vector,
             field_type,
-        )?));
+        )?);
     }
     let id_string = id.to_string();
-    doc.add(Box::new(StringField::new(
-        "id",
-        id_string.clone(),
-        Store::YES,
-    )?));
-    doc.add(Box::new(SortedDocValuesField::new(
+    doc.add(StringField::new("id", id_string.clone(), Store::YES)?);
+    doc.add(SortedDocValuesField::new(
         "id",
         BytesRef::from_char_sequence(&id_string),
-    )));
+    ));
     // XSSystem.out.println("add " + idString + " " + Arrays.toString(vector));
     iw.update_document(Term::from_text("id", &id_string), &doc)?;
     Ok(())

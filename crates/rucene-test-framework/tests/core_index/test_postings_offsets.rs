@@ -147,7 +147,7 @@ fn test_basic(inst: &mut TestPostingsOffsetsInstance) -> Result<()> {
         make_token("a", 1, 9, 17),
         make_token("c", 1, 19, 50),
     ];
-    doc.add(Box::new(canned_field("content", tokens, &ft)?));
+    doc.add(canned_field("content", tokens, &ft)?);
 
     w.add_document(&doc)?;
     let r: Arc<dyn IndexReader> = w.get_reader()?;
@@ -256,17 +256,17 @@ fn do_test_numbers(inst: &mut TestPostingsOffsetsInstance, with_payloads: bool) 
     let num_docs = LuceneTestCase::at_least(500);
     for i in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(Field::new(
+        doc.add(Field::new(
             "numbers",
             English::int_to_english(i),
             FieldType::new_from(&ft),
-        )?));
-        doc.add(Box::new(Field::new(
+        )?);
+        doc.add(Field::new(
             "oddeven",
             if i % 2 == 0 { "even" } else { "odd" }.to_string(),
             FieldType::new_from(&ft),
-        )?));
-        doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+        )?);
+        doc.add(StringField::new("id", i.to_string(), Store::NO)?);
         w.add_document(&doc)?;
     }
 
@@ -359,7 +359,7 @@ fn test_random(inst: &mut TestPostingsOffsetsInstance) -> Result<()> {
 
     for doc_count in 0..num_docs {
         let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::new("id", doc_count as i64)));
+        doc.add(NumericDocValuesField::new("id", doc_count as i64));
         let mut tokens: Vec<Token> = Vec::new();
         let num_tokens = LuceneTestCase::at_least(100);
         // final int numTokens = atLeast(20);
@@ -415,7 +415,7 @@ fn test_random(inst: &mut TestPostingsOffsetsInstance) -> Result<()> {
             // pos + " off=" + token.startOffset() + "/" + token.endOffset() + " (freq=" +
             // postingsByDoc.get(docCount).size() + ")");
         }
-        doc.add(Box::new(canned_field("content", tokens, &ft)?));
+        doc.add(canned_field("content", tokens, &ft)?);
         w.add_document(&doc)?;
     }
     let r = w.get_reader()?;
@@ -543,16 +543,16 @@ fn test_add_field_twice(_inst: &mut TestPostingsOffsetsInstance) -> Result<()> {
     custom_type3.set_store_term_vector_offsets(true)?;
     custom_type3.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)?;
     let custom_type3 = Arc::new(custom_type3);
-    doc.add(Box::new(Field::new(
+    doc.add(Field::new(
         "content3",
         "here is more content with aaa aaa aaa".to_string(),
         Arc::clone(&custom_type3),
-    )?));
-    doc.add(Box::new(Field::new(
+    )?);
+    doc.add(Field::new(
         "content3",
         "here is more content with aaa aaa aaa".to_string(),
         Arc::clone(&custom_type3),
-    )?));
+    )?);
     iw.add_document(&doc)?;
     iw.close()?;
     dir.close() // checkindex
@@ -658,16 +658,8 @@ fn test_crazy_offset_gap(_inst: &mut TestPostingsOffsetsInstance) -> Result<()> 
     expect_throws(IAE, || -> Result<()> {
         let ft = offsets_type(TextField::type_not_stored())?;
         let ft = Arc::new(ft);
-        doc.add(Box::new(Field::new(
-            "foo",
-            "bar".to_string(),
-            Arc::clone(&ft),
-        )?));
-        doc.add(Box::new(Field::new(
-            "foo",
-            "bar".to_string(),
-            Arc::clone(&ft),
-        )?));
+        doc.add(Field::new("foo", "bar".to_string(), Arc::clone(&ft))?);
+        doc.add(Field::new("foo", "bar".to_string(), Arc::clone(&ft))?);
         iw.add_document(&doc)?;
         Ok(())
     });
@@ -700,7 +692,7 @@ fn test_legalbut_very_large_offsets(_inst: &mut TestPostingsOffsetsInstance) -> 
     ft.set_store_term_vector_positions(true)?;
     ft.set_store_term_vector_offsets(true)?;
     let field = canned_field("foo", vec![t1, t2], &ft)?;
-    doc.add(Box::new(field));
+    doc.add(field);
     iw.add_document(&doc)?;
     iw.close()?;
     dir.close()
@@ -734,7 +726,7 @@ fn check_tokens_fields(
 
         let mut doc = Document::new();
         for tokens in fields {
-            doc.add(Box::new(canned_field("body", tokens, &ft)?));
+            doc.add(canned_field("body", tokens, &ft)?);
         }
         riw.add_document(&doc)?;
         riw.close()?;

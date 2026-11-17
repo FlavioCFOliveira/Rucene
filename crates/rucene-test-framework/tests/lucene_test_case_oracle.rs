@@ -664,15 +664,11 @@ fn members_reader(
     .unwrap();
     for i in 0..ids.len() {
         let mut d = Document::new();
-        d.add(Box::new(
-            StringField::new("id", ids[i].to_string(), Store::YES).unwrap(),
-        ));
-        d.add(Box::new(NumericDocValuesField::new("n", ns[i])));
-        d.add(Box::new(IntPoint::new("p", &[ps[i]]).unwrap()));
+        d.add(StringField::new("id", ids[i].to_string(), Store::YES).unwrap());
+        d.add(NumericDocValuesField::new("n", ns[i]));
+        d.add(IntPoint::new("p", &[ps[i]]).unwrap());
         if extra {
-            d.add(Box::new(
-                StringField::new("x", "y".to_string(), Store::NO).unwrap(),
-            ));
+            d.add(StringField::new("x", "y".to_string(), Store::NO).unwrap());
         }
         w.add_document(&d).unwrap();
     }

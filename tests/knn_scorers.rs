@@ -322,44 +322,40 @@ fn quantized_config() -> IndexWriterConfig {
 fn exact_document(i: i32) -> Document {
     let f = i as f32;
     let mut doc = Document::new();
-    doc.add(Box::new(
+    doc.add(
         StringField::new(
             "tag",
             (if i % 2 == 0 { "even" } else { "odd" }).to_string(),
             Store::NO,
         )
         .unwrap(),
-    ));
-    doc.add(Box::new(
-        KnnFloatVectorField::with_euclidean("f", &[f, 1.0 + 0.5 * f]).unwrap(),
-    ));
-    doc.add(Box::new(
+    );
+    doc.add(KnnFloatVectorField::with_euclidean("f", &[f, 1.0 + 0.5 * f]).unwrap());
+    doc.add(
         KnnFloatVectorField::new("c", &[1.0 + f, 2.0], VectorSimilarityFunction::COSINE).unwrap(),
-    ));
-    doc.add(Box::new(
+    );
+    doc.add(
         KnnFloatVectorField::new(
             "m",
             &[0.25 * f, 1.0 - 0.1 * f],
             VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
         )
         .unwrap(),
-    ));
+    );
     if i % 2 == 0 {
-        doc.add(Box::new(
-            KnnFloatVectorField::with_euclidean("s", &[f, 2.0 - f]).unwrap(),
-        ));
+        doc.add(KnnFloatVectorField::with_euclidean("s", &[f, 2.0 - f]).unwrap());
     }
-    doc.add(Box::new(
+    doc.add(
         KnnByteVectorField::with_euclidean("b", &[i as i8 as u8, (2 * i + 1) as i8 as u8]).unwrap(),
-    ));
-    doc.add(Box::new(
+    );
+    doc.add(
         KnnByteVectorField::new(
             "bd",
             &[(3 - i) as i8 as u8, (i + 1) as i8 as u8],
             VectorSimilarityFunction::DOT_PRODUCT,
         )
         .unwrap(),
-    ));
+    );
     doc
 }
 
@@ -516,16 +512,10 @@ fn a_field_with_no_vector_in_the_segment_has_no_scorer_as_in_lucene() {
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for i in 0..4 {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", format!("doc-{i}"), Store::NO).unwrap(),
-        ));
-        doc.add(Box::new(
-            KnnFloatVectorField::with_euclidean("f", &[i as f32, 1.0]).unwrap(),
-        ));
+        doc.add(StringField::new("id", format!("doc-{i}"), Store::NO).unwrap());
+        doc.add(KnnFloatVectorField::with_euclidean("f", &[i as f32, 1.0]).unwrap());
         if i == 0 {
-            doc.add(Box::new(
-                KnnFloatVectorField::with_euclidean("e", &[1.0, 1.0]).unwrap(),
-            ));
+            doc.add(KnnFloatVectorField::with_euclidean("e", &[1.0, 1.0]).unwrap());
         }
         writer.add_document(&doc).unwrap();
     }
@@ -594,25 +584,21 @@ fn quantized_format_searches_and_scorers_match_lucene() {
     for d in 0..SQ_DOCS {
         let f = d as f32;
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", format!("doc-{d}"), Store::NO).unwrap(),
-        ));
-        doc.add(Box::new(
+        doc.add(StringField::new("id", format!("doc-{d}"), Store::NO).unwrap());
+        doc.add(
             StringField::new(
                 "tag",
                 (if d % 2 == 0 { "even" } else { "odd" }).to_string(),
                 Store::NO,
             )
             .unwrap(),
-        ));
-        doc.add(Box::new(IntPoint::new("rank", &[d]).unwrap()));
-        doc.add(Box::new(
+        );
+        doc.add(IntPoint::new("rank", &[d]).unwrap());
+        doc.add(
             KnnFloatVectorField::with_euclidean("qd", &[f * 0.5, 3.0 - f * 0.25, 1.0]).unwrap(),
-        ));
+        );
         if sq_has_q(d) {
-            doc.add(Box::new(
-                KnnFloatVectorField::with_euclidean("q", &[f, 0.5 * f, 2.0]).unwrap(),
-            ));
+            doc.add(KnnFloatVectorField::with_euclidean("q", &[f, 0.5 * f, 2.0]).unwrap());
         }
         writer.add_document(&doc).unwrap();
     }
@@ -675,14 +661,10 @@ const VECTOR_FIELD: &str = "vector";
 /// neighbours of `[0, 0]` are documents 1, 3, 5, … in that order.
 fn sparse_document(d: i32) -> Document {
     let mut document = Document::new();
-    document.add(Box::new(
-        StringField::new("id", format!("doc-{d}"), Store::NO).unwrap(),
-    ));
-    document.add(Box::new(IntPoint::new("rank", &[d]).unwrap()));
+    document.add(StringField::new("id", format!("doc-{d}"), Store::NO).unwrap());
+    document.add(IntPoint::new("rank", &[d]).unwrap());
     if d % 2 == 1 {
-        document.add(Box::new(
-            KnnFloatVectorField::with_euclidean(VECTOR_FIELD, &[d as f32, 0.0]).unwrap(),
-        ));
+        document.add(KnnFloatVectorField::with_euclidean(VECTOR_FIELD, &[d as f32, 0.0]).unwrap());
     }
     document
 }
@@ -885,9 +867,7 @@ fn readers_built_per_search(doc_count: i32) -> (u64, u64, usize) {
     for d in 0..doc_count {
         let mut doc = Document::new();
         if scaling_has_vector(d) {
-            doc.add(Box::new(
-                KnnFloatVectorField::with_euclidean(VECTOR_FIELD, &[d as f32, 0.0]).unwrap(),
-            ));
+            doc.add(KnnFloatVectorField::with_euclidean(VECTOR_FIELD, &[d as f32, 0.0]).unwrap());
         }
         writer.add_document(&doc).unwrap();
     }

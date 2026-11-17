@@ -311,16 +311,16 @@ fn test_two_fields_two_formats() -> Result<()> {
         "termlongtermlongtermlongterm"
     );
     let text = format!("This is the text to be indexed. {long_term}");
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "fieldname",
         &text,
         Store::YES,
-    )));
-    doc.add(Box::new(NumericDocValuesField::new("dv1", 5)));
-    doc.add(Box::new(BinaryDocValuesField::new(
+    ));
+    doc.add(NumericDocValuesField::new("dv1", 5));
+    doc.add(BinaryDocValuesField::new(
         "dv2",
         BytesRef::from_char_sequence("hello world"),
-    )));
+    ));
     iwriter.add_document(&doc)?;
     iwriter.close()?;
 
@@ -405,22 +405,22 @@ fn test_merge_called_on_two_formats() -> Result<()> {
     let iwriter = IndexWriter::new(directory.as_directory(), iwc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("dv1", 5)));
-    doc.add(Box::new(NumericDocValuesField::new("dv2", 42)));
-    doc.add(Box::new(BinaryDocValuesField::new(
+    doc.add(NumericDocValuesField::new("dv1", 5));
+    doc.add(NumericDocValuesField::new("dv2", 42));
+    doc.add(BinaryDocValuesField::new(
         "dv3",
         BytesRef::from_char_sequence("hello world"),
-    )));
+    ));
     iwriter.add_document(&doc)?;
     iwriter.commit()?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("dv1", 8)));
-    doc.add(Box::new(NumericDocValuesField::new("dv2", 45)));
-    doc.add(Box::new(BinaryDocValuesField::new(
+    doc.add(NumericDocValuesField::new("dv1", 8));
+    doc.add(NumericDocValuesField::new("dv2", 45));
+    doc.add(BinaryDocValuesField::new(
         "dv3",
         BytesRef::from_char_sequence("goodbye world"),
-    )));
+    ));
     iwriter.add_document(&doc)?;
     iwriter.commit()?;
 
@@ -457,26 +457,26 @@ fn test_doc_values_merge_with_indexed_fields() -> Result<()> {
     let iwriter = IndexWriter::new(directory.as_directory(), iwc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("dv1", 5)));
-    doc.add(Box::new(TextField::new(
+    doc.add(NumericDocValuesField::new("dv1", 5));
+    doc.add(TextField::new(
         "normalField",
         "not a doc value".to_string(),
         Store::NO,
-    )?));
+    )?);
     iwriter.add_document(&doc)?;
     iwriter.commit()?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(
+    doc.add(TextField::new(
         "anotherField",
         "again no doc values here".to_string(),
         Store::NO,
-    )?));
-    doc.add(Box::new(TextField::new(
+    )?);
+    doc.add(TextField::new(
         "normalField",
         "my document without doc values".to_string(),
         Store::NO,
-    )?));
+    )?);
     iwriter.add_document(&doc)?;
     iwriter.commit()?;
 

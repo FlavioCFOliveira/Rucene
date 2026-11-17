@@ -3690,12 +3690,10 @@ mod visit_tests {
             for polygon in polygons {
                 for triangle in LatLonShape::create_indexable_fields_polygon("s", polygon).unwrap()
                 {
-                    document.add(Box::new(triangle));
+                    document.add(triangle);
                 }
             }
-            document.add(Box::new(
-                crate::document::StoredField::new_string("id", "x".to_string()).unwrap(),
-            ));
+            document.add(crate::document::StoredField::new_string("id", "x".to_string()).unwrap());
             writer.add_document(&document).unwrap();
         }
         writer.force_merge(1).unwrap();

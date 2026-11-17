@@ -48,7 +48,7 @@ fn test_numerics() -> Result<()> {
 
     let mut doc = Document::new();
     let dv_field = NumericDocValuesField::new("dv", 0);
-    doc.add(Box::new(dv_field));
+    doc.add(dv_field);
 
     for i in 0..MAX_DOCS {
         doc.get_field_mut_as::<NumericDocValuesField>("dv")

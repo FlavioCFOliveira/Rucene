@@ -107,7 +107,7 @@ fn do_set_up(f: &mut SpanMultiTermQueryWrapperTest) -> Result<()> {
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
     let mut doc = Document::new();
     let field = LuceneTestCase::new_text_field("field", "", Store::NO);
-    doc.add(Box::new(field));
+    doc.add(field);
 
     field_mut(&mut doc, "field").set_string_value("quick brown fox".to_string())?;
     iw.add_document(&doc)?;

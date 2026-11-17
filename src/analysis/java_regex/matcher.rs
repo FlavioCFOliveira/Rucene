@@ -17,7 +17,22 @@ use std::fmt;
 
 use crate::error::{LuceneError, Result};
 
-use super::JavaPattern;
+use super::{JavaPattern, Precheck};
+
+/// Whether the characters of `needle` occur, contiguous, in `haystack`.
+fn contains_chars(haystack: &[char], needle: &str) -> bool {
+    let mut chars = needle.chars();
+    let Some(first) = chars.next() else {
+        return true;
+    };
+    let rest = chars.as_str();
+    haystack.iter().enumerate().any(|(i, &c)| {
+        c == first && {
+            let mut tail = haystack[i + 1..].iter();
+            rest.chars().all(|n| tail.next() == Some(&n))
+        }
+    })
+}
 
 /// The class of the exceptions `start`, `end` and `group` throw for a group
 /// the pattern does not have.
@@ -53,8 +68,12 @@ pub struct JavaMatcher {
     /// For each UTF-16 index of the input, and its length, the byte offset
     /// in `haystack` that starts it; the low half of a surrogate pair maps
     /// one byte into its character, so the offsets are strictly increasing
-    /// and a character boundary is never such a position.
+    /// and a character boundary is never such a position. Left empty when
+    /// the input is ASCII (`ascii`), where the offset is the index itself.
     byte_of_unit: Vec<usize>,
+    /// Whether every unit of the input is below U+0080, so that the
+    /// haystack's bytes are the input's units, one for one.
+    ascii: bool,
     /// The bounds of the groups of the last match, `-1` when unset, Java's
     /// `groups`.
     groups: Vec<i32>,
@@ -88,6 +107,7 @@ impl JavaMatcher {
             text: Vec::new(),
             haystack: String::new(),
             byte_of_unit: Vec::new(),
+            ascii: true,
             groups: vec![-1; (group_count + 1) * 2],
             first: -1,
             last: 0,
@@ -104,6 +124,15 @@ impl JavaMatcher {
         self.text.extend_from_slice(input);
         self.haystack.clear();
         self.byte_of_unit.clear();
+        // PERF: an ASCII input (every token after `ASCIIFoldingFilter`) is
+        // its own haystack, and its unit and byte offsets coincide, so no
+        // offset table is built.
+        self.ascii = input.iter().all(|&unit| unit < 0x80);
+        if self.ascii {
+            self.haystack
+                .extend(input.iter().map(|&unit| char::from(unit as u8)));
+            return;
+        }
         let mut i = 0;
         while i < input.len() {
             let unit = input[i];
@@ -130,12 +159,57 @@ impl JavaMatcher {
         self.byte_of_unit.push(self.haystack.len());
     }
 
+    /// Installs the UTF-16 encoding of `input` as the text, with its engine
+    /// view: the state [`set_text`](Self::set_text) builds from those units,
+    /// built in one pass over the characters. A character sequence holds no
+    /// unpaired surrogate, so each character is its own engine character.
+    fn set_text_chars(&mut self, input: &[char]) {
+        self.text.clear();
+        self.haystack.clear();
+        self.byte_of_unit.clear();
+        self.ascii = input.iter().all(char::is_ascii);
+        if self.ascii {
+            self.text.extend(input.iter().map(|&c| c as u16));
+            self.haystack.extend(input);
+            return;
+        }
+        for &c in input {
+            let byte = self.haystack.len();
+            self.haystack.push(c);
+            let code_point = c as u32;
+            if code_point < 0x1_0000 {
+                self.text.push(code_point as u16);
+                self.byte_of_unit.push(byte);
+            } else {
+                let offset = code_point - 0x1_0000;
+                self.text.push(0xD800 | (offset >> 10) as u16);
+                self.text.push(0xDC00 | (offset & 0x3FF) as u16);
+                self.byte_of_unit.push(byte);
+                self.byte_of_unit.push(byte + 1);
+            }
+        }
+        self.byte_of_unit.push(self.haystack.len());
+    }
+
     /// The UTF-16 index whose character starts at byte `byte` of the
     /// haystack (a match bound is always one).
     fn unit_of_byte(&self, byte: usize) -> i32 {
+        if self.ascii {
+            return byte as i32;
+        }
         self.byte_of_unit
             .binary_search(&byte)
             .expect("INVARIANT: a match bound is a character boundary") as i32
+    }
+
+    /// The byte offset in the haystack that starts UTF-16 index `unit` (or
+    /// ends the input, for its length); see `byte_of_unit`.
+    fn byte_of_unit(&self, unit: usize) -> usize {
+        if self.ascii {
+            unit
+        } else {
+            self.byte_of_unit[unit]
+        }
     }
 
     /// The pattern this matcher interprets, `Matcher.pattern()`.
@@ -166,6 +240,45 @@ impl JavaMatcher {
     pub fn reset_input(&mut self, input: &[u16]) -> &mut Self {
         self.set_text(input);
         self.reset()
+    }
+
+    /// Resets this matcher with a new input sequence of characters.
+    ///
+    /// Equivalent to `Matcher.reset(CharSequence)` for a sequence held as
+    /// Rust `char`s, such as the buffer of `rucene`'s `CharTermAttribute`
+    /// (in Java a `CharSequence` of UTF-16 units): the text is the UTF-16
+    /// encoding of `input`, and the matcher's state is the one
+    /// [`reset_input`](Self::reset_input) of those units leaves.
+    pub fn reset_input_chars(&mut self, input: &[char]) -> &mut Self {
+        // PERF: the text and the engine's haystack are built in one pass
+        // over the characters, where encoding them to UTF-16 first (in the
+        // caller), copying the units into the text and rebuilding the
+        // haystack from them cost three passes and a buffer per caller, on
+        // every token of every `PatternReplaceFilter` (task #546, round 4).
+        self.set_text_chars(input);
+        self.reset()
+    }
+
+    /// Whether [`find`](Self::find) can succeed right after
+    /// [`reset_input_chars`](Self::reset_input_chars)`(input)`: false only
+    /// when it cannot, decided on the characters themselves, before any of
+    /// the matcher's input is built. The matcher's state is not changed.
+    ///
+    /// The answer is the pattern's literal pre-check (see
+    /// `JavaPattern::may_match_from`): when every match must contain one
+    /// string, `find` from the start of the input fails unless `input` holds
+    /// that string. Any other pattern may match.
+    ///
+    /// No JDK counterpart: Java's `Matcher` reads its `CharSequence` in
+    /// place, so a failing `reset` and `find` build nothing; this lets a
+    /// caller skip the port's input build in the same case.
+    pub fn may_find_in_chars(&self, input: &[char]) -> bool {
+        match self.pattern.precheck() {
+            // The literal's UTF-8 bytes occur in the haystack (the UTF-8 of
+            // `input`) exactly where its characters occur in `input`.
+            Some(Precheck::Literal(literal)) => contains_chars(input, literal),
+            _ => true,
+        }
     }
 
     /// The number of capturing groups in this matcher's pattern.
@@ -214,13 +327,11 @@ impl JavaMatcher {
             self.first = -1;
             return false;
         };
-        let bounds: Vec<Option<(usize, usize)>> = (0..=self.group_count())
-            .map(|group| captures.get(group).map(|m| (m.start(), m.end())))
-            .collect();
-        for (group, bound) in bounds.into_iter().enumerate() {
-            if let Some((start, end)) = bound {
-                self.groups[group * 2] = self.unit_of_byte(start);
-                self.groups[group * 2 + 1] = self.unit_of_byte(end);
+        for group in 0..=self.group_count() {
+            if let Some(m) = captures.get(group) {
+                let (start, end) = (self.unit_of_byte(m.start()), self.unit_of_byte(m.end()));
+                self.groups[group * 2] = start;
+                self.groups[group * 2 + 1] = end;
             }
         }
         self.first = self.groups[0];
@@ -234,27 +345,32 @@ impl JavaMatcher {
         let mut from = from.max(0) as usize;
         // See the type's documentation: a search does not start inside a
         // surrogate pair.
-        while from < self.text.len() && !self.haystack.is_char_boundary(self.byte_of_unit[from]) {
+        while from < self.text.len() && !self.haystack.is_char_boundary(self.byte_of_unit(from)) {
             from += 1;
         }
         self.first = from as i32;
         self.groups.fill(-1);
+        let pos = self.byte_of_unit(from);
+        // PERF: a necessary condition, checked by the plain automaton before
+        // the backtracking engine runs (see `JavaPattern::may_match_from`).
+        if !self.pattern.may_match_from(self.haystack.as_str(), pos) {
+            self.first = -1;
+            return false;
+        }
         let captures = self
             .pattern
             .find_regex()
-            .captures_from_pos(self.haystack.as_str(), self.byte_of_unit[from])
+            .captures_from_pos(self.haystack.as_str(), pos)
             .expect("INVARIANT: the engine has no backtracking limit");
         let Some(captures) = captures else {
             self.first = -1;
             return false;
         };
-        let bounds: Vec<Option<(usize, usize)>> = (0..=self.group_count())
-            .map(|group| captures.get(group).map(|m| (m.start(), m.end())))
-            .collect();
-        for (group, bound) in bounds.into_iter().enumerate() {
-            if let Some((start, end)) = bound {
-                self.groups[group * 2] = self.unit_of_byte(start);
-                self.groups[group * 2 + 1] = self.unit_of_byte(end);
+        for group in 0..=self.group_count() {
+            if let Some(m) = captures.get(group) {
+                let (start, end) = (self.unit_of_byte(m.start()), self.unit_of_byte(m.end()));
+                self.groups[group * 2] = start;
+                self.groups[group * 2 + 1] = end;
             }
         }
         self.first = self.groups[0];
@@ -564,5 +680,189 @@ impl JavaMatcher {
         self.append_replacement(&mut sb, replacement)?;
         self.append_tail(&mut sb);
         Ok(sb)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{JavaPattern, Precheck};
+    use super::JavaMatcher;
+
+    /// The input fields (text, haystack, offset table, ASCII flag) and the
+    /// match fields (groups, `first`, `last`, `lastAppendPosition`).
+    type State = (
+        (Vec<u16>, String, Vec<usize>, bool),
+        (Vec<i32>, i32, i32, i32),
+    );
+
+    /// Every field of the matcher's state.
+    fn state(m: &JavaMatcher) -> State {
+        (
+            (
+                m.text.clone(),
+                m.haystack.clone(),
+                m.byte_of_unit.clone(),
+                m.ascii,
+            ),
+            (m.groups.clone(), m.first, m.last, m.last_append_position),
+        )
+    }
+
+    /// `reset_input_chars` of a character sequence leaves the state
+    /// `reset_input` of its UTF-16 units leaves (text, engine view, offset
+    /// table, groups), on a matcher reused across inputs of every kind, and
+    /// `find`, `replaceAll` and `replaceFirst` then answer the same.
+    #[test]
+    fn reset_input_chars_equals_reset_input_of_the_units() {
+        let samples = [
+            "",
+            "a",
+            "acoes",
+            "accoes",
+            "oes",
+            "paes",
+            "anzois",
+            "ações",
+            "x😀oes",
+            "😀",
+            "a😀b😀",
+            "oesoes",
+            "ÿĀoes",
+            "\u{10FFFF}oes\u{FFFF}",
+            "\r\n",
+            "oes\n",
+            "pães",
+            "aes",
+            "ois",
+        ];
+        for (regex, replacement) in [
+            ("oes$", "ões"),
+            ("aes$", "ães"),
+            ("ois$", "óis"),
+            ("(o)(e)?s", "$2$1"),
+            (".", "-"),
+            ("", "_"),
+        ] {
+            let pattern = JavaPattern::compile(regex, 0).expect("valid pattern");
+            let mut by_chars = pattern.matcher(&[]);
+            let mut by_units = pattern.matcher(&[]);
+            for sample in samples {
+                let chars: Vec<char> = sample.chars().collect();
+                let units: Vec<u16> = sample.encode_utf16().collect();
+                by_chars.reset_input_chars(&chars);
+                by_units.reset_input(&units);
+                assert_eq!(
+                    state(&by_chars),
+                    state(&by_units),
+                    "{regex:?} over {sample:?}"
+                );
+                assert_eq!(
+                    by_chars.find(),
+                    by_units.find(),
+                    "{regex:?} over {sample:?}"
+                );
+                assert_eq!(
+                    state(&by_chars),
+                    state(&by_units),
+                    "{regex:?} over {sample:?}"
+                );
+                assert_eq!(
+                    by_chars
+                        .replace_all(replacement)
+                        .expect("valid replacement"),
+                    by_units
+                        .replace_all(replacement)
+                        .expect("valid replacement"),
+                    "{regex:?} over {sample:?}"
+                );
+                assert_eq!(
+                    by_chars
+                        .replace_first(replacement)
+                        .expect("valid replacement"),
+                    by_units
+                        .replace_first(replacement)
+                        .expect("valid replacement"),
+                    "{regex:?} over {sample:?}"
+                );
+                assert_eq!(
+                    state(&by_chars),
+                    state(&by_units),
+                    "{regex:?} over {sample:?}"
+                );
+            }
+        }
+    }
+
+    /// `may_find_in_chars` answers as the pattern's pre-check over the
+    /// haystack from the start, and when it answers false, `find` after
+    /// `reset_input_chars` fails; it leaves the matcher's state unchanged.
+    #[test]
+    fn may_find_in_chars_answers_as_the_precheck() {
+        let samples = [
+            "",
+            "o",
+            "oe",
+            "oes",
+            "acoes",
+            "accoes",
+            "oesx",
+            "xoxes",
+            "paes",
+            "anzois",
+            "ações",
+            "x😀oes",
+            "😀",
+            "😀b",
+            "a😀b",
+            "aa😀bb",
+            "ab",
+            "ba",
+            "\u{10FFFF}oes",
+            "oes\n",
+            "OES",
+        ];
+        // Literal pre-checks (`oes`, `aes`, `ois`, `ab`), automaton
+        // pre-checks (`a😀b`, whose supplementary character the translation
+        // does not write as a literal, and the classes) and no pre-check (a
+        // back reference).
+        let patterns = [
+            "oes$", "aes$", "ois$", "ab", "a😀b", "(o)(e)?s", "[ab]c", r"(a)\1",
+        ];
+        let (mut rejected, mut literals) = (0, 0);
+        for regex in patterns {
+            let pattern = JavaPattern::compile(regex, 0).expect("valid pattern");
+            let literal = matches!(pattern.precheck(), Some(Precheck::Literal(_)));
+            literals += usize::from(literal);
+            let mut m = pattern.matcher(&[]);
+            for sample in samples {
+                let chars: Vec<char> = sample.chars().collect();
+                let before = state(&m);
+                let may = m.may_find_in_chars(&chars);
+                assert_eq!(state(&m), before, "{regex:?} over {sample:?}");
+                if literal {
+                    // Decided on the characters as the literal pre-check
+                    // decides on the haystack.
+                    assert_eq!(
+                        may,
+                        pattern.may_match_from(sample, 0),
+                        "{regex:?} over {sample:?}"
+                    );
+                } else {
+                    // Undecided without a haystack: may match.
+                    assert!(may, "{regex:?} over {sample:?}");
+                }
+                m.reset_input_chars(&chars);
+                let found = m.find();
+                if !may {
+                    assert!(!found, "{regex:?} over {sample:?}");
+                    rejected += 1;
+                }
+            }
+        }
+        assert_eq!(
+            literals, 4,
+            "the four literal patterns keep a literal pre-check"
+        );
+        assert!(rejected > 50, "only {rejected} inputs were rejected");
     }
 }

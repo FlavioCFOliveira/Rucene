@@ -368,27 +368,27 @@ fn test_exitable_filter_terms_index_reader() -> Result<()> {
     )?;
 
     let mut d1 = Document::new();
-    d1.add(Box::new(LuceneTestCase::new_text_field(
+    d1.add(LuceneTestCase::new_text_field(
         "default",
         "one two",
         Store::YES,
-    )));
+    ));
     writer.add_document(&d1)?;
 
     let mut d2 = Document::new();
-    d2.add(Box::new(LuceneTestCase::new_text_field(
+    d2.add(LuceneTestCase::new_text_field(
         "default",
         "one three",
         Store::YES,
-    )));
+    ));
     writer.add_document(&d2)?;
 
     let mut d3 = Document::new();
-    d3.add(Box::new(LuceneTestCase::new_text_field(
+    d3.add(LuceneTestCase::new_text_field(
         "default",
         "ones two four",
         Store::YES,
-    )));
+    ));
     writer.add_document(&d3)?;
 
     writer.force_merge(1)?;
@@ -446,11 +446,11 @@ fn test_exitable_terms_enum_sample_timeout_check() -> Result<()> {
         let inner = (|| -> Result<()> {
             for i in 0..50 {
                 let mut d1 = Document::new();
-                d1.add(Box::new(LuceneTestCase::new_text_field(
+                d1.add(LuceneTestCase::new_text_field(
                     "default",
                     &format!("term{i}"),
                     Store::YES,
-                )));
+                ));
                 writer.add_document(&d1)?;
             }
 
@@ -504,7 +504,7 @@ fn test_exitable_point_values_index_reader() -> Result<()> {
 
     for value in [10, 100, 1000] {
         let mut d = Document::new();
-        d.add(Box::new(IntPoint::new("default", &[value])?));
+        d.add(IntPoint::new("default", &[value])?);
         writer.add_document(&d)?;
     }
 
@@ -600,7 +600,7 @@ fn test_exitable_terms_min_and_max() -> Result<()> {
     )?;
     let mut doc = Document::new();
     let foo_field = StringField::new("foo", "bar".to_string(), Store::NO)?;
-    doc.add(Box::new(foo_field));
+    doc.add(foo_field);
     w.add_document(&doc)?;
     w.flush()?;
 
@@ -822,11 +822,11 @@ fn test_float_vector_values() -> Result<()> {
             dimension,
             rucene::index::VectorSimilarityFunction::COSINE,
         )?;
-        doc.add(Box::new(KnnFloatVectorField::with_field_type(
+        doc.add(KnnFloatVectorField::with_field_type(
             "vector", &value, field_type,
-        )?));
+        )?);
 
-        doc.add(Box::new(StringField::new("id", i.to_string(), Store::YES)?));
+        doc.add(StringField::new("id", i.to_string(), Store::YES)?);
         writer.add_document(&doc)?;
     }
 
@@ -893,12 +893,12 @@ fn test_byte_vector_values() -> Result<()> {
         let mut doc = Document::new();
         let mut value = vec![0u8; dimension as usize];
         random().next_bytes(&mut value);
-        doc.add(Box::new(KnnByteVectorField::new(
+        doc.add(KnnByteVectorField::new(
             "vector",
             &value,
             rucene::index::VectorSimilarityFunction::COSINE,
-        )?));
-        doc.add(Box::new(StringField::new("id", i.to_string(), Store::YES)?));
+        )?);
+        doc.add(StringField::new("id", i.to_string(), Store::YES)?);
         writer.add_document(&doc)?;
     }
 
@@ -1020,21 +1020,18 @@ fn scan(leaf: &dyn LeafReader, iter: Option<Box<dyn DocValuesIterator>>) -> Resu
 
 /// `addDVs(d1, i)`.
 fn add_dvs(d1: &mut Document, i: i32) {
-    d1.add(Box::new(NumericDocValuesField::new("numeric", i as i64)));
-    d1.add(Box::new(BinaryDocValuesField::new(
+    d1.add(NumericDocValuesField::new("numeric", i as i64));
+    d1.add(BinaryDocValuesField::new(
         "binary",
         BytesRef::from_char_sequence(&i.to_string()),
-    )));
-    d1.add(Box::new(SortedDocValuesField::new(
+    ));
+    d1.add(SortedDocValuesField::new(
         "sorted",
         BytesRef::from_char_sequence(&i.to_string()),
-    )));
-    d1.add(Box::new(SortedNumericDocValuesField::new(
-        "sortednumeric",
-        i as i64,
-    )));
-    d1.add(Box::new(SortedSetDocValuesField::new(
+    ));
+    d1.add(SortedNumericDocValuesField::new("sortednumeric", i as i64));
+    d1.add(SortedSetDocValuesField::new(
         "sortedset",
         BytesRef::from_char_sequence(&i.to_string()),
-    )));
+    ));
 }

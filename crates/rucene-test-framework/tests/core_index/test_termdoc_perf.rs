@@ -152,11 +152,7 @@ fn add_docs(
 
     let mut doc = Document::new();
 
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        field,
-        val,
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field(field, val, Store::NO));
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     iwc.set_open_mode(OpenMode::CREATE)?;
     iwc.set_max_buffered_docs(100)?;

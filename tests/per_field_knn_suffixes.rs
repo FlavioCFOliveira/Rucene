@@ -136,10 +136,10 @@ fn rucene_files(shared: bool) -> Vec<String> {
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let mut doc = Document::new();
     for i in 0..4 {
-        doc.add(Box::new(
+        doc.add(
             KnnFloatVectorField::with_euclidean(&format!("v{i}"), &[i as f32, (i + 1) as f32])
                 .unwrap(),
-        ));
+        );
     }
     writer.add_document(&doc).unwrap();
     writer.commit().unwrap();

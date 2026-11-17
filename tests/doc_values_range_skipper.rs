@@ -45,14 +45,11 @@ fn searcher(sort: Option<Sort>) -> IndexSearcher {
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("writer");
     for i in 0..DOC_COUNT {
         let mut d = Document::new();
-        d.add(Box::new(NumericDocValuesField::indexed_field(
-            "num",
-            num(i),
-        )));
-        d.add(Box::new(SortedDocValuesField::indexed_field(
+        d.add(NumericDocValuesField::indexed_field("num", num(i)));
+        d.add(SortedDocValuesField::indexed_field(
             "tag",
             BytesRef::new(tag(i).into_bytes()),
-        )));
+        ));
         writer.add_document(&d).expect("add");
     }
     writer.force_merge(1).expect("force merge");

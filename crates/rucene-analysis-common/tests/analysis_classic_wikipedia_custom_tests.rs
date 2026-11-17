@@ -422,15 +422,15 @@ fn ca_test_wicked_long_term() -> Result<()> {
     // This produces a too-long term:
     let contents = format!("abc xyz x{big_term} another term");
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new("content", contents, Store::NO)?));
+    doc.add(TextField::new("content", contents, Store::NO)?);
     writer.add_document(&doc)?;
     // Make sure we can add another normal document
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(
+    doc.add(TextField::new(
         "content",
         "abc bbb ccc".to_string(),
         Store::NO,
-    )?));
+    )?);
     writer.add_document(&doc)?;
     writer.close()?;
 
@@ -463,11 +463,7 @@ fn ca_test_wicked_long_term() -> Result<()> {
     // Make sure we can add a document with exactly the maximum length term,
     // and search on that term:
     let mut doc = Document::new();
-    doc.add(Box::new(TextField::new(
-        "content",
-        big_term.clone(),
-        Store::NO,
-    )?));
+    doc.add(TextField::new("content", big_term.clone(), Store::NO)?);
     let mut sa = ClassicAnalyzer::new();
     sa.set_max_token_length(100000);
     let sa: Arc<dyn Analyzer> = Arc::new(sa);

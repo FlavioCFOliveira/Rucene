@@ -114,14 +114,9 @@ fn segments_n_lists_doc_values_update_files_in_lucenes_order() {
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..10i64 {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                StringField::new("id", format!("d{i}"), Store::NO).unwrap(),
-            ));
+            doc.add(StringField::new("id", format!("d{i}"), Store::NO).unwrap());
             for f in 0..20i64 {
-                doc.add(Box::new(NumericDocValuesField::new(
-                    &format!("f{f}"),
-                    i * 100 + f,
-                )));
+                doc.add(NumericDocValuesField::new(&format!("f{f}"), i * 100 + f));
             }
             writer.add_document(&doc).unwrap();
         }

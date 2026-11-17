@@ -148,9 +148,9 @@ fn bitvectors_refuses_float_fields() {
     )
     .unwrap();
     let mut doc = Document::new();
-    doc.add(Box::new(
+    doc.add(
         KnnFloatVectorField::new("vb", &[1.0, 2.0], VectorSimilarityFunction::EUCLIDEAN).unwrap(),
-    ));
+    );
     let err = w.add_document(&doc).expect_err("a float field is refused");
     assert_eq!(
         java_error_of(&err),
@@ -188,9 +188,7 @@ fn bitvectors_graph_of_a_large_segment_matches_lucenes() {
             .map(|j| ((i * 31 + j * 17 + (i * j) % 13) & 0xff) as u8)
             .collect();
         let mut doc = Document::new();
-        doc.add(Box::new(
-            KnnByteVectorField::new("vb", &v, VectorSimilarityFunction::EUCLIDEAN).unwrap(),
-        ));
+        doc.add(KnnByteVectorField::new("vb", &v, VectorSimilarityFunction::EUCLIDEAN).unwrap());
         w.add_document(&doc).unwrap();
     }
     w.commit().unwrap();

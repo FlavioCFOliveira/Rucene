@@ -109,7 +109,7 @@ fn stored_with(options: IndexOptions) -> Result<FieldType> {
 /// `Collections.singleton(new Field(name, value, ft))`.
 fn singleton(name: &str, value: &str, ft: &FieldType) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(Field::new(name, value.to_string(), ft.clone())?));
+    doc.add(Field::new(name, value.to_string(), ft.clone())?);
     Ok(doc)
 }
 
@@ -350,9 +350,9 @@ fn test_multi_valued_field_same_frozen_field_type() -> Result<()> {
     let ft = stored();
     ft.freeze();
     let mut doc = Document::new();
-    doc.add(Box::new(Field::new("foo", "bar1".to_string(), ft.clone())?));
-    doc.add(Box::new(Field::new("foo", "bar2".to_string(), ft.clone())?));
-    doc.add(Box::new(Field::new("foo", "bar3".to_string(), ft.clone())?));
+    doc.add(Field::new("foo", "bar1".to_string(), ft.clone())?);
+    doc.add(Field::new("foo", "bar2".to_string(), ft.clone())?);
+    doc.add(Field::new("foo", "bar3".to_string(), ft.clone())?);
     w.add_document(&doc)?;
     {
         let r = only_leaf(&w)?;
@@ -373,12 +373,8 @@ fn test_multi_valued_field_mixed_frozen_and_unfrozen_compatible_types() -> Resul
     // Unfrozen copy with same settings
     let unfrozen_ft = stored();
     let mut doc = Document::new();
-    doc.add(Box::new(Field::new("foo", "bar1".to_string(), frozen_ft)?));
-    doc.add(Box::new(Field::new(
-        "foo",
-        "bar2".to_string(),
-        unfrozen_ft,
-    )?));
+    doc.add(Field::new("foo", "bar1".to_string(), frozen_ft)?);
+    doc.add(Field::new("foo", "bar2".to_string(), unfrozen_ft)?);
     w.add_document(&doc)?;
     {
         let r = only_leaf(&w)?;
@@ -399,12 +395,8 @@ fn test_multi_valued_field_mixed_frozen_incompatible_types() -> Result<()> {
     let different_ft = stored_with(IndexOptions::DOCS_AND_FREQS)?;
     different_ft.freeze();
     let mut doc = Document::new();
-    doc.add(Box::new(Field::new("foo", "bar1".to_string(), frozen_ft)?));
-    doc.add(Box::new(Field::new(
-        "foo",
-        "bar2".to_string(),
-        different_ft,
-    )?));
+    doc.add(Field::new("foo", "bar1".to_string(), frozen_ft)?);
+    doc.add(Field::new("foo", "bar2".to_string(), different_ft)?);
     // throw exception because of intra-document inconsistency
     let e = expect_throws(IAE, || w.add_document(&doc));
     let message = e.message().unwrap_or_default().to_string();
@@ -517,16 +509,8 @@ fn test_multi_value_forces_deoptimization() -> Result<()> {
     w.add_document(&singleton("foo", "val0", &ft_a)?)?;
     // Doc 1
     let mut doc = Document::new();
-    doc.add(Box::new(Field::new(
-        "foo",
-        "val1a".to_string(),
-        ft_a.clone(),
-    )?));
-    doc.add(Box::new(Field::new(
-        "foo",
-        "val1b".to_string(),
-        ft_b.clone(),
-    )?));
+    doc.add(Field::new("foo", "val1a".to_string(), ft_a.clone())?);
+    doc.add(Field::new("foo", "val1b".to_string(), ft_b.clone())?);
     w.add_document(&doc)?;
     // Doc 2
     w.add_document(&singleton("foo", "val2", &ft_b)?)?;
@@ -542,12 +526,8 @@ fn test_multi_value_forces_deoptimization() -> Result<()> {
     ft_c.set_store_term_vectors(true)?;
     ft_c.freeze();
     let mut doc4 = Document::new();
-    doc4.add(Box::new(Field::new(
-        "foo",
-        "val4a".to_string(),
-        ft_b.clone(),
-    )?));
-    doc4.add(Box::new(Field::new("foo", "val4b".to_string(), ft_c)?));
+    doc4.add(Field::new("foo", "val4a".to_string(), ft_b.clone())?);
+    doc4.add(Field::new("foo", "val4b".to_string(), ft_c)?);
     let message = iae_message(&w, &doc4).unwrap_or_default();
     Assert::assert_true_msg(&message, message.contains("store term vector"));
     w.close()?;
@@ -565,19 +545,11 @@ fn test_frozen_field_type_in_document_block() -> Result<()> {
     let mut block = Vec::new();
     for i in 0..5 {
         let mut child = Document::new();
-        child.add(Box::new(Field::new(
-            "foo",
-            format!("child{i}"),
-            ft.clone(),
-        )?));
+        child.add(Field::new("foo", format!("child{i}"), ft.clone())?);
         block.push(child);
     }
     let mut parent = Document::new();
-    parent.add(Box::new(Field::new(
-        "foo",
-        "parent".to_string(),
-        ft.clone(),
-    )?));
+    parent.add(Field::new("foo", "parent".to_string(), ft.clone())?);
     block.push(parent);
     w.add_documents(&block)?;
     {

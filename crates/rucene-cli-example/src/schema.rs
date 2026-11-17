@@ -269,40 +269,36 @@ impl Record {
                 Value::String(text) => {
                     let spec = require_field(name)?;
                     if spec.kind == FieldKind::Text {
-                        document.add(Box::new(TextField::new(name, text.clone(), Store::YES)?));
-                        document.add(Box::new(KeywordField::new(
+                        document.add(TextField::new(name, text.clone(), Store::YES)?);
+                        document.add(KeywordField::new(
                             exact_field_of(spec),
                             text.clone(),
                             Store::NO,
-                        )?));
+                        )?);
                     } else {
-                        document.add(Box::new(KeywordField::new(name, text.clone(), Store::YES)?));
+                        document.add(KeywordField::new(name, text.clone(), Store::YES)?);
                     }
                 }
                 Value::Date(millis) => {
-                    document.add(Box::new(LongField::new(name, *millis, Store::YES)));
+                    document.add(LongField::new(name, *millis, Store::YES));
                 }
                 Value::Double(number) => {
-                    document.add(Box::new(DoubleField::new(name, *number, Store::YES)));
+                    document.add(DoubleField::new(name, *number, Store::YES));
                 }
                 Value::Int(number) => {
-                    document.add(Box::new(IntField::new(name, *number, Store::YES)));
+                    document.add(IntField::new(name, *number, Store::YES));
                 }
             }
         }
         if let (Some(Value::Double(latitude)), Some(Value::Double(longitude))) =
             (self.get("latitude"), self.get("longitude"))
         {
-            document.add(Box::new(LatLonPoint::new(
+            document.add(LatLonPoint::new(LOCATION_FIELD, *latitude, *longitude)?);
+            document.add(LatLonDocValuesField::new(
                 LOCATION_FIELD,
                 *latitude,
                 *longitude,
-            )?));
-            document.add(Box::new(LatLonDocValuesField::new(
-                LOCATION_FIELD,
-                *latitude,
-                *longitude,
-            )?));
+            )?);
         }
         Ok(document)
     }

@@ -97,20 +97,12 @@ fn three_segment_writer(
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     // segment that contains the term
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "foo",
-        "bar".to_string(),
-        Store::NO,
-    )?));
+    doc.add(StringField::new("foo", "bar".to_string(), Store::NO)?);
     w.add_document(&doc)?;
     w.get_reader()?.close()?;
     // segment that does not contain the term
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "foo",
-        "baz".to_string(),
-        Store::NO,
-    )?));
+    doc.add(StringField::new("foo", "baz".to_string(), Store::NO)?);
     w.add_document(&doc)?;
     w.get_reader()?.close()?;
     // segment that does not contain the field
@@ -182,11 +174,7 @@ fn test_query_matches_count() -> Result<()> {
     for _i in 0..random_num_docs {
         let mut doc = Document::new();
         if random().next_boolean() {
-            doc.add(Box::new(StringField::new(
-                "foo",
-                "bar".to_string(),
-                Store::NO,
-            )?));
+            doc.add(StringField::new("foo", "bar".to_string(), Store::NO)?);
             num_matching_docs += 1;
         }
         w.add_document(&doc)?;
@@ -342,11 +330,7 @@ fn test_with_with_different_score_modes() -> Result<()> {
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     // segment that contains the term
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new(
-        "foo",
-        "bar".to_string(),
-        Store::NO,
-    )?));
+    doc.add(StringField::new("foo", "bar".to_string(), Store::NO)?);
     w.add_document(&doc)?;
     w.get_reader()?.close()?;
     let reader = w.get_reader()?;

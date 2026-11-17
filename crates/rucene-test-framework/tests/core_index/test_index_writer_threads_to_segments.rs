@@ -102,11 +102,11 @@ fn test_segment_count_on_flush_basic() -> Result<()> {
             let run = || -> Result<()> {
                 starting_gun.await_();
                 let mut doc = Document::new();
-                doc.add(Box::new(LuceneTestCase::new_text_field(
+                doc.add(LuceneTestCase::new_text_field(
                     "field",
                     "here is some text",
                     Store::NO,
-                )));
+                ));
                 w.add_document(&doc)?;
                 start_done.count_down();
                 middle_gun.await_();
@@ -290,12 +290,12 @@ fn test_segment_count_on_flush_random() -> Result<()> {
 
                         // We get to index on this cycle:
                         let mut doc = Document::new();
-                        doc.add(Box::new(TextField::new(
+                        doc.add(TextField::new(
                             "field",
                             "here is some text that is a bit longer than normal trivial text"
                                 .to_string(),
                             Store::NO,
-                        )?));
+                        )?);
                         for _ in 0..200 {
                             w.add_document(&doc)?;
                         }
@@ -369,11 +369,11 @@ fn test_many_threads_close() -> Result<()> {
             let run = || -> Result<()> {
                 starting_gun.await_();
                 let mut doc = Document::new();
-                doc.add(Box::new(TextField::new(
+                doc.add(TextField::new(
                     "field",
                     "here is some text that is a bit longer than normal trivial text".to_string(),
                     Store::NO,
-                )?));
+                )?);
                 for _ in 0..1000 {
                     w.add_document(&doc)?;
                 }
@@ -430,11 +430,11 @@ fn test_docs_stuck_in_ram_forever() -> Result<()> {
                 starting_gun.await_();
                 for _ in 0..1000 {
                     let mut doc = Document::new();
-                    doc.add(Box::new(LuceneTestCase::new_string_field(
+                    doc.add(LuceneTestCase::new_string_field(
                         "field",
                         &format!("threadID{thread_id}"),
                         Store::NO,
-                    )));
+                    ));
                     w.add_document(&doc)?;
                 }
                 Ok(())
@@ -464,11 +464,11 @@ fn test_docs_stuck_in_ram_forever() -> Result<()> {
     let mut check_at: i64 = 100;
     while thread0_count < 1000 || thread1_count < 1000 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "field",
             "threadIDmain",
             Store::NO,
-        )));
+        ));
         w.add_document(&doc)?;
         let c = counter;
         counter += 1;

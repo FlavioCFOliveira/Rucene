@@ -49,9 +49,7 @@ fn directory_reader() -> Arc<dyn DirectoryReader> {
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
     for d in 0..6 {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", format!("d{d}"), Store::YES).expect("id"),
-        ));
+        doc.add(StringField::new("id", format!("d{d}"), Store::YES).expect("id"));
         writer.add_document(&doc).expect("add document");
         if d == 2 {
             writer.commit().expect("commit");

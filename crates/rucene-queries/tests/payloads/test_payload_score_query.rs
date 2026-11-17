@@ -440,21 +440,17 @@ fn before_class() -> Result<()> {
     // writer.infoStream = System.out;
     for i in 0..300 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             "field",
             &English::int_to_english(i),
             Store::YES,
-        )));
+        ));
         let txt = format!(
             "{} {}",
             English::int_to_english(i),
             English::int_to_english(i + 1)
         );
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "field2",
-            &txt,
-            Store::YES,
-        )));
+        doc.add(LuceneTestCase::new_text_field("field2", &txt, Store::YES));
         writer.add_document(&doc)?;
     }
     let reader = writer.get_reader()?;

@@ -235,11 +235,11 @@ fn do_set_up(f: &mut SpansTest) -> Result<()> {
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;
     for i in 0..f.doc_fields.len() {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
+        doc.add(LuceneTestCase::new_text_field(
             FIELD,
             f.doc_fields[i],
             Store::YES,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     writer.force_merge(1)?;
@@ -414,16 +414,8 @@ fn test_span_or_triple_same_doc(f: &mut SpansTest) -> Result<()> {
 // LUCENE-1404
 fn add_doc(writer: &IndexWriter, id: &str, text: &str) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "id",
-        id,
-        Store::YES,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_text_field(
-        "text",
-        text,
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_string_field("id", id, Store::YES));
+    doc.add(LuceneTestCase::new_text_field("text", text, Store::YES));
     writer.add_document(&doc)?;
     Ok(())
 }

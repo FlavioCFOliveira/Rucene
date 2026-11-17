@@ -371,7 +371,7 @@ fn do_test_dense_numeric_long_values_bulk_fetch(bits_per_value: i32) -> Result<(
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     for value in &expected {
         let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::new("numeric", *value)));
+        doc.add(NumericDocValuesField::new("numeric", *value));
         writer.add_document(&doc)?;
     }
     writer.force_merge(1)?;
@@ -539,36 +539,36 @@ fn do_test_sparse_doc_values_vs_stored_fields() -> Result<()> {
 
         // single-valued
         let mut doc_value = values[random().next_int_bound(values.len() as i32) as usize];
-        doc.add(Box::new(NumericDocValuesField::new("numeric", doc_value)));
-        doc.add(Box::new(SortedDocValuesField::new(
+        doc.add(NumericDocValuesField::new("numeric", doc_value));
+        doc.add(SortedDocValuesField::new(
             "sorted",
             bytes(&doc_value.to_string()),
-        )));
-        doc.add(Box::new(BinaryDocValuesField::new(
+        ));
+        doc.add(BinaryDocValuesField::new(
             "binary",
             bytes(&doc_value.to_string()),
-        )));
-        doc.add(Box::new(StoredField::new_number(
+        ));
+        doc.add(StoredField::new_number(
             "value",
             NumericValue::Long(doc_value),
-        )?));
+        )?);
 
         // multi-valued
         let num_values = TestUtil::next_int(&*random(), 1, max_num_values_per_doc);
         for _ in 0..num_values {
             doc_value = values[random().next_int_bound(values.len() as i32) as usize];
-            doc.add(Box::new(SortedNumericDocValuesField::new(
+            doc.add(SortedNumericDocValuesField::new(
                 "sorted_numeric",
                 doc_value,
-            )));
-            doc.add(Box::new(SortedSetDocValuesField::new(
+            ));
+            doc.add(SortedSetDocValuesField::new(
                 "sorted_set",
                 bytes(&doc_value.to_string()),
-            )));
-            doc.add(Box::new(StoredField::new_number(
+            ));
+            doc.add(StoredField::new_number(
                 "values",
                 NumericValue::Long(doc_value),
-            )?));
+            )?);
         }
 
         writer.add_document(&doc)?;
@@ -723,7 +723,7 @@ fn do_test_terms_enum_random(
     for i in 0..num_docs {
         let mut doc = Document::new();
         let id_field = StringField::new("id", i.to_string(), Store::NO)?;
-        doc.add(Box::new(id_field));
+        doc.add(id_field);
         let num_values = random().next_int_bound(17);
         // create a random list of strings
         let mut values: Vec<String> = Vec::new();
@@ -735,18 +735,14 @@ fn do_test_terms_enum_random(
         let mut unordered = values.clone();
         shuffle(&mut unordered, &*random());
         for v in &values {
-            doc.add(Box::new(LuceneTestCase::new_string_field(
-                "indexed",
-                v,
-                Store::NO,
-            )));
+            doc.add(LuceneTestCase::new_string_field("indexed", v, Store::NO));
         }
 
         // add in any order to the dv field
         let mut unordered2 = values.clone();
         shuffle(&mut unordered2, &*random());
         for v in &unordered2 {
-            doc.add(Box::new(SortedSetDocValuesField::new("dv", bytes(v))));
+            doc.add(SortedSetDocValuesField::new("dv", bytes(v)));
         }
 
         writer.add_document(&doc)?;
@@ -912,9 +908,9 @@ fn test_sorted_set_around_block_size(_suite: &CompressingDocValuesSuite) -> Resu
         let mut out = ByteBuffersDataOutput::new();
         let mut doc = Document::new();
         let field1 = SortedSetDocValuesField::new("sset", BytesRef::new(Vec::new()));
-        doc.add(Box::new(field1));
+        doc.add(field1);
         let field2 = SortedSetDocValuesField::new("sset", BytesRef::new(Vec::new()));
-        doc.add(Box::new(field2));
+        doc.add(field2);
         for _ in 0..max_doc {
             let s1 = bytes(&TestUtil::random_simple_string_max(&*random(), 2));
             let s2 = bytes(&TestUtil::random_simple_string_max(&*random(), 2));
@@ -972,9 +968,9 @@ fn test_sorted_numeric_around_block_size(_suite: &CompressingDocValuesSuite) -> 
 
         let mut doc = Document::new();
         let field1 = SortedNumericDocValuesField::new("snum", 0);
-        doc.add(Box::new(field1));
+        doc.add(field1);
         let field2 = SortedNumericDocValuesField::new("snum", 0);
-        doc.add(Box::new(field2));
+        doc.add(field2);
         for _ in 0..max_doc {
             let s1 = i64::from(random().next_int_bound(100));
             let s2 = i64::from(random().next_int_bound(100));
@@ -1161,14 +1157,11 @@ fn do_test_sorted_numeric_blocks_of_various_bits_per_value(
         for slot in value_array.iter_mut() {
             let value = values.get_as_long();
             *slot = value;
-            doc.add(Box::new(SortedNumericDocValuesField::new("dv", value)));
+            doc.add(SortedNumericDocValuesField::new("dv", value));
         }
         value_array.sort_unstable();
         for value in &value_array {
-            doc.add(Box::new(StoredField::new_string(
-                "stored",
-                value.to_string(),
-            )?));
+            doc.add(StoredField::new_string("stored", value.to_string())?);
         }
         write_doc_values.push(value_array);
         writer.add_document(&doc)?;
@@ -1235,8 +1228,8 @@ fn do_test_sparse_numeric_blocks_of_various_bits_per_value(
     let mut doc = Document::new();
     let stored_field = LuceneTestCase::new_string_field("stored", "", Store::YES);
     let dv_field = NumericDocValuesField::new("dv", 0);
-    doc.add(Box::new(stored_field));
-    doc.add(Box::new(dv_field));
+    doc.add(stored_field);
+    doc.add(dv_field);
 
     let num_docs = LuceneTestCase::at_least(NUMERIC_BLOCK_SIZE as i32 * 3);
     let mut longs = blocks_of_various_bpv();
@@ -1346,15 +1339,11 @@ fn test_reseek_after_skip_decompression(suite: &CompressingDocValuesSuite) -> Re
         let writer = IndexWriter::new(directory.as_directory(), config)?;
         for i in 0..280 {
             let mut doc = Document::new();
-            doc.add(Box::new(StringField::new(
-                "id",
-                format!("Doc{i}"),
-                Store::NO,
-            )?));
-            doc.add(Box::new(SortedDocValuesField::new(
+            doc.add(StringField::new("id", format!("Doc{i}"), Store::NO)?);
+            doc.add(SortedDocValuesField::new(
                 "sdv",
                 bytes(&values[i % doc_values]),
-            )));
+            ));
             writer.add_document(&doc)?;
         }
         writer.commit()?;
@@ -1406,15 +1395,11 @@ fn test_large_terms_compression(suite: &CompressingDocValuesSuite) -> Result<()>
         let writer = IndexWriter::new(directory.as_directory(), config)?;
         for i in 0..256 {
             let mut doc = Document::new();
-            doc.add(Box::new(StringField::new(
-                "id",
-                format!("Doc{i}"),
-                Store::NO,
-            )?));
-            doc.add(Box::new(SortedDocValuesField::new(
+            doc.add(StringField::new("id", format!("Doc{i}"), Store::NO)?);
+            doc.add(SortedDocValuesField::new(
                 "sdv",
                 bytes(&values[i % values_count]),
-            )));
+            ));
             writer.add_document(&doc)?;
         }
         writer.commit()?;
@@ -1444,7 +1429,7 @@ fn test_sorted_terms_dict_lookup_ord(_suite: &CompressingDocValuesSuite) -> Resu
     )?;
     let mut doc = Document::new();
     let field = SortedDocValuesField::new("foo", BytesRef::new(Vec::new()));
-    doc.add(Box::new(field));
+    doc.add(field);
     let num_docs = LuceneTestCase::at_least(TERMS_DICT_BLOCK_LZ4_SIZE as i32 + 1);
     for i in 0..num_docs {
         field_mut::<SortedDocValuesField>(&mut doc, "foo")
@@ -1476,7 +1461,7 @@ fn test_sorted_set_terms_dict_lookup_ord(_suite: &CompressingDocValuesSuite) -> 
     )?;
     let mut doc = Document::new();
     let field = SortedSetDocValuesField::new("foo", BytesRef::new(Vec::new()));
-    doc.add(Box::new(field));
+    doc.add(field);
     let num_docs = LuceneTestCase::at_least(2 * TERMS_DICT_BLOCK_LZ4_SIZE as i32 + 1);
     for i in 0..num_docs {
         field_mut::<SortedSetDocValuesField>(&mut doc, "foo")
@@ -1537,7 +1522,7 @@ fn test_terms_enum_dictionary(_suite: &CompressingDocValuesSuite) -> Result<()> 
     let iwriter = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
     let mut doc = Document::new();
     let field = SortedDocValuesField::new("field", bytes("abc0defghijkl"));
-    doc.add(Box::new(field));
+    doc.add(field);
     iwriter.add_document(&doc)?;
     field_mut::<SortedDocValuesField>(&mut doc, "field").set_bytes_value(bytes("abc1defghijkl"))?;
     iwriter.add_document(&doc)?;
@@ -1586,7 +1571,7 @@ fn test_terms_enum_consistency(_suite: &CompressingDocValuesSuite) -> Result<()>
     };
     let mut doc = Document::new();
     let field = SortedDocValuesField::new("field", bytes(&string_supplier(0)));
-    doc.add(Box::new(field));
+    doc.add(field);
     iwriter.add_document(&doc)?;
     for i in 1..num_terms {
         field_mut::<SortedDocValuesField>(&mut doc, "field")
@@ -1635,7 +1620,7 @@ fn test_skip_index_stored_separately(suite: &CompressingDocValuesSuite) -> Resul
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
         for i in 0..100 {
             let mut doc = Document::new();
-            doc.add(Box::new(NumericDocValuesField::indexed_field("dv", i)));
+            doc.add(NumericDocValuesField::indexed_field("dv", i));
             writer.add_document(&doc)?;
         }
         writer.force_merge(1)?;
@@ -1913,7 +1898,7 @@ fn test_skipper_all_equal_value(suite: &DocValuesSuite) -> Result<()> {
         let num_docs = LuceneTestCase::at_least(100);
         for _ in 0..num_docs {
             let mut doc = Document::new();
-            doc.add(Box::new(NumericDocValuesField::indexed_field("dv", 0)));
+            doc.add(NumericDocValuesField::indexed_field("dv", 0));
             writer.add_document(&doc)?;
         }
         writer.force_merge(1)?;
@@ -1955,10 +1940,7 @@ fn test_skipper_few_values_sorted(suite: &DocValuesSuite) -> Result<()> {
             num_docs[i as usize] = random().next_int_bound(10) + 16;
             for _ in 0..num_docs[i as usize] {
                 let mut doc = Document::new();
-                doc.add(Box::new(NumericDocValuesField::indexed_field(
-                    "dv",
-                    i64::from(i),
-                )));
+                doc.add(NumericDocValuesField::indexed_field("dv", i64::from(i)));
                 writer.add_document(&doc)?;
             }
         }
@@ -2010,16 +1992,14 @@ fn test_skipper_all_equal_value_with_gaps(suite: &DocValuesSuite) -> Result<()> 
             num_docs[i] = random().next_int_bound(10) + 16;
             for _ in 0..num_docs[i] {
                 let mut doc = Document::new();
-                doc.add(Box::new(NumericDocValuesField::new("sort", totaldocs)));
+                doc.add(NumericDocValuesField::new("sort", totaldocs));
                 totaldocs += 1;
-                doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
-                    "dv", 0,
-                )));
+                doc.add(SortedNumericDocValuesField::indexed_field("dv", 0));
                 writer.add_document(&doc)?;
             }
             // add doc with empty "dv"
             let mut doc = Document::new();
-            doc.add(Box::new(NumericDocValuesField::new("sort", totaldocs)));
+            doc.add(NumericDocValuesField::new("sort", totaldocs));
             totaldocs += 1;
             writer.add_document(&doc)?;
         }
@@ -2066,24 +2046,18 @@ fn test_skipper_all_equal_value_with_multi_values(suite: &DocValuesSuite) -> Res
             num_docs[i] += docs;
             for _ in 0..docs {
                 let mut doc = Document::new();
-                doc.add(Box::new(NumericDocValuesField::new("sort", totaldocs)));
+                doc.add(NumericDocValuesField::new("sort", totaldocs));
                 totaldocs += 1;
-                doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
-                    "dv", 0,
-                )));
+                doc.add(SortedNumericDocValuesField::indexed_field("dv", 0));
                 writer.add_document(&doc)?;
             }
             if i != gaps as usize - 1 {
                 // add doc with mutivalues
                 let mut doc = Document::new();
-                doc.add(Box::new(NumericDocValuesField::new("sort", totaldocs)));
+                doc.add(NumericDocValuesField::new("sort", totaldocs));
                 totaldocs += 1;
-                doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
-                    "dv", 0,
-                )));
-                doc.add(Box::new(SortedNumericDocValuesField::indexed_field(
-                    "dv", 0,
-                )));
+                doc.add(SortedNumericDocValuesField::indexed_field("dv", 0));
+                doc.add(SortedNumericDocValuesField::indexed_field("dv", 0));
                 writer.add_document(&doc)?;
                 num_docs[i + 1] = 1;
             }

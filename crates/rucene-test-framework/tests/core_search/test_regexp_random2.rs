@@ -127,9 +127,9 @@ fn regexp_random2_set_up<V>(f: &mut RegexpRandom2Fixture<V>) -> Result<()> {
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     let mut doc = Document::new();
     let field: Field = LuceneTestCase::new_string_field(&f.field_name, "", Store::NO);
-    doc.add(Box::new(field));
+    doc.add(field);
     let dv_field = SortedDocValuesField::new(&f.field_name, LuceneTestCase::new_bytes_ref());
-    doc.add(Box::new(dv_field));
+    doc.add(dv_field);
     let mut terms: Vec<String> = Vec::new();
     let num = LuceneTestCase::at_least(200);
     for _ in 0..num {

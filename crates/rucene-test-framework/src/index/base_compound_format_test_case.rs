@@ -518,13 +518,13 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     /// `addRandomFields(Document)`: the override a subclass's
     /// `add_random_fields` calls.
     fn compound_add_random_fields(&self, doc: &mut Document) {
-        doc.add(Box::new(
+        doc.add(
             StoredField::new_string(
                 "foobar",
                 TestUtil::random_simple_string(&*LuceneTestCase::random()),
             )
             .unwrap_or_else(|e| super::base_index_file_format_test_case::rethrow(e)),
-        ));
+        );
     }
 
     /// `testMergeStability()`, overridden.
@@ -704,16 +704,16 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
             let body_field = LuceneTestCase::new_text_field("body", "", Store::NO);
             for i in 0..100 {
                 let mut doc = Document::new();
-                doc.add(Box::new(rucene::document::Field::new(
+                doc.add(rucene::document::Field::new(
                     id_field.name(),
                     i.to_string(),
                     id_field.field_type().clone(),
-                )?));
-                doc.add(Box::new(rucene::document::Field::new(
+                )?);
+                doc.add(rucene::document::Field::new(
                     body_field.name(),
                     TestUtil::random_unicode_string(&*LuceneTestCase::random()),
                     body_field.field_type().clone(),
-                )?));
+                )?);
                 riw.add_document(&doc)?;
                 if LuceneTestCase::random().next_int_bound(7) == 0 {
                     riw.commit()?;

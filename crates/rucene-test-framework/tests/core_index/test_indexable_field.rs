@@ -268,13 +268,13 @@ fn test_arbitrary_fields() -> Result<()> {
         let mut d = Document::new();
         for field_upto in 0..field_count {
             if field_upto == 0 {
-                d.add(Box::new(LuceneTestCase::new_string_field(
+                d.add(LuceneTestCase::new_string_field(
                     "id",
                     &doc_count.to_string(),
                     Store::YES,
-                )));
+                ));
             } else {
-                d.add(Box::new(MyField::new(final_base_count + (field_upto - 1))));
+                d.add(MyField::new(final_base_count + (field_upto - 1)));
             }
         }
         w.add_document(&d)?;
@@ -484,7 +484,7 @@ fn test_not_indexed_term_vectors() -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     expect_throws(IAE, || {
         let mut doc = Document::new();
-        doc.add(Box::new(CustomField::new()?));
+        doc.add(CustomField::new()?);
         w.add_document(&doc)
     });
     w.close()?;

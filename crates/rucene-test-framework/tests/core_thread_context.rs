@@ -109,9 +109,7 @@ fn test_merge_thread_inherits_context() {
     let w = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     for id in ["0", "1"] {
         let mut doc = Document::new();
-        doc.add(Box::new(
-            StringField::new("id", id.to_string(), Store::NO).unwrap(),
-        ));
+        doc.add(StringField::new("id", id.to_string(), Store::NO).unwrap());
         w.add_document(&doc).unwrap();
         w.commit().unwrap();
     }

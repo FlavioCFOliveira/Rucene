@@ -310,11 +310,7 @@ fn get_index_store(field: &str, contents: &[&str]) -> Result<TestDirectory> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), index_store.as_directory())?;
     for content in contents {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            field,
-            content,
-            Store::YES,
-        )));
+        doc.add(LuceneTestCase::new_text_field(field, content, Store::YES));
         writer.add_document(&doc)?;
     }
     writer.close()?;
@@ -421,11 +417,7 @@ fn test_parsing_and_searching() -> Result<()> {
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     for d in &docs {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            field,
-            d,
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_text_field(field, d, Store::NO));
         iw.add_document(&doc)?;
     }
     iw.close()?;
@@ -505,11 +497,7 @@ fn test_large() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "body",
-        big,
-        Store::YES,
-    )));
+    doc.add(LuceneTestCase::new_string_field("body", big, Store::YES));
     writer.add_document(&doc)?;
     writer.close()?;
 
@@ -529,25 +517,25 @@ fn test_cost_estimate() -> Result<()> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for i in 0..1000 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "body",
             "foo bar",
             Store::NO,
-        )));
+        ));
         writer.add_document(&doc)?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "body",
             "foo wuzzle",
             Store::NO,
-        )));
+        ));
         writer.add_document(&doc)?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "body",
             &format!("bar {i}"),
             Store::NO,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     writer.flush()?;
@@ -593,11 +581,11 @@ fn test_scorer_supplier_does_not_scan_terms_eagerly() -> Result<()> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for i in 0..1000 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "body",
             &format!("foo {i}"),
             Store::NO,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     writer.flush()?;

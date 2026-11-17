@@ -101,9 +101,7 @@ fn minimum_should_match_matches_iterator_has_no_query() {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     let mut doc = Document::new();
-    doc.add(Box::new(
-        TextField::new("field1", "pease porridge hot".to_string(), Store::NO).unwrap(),
-    ));
+    doc.add(TextField::new("field1", "pease porridge hot".to_string(), Store::NO).unwrap());
     writer.add_document(&doc).unwrap();
     writer.commit().unwrap();
     writer.close().unwrap();

@@ -34,11 +34,11 @@ fn test_rollback_integrity_with_buffer_flush() -> Result<()> {
     let rw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for i in 0..5 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             "pk",
             &i.to_string(),
             Store::YES,
-        )));
+        ));
         rw.add_document(&doc)?;
     }
     rw.close()?;
@@ -54,16 +54,8 @@ fn test_rollback_integrity_with_buffer_flush() -> Result<()> {
     for i in 0..3 {
         let mut doc = Document::new();
         let value = i.to_string();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "pk",
-            &value,
-            Store::YES,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "text",
-            "foo",
-            Store::YES,
-        )));
+        doc.add(LuceneTestCase::new_string_field("pk", &value, Store::YES));
+        doc.add(LuceneTestCase::new_string_field("text", "foo", Store::YES));
         w.update_document(Term::from_text("pk", &value), &doc)?;
     }
     w.rollback()?;

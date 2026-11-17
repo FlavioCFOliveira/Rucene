@@ -79,12 +79,12 @@ fn test_sort_on_add_indices_ord() -> Result<()> {
     let w = IndexWriter::new(tmp_dir.as_directory(), iwc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(SortedSetDocValuesField::new("foo", bytes("b"))));
+    doc.add(SortedSetDocValuesField::new("foo", bytes("b")));
     w.add_document(&doc)?;
 
-    doc.add(Box::new(SortedSetDocValuesField::new("foo", bytes("a"))));
-    doc.add(Box::new(SortedSetDocValuesField::new("foo", bytes("b"))));
-    doc.add(Box::new(SortedSetDocValuesField::new("foo", bytes("b"))));
+    doc.add(SortedSetDocValuesField::new("foo", bytes("a")));
+    doc.add(SortedSetDocValuesField::new("foo", bytes("b")));
+    doc.add(SortedSetDocValuesField::new("foo", bytes("b")));
     w.add_document(&doc)?;
 
     w.commit()?;
@@ -145,16 +145,16 @@ fn test_sort_on_add_indices_int() -> Result<()> {
     let iwc = mock_iwc();
     let w = IndexWriter::new(tmp_dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("foo", 18)));
+    doc.add(NumericDocValuesField::new("foo", 18));
     w.add_document(&doc)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("foo", -1)));
+    doc.add(NumericDocValuesField::new("foo", -1));
     w.add_document(&doc)?;
     w.commit()?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("foo", 7)));
+    doc.add(NumericDocValuesField::new("foo", 7));
     w.add_document(&doc)?;
     w.commit()?;
     w.close()?;
@@ -261,83 +261,65 @@ fn sort_on_add_indices_random_in(
             for i in 0..num_docs as usize {
                 let doc_id = doc_ids[i];
                 let mut doc = Document::new();
-                doc.add(Box::new(StringField::new(
+                doc.add(StringField::new(
                     "string_id",
                     doc_id.to_string(),
                     Store::YES,
-                )?));
+                )?);
                 if dense || doc_id % 3 == 0 {
-                    doc.add(Box::new(LongPoint::new("point_id", &[doc_id as i64])?));
+                    doc.add(LongPoint::new("point_id", &[doc_id as i64])?);
                 }
                 let s = RandomStrings::random_realistic_unicode_of_length(&*random(), 25);
-                doc.add(Box::new(TextField::new(
-                    "text_field",
-                    s.clone(),
-                    Store::YES,
-                )?));
-                doc.add(Box::new(BinaryDocValuesField::new("text_field", bytes(&s))));
-                doc.add(Box::new(TextField::new(
-                    "another_text_field",
-                    s.clone(),
-                    Store::YES,
-                )?));
-                doc.add(Box::new(BinaryDocValuesField::new(
-                    "another_text_field",
-                    bytes(&s),
-                )));
-                doc.add(Box::new(SortedNumericDocValuesField::new(
+                doc.add(TextField::new("text_field", s.clone(), Store::YES)?);
+                doc.add(BinaryDocValuesField::new("text_field", bytes(&s)));
+                doc.add(TextField::new("another_text_field", s.clone(), Store::YES)?);
+                doc.add(BinaryDocValuesField::new("another_text_field", bytes(&s)));
+                doc.add(SortedNumericDocValuesField::new(
                     "sorted_numeric_dv",
                     doc_id as i64,
-                )));
-                doc.add(Box::new(SortedDocValuesField::new(
+                ));
+                doc.add(SortedDocValuesField::new(
                     "binary_sorted_dv",
                     bytes(&doc_id.to_string()),
-                )));
-                doc.add(Box::new(BinaryDocValuesField::new(
+                ));
+                doc.add(BinaryDocValuesField::new(
                     "binary_dv",
                     bytes(&doc_id.to_string()),
-                )));
-                doc.add(Box::new(SortedSetDocValuesField::new(
+                ));
+                doc.add(SortedSetDocValuesField::new(
                     "sorted_set_dv",
                     bytes(&doc_id.to_string()),
-                )));
+                ));
                 if dense || doc_id % 2 == 0 {
-                    doc.add(Box::new(KnnFloatVectorField::with_euclidean(
+                    doc.add(KnnFloatVectorField::with_euclidean(
                         "vector",
                         &[doc_id as f32],
-                    )?));
+                    )?);
                 }
-                doc.add(Box::new(NumericDocValuesField::new(
+                doc.add(NumericDocValuesField::new(
                     "foo",
                     random().next_int_bound(20) as i64,
-                )));
+                ));
 
                 let ft = FieldType::new_from(StringField::type_not_stored());
                 ft.set_store_term_vectors(true)?;
-                doc.add(Box::new(Field::new(
-                    "term_vectors",
-                    format!("test{doc_id}"),
-                    ft,
-                )?));
+                doc.add(Field::new("term_vectors", format!("test{doc_id}"), ft)?);
                 if !LuceneTestCase::rarely() {
-                    doc.add(Box::new(NumericDocValuesField::new("id", doc_id as i64)));
-                    doc.add(Box::new(SortedSetDocValuesField::new(
+                    doc.add(NumericDocValuesField::new("id", doc_id as i64));
+                    doc.add(SortedSetDocValuesField::new(
                         "sorted_set_sort_field",
                         bytes(&format!("{doc_id:06}")),
-                    )));
-                    doc.add(Box::new(SortedDocValuesField::new(
+                    ));
+                    doc.add(SortedDocValuesField::new(
                         "sorted_binary_sort_field",
                         bytes(&format!("{doc_id:06}")),
-                    )));
-                    doc.add(Box::new(SortedNumericDocValuesField::new(
+                    ));
+                    doc.add(SortedNumericDocValuesField::new(
                         "sorted_numeric_sort_field",
                         doc_id as i64,
-                    )));
+                    ));
                 } else {
-                    doc.add(Box::new(NumericDocValuesField::new(
-                        "alt_id",
-                        doc_id as i64,
-                    )));
+                    doc.add(NumericDocValuesField::new("alt_id", doc_id as i64));
                 }
                 iw.add_document(&doc)?;
                 if i > 0 && random().next_int_bound(5) == 0 {

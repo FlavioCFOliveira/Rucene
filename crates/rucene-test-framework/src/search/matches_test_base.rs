@@ -182,34 +182,30 @@ pub fn set_up(inst: &mut MatchesTestInstance) -> Result<()> {
     let doc_fields = inst.case.get_documents();
     for (i, text) in doc_fields.iter().enumerate() {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_field(
+        doc.add(LuceneTestCase::new_field(
             FIELD_WITH_OFFSETS,
             text,
             &OFFSETS,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_field(
+        ));
+        doc.add(LuceneTestCase::new_field(
             FIELD_NO_OFFSETS,
             text,
             TextField::type_stored(),
-        )));
-        doc.add(Box::new(LuceneTestCase::new_field(
-            FIELD_DOCS_ONLY,
-            text,
-            &DOCS,
-        )));
-        doc.add(Box::new(LuceneTestCase::new_field(
+        ));
+        doc.add(LuceneTestCase::new_field(FIELD_DOCS_ONLY, text, &DOCS));
+        doc.add(LuceneTestCase::new_field(
             FIELD_FREQS,
             text,
             &DOCS_AND_FREQS,
-        )));
-        doc.add(Box::new(IntPoint::new(FIELD_POINT, &[10])?));
-        doc.add(Box::new(NumericDocValuesField::new(FIELD_POINT, 10)));
-        doc.add(Box::new(NumericDocValuesField::new("id", i as i64)));
-        doc.add(Box::new(LuceneTestCase::new_field(
+        ));
+        doc.add(IntPoint::new(FIELD_POINT, &[10])?);
+        doc.add(NumericDocValuesField::new(FIELD_POINT, 10));
+        doc.add(NumericDocValuesField::new("id", i as i64));
+        doc.add(LuceneTestCase::new_field(
             "id",
             &i.to_string(),
             TextField::type_stored(),
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     writer.force_merge(1)?;

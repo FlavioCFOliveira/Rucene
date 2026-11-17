@@ -607,7 +607,7 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         let mut document = Document::new();
-        document.add(Box::new(InetAddressPoint::new("field", address)));
+        document.add(InetAddressPoint::new("field", address));
         writer.add_document(&document).unwrap();
         writer.commit().unwrap();
         writer.close().unwrap();

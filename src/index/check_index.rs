@@ -6496,7 +6496,7 @@ mod tests {
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         for value in [30, 20, 10] {
             let mut doc = Document::new();
-            doc.add(Box::new(NumericDocValuesField::new("n", value)));
+            doc.add(NumericDocValuesField::new("n", value));
             writer.add_document(&doc).unwrap();
         }
         writer.commit().unwrap();
@@ -6568,9 +6568,7 @@ mod segment_check_pool_tests {
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..segments {
             let mut doc = Document::new();
-            doc.add(Box::new(
-                TextField::new("body", format!("document {i}"), Store::YES).unwrap(),
-            ));
+            doc.add(TextField::new("body", format!("document {i}"), Store::YES).unwrap());
             writer.add_document(&doc).unwrap();
             writer.commit().unwrap();
         }
@@ -6683,9 +6681,7 @@ mod segment_check_pool_tests {
             let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
             for value in [2i64, 1] {
                 let mut doc = Document::new();
-                doc.add(Box::new(crate::document::NumericDocValuesField::new(
-                    "n", value,
-                )));
+                doc.add(crate::document::NumericDocValuesField::new("n", value));
                 writer.add_document(&doc).unwrap();
             }
             writer.commit().unwrap();

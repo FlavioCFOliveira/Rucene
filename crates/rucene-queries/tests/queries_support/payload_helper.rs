@@ -217,12 +217,12 @@ impl PayloadHelper {
         // writer.infoStream = System.out;
         for i in 0..num_docs {
             let mut doc = Document::new();
-            doc.add(Box::new(TextField::new(
+            doc.add(TextField::new(
                 FIELD,
                 English::int_to_english(i),
                 Store::YES,
-            )?));
-            doc.add(Box::new(TextField::new(
+            )?);
+            doc.add(TextField::new(
                 MULTI_FIELD,
                 format!(
                     "{}  {}",
@@ -230,12 +230,12 @@ impl PayloadHelper {
                     English::int_to_english(i)
                 ),
                 Store::YES,
-            )?));
-            doc.add(Box::new(TextField::new(
+            )?);
+            doc.add(TextField::new(
                 NO_PAYLOAD_FIELD,
                 English::int_to_english(i),
                 Store::YES,
-            )?));
+            )?);
             writer.add_document(&doc)?;
         }
         writer.force_merge(1)?;

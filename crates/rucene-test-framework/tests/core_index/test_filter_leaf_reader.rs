@@ -362,11 +362,7 @@ fn test_filter_index_reader() -> Result<()> {
 
     for text in ["one two", "one three", "two four"] {
         let mut d = Document::new();
-        d.add(Box::new(LuceneTestCase::new_text_field(
-            "default",
-            text,
-            Store::YES,
-        )));
+        d.add(LuceneTestCase::new_text_field("default", text, Store::YES));
         writer.add_document(&d)?;
     }
     writer.force_merge(1)?;

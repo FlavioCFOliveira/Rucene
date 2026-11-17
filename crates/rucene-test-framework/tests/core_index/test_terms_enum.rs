@@ -246,16 +246,12 @@ fn add_doc(
     id: i32,
 ) -> Result<()> {
     let mut doc = Document::new();
-    doc.add(Box::new(NumericDocValuesField::new("id", i64::from(id))));
+    doc.add(NumericDocValuesField::new("id", i64::from(id)));
     if verbose() {
         println!("TEST: addDoc id:{id} terms=[{}]", terms.join(", "));
     }
     for s2 in terms.iter() {
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "f",
-            s2,
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_string_field("f", s2, Store::NO));
         term_to_id.insert(LuceneTestCase::new_bytes_ref_str(s2), id);
     }
     w.add_document(&doc)?;
@@ -533,11 +529,7 @@ impl Fixture {
         let w = RandomIndexWriter::new_with_config(&*random(), d.as_directory(), iwc)?;
         for term in terms {
             let mut doc = Document::new();
-            doc.add(Box::new(LuceneTestCase::new_string_field(
-                FIELD,
-                term,
-                Store::NO,
-            )));
+            doc.add(LuceneTestCase::new_string_field(FIELD, term, Store::NO));
             w.add_document(&doc)?;
         }
         // `d = newDirectory()` replaced the field before `close()` runs, so
@@ -703,20 +695,20 @@ fn test_zero_terms() -> Result<()> {
         f.d.as_ref().expect("set").as_directory(),
     )?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "one two three",
         Store::NO,
-    )));
+    ));
     let mut doc = {
         drop(doc);
         Document::new()
     };
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field2",
         "one two three",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     w.commit()?;
     w.delete_documents(Term::from_text("field", "one"))?;
@@ -967,11 +959,7 @@ fn test_intersect_basic() -> Result<()> {
     let w = log_doc_writer(&dir)?;
     for value in ["aaa", "bbb", "ccc"] {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "field",
-            value,
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_text_field("field", value, Store::NO));
         w.add_document(&doc)?;
     }
 
@@ -1015,11 +1003,7 @@ fn test_intersect_start_term() -> Result<()> {
     let w = log_doc_writer(&dir)?;
     for value in ["abc", "abd", "acd", "bcd"] {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "field",
-            value,
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_string_field("field", value, Store::NO));
         w.add_document(&doc)?;
     }
 
@@ -1067,32 +1051,16 @@ fn test_intersect_empty_string() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let w = log_doc_writer(&dir)?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "field",
-        "",
-        Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "field",
-        "abc",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("field", "", Store::NO));
+    doc.add(LuceneTestCase::new_string_field("field", "abc", Store::NO));
     w.add_document(&doc)?;
 
     let mut doc = Document::new();
     // add empty string to both documents, so that singletonDocID == -1.
     // For a FST-based term dict, we'll expect to see the first arc is
     // flaged with HAS_FINAL_OUTPUT
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "field",
-        "abc",
-        Store::NO,
-    )));
-    doc.add(Box::new(LuceneTestCase::new_string_field(
-        "field",
-        "",
-        Store::NO,
-    )));
+    doc.add(LuceneTestCase::new_string_field("field", "abc", Store::NO));
+    doc.add(LuceneTestCase::new_string_field("field", "", Store::NO));
     w.add_document(&doc)?;
 
     w.force_merge(1)?;
@@ -1160,11 +1128,7 @@ fn test_common_prefix_terms() -> Result<()> {
     }
     for term in terms.iter() {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
-            "id",
-            term,
-            Store::YES,
-        )));
+        doc.add(LuceneTestCase::new_string_field("id", term, Store::YES));
         w.add_document(&doc)?;
     }
     let r: Arc<dyn IndexReader> = w.get_reader()?;
@@ -1264,11 +1228,7 @@ fn test_varying_terms_per_segment() -> Result<()> {
         iwc.set_open_mode(rucene::index::index_writer_config::OpenMode::CREATE)?;
         let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "field",
-            &sb,
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_text_field("field", &sb, Store::NO));
         w.add_document(&doc)?;
         let r: Arc<dyn IndexReader> = w.get_reader()?;
         let leaves = Arc::clone(&r).leaves()?;
@@ -1306,11 +1266,11 @@ fn test_intersect_regexp() -> Result<()> {
     let d = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_string_field(
+    doc.add(LuceneTestCase::new_string_field(
         "field",
         "foobar",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     let r: Arc<dyn IndexReader> = w.get_reader()?;
     let terms = MultiTerms::get_terms(&r, "field")?.unwrap_or_else(|| npe("terms"));

@@ -136,11 +136,11 @@ fn test_method() -> Result<()> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
     for i in 0..values.len() {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_string_field(
+        doc.add(LuceneTestCase::new_string_field(
             FIELD,
             values[i],
             Store::YES,
-        )));
+        ));
         writer.add_document(&doc)?;
     }
     let ir = writer.get_reader()?;
@@ -279,11 +279,11 @@ fn test_embedded_boolean_scorer() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "doctors are people who prescribe medicines of which they know little, to cure diseases of which they know less, in human beings of whom they know nothing",
         Store::NO,
-    )));
+    ));
     w.add_document(&doc)?;
     let r = w.get_reader()?;
     w.close()?;
@@ -326,7 +326,7 @@ fn test_optimize_top_level_clause_or_null() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("foo", "bar".into(), Store::NO)?));
+    doc.add(StringField::new("foo", "bar".into(), Store::NO)?);
     w.add_document(&doc)?;
     let reader = w.get_reader()?;
     let mut searcher = IndexSearcher::new(Arc::clone(&reader) as Arc<dyn IndexReader>)?;
@@ -671,11 +671,11 @@ fn test_optimize_prohibited_clauses() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("foo", "bar".into(), Store::NO)?));
-    doc.add(Box::new(StringField::new("foo", "baz".into(), Store::NO)?));
+    doc.add(StringField::new("foo", "bar".into(), Store::NO)?);
+    doc.add(StringField::new("foo", "baz".into(), Store::NO)?);
     w.add_document(&doc)?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("foo", "baz".into(), Store::NO)?));
+    doc.add(StringField::new("foo", "baz".into(), Store::NO)?);
     w.add_document(&doc)?;
     w.force_merge(1)?;
     let reader = w.get_reader()?;
@@ -742,11 +742,7 @@ fn test_sparse_clause_optimization() -> Result<()> {
         let mut doc = Document::new();
         for value in ["foo", "bar", "baz"] {
             if random().next_boolean() {
-                doc.add(Box::new(StringField::new(
-                    "field",
-                    value.into(),
-                    Store::NO,
-                )?));
+                doc.add(StringField::new("field", value.into(), Store::NO)?);
             }
         }
     }
@@ -806,9 +802,9 @@ fn test_filter_constant_score() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    doc.add(Box::new(StringField::new("foo", "bar".into(), Store::NO)?));
-    doc.add(Box::new(StringField::new("foo", "bat".into(), Store::NO)?));
-    doc.add(Box::new(StringField::new("foo", "baz".into(), Store::NO)?));
+    doc.add(StringField::new("foo", "bar".into(), Store::NO)?);
+    doc.add(StringField::new("foo", "bat".into(), Store::NO)?);
+    doc.add(StringField::new("foo", "baz".into(), Store::NO)?);
     w.add_document(&doc)?;
     let reader = w.get_reader()?;
     let mut searcher = IndexSearcher::new(Arc::clone(&reader) as Arc<dyn IndexReader>)?;
@@ -921,12 +917,12 @@ fn test_collect_no_threshold_when_only_filter() -> Result<()> {
     field_type.set_index_options(IndexOptions::DOCS)?;
     for i in 0..50 {
         let mut doc = Document::new();
-        doc.add(Box::new(Field::new(
+        doc.add(Field::new(
             "foo",
             format!("bar{}", i % 2),
             FieldType::new_from(&field_type),
-        )?));
-        doc.add(Box::new(LongPoint::new("field", &[(i % 4) as i64])?));
+        )?);
+        doc.add(LongPoint::new("field", &[(i % 4) as i64])?);
         w.add_document(&doc)?;
     }
 
@@ -962,9 +958,9 @@ fn test_top_scores_with_min_should_match_falls_back_to_wand() -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for _i in 0..100 {
         let mut doc = Document::new();
-        doc.add(Box::new(StringField::new("foo", "bar".into(), Store::NO)?));
-        doc.add(Box::new(StringField::new("foo", "baz".into(), Store::NO)?));
-        doc.add(Box::new(StringField::new("foo", "qux".into(), Store::NO)?));
+        doc.add(StringField::new("foo", "bar".into(), Store::NO)?);
+        doc.add(StringField::new("foo", "baz".into(), Store::NO)?);
+        doc.add(StringField::new("foo", "qux".into(), Store::NO)?);
         w.add_document(&doc)?;
     }
     let reader = w.get_reader()?;

@@ -276,9 +276,9 @@ fn test_asserting_leaf_collector() {
 fn keyword_doc(fields: &[(&str, &str)]) -> Document {
     let mut doc = Document::new();
     for (name, value) in fields {
-        doc.add(Box::new(
+        doc.add(
             KeywordField::new(name, value.to_string(), Store::NO).unwrap_or_else(|e| rethrow(e)),
-        ));
+        );
     }
     doc
 }
@@ -739,11 +739,7 @@ fn five_docs(dir: &TestDirectory, force_merge: bool) -> Arc<dyn DirectoryReader>
             .unwrap_or_else(|e| rethrow(e));
     for _ in 0..5 {
         let mut doc = Document::new();
-        doc.add(Box::new(LuceneTestCase::new_text_field(
-            "f",
-            "v",
-            Store::NO,
-        )));
+        doc.add(LuceneTestCase::new_text_field("f", "v", Store::NO));
         iw.add_document(&doc).unwrap_or_else(|e| rethrow(e));
     }
     if force_merge {

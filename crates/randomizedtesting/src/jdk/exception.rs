@@ -14,8 +14,9 @@
 
 use std::collections::HashMap;
 use std::fmt::{self, Display};
+use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 
 /// `java.lang.IllegalArgumentException`.
 pub const ILLEGAL_ARGUMENT_EXCEPTION: &str = "java.lang.IllegalArgumentException";
@@ -381,8 +382,13 @@ impl Display for StackTraceElement {
 ///   `java.lang.Throwable`.
 /// * The JVM fills a throwable's stack trace when it is created; a Rust
 ///   panic has no Java frames, so the stack trace starts empty and holds
-///   only the elements code adds (`setStackTrace`), such as the runner's
-///   seed frame.
+///   only the elements code adds: `setStackTrace` ([`set_stack_trace`]),
+///   such as the runner's seed frame, or the frames of a stack captured
+///   elsewhere ([`set_lazy_stack_trace`]), which, as the JVM's
+///   `getOurStackTrace()` does, are materialised only when first read.
+///
+/// [`set_stack_trace`]: Throwable::set_stack_trace
+/// [`set_lazy_stack_trace`]: Throwable::set_lazy_stack_trace
 /// * A Rust panic whose text is not `"class: message"` (a failed `assert!`,
 ///   say) becomes a `java.lang.AssertionError`, the error Java's `assert`
 ///   and JUnit's `Assert` throw.
@@ -394,10 +400,62 @@ struct ThrowableData {
     class: String,
     message: Option<String>,
     cause: Option<Throwable>,
-    stack_trace: Vec<StackTraceElement>,
+    stack_trace: StackTrace,
     suppressed: Vec<Throwable>,
     /// `MultipleFailureException.getFailures()`.
     failures: Vec<Throwable>,
+}
+
+/// The frames of a throwable's `getStackTrace()`.
+///
+/// Java's `Throwable` keeps the stack that `fillInStackTrace()` captured as
+/// an opaque `backtrace` and builds the `StackTraceElement`s from it only
+/// when they are first needed (`getOurStackTrace()`, which `getStackTrace()`
+/// and `printStackTrace()` call); `setStackTrace` replaces them
+/// (`java.lang.Throwable`, JDK 21 and 25).
+#[derive(Clone)]
+enum StackTrace {
+    /// Elements set as they are: none for a new throwable, or the elements of
+    /// `setStackTrace`.
+    Elements(Vec<StackTraceElement>),
+    /// The elements of a captured stack, built on first read. The clones of
+    /// a throwable share them, as they share the stack.
+    Captured(Arc<CapturedStack>),
+}
+
+/// A captured stack whose elements are built on first read.
+struct CapturedStack {
+    /// The elements, once built.
+    elements: OnceLock<Vec<StackTraceElement>>,
+    /// Builds the elements from the captured stack.
+    resolve: Box<dyn Fn() -> Vec<StackTraceElement> + Send + Sync>,
+}
+
+// A panic in `resolve` leaves `elements` unset (`OnceLock::get_or_init`
+// stores only a value that `resolve` returned), and `resolve` is reached
+// only through a shared reference, so no state half-updated by an unwind can
+// be observed afterwards: the stack keeps the unwind safety a `Throwable` of
+// plain elements has.
+impl UnwindSafe for CapturedStack {}
+impl RefUnwindSafe for CapturedStack {}
+
+impl StackTrace {
+    /// The elements, built from the captured stack on first read.
+    fn elements(&self) -> &[StackTraceElement] {
+        match self {
+            StackTrace::Elements(elements) => elements,
+            StackTrace::Captured(captured) => {
+                captured.elements.get_or_init(|| (captured.resolve)())
+            }
+        }
+    }
+}
+
+impl fmt::Debug for StackTrace {
+    /// The elements' debug form, as a `Vec<StackTraceElement>` prints it.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.elements(), f)
+    }
 }
 
 impl Throwable {
@@ -412,7 +470,7 @@ impl Throwable {
             class: class.into(),
             message,
             cause: None,
-            stack_trace: Vec::new(),
+            stack_trace: StackTrace::Elements(Vec::new()),
             suppressed: Vec::new(),
             failures: Vec::new(),
         }))
@@ -480,14 +538,33 @@ impl Throwable {
         self.0.cause = Some(cause);
     }
 
-    /// `getStackTrace()`.
+    /// `getStackTrace()`: the elements set, or those of the captured stack
+    /// ([`set_lazy_stack_trace`](Self::set_lazy_stack_trace)), built on the
+    /// first read.
     pub fn stack_trace(&self) -> &[StackTraceElement] {
-        &self.0.stack_trace
+        self.0.stack_trace.elements()
     }
 
     /// `setStackTrace(stackTrace)`.
     pub fn set_stack_trace(&mut self, stack_trace: Vec<StackTraceElement>) {
-        self.0.stack_trace = stack_trace;
+        self.0.stack_trace = StackTrace::Elements(stack_trace);
+    }
+
+    /// The frames of a stack captured elsewhere, as the JVM's
+    /// `fillInStackTrace()` leaves them: `resolve` builds the elements and
+    /// runs only when they are first read ([`stack_trace`](Self::stack_trace),
+    /// the debug form), once, its result shared by the clones of this
+    /// throwable. Java's `Throwable.getOurStackTrace()` builds the
+    /// `StackTraceElement`s of its `backtrace` the same way, on first use, so
+    /// a throwable whose frames nobody reads never has them resolved.
+    pub fn set_lazy_stack_trace(
+        &mut self,
+        resolve: impl Fn() -> Vec<StackTraceElement> + Send + Sync + 'static,
+    ) {
+        self.0.stack_trace = StackTrace::Captured(Arc::new(CapturedStack {
+            elements: OnceLock::new(),
+            resolve: Box::new(resolve),
+        }));
     }
 
     /// `getSuppressed()`.
@@ -626,5 +703,104 @@ impl Default for QuietPanics {
 impl Drop for QuietPanics {
     fn drop(&mut self) {
         QUIET.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use super::{QuietPanics, StackTraceElement, Throwable};
+
+    fn elements() -> Vec<StackTraceElement> {
+        vec![
+            StackTraceElement::new("foo.Bar", "baz", Some("Bar.java".into()), 7),
+            StackTraceElement::new("foo.Qux", "quux", None, -1),
+        ]
+    }
+
+    /// A throwable with lazy frames whose resolutions are counted.
+    fn lazy(calls: &Arc<AtomicUsize>) -> Throwable {
+        let mut t = Throwable::new("java.lang.IllegalStateException", "m");
+        let calls = Arc::clone(calls);
+        t.set_lazy_stack_trace(move || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            elements()
+        });
+        t
+    }
+
+    /// The frames are built only when read, once, and the clones of the
+    /// throwable share them, as `getOurStackTrace()` builds them on first use.
+    #[test]
+    fn lazy_frames_resolve_once_on_first_read() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let t = lazy(&calls);
+        assert!(t.is_instance("java.lang.RuntimeException"));
+        assert_eq!(t.to_string(), "java.lang.IllegalStateException: m");
+        let copy = t.clone();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(t.stack_trace(), elements().as_slice());
+        assert_eq!(copy.stack_trace(), elements().as_slice());
+        assert_eq!(t.stack_trace(), elements().as_slice());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Lazy frames read, print and format as the same frames set eagerly.
+    #[test]
+    fn lazy_frames_read_as_eager_frames() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let lazy = lazy(&calls);
+        let mut eager = Throwable::new("java.lang.IllegalStateException", "m");
+        eager.set_stack_trace(elements());
+        assert_eq!(format!("{lazy:?}"), format!("{eager:?}"));
+        assert_eq!(format!("{lazy:#?}"), format!("{eager:#?}"));
+        assert_eq!(
+            crate::jdk::system::format_stack_trace(&lazy),
+            crate::jdk::system::format_stack_trace(&eager)
+        );
+    }
+
+    /// `setStackTrace` replaces lazy frames without resolving them.
+    #[test]
+    fn set_stack_trace_replaces_lazy_frames() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut t = lazy(&calls);
+        t.set_stack_trace(Vec::new());
+        assert!(t.stack_trace().is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// A resolver that panics leaves the frames unbuilt; the next read runs
+    /// it again.
+    #[test]
+    fn a_panicking_resolver_leaves_the_frames_unbuilt() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut t = Throwable::new("java.lang.RuntimeException", "m");
+        let counter = Arc::clone(&calls);
+        t.set_lazy_stack_trace(move || {
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("first resolution fails");
+            }
+            elements()
+        });
+        let quiet = QuietPanics::new();
+        assert!(std::panic::catch_unwind(|| t.stack_trace().len()).is_err());
+        drop(quiet);
+        assert_eq!(t.stack_trace(), elements().as_slice());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A throwable stays sendable, shareable and unwind safe, so it can be a
+    /// panic payload and be caught by reference.
+    #[test]
+    fn a_throwable_keeps_its_auto_traits() {
+        fn check<T>()
+        where
+            T: Send + Sync + std::panic::UnwindSafe + std::panic::RefUnwindSafe + 'static,
+        {
+        }
+        check::<Throwable>();
     }
 }

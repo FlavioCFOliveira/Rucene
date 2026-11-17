@@ -90,11 +90,11 @@ fn test_payload_filtered_interval() -> Result<()> {
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;
 
     let mut doc = Document::new();
-    doc.add(Box::new(LuceneTestCase::new_text_field(
+    doc.add(LuceneTestCase::new_text_field(
         "field",
         "a sentence with words repeated words words quite often words",
         Store::NO,
-    )));
+    ));
     writer.add_document(&doc)?;
     let reader = writer.get_reader()?;
     writer.close()?;

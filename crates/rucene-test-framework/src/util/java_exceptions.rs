@@ -258,23 +258,27 @@ pub fn java_throwable(e: &LuceneError) -> Throwable {
     let mut throwable = Throwable::with_message(java_class_name(e), message);
     // `getStackTrace()`: the frames captured when the error was created, each
     // function named as Java names the method (`check_max_clause_count` is
-    // `checkMaxClauseCount`).
-    let frames = e.get_stack_trace();
-    if !frames.is_empty() {
-        throwable.set_stack_trace(
-            frames
-                .iter()
-                .map(
-                    |frame| randomizedtesting::jdk::exception::StackTraceElement {
-                        declaring_class: frame.path.clone(),
-                        method_name: java_method_name(&frame.function),
-                        file_name: frame.file.clone(),
-                        line_number: frame.line,
-                    },
-                )
-                .collect(),
-        );
-    }
+    // `checkMaxClauseCount`). They are resolved only when read, as the JVM
+    // builds the `StackTraceElement`s of a throwable's captured backtrace on
+    // first use (`Throwable.getOurStackTrace()`): resolving a Rust backtrace
+    // (symbols, demangling, source paths) is far costlier than capturing
+    // it, and most converted errors are only checked for their class. The
+    // duplicate shares the error's captured stack.
+    let error = e.duplicate();
+    throwable.set_lazy_stack_trace(move || {
+        error
+            .get_stack_trace()
+            .iter()
+            .map(
+                |frame| randomizedtesting::jdk::exception::StackTraceElement {
+                    declaring_class: frame.path.clone(),
+                    method_name: java_method_name(&frame.function),
+                    file_name: frame.file.clone(),
+                    line_number: frame.line,
+                },
+            )
+            .collect()
+    });
     // `getCause()`: for an `IOException`, the cause the `io::Error` carries
     // (`new IOException(message, cause)`, read back with `java_cause_of`);
     // for any other kind, the kind's cause, held as an `Arc<LuceneError>`.

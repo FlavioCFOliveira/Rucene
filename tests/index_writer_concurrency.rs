@@ -81,10 +81,8 @@ fn id_term(id: usize) -> Term {
 
 fn doc(id: usize, rank: i64) -> Document {
     let mut d = Document::new();
-    d.add(Box::new(
-        StringField::new("id", format!("id{id:04}"), Store::NO).unwrap(),
-    ));
-    d.add(Box::new(NumericDocValuesField::new("rank", rank)));
+    d.add(StringField::new("id", format!("id{id:04}"), Store::NO).unwrap());
+    d.add(NumericDocValuesField::new("rank", rank));
     d
 }
 
