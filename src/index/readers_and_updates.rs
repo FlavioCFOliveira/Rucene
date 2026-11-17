@@ -3429,7 +3429,7 @@ impl ReaderPool {
         // Matches incRef in get:
         rld.dec_ref();
 
-        let name = rld.info().info.name;
+        let name = rld.info().info.name.clone();
         let pooled = map.get(&name).is_some_and(|held| Arc::ptr_eq(held, rld));
         if rld.ref_count() == 0 {
             // This happens if the segment was just merged away, while a buffered

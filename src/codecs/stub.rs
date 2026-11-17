@@ -41,12 +41,12 @@ mod tests {
     fn field_info_attributes_round_trip() {
         let fi = FieldInfo::new("body", 0);
         assert_eq!(fi.put_attribute("fmt", "Lucene90"), None);
-        assert_eq!(fi.get_attribute("fmt"), Some("Lucene90".to_string()));
+        assert_eq!(fi.get_attribute("fmt").as_deref(), Some("Lucene90"));
         assert_eq!(
             fi.put_attribute("fmt", "Other"),
             Some("Lucene90".to_string())
         );
-        assert_eq!(fi.get_attribute("fmt"), Some("Other".to_string()));
+        assert_eq!(fi.get_attribute("fmt").as_deref(), Some("Other"));
     }
 
     #[test]

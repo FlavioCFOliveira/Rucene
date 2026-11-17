@@ -1216,16 +1216,24 @@ impl DirectMonotonicMeta {
         }
         let num_blocks = num_blocks as usize;
 
-        // `num_values` comes off disk, so `num_blocks` does too. Java reaches
-        // `new long[(int) numBlocks]` here and answers an absurd value with a
-        // catchable `OutOfMemoryError`; Rust cannot catch a failed allocation,
-        // so nothing is reserved up front. Each block costs 21 bytes of
-        // metadata, so a corrupt count runs out of input long before the four
-        // vectors grow large.
-        let mut mins = Vec::new();
-        let mut avgs = Vec::new();
-        let mut offsets = Vec::new();
-        let mut bpvs = Vec::new();
+        // `new long[numBlocks]` and its siblings (`DirectMonotonicReader.java:55-58`):
+        // each array is sized once. `num_values` comes off disk, so
+        // `num_blocks` does too, and Java answers an absurd value with a
+        // catchable `OutOfMemoryError`. The reservations are therefore only
+        // attempted: one the allocator refuses leaves its vector empty, the
+        // reads below grow it, and a corrupt count still ends on the input's
+        // end, 21 bytes of metadata per block, as it did before anything was
+        // reserved.
+        // PERF: one allocation per array, as Java's; growing by `push` from
+        // empty reallocated every array past four blocks.
+        let mut mins: Vec<i64> = Vec::new();
+        let mut avgs: Vec<f32> = Vec::new();
+        let mut offsets: Vec<i64> = Vec::new();
+        let mut bpvs: Vec<i8> = Vec::new();
+        let _ = mins.try_reserve_exact(num_blocks);
+        let _ = avgs.try_reserve_exact(num_blocks);
+        let _ = offsets.try_reserve_exact(num_blocks);
+        let _ = bpvs.try_reserve_exact(num_blocks);
 
         let mut all_values_zero = true;
         for _ in 0..num_blocks {
@@ -1241,7 +1249,31 @@ impl DirectMonotonicMeta {
 
         // Save heap in case all values are zero.
         if all_values_zero {
-            return Ok(Self::single_zero_block());
+            // `Meta.SINGLE_ZERO_BLOCK` (`DirectMonotonicReader.java:39,82`).
+            // PERF: Java discards the arrays it just filled for a shared
+            // constant; this port returns the constant's value, built in the
+            // vectors it already holds rather than in four new ones.
+            if num_blocks == 0 {
+                return Ok(Self::single_zero_block());
+            }
+            mins.truncate(1);
+            avgs.truncate(1);
+            offsets.truncate(1);
+            bpvs.truncate(1);
+            mins.shrink_to_fit();
+            avgs.shrink_to_fit();
+            offsets.shrink_to_fit();
+            bpvs.shrink_to_fit();
+            // Every `min`, `avg` and `bpv` read was zero; `offset` need not be.
+            offsets[0] = 0;
+            return Ok(Self {
+                block_shift: 63,
+                num_blocks: 1,
+                mins,
+                avgs,
+                offsets,
+                bpvs,
+            });
         }
 
         Ok(Self {
@@ -2254,6 +2286,55 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `return allValuesZero ? Meta.SINGLE_ZERO_BLOCK : meta`
+    /// (`DirectMonotonicReader.java:82`): blocks whose `min`, `avg` and `bpv`
+    /// are all zero load as the single zero block whatever their offsets, and
+    /// the vectors that held them are cut down to its one entry.
+    #[test]
+    fn direct_monotonic_all_zero_blocks_load_as_the_single_zero_block() {
+        for num_blocks in [1usize, 3] {
+            let mut meta_out = ByteBuffersIndexOutput::new(
+                crate::store::ByteBuffersDataOutput::new(),
+                "meta",
+                "meta",
+            );
+            for block in 0..num_blocks {
+                meta_out.write_long(0).unwrap();
+                meta_out.write_int(0).unwrap();
+                meta_out.write_long(7 + block as i64).unwrap();
+                meta_out.write_byte(0).unwrap();
+            }
+            let meta_bytes = meta_out.to_array_copy().unwrap();
+            let mut meta_input = ByteArrayDataInput::new(&meta_bytes);
+            // Block shift 2: four values per block.
+            let meta =
+                DirectMonotonicMeta::load(&mut meta_input, 4 * num_blocks as i64, 2).unwrap();
+            assert_eq!(
+                format!("{meta:?}"),
+                format!("{:?}", DirectMonotonicMeta::single_zero_block())
+            );
+            assert_eq!(meta.offsets, vec![0]);
+            assert_eq!(
+                [
+                    meta.mins.capacity(),
+                    meta.avgs.capacity(),
+                    meta.offsets.capacity(),
+                    meta.bpvs.capacity()
+                ],
+                [1, 1, 1, 1]
+            );
+        }
+    }
+
+    /// A count the input cannot back still fails on the input's end, as it did
+    /// before each array was reserved at the block count.
+    #[test]
+    fn direct_monotonic_corrupt_count_fails_on_the_input_end() {
+        let bytes = [0u8; 21];
+        let mut meta_input = ByteArrayDataInput::new(&bytes);
+        assert!(DirectMonotonicMeta::load(&mut meta_input, i64::from(i32::MAX) << 2, 2).is_err());
     }
 
     #[test]

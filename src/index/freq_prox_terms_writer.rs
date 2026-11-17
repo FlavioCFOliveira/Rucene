@@ -95,7 +95,7 @@ use std::sync::Arc;
 use crate::codecs::norms::NormsProducer;
 use crate::codecs::state::SegmentWriteState;
 use crate::error::{LuceneError, LuceneErrorKind, Result};
-use crate::index::documents_writer::TermDelete;
+use crate::index::documents_writer::DeletedTerms;
 use crate::index::filter_reader::{FilterFields, FilterTerms, FilterTermsEnum};
 use crate::index::index_sorter::SorterDocMap;
 use crate::index::indexing_chain::FieldInvertState;
@@ -2708,9 +2708,10 @@ impl FreqProxTermsWriter {
 
     /// Writes the buffered postings into the segment described by `state`.
     ///
-    /// Equivalent to `FreqProxTermsWriter.flush`. Segment-private delete terms
-    /// are applied first, so `state.live_docs` and `state.del_count_on_flush`
-    /// may be updated before the codec runs.
+    /// Equivalent to `FreqProxTermsWriter.flush`. Segment-private delete terms,
+    /// read off `state.seg_updates` as Java reads `state.segUpdates`, are
+    /// applied first, so `state.live_docs` and `state.del_count_on_flush` may
+    /// be updated before the codec runs.
     ///
     /// # Errors
     ///
@@ -2724,7 +2725,6 @@ impl FreqProxTermsWriter {
     pub fn flush(
         &mut self,
         state: &mut SegmentWriteState<'_>,
-        delete_terms: &[TermDelete],
         sort_map: Option<&SorterDocMap>,
         norms: Option<&dyn NormsProducer>,
     ) -> Result<()> {
@@ -2736,7 +2736,7 @@ impl FreqProxTermsWriter {
             return Ok(());
         }
 
-        apply_deletes(state, &fields, delete_terms)?;
+        apply_deletes(state, &fields)?;
 
         let codec = state
             .segment_info
@@ -3522,22 +3522,21 @@ impl PostingsEnum for SortingPostingsEnum {
 
 /// Applies this segment's buffered delete-by-term to the flushing segment.
 ///
-/// Equivalent to `FreqProxTermsWriter.applyDeletes`. Each delete term removes
-/// every document strictly below its `docIDUpto`, which is the document count
-/// at the moment the delete was buffered.
+/// Equivalent to `FreqProxTermsWriter.applyDeletes`
+/// (`FreqProxTermsWriter.java:53-80`), which reads the terms off
+/// `state.segUpdates.deleteTerms`. Each delete term removes every document
+/// strictly below its `docIDUpto`, which is the document count at the moment
+/// the delete was buffered.
 ///
 /// # Errors
 ///
 /// Propagates errors raised while reading the buffered postings.
-fn apply_deletes(
-    state: &mut SegmentWriteState<'_>,
-    fields: &FreqProxFields,
-    delete_terms: &[TermDelete],
-) -> Result<()> {
+fn apply_deletes(state: &mut SegmentWriteState<'_>, fields: &FreqProxFields) -> Result<()> {
+    let seg_updates = state.seg_updates;
     let max_doc = state.segment_info.max_doc()?;
     apply_deletes_to(
         fields,
-        delete_terms,
+        &seg_updates.delete_terms,
         max_doc,
         &mut state.live_docs,
         &mut state.del_count_on_flush,
@@ -3552,7 +3551,7 @@ fn apply_deletes(
 /// Propagates errors raised while reading the buffered postings.
 fn apply_deletes_to(
     fields: &FreqProxFields,
-    delete_terms: &[TermDelete],
+    delete_terms: &DeletedTerms,
     max_doc: i32,
     live_docs: &mut Option<FixedBitSet>,
     del_count_on_flush: &mut i32,
@@ -3561,40 +3560,33 @@ fn apply_deletes_to(
         return Ok(());
     }
 
-    // Lucene iterates the delete terms grouped by field and sorted inside each
-    // field so that one terms enum can be reused; the resulting deletions are
+    // `segDeletes.forEachOrdered(...)` hands the terms over grouped by field
+    // (fields by `String.compareTo`, UTF-16 code units) and sorted inside each
+    // field, so one terms enum serves each field; the resulting deletions are
     // the same in any order.
-    let mut ordered: Vec<&TermDelete> = delete_terms.iter().collect();
-    // `BufferedUpdates.DeletedTerms.forEachOrdered` sorts the fields with
-    // `Map.Entry.comparingByKey()`, `String.compareTo`: UTF-16 code units.
-    ordered.sort_by(|left, right| {
-        crate::util::compare_utf16(left.term.field(), right.term.field())
-            .then_with(|| left.term.bytes().slice().cmp(right.term.bytes().slice()))
-    });
-
     let mut current_field: Option<String> = None;
     let mut terms_enum: Option<Box<dyn TermsEnum>> = None;
-    for delete in ordered {
-        if current_field.as_deref() != Some(delete.term.field()) {
-            current_field = Some(delete.term.field().to_string());
-            terms_enum = match fields.terms(delete.term.field())? {
+    delete_terms.for_each_ordered(|term, doc_id_upto| -> Result<()> {
+        if current_field.as_deref() != Some(term.field()) {
+            current_field = Some(term.field().to_string());
+            terms_enum = match fields.terms(term.field())? {
                 Some(terms) => Some(terms.iterator()?),
                 None => None,
             };
         }
         let Some(enumerator) = terms_enum.as_mut() else {
-            continue;
+            return Ok(());
         };
-        if !enumerator.seek_exact(delete.term.bytes())? {
-            continue;
+        if !enumerator.seek_exact(term.bytes())? {
+            return Ok(());
         }
         let mut postings = enumerator
             .postings(None, 0)?
             .ok_or_else(LuceneError::null_pointer)?;
-        debug_assert!(delete.doc_id_upto < NO_MORE_DOCS);
+        debug_assert!(doc_id_upto < NO_MORE_DOCS);
         loop {
             let doc = postings.next_doc()?;
-            if doc >= delete.doc_id_upto || doc == NO_MORE_DOCS {
+            if doc >= doc_id_upto || doc == NO_MORE_DOCS {
                 break;
             }
             let bits = live_docs.get_or_insert_with(|| {
@@ -3609,8 +3601,8 @@ fn apply_deletes_to(
                 *del_count_on_flush += 1;
             }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 impl PartialEq for TermsHashPerField {
@@ -4781,10 +4773,10 @@ mod tests {
 
         let mut live_docs = None;
         let mut del_count = 0;
-        let deletes = vec![TermDelete {
-            term: Term::new("body", BytesRef::new(b"alpha".to_vec())),
-            doc_id_upto: 3,
-        }];
+        let mut deletes = DeletedTerms::new();
+        deletes
+            .put(&Term::new("body", BytesRef::new(b"alpha".to_vec())), 3)
+            .expect("put");
         apply_deletes_to(&fields, &deletes, 6, &mut live_docs, &mut del_count).expect("deletes");
 
         assert_eq!(del_count, 3, "docs 0, 1 and 2 carry the deleted term");
@@ -4803,16 +4795,13 @@ mod tests {
 
         let mut live_docs = None;
         let mut del_count = 0;
-        let deletes = vec![
-            TermDelete {
-                term: Term::new("body", BytesRef::new(b"missing".to_vec())),
-                doc_id_upto: 10,
-            },
-            TermDelete {
-                term: Term::new("other", BytesRef::new(b"alpha".to_vec())),
-                doc_id_upto: 10,
-            },
-        ];
+        let mut deletes = DeletedTerms::new();
+        deletes
+            .put(&Term::new("body", BytesRef::new(b"missing".to_vec())), 10)
+            .expect("put");
+        deletes
+            .put(&Term::new("other", BytesRef::new(b"alpha".to_vec())), 10)
+            .expect("put");
         apply_deletes_to(&fields, &deletes, 1, &mut live_docs, &mut del_count).expect("deletes");
         assert_eq!(del_count, 0);
         assert!(

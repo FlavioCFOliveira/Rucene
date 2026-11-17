@@ -251,6 +251,28 @@ impl<V> JavaHashMap<V> {
             .map(|e| &e.value)
     }
 
+    /// Where `key`'s node sits, its bucket and its place in that bucket, for
+    /// [`value_at`](Self::value_at): `HashMap.get(Object)` split in two, so
+    /// that the holder of a shared map that is never mutated can keep the
+    /// answer without keeping a borrow of the map.
+    pub(crate) fn slot_of(&self, key: &str) -> Option<(usize, usize)> {
+        if self.table.is_empty() {
+            return None;
+        }
+        let hash = spread(key);
+        let bucket = index_for(hash, self.table.len());
+        self.table[bucket]
+            .iter()
+            .position(|e| e.hash == hash && e.key == key)
+            .map(|index| (bucket, index))
+    }
+
+    /// The value at a slot [`slot_of`](Self::slot_of) answered on this same,
+    /// unmodified map.
+    pub(crate) fn value_at(&self, (bucket, index): (usize, usize)) -> &V {
+        &self.table[bucket][index].value
+    }
+
     /// `HashMap.containsKey(Object)`.
     pub fn contains_key(&self, key: &str) -> bool {
         self.get(key).is_some()
@@ -2026,16 +2048,33 @@ impl JavaOrderedSet for JavaHashSet {
 /// order [`str`] compares in: Rust orders by UTF-8 bytes, i.e. by code point,
 /// so it puts U+E000 before U+1D400 while Java, comparing the surrogate 0xD835
 /// against 0xE000, puts U+1D400 first.
+///
+/// The two orders differ in that one case only, so the comparison runs on the
+/// UTF-8 bytes and corrects it. Both strings are valid UTF-8, so their first
+/// differing byte is either a continuation byte of two characters with the
+/// same lead byte — same length, same range, where code-point order and UTF-16
+/// order agree — or the lead byte of each differing character. Of the lead
+/// bytes, only `F0..=F4` (a supplementary character, a surrogate pair in
+/// UTF-16) against `EE`/`EF` (U+E000..U+FFFF, above the surrogates) orders the
+/// other way in UTF-16. A string that is a byte prefix of the other is also a
+/// UTF-16 prefix of it, so the shorter one sorts first in both.
 pub fn java_compare_to(a: &str, b: &str) -> Ordering {
-    let mut left = a.encode_utf16();
-    let mut right = b.encode_utf16();
-    loop {
-        match (left.next(), right.next()) {
-            (Some(x), Some(y)) if x == y => continue,
-            (Some(x), Some(y)) => return x.cmp(&y),
-            (None, None) => return Ordering::Equal,
-            (None, Some(_)) => return Ordering::Less,
-            (Some(_), None) => return Ordering::Greater,
+    // PERF: `String.compareTo` on Lucene's Latin-1 attribute keys is a byte
+    // compare (`TreeMap.get` under `DataInput.readMapOfStrings`,
+    // `DataInput.java:261-276`); transcoding both strings to UTF-16 per call
+    // was 3 % of the instructions of every index open.
+    let (left, right) = (a.as_bytes(), b.as_bytes());
+    match left.iter().zip(right).position(|(x, y)| x != y) {
+        None => left.len().cmp(&right.len()),
+        Some(i) => {
+            let (x, y) = (left[i], right[i]);
+            if x >= 0xF0 && (0xEE..=0xEF).contains(&y) {
+                Ordering::Less
+            } else if y >= 0xF0 && (0xEE..=0xEF).contains(&x) {
+                Ordering::Greater
+            } else {
+                x.cmp(&y)
+            }
         }
     }
 }
@@ -2106,6 +2145,28 @@ impl JavaStringMap {
                 .ok()
                 .map(|index| &entries[index].1),
             JavaStringMap::Hash(map) => map.get(key),
+        }
+    }
+
+    /// Where `key`'s entry sits, for [`value_at`](Self::value_at): `Map.get`
+    /// split in two, so that the holder of a shared map that is never mutated
+    /// can keep the answer without keeping a borrow of the map.
+    pub(crate) fn slot_of(&self, key: &str) -> Option<(usize, usize)> {
+        match self {
+            JavaStringMap::Sorted(entries) => entries
+                .binary_search_by(|(k, _)| java_compare_to(k, key))
+                .ok()
+                .map(|index| (index, 0)),
+            JavaStringMap::Hash(map) => map.slot_of(key),
+        }
+    }
+
+    /// The value at a slot [`slot_of`](Self::slot_of) answered on this same,
+    /// unmodified map.
+    pub(crate) fn value_at(&self, slot: (usize, usize)) -> &String {
+        match self {
+            JavaStringMap::Sorted(entries) => &entries[slot.0].1,
+            JavaStringMap::Hash(map) => map.value_at(slot),
         }
     }
 
@@ -2214,10 +2275,16 @@ impl FromIterator<(String, String)> for JavaStringMap {
 /// `AbstractMap.equals`, which compares contents and ignores iteration order.
 impl PartialEq for JavaStringMap {
     fn eq(&self, other: &Self) -> bool {
+        // PERF: walks each variant directly; the boxed `iter()` cost one
+        // allocation per comparison, and `Lucene94FieldInfosFormat.read`
+        // compares every field's attributes with the previous field's.
+        let contains =
+            |(k, v): (&String, &String)| other.get(k).is_some_and(|other_v| other_v == v);
         self.len() == other.len()
-            && self
-                .iter()
-                .all(|(k, v)| other.get(k).is_some_and(|other_v| other_v == v))
+            && match self {
+                JavaStringMap::Sorted(entries) => entries.iter().all(|(k, v)| contains((k, v))),
+                JavaStringMap::Hash(map) => map.iter().all(contains),
+            }
     }
 }
 
@@ -2556,6 +2623,79 @@ mod tests {
         assert_eq!(set.table_length(), DEFAULT_INITIAL_CAPACITY);
         assert!(set.contains("_9.fdx"));
         assert!(!set.contains("_9.tim"));
+    }
+
+    /// `String.compareTo` by definition: UTF-16 code units, then the length
+    /// difference. The oracle [`java_compare_to`] must agree with.
+    fn utf16_compare_to(a: &str, b: &str) -> Ordering {
+        a.encode_utf16().cmp(b.encode_utf16())
+    }
+
+    #[test]
+    fn java_compare_to_orders_by_utf16_code_units() {
+        let cases = [
+            (
+                "PerFieldPostingsFormat.format",
+                "PerFieldPostingsFormat.suffix",
+            ),
+            ("", ""),
+            ("", "a"),
+            ("abc", "abd"),
+            ("ab", "abc"),
+            ("é", "f"),
+            // A supplementary character (surrogate pair 0xD835 0xDC00) sorts
+            // before U+E000..U+FFFF in UTF-16 but after them by code point.
+            ("\u{1D400}", "\u{E000}"),
+            ("\u{10000}", "\u{FFFF}"),
+            ("x\u{10FFFF}", "x\u{EFFF}"),
+            ("\u{D7FF}", "\u{10000}"),
+            ("\u{1D400}a", "\u{1D400}b"),
+            ("\u{10000}", "\u{10001}"),
+        ];
+        for (a, b) in cases {
+            assert_eq!(
+                java_compare_to(a, b),
+                utf16_compare_to(a, b),
+                "{a:?} vs {b:?}"
+            );
+            assert_eq!(
+                java_compare_to(b, a),
+                utf16_compare_to(b, a),
+                "{b:?} vs {a:?}"
+            );
+        }
+    }
+
+    /// Characters from every UTF-8 length and both sides of the surrogate
+    /// range, so that random pairs keep hitting the case UTF-8 and UTF-16
+    /// order differently.
+    fn mixed_char() -> impl proptest::strategy::Strategy<Value = char> {
+        use proptest::prelude::*;
+        prop_oneof![
+            Just('a'),
+            Just('z'),
+            Just('é'),
+            Just('\u{D7FF}'),
+            Just('\u{E000}'),
+            Just('\u{FFFF}'),
+            Just('\u{10000}'),
+            Just('\u{1D400}'),
+            Just('\u{10FFFF}'),
+            any::<char>(),
+        ]
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn java_compare_to_matches_utf16_order(
+            prefix in proptest::collection::vec(mixed_char(), 0..4),
+            a in proptest::collection::vec(mixed_char(), 0..4),
+            b in proptest::collection::vec(mixed_char(), 0..4),
+        ) {
+            let a: String = prefix.iter().chain(&a).collect();
+            let b: String = prefix.iter().chain(&b).collect();
+            proptest::prop_assert_eq!(java_compare_to(&a, &b), utf16_compare_to(&a, &b));
+        }
     }
 }
 

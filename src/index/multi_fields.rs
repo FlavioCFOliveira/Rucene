@@ -991,7 +991,9 @@ impl MultiTermsEnum {
     /// Equivalent to `MultiTermsEnum(ReaderSlice[] slices)`
     /// (`MultiTermsEnum.java:65-76`). Java also allocates a
     /// `MultiPostingsEnum.EnumWithSlice[] subDocs` scratch array here, which
-    /// [`postings`](TermsEnum::postings) builds per call instead.
+    /// [`postings`](TermsEnum::postings) does without: it fills the live
+    /// slots of the [`MultiPostingsEnum`] directly, whose vectors keep their
+    /// capacity from term to term.
     ///
     /// # Errors
     ///
@@ -1373,8 +1375,19 @@ impl TermsEnum for MultiTermsEnum {
                 )
             })?;
         // Rust-only: the live sub-enums go back to `subPostingsEnums`, which
-        // in Java still holds them alongside the live slots.
-        multi.release_live_subs();
+        // in Java still holds them alongside the live slots
+        // (`MultiPostingsEnum::release_live_subs`). PERF: drained in place, so
+        // the live vectors keep their capacity from term to term, as Java's
+        // `subDocs` and `subs` arrays are allocated once
+        // (`MultiTermsEnum.java:69-72`, `MultiPostingsEnum.java:44-51`).
+        for (sub, sub_index) in multi.subs.drain(..).zip(multi.live_sub_indices.drain(..)) {
+            if let (Some(postings_enum), Some(sub_index)) = (sub.postings_enum, sub_index) {
+                if let Some(slot) = multi.sub_postings_enums.get_mut(sub_index) {
+                    *slot = Some(postings_enum);
+                }
+            }
+        }
+        multi.current = None;
 
         // `ArrayUtil.timSort(top, 0, numTop, (o1, o2) -> o1.subIndex - o2.subIndex)`
         // is stable, as `sort_by_key` is.
@@ -1382,7 +1395,6 @@ impl TermsEnum for MultiTermsEnum {
         self.top.sort_by_key(|&sub| subs[sub].base.sub_index());
 
         let num_subs = self.queue.subs().len();
-        let mut sub_docs: Vec<(EnumWithSlice, usize)> = Vec::with_capacity(self.top.len());
         for i in 0..self.top.len() {
             let sub = self.top[i];
             let entry = &mut self.queue.subs_mut()[sub];
@@ -1409,20 +1421,22 @@ impl TermsEnum for MultiTermsEnum {
             debug_assert!(sub_postings_enum.is_some());
             let sub_postings_enum = sub_postings_enum.ok_or_else(LuceneError::null_pointer)?;
             // Java stores the enum both in `subPostingsEnums[subIndex]` and in
-            // `subDocs[upto]`; here it lives in the slot, and goes back to
-            // `subPostingsEnums` on the next reuse.
-            sub_docs.push((
-                EnumWithSlice::new(sub_postings_enum, entry.sub_slice),
-                sub_index,
-            ));
+            // `subDocs[upto]`, which `reset` copies into `subs[upto]`; here it
+            // goes straight into the live slot, and back to
+            // `subPostingsEnums` on the next reuse. Rust-only: the slot's
+            // `live_sub_indices` entry records that `subPostingsEnums` index.
+            multi
+                .subs
+                .push(EnumWithSlice::new(sub_postings_enum, entry.sub_slice));
+            multi.live_sub_indices.push(Some(sub_index));
         }
 
-        // `docsEnum.reset(subDocs, upto)`
-        let (sub_docs, sub_indices): (Vec<EnumWithSlice>, Vec<usize>) =
-            sub_docs.into_iter().unzip();
-        multi.reset(sub_docs);
-        // Rust-only: the `subPostingsEnums` slot each live enum returns to.
-        multi.live_sub_indices = sub_indices.into_iter().map(Some).collect();
+        // The rest of `docsEnum.reset(subDocs, upto)`
+        // (`MultiPostingsEnum.java:59-69`): `numSubs` is the live slots'
+        // length.
+        multi.upto = -1;
+        multi.doc = -1;
+        multi.current = None;
         Ok(Some(docs_enum))
     }
 
@@ -1647,8 +1661,9 @@ impl MultiPostingsEnum {
     ///
     /// The enums the live slots held go back to `subPostingsEnums` first, where
     /// Java's array still holds them. The new slots carry no sub index:
-    /// [`MultiTermsEnum::postings`] records the one of each enum it obtained
-    /// right after calling this.
+    /// [`MultiTermsEnum::postings`] does not go through this method, it fills
+    /// the live slots in place and records the sub index of each enum it
+    /// obtained.
     pub fn reset(&mut self, subs: Vec<EnumWithSlice>) -> &mut Self {
         self.release_live_subs();
         self.live_sub_indices = vec![None; subs.len()];
@@ -1900,6 +1915,18 @@ impl SlowImpactsEnum {
     /// Equivalent to `SlowImpactsEnum(PostingsEnum)`.
     pub fn new(delegate: Box<dyn PostingsEnum>) -> Self {
         Self { delegate }
+    }
+
+    /// The wrapped postings enum, which Java's `TermScorer` keeps as its
+    /// `postingsEnum` and `iterator` beside the `SlowImpactsEnum` it builds
+    /// over the same object (`TermScorer.java:48-49`).
+    pub(crate) fn delegate_mut(&mut self) -> &mut dyn PostingsEnum {
+        &mut *self.delegate
+    }
+
+    /// The shared form of [`delegate_mut`](Self::delegate_mut).
+    pub(crate) fn delegate_ref(&self) -> &dyn PostingsEnum {
+        &*self.delegate
     }
 }
 

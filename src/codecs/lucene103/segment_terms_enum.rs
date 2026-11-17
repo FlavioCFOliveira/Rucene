@@ -989,7 +989,9 @@ enum PrepareSeek {
 /// first time a block is loaded or prefetched. `seek_ord` is unsupported here
 /// as it is in Java, and `intersect` lives in its own cursor.
 pub struct SegmentTermsEnum {
-    field: FieldReader,
+    /// The field this cursor walks, shared as Java's `fr` reference is
+    /// (`SegmentTermsEnum.java:48`, `FieldReader.java:139-141`).
+    field: std::sync::Arc<FieldReader>,
     /// This cursor's clone of the `.tim` input, or `None` until a block is
     /// first loaded or prefetched.
     ///
@@ -1039,7 +1041,10 @@ impl std::fmt::Debug for SegmentTermsEnum {
 
 impl SegmentTermsEnum {
     /// Opens a cursor over `field`.
-    pub fn new(field: FieldReader) -> Result<Self> {
+    ///
+    /// Equivalent to `SegmentTermsEnum(FieldReader, TrieReader)`, whose
+    /// `fr` is a reference to the field's one reader.
+    pub fn new(field: std::sync::Arc<FieldReader>) -> Result<Self> {
         let trie = field.new_reader()?;
 
         Ok(Self {

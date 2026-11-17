@@ -252,6 +252,12 @@ impl DocIdSetIterator for AllDocIdSetIterator {
         self.range.cost()
     }
 
+    /// `DocIdSetIterator.all(int)` is a `RangeDocIdSetIterator`, so its
+    /// `intoBitSet` override applies (`DocIdSetIterator.java:92-100`).
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        self.range.into_bit_set(up_to, bit_set, offset)
+    }
+
     fn doc_id_run_end(&mut self) -> Result<i32> {
         self.range.doc_id_run_end()
     }
@@ -332,6 +338,31 @@ impl DocIdSetIterator for RangeDocIdSetIterator {
 
     fn cost(&self) -> i64 {
         (self.max_doc - self.min_doc) as i64
+    }
+
+    /// Sets the whole run `[doc_id(), min(up_to, max_doc))` with one range
+    /// fill, then advances past it.
+    ///
+    /// Equivalent to `RangeDocIdSetIterator.intoBitSet(int, FixedBitSet, int)`
+    /// (`DocIdSetIterator.java:92-100`). An unpositioned iterator is first
+    /// moved to its first doc, as the trait default does.
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        if self.doc == -1 {
+            self.next_doc()?;
+        }
+        debug_assert!(
+            offset <= self.doc,
+            "offset={offset} docID()={} upTo={up_to}",
+            self.doc
+        );
+        // PERF: one word-level fill instead of one `set` and one `next_doc`
+        // per document.
+        let up_to = up_to.min(self.max_doc);
+        if up_to > self.doc {
+            bit_set.set_range((self.doc - offset) as usize, (up_to - offset) as usize);
+            self.advance(up_to)?;
+        }
+        Ok(())
     }
 
     fn doc_id_run_end(&mut self) -> Result<i32> {
@@ -956,6 +987,74 @@ mod tests {
         assert!(bit_set.get(7));
         assert!(!bit_set.get(8));
         assert!(!bit_set.get(9));
+    }
+
+    /// A range iterator seen through the trait's default `into_bit_set`: it
+    /// forwards the moves only, so the bulk fill runs the per-document loop.
+    struct DefaultIntoBitSet(RangeDocIdSetIterator);
+
+    impl DocIdSetIterator for DefaultIntoBitSet {
+        fn doc_id(&self) -> i32 {
+            self.0.doc_id()
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            self.0.next_doc()
+        }
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            self.0.advance(target)
+        }
+        fn cost(&self) -> i64 {
+            self.0.cost()
+        }
+    }
+
+    /// `RangeDocIdSetIterator.intoBitSet` (`DocIdSetIterator.java:92-100`)
+    /// fills the run with one range set; it must leave exactly the bits and
+    /// the position the per-document default leaves, from every start
+    /// (unpositioned, inside, at the end), for every `up_to` and offset.
+    #[test]
+    fn range_into_bit_set_matches_the_per_document_default() {
+        for (min, max) in [(0, 1), (0, 70), (3, 9), (60, 200), (64, 128)] {
+            for start in [None, Some(min), Some((min + max) / 2), Some(max - 1)] {
+                for up_to in [
+                    0,
+                    min,
+                    min + 1,
+                    (min + max) / 2,
+                    max - 1,
+                    max,
+                    max + 5,
+                    NO_MORE_DOCS,
+                ] {
+                    for offset in [0, min.min(start.unwrap_or(min))] {
+                        let mut fast = range(min, max).unwrap();
+                        let mut slow = DefaultIntoBitSet(range(min, max).unwrap());
+                        if let Some(target) = start {
+                            fast.advance(target).unwrap();
+                            slow.advance(target).unwrap();
+                        }
+                        let mut fast_bits = FixedBitSet::new(256);
+                        let mut slow_bits = FixedBitSet::new(256);
+                        fast.into_bit_set(up_to, &mut fast_bits, offset).unwrap();
+                        slow.into_bit_set(up_to, &mut slow_bits, offset).unwrap();
+                        let case = format!(
+                            "range [{min}, {max}) start {start:?} upTo {up_to} offset {offset}"
+                        );
+                        assert_eq!(fast.doc_id(), slow.doc_id(), "position: {case}");
+                        for bit in 0..256 {
+                            assert_eq!(fast_bits.get(bit), slow_bits.get(bit), "bit {bit}: {case}");
+                        }
+                    }
+                }
+            }
+        }
+        // `DocIdSetIterator.all(int)` is the same class.
+        let mut all = AllDocIdSetIterator::new(100).unwrap();
+        let mut bits = FixedBitSet::new(100);
+        all.into_bit_set(40, &mut bits, 0).unwrap();
+        assert_eq!(all.doc_id(), 40);
+        assert_eq!(bits.cardinality(), 40);
+        assert!(bits.get(0) && bits.get(39) && !bits.get(40));
     }
 
     #[test]

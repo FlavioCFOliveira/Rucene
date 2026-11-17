@@ -674,7 +674,15 @@ fn strip_segment_name(name: &str) -> &str {
 /// `equals`.
 pub struct SegmentCommitInfo {
     /// The `SegmentInfo` wrapped by this commit info.
-    pub info: SegmentInfo,
+    ///
+    /// Java's `public final SegmentInfo info` (`SegmentCommitInfo.java:38`)
+    /// is a reference that `clone()` passes on (`SegmentCommitInfo.java:383-386`),
+    /// so every commit info over one segment holds the one `SegmentInfo`; the
+    /// [`Arc`] is that reference, which [`Clone`] and
+    /// [`java_clone`](Self::java_clone) share. The setters that take
+    /// `&mut SegmentInfo` reach it through [`Arc::make_mut`], which writes in
+    /// place when this is the only holder and into a private copy otherwise.
+    pub info: Arc<SegmentInfo>,
 
     /// The per-commit state every holder of this object shares.
     state: Arc<std::sync::Mutex<CommitState>>,
@@ -740,7 +748,7 @@ impl SegmentCommitInfo {
     /// constructor can throw and because the callers of this constructor sit on
     /// fallible paths.
     pub fn new(
-        info: SegmentInfo,
+        info: impl Into<Arc<SegmentInfo>>,
         del_count: i32,
         soft_del_count: i32,
         del_gen: i64,
@@ -749,7 +757,7 @@ impl SegmentCommitInfo {
         id: [u8; ID_LENGTH],
     ) -> Result<Self> {
         Ok(Self {
-            info,
+            info: info.into(),
             state: Arc::new(std::sync::Mutex::new(CommitState {
                 id,
                 del_count,
@@ -813,7 +821,10 @@ impl SegmentCommitInfo {
             buffered_deletes_gen: -1,
         };
         Self {
-            info: self.info.clone(),
+            // PERF: `new SegmentCommitInfo(info, ...)` shares `info`
+            // (`SegmentCommitInfo.java:383-386`); a deep copy cost its name,
+            // diagnostics, attributes and files.
+            info: Arc::clone(&self.info),
             state: Arc::new(std::sync::Mutex::new(copy)),
         }
     }
@@ -1199,7 +1210,7 @@ impl Debug for SegmentCommitInfo {
 impl Clone for SegmentCommitInfo {
     fn clone(&self) -> Self {
         Self {
-            info: self.info.clone(),
+            info: Arc::clone(&self.info),
             state: Arc::clone(&self.state),
         }
     }
@@ -1572,6 +1583,33 @@ mod tests {
     /// file is renamed for this segment, a name that is not a codec file name
     /// or ends in `.tmp` is refused with Java's message, and a refusal leaves
     /// the new, empty set behind.
+    /// `public final SegmentInfo info` (`SegmentCommitInfo.java:38`): a copied
+    /// reference and Java's `clone()` (`SegmentCommitInfo.java:383-386`) both
+    /// hold the one `SegmentInfo`, so `setFiles` through one is seen through
+    /// every other.
+    #[test]
+    fn commit_info_clones_share_their_segment_info() {
+        let commit = SegmentCommitInfo::new(
+            test_segment_info("_0", 10),
+            0,
+            0,
+            -1,
+            -1,
+            -1,
+            StringHelper::random_id(),
+        )
+        .unwrap();
+        let reference = commit.clone();
+        let java_clone = commit.java_clone();
+        assert!(Arc::ptr_eq(&commit.info, &reference.info));
+        assert!(Arc::ptr_eq(&commit.info, &java_clone.info));
+        assert!(!java_clone.same_object(&commit));
+
+        java_clone.info.set_files(["_0.fdt".to_string()]).unwrap();
+        assert!(commit.info.files().unwrap().contains("_0.fdt"));
+        assert!(reference.info.files().unwrap().contains("_0.fdt"));
+    }
+
     #[test]
     fn set_files_validates_and_renames_as_java() {
         let info = test_segment_info("_0", 10);

@@ -75,6 +75,28 @@ enum MemberKind {
     Scorer(Box<dyn Scorer>),
 }
 
+/// A [`ConjunctionMember`]'s iteration view, borrowed once by
+/// [`ConjunctionMember::view`].
+pub(crate) enum MemberView<'a> {
+    /// A member that needs no confirmation: its approximation is its
+    /// iterator.
+    Iterator(&'a mut dyn DocIdSetIterator),
+    /// A member confirmed by a two-phase view, whose approximation drives
+    /// iteration.
+    TwoPhase(&'a mut dyn TwoPhaseIterator),
+}
+
+impl MemberView<'_> {
+    /// The approximation: the iterator itself, or the two-phase view's.
+    #[inline]
+    pub(crate) fn approximation(&mut self) -> &mut dyn DocIdSetIterator {
+        match self {
+            MemberView::Iterator(iterator) => &mut **iterator,
+            MemberView::TwoPhase(two_phase) => two_phase.approximation(),
+        }
+    }
+}
+
 impl std::fmt::Debug for ConjunctionMember {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConjunctionMember")
@@ -226,11 +248,33 @@ impl ConjunctionMember {
     }
 
     /// Records the doc ID of a scorer member's approximation after it was
-    /// moved through [`approximation`](Self::approximation) rather than
-    /// through [`advance`](Self::advance) or [`next_doc`](Self::next_doc).
-    fn sync_scorer_doc(&mut self) {
+    /// moved through [`approximation`](Self::approximation) or
+    /// [`view`](Self::view) rather than through [`advance`](Self::advance) or
+    /// [`next_doc`](Self::next_doc).
+    pub(crate) fn sync_scorer_doc(&mut self) {
         if matches!(self.kind, MemberKind::Scorer(_)) {
             self.scorer_doc = self.approximation().doc_id();
+        }
+    }
+
+    /// Borrows this member's iteration view once, for a run of moves.
+    ///
+    /// Equivalent to the `approximation` and `twoPhase` fields Java stores
+    /// once per member (`ReqExclBulkScorer.java:24-48`): a scorer member's
+    /// two-phase view or iterator is fetched here once instead of on every
+    /// move. A caller that moves the approximation through the view calls
+    /// [`sync_scorer_doc`](Self::sync_scorer_doc) when it is done.
+    pub(crate) fn view(&mut self) -> MemberView<'_> {
+        match &mut self.kind {
+            MemberKind::Plain(iterator) => MemberView::Iterator(&mut **iterator),
+            MemberKind::TwoPhase(two_phase) => MemberView::TwoPhase(&mut **two_phase),
+            MemberKind::Scorer(scorer) => {
+                if self.has_two_phase {
+                    MemberView::TwoPhase(scorer.two_phase_iterator().expect(TWO_PHASE_INVARIANT))
+                } else {
+                    MemberView::Iterator(scorer.iterator())
+                }
+            }
         }
     }
 

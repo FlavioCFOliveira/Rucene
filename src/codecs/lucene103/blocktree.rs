@@ -2646,10 +2646,9 @@ impl Fields for Lucene103BlockTreeTermsReader {
         if self.fields_cleared() {
             return Ok(None);
         }
-        Ok(self
-            .fields
-            .get(field)
-            .map(|reader| Box::new(reader.clone()) as Box<dyn Terms>))
+        // `fieldMap.get(field)` (`Lucene103BlockTreeTermsReader.java:292-296`):
+        // the field's shared reader, not a copy.
+        Ok(self.fields.get(field).map(FieldReader::shared_terms))
     }
 
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
@@ -3614,8 +3613,9 @@ mod tests {
             .expect("the field was written")
             .clone();
 
-        let mut terms = crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(field)
-            .expect("cursor should open");
+        let mut terms =
+            crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(Arc::new(field))
+                .expect("cursor should open");
         assert!(
             !terms.index_input_initialized(),
             "opening a cursor must not clone the terms input"
@@ -3627,6 +3627,70 @@ mod tests {
         assert!(
             terms.index_input_initialized(),
             "loading the first block clones the terms input"
+        );
+    }
+
+    /// `terms(field)` returns the field map's one `FieldReader`
+    /// (`Lucene103BlockTreeTermsReader.java:292-296`), not a copy per call, and
+    /// two calls see the same object.
+    #[test]
+    fn terms_hands_out_one_shared_field_reader() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let segment_info = test_segment_info("_0", 10);
+        let field_infos = FieldInfos::new(vec![indexed_body_field()]).expect("valid field infos");
+        {
+            let state = test_write_state(&dir, &segment_info, &field_infos);
+            let fields = TestFields {
+                field: "body".to_string(),
+                terms: vec![
+                    BytesRef::new(b"a".to_vec()),
+                    BytesRef::new(b"ab".to_vec()),
+                    BytesRef::new(b"b".to_vec()),
+                ],
+            };
+            let mut writer = Lucene103BlockTreeTermsWriter::new(
+                &state,
+                Box::new(CountingPostingsWriter),
+                DEFAULT_MIN_BLOCK_SIZE,
+                DEFAULT_MAX_BLOCK_SIZE,
+            )
+            .expect("writer should be created");
+            writer.write(&fields, None).expect("write should succeed");
+            writer.close().expect("close should succeed");
+        }
+        let read_state = SegmentReadState::new(
+            &*dir,
+            &segment_info,
+            &field_infos,
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        );
+        let reader = Lucene103BlockTreeTermsReader::new(Box::new(StubPostingsReader), &read_state)
+            .expect("reader should open");
+
+        let first = reader
+            .terms("body")
+            .unwrap()
+            .expect("the field was written");
+        let second = reader
+            .terms("body")
+            .unwrap()
+            .expect("the field was written");
+        let field_reader = |terms: &dyn Terms| -> *const FieldReader {
+            terms
+                .as_any()
+                .and_then(|any| any.downcast_ref::<FieldReader>())
+                .expect("the terms are the field's FieldReader")
+        };
+        assert_eq!(
+            field_reader(&*first),
+            field_reader(&*second),
+            "both calls hand out the same reader"
+        );
+        let mut terms_enum = second.iterator().expect("cursor should open");
+        assert_eq!(first.size().unwrap(), 3);
+        assert_eq!(
+            terms_enum.next().expect("next should succeed"),
+            Some(BytesRef::new(b"a".to_vec()))
         );
     }
 

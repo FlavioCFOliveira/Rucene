@@ -388,11 +388,11 @@ pub struct Lucene90NormsProducer {
     /// field number.
     disi_inputs: Mutex<HashMap<i32, SharedIndexInput>>,
     /// `disiJumpTables`: the jump tables a merge instance opened, by field
-    /// number.
-    disi_jump_tables: Mutex<HashMap<i32, SharedRandomAccessInput>>,
+    /// number, each with its resource description read once.
+    disi_jump_tables: Mutex<HashMap<i32, SharedRandomAccessSlice>>,
     /// `dataInputs`: the values slices a merge instance opened, by field
-    /// number.
-    data_inputs: Mutex<HashMap<i32, SharedRandomAccessInput>>,
+    /// number, each with its resource description read once.
+    data_inputs: Mutex<HashMap<i32, SharedRandomAccessSlice>>,
 }
 
 /// An `IndexInput` several readers of a merge instance share (Java shares the
@@ -522,7 +522,7 @@ impl Lucene90NormsProducer {
         field: &FieldInfo,
         entry: &NormsEntry,
     ) -> Result<Box<dyn RandomAccessInput>> {
-        let mut slice: Option<SharedRandomAccessInput> = None;
+        let mut slice: Option<SharedRandomAccessSlice> = None;
         if self.merging {
             slice = lock(&self.data_inputs).get(&field.number).cloned();
         }
@@ -538,12 +538,14 @@ impl Lucene90NormsProducer {
                 if !self.merging {
                     return Ok(slice);
                 }
-                let slice = shared_random_access_input(slice);
-                lock(&self.data_inputs).insert(field.number, Arc::clone(&slice));
+                let slice = SharedRandomAccessSlice::new(shared_random_access_input(slice));
+                lock(&self.data_inputs).insert(field.number, slice.clone());
                 slice
             }
         };
-        Ok(Box::new(SharedRandomAccessSlice::new(slice)))
+        // PERF: the cached handle, as Java returns its cached slice; cloning
+        // it copies two reference counts, not the resource description.
+        Ok(Box::new(slice))
     }
 
     /// Opens the packed-values slice of one field:
@@ -622,7 +624,7 @@ impl Lucene90NormsProducer {
         field: &FieldInfo,
         entry: &NormsEntry,
     ) -> Result<Option<Box<dyn RandomAccessInput>>> {
-        let mut jump_table: Option<SharedRandomAccessInput> = None;
+        let mut jump_table: Option<SharedRandomAccessSlice> = None;
         if self.merging {
             jump_table = lock(&self.disi_jump_tables).get(&field.number).cloned();
         }
@@ -641,12 +643,13 @@ impl Lucene90NormsProducer {
                 if !self.merging {
                     return Ok(Some(jump_table));
                 }
-                let jump_table = shared_random_access_input(jump_table);
-                lock(&self.disi_jump_tables).insert(field.number, Arc::clone(&jump_table));
+                let jump_table =
+                    SharedRandomAccessSlice::new(shared_random_access_input(jump_table));
+                lock(&self.disi_jump_tables).insert(field.number, jump_table.clone());
                 jump_table
             }
         };
-        Ok(Some(Box::new(SharedRandomAccessSlice::new(jump_table))))
+        Ok(Some(Box::new(jump_table)))
     }
 
     /// Opens the docs-with-field iterator of one sparse field.
@@ -798,16 +801,20 @@ fn lock<T>(cache: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// A slice a merge instance shares between the readers it hands out: every
 /// read goes to the one shared input, as Java's readers share the one
 /// `RandomAccessInput` object (`Lucene90NormsProducer.java:246-265, 358-375`).
+///
+/// A merge instance caches one per field and hands out clones of it, which
+/// share both the input and its resource description, read once when the
+/// slice is opened.
+#[derive(Clone)]
 struct SharedRandomAccessSlice {
     input: SharedRandomAccessInput,
-    resource_description: String,
+    resource_description: Arc<str>,
 }
 
 impl SharedRandomAccessSlice {
     fn new(input: SharedRandomAccessInput) -> Self {
-        let resource_description = lock_random_access_input(&input)
-            .resource_description()
-            .to_string();
+        let resource_description =
+            Arc::from(lock_random_access_input(&input).resource_description());
         Self {
             input,
             resource_description,
@@ -821,7 +828,7 @@ impl DataInput for SharedRandomAccessSlice {
     }
 
     fn to_java_string(&self) -> String {
-        self.resource_description.clone()
+        self.resource_description.to_string()
     }
 
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {

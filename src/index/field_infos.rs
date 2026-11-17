@@ -6,8 +6,9 @@
 
 #![deny(unsafe_code)]
 
+use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, RwLock};
 
 use crate::error::{LuceneError, Result};
 use crate::index::index_reader::IndexReader;
@@ -91,7 +92,103 @@ pub struct FieldInfo {
     /// `Map` its caller passed — the `HashMap` `putAttribute` rebuilds, or the
     /// `TreeMap`/`HashMap` `DataInput.readMapOfStrings` returned — and this
     /// field stores the same choice. See [`JavaStringMap`].
-    attributes: RwLock<JavaStringMap>,
+    ///
+    /// Java's map is never changed in place — `putAttribute` swaps in a new
+    /// one (`FieldInfo.java:670-679`) — so several fields can hold the same
+    /// map, as `Lucene94FieldInfosFormat.read` makes consecutive fields with
+    /// equal attributes do (`Lucene94FieldInfosFormat.java:197-201`). The
+    /// [`Arc`] is that shared reference.
+    attributes: RwLock<Arc<JavaStringMap>>,
+}
+
+/// `Collections.emptyMap()`: the one empty attribute map every field without
+/// attributes shares, as Java's fields share the singleton.
+static EMPTY_ATTRIBUTES: LazyLock<Arc<JavaStringMap>> =
+    LazyLock::new(|| Arc::new(JavaStringMap::default()));
+
+/// The shared empty attribute map, `Collections.emptyMap()`.
+pub(crate) fn empty_attributes() -> Arc<JavaStringMap> {
+    Arc::clone(&EMPTY_ATTRIBUTES)
+}
+
+/// A codec attribute value, as [`FieldInfo::get_attribute`] hands it out: the
+/// value inside the field's attribute map, shared rather than copied.
+///
+/// Java's `FieldInfo.getAttribute` returns the map's own `String`
+/// (`FieldInfo.java:658-660`). The map is never changed in place —
+/// `putAttribute` swaps in a new one (`FieldInfo.java:670-679`) — so the value
+/// stays what it was when it was read, whatever is put afterwards. This handle
+/// keeps that map alive and reads the value out of it; it dereferences to
+/// [`str`].
+#[derive(Clone)]
+pub struct AttributeValue {
+    map: Arc<JavaStringMap>,
+    slot: (usize, usize),
+}
+
+impl AttributeValue {
+    /// The value, as a string slice.
+    pub fn as_str(&self) -> &str {
+        self.map.value_at(self.slot)
+    }
+}
+
+impl std::ops::Deref for AttributeValue {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for AttributeValue {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Borrow<str> for AttributeValue {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Debug for AttributeValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl std::fmt::Display for AttributeValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl PartialEq for AttributeValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for AttributeValue {}
+
+impl PartialEq<str> for AttributeValue {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for AttributeValue {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for AttributeValue {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other.as_str()
+    }
 }
 
 impl Default for FieldInfo {
@@ -114,7 +211,7 @@ impl Default for FieldInfo {
             store_term_vector: false,
             omit_norms: false,
             store_payloads: false,
-            attributes: RwLock::new(JavaStringMap::default()),
+            attributes: RwLock::new(empty_attributes()),
         }
     }
 }
@@ -139,12 +236,13 @@ impl Clone for FieldInfo {
             store_term_vector: self.store_term_vector,
             omit_norms: self.omit_norms,
             store_payloads: self.store_payloads,
-            attributes: RwLock::new(
-                self.attributes
+            // The map is never mutated in place, so the copy shares it.
+            attributes: RwLock::new(Arc::clone(
+                &self
+                    .attributes
                     .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
-            ),
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )),
         }
     }
 }
@@ -264,7 +362,61 @@ impl FieldInfo {
         soft_deletes_field: bool,
         is_parent_field: bool,
     ) -> Result<Self> {
-        let info = Self {
+        let info = Self::new_unchecked(
+            name,
+            number,
+            store_term_vector,
+            omit_norms,
+            store_payloads,
+            index_options,
+            doc_values_type,
+            doc_values_skip_index_type,
+            doc_values_gen,
+            Arc::new(attributes),
+            point_dimension_count,
+            point_index_dimension_count,
+            point_num_bytes,
+            vector_dimension,
+            vector_encoding,
+            vector_similarity_function,
+            soft_deletes_field,
+            is_parent_field,
+        );
+        info.check_consistency()?;
+        Ok(info)
+    }
+
+    /// The field assignments of the Java constructor, without its closing
+    /// `checkConsistency()` call (`FieldInfo.java:78-125`).
+    ///
+    /// [`new_full`](Self::new_full) is this followed by
+    /// [`check_consistency`](Self::check_consistency). A reader that must
+    /// report a failed check with the field's name, as
+    /// `Lucene94FieldInfosFormat.read` does (`Lucene94FieldInfosFormat.java:215-240`),
+    /// runs the two steps itself, so that the name is still at hand when the
+    /// check fails.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_unchecked(
+        name: impl Into<String>,
+        number: i32,
+        store_term_vector: bool,
+        omit_norms: bool,
+        store_payloads: bool,
+        index_options: IndexOptions,
+        doc_values_type: DocValuesType,
+        doc_values_skip_index_type: DocValuesSkipIndexType,
+        doc_values_gen: i64,
+        attributes: Arc<JavaStringMap>,
+        point_dimension_count: i32,
+        point_index_dimension_count: i32,
+        point_num_bytes: i32,
+        vector_dimension: i32,
+        vector_encoding: VectorEncoding,
+        vector_similarity_function: VectorSimilarityFunction,
+        soft_deletes_field: bool,
+        is_parent_field: bool,
+    ) -> Self {
+        Self {
             name: name.into(),
             number,
             index_options,
@@ -295,9 +447,7 @@ impl FieldInfo {
                 store_payloads
             },
             attributes: RwLock::new(attributes),
-        };
-        info.check_consistency()?;
-        Ok(info)
+        }
     }
 
     /// Convenience helper for the postings-layer tests and stubs that used to
@@ -564,12 +714,21 @@ impl FieldInfo {
     }
 
     /// Returns a codec attribute value, or `None` if absent.
-    pub fn get_attribute(&self, key: &str) -> Option<String> {
-        self.attributes
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(key)
-            .cloned()
+    ///
+    /// Equivalent to `FieldInfo.getAttribute` (`FieldInfo.java:658-660`),
+    /// which returns the map's own `String`: the [`AttributeValue`] shares the
+    /// value instead of copying it.
+    pub fn get_attribute(&self, key: &str) -> Option<AttributeValue> {
+        // PERF: shares the map; copying the value cost one allocation per
+        // lookup, two per field at every segment open.
+        let map = Arc::clone(
+            &self
+                .attributes
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let slot = map.slot_of(key)?;
+        Some(AttributeValue { map, slot })
     }
 
     /// Stores a codec attribute value, returning the previous value if any.
@@ -594,8 +753,24 @@ impl FieldInfo {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut new_map = guard.to_java_hash_map();
         let old_value = new_map.insert(key.into(), value.into());
-        *guard = JavaStringMap::Hash(new_map);
+        *guard = Arc::new(JavaStringMap::Hash(new_map));
         old_value
+    }
+
+    /// Whether `self` and `other` hold the very same attribute map, as two
+    /// Java fields holding one `Map` reference do.
+    #[cfg(test)]
+    pub(crate) fn shares_attributes_with(&self, other: &FieldInfo) -> bool {
+        Arc::ptr_eq(
+            &self
+                .attributes
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            &other
+                .attributes
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// Returns a copy of the internal codec attributes map, iteration order
@@ -609,10 +784,12 @@ impl FieldInfo {
     /// (`FieldInfos.java:775-776, 801`). This port returns a copy because the
     /// map is behind a lock.
     pub fn attributes(&self) -> JavaStringMap {
-        self.attributes
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        JavaStringMap::clone(
+            &self
+                .attributes
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// Verifies that the combination of field options is internally consistent.
@@ -938,6 +1115,70 @@ impl std::fmt::Debug for FieldInfos {
     }
 }
 
+/// A map key that is a field's own name: the field's [`FieldInfo`], hashed,
+/// compared and ordered by [`FieldInfo::name`] exactly as that `String` is,
+/// and borrowable as `str` for lookups.
+///
+/// Java's name-keyed maps hold the field's own `String` reference —
+/// `byName.put(info.name, info)` (`FieldInfos.java:102`),
+/// `fields.put(fieldName, ...)` (`PerFieldPostingsFormat.java:320`) — not a
+/// copy. A Rust map must own its keys, so this key owns a handle onto the one
+/// `FieldInfo` object instead of a copy of its name.
+#[derive(Clone)]
+pub(crate) struct FieldName(Arc<FieldInfo>);
+
+impl FieldName {
+    /// The key of `info`.
+    pub(crate) fn new(info: &Arc<FieldInfo>) -> Self {
+        Self(Arc::clone(info))
+    }
+
+    /// The field name.
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0.name
+    }
+}
+
+impl Borrow<str> for FieldName {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::hash::Hash for FieldName {
+    /// The hash of the name as a `str`, as [`Borrow<str>`] requires.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl PartialEq for FieldName {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for FieldName {}
+
+impl PartialOrd for FieldName {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FieldName {
+    /// The order of the name as a `str`, as [`Borrow<str>`] requires.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl std::fmt::Debug for FieldName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
 /// The immutable tables of a [`FieldInfos`], shared by all its clones.
 #[derive(Debug, PartialEq, Eq, Default)]
 struct FieldInfosCore {
@@ -960,7 +1201,8 @@ struct FieldInfosCore {
     /// per field, as Java's references do; storing `FieldInfo` by value in each
     /// would make them independent copies and silently drop such a mutation.
     by_number: Vec<Option<Arc<FieldInfo>>>,
-    by_name: HashMap<String, i32>,
+    /// `byName`, keyed by each field's own name (see [`FieldName`]).
+    by_name: HashMap<FieldName, i32>,
     /// The same objects as [`Self::by_number`], in the order Java's `values`
     /// collection presents them.
     values: Vec<Arc<FieldInfo>>,
@@ -978,7 +1220,14 @@ impl FieldInfos {
     /// if field names or numbers are duplicated, or if multiple soft-deletes or
     /// parent fields are present.
     pub fn new(infos: Vec<FieldInfo>) -> Result<Self> {
-        let mut by_name: HashMap<String, i32> = HashMap::with_capacity(infos.len());
+        // One `Arc` per field, shared by `by_name`, `by_number` and `values`,
+        // so that the collections alias a single object exactly as Java's
+        // map and arrays do.
+        let infos: Vec<Arc<FieldInfo>> = infos.into_iter().map(Arc::new).collect();
+        // A `FieldName` hashes the field's name alone, which never changes;
+        // the interior mutability the lint sees is the attribute map.
+        #[allow(clippy::mutable_key_type)]
+        let mut by_name: HashMap<FieldName, i32> = HashMap::with_capacity(infos.len());
         let mut max_field_number: i32 = -1;
         let mut field_number_strictly_ascending = true;
         let mut soft_deletes_field: Option<String> = None;
@@ -1010,7 +1259,9 @@ impl FieldInfos {
                 field_number_strictly_ascending = false;
             }
 
-            if let Some(previous) = by_name.insert(info.name.clone(), info.number) {
+            // PERF: the key is the field's own name, as Java's
+            // `byName.put(info.name, info)` (`FieldInfos.java:102`), not a copy.
+            if let Some(previous) = by_name.insert(FieldName::new(info), info.number) {
                 return Err(LuceneError::illegal_argument(format!(
                     "duplicate field names: {previous} and {} have: {}",
                     info.number, info.name
@@ -1056,10 +1307,6 @@ impl FieldInfos {
                 parent_field = Some(info.name.clone());
             }
         }
-
-        // One `Arc` per field, shared by `by_number` and `values`, so that the
-        // two collections alias a single object exactly as Java's arrays do.
-        let infos: Vec<Arc<FieldInfo>> = infos.into_iter().map(Arc::new).collect();
 
         let mut by_number: Vec<Option<Arc<FieldInfo>>> =
             vec![None; (max_field_number + 1) as usize];
@@ -1141,6 +1388,16 @@ impl FieldInfos {
             .values
             .iter()
             .map(Arc::as_ref)
+            .filter(move |fi| self.is_visible(&fi.name))
+    }
+
+    /// [`iter`](Self::iter), answering the shared handle onto each field's
+    /// one `FieldInfo` object, for a reader that keeps a field's reference as
+    /// Java does.
+    pub(crate) fn iter_shared(&self) -> impl Iterator<Item = &Arc<FieldInfo>> {
+        self.core
+            .values
+            .iter()
             .filter(move |fi| self.is_visible(&fi.name))
     }
 
@@ -2003,12 +2260,54 @@ mod tests {
     fn field_info_attributes_round_trip() {
         let fi = FieldInfo::new("body", 0);
         assert_eq!(fi.put_attribute("fmt", "Lucene90"), None);
-        assert_eq!(fi.get_attribute("fmt"), Some("Lucene90".to_string()));
+        assert_eq!(fi.get_attribute("fmt").as_deref(), Some("Lucene90"));
         assert_eq!(
             fi.put_attribute("fmt", "Other"),
             Some("Lucene90".to_string())
         );
-        assert_eq!(fi.get_attribute("fmt"), Some("Other".to_string()));
+        assert_eq!(fi.get_attribute("fmt").as_deref(), Some("Other"));
+    }
+
+    /// `getAttribute` returns the map's own value and `putAttribute` swaps in
+    /// a new map (`FieldInfo.java:658-680`): a value obtained before a put
+    /// keeps reading what it read, and a copy of the field shares the map.
+    #[test]
+    fn field_info_attribute_values_are_shared_and_stable() {
+        let fi = FieldInfo::new("body", 0);
+        fi.put_attribute("fmt", "Lucene90");
+        let before = fi.get_attribute("fmt").unwrap();
+        let copy = fi.clone();
+        assert!(copy.shares_attributes_with(&fi));
+
+        fi.put_attribute("fmt", "Other");
+        assert_eq!(before, "Lucene90");
+        assert_eq!(before.to_string(), "Lucene90");
+        assert_eq!(format!("{before:?}"), "\"Lucene90\"");
+        assert_eq!(fi.get_attribute("fmt").as_deref(), Some("Other"));
+        assert!(!copy.shares_attributes_with(&fi));
+        assert_eq!(copy.get_attribute("fmt").as_deref(), Some("Lucene90"));
+        assert!(fi.get_attribute("missing").is_none());
+    }
+
+    /// `byName.put(info.name, info)` (`FieldInfos.java:102`): the name lookup
+    /// keyed by each field's own name finds every field, and a duplicate name
+    /// is still rejected with Java's message.
+    #[test]
+    fn field_infos_by_name_is_keyed_by_the_fields_own_names() {
+        let infos =
+            FieldInfos::new(vec![FieldInfo::new("title", 0), FieldInfo::new("body", 1)]).unwrap();
+        assert_eq!(infos.field_info("title").unwrap().number, 0);
+        assert_eq!(infos.field_info("body").unwrap().number, 1);
+        assert!(infos.field_info("missing").is_none());
+
+        let error = FieldInfos::new(vec![FieldInfo::new("title", 0), FieldInfo::new("title", 1)])
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate field names: 0 and 1 have: title"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -2406,7 +2705,7 @@ mod tests {
         builder.add(&again).unwrap();
 
         let info = builder.field_info("title").unwrap();
-        assert_eq!(info.get_attribute("fmt"), Some("MockPostings".to_string()));
+        assert_eq!(info.get_attribute("fmt").as_deref(), Some("MockPostings"));
         assert!(info.has_payloads());
         assert_eq!(builder.len(), 1);
         assert!(!builder.is_empty());

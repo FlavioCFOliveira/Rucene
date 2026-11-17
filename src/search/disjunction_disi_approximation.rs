@@ -40,6 +40,10 @@ pub struct DisjunctionDISIApproximation {
     lead_top: usize,
     min_other_doc: i32,
     doc: i32,
+    /// The reused buffer [`doc_id_run_end`](DocIdSetIterator::doc_id_run_end)
+    /// collects the heap's top list into. Java walks the `DisiWrapper.next`
+    /// chain and allocates nothing (`DisjunctionDISIApproximation.java:194-198`).
+    top_list_scratch: Vec<usize>,
 }
 
 impl std::fmt::Debug for DisjunctionDISIApproximation {
@@ -173,6 +177,7 @@ impl DisjunctionDISIApproximation {
             lead_top,
             min_other_doc,
             doc: -1,
+            top_list_scratch: Vec::new(),
         }
     }
 
@@ -350,10 +355,23 @@ impl DocIdSetIterator for DisjunctionDISIApproximation {
         // `super.docIDRunEnd()`: `docID() + 1`.
         let mut max_doc_id_run_end = self.doc + 1;
         if self.wrappers[self.lead_top].doc == self.doc {
-            for position in self.lead_iterators.top_list(&self.wrappers) {
-                max_doc_id_run_end = max_doc_id_run_end
-                    .max(self.wrappers[position].approximation().doc_id_run_end()?);
+            // PERF: the list goes into the reused buffer, taken out for the
+            // walk because each step borrows a wrapper mutably.
+            let mut top_list = std::mem::take(&mut self.top_list_scratch);
+            self.lead_iterators
+                .top_list_into(&self.wrappers, &mut top_list);
+            let mut result = Ok(());
+            for &position in &top_list {
+                match self.wrappers[position].approximation().doc_id_run_end() {
+                    Ok(run_end) => max_doc_id_run_end = max_doc_id_run_end.max(run_end),
+                    Err(error) => {
+                        result = Err(error);
+                        break;
+                    }
+                }
             }
+            self.top_list_scratch = top_list;
+            result?;
         }
         Ok(max_doc_id_run_end)
     }

@@ -161,7 +161,7 @@ fn stored_type() -> Result<FieldType> {
 
 /// `fi.getAttribute(key)`.
 fn attribute(fi: &FieldInfo, key: &str) -> Option<String> {
-    fi.get_attribute(key)
+    fi.get_attribute(key).map(|value| value.as_str().to_owned())
 }
 
 /// Port of `TestFieldInfos.testFieldAttributes`.

@@ -838,7 +838,7 @@ mod tests {
         created_version_major: i32,
     ) -> Arc<dyn CodecReader> {
         let mut info = info.clone();
-        info.info.set_min_version(min_version);
+        Arc::make_mut(&mut info.info).set_min_version(min_version);
         Arc::new(SegmentReader::new(info, created_version_major, &*DEFAULT_IO_CONTEXT).unwrap())
     }
 

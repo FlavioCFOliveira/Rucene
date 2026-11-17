@@ -1177,7 +1177,7 @@ fn wrap_specification(spec: Option<MergeSpecification>) -> Option<MergeSpecifica
         merge.set_set_merge_info_override(Arc::new(|merge, info| {
             merge.super_set_merge_info(info);
             if let Some(info) = merge.info().as_mut() {
-                info.info.add_diagnostics(HashMap::from([(
+                Arc::make_mut(&mut info.info).add_diagnostics(HashMap::from([(
                     "merge_policy".to_string(),
                     "my_merge_policy".to_string(),
                 )]));

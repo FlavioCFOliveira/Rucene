@@ -556,7 +556,8 @@ impl IntersectTermsEnumFrame {
 /// through the same path instead, which the labelled loops below make explicit.
 /// The traversal order and the terms produced are unchanged.
 pub struct IntersectTermsEnum {
-    field: FieldReader,
+    /// The field this cursor walks, shared as Java's `fr` reference is.
+    field: std::sync::Arc<FieldReader>,
     terms_in: Box<dyn IndexInput>,
     trie: TrieReader,
     run_automaton: Box<dyn ByteRunnable>,
@@ -583,7 +584,7 @@ impl std::fmt::Debug for IntersectTermsEnum {
 impl IntersectTermsEnum {
     /// Opens a cursor that yields only the terms `run_automaton` accepts.
     pub fn new(
-        field: FieldReader,
+        field: std::sync::Arc<FieldReader>,
         automaton: Box<dyn TransitionAccessor>,
         run_automaton: Box<dyn ByteRunnable>,
         common_suffix: Option<BytesRef>,

@@ -40,7 +40,7 @@ use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, Result};
 use crate::index::{segment_file_name, FieldInfos};
 use crate::store::SharedIndexInput;
-use crate::store::{DataInput, Directory, IndexInput, IndexOutput};
+use crate::store::{DataInput, Directory, IndexOutput};
 use crate::util::bkd::{BKDConfig, BKDFinalizer, BKDReader, BKDSplitOverride, BKDWriter};
 use crate::util::IOUtils;
 
@@ -686,23 +686,23 @@ impl Lucene90PointsReader {
     /// `IOUtils.closeWhileHandlingException(this)` closes the inputs opened so
     /// far through `close()`, `IOUtils.close(indexIn, dataIn)`.
     pub fn new(state: &SegmentReadState) -> Result<Self> {
-        let mut index_in: Option<Box<dyn IndexInput>> = None;
-        let mut data_in: Option<Box<dyn IndexInput>> = None;
+        let mut index_in: Option<Arc<SharedIndexInput>> = None;
+        let mut data_in: Option<Arc<SharedIndexInput>> = None;
         match Self::open(state, &mut index_in, &mut data_in) {
             Ok(readers) => {
                 let expect = "INVARIANT: the constructor opened both inputs";
                 Ok(Self {
                     readers,
                     field_infos: state.field_infos.clone(),
-                    index_in: Arc::new(SharedIndexInput::new(index_in.expect(expect))),
-                    data_in: Arc::new(SharedIndexInput::new(data_in.expect(expect))),
+                    index_in: index_in.expect(expect),
+                    data_in: data_in.expect(expect),
                     readers_cleared: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 })
             }
             Err(error) => {
                 IOUtils::close_while_handling_exception([Some(|| {
                     IOUtils::close(
-                        [index_in.as_mut(), data_in.as_mut()].map(|i| i.map(|i| move || i.close())),
+                        [index_in.as_ref(), data_in.as_ref()].map(|i| i.map(|i| move || i.close())),
                     )
                 })])?;
                 Err(error)
@@ -712,17 +712,21 @@ impl Lucene90PointsReader {
 
     /// The `try` block of the constructor: opens `indexIn` and `dataIn` into
     /// the two slots and reads the metadata.
+    ///
+    /// The inputs are shared from the moment they are opened: every field's
+    /// [`BKDReader`] keeps them, as Java's keeps the `indexIn` and `dataIn`
+    /// it is passed (`Lucene90PointsReader.java:107`, `BKDReader.java:121-122`).
     fn open(
         state: &SegmentReadState,
-        index_in: &mut Option<Box<dyn IndexInput>>,
-        data_in: &mut Option<Box<dyn IndexInput>>,
+        index_in: &mut Option<Arc<SharedIndexInput>>,
+        data_in: &mut Option<Arc<SharedIndexInput>>,
     ) -> Result<HashMap<i32, BkdPointValues>> {
         let index_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
             INDEX_EXTENSION,
         );
-        let index_in = index_in.insert(
+        let index_in = index_in.insert(Arc::new(SharedIndexInput::new(
             state.directory.open_input(
                 &index_name,
                 /* withHints, `Lucene90PointsReader.java:64` */
@@ -731,23 +735,23 @@ impl Lucene90PointsReader {
                     .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Index)])
                     .as_ref(),
             )?,
-        );
+        )));
         check_index_header(
-            &mut **index_in,
+            &mut **index_in.write(),
             INDEX_CODEC_NAME,
             VERSION_START,
             VERSION_CURRENT,
             &state.segment_info.id(),
             &state.segment_suffix,
         )?;
-        let _ = retrieve_checksum(&mut **index_in)?;
+        let _ = retrieve_checksum(&mut **index_in.write())?;
 
         let data_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
             DATA_EXTENSION,
         );
-        let data_in = data_in.insert(
+        let data_in = data_in.insert(Arc::new(SharedIndexInput::new(
             state.directory.open_input(
                 &data_name,
                 /* withHints, `Lucene90PointsReader.java:78` */
@@ -756,16 +760,16 @@ impl Lucene90PointsReader {
                     .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Data)])
                     .as_ref(),
             )?,
-        );
+        )));
         check_index_header(
-            &mut **data_in,
+            &mut **data_in.write(),
             DATA_CODEC_NAME,
             VERSION_START,
             VERSION_CURRENT,
             &state.segment_info.id(),
             &state.segment_suffix,
         )?;
-        let _ = retrieve_checksum(&mut **data_in)?;
+        let _ = retrieve_checksum(&mut **data_in.write())?;
 
         let meta_name = segment_file_name(
             &state.segment_info.name,
@@ -799,7 +803,7 @@ impl Lucene90PointsReader {
                         meta_in.to_java_string(),
                     ));
                 }
-                let reader = BKDReader::new(meta_in.as_mut(), index_in.as_mut(), data_in.as_mut())?;
+                let reader = BKDReader::new_shared(meta_in.as_mut(), index_in, data_in)?;
                 readers.insert(field_number, BkdPointValues::new(reader));
             }
             let index_length = meta_in.read_long()?;
@@ -809,8 +813,8 @@ impl Lucene90PointsReader {
         let read = check_footer_after(&mut *meta_in, read);
         let (readers, index_length, data_length) = crate::store::close_after(&mut *meta_in, read)?;
 
-        let _ = retrieve_checksum_expected_length(&mut **index_in, index_length)?;
-        let _ = retrieve_checksum_expected_length(&mut **data_in, data_length)?;
+        let _ = retrieve_checksum_expected_length(&mut **index_in.write(), index_length)?;
+        let _ = retrieve_checksum_expected_length(&mut **data_in.write(), data_length)?;
         Ok(readers)
     }
 }

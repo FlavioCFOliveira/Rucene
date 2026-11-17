@@ -4867,10 +4867,12 @@ impl IndexWriter {
         // merger's copy is stamped on `merge.info.info` too, right after the
         // merger is built, so that `merge.info.set_soft_del_count` below
         // checks against it as Java's `setSoftDelCount` does.
-        let merged_info = merge
-            .get_merge_info()
-            .expect("INVARIANT: mergeInit ran before mergeMiddle")
-            .info;
+        let merged_info = Arc::unwrap_or_clone(
+            merge
+                .get_merge_info()
+                .expect("INVARIANT: mergeInit ran before mergeMiddle")
+                .info,
+        );
         let codec = self.config.codec();
 
         let mut merger = SegmentMerger::new(
@@ -4891,7 +4893,7 @@ impl IndexWriter {
             .expect("INVARIANT: the merge state holds the merged segment's info")
             .max_doc()?;
         if let Some(info) = merge.info().as_mut() {
-            info.info.set_max_doc(merged_max_doc)?;
+            Arc::make_mut(&mut info.info).set_max_doc(merged_max_doc)?;
             // `merge.info.setSoftDelCount(Math.toIntExact(softDeleteCount.get()))`
             // (`IndexWriter.java:5375`).
             info.set_soft_del_count(crate::error::to_int_exact(soft_delete_count)?)?;
@@ -4940,7 +4942,7 @@ impl IndexWriter {
         ))?;
         let merged_max_doc = merged_info.max_doc()?;
         if let Some(info) = merge.info().as_mut() {
-            info.info = merged_info;
+            info.info = Arc::new(merged_info);
         }
 
         if self.info_stream.is_enabled(IW) {
@@ -5101,12 +5103,14 @@ impl IndexWriter {
                 return Ok((0, false));
             }
 
-            merge
-                .info()
-                .as_mut()
-                .expect("INVARIANT: merge info was set by mergeInit")
-                .info
-                .set_use_compound_file(true);
+            Arc::make_mut(
+                &mut merge
+                    .info()
+                    .as_mut()
+                    .expect("INVARIANT: merge info was set by mergeInit")
+                    .info,
+            )
+            .set_use_compound_file(true);
         }
 
         // `merge.setMergeInfo(merge.info)` (`IndexWriter.java:5535`): an
@@ -5395,7 +5399,7 @@ impl IndexWriter {
         tracking_dir.clear_created_files();
 
         Self::set_diagnostics(
-            &mut merge.info().as_mut().expect("just set").info,
+            Arc::make_mut(&mut merge.info().as_mut().expect("just set").info),
             SOURCE_ADDINDEXES_READERS,
         );
 
@@ -5450,11 +5454,7 @@ impl IndexWriter {
             // `SegmentInfo`; on success the non-compound files are no longer
             // tracked, so they are deleted directly.
             self.delete_new_files(files_to_delete)?;
-            merge
-                .info()
-                .as_mut()
-                .expect("just set")
-                .info
+            Arc::make_mut(&mut merge.info().as_mut().expect("just set").info)
                 .set_use_compound_file(true);
         }
 
@@ -11513,7 +11513,7 @@ mod tests {
         let mut updates = crate::index::documents_writer::BufferedUpdates::new("_test");
         updates
             .add_term(
-                Term::new("id", crate::util::BytesRef::new(b"a".to_vec())),
+                &Term::new("id", crate::util::BytesRef::new(b"a".to_vec())),
                 i32::MAX,
             )
             .unwrap();

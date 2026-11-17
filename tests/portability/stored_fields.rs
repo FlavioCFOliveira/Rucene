@@ -900,7 +900,7 @@ fn open_java_segment(dir: &Path) -> (Arc<dyn Directory>, SegmentInfo, FieldInfos
     let directory: Arc<dyn Directory> = Arc::new(FSDirectory::open(dir).expect("directory"));
     let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory)).expect("segments file");
     assert_eq!(infos.size(), 1, "the fixture writes exactly one segment");
-    let segment_info = infos.info(0).info.clone();
+    let segment_info = SegmentInfo::clone(&infos.info(0).info);
     let field_infos = codec
         .field_infos_format()
         .read(directory.as_ref(), &segment_info, "", &*DEFAULT_IO_CONTEXT)

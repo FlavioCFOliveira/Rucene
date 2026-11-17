@@ -110,9 +110,18 @@ impl DisiPriorityQueue {
     ///
     /// Equivalent to `DisiPriorityQueue.topList()`.
     pub fn top_list(&self, wrappers: &[DisiWrapper]) -> Vec<usize> {
+        let mut order = Vec::new();
+        self.top_list_into(wrappers, &mut order);
+        order
+    }
+
+    /// [`top_list`](Self::top_list) written into `order`, which is cleared
+    /// first, so that a caller asking on every document reuses one buffer;
+    /// Java threads the list through `DisiWrapper.next` and allocates nothing.
+    pub(crate) fn top_list_into(&self, wrappers: &[DisiWrapper], order: &mut Vec<usize>) {
         match self {
-            Self::Two(q) => q.top_list(wrappers),
-            Self::N(q) => q.top_list(wrappers),
+            Self::Two(q) => q.top_list_into(wrappers, order),
+            Self::N(q) => q.top_list_into(wrappers, order),
         }
     }
 
@@ -255,6 +264,14 @@ impl DisiPriorityQueue2 {
     /// Equivalent to `DisiPriorityQueue2.topList()`.
     pub fn top_list(&self, wrappers: &[DisiWrapper]) -> Vec<usize> {
         let mut order = Vec::with_capacity(2);
+        self.top_list_into(wrappers, &mut order);
+        order
+    }
+
+    /// [`top_list`](Self::top_list) written into `order`, which is cleared
+    /// first.
+    pub(crate) fn top_list_into(&self, wrappers: &[DisiWrapper], order: &mut Vec<usize>) {
+        order.clear();
         if let Some(top) = self.top() {
             order.push(top);
             if let Some(top2) = self.top2() {
@@ -264,7 +281,6 @@ impl DisiPriorityQueue2 {
             }
         }
         order.reverse();
-        order
     }
 
     /// Adds an entry and returns the new top.
@@ -417,21 +433,28 @@ impl DisiPriorityQueueN {
     /// by prepending, so the traversal starts at the last entry prepended; the
     /// vector returned here is in exactly that order.
     pub fn top_list(&self, wrappers: &[DisiWrapper]) -> Vec<usize> {
+        let mut order = Vec::with_capacity(self.heap.len());
+        self.top_list_into(wrappers, &mut order);
+        order
+    }
+
+    /// [`top_list`](Self::top_list) written into `order`, which is cleared
+    /// first.
+    pub(crate) fn top_list_into(&self, wrappers: &[DisiWrapper], order: &mut Vec<usize>) {
+        order.clear();
         let size = self.heap.len();
-        let mut order = Vec::with_capacity(size);
         if size == 0 {
-            return order;
+            return;
         }
         let doc = wrappers[self.heap[0]].doc;
         order.push(self.heap[0]);
         if size >= 3 {
-            self.collect_top_list(wrappers, doc, 1, &mut order);
-            self.collect_top_list(wrappers, doc, 2, &mut order);
+            self.collect_top_list(wrappers, doc, 1, order);
+            self.collect_top_list(wrappers, doc, 2, order);
         } else if size == 2 && wrappers[self.heap[1]].doc == doc {
-            Self::prepend(self.heap[1], &mut order);
+            Self::prepend(self.heap[1], order);
         }
         order.reverse();
-        order
     }
 
     /// Prepends `w1`, an iterator, to `order`, the list being built.

@@ -184,6 +184,16 @@ impl Term {
         self.field = Some(field.into());
         self.bytes = bytes;
     }
+
+    /// The term bytes, for refilling in place.
+    ///
+    /// Stands for the package-private `Term.bytes` field that
+    /// `BufferedUpdates.DeletedTerms.forEachOrdered` refills on its scratch
+    /// term (`terms.bytesRefHash.get(index, scratch.bytes)`,
+    /// `BufferedUpdates.java:261-268`).
+    pub(crate) fn bytes_mut(&mut self) -> &mut BytesRef {
+        &mut self.bytes
+    }
 }
 
 impl Term {
@@ -1235,7 +1245,9 @@ impl crate::util::Accountable for PrefixCodedTerms {
 #[derive(Debug)]
 pub struct PrefixCodedTermsBuilder {
     output: ByteBuffersDataOutput,
-    last_term: Term,
+    /// The field of `lastTerm`, replaced only when the field changes.
+    last_field: String,
+    /// `lastTermBytes`, refilled with each term (`lastTermBytes.copyBytes`).
     last_term_bytes: Vec<u8>,
     size: i64,
 }
@@ -1251,7 +1263,8 @@ impl PrefixCodedTermsBuilder {
     pub fn new() -> Self {
         Self {
             output: ByteBuffersDataOutput::new(),
-            last_term: Term::empty(""),
+            // `lastTerm = new Term("")`.
+            last_field: String::new(),
             last_term_bytes: Vec::new(),
             size: 0,
         }
@@ -1263,19 +1276,37 @@ impl PrefixCodedTermsBuilder {
     }
 
     /// Adds a term from its field and bytes.
+    ///
+    /// Equivalent to `PrefixCodedTerms.Builder.add(String, BytesRef)`
+    /// (`PrefixCodedTerms.java:73-99`), which keeps the last term in a reused
+    /// `BytesRefBuilder` and the field by reference: nothing is allocated per
+    /// term here either once the buffers have grown.
     pub fn add_bytes(&mut self, field: &str, bytes: &BytesRef) -> Result<()> {
         // `PrefixCodedTerms.java:74`.
-        debug_assert!(
-            self.last_term == Term::empty("") || Term::new(field, bytes.clone()) > self.last_term
-        );
+        debug_assert!({
+            let last_term = Term::new(
+                self.last_field.as_str(),
+                BytesRef::new(self.last_term_bytes.clone()),
+            );
+            last_term == Term::empty("") || Term::new(field, bytes.clone()) > last_term
+        });
 
         let bytes_slice = bytes.slice();
-        let same_field = self.size > 0 && field == self.last_term.field();
+        let same_field = self.size > 0 && field == self.last_field;
         let prefix = if same_field {
-            StringHelper::bytes_difference(
-                &BytesRef::new(self.last_term_bytes.clone()),
-                &BytesRef::new(bytes_slice.to_vec()),
-            )? as usize
+            // PERF: `StringHelper.bytesDifference(lastTerm.bytes, bytes)` over
+            // the two buffers in place. Equal terms are its
+            // `IllegalArgumentException`, raised by the helper itself so that
+            // the message is the same.
+            let last = self.last_term_bytes.as_slice();
+            match last.iter().zip(bytes_slice).position(|(x, y)| x != y) {
+                Some(mismatch) => mismatch,
+                None if last.len() != bytes_slice.len() => last.len().min(bytes_slice.len()),
+                None => StringHelper::bytes_difference(
+                    &BytesRef::new(last.to_vec()),
+                    &BytesRef::new(bytes_slice.to_vec()),
+                )? as usize,
+            }
         } else {
             0
         };
@@ -1289,8 +1320,14 @@ impl PrefixCodedTermsBuilder {
         self.output.write_v_int(suffix as i32)?;
         self.output.write_bytes(bytes_slice, prefix, suffix)?;
 
-        self.last_term_bytes = bytes_slice.to_vec();
-        self.last_term = Term::new(field.to_string(), bytes.clone());
+        // `lastTermBytes.copyBytes(bytes); lastTerm.bytes = lastTermBytes.get();
+        // lastTerm.field = field;`
+        self.last_term_bytes.clear();
+        self.last_term_bytes.extend_from_slice(bytes_slice);
+        if !same_field {
+            self.last_field.clear();
+            self.last_field.push_str(field);
+        }
         self.size += 1;
         Ok(())
     }
@@ -1366,6 +1403,18 @@ impl PrefixCodedTermsIterator {
     /// Returns the current term bytes, or `None` when exhausted.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<BytesRef>> {
+        Ok(self
+            .next_bytes()?
+            .map(|bytes| BytesRef::new(bytes.to_vec())))
+    }
+
+    /// Advances to the next term and lends its bytes, the iterator's reused
+    /// buffer, or returns `None` when exhausted.
+    ///
+    /// Equivalent to `PrefixCodedTerms.TermIterator.next()`
+    /// (`PrefixCodedTerms.java:123-142`), which returns its one reused
+    /// `bytes`; [`next`](Self::next) is the owned form.
+    pub(crate) fn next_bytes(&mut self) -> Result<Option<&[u8]>> {
         if (self.input.position() as i64) >= self.end {
             self.field = None;
             return Ok(None);
@@ -1385,7 +1434,7 @@ impl PrefixCodedTermsIterator {
             .read_bytes(Some(&mut self.bytes[..]), prefix, suffix)?;
         self.bytes.truncate(prefix + suffix);
 
-        Ok(Some(BytesRef::new(self.bytes.clone())))
+        Ok(Some(&self.bytes))
     }
 }
 
@@ -2009,6 +2058,44 @@ mod prefix_coded_terms_accounting_tests {
         );
         let capacity: i64 = packet.content().iter().map(Vec::capacity).sum::<usize>() as i64;
         assert_eq!(packet.ram_bytes_used(), capacity + 16);
+    }
+}
+
+#[cfg(test)]
+mod prefix_coded_terms_builder_tests {
+    use super::*;
+
+    /// `PrefixCodedTerms.Builder.add` (`PrefixCodedTerms.java:73-99`): a
+    /// field change writes `1` and the field, a same-field term writes
+    /// `prefix << 1` with the prefix shared with the previous term (the shorter
+    /// length when one term starts the other), then the suffix.
+    #[test]
+    fn the_builder_writes_lucene_prefix_codes() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        for (field, text) in [
+            ("f", "aaa"),
+            ("f", "aab"),
+            ("f", "b"),
+            ("g", "b"),
+            ("g", "ba"),
+        ] {
+            builder
+                .add_bytes(field, &BytesRef::new(text.as_bytes().to_vec()))
+                .unwrap();
+        }
+        let packet = builder.finish();
+        assert_eq!(packet.size(), 5);
+        let bytes: Vec<u8> = packet.content().concat();
+        assert_eq!(
+            bytes,
+            vec![
+                0x01, 0x01, b'f', 0x03, b'a', b'a', b'a', // f:aaa, new field
+                0x04, 0x01, b'b', // f:aab, prefix 2
+                0x00, 0x01, b'b', // f:b, prefix 0
+                0x01, 0x01, b'g', 0x01, b'b', // g:b, new field
+                0x02, 0x01, b'a', // g:ba, prefix 1 (`b` starts `ba`)
+            ]
+        );
     }
 }
 

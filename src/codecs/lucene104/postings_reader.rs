@@ -370,7 +370,7 @@ impl Lucene104PostingsReader {
         field_info: &FieldInfo,
         flags: i32,
         needs_impacts: bool,
-    ) -> Result<BlockPostingsEnum> {
+    ) -> Result<Box<BlockPostingsEnum>> {
         let pos_in = self.pos_in.as_ref().map(SharedIndexInput::read);
         let pay_in = self.pay_in.as_ref().map(SharedIndexInput::read);
         BlockPostingsEnum::new(
@@ -489,7 +489,7 @@ impl PostingsReaderBase for Lucene104PostingsReader {
             });
         let mut postings: Box<dyn PostingsEnum> = match reuse {
             Some(everything_enum) if can_reuse => everything_enum,
-            _ => Box::new(self.new_block_postings_enum(field_info, flags, false)?),
+            _ => self.new_block_postings_enum(field_info, flags, false)?,
         };
         postings
             .as_any_mut()
@@ -507,7 +507,7 @@ impl PostingsReaderBase for Lucene104PostingsReader {
     ) -> Result<Box<dyn ImpactsEnum>> {
         let mut enum_ = self.new_block_postings_enum(field_info, flags, true)?;
         enum_.reset(state, self.doc_in.as_ref())?;
-        Ok(Box::new(enum_))
+        Ok(enum_)
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -590,10 +590,15 @@ pub struct BlockPostingsEnum {
     /// the first [`freq`](PostingsEnum::freq), which takes `&self`, hence the
     /// cell; everything else reaches them through `get_mut`.
     freq_buffer: RefCell<[i32; BS]>,
-    pos_delta_buffer: Option<[i32; BS]>,
-    payload_length_buffer: Option<[i32; BS]>,
-    offset_start_delta_buffer: Option<[i32; BS]>,
-    offset_length_buffer: Option<[i32; BS]>,
+    /// `posDeltaBuffer`, `payloadLengthBuffer`, `offsetStartDeltaBuffer` and
+    /// `offsetLengthBuffer`: allocated only when the enum reads what they
+    /// hold, as Java's `new int[BLOCK_SIZE]` is
+    /// (`Lucene104PostingsReader.java:454-490`), so that an enum that reads
+    /// docs and freqs carries none of them.
+    pos_delta_buffer: Option<Box<[i32; BS]>>,
+    payload_length_buffer: Option<Box<[i32; BS]>>,
+    offset_start_delta_buffer: Option<Box<[i32; BS]>>,
+    offset_length_buffer: Option<Box<[i32; BS]>>,
 
     payload_bytes: Vec<u8>,
     payload_byte_upto: i32,
@@ -720,7 +725,7 @@ impl BlockPostingsEnum {
         max_impact_num_bytes_at_level0: i32,
         max_num_impacts_at_level1: i32,
         max_impact_num_bytes_at_level1: i32,
-    ) -> Result<Self> {
+    ) -> Result<Box<Self>> {
         let index_options = field_info.index_options;
         let index_has_freq = index_options.subsumes(IndexOptions::DOCS_AND_FREQS);
         let index_has_pos = index_options.subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
@@ -740,14 +745,18 @@ impl BlockPostingsEnum {
         let needs_offsets_or_payloads = needs_offsets || needs_payloads;
 
         let freq_buffer = [1i32; BS];
-        let pos_delta_buffer = if needs_pos { Some([0i32; BS]) } else { None };
+        let pos_delta_buffer = if needs_pos {
+            Some(Box::new([0i32; BS]))
+        } else {
+            None
+        };
         let payload_length_buffer = if index_has_payloads {
-            Some([0i32; BS])
+            Some(Box::new([0i32; BS]))
         } else {
             None
         };
         let (offset_start_delta_buffer, offset_length_buffer) = if needs_offsets {
-            (Some([0i32; BS]), Some([0i32; BS]))
+            (Some(Box::new([0i32; BS])), Some(Box::new([0i32; BS])))
         } else {
             (None, None)
         };
@@ -806,7 +815,9 @@ impl BlockPostingsEnum {
             impact_buffer: impact_buffer.clone(),
         };
 
-        Ok(Self {
+        // PERF: built straight into its box, which the reader hands out, so
+        // the enum is not first built on the stack and then copied.
+        Ok(Box::new(Self {
             for_util: ForUtil::new(),
             pfor_util: Some(PForUtil::new()),
             encoding: DeltaEncoding::Packed,
@@ -881,7 +892,7 @@ impl BlockPostingsEnum {
             level1_serialized_impacts_length: 0,
             impacts,
             needs_refilling: false,
-        })
+        }))
     }
 
     /// Equivalent to `BlockPostingsEnum.canReuse(IndexInput, FieldInfo, int, boolean)`
@@ -1421,7 +1432,7 @@ impl BlockPostingsEnum {
             let end = (self.pos_buffer_upto + to_skip) as usize;
             if self.needs_payloads {
                 self.payload_byte_upto += sum_over_range(
-                    self.payload_length_buffer.as_ref().unwrap(),
+                    &self.payload_length_buffer.as_ref().unwrap()[..],
                     self.pos_buffer_upto as usize,
                     end,
                 );
@@ -1459,7 +1470,7 @@ impl BlockPostingsEnum {
             self.refill_positions()?;
             if self.needs_payloads {
                 self.payload_byte_upto = sum_over_range(
-                    self.payload_length_buffer.as_ref().unwrap(),
+                    &self.payload_length_buffer.as_ref().unwrap()[..],
                     0,
                     to_skip as usize,
                 );

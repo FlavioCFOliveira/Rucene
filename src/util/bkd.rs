@@ -74,7 +74,8 @@ use crate::{
     search::{DocIdSetIterator, NO_MORE_DOCS},
     store::{
         BufferedChecksumIndexInput, DataOutput, Directory, IndexInput, IndexOutput,
-        TrackingDirectoryWrapper, VecDataOutput, DEFAULT_IO_CONTEXT, READONCE_IO_CONTEXT,
+        SharedIndexInput, TrackingDirectoryWrapper, VecDataOutput, DEFAULT_IO_CONTEXT,
+        READONCE_IO_CONTEXT,
     },
     util::{
         ArrayUtil, BitUtil, DocBaseBitSetIterator, FixedBitSet, IntsRef, MathUtil, NumericUtils,
@@ -1694,10 +1695,7 @@ impl DocIdsWriter {
         let min = in_.read_v_int()?;
         let half = count >> 1;
         // `in.readInts(docIds, 0, half)`.
-        for i in 0..half.max(0) {
-            let value = in_.read_int()?;
-            int_array_store(out, i, value)?;
-        }
+        Self::read_ints_into(in_, out, half)?;
         // Java calls `decode16` twice from two arms of an `if`, once with the
         // constant `DEFAULT_MAX_POINTS_IN_LEAF_NODE / 2` so the JIT can
         // specialise the loop for the common leaf size. Both arms run the same
@@ -1742,10 +1740,7 @@ impl DocIdsWriter {
         let one_third = (count / 3) & !0xF;
         let num_ints = one_third.wrapping_shl(1);
         // `in.readInts(scratch, 0, numInts)`.
-        for i in 0..num_ints.max(0) {
-            let value = in_.read_int()?;
-            int_array_store(scratch, i, value)?;
-        }
+        Self::read_ints_into(in_, scratch, num_ints)?;
         Self::decode21(out, scratch, one_third, num_ints)?;
         let mut i = one_third.wrapping_mul(3);
         while i < count.wrapping_sub(2) {
@@ -1786,10 +1781,7 @@ impl DocIdsWriter {
         let quarter = count >> 2;
         let num_ints = quarter.wrapping_mul(3);
         // `in.readInts(scratch, 0, numInts)`.
-        for i in 0..num_ints.max(0) {
-            let value = in_.read_int()?;
-            int_array_store(scratch, i, value)?;
-        }
+        Self::read_ints_into(in_, scratch, num_ints)?;
         if count == BKDConfig::DEFAULT_MAX_POINTS_IN_LEAF_NODE {
             // Java specializes this case (`DocIdsWriter.java:381-391`); the
             // decoding is the same, so only its assertion is reproduced.
@@ -1862,9 +1854,27 @@ impl DocIdsWriter {
 
     /// `in.readInts(docIDs, 0, count)`.
     fn read_ints32(in_: &mut dyn IndexInput, count: i32, out: &mut [i32]) -> Result<()> {
+        Self::read_ints_into(in_, out, count)
+    }
+
+    /// `in.readInts(dst, 0, count)` (`DocIdsWriter.java:315,345,381,436,529`).
+    ///
+    /// A run that fits `dst` is read with one [`DataInput::read_ints`] call,
+    /// as Java's single `readInts` call copies it
+    /// (`MemorySegmentIndexInput.java:231-242`). Any other count keeps this
+    /// port's element-by-element read, so a corrupt count fails exactly as it
+    /// did: an `ArrayIndexOutOfBoundsException` at the first index past
+    /// `dst`, after the values before it were stored.
+    ///
+    /// [`DataInput::read_ints`]: crate::store::DataInput::read_ints
+    fn read_ints_into(in_: &mut dyn IndexInput, dst: &mut [i32], count: i32) -> Result<()> {
+        if count > 0 && count as usize <= dst.len() {
+            // PERF: one bulk read instead of one dynamic `read_int` per value.
+            return in_.read_ints(Some(dst), 0, count as usize);
+        }
         for i in 0..count.max(0) {
             let value = in_.read_int()?;
-            int_array_store(out, i, value)?;
+            int_array_store(dst, i, value)?;
         }
         Ok(())
     }
@@ -2058,8 +2068,12 @@ impl IntersectVisitor for LastLeafDocIdCounter {
 pub struct BKDReader {
     config: BKDConfig,
     num_leaves: i32,
-    data_in: Box<dyn IndexInput>,
-    index_in: Box<dyn IndexInput>,
+    /// `in`, the data input. Java keeps the input it is passed, the points
+    /// reader's one `dataIn` for every field (`BKDReader.java:122`); the
+    /// handle is shared the same way.
+    data_in: Arc<SharedIndexInput>,
+    /// `indexIn`, kept the same way (`BKDReader.java:121`).
+    index_in: Arc<SharedIndexInput>,
     min_packed_value: Vec<u8>,
     max_packed_value: Vec<u8>,
     point_count: i64,
@@ -2076,11 +2090,65 @@ impl BKDReader {
     /// Creates a reader from the meta, index, and data inputs.
     ///
     /// The inputs must be positioned at the start of their respective BKD
-    /// sections.
+    /// sections. A borrowed input cannot be kept, so the reader keeps a clone
+    /// of `index_in` and of `data_in`; see [`Self::new_shared`] for the
+    /// constructor that keeps the inputs themselves, as Java does.
     pub fn new(
         meta_in: &mut dyn IndexInput,
         index_in: &mut dyn IndexInput,
         data_in: &mut dyn IndexInput,
+    ) -> Result<Self> {
+        Self::read_meta(meta_in, index_in, |index_in| {
+            Ok((
+                Arc::new(SharedIndexInput::new(data_in.clone_input()?)),
+                Arc::new(SharedIndexInput::new(index_in.clone_input()?)),
+            ))
+        })?
+        .with_tree_balance()
+    }
+
+    /// Creates a reader that keeps the given index and data inputs, shared.
+    ///
+    /// Equivalent to `BKDReader(IndexInput, IndexInput, IndexInput)`
+    /// (`BKDReader.java:58-126`), which keeps `indexIn` and `dataIn`
+    /// themselves (`:121-122`): the points reader passes its one pair of
+    /// inputs to every field's reader (`Lucene90PointsReader.java:107`), and
+    /// each reader clones them only when it walks its tree.
+    pub(crate) fn new_shared(
+        meta_in: &mut dyn IndexInput,
+        index_in: &Arc<SharedIndexInput>,
+        data_in: &Arc<SharedIndexInput>,
+    ) -> Result<Self> {
+        // PERF: shares the segment's inputs; a clone of each per field cost
+        // two input copies per point field at every segment open.
+        let reader = {
+            let mut index = index_in.write();
+            Self::read_meta(meta_in, &mut **index, |_| {
+                Ok((Arc::clone(data_in), Arc::clone(index_in)))
+            })?
+        };
+        reader.with_tree_balance()
+    }
+
+    /// `this.isTreeBalanced = numLeaves != 1 && isTreeBalanced()`
+    /// (`BKDReader.java:123-125`), the constructor's last step, run once the
+    /// reader holds its inputs.
+    fn with_tree_balance(mut self) -> Result<Self> {
+        // For only one leaf, balanced and unbalanced trees can be handled the
+        // same way, so it is set to unbalanced.
+        self.is_tree_balanced = self.num_leaves != 1 && self.is_tree_balanced()?;
+        Ok(self)
+    }
+
+    /// The constructor up to `isTreeBalanced`: reads the metadata, rewinding
+    /// `index_in` for a pre-meta-file index, then takes the data and index
+    /// inputs the reader keeps from `inputs`, called with `index_in`.
+    fn read_meta(
+        meta_in: &mut dyn IndexInput,
+        index_in: &mut dyn IndexInput,
+        inputs: impl FnOnce(
+            &mut dyn IndexInput,
+        ) -> Result<(Arc<SharedIndexInput>, Arc<SharedIndexInput>)>,
     ) -> Result<Self> {
         let version = check_header(meta_in, CODEC_NAME, VERSION_START, VERSION_CURRENT)?;
         let num_dims = meta_in.read_v_int()?;
@@ -2141,11 +2209,12 @@ impl BKDReader {
             (min_leaf_block_fp, index_start_pointer)
         };
 
-        let mut reader = Self {
+        let (data_in, index_in) = inputs(index_in)?;
+        Ok(Self {
             config,
             num_leaves,
-            data_in: data_in.clone_input()?,
-            index_in: index_in.clone_input()?,
+            data_in,
+            index_in,
             min_packed_value,
             max_packed_value,
             point_count,
@@ -2155,11 +2224,7 @@ impl BKDReader {
             num_index_bytes,
             min_leaf_block_fp,
             is_tree_balanced: false,
-        };
-        // For only one leaf, balanced and unbalanced trees can be handled the
-        // same way, so it is set to unbalanced.
-        reader.is_tree_balanced = num_leaves != 1 && reader.is_tree_balanced()?;
-        Ok(reader)
+        })
     }
 
     /// Returns whether this is a legacy (pre-8.6) fully balanced tree.
@@ -2394,180 +2459,6 @@ impl BKDReader {
         Ok(false)
     }
 
-    fn read_node_data(
-        inner_in: &mut Box<dyn IndexInput>,
-        parent: &BKDTreeNode,
-        child: &mut BKDTreeNode,
-        is_left: bool,
-        config: &BKDConfig,
-        num_leaves: i32,
-    ) -> Result<()> {
-        if !is_left {
-            child.leaf_block_fp += inner_in.read_v_long()?;
-        }
-        if child.node_id < num_leaves {
-            // Override the inherited negative-delta flag for the parent's
-            // split dimension BEFORE reading the split code, matching Java's
-            // `readNodeData`: it copies `negativeDeltas[level-1]` into
-            // `negativeDeltas[level]`, sets the parent-split-dim entry to
-            // `isLeft`, and only then reads the split code and applies
-            // `negativeDeltas[level][splitDim]` to `firstDiffByteDelta`. The
-            // child already inherited the parent's flags via `child()`, so we
-            // only need the override here. Reading `parent.negative_deltas`
-            // instead (and overriding after) uses the wrong sign on every
-            // descent when `split_dim == parent.split_dim`, which is always
-            // true for a one-dimensional index.
-            if parent.split_dim >= 0 {
-                child.negative_deltas[parent.split_dim as usize] = is_left;
-            }
-            let code = inner_in.read_v_int()?;
-            // `BKDWriter` packs the split dimension, the common-prefix length
-            // and the first differing byte's delta into a single non-negative
-            // int, `(firstDiffByteDelta * (1 + bytesPerDim) + prefix) *
-            // numIndexDims + splitDim`, with `firstDiffByteDelta >= 0`,
-            // `prefix` in `[0, bytesPerDim]` and `splitDim` in
-            // `[0, numIndexDims)` (`BKDWriter.java:1195-1197`). A corrupt file
-            // can still name a negative one, and Java checks nothing: it lets
-            // `splitDim`, `splitDimsPos[level]` and `prefix` go negative and
-            // `suffix` grow past `bytesPerDim`, then uses the result as an
-            // array index (`BKDReader.java:718-733`). The arithmetic is
-            // reproduced here in `i32`, exactly as Java does it, so that the
-            // two implementations agree branch for branch:
-            //
-            // * `negativeDeltas[level * numIndexDims + splitDim]` never throws
-            //   for a corrupt code. `splitDim` is `code % numIndexDims`, so it
-            //   is greater than `-numIndexDims`, and `readNodeData` only runs
-            //   for `level >= 1` (it reads `leafBlockFPStack[level - 1]`), so
-            //   the index stays non-negative. Java simply reads a *previous
-            //   level's* slot. That case is unreachable, though: whenever
-            //   `splitDim < 0` the very next statement throws, see below.
-            // * `splitValuesStack[level][startPos]` **does** throw, and it is
-            //   the only place a corrupt code is refused. So the faithful
-            //   condition is exactly `startPos` out of the packed index value,
-            //   which is what is checked below and nothing more.
-            // * `readBytes(splitValuesStack[level], startPos + 1, suffix - 1)`
-            //   cannot add a refusal of its own: `startPos + suffix` is
-            //   `(splitDim + 1) * bytesPerDim`, independent of `prefix`, and
-            //   `splitDim <= numIndexDims - 1` always holds.
-            //
-            // The one corrupt code Java carries on with is therefore
-            // `splitDim == 0` together with `prefix == 0`, which puts
-            // `startPos` at `0`: Java wraps a negative `firstDiffByteDelta`
-            // into a byte and continues with a nonsense split value. This port
-            // does the same — `as u8` truncates exactly as Java's `(byte)`
-            // cast does — and, because `splitDim` is `0` there, the
-            // negative-delta slot it consults is the node's own, which this
-            // port has. No divergence: a file Java reads is read here, and a
-            // file Java refuses is refused here.
-            let split_dim = code % config.num_index_dims;
-            // Java's `splitDimsPos[level]`, assigned before the suffix branch.
-            child.split_dim = split_dim;
-            let code = code / config.num_index_dims;
-            let prefix = code % (1 + config.bytes_per_dim);
-            let suffix = config.bytes_per_dim - prefix;
-            let dim_off = split_dim * config.bytes_per_dim;
-            if suffix > 0 {
-                let start = dim_off + prefix;
-                // `splitValuesStack[level][startPos]` (`BKDReader.java:739-741`)
-                // with no check of its own: a start outside the packed index
-                // value raises `ArrayIndexOutOfBoundsException`. The
-                // `negativeDeltas` read before it cannot fail first: it is
-                // indexed `level * numIndexDims + splitDim` with `level >= 1`
-                // and `|splitDim| < numIndexDims`.
-                if start < 0 || start >= config.packed_index_bytes_length() {
-                    return Err(LuceneError::unchecked(
-                        "java.lang.ArrayIndexOutOfBoundsException",
-                        format!(
-                            "Index {start} out of bounds for length {}",
-                            config.packed_index_bytes_length()
-                        ),
-                    ));
-                }
-                // `start >= 0` forces `split_dim >= 0`: a negative `split_dim`
-                // only arises from a negative code, which also makes `prefix`
-                // non-positive, so `start` would be at most `-bytes_per_dim`.
-                let start = start as usize;
-                let split_dim = split_dim as usize;
-                let mut first_diff = code / (1 + config.bytes_per_dim);
-                if child.negative_deltas[split_dim] {
-                    first_diff = -first_diff;
-                }
-                let old_byte = child.split_value[start] as i32;
-                child.split_value[start] = (old_byte + first_diff) as u8;
-                if suffix > 1 {
-                    inner_in.read_bytes(
-                        Some(&mut child.split_value),
-                        start + 1,
-                        suffix as usize - 1,
-                    )?;
-                }
-            }
-            let left_num_bytes = if child.node_id * 2 < num_leaves {
-                inner_in.read_v_int()? as i64
-            } else {
-                0
-            };
-            // Record the right child's absolute position so the traversal can
-            // seek to it directly. Java stores this in `rightNodePositions`
-            // after reading `leftNumBytes`; the right child is only reachable
-            // via a seek because the recursive traversal shares one cursor and
-            // may prune (and thus not consume) the left subtree's bytes.
-            let left_child_start = inner_in.file_pointer()?;
-            child.right_node_position = left_child_start + left_num_bytes;
-            // Position where this inner node's left child data begins, captured
-            // so the explicit-stack cursor (`BKDPointTree`) can seek back to it
-            // on `moveToChild` (Java: `readNodeDataPositions[level]`).
-            child.first_child_position = left_child_start;
-        }
-        // Narrow the cell bounds from the parent's split dimension and split
-        // value. Java does this in `pushBoundsLeft`/`pushBoundsRight` (called
-        // from `pushLeft`/`pushRight`), which apply to internal AND leaf nodes;
-        // Rucene folds the same step into `read_node_data` since it is called
-        // exactly once per node at the point Java would pushLeft/pushRight.
-        // Applying this only to internal nodes (the old behaviour) left leaves
-        // with the root's full bounds, defeating tree-level pruning: an
-        // all-identical `-1` leaf, which has no refinement compare, could not
-        // be pruned at all.
-        if parent.split_dim >= 0 && (parent.split_dim as usize) < config.num_index_dims as usize {
-            let parent_dim_off = parent.split_dim as usize * config.bytes_per_dim as usize;
-            let bytes_per_dim = config.bytes_per_dim as usize;
-            let split = &parent.split_value[parent_dim_off..parent_dim_off + bytes_per_dim];
-            if is_left {
-                // `pushBoundsLeft` (`BKDReader.java:413-422`).
-                debug_assert!(
-                    child.max_packed[parent_dim_off..parent_dim_off + bytes_per_dim] >= *split,
-                    "config.bytesPerDim()={} splitDimPos={parent_dim_off} config.numIndexDims()={} config.numDims()={}",
-                    config.bytes_per_dim,
-                    config.num_index_dims,
-                    config.num_dims
-                );
-            } else {
-                // `pushBoundsRight` (`BKDReader.java:442-451`).
-                debug_assert!(
-                    child.min_packed[parent_dim_off..parent_dim_off + bytes_per_dim] <= *split,
-                    "config.bytesPerDim()={} splitDimPos={parent_dim_off} config.numIndexDims()={} config.numDims()={}",
-                    config.bytes_per_dim,
-                    config.num_index_dims,
-                    config.num_dims
-                );
-            }
-            if is_left {
-                child.max_packed[parent_dim_off..parent_dim_off + config.bytes_per_dim as usize]
-                    .copy_from_slice(
-                        &parent.split_value
-                            [parent_dim_off..parent_dim_off + config.bytes_per_dim as usize],
-                    );
-            } else {
-                child.min_packed[parent_dim_off..parent_dim_off + config.bytes_per_dim as usize]
-                    .copy_from_slice(
-                        &parent.split_value
-                            [parent_dim_off..parent_dim_off + config.bytes_per_dim as usize],
-                    );
-            }
-        }
-        Ok(())
-    }
-
     /// Returns the configured BKD parameters.
     pub fn config(&self) -> &BKDConfig {
         &self.config
@@ -2677,77 +2568,73 @@ impl PointValues for BKDReader {
     }
 }
 
-#[derive(Clone)]
-struct BKDTreeNode {
-    node_id: i32,
-    leaf_block_fp: i64,
-    split_value: Vec<u8>,
-    split_dim: i32,
-    min_packed: Vec<u8>,
-    max_packed: Vec<u8>,
-    negative_deltas: Vec<bool>,
-    /// Absolute byte offset of this internal node's right child within the
-    /// inner-nodes index stream. Recorded by `read_node_data` after reading
-    /// `left_num_bytes` (Java: `rightNodePositions[level]`), so the right
-    /// child can be sought to directly even when the left subtree was
-    /// pruned and left the shared cursor mid-stream. Only meaningful for
-    /// internal nodes; leaves inherit `0` and never use it.
-    right_node_position: i64,
-    /// Absolute byte offset of this internal node's left child data within the
-    /// inner-nodes index stream (Java: `readNodeDataPositions[level]`). The
-    /// explicit-stack cursor seeks here on `moveToChild`; the recursive
-    /// traversal reads the left child sequentially and does not use it.
-    first_child_position: i64,
-}
-
-impl BKDTreeNode {
-    fn child(&self, _num_leaves: i32, is_left: bool) -> Result<Self> {
-        let node_id = if is_left {
-            self.node_id * 2
-        } else {
-            self.node_id * 2 + 1
-        };
-        Ok(Self {
-            node_id,
-            leaf_block_fp: self.leaf_block_fp,
-            split_value: self.split_value.clone(),
-            split_dim: self.split_dim,
-            min_packed: self.min_packed.clone(),
-            max_packed: self.max_packed.clone(),
-            negative_deltas: self.negative_deltas.clone(),
-            right_node_position: 0,
-            first_child_position: 0,
-        })
-    }
-}
-
 // -----------------------------------------------------------------------------
 // BKDPointTree — explicit-stack PointTree cursor
 // -----------------------------------------------------------------------------
 
 /// Explicit-stack cursor over a [`BKDReader`] BKD tree.
 ///
-/// Equivalent to `BKDReader.BKDPointTree`. Navigation is not recursive: a
-/// stack of `BKDTreeNode` entries holds the per-level state (node id, cell
-/// bounds, split value, negative-delta flags, child positions). Each entry
-/// carries its own `min_packed`/`max_packed`, so push/pop is just adding or
-/// removing a stack frame — no in-place mutation or save/restore is needed,
-/// unlike Java which mutates one `minPackedValue`/`maxPackedValue` pair.
+/// Equivalent to `BKDReader.BKDPointTree` (`BKDReader.java:198-998`), with its
+/// layout: the per-level state (leaf-block file pointer, child positions,
+/// split dimension, negative-delta flags, split value) lives in arrays sized
+/// by the tree depth and allocated once, and one `min_packed_value` /
+/// `max_packed_value` pair holds the current cell, narrowed in place by
+/// `move_to_child`/`move_to_sibling` and restored from the saved
+/// `bytesPerDim` bytes by `move_to_sibling`/`move_to_parent`
+/// (`pushBoundsLeft`, `pushBoundsRight`, `popBounds`,
+/// `BKDReader.java:405-500`). The full-subtree walks (`visit_doc_ids`,
+/// `visit_doc_values`) push and pop without touching the bounds, as Java's
+/// `addAll` and `visitLeavesOneByOne` do.
 ///
 /// The cursor owns fresh clones of the inner-nodes and leaf-data inputs, so it
 /// can be moved independently of the reader and several cursors can coexist.
-/// `clone_tree` re-roots at the current node by slicing the stack down to the
-/// current frame and cloning the inputs.
+/// `clone_tree` re-roots at the current node and copies that level's state,
+/// as `BKDPointTree.clone()` does.
 pub struct BKDPointTree {
     config: BKDConfig,
     version: i32,
+    /// `leafNodeOffset`: the number of leaves; node IDs at or above it are
+    /// leaves.
     num_leaves: i32,
     inner: Box<dyn IndexInput>,
     leaf: Box<dyn IndexInput>,
-    /// Stack of nodes; `stack[0]` is this cursor's root, `stack.last()` is the
-    /// current node. The root is fixed for a given cursor (set at construction
-    /// and on `clone_tree`), so `move_to_parent` stops there.
-    stack: Vec<BKDTreeNode>,
+    /// `nodeID`: the node the cursor is on.
+    node_id: i32,
+    /// `nodeRoot`: the node this cursor was created on (at construction or by
+    /// `clone_tree`), where `move_to_parent` and `move_to_sibling` stop.
+    node_root: i32,
+    /// `level`, 1-based so that `level - 1` needs no check.
+    level: usize,
+    /// `leafBlockFPStack`: the minimum (left-most) leaf block file pointer of
+    /// each level; `tree_depth + 1` entries.
+    leaf_block_fp_stack: Vec<i64>,
+    /// `readNodeDataPositions`: where each level's left-child data starts in
+    /// the inner-nodes index; `tree_depth + 1` entries.
+    read_node_data_positions: Vec<i64>,
+    /// `rightNodePositions`: where each level's right child starts in the
+    /// inner-nodes index; `tree_depth` entries.
+    right_node_positions: Vec<i64>,
+    /// The split dimension of each level. Java keeps `splitDimsPos`, the
+    /// dimension times `bytesPerDim`; the dimension is kept here and
+    /// multiplied where Java uses the position, which reads the same bytes.
+    split_dims: Vec<i32>,
+    /// `negativeDeltas`: `[level * numIndexDims + dim]`, whether the last
+    /// split on `dim` at or above `level` descended to the left.
+    negative_deltas: Vec<bool>,
+    /// `splitValuesStack`, packed: level `l` is
+    /// `[l * packedIndexBytesLength, (l + 1) * packedIndexBytesLength)`.
+    /// Java allocates the levels below the root lazily, by cloning the level
+    /// above; they are allocated here at once, and each is overwritten from
+    /// the level above before it is read, as Java's `arraycopy` does.
+    split_values_stack: Vec<u8>,
+    /// `minPackedValue`: the current cell's lower bound.
+    min_packed_value: Vec<u8>,
+    /// `maxPackedValue`: the current cell's upper bound.
+    max_packed_value: Vec<u8>,
+    /// `splitDimValueStack`, packed: level `l` is
+    /// `[l * bytesPerDim, (l + 1) * bytesPerDim)`, the bound bytes the
+    /// descent below level `l` overwrote.
+    split_dim_value_stack: Vec<u8>,
     /// `size()` parameters.
     point_count: i64,
     last_leaf_node_point_count: i32,
@@ -2762,44 +2649,61 @@ pub struct BKDPointTree {
 impl BKDPointTree {
     /// Creates a cursor rooted at the BKD tree's root node.
     ///
-    /// Equivalent to the `BKDPointTree` constructor: the inner input is seeked
-    /// to the packed-index start, the root frame is pushed, and `readNodeData`
-    /// is run with `isLeft=false` (the root is treated as a right child for the
-    /// leaf-block-FP delta, matching Java).
+    /// Equivalent to the public-facing `BKDPointTree` constructor: the inner
+    /// input is sought to the packed-index start, the state arrays are
+    /// allocated, and `readNodeData(false)` reads the root (the root is
+    /// treated as a right child for the leaf-block-FP delta, as in Java).
     fn new(reader: &BKDReader) -> Result<Self> {
         let config = reader.config.clone();
         let scratch = Arc::new(Mutex::new(Some(LeafScratch::new(&config))));
-        let num_leaves = reader.num_leaves;
-        let version = reader.version;
-        let point_count = reader.point_count;
         let mut inner = reader.index_in.clone_input()?;
         let leaf = reader.data_in.clone_input()?;
         inner.seek(reader.index_start_pointer)?;
-        let index_bytes_len = config.packed_index_bytes_length() as usize;
-        let mut root = BKDTreeNode {
-            node_id: 1,
-            leaf_block_fp: 0,
-            split_value: vec![0u8; index_bytes_len],
-            split_dim: -1,
-            min_packed: reader.min_packed_value.clone(),
-            max_packed: reader.max_packed_value.clone(),
-            negative_deltas: vec![false; config.num_index_dims as usize],
-            right_node_position: 0,
-            first_child_position: 0,
-        };
-        // The root has no parent; a `parent` with `split_dim = -1` makes
-        // `read_node_data` skip the inherited-bound-narrowing step, exactly as
-        // Java's `readNodeData(false)` at level 1 does (the root inherits the
-        // whole-tree bounds).
-        let parent = root.clone();
-        BKDReader::read_node_data(&mut inner, &parent, &mut root, false, &config, num_leaves)?;
-        // Tree-depth and the unbalanced-tree `size()` parameters, matching
-        // `BKDPointTree.size` and `BKDReader.isTreeBalanced`.
+        let mut tree = Self::with_state(
+            config,
+            reader.version,
+            reader.num_leaves,
+            inner,
+            leaf,
+            reader.point_count,
+            1,
+            1,
+            &reader.min_packed_value,
+            &reader.max_packed_value,
+            scratch,
+            reader.is_tree_balanced,
+        );
+        // read root node
+        tree.read_node_data(false)?;
+        Ok(tree)
+    }
+
+    /// Allocates a cursor on `node_id` at `level`, with fresh state arrays.
+    ///
+    /// Equivalent to the private `BKDPointTree` constructor that both the
+    /// public one and `clone()` delegate to (`BKDReader.java:287-339`).
+    #[allow(clippy::too_many_arguments)]
+    fn with_state(
+        config: BKDConfig,
+        version: i32,
+        num_leaves: i32,
+        inner: Box<dyn IndexInput>,
+        leaf: Box<dyn IndexInput>,
+        point_count: i64,
+        node_id: i32,
+        level: usize,
+        min_packed_value: &[u8],
+        max_packed_value: &[u8],
+        scratch: Arc<Mutex<Option<LeafScratch>>>,
+        is_tree_balanced: bool,
+    ) -> Self {
+        // `getTreeDepth(numLeaves)`: `MathUtil.log(numLeaves, 2) + 2`.
         let tree_depth = if num_leaves >= 1 {
             num_leaves.ilog2() as i32 + 2
         } else {
             2
         };
+        let depth = tree_depth as usize;
         let right_most_leaf_node = (1i32 << (tree_depth - 1)) - 1;
         let last_leaf_node_point_count = if point_count == 0 {
             0
@@ -2811,88 +2715,287 @@ impl BKDPointTree {
                 r
             }
         };
-        let is_tree_balanced = reader.is_tree_balanced;
-        Ok(Self {
-            config,
+        let packed_index_bytes_length = config.packed_index_bytes_length() as usize;
+        let num_index_dims = config.num_index_dims as usize;
+        let bytes_per_dim = config.bytes_per_dim as usize;
+        Self {
             version,
             num_leaves,
             inner,
             leaf,
-            stack: vec![root],
+            node_id,
+            node_root: node_id,
+            level,
+            leaf_block_fp_stack: vec![0; depth + 1],
+            read_node_data_positions: vec![0; depth + 1],
+            right_node_positions: vec![0; depth],
+            split_dims: vec![0; depth],
+            negative_deltas: vec![false; num_index_dims * depth],
+            split_values_stack: vec![0; packed_index_bytes_length * depth],
+            min_packed_value: min_packed_value.to_vec(),
+            max_packed_value: max_packed_value.to_vec(),
+            split_dim_value_stack: vec![0; bytes_per_dim * depth],
             point_count,
             last_leaf_node_point_count,
             right_most_leaf_node,
             is_tree_balanced,
             scratch,
-        })
-    }
-
-    #[inline]
-    fn current(&self) -> &BKDTreeNode {
-        self.stack
-            .last()
-            .expect("INVARIANT: the cursor stack is never empty")
-    }
-
-    #[inline]
-    fn is_leaf(&self) -> bool {
-        self.current().node_id >= self.num_leaves
-    }
-
-    #[inline]
-    fn is_left_node(&self) -> bool {
-        (self.current().node_id & 1) == 0
-    }
-
-    /// Pushes the left child of the current node onto the stack.
-    fn push_left(&mut self) -> Result<()> {
-        let parent = self.current().clone();
-        let mut child = parent.child(self.num_leaves, true)?;
-        BKDReader::read_node_data(
-            &mut self.inner,
-            &parent,
-            &mut child,
-            true,
-            &self.config,
-            self.num_leaves,
-        )?;
-        self.stack.push(child);
-        Ok(())
-    }
-
-    /// Pops the current node, restoring the parent as current.
-    fn pop(&mut self) {
-        if self.stack.len() > 1 {
-            self.stack.pop();
+            config,
         }
     }
 
-    /// Pushes the right child of the current node onto the stack, seeking the
-    /// inner-nodes input to the right child's recorded position first.
+    /// `isLeafNode()`.
+    #[inline]
+    fn is_leaf(&self) -> bool {
+        self.node_id >= self.num_leaves
+    }
+
+    /// `isLeftNode()`.
+    #[inline]
+    fn is_left_node(&self) -> bool {
+        (self.node_id & 1) == 0
+    }
+
+    /// `isRootNode()`: the node this cursor was created on.
+    #[inline]
+    fn is_root_node(&self) -> bool {
+        self.node_id == self.node_root
+    }
+
+    /// The split value of `level`, a slice of
+    /// [`split_values_stack`](Self::split_values_stack).
+    #[inline]
+    fn split_value(&self, level: usize) -> &[u8] {
+        let len = self.config.packed_index_bytes_length() as usize;
+        &self.split_values_stack[level * len..(level + 1) * len]
+    }
+
+    /// `pushLeft()`: descends to the left child and reads its node data.
+    fn push_left(&mut self) -> Result<()> {
+        self.node_id *= 2;
+        self.level += 1;
+        self.read_node_data(true)
+    }
+
+    /// `pushRight()`: seeks the inner-nodes input to the right child's
+    /// recorded position, descends to it and reads its node data.
     fn push_right(&mut self) -> Result<()> {
-        let parent = self.current().clone();
+        let node_position = self.right_node_positions[self.level];
         debug_assert!(
-            parent.right_node_position >= self.inner.file_pointer()?,
+            node_position >= self.inner.file_pointer()?,
             "nodePosition = {} < currentPosition={}",
-            parent.right_node_position,
+            node_position,
             self.inner.file_pointer()?
         );
-        self.inner.seek(parent.right_node_position)?;
-        let mut child = parent.child(self.num_leaves, false)?;
-        BKDReader::read_node_data(
-            &mut self.inner,
-            &parent,
-            &mut child,
-            false,
-            &self.config,
-            self.num_leaves,
-        )?;
-        self.stack.push(child);
+        self.inner.seek(node_position)?;
+        self.node_id = 2 * self.node_id + 1;
+        self.level += 1;
+        self.read_node_data(false)
+    }
+
+    /// `pop()`: back to the parent, leaving the bounds as they are.
+    fn pop(&mut self) {
+        self.node_id /= 2;
+        self.level -= 1;
+    }
+
+    /// `pushBoundsLeft()` (`BKDReader.java:405-427`): saves the current upper
+    /// bound on this level's split dimension and replaces it with the split
+    /// value, the left child's upper bound.
+    fn push_bounds_left(&mut self) {
+        let level = self.level;
+        let bytes_per_dim = self.config.bytes_per_dim as usize;
+        let split_dim_pos = self.split_dims[level] as usize * bytes_per_dim;
+        let dim = split_dim_pos..split_dim_pos + bytes_per_dim;
+        // save the dimension we are going to change
+        self.split_dim_value_stack[level * bytes_per_dim..(level + 1) * bytes_per_dim]
+            .copy_from_slice(&self.max_packed_value[dim.clone()]);
+        debug_assert!(
+            self.max_packed_value[dim.clone()] >= self.split_value(level)[dim.clone()],
+            "config.bytesPerDim()={} splitDimPos={split_dim_pos} config.numIndexDims()={} config.numDims()={}",
+            self.config.bytes_per_dim,
+            self.config.num_index_dims,
+            self.config.num_dims
+        );
+        // add the split dim value:
+        let len = self.config.packed_index_bytes_length() as usize;
+        let split_start = level * len + split_dim_pos;
+        self.max_packed_value[dim]
+            .copy_from_slice(&self.split_values_stack[split_start..split_start + bytes_per_dim]);
+    }
+
+    /// `pushBoundsRight()` (`BKDReader.java:435-456`): saves the current lower
+    /// bound on this level's split dimension and replaces it with the split
+    /// value, the right child's lower bound.
+    fn push_bounds_right(&mut self) {
+        let level = self.level;
+        let bytes_per_dim = self.config.bytes_per_dim as usize;
+        let split_dim_pos = self.split_dims[level] as usize * bytes_per_dim;
+        let dim = split_dim_pos..split_dim_pos + bytes_per_dim;
+        // save the dimension we are going to change
+        self.split_dim_value_stack[level * bytes_per_dim..(level + 1) * bytes_per_dim]
+            .copy_from_slice(&self.min_packed_value[dim.clone()]);
+        debug_assert!(
+            self.min_packed_value[dim.clone()] <= self.split_value(level)[dim.clone()],
+            "config.bytesPerDim()={} splitDimPos={split_dim_pos} config.numIndexDims()={} config.numDims()={}",
+            self.config.bytes_per_dim,
+            self.config.num_index_dims,
+            self.config.num_dims
+        );
+        // add the split dim value:
+        let len = self.config.packed_index_bytes_length() as usize;
+        let split_start = level * len + split_dim_pos;
+        self.min_packed_value[dim]
+            .copy_from_slice(&self.split_values_stack[split_start..split_start + bytes_per_dim]);
+    }
+
+    /// `popBounds(byte[])` (`BKDReader.java:486-490`): restores this level's
+    /// split dimension of the upper bound (`max == true`) or of the lower
+    /// bound from the bytes the descent saved.
+    fn pop_bounds(&mut self, max: bool) {
+        let level = self.level;
+        let bytes_per_dim = self.config.bytes_per_dim as usize;
+        let split_dim_pos = self.split_dims[level] as usize * bytes_per_dim;
+        let saved = &self.split_dim_value_stack[level * bytes_per_dim..(level + 1) * bytes_per_dim];
+        let packed_value = if max {
+            &mut self.max_packed_value
+        } else {
+            &mut self.min_packed_value
+        };
+        packed_value[split_dim_pos..split_dim_pos + bytes_per_dim].copy_from_slice(saved);
+    }
+
+    /// Reads the node data of the node the cursor just moved to.
+    ///
+    /// Equivalent to `BKDPointTree.readNodeData(boolean)`
+    /// (`BKDReader.java:688-748`): the leaf-block file pointer of every node,
+    /// and for an inner node its negative-delta flags, split dimension, split
+    /// value and child positions.
+    fn read_node_data(&mut self, is_left: bool) -> Result<()> {
+        let level = self.level;
+        self.leaf_block_fp_stack[level] = self.leaf_block_fp_stack[level - 1];
+        if !is_left {
+            // read leaf block FP delta
+            self.leaf_block_fp_stack[level] += self.inner.read_v_long()?;
+        }
+
+        if !self.is_leaf() {
+            let num_index_dims = self.config.num_index_dims as usize;
+            let bytes_per_dim = self.config.bytes_per_dim;
+            let packed_index_bytes_length = self.config.packed_index_bytes_length();
+            let len = packed_index_bytes_length as usize;
+            self.negative_deltas.copy_within(
+                (level - 1) * num_index_dims..level * num_index_dims,
+                level * num_index_dims,
+            );
+            // `negativeDeltas[level * numIndexDims + splitDimsPos[level - 1] /
+            // bytesPerDim] = isLeft`, set BEFORE the split code is read, so
+            // that the delta below uses this node's flag. The parent's split
+            // dimension is never negative here: a negative one comes only from
+            // a corrupt code, which `readNodeData` of the parent refused.
+            let parent_split_dim = self.split_dims[level - 1];
+            if parent_split_dim >= 0 {
+                self.negative_deltas[level * num_index_dims + parent_split_dim as usize] = is_left;
+            }
+            self.split_values_stack
+                .copy_within((level - 1) * len..level * len, level * len);
+
+            // read split dim, prefix, firstDiffByteDelta encoded as int:
+            let code = self.inner.read_v_int()?;
+            // `BKDWriter` packs the split dimension, the common-prefix length
+            // and the first differing byte's delta into a single non-negative
+            // int, `(firstDiffByteDelta * (1 + bytesPerDim) + prefix) *
+            // numIndexDims + splitDim`, with `firstDiffByteDelta >= 0`,
+            // `prefix` in `[0, bytesPerDim]` and `splitDim` in
+            // `[0, numIndexDims)` (`BKDWriter.java:1195-1197`). A corrupt file
+            // can still name a negative one, and Java checks nothing: it lets
+            // `splitDim`, `splitDimsPos[level]` and `prefix` go negative and
+            // `suffix` grow past `bytesPerDim`, then uses the result as an
+            // array index (`BKDReader.java:718-733`). The arithmetic is
+            // reproduced here in `i32`, exactly as Java does it, so that the
+            // two implementations agree branch for branch:
+            //
+            // * `negativeDeltas[level * numIndexDims + splitDim]` never throws
+            //   for a corrupt code. `splitDim` is `code % numIndexDims`, so it
+            //   is greater than `-numIndexDims`, and `readNodeData` only runs
+            //   for `level >= 1` (it reads `leafBlockFPStack[level - 1]`), so
+            //   the index stays non-negative. Java simply reads a *previous
+            //   level's* slot. That case is unreachable, though: whenever
+            //   `splitDim < 0` the very next statement throws, see below.
+            // * `splitValuesStack[level][startPos]` **does** throw, and it is
+            //   the only place a corrupt code is refused. So the faithful
+            //   condition is exactly `startPos` out of the packed index value,
+            //   which is what is checked below and nothing more.
+            // * `readBytes(splitValuesStack[level], startPos + 1, suffix - 1)`
+            //   cannot add a refusal of its own: `startPos + suffix` is
+            //   `(splitDim + 1) * bytesPerDim`, independent of `prefix`, and
+            //   `splitDim <= numIndexDims - 1` always holds.
+            //
+            // The one corrupt code Java carries on with is therefore
+            // `splitDim == 0` together with `prefix == 0`, which puts
+            // `startPos` at `0`: Java wraps a negative `firstDiffByteDelta`
+            // into a byte and continues with a nonsense split value. This port
+            // does the same — `as u8` truncates exactly as Java's `(byte)`
+            // cast does — and, because `splitDim` is `0` there, the
+            // negative-delta slot it consults is the node's own. No
+            // divergence: a file Java reads is read here, and a file Java
+            // refuses is refused here.
+            let split_dim = code % self.config.num_index_dims;
+            // Java's `splitDimsPos[level]`, assigned before the suffix branch.
+            self.split_dims[level] = split_dim;
+            let code = code / self.config.num_index_dims;
+            let prefix = code % (1 + bytes_per_dim);
+            let suffix = bytes_per_dim - prefix;
+            let dim_off = split_dim * bytes_per_dim;
+            if suffix > 0 {
+                let start = dim_off + prefix;
+                // `splitValuesStack[level][startPos]` (`BKDReader.java:739-741`)
+                // with no check of its own: a start outside the packed index
+                // value raises `ArrayIndexOutOfBoundsException`. The
+                // `negativeDeltas` read before it cannot fail first: it is
+                // indexed `level * numIndexDims + splitDim` with `level >= 1`
+                // and `|splitDim| < numIndexDims`.
+                if start < 0 || start >= packed_index_bytes_length {
+                    return Err(LuceneError::unchecked(
+                        "java.lang.ArrayIndexOutOfBoundsException",
+                        format!(
+                            "Index {start} out of bounds for length {packed_index_bytes_length}"
+                        ),
+                    ));
+                }
+                // `start >= 0` forces `split_dim >= 0`: a negative `split_dim`
+                // only arises from a negative code, which also makes `prefix`
+                // non-positive, so `start` would be at most `-bytes_per_dim`.
+                let start = start as usize;
+                let split_dim = split_dim as usize;
+                let mut first_diff = code / (1 + bytes_per_dim);
+                if self.negative_deltas[level * num_index_dims + split_dim] {
+                    first_diff = -first_diff;
+                }
+                let split_value = &mut self.split_values_stack[level * len..(level + 1) * len];
+                let old_byte = split_value[start] as i32;
+                split_value[start] = (old_byte + first_diff) as u8;
+                if suffix > 1 {
+                    self.inner
+                        .read_bytes(Some(split_value), start + 1, suffix as usize - 1)?;
+                }
+            } else {
+                // our split value is == last split value in this dim, which
+                // can happen when there are many duplicate values
+            }
+
+            let left_num_bytes = if self.node_id * 2 < self.num_leaves {
+                self.inner.read_v_int()? as i64
+            } else {
+                0
+            };
+            let position = self.inner.file_pointer()?;
+            self.right_node_positions[level] = position + left_num_bytes;
+            self.read_node_data_positions[level] = position;
+        }
         Ok(())
     }
 
-    /// Seeks the inner-nodes input back to the current node's left-child data
-    /// start. Equivalent to Java's `resetNodeDataPosition`.
     /// Equivalent to the assertion helper `BKDPointTree.getNumLeavesSlow(int)`
     /// (`BKDReader.java:676-686`).
     fn get_num_leaves_slow(&self, node: i32) -> i32 {
@@ -2907,11 +3010,20 @@ impl BKDPointTree {
         }
     }
 
+    /// `resetNodeDataPosition()`: seeks the inner-nodes input back to where
+    /// the current level's left-child data starts.
     fn reset_node_data_position(&mut self) -> Result<()> {
         // move position of the inner nodes index to visit the first child
-        let pos = self.current().first_child_position;
+        let pos = self.read_node_data_positions[self.level];
         debug_assert!(pos <= self.inner.file_pointer()?);
         self.inner.seek(pos)
+    }
+
+    /// `getLeafBlockFP()`: only valid after `push_left` or `push_right`, not
+    /// `pop`.
+    fn leaf_block_fp(&self) -> i64 {
+        debug_assert!(self.is_leaf(), "nodeID={} is not a leaf", self.node_id);
+        self.leaf_block_fp_stack[self.level]
     }
 
     /// Takes the shared leaf scratch out for one leaf visit, so that no lock
@@ -2968,13 +3080,8 @@ impl BKDPointTree {
             }
         }
         if self.is_leaf() {
-            // Java's `getLeafBlockFP()` (`BKDReader.java:520-523`).
-            debug_assert!(
-                self.is_leaf(),
-                "nodeID={} is not a leaf",
-                self.current().node_id
-            );
-            let block_fp = self.current().leaf_block_fp;
+            // Leaf node
+            let block_fp = self.leaf_block_fp();
             self.leaf.seek(block_fp)?;
             // How many points are stored in this leaf cell:
             let count = self.leaf.read_v_int()?;
@@ -3005,13 +3112,8 @@ impl BKDPointTree {
     /// current node. Equivalent to Java's `BKDPointTree.visitLeavesOneByOne`.
     fn visit_leaves_one_by_one(&mut self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
         if self.is_leaf() {
-            // Java's `getLeafBlockFP()` (`BKDReader.java:520-523`).
-            debug_assert!(
-                self.is_leaf(),
-                "nodeID={} is not a leaf",
-                self.current().node_id
-            );
-            let block_fp = self.current().leaf_block_fp;
+            // Leaf node
+            let block_fp = self.leaf_block_fp();
             let mut scratch = self.take_scratch();
             let result = BKDReader::visit_leaf(
                 &mut self.leaf,
@@ -3039,12 +3141,15 @@ impl PointTree for BKDPointTree {
     /// `BKDReader.BKDPointTree.toString()` (`BKDReader.java:995-998`):
     /// `"nodeID=" + nodeID`, the node the cursor is on.
     fn java_to_string(&self) -> String {
-        format!("nodeID={}", self.current().node_id)
+        format!("nodeID={}", self.node_id)
     }
+
+    /// Equivalent to `BKDPointTree.clone()` (`BKDReader.java:342-376`): a tree
+    /// rooted at the current node, over fresh clones of both inputs, sharing
+    /// the leaf scratch, with the current level's leaf-block file pointer and,
+    /// for an inner node, its child positions, split value, negative-delta
+    /// flags and split dimension.
     fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
-        // Re-root at the current node: the clone's stack holds only the current
-        // frame, so its `move_to_parent` stops here. Fresh input clones keep
-        // the clone independent of the original's stream position.
         let inner = self
             .inner
             .clone_input()
@@ -3053,19 +3158,37 @@ impl PointTree for BKDPointTree {
             .leaf
             .clone_input()
             .expect("INVARIANT: cloning a readable index input does not fail");
-        Ok(Box::new(Self {
-            config: self.config.clone(),
-            version: self.version,
-            num_leaves: self.num_leaves,
+        let level = self.level;
+        let mut index = Self::with_state(
+            self.config.clone(),
+            self.version,
+            self.num_leaves,
             inner,
             leaf,
-            stack: vec![self.current().clone()],
-            point_count: self.point_count,
-            last_leaf_node_point_count: self.last_leaf_node_point_count,
-            right_most_leaf_node: self.right_most_leaf_node,
-            is_tree_balanced: self.is_tree_balanced,
-            scratch: Arc::clone(&self.scratch),
-        }))
+            self.point_count,
+            self.node_id,
+            level,
+            &self.min_packed_value,
+            &self.max_packed_value,
+            Arc::clone(&self.scratch),
+            self.is_tree_balanced,
+        );
+        index.leaf_block_fp_stack[level] = self.leaf_block_fp_stack[level];
+        if !self.is_leaf() {
+            // copy node data
+            let num_index_dims = self.config.num_index_dims as usize;
+            let len = self.config.packed_index_bytes_length() as usize;
+            index.right_node_positions[level] = self.right_node_positions[level];
+            index.read_node_data_positions[level] = self.read_node_data_positions[level];
+            index.split_values_stack[level * len..(level + 1) * len]
+                .copy_from_slice(self.split_value(level));
+            index.negative_deltas[level * num_index_dims..(level + 1) * num_index_dims]
+                .copy_from_slice(
+                    &self.negative_deltas[level * num_index_dims..(level + 1) * num_index_dims],
+                );
+            index.split_dims[level] = self.split_dims[level];
+        }
+        Ok(Box::new(index))
     }
 
     fn move_to_child(&mut self) -> Result<bool> {
@@ -3073,46 +3196,48 @@ impl PointTree for BKDPointTree {
             return Ok(false);
         }
         self.reset_node_data_position()?;
+        self.push_bounds_left();
         self.push_left()?;
         Ok(true)
     }
 
     fn move_to_sibling(&mut self) -> Result<bool> {
-        if !self.is_left_node() || self.stack.len() == 1 {
+        if !self.is_left_node() || self.is_root_node() {
             return Ok(false);
         }
-        // Move to the parent, then push the right child. The parent becomes
-        // the current node after `pop`, and `push_right` seeks to its recorded
-        // right-child position.
         self.pop();
+        self.pop_bounds(true);
+        self.push_bounds_right();
         self.push_right()?;
         // Java's `nodeExists()`: `nodeID - leafNodeOffset < leafNodeOffset`.
-        debug_assert!(self.current().node_id - self.num_leaves < self.num_leaves);
+        debug_assert!(self.node_id - self.num_leaves < self.num_leaves);
         Ok(true)
     }
 
     fn move_to_parent(&mut self) -> Result<bool> {
-        if self.stack.len() == 1 {
+        if self.is_root_node() {
             return Ok(false);
         }
+        let max = self.is_left_node();
         self.pop();
+        self.pop_bounds(max);
         Ok(true)
     }
 
     fn min_packed_value(&self) -> Result<&[u8]> {
-        Ok(&self.current().min_packed)
+        Ok(&self.min_packed_value)
     }
 
     fn max_packed_value(&self) -> Result<&[u8]> {
-        Ok(&self.current().max_packed)
+        Ok(&self.max_packed_value)
     }
 
     fn size(&self) -> Result<i64> {
-        let mut left_most = self.current().node_id;
+        let mut left_most = self.node_id;
         while left_most < self.num_leaves {
             left_most *= 2;
         }
-        let mut right_most = self.current().node_id;
+        let mut right_most = self.node_id;
         while right_most < self.num_leaves {
             right_most = right_most * 2 + 1;
         }
@@ -3122,9 +3247,9 @@ impl PointTree for BKDPointTree {
             right_most - left_most + 1 + self.num_leaves
         };
         debug_assert!(
-            num_leaves == self.get_num_leaves_slow(self.current().node_id),
+            num_leaves == self.get_num_leaves_slow(self.node_id),
             "{num_leaves} {}",
-            self.get_num_leaves_slow(self.current().node_id)
+            self.get_num_leaves_slow(self.node_id)
         );
         if self.is_tree_balanced {
             return size_from_balanced_tree(
@@ -6845,30 +6970,47 @@ mod tests {
         let config = BKDConfig::of(2, 2, 4, 8).unwrap();
         let num_leaves = 4;
 
-        fn read_one(config: &BKDConfig, num_leaves: i32, code: i32) -> Result<BKDTreeNode> {
+        /// The split dimension and split value `readNodeData(true)` decodes
+        /// for node 2, the left child of the root.
+        struct ReadNode {
+            split_dim: i32,
+            split_value: Vec<u8>,
+        }
+
+        fn read_one(config: &BKDConfig, num_leaves: i32, code: i32) -> Result<ReadNode> {
             let mut out = MockIndexOutput::new("test", "index.bin");
             out.write_v_int(code).unwrap();
             // Enough trailing bytes for the longest suffix any code can name.
             out.write_bytes(&[0xaa; 16], 0, 16).unwrap();
-            let mut input: Box<dyn IndexInput> =
+            let inner: Box<dyn IndexInput> =
                 Box::new(MockIndexInput::new(out.into_inner(), "index.bin"));
-            let parent = BKDTreeNode {
-                node_id: 1,
-                leaf_block_fp: 0,
-                split_value: vec![0u8; config.packed_index_bytes_length() as usize],
-                // Dimension 1, so the descent overrides `negative_deltas[1]`
-                // and leaves dimension 0 false — which is the dimension the
-                // one readable corrupt code names.
-                split_dim: 1,
-                min_packed: vec![0u8; config.packed_index_bytes_length() as usize],
-                max_packed: vec![0xffu8; config.packed_index_bytes_length() as usize],
-                negative_deltas: vec![false; config.num_index_dims as usize],
-                right_node_position: 0,
-                first_child_position: 0,
-            };
-            let mut child = parent.child(num_leaves, true)?;
-            BKDReader::read_node_data(&mut input, &parent, &mut child, true, config, num_leaves)?;
-            Ok(child)
+            let leaf: Box<dyn IndexInput> = Box::new(MockIndexInput::new(Vec::new(), "data.bin"));
+            let len = config.packed_index_bytes_length() as usize;
+            // A cursor on the root (node 1, level 1) whose split value is all
+            // zeros.
+            let mut tree = BKDPointTree::with_state(
+                config.clone(),
+                VERSION_CURRENT,
+                num_leaves,
+                inner,
+                leaf,
+                i64::from(num_leaves * config.max_points_in_leaf_node),
+                1,
+                1,
+                &vec![0u8; len],
+                &vec![0xffu8; len],
+                Arc::new(Mutex::new(Some(LeafScratch::new(config)))),
+                false,
+            );
+            // The root splits on dimension 1, so the descent overrides
+            // `negativeDeltas[2][1]` and leaves dimension 0 false — which is
+            // the dimension the one readable corrupt code names.
+            tree.split_dims[1] = 1;
+            tree.push_left()?;
+            Ok(ReadNode {
+                split_dim: tree.split_dims[2],
+                split_value: tree.split_value(2).to_vec(),
+            })
         }
 
         // `splitDim = code % 2`, `prefix = (code / 2) % 5`,
@@ -8082,11 +8224,12 @@ mod tests {
     // Regression tests for task #125 (BKD cursor desync after subtree pruning)
     // -------------------------------------------------------------------------
 
-    /// Snapshot of one node captured during a manual tree walk. The walk
-    /// mirrors `BkdReader::visit` exactly (including the right-child seek and
-    /// the negative-delta / cell-narrowing order fixed by task #125), so the
-    /// invariants asserted in the tests below exercise the same code path the
-    /// query traversal uses.
+    /// Snapshot of one node captured during a manual tree walk. The walk moves
+    /// a [`BKDPointTree`] with `move_to_child`, `move_to_sibling` and
+    /// `move_to_parent` — the moves `intersect` makes, including the
+    /// right-child seek and the negative-delta / cell-narrowing order fixed by
+    /// task #125 — so the invariants asserted in the tests below exercise the
+    /// same code path the query traversal uses.
     #[allow(dead_code)]
     struct NodeInfo {
         node_id: i32,
@@ -8105,15 +8248,15 @@ mod tests {
         points: Vec<(i32, Vec<u8>)>,
     }
 
-    /// Reads the doc IDs of a leaf block directly from the data file and maps
-    /// them to their packed values via `by_doc`.
+    /// Reads the doc IDs of the leaf block at `leaf_block_fp` directly from the
+    /// data file and maps them to their packed values via `by_doc`.
     fn read_leaf_points(
         reader: &BKDReader,
-        node: &BKDTreeNode,
+        leaf_block_fp: i64,
         by_doc: &std::collections::HashMap<i32, Vec<u8>>,
     ) -> Vec<(i32, Vec<u8>)> {
         let mut leaf = reader.data_in.clone_input().unwrap();
-        leaf.seek(node.leaf_block_fp).unwrap();
+        leaf.seek(leaf_block_fp).unwrap();
         let count = leaf.read_v_int().unwrap() as usize;
         let mut doc_ids = vec![0i32; count];
         DocIdsWriter::read_doc_ids(leaf.as_mut(), count as i32, &mut doc_ids, reader.version)
@@ -8124,29 +8267,32 @@ mod tests {
             .collect()
     }
 
-    /// Recursive tree walk that collects one `NodeInfo` per node. It descends
-    /// both children for every internal node using the SAME machinery as
-    /// `BkdReader::visit`: the left child is read in place (no seek, matching
-    /// Java's `pushLeft`), and the right child is sought to
-    /// `node.right_node_position` (matching Java's `pushRight`) before being
-    /// read. This is the exact path that task #125's seek fix repairs.
+    /// Recursive tree walk that collects one `NodeInfo` per node. For every
+    /// internal node it descends to the left child (`move_to_child`, the left
+    /// child read in place as Java's `pushLeft`), then to the right one
+    /// (`move_to_sibling`, sought to the recorded right-child position as
+    /// Java's `pushRight`), and climbs back (`move_to_parent`). The cursor is
+    /// left on the node it was given.
     fn walk_collect(
         reader: &BKDReader,
-        inner: &mut Box<dyn IndexInput>,
-        node: BKDTreeNode,
+        tree: &mut BKDPointTree,
         parent_split_dim: i32,
         parent_split_value: &[u8],
         by_doc: &std::collections::HashMap<i32, Vec<u8>>,
         out: &mut Vec<NodeInfo>,
     ) -> Vec<(i32, Vec<u8>)> {
-        if node.node_id >= reader.num_leaves {
-            let pts = read_leaf_points(reader, &node, by_doc);
+        let node_id = tree.node_id;
+        let min_packed = tree.min_packed_value.clone();
+        let max_packed = tree.max_packed_value.clone();
+        if tree.is_leaf() {
+            let pts = read_leaf_points(reader, tree.leaf_block_fp(), by_doc);
             out.push(NodeInfo {
-                node_id: node.node_id,
-                split_dim: node.split_dim,
-                split_value: node.split_value.clone(),
-                min_packed: node.min_packed.clone(),
-                max_packed: node.max_packed.clone(),
+                node_id,
+                // A leaf has no split of its own; it reports its parent's.
+                split_dim: parent_split_dim,
+                split_value: parent_split_value.to_vec(),
+                min_packed,
+                max_packed,
                 is_leaf: true,
                 parent_split_dim,
                 parent_split_value: parent_split_value.to_vec(),
@@ -8154,56 +8300,27 @@ mod tests {
             });
             pts
         } else {
-            let mut left = node.child(reader.num_leaves, true).unwrap();
-            BKDReader::read_node_data(
-                inner,
-                &node,
-                &mut left,
-                true,
-                &reader.config,
-                reader.num_leaves,
-            )
-            .unwrap();
-            let left_pts = walk_collect(
-                reader,
-                inner,
-                left,
-                node.split_dim,
-                &node.split_value,
-                by_doc,
-                out,
-            );
-            let mut right = node.child(reader.num_leaves, false).unwrap();
+            let split_dim = tree.split_dims[tree.level];
+            let split_value = tree.split_value(tree.level).to_vec();
+            assert!(tree.move_to_child().unwrap());
+            let left_pts = walk_collect(reader, tree, split_dim, &split_value, by_doc, out);
             // The seek that task #125 (Defect 1) restored: without it the
             // right child is decoded from a desynchronised cursor whenever the
             // left subtree was pruned.
-            inner.seek(node.right_node_position).unwrap();
-            BKDReader::read_node_data(
-                inner,
-                &node,
-                &mut right,
-                false,
-                &reader.config,
-                reader.num_leaves,
-            )
-            .unwrap();
-            let right_pts = walk_collect(
-                reader,
-                inner,
-                right,
-                node.split_dim,
-                &node.split_value,
-                by_doc,
-                out,
-            );
+            assert!(tree.move_to_sibling().unwrap());
+            let right_pts = walk_collect(reader, tree, split_dim, &split_value, by_doc, out);
+            assert!(tree.move_to_parent().unwrap());
+            assert_eq!(tree.node_id, node_id);
+            assert_eq!(tree.min_packed_value, min_packed, "bounds restored");
+            assert_eq!(tree.max_packed_value, max_packed, "bounds restored");
             let mut pts = left_pts;
             pts.extend(right_pts);
             out.push(NodeInfo {
-                node_id: node.node_id,
-                split_dim: node.split_dim,
-                split_value: node.split_value.clone(),
-                min_packed: node.min_packed.clone(),
-                max_packed: node.max_packed.clone(),
+                node_id,
+                split_dim,
+                split_value,
+                min_packed,
+                max_packed,
                 is_leaf: false,
                 parent_split_dim,
                 parent_split_value: parent_split_value.to_vec(),
@@ -8214,38 +8331,16 @@ mod tests {
     }
 
     /// Builds the full tree from `reader` and returns one `NodeInfo` per node,
-    /// in depth-first order. The root is read the same way `intersect` reads
-    /// it (is_left = false, parent = a clone of the root with split_dim = -1).
+    /// in depth-first order, walking a cursor from the root exactly as
+    /// `intersect` does.
     fn build_tree_info(reader: &BKDReader, points: &[(i32, Vec<u8>)]) -> Vec<NodeInfo> {
         let mut by_doc = std::collections::HashMap::new();
         for (d, p) in points {
             by_doc.insert(*d, p.clone());
         }
-        let mut inner = reader.index_in.clone_input().unwrap();
-        inner.seek(reader.index_start_pointer).unwrap();
-        let mut root = BKDTreeNode {
-            node_id: 1,
-            leaf_block_fp: 0,
-            split_value: vec![0u8; reader.config.packed_index_bytes_length() as usize],
-            split_dim: -1,
-            min_packed: reader.min_packed_value.clone(),
-            max_packed: reader.max_packed_value.clone(),
-            negative_deltas: vec![false; reader.config.num_index_dims as usize],
-            right_node_position: 0,
-            first_child_position: 0,
-        };
-        let parent = root.clone();
-        BKDReader::read_node_data(
-            &mut inner,
-            &parent,
-            &mut root,
-            false,
-            &reader.config,
-            reader.num_leaves,
-        )
-        .unwrap();
+        let mut tree = BKDPointTree::new(reader).unwrap();
         let mut out = Vec::new();
-        walk_collect(reader, &mut inner, root, -1, &[], &by_doc, &mut out);
+        walk_collect(reader, &mut tree, -1, &[], &by_doc, &mut out);
         out
     }
 

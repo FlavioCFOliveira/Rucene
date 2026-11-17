@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::index::field_infos::FieldName;
 use crate::index::{DocValuesType, IndexOptions};
 use crate::internal::hppc::IntObjectHashMap;
 use crate::util::java_collections::JavaHashMap;
@@ -138,9 +139,13 @@ fn get_suffix(format_name: &str, suffix: impl std::fmt::Display) -> String {
     format!("{}_{}", format_name, suffix)
 }
 
-fn get_full_segment_suffix(outer_segment_suffix: &str, segment_suffix: &str) -> String {
+/// `PerFieldDocValuesFormat.getFullSegmentSuffix` (`PerFieldDocValuesFormat.java:250-256`),
+/// which returns `segmentSuffix` itself when the outer suffix is empty.
+fn get_full_segment_suffix(outer_segment_suffix: &str, segment_suffix: String) -> String {
     if outer_segment_suffix.is_empty() {
-        segment_suffix.to_string()
+        // PERF: the argument itself, as Java returns the same `String`, not a
+        // copy of it.
+        segment_suffix
     } else {
         format!("{}_{}", outer_segment_suffix, segment_suffix)
     }
@@ -422,16 +427,23 @@ struct FieldsReader {
     /// iteration order is the order the producers are closed in, which decides
     /// whose failure surfaces when several fail.
     formats: JavaHashMap<Box<dyn FieldsProducer>>,
-    fields: BTreeMap<String, String>,
+    /// Java's `Map<String, FieldsProducer> fields = new TreeMap<>()`
+    /// (`PerFieldPostingsFormat.java:272`), keyed by each field's own name
+    /// (see [`FieldName`]) and pointing at the segment suffix of its producer
+    /// in [`Self::formats`].
+    fields: BTreeMap<FieldName, String>,
 }
 
 impl FieldsReader {
     fn new(read_state: &SegmentReadState) -> Result<Self> {
         let mut formats: JavaHashMap<Box<dyn FieldsProducer>> = JavaHashMap::new();
-        let mut fields: BTreeMap<String, String> = BTreeMap::new();
+        // A `FieldName` orders by the field's name alone, which never changes;
+        // the interior mutability the lint sees is the attribute map.
+        #[allow(clippy::mutable_key_type)]
+        let mut fields: BTreeMap<FieldName, String> = BTreeMap::new();
 
         let result = (|| -> Result<()> {
-            for fi in read_state.field_infos.iter() {
+            for fi in read_state.field_infos.iter_shared() {
                 if fi.index_options != IndexOptions::NONE {
                     // null formatName means the field is in fieldInfos, but has no postings!
                     // (`PerFieldPostingsFormat.java:305-307`)
@@ -454,7 +466,9 @@ impl FieldsReader {
                         let state = read_state.with_new_suffix(segment_suffix.clone());
                         formats.insert(segment_suffix.clone(), format.fields_producer(&state)?);
                     }
-                    fields.insert(fi.name.clone(), segment_suffix);
+                    // PERF: `fields.put(fieldName, ...)` keys by the field's
+                    // own name (`PerFieldPostingsFormat.java:320`), not a copy.
+                    fields.insert(FieldName::new(fi), segment_suffix);
                 }
             }
             Ok(())
@@ -502,7 +516,7 @@ impl Fields for FieldsReader {
     }
 
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        let names: Vec<String> = self.fields.keys().cloned().collect();
+        let names: Vec<String> = self.fields.keys().map(|k| k.as_str().to_owned()).collect();
         Box::new(names.into_iter())
     }
 }
@@ -769,7 +783,7 @@ impl<'a> DvFieldsWriter<'a> {
 
             let segment_suffix = get_full_segment_suffix(
                 &self.segment_write_state.segment_suffix,
-                &get_suffix(&format_name, suffix),
+                get_suffix(&format_name, suffix),
             );
             let state = self.segment_write_state.with_new_suffix(segment_suffix);
             let consumer = format.fields_consumer(&state)?;
@@ -936,7 +950,7 @@ impl DvFieldsReader {
                     let format = doc_values_lookup(&format_name)?;
                     let segment_suffix = get_full_segment_suffix(
                         &read_state.segment_suffix,
-                        &get_suffix(&format_name, &suffix),
+                        get_suffix(&format_name, &suffix),
                     );
                     if !formats.contains_key(&segment_suffix) {
                         let state = read_state.with_new_suffix(segment_suffix.clone());
@@ -1259,7 +1273,7 @@ impl KnnFieldsWriter {
             self.suffixes.insert(format_name.clone(), suffix);
             let segment_suffix = get_full_segment_suffix(
                 &self.segment_write_state.segment_suffix,
-                &get_suffix(&format_name, suffix),
+                get_suffix(&format_name, suffix),
             );
             let state = self.segment_write_state.with_new_suffix(segment_suffix);
             let writer = format.fields_writer(&state)?;
@@ -1415,7 +1429,7 @@ impl KnnFieldsReader {
                     let format = knn_vectors_lookup(&format_name)?;
                     let segment_suffix = get_full_segment_suffix(
                         &read_state.segment_suffix,
-                        &get_suffix(&format_name, &suffix),
+                        get_suffix(&format_name, &suffix),
                     );
                     if !formats.contains_key(&segment_suffix) {
                         let state = read_state.with_new_suffix(segment_suffix.clone());
@@ -2123,20 +2137,28 @@ mod tests {
         let body_info = state.field_infos.field_info("body").unwrap();
         let title_info = state.field_infos.field_info("title").unwrap();
         assert_eq!(
-            body_info.get_attribute(PER_FIELD_POSTINGS_FORMAT_KEY),
-            Some("FormatA".to_string())
+            body_info
+                .get_attribute(PER_FIELD_POSTINGS_FORMAT_KEY)
+                .as_deref(),
+            Some("FormatA")
         );
         assert_eq!(
-            title_info.get_attribute(PER_FIELD_POSTINGS_FORMAT_KEY),
-            Some("FormatB".to_string())
+            title_info
+                .get_attribute(PER_FIELD_POSTINGS_FORMAT_KEY)
+                .as_deref(),
+            Some("FormatB")
         );
         assert_eq!(
-            body_info.get_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY),
-            Some("0".to_string())
+            body_info
+                .get_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY)
+                .as_deref(),
+            Some("0")
         );
         assert_eq!(
-            title_info.get_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY),
-            Some("0".to_string())
+            title_info
+                .get_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY)
+                .as_deref(),
+            Some("0")
         );
     }
 
