@@ -40,16 +40,22 @@ pub struct PortugueseLightStemFilterLogic {
     term_att: AttributeHandle<dyn CharTermAttribute>,
     /// `private final KeywordAttribute keywordAttr = addAttribute(KeywordAttribute.class)`.
     keyword_attr: AttributeHandle<dyn KeywordAttribute>,
-    /// The term's UTF-16 units, Java's `termAtt.buffer()`, which the stemmer
-    /// edits in place; kept across tokens so that no token allocates.
+    /// The term's UTF-16 units when it holds a character beyond the Basic
+    /// Multilingual Plane, which the stemmer then edits; kept across tokens
+    /// so that no token allocates.
     buffer: Vec<u16>,
 }
 
 impl TokenFilterLogic for PortugueseLightStemFilterLogic {
     /// Equivalent to `PortugueseLightStemFilter.incrementToken()`. The stemmer
-    /// reads the term's UTF-16 units, Java's `termAtt.buffer()`, and may
-    /// change them in place; the first `newlen` units become the term, as
-    /// Java's `termAtt.setLength(newlen)` keeps them.
+    /// edits Java's `termAtt.buffer()` in place, and the first `newlen` units
+    /// become the term, as Java's `termAtt.setLength(newlen)` keeps them.
+    ///
+    /// The term buffer holds `char`s (the divergence declared on
+    /// `CharTermAttribute`). When every one is in the Basic Multilingual
+    /// Plane, each is one UTF-16 unit and the stemmer edits the buffer
+    /// itself, as Java's does; otherwise it edits the term's UTF-16 units,
+    /// which then become the term.
     fn increment_token(
         &mut self,
         _source: &mut AttributeSource,
@@ -59,11 +65,22 @@ impl TokenFilterLogic for PortugueseLightStemFilterLogic {
             let is_keyword = self.keyword_attr.borrow().is_keyword();
             if !is_keyword {
                 let mut term_att = self.term_att.borrow_mut();
-                term_to_utf16(&term_att.buffer()[..term_att.length()], &mut self.buffer);
-                let length = self.buffer.len();
-                let newlen = self.stemmer.stem(&mut self.buffer, length);
-                // `termAtt.setLength(newlen)` over the edited buffer.
-                set_term_utf16(&mut *term_att, &self.buffer[..newlen]);
+                let length = term_att.length();
+                if term_att.buffer()[..length]
+                    .iter()
+                    .all(|&c| (c as u32) < 0x1_0000)
+                {
+                    // PERF: in place, as Java, with no conversion of the
+                    // term to UTF-16 and back (task #546, round 4).
+                    let newlen = self.stemmer.stem(term_att.buffer_mut(), length);
+                    term_att.set_length(newlen);
+                } else {
+                    term_to_utf16(&term_att.buffer()[..length], &mut self.buffer);
+                    let length = self.buffer.len();
+                    let newlen = self.stemmer.stem(&mut self.buffer, length);
+                    // `termAtt.setLength(newlen)` over the edited buffer.
+                    set_term_utf16(&mut *term_att, &self.buffer[..newlen]);
+                }
             }
             Ok(true)
         } else {

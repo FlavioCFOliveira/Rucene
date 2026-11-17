@@ -779,6 +779,65 @@ impl FieldType {
         }
     }
 
+    /// [`new_from`](Self::new_from) for a source that is a `FieldType`,
+    /// built in the [`Arc`] a [`Field`] holds it through: the same copy,
+    /// `new FieldType(ref)` (`FieldType.java:55-76`), with the properties
+    /// read directly instead of through [`IndexableFieldType`] and written
+    /// into the shared object, as Java assigns them to the new object.
+    ///
+    /// The attribute map is copied only when it holds an entry, as Java
+    /// copies `ref.getAttributes()` only when it is not `null`
+    /// (`FieldType.java:72-74`). An empty map is Java's `null` map:
+    /// [`put_attribute`](Self::put_attribute) is the only way an entry is
+    /// added and none is ever removed, and the copy of an empty map is a new
+    /// one.
+    // PERF: `DocumentStoredFieldVisitor::string_field` copies
+    // `TextField.TYPE_STORED` for every stored string value it loads. Through
+    // `new_from`, the 17 vtable calls and the clone of the empty map under its
+    // lock, then the move of the assembled value into its `Arc` (byte stores
+    // reloaded as 16-byte words, store-forwarding stalls), were most of the
+    // visitor (profiles of task #546, lanes G and I).
+    fn new_shared_from_field_type(other: &FieldType) -> Arc<Self> {
+        let copy = Arc::new(Self::new());
+        copy.stored.store(other.stored(), FT_ORDER);
+        copy.tokenized.store(other.tokenized(), FT_ORDER);
+        copy.store_term_vectors
+            .store(other.store_term_vectors(), FT_ORDER);
+        copy.store_term_vector_offsets
+            .store(other.store_term_vector_offsets(), FT_ORDER);
+        copy.store_term_vector_positions
+            .store(other.store_term_vector_positions(), FT_ORDER);
+        copy.store_term_vector_payloads
+            .store(other.store_term_vector_payloads(), FT_ORDER);
+        copy.omit_norms.store(other.omit_norms(), FT_ORDER);
+        copy.index_options.set(other.index_options());
+        copy.doc_values_type.set(other.doc_values_type());
+        copy.doc_values_skip_index_type
+            .set(other.doc_values_skip_index_type());
+        copy.dimension_count
+            .store(other.point_dimension_count(), FT_ORDER);
+        copy.index_dimension_count
+            .store(other.point_index_dimension_count(), FT_ORDER);
+        copy.dimension_num_bytes
+            .store(other.point_num_bytes(), FT_ORDER);
+        copy.vector_dimension
+            .store(other.vector_dimension(), FT_ORDER);
+        copy.vector_encoding.set(other.vector_encoding());
+        copy.vector_similarity_function
+            .set(other.vector_similarity_function());
+        let attributes = other
+            .attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !attributes.is_empty() {
+            *copy
+                .attributes
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = attributes.clone();
+        }
+        copy
+    }
+
     fn check_if_frozen(&self) -> Result<()> {
         if self.is_frozen() {
             Err(LuceneError::illegal_state(
@@ -1165,25 +1224,35 @@ fn require_analyzer(analyzer: Option<&dyn Analyzer>) -> Result<&dyn Analyzer> {
     analyzer.ok_or_else(LuceneError::null_pointer)
 }
 
-/// `analyzer.tokenStream(name, readerValue())`.
+/// `analyzer.tokenStream(name, readerValue())`, through the wrapper `reuse`
+/// holds when it wraps the same stream (see
+/// [`SharedTokenStream::reuse_or_new`](crate::analysis::SharedTokenStream::reuse_or_new)).
 fn reader_token_stream(
     analyzer: Option<&dyn Analyzer>,
     name: &str,
     reader: &SharedReader,
+    reuse: &mut Option<Box<dyn TokenStream>>,
 ) -> Result<Box<dyn TokenStream>> {
     let stream = require_analyzer(analyzer)?
         .token_stream(name, Box::new(SharedCharReader(Arc::clone(reader))))?;
-    Ok(Box::new(crate::analysis::SharedTokenStream::new(stream)))
+    Ok(crate::analysis::SharedTokenStream::reuse_or_new(
+        stream, reuse,
+    ))
 }
 
-/// `analyzer.tokenStream(name, stringValue())`.
+/// `analyzer.tokenStream(name, stringValue())`, through the wrapper `reuse`
+/// holds when it wraps the same stream (see
+/// [`SharedTokenStream::reuse_or_new`](crate::analysis::SharedTokenStream::reuse_or_new)).
 fn string_token_stream(
     analyzer: Option<&dyn Analyzer>,
     name: &str,
     value: &str,
+    reuse: &mut Option<Box<dyn TokenStream>>,
 ) -> Result<Box<dyn TokenStream>> {
     let stream = require_analyzer(analyzer)?.token_stream_from_str(name, value)?;
-    Ok(Box::new(crate::analysis::SharedTokenStream::new(stream)))
+    Ok(crate::analysis::SharedTokenStream::reuse_or_new(
+        stream, reuse,
+    ))
 }
 
 /// A field in a document.
@@ -1733,13 +1802,13 @@ impl IndexableField for Field {
             ));
         }
         if let Some(ts) = self.token_stream_value() {
-            return Ok(Box::new(crate::analysis::SharedTokenStream::new(ts)));
+            return Ok(crate::analysis::SharedTokenStream::reuse_or_new(ts, reuse));
         }
         if let Some(reader) = self.reader_value() {
-            return reader_token_stream(analyzer, &self.name, &reader);
+            return reader_token_stream(analyzer, &self.name, &reader, reuse);
         }
         if let Some(s) = self.string_value() {
-            return string_token_stream(analyzer, &self.name, &s);
+            return string_token_stream(analyzer, &self.name, &s, reuse);
         }
         // `"... got " + this` (`Field.java:501-502`).
         Err(LuceneError::illegal_argument(format!(
@@ -2446,14 +2515,15 @@ impl IndexableField for TextField {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        _reuse: &mut Option<Box<dyn TokenStream>>,
+        reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         match &*self.fields_data.borrow() {
-            FieldData::TokenStream(ts) => Ok(Box::new(crate::analysis::SharedTokenStream::new(
+            FieldData::TokenStream(ts) => Ok(crate::analysis::SharedTokenStream::reuse_or_new(
                 Arc::clone(ts),
-            ))),
-            FieldData::Reader(reader) => reader_token_stream(analyzer, &self.name, reader),
-            FieldData::String(s) => string_token_stream(analyzer, &self.name, s),
+                reuse,
+            )),
+            FieldData::Reader(reader) => reader_token_stream(analyzer, &self.name, reader, reuse),
+            FieldData::String(s) => string_token_stream(analyzer, &self.name, s, reuse),
             // `"... got " + this` (`Field.java:501-502`).
             _ => Err(LuceneError::illegal_argument(format!(
                 "Field must have either TokenStream, String, Reader or Number value; got {self}"
@@ -2790,15 +2860,18 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
         // Lucene rebuilds a `TextField.TYPE_STORED` and copies back the three
         // properties the segment's FieldInfo does carry, so that a document
         // round-tripped through the index keeps them.
-        let field_type = FieldType::new_from(&**text_field_type_stored());
+        let field_type = FieldType::new_shared_from_field_type(text_field_type_stored());
         field_type.set_store_term_vectors(field_info.has_term_vectors())?;
         field_type.set_omit_norms(field_info.omits_norms())?;
         field_type.set_index_options(field_info.index_options)?;
-        self.doc.add(StoredField::new_with_field_type(
+        // `new StoredField(name, value, ft)`, which is `Field(name, value,
+        // ft)` (`StoredField.java:143-145`), as `StoredField::new_with_field_type`
+        // is, given the type already in the `Arc` the field holds.
+        self.doc.add(StoredField(Field::new(
             &field_info.name,
             value,
             field_type,
-        )?);
+        )?));
         Ok(())
     }
 
@@ -9374,6 +9447,117 @@ mod tests {
         assert!(field_type.store_term_vectors());
         assert!(field_type.omit_norms());
         assert_eq!(field_type.index_options(), IndexOptions::DOCS_AND_FREQS);
+    }
+
+    /// The visitor's copy of a concrete type, `new_shared_from_field_type`,
+    /// is `new_from`'s copy, `new FieldType(ref)`: every property, the frozen
+    /// flag and identity left unset, the attributes copied in their order
+    /// when there are some, and a new empty map when there are none.
+    #[test]
+    fn new_shared_from_field_type_copies_as_new_from() {
+        let with_attributes = FieldType::new();
+        with_attributes.set_stored(true).unwrap();
+        with_attributes.set_tokenized(false).unwrap();
+        with_attributes.set_store_term_vectors(true).unwrap();
+        with_attributes.set_store_term_vector_offsets(true).unwrap();
+        with_attributes
+            .set_store_term_vector_positions(true)
+            .unwrap();
+        with_attributes
+            .set_store_term_vector_payloads(true)
+            .unwrap();
+        with_attributes.set_omit_norms(true).unwrap();
+        with_attributes
+            .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+            .unwrap();
+        with_attributes
+            .set_doc_values_type(DocValuesType::SORTED)
+            .unwrap();
+        with_attributes
+            .set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)
+            .unwrap();
+        with_attributes
+            .set_dimensions_with_index_count(3, 2, 4)
+            .unwrap();
+        with_attributes
+            .set_vector_attributes(
+                8,
+                VectorEncoding::BYTE,
+                VectorSimilarityFunction::DOT_PRODUCT,
+            )
+            .unwrap();
+        with_attributes
+            .put_attribute("b".to_string(), "2".to_string())
+            .unwrap();
+        with_attributes
+            .put_attribute("a".to_string(), "1".to_string())
+            .unwrap();
+        with_attributes.freeze();
+        for source in [&**text_field_type_stored(), &with_attributes] {
+            let expected = FieldType::new_from(source);
+            let copy = FieldType::new_shared_from_field_type(source);
+            assert_eq!(format!("{copy:?}"), format!("{expected:?}"));
+            assert!(!copy.is_frozen());
+            assert_eq!(copy.frozen_field_type_identity(), None);
+            assert_eq!(
+                copy.attributes().table_length(),
+                expected.attributes().table_length()
+            );
+        }
+        let copy = FieldType::new_shared_from_field_type(&with_attributes);
+        assert_eq!(copy.attributes().len(), 2);
+        let plain = FieldType::new_shared_from_field_type(text_field_type_stored());
+        assert!(plain.attributes().is_empty());
+        assert_eq!(plain.attributes().table_length(), 0);
+    }
+
+    /// A text field's next value is tokenized through the stream its previous
+    /// value returned, as Java's `Field.tokenStream` returns the analyzer's
+    /// one reused stream object: `TextField` and `Field` take the wrapper out
+    /// of `reuse` when it wraps the analyzer's stream, and produce the next
+    /// value's tokens through it.
+    #[test]
+    fn text_fields_reuse_the_stream_of_their_previous_value() -> Result<()> {
+        fn terms(stream: &mut dyn TokenStream) -> Result<Vec<String>> {
+            let mut terms = Vec::new();
+            stream.reset()?;
+            while stream.increment_token()? {
+                let term = stream
+                    .attribute_source()
+                    .get_attribute_interface::<dyn crate::analysis::CharTermAttribute>()
+                    .unwrap();
+                terms.push(term.buffer()[..term.length()].iter().collect());
+            }
+            stream.end()?;
+            stream.close()?;
+            Ok(terms)
+        }
+        fn address(stream: &dyn TokenStream) -> *const () {
+            (stream as *const dyn TokenStream).cast::<()>()
+        }
+        let analyzer = crate::analysis::standard::StandardAnalyzer::new();
+        let first = TextField::new("body", "Hello World".to_string(), Store::NO)?;
+        let second = TextField::new("body", "second value".to_string(), Store::NO)?;
+        let third = Field::new(
+            "body",
+            "third one".to_string(),
+            Arc::clone(text_field_type_not_stored()),
+        )?;
+        let mut reuse: Option<Box<dyn TokenStream>> = None;
+        let mut stream = first.token_stream(Some(&analyzer), &mut reuse)?;
+        assert_eq!(terms(stream.as_mut())?, vec!["hello", "world"]);
+        let held = address(stream.as_ref());
+        reuse = Some(stream);
+        let mut stream = second.token_stream(Some(&analyzer), &mut reuse)?;
+        assert!(reuse.is_none(), "the wrapper is taken out of the slot");
+        assert_eq!(address(stream.as_ref()), held);
+        assert_eq!(terms(stream.as_mut())?, vec!["second", "value"]);
+        reuse = Some(stream);
+        let mut stream = third.token_stream(Some(&analyzer), &mut reuse)?;
+        assert!(reuse.is_none(), "the wrapper is taken out of the slot");
+        assert_eq!(address(stream.as_ref()), held);
+        assert_eq!(terms(stream.as_mut())?, vec!["third", "one"]);
+        Ok(())
     }
 }
 

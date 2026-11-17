@@ -263,7 +263,7 @@ impl JavaPattern {
     pub(crate) fn may_match_from(&self, haystack: &str, pos: usize) -> bool {
         match self.precheck() {
             Some(Precheck::Literal(literal)) => match haystack.get(pos..) {
-                Some(rest) => rest.contains(literal.as_str()),
+                Some(rest) => contains_literal(rest, literal),
                 // Not reached: the matcher searches from a character
                 // boundary. A byte search answers the same: the UTF-8 bytes
                 // of a literal match a valid haystack only at a boundary.
@@ -402,6 +402,39 @@ enum Precheck {
     Literal(String),
     /// The pre-check pattern, run by the engine as a plain automaton.
     Automaton(fancy_regex::Regex),
+}
+
+/// Whether `needle` occurs in `haystack`: [`str::contains`], with a haystack
+/// too short for its vectorised search scanned here.
+///
+/// Both answer the same question by byte comparison (a valid UTF-8 needle
+/// occurs in a valid UTF-8 haystack only at character boundaries), so the
+/// answer is `str::contains`'s for every input.
+// PERF: for a haystack shorter than 16 bytes plus the needle,
+// `str::contains` compares every window through a `bcmp` call
+// (`core::str::pattern::simd_contains`); analysis tokens average about 6
+// bytes, and those calls were 8.9 % of the analysis of the CLI's documents
+// (profile of task #546, lane G). The scan tests the first byte inline and
+// compares the rest only where it matches.
+#[inline]
+fn contains_literal(haystack: &str, needle: &str) -> bool {
+    let (bytes, wanted) = (haystack.as_bytes(), needle.as_bytes());
+    if bytes.len() >= 16 + wanted.len() {
+        return haystack.contains(needle);
+    }
+    let Some((&first, rest)) = wanted.split_first() else {
+        return true;
+    };
+    let Some(last_start) = bytes.len().checked_sub(wanted.len()) else {
+        return false;
+    };
+    (0..=last_start).any(|start| {
+        bytes[start] == first
+            && bytes[start + 1..start + wanted.len()]
+                .iter()
+                .zip(rest)
+                .all(|(a, b)| a == b)
+    })
 }
 
 /// The translation `pattern` anchored at both ends of the input, the
@@ -4804,6 +4837,64 @@ mod tests {
         assert_eq!(one_code_point_class("[a-c]"), None);
         assert_eq!(one_code_point_class("[\\d]"), None);
         assert_eq!(one_code_point_class("[ ]"), None);
+    }
+
+    /// `contains_literal` answers as `str::contains` on both sides of its
+    /// short-haystack threshold: every needle (empty, one byte, the CLI's
+    /// literals, multi-byte, repeated bytes) over every suffix, from each
+    /// character boundary, of haystacks shorter and longer than 16 bytes plus
+    /// the needle.
+    #[test]
+    fn contains_literal_answers_as_str_contains() {
+        let needles = [
+            "",
+            "o",
+            "oes",
+            "aes",
+            "ois",
+            "a.b",
+            "aaa",
+            "ab",
+            "\u{e7}\u{f5}es",
+            "\u{1F600}",
+        ];
+        let haystacks = [
+            "",
+            "a",
+            "oes",
+            "OES",
+            "xoesx",
+            "contratacoes",
+            "aaaaab",
+            "abababab",
+            "a.b",
+            "axb",
+            "\u{e7}\u{f5}es",
+            "\u{1F600}oes\u{e7}",
+            "xxxxxxxxxxxxxxxxxxoe",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+            "administracao central do sistema de saude oes",
+            "\u{e7}\u{e7}\u{e7}\u{e7}\u{e7}\u{e7}\u{e7}\u{e7}\u{e7}\u{e7}\u{f5}es",
+        ];
+        let (mut short, mut long) = (0, 0);
+        for needle in needles {
+            for haystack in haystacks {
+                for start in (0..=haystack.len()).filter(|&i| haystack.is_char_boundary(i)) {
+                    let rest = &haystack[start..];
+                    if rest.len() >= 16 + needle.len() {
+                        long += 1;
+                    } else {
+                        short += 1;
+                    }
+                    assert_eq!(
+                        contains_literal(rest, needle),
+                        rest.contains(needle),
+                        "{needle:?} in {rest:?}"
+                    );
+                }
+            }
+        }
+        assert!(short > 0 && long > 0, "both paths ran: {short} / {long}");
     }
 
     /// The anchored pattern is built on the first `matches()`, shared by the

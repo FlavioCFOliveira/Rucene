@@ -991,13 +991,54 @@ impl<T: TokenFilterLogic> Unwrappable<dyn TokenStream> for TokenFilter<T> {
 pub struct SharedTokenStream {
     inner: Arc<AtomicRefCell<dyn TokenStream>>,
     source: AttributeSource,
+    /// The shared maps' removal count when `source` was built (see
+    /// [`reuse_or_new`](Self::reuse_or_new)).
+    removals: u64,
 }
 
 impl SharedTokenStream {
     /// Wraps `inner` in a stream that shares its attributes.
     pub fn new(inner: Arc<AtomicRefCell<dyn TokenStream>>) -> Self {
         let source = AttributeSource::new_from(inner.borrow().attribute_source());
-        Self { inner, source }
+        let removals = source.shared_removals();
+        Self {
+            inner,
+            source,
+            removals,
+        }
+    }
+
+    /// `stream` wrapped for one more use: the wrapper `reuse` holds, taken
+    /// out of the slot, when it wraps `stream` itself; otherwise a new
+    /// wrapper, and `reuse` is left as it was.
+    ///
+    /// Java's `Field.tokenStream` returns the stream object of the
+    /// analyzer's reused components itself (`Field.java:465-498`,
+    /// `Analyzer.java:153-198`), so every value of a field is inverted
+    /// through the one object `IndexingChain` keeps in its `tokenStream`
+    /// (`IndexingChain.java:1908`); here that object is this wrapper. A reused
+    /// wrapper's view of the shared attributes is first brought up to date,
+    /// so it is exactly the view a new wrapper would build, or rebuilt when
+    /// the attributes were removed since.
+    // PERF: a new wrapper per text value cloned the attribute map of the
+    // chain and dropped it after the inversion, about 3.5 % of the add phase
+    // of the CLI's documents (profile of task #546, lane G).
+    pub(crate) fn reuse_or_new(
+        stream: Arc<AtomicRefCell<dyn TokenStream>>,
+        reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Box<dyn TokenStream> {
+        if let Some(wrapper) = reuse
+            .as_mut()
+            .and_then(|reuse| reuse.as_any_mut())
+            .and_then(|any| any.downcast_mut::<SharedTokenStream>())
+            .filter(|wrapper| Arc::ptr_eq(&wrapper.inner, &stream))
+        {
+            if !wrapper.source.sync_view_unless_emptied(wrapper.removals) {
+                *wrapper = SharedTokenStream::new(stream);
+            }
+            return reuse.take().expect("INVARIANT: matched above");
+        }
+        Box::new(SharedTokenStream::new(stream))
     }
 }
 
@@ -1024,6 +1065,14 @@ impl TokenStream for SharedTokenStream {
 
     fn attribute_source_mut(&mut self) -> &mut AttributeSource {
         &mut self.source
+    }
+
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
     }
 }
 
@@ -2828,6 +2877,99 @@ mod tests {
         stream.end()?;
         stream.close()?;
         Ok(terms)
+    }
+
+    /// Drains a boxed stream, as [`collect_terms`] drains a shared one.
+    fn collect_boxed_terms(stream: &mut dyn TokenStream) -> Result<Vec<String>> {
+        let mut terms = Vec::new();
+        stream.reset()?;
+        while stream.increment_token()? {
+            let term = stream
+                .attribute_source()
+                .get_attribute_interface::<dyn CharTermAttribute>()
+                .unwrap()
+                .term();
+            terms.push(term);
+        }
+        stream.end()?;
+        stream.close()?;
+        Ok(terms)
+    }
+
+    /// The address of a boxed stream, for identity checks.
+    fn stream_address(stream: &dyn TokenStream) -> *const () {
+        (stream as *const dyn TokenStream).cast::<()>()
+    }
+
+    /// `SharedTokenStream::reuse_or_new` hands back the wrapper `reuse`
+    /// holds when it wraps the same stream, as Java's `Field.tokenStream`
+    /// hands back the analyzer's one stream object: the reused wrapper reads
+    /// the next value, sees an attribute the chain added since it was built,
+    /// and has its view rebuilt when the chain's attributes were removed. A
+    /// wrapper of another stream stays in `reuse` and a new one is returned.
+    #[test]
+    fn shared_token_stream_reuses_the_wrapper_of_the_same_stream() -> Result<()> {
+        let analyzer = WhitespaceAnalyzer::new();
+        let mut reuse: Option<Box<dyn TokenStream>> = None;
+        let stream = analyzer.token_stream_from_str("field", "hello world")?;
+        let mut wrapper = SharedTokenStream::reuse_or_new(stream, &mut reuse);
+        assert_eq!(
+            collect_boxed_terms(wrapper.as_mut())?,
+            vec!["hello", "world"]
+        );
+        assert!(wrapper
+            .attribute_source()
+            .get_attribute_interface::<dyn PayloadAttribute>()
+            .is_none());
+        let address = stream_address(wrapper.as_ref());
+        reuse = Some(wrapper);
+
+        // The same components' stream, with an attribute added since.
+        let stream = analyzer.token_stream_from_str("field", "second value")?;
+        stream
+            .borrow_mut()
+            .attribute_source_mut()
+            .add_attribute_interface::<dyn PayloadAttribute>()?;
+        let mut wrapper = SharedTokenStream::reuse_or_new(Arc::clone(&stream), &mut reuse);
+        assert!(reuse.is_none(), "the wrapper is taken out of the slot");
+        assert_eq!(stream_address(wrapper.as_ref()), address);
+        assert!(wrapper
+            .attribute_source()
+            .get_attribute_interface::<dyn PayloadAttribute>()
+            .is_some());
+        assert_eq!(
+            collect_boxed_terms(wrapper.as_mut())?,
+            vec!["second", "value"]
+        );
+        reuse = Some(wrapper);
+
+        // The chain's attributes removed: the reused wrapper's view is rebuilt
+        // and no longer lends the removed attribute.
+        stream
+            .borrow_mut()
+            .attribute_source_mut()
+            .remove_all_attributes();
+        let wrapper = SharedTokenStream::reuse_or_new(Arc::clone(&stream), &mut reuse);
+        assert_eq!(stream_address(wrapper.as_ref()), address);
+        assert!(wrapper
+            .attribute_source()
+            .get_attribute_interface::<dyn PayloadAttribute>()
+            .is_none());
+        assert!(wrapper
+            .attribute_source()
+            .get_attribute_interface::<dyn CharTermAttribute>()
+            .is_none());
+        reuse = Some(wrapper);
+
+        // Another stream: a new wrapper, and the held one stays in the slot.
+        let other = WhitespaceAnalyzer::new().token_stream_from_str("field", "other")?;
+        let mut wrapper = SharedTokenStream::reuse_or_new(other, &mut reuse);
+        assert!(reuse
+            .as_deref()
+            .is_some_and(|held| stream_address(held) == address));
+        assert_ne!(stream_address(wrapper.as_ref()), address);
+        assert_eq!(collect_boxed_terms(wrapper.as_mut())?, vec!["other"]);
+        Ok(())
     }
 
     #[test]

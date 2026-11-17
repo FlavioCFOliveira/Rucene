@@ -1201,6 +1201,16 @@ pub struct DefaultIndexingChain {
     per_fields: Vec<PerField>,
     per_field_index: HashMap<String, usize>,
     next_field_gen: i64,
+    /// `IndexingChain.fields` (`IndexingChain.java:108`): the indices into
+    /// [`per_fields`](Self::per_fields) of a document's unique fields whose
+    /// `FieldInfo` must be initialized or validated, then of its fields
+    /// indexed with postings; kept across documents, as Java keeps the array.
+    fields: Vec<usize>,
+    /// `IndexingChain.docFields` (`IndexingChain.java:109`): the index into
+    /// [`per_fields`](Self::per_fields) of each field instance of a
+    /// document, in document order; kept across documents, as Java keeps the
+    /// array.
+    doc_fields: Vec<usize>,
     aborting_error: Option<LuceneError>,
     /// The stored-fields half of the chain, present once the chain knows which
     /// segment it writes. Equivalent to `IndexingChain.storedFieldsConsumer`,
@@ -1249,6 +1259,8 @@ impl DefaultIndexingChain {
             per_fields: Vec::new(),
             per_field_index: HashMap::new(),
             next_field_gen: 0,
+            fields: Vec::new(),
+            doc_fields: Vec::new(),
             aborting_error: None,
             stored_fields_consumer: None,
             term_vectors_consumer: None,
@@ -4045,6 +4057,10 @@ impl Accountable for DefaultIndexingChain {
 impl DefaultIndexingChain {
     /// The body of [`process_document`](IndexingChain::process_document);
     /// `panicked` receives the payload of a panic raised by `invert`.
+    /// `fields` and `doc_fields` are the chain's
+    /// [`fields`](Self::fields) and [`doc_fields`](Self::doc_fields), empty,
+    /// lent for the document.
+    #[allow(clippy::too_many_arguments)]
     fn process_document_body(
         &mut self,
         doc_id: i32,
@@ -4052,15 +4068,17 @@ impl DefaultIndexingChain {
         is_last_doc: bool,
         field_infos: &mut FieldInfosBuilder,
         panicked: &mut Option<Box<dyn std::any::Any + Send>>,
+        fields: &mut Vec<usize>,
+        doc_fields: &mut Vec<usize>,
     ) -> Result<()> {
         let analyzer = self.config.analyzer_arc();
         let info_stream = self.config.info_stream();
         let field_gen = self.next_field_gen;
         self.next_field_gen += 1;
-        // The unique fields of the document whose `FieldInfo` must be
-        // initialized or whose schema must be validated
-        // (`IndexingChain.java:592-593`).
-        let mut fields_need_init_or_validate: Vec<usize> = Vec::new();
+        // `fields` first holds the unique fields of the document whose
+        // `FieldInfo` must be initialized or whose schema must be validated
+        // (`IndexingChain.java:592-593`), then the fields indexed with
+        // postings (`IndexingChain.java:594`), as Java's `fields` array does.
 
         // Handle the parent field first, before the document's own fields: only
         // the last document of a block carries it. Its schema was set up when
@@ -4075,7 +4093,7 @@ impl DefaultIndexingChain {
         if let Some(parent_pf) = parent_pf {
             self.per_fields[parent_pf].schema.reset_just_doc_id(doc_id);
             if self.per_fields[parent_pf].field_info.is_none() {
-                fields_need_init_or_validate.push(parent_pf);
+                fields.push(parent_pf);
             }
         }
 
@@ -4097,7 +4115,6 @@ impl DefaultIndexingChain {
         // aligned with the doc ids.
         self.start_stored_fields(doc_id)?;
 
-        let mut indexed: Vec<usize> = Vec::new();
         let mut outcome: Result<()> = Ok(());
 
         // Two passes, as in Lucene: every instance of a multi-valued field must
@@ -4113,7 +4130,6 @@ impl DefaultIndexingChain {
         // `for (IndexableField field : document)` dereferences a `null`
         // document, and an exception the iterator throws leaves the pass
         // there.
-        let mut doc_fields: Vec<usize> = Vec::new();
         'first_pass: for item in doc
             .map(IndexableFieldIterable::iterator)
             .unwrap_or_else(|| Box::new(std::iter::once(Err(LuceneError::null_pointer()))))
@@ -4138,14 +4154,14 @@ impl DefaultIndexingChain {
                 per_field.field_gen = field_gen;
                 per_field.reset(doc_id, field_type);
                 if per_field.validated_frozen_field_type.is_none() {
-                    fields_need_init_or_validate.push(pf);
+                    fields.push(pf);
                 }
             } else if per_field.multi_value_forces_deoptimize(field_type) {
                 // Multi-valued field with a different field type than the
                 // cached frozen type. Drop the validated frozen field type to
                 // force the validation path.
                 per_field.validated_frozen_field_type = None;
-                fields_need_init_or_validate.push(pf);
+                fields.push(pf);
             }
             doc_fields.push(pf);
             if per_field.validated_frozen_field_type.is_none() {
@@ -4158,13 +4174,14 @@ impl DefaultIndexingChain {
             }
         }
 
-        if outcome.is_ok() && !fields_need_init_or_validate.is_empty() {
-            if let Err(error) =
-                self.init_and_validate_fields(&fields_need_init_or_validate, field_infos)
-            {
+        if outcome.is_ok() && !fields.is_empty() {
+            if let Err(error) = self.init_and_validate_fields(fields, field_infos) {
                 outcome = Err(error);
             }
         }
+        // From here on `fields` holds the fields indexed with postings
+        // (`fields[indexedFieldCount] = ...`, `IndexingChain.java:655, 663`).
+        fields.clear();
 
         // 2nd pass — index the parent field first (`IndexingChain.java:650-657`).
         // `parent_field` is currently a `NumericDocValuesField`, so
@@ -4185,7 +4202,7 @@ impl DefaultIndexingChain {
             );
             self.parent_field = Some(parent_field);
             match result {
-                Ok(true) => indexed.push(parent_pf),
+                Ok(true) => fields.push(parent_pf),
                 Ok(false) => {}
                 // Java lets the exception leave the `try` block, so the
                 // `finally` tail below still closes the stored-fields frame this
@@ -4213,8 +4230,10 @@ impl DefaultIndexingChain {
             };
             let index = doc_fields[doc_field_idx];
             // `IndexingChain.invertAndStore` inverts first and stores second,
-            // for every field instance, in document order.
-            if field.field_type().index_options() != IndexOptions::NONE {
+            // for every field instance, in document order, reading
+            // `field.fieldType()` once for both (`IndexingChain.java:1408`).
+            let field_type = field.field_type();
+            if field_type.index_options() != IndexOptions::NONE {
                 let first = self.per_fields[index].first;
                 let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     Self::invert(
@@ -4247,7 +4266,7 @@ impl DefaultIndexingChain {
                 // then delete.
                 if result.is_ok() && first {
                     self.per_fields[index].first = false;
-                    indexed.push(index);
+                    fields.push(index);
                 }
                 if let Err(error) = result {
                     // Lucene distinguishes a document-level problem (the
@@ -4262,18 +4281,22 @@ impl DefaultIndexingChain {
                 }
             }
 
-            if field.field_type().stored() {
+            if field_type.stored() {
                 if let Err(error) = self.store_field(index, field) {
                     outcome = Err(error);
                     break;
                 }
             }
 
+            // `processField` reads `field.fieldType()` once more, after the
+            // invert-and-store half, for the doc values, the points and the
+            // vectors (`IndexingChain.java:1388`).
+            let field_type = field.field_type();
             // `processField` runs `indexDocValue` for every instance of a
             // field that declares doc values, after the invert-and-store half
             // (`IndexingChain.java:1386-1391`); a validation failure is a
             // document-level problem exactly like the ones `invert` raises.
-            if field.field_type().doc_values_type() != DocValuesType::NONE {
+            if field_type.doc_values_type() != DocValuesType::NONE {
                 let result = self.per_fields[index].doc_values.as_mut().expect(
                     "INVARIANT: every field with a doc-values type gets a writer in get_or_add_per_field",
                 ).add_value(doc_id, field, &mut self.doc_values_byte_pool);
@@ -4292,7 +4315,7 @@ impl DefaultIndexingChain {
             // `field.binaryValue()` and lets `addPackedValue` reject a null
             // with "point value must not be null"; here the absent value is an
             // `Option`, and the same message is raised for it.
-            if field.field_type().point_dimension_count() != 0 {
+            if field_type.point_dimension_count() != 0 {
                 let result = match field.binary_value() {
                     Some(value) => self.per_fields[index]
                         .point_values
@@ -4324,7 +4347,7 @@ impl DefaultIndexingChain {
             // accessor, and an absent value is the `ClassCastException` Java
             // would raise for a field whose type promises a vector its class
             // cannot produce.
-            if field.field_type().vector_dimension() != 0 {
+            if field_type.vector_dimension() != 0 {
                 let result = Self::index_vector_value(doc_id, &mut self.per_fields[index], field);
                 // `indexVectorValue` runs outside any `catch`
                 // (`IndexingChain.java:1396-1398, 1695-1707`): a failure is a
@@ -4347,7 +4370,7 @@ impl DefaultIndexingChain {
             // must carry into the segment, and
             // `TermVectorsConsumerPerField.finish` queues the field's vector.
             let similarity = self.config.similarity();
-            for index in indexed {
+            for &index in fields.iter() {
                 // `PerField.finish(docID)` computes the norm *before*
                 // `termsHashPerField.finish()` (`IndexingChain.java:1853-1870`).
                 if let Err(error) =
@@ -4678,8 +4701,24 @@ impl IndexingChain for DefaultIndexingChain {
         // `invert`: the `finally` tail still runs (`IndexingChain.java:
         // 669-686`), and the panic is rethrown afterwards.
         let mut panicked: Option<Box<dyn std::any::Any + Send>> = None;
-        let outcome =
-            self.process_document_body(doc_id, doc, is_last_doc, field_infos, &mut panicked);
+        // PERF: the member arrays `fields` and `docFields` are reused across
+        // documents, as Java reuses them (`IndexingChain.java:108-109`), where
+        // three new `Vec`s per document were allocated before (task #546).
+        let mut fields = std::mem::take(&mut self.fields);
+        let mut doc_fields = std::mem::take(&mut self.doc_fields);
+        fields.clear();
+        doc_fields.clear();
+        let outcome = self.process_document_body(
+            doc_id,
+            doc,
+            is_last_doc,
+            field_infos,
+            &mut panicked,
+            &mut fields,
+            &mut doc_fields,
+        );
+        self.fields = fields;
+        self.doc_fields = doc_fields;
         if let Some(payload) = panicked {
             std::panic::resume_unwind(payload);
         }

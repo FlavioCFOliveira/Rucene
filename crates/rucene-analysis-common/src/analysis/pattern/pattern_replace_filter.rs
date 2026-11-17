@@ -18,7 +18,7 @@
 //! A filter that replaces regular expression matches in each token, ported
 //! from `org.apache.lucene.analysis.pattern.PatternReplaceFilter`.
 
-use rucene::analysis::character_utils::{set_term_utf16, term_to_utf16};
+use rucene::analysis::character_utils::set_term_utf16;
 use rucene::analysis::java_regex::{JavaMatcher, JavaPattern};
 use rucene::analysis::{
     AttributeHandle, CharTermAttribute, TokenFilter, TokenFilterLogic, TokenStream,
@@ -30,7 +30,7 @@ use rucene::util::attribute::AttributeSource;
 /// `PatternReplaceFilter` adds to `TokenFilter`.
 ///
 /// Java's matcher reads the `CharTermAttribute` itself, a live
-/// `CharSequence`; here `m.reset()` hands it the term's current units.
+/// `CharSequence`; here `m.reset()` hands it the term's current characters.
 #[derive(Debug)]
 pub struct PatternReplaceFilterLogic {
     replacement: String,
@@ -38,9 +38,6 @@ pub struct PatternReplaceFilterLogic {
     m: JavaMatcher,
     /// `private final CharTermAttribute termAtt = addAttribute(CharTermAttribute.class)`.
     term_att: AttributeHandle<dyn CharTermAttribute>,
-    /// The term's UTF-16 units, the `CharSequence` Java's matcher reads
-    /// (`p.matcher(termAtt)`), kept across tokens so that no token allocates.
-    units: Vec<u16>,
 }
 
 impl TokenFilterLogic for PatternReplaceFilterLogic {
@@ -60,12 +57,21 @@ impl TokenFilterLogic for PatternReplaceFilterLogic {
         }
 
         // `m.reset()` of the matcher over the live `termAtt`
-        // (`PatternReplaceFilter.java:63`): the term's current units.
+        // (`PatternReplaceFilter.java:63`): the term's current characters.
         {
             let term = self.term_att.borrow();
-            term_to_utf16(&term.buffer()[..term.length()], &mut self.units);
+            let chars = &term.buffer()[..term.length()];
+            // PERF: when the pattern cannot match the term, Java's `reset()`
+            // and failing `find()` build nothing and leave the token as it
+            // is; here the matcher's input (UTF-16 text and engine haystack)
+            // is not built either, and the token is left as it is (task
+            // #546, round 4). The matcher is the filter's own and the next
+            // token resets it, so the skipped state is never read.
+            if !self.m.may_find_in_chars(chars) {
+                return Ok(true);
+            }
+            self.m.reset_input_chars(chars);
         }
-        self.m.reset_input(&self.units);
         if self.m.find() {
             // replaceAll/replaceFirst will reset() this previous find.
             let transformed = if self.all {
@@ -120,7 +126,6 @@ pub fn new_pattern_replace_filter(
             all,
             m: p.matcher(&[]),
             term_att: AttributeHandle::add(source)?,
-            units: Vec::new(),
         })
     })
 }
