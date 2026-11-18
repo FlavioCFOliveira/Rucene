@@ -8273,7 +8273,7 @@ impl IndexWriter {
             // failure to close is reported only when the read succeeded.
             let cfs = codec
                 .compound_format()
-                .get_compound_reader(si.info.directory.as_ref(), &si.info)?;
+                .get_compound_reader(&si.info.directory, &si.info)?;
             let read = reader.read(&*cfs, &si.info, "", context);
             let closed = cfs.close();
             let field_infos = read?;

@@ -283,7 +283,7 @@ impl Fields for SharedFieldsProducer {
         self.0.iterator()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.0.terms(field)
     }
 
@@ -1035,7 +1035,7 @@ mod tests {
             0
         }
 
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
 
@@ -1295,7 +1295,7 @@ mod tests {
             0
         }
 
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
 

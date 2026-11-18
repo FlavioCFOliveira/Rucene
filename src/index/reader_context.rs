@@ -436,7 +436,7 @@ mod tests {
             None
         }
 
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn crate::index::Terms>>> {
             Ok(None)
         }
 

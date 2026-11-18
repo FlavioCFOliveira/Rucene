@@ -254,7 +254,7 @@ fn test_equals(_f: &mut AutomatonFixture) -> Result<()> {
 }
 
 /// `MultiTerms.getTerms(searcher.getIndexReader(), FN)`.
-fn field_terms(f: &AutomatonFixture) -> Result<Box<dyn rucene::index::Terms>> {
+fn field_terms(f: &AutomatonFixture) -> Result<Arc<dyn rucene::index::Terms>> {
     let reader: Arc<dyn IndexReader> = Arc::clone(f.searcher().get_index_reader());
     Ok(MultiTerms::get_terms(&reader, FN)?.expect("field is indexed"))
 }

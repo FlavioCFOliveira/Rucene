@@ -537,8 +537,8 @@ mod use_after_close_tests {
         fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
             Box::new(std::iter::once("f".to_string()))
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
-            Ok(Some(Box::new(EmptyTerms::new())))
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
+            Ok(Some(Arc::new(EmptyTerms::new())))
         }
         fn size(&self) -> i32 {
             1

@@ -120,7 +120,7 @@ impl LeafReader for DummyIndexReader {
     fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
         None
     }
-    fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(None)
     }
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {

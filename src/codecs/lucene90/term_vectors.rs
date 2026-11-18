@@ -3034,7 +3034,7 @@ impl Fields for TVFields {
         }))
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let field_info = self.field_infos.field_info(field);
         if field_info.is_none() {
             return Ok(None);
@@ -3070,7 +3070,7 @@ impl Fields for TVFields {
                 ),
             )));
         }
-        Ok(Some(Box::new(TVTerms {
+        Ok(Some(Arc::new(TVTerms {
             num_terms: self.field_num_terms[idx],
             flags: self.field_flags[idx],
             prefix_lengths: self.prefix_lengths[idx].clone(),
@@ -4651,7 +4651,7 @@ mod tests {
         }
 
         let compound = compound_format
-            .get_compound_reader(directory.as_ref(), &segment_info)
+            .get_compound_reader(&directory, &segment_info)
             .expect("compound reader");
         let reader = Lucene90TermVectorsFormat::new()
             .vectors_reader(

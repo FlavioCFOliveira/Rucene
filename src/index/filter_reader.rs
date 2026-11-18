@@ -164,7 +164,7 @@ impl LeafReader for FilterLeafReader {
         self.inner.get_core_cache_helper()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.core.ensure_open()?;
         self.inner.terms(field)
     }
@@ -317,7 +317,7 @@ impl<F: Fields + ?Sized> Fields for FilterFields<F> {
 
     /// Equivalent to `FilterFields.terms(String)`, which returns
     /// `in.terms(field)`.
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.inner.terms(field)
     }
 
@@ -435,7 +435,7 @@ impl Unwrappable<dyn PostingsEnum> for FilterPostingsEnum {
 /// forwards to — the same delegation with one more level of indirection. See
 /// [`FilterLeafReader`] for the same divergence on the reader itself.
 pub struct FilterTerms {
-    inner: Box<dyn Terms>,
+    inner: Arc<dyn Terms>,
 }
 
 impl FilterTerms {
@@ -443,7 +443,7 @@ impl FilterTerms {
     ///
     /// Equivalent to `FilterTerms(Terms)`. Java refuses a null delegate with a
     /// `NullPointerException`; Rust's type system refuses it at compile time.
-    pub fn new(inner: Box<dyn Terms>) -> Self {
+    pub fn new(inner: Arc<dyn Terms>) -> Self {
         Self { inner }
     }
 
@@ -753,7 +753,7 @@ impl LeafReader for FilterCodecReader {
         self.inner.get_core_cache_helper()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         final_members::terms(self, field)
     }
 
@@ -989,7 +989,7 @@ impl LeafReader for LiveDocsCodecReader {
         self.inner.get_core_cache_helper()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         final_members::terms(self, field)
     }
 

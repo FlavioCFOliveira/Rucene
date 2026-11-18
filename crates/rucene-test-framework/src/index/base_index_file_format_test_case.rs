@@ -1377,7 +1377,7 @@ impl Fields for OneDocFields {
         Box::new(self.indexed_fields.iter().cloned())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.reader.terms(field)
     }
 

@@ -116,7 +116,7 @@ impl TermFreqValueSource {
 /// The anonymous `IntDocValues` of `TermFreqValueSource.getValues`.
 struct TermFreqValues {
     this: Arc<TermFreqValueSource>,
-    terms: Box<dyn Terms>,
+    terms: Arc<dyn Terms>,
     docs: TermPostings,
     at_doc: i32,
     last_doc_requested: i32,

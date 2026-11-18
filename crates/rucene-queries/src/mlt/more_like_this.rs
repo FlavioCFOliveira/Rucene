@@ -636,7 +636,7 @@ impl MoreLikeThis {
         let term_vectors = self.ir.term_vectors()?;
         for field_name in self.field_names_or_npe()? {
             let vectors = term_vectors.get(doc_num)?;
-            let vector: Option<Box<dyn Terms>> = match vectors {
+            let vector: Option<Arc<dyn Terms>> = match vectors {
                 Some(vectors) => vectors.terms(field_name)?,
                 None => None,
             };

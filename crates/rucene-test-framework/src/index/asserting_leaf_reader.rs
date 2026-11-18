@@ -150,11 +150,11 @@ impl Fields for AssertingFields {
         self.r#in.iterator()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         assert_thread("Fields", &self.creation_thread)?;
         Ok(match self.r#in.terms(field)? {
             None => None,
-            Some(terms) => Some(Box::new(AssertingTerms::new(terms))),
+            Some(terms) => Some(Arc::new(AssertingTerms::new(terms))),
         })
     }
 
@@ -172,12 +172,12 @@ impl Fields for AssertingFields {
 /// wraps a [`Terms`] but with additional asserts.
 pub struct AssertingTerms {
     creation_thread: Thread,
-    r#in: Box<dyn Terms>,
+    r#in: Arc<dyn Terms>,
 }
 
 impl AssertingTerms {
     /// `new AssertingTerms(in)`.
-    pub fn new(r#in: Box<dyn Terms>) -> Self {
+    pub fn new(r#in: Arc<dyn Terms>) -> Self {
         AssertingTerms {
             creation_thread: Thread::current(),
             r#in,
@@ -2459,12 +2459,12 @@ impl LeafReader for AssertingLeafReader {
         get_meta_data,
     );
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         LeafReader::core(&self.base).ensure_open()?;
         Ok(self
             .r#in
             .terms(field)?
-            .map(|terms| Box::new(AssertingTerms::new(terms)) as Box<dyn Terms>))
+            .map(|terms| Arc::new(AssertingTerms::new(terms)) as Arc<dyn Terms>))
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
@@ -3278,7 +3278,7 @@ mod tests {
         fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
             None
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
         fn get_numeric_doc_values(

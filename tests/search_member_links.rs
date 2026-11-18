@@ -486,7 +486,7 @@ fn a_fuzzy_query_matches_the_terms_near_its_term() {
 
 /// A field whose intersections record their `prepare_seek_exact` calls.
 struct RecordingTerms {
-    inner: Box<dyn Terms>,
+    inner: Arc<dyn Terms>,
     prepared: Arc<AtomicUsize>,
 }
 

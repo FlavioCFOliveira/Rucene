@@ -61,7 +61,7 @@
 //!   has [`TermsHashPerField::intern`] return a [`TermSlot`] and lets the caller
 //!   dispatch, which is the same control flow without the inheritance.
 //! * **Flush hands out `Arc` snapshots.** `Fields::terms` returns
-//!   `Box<dyn Terms>`, which is `'static`, so the read-back view cannot borrow
+//!   `Arc<dyn Terms>`, which is `'static`, so the read-back view cannot borrow
 //!   the writer. At flush the buffers are moved — not copied — behind an
 //!   [`Arc`], which every terms view, terms enum and postings enum then
 //!   shares.
@@ -1900,11 +1900,11 @@ impl Fields for FreqProxFields {
         Box::new(self.fields.iter().map(|field| field.field_name.clone()))
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(self.by_name.get(field).map(|index| {
-            Box::new(FreqProxTerms {
+            Arc::new(FreqProxTerms {
                 field: Arc::clone(&self.fields[*index]),
-            }) as Box<dyn Terms>
+            }) as Arc<dyn Terms>
         }))
     }
 
@@ -2794,7 +2794,7 @@ impl Fields for SortingFields<'_> {
 
     /// Equivalent to the anonymous class's `terms(String)`: the buffered terms,
     /// wrapped with the field's index options and the document map.
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let Some(terms) = self.base.get_delegate().terms(field)? else {
             return Ok(None);
         };
@@ -2804,7 +2804,7 @@ impl Fields for SortingFields<'_> {
             // `infos.fieldInfo(field).getIndexOptions()` on `null`.
             .ok_or_else(LuceneError::null_pointer)?
             .index_options;
-        Ok(Some(Box::new(SortingTerms::new(
+        Ok(Some(Arc::new(SortingTerms::new(
             terms,
             index_options,
             Arc::clone(&self.doc_map),
@@ -2835,7 +2835,7 @@ impl SortingTerms {
     ///
     /// Equivalent to `SortingTerms(Terms, IndexOptions, Sorter.DocMap)`.
     pub fn new(
-        inner: Box<dyn Terms>,
+        inner: Arc<dyn Terms>,
         index_options: IndexOptions,
         doc_map: Arc<SorterDocMap>,
     ) -> Self {

@@ -1987,7 +1987,7 @@ impl LeafReader for NoIndexLeafReader {
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
         None
     }
-    fn terms(&self, _field: &str) -> Result<Option<Box<dyn rucene::index::Terms>>> {
+    fn terms(&self, _field: &str) -> Result<Option<Arc<dyn rucene::index::Terms>>> {
         Ok(None)
     }
     fn get_numeric_doc_values(

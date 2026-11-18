@@ -62,9 +62,7 @@ fn check_headers(
         }
         if si.info.get_use_compound_file() {
             let codec = si.info.codec().unwrap_or_else(|| npe("si.info.getCodec()"));
-            let cfs_dir = codec
-                .compound_format()
-                .get_compound_reader(&**dir, &si.info)?;
+            let cfs_dir = codec.compound_format().get_compound_reader(dir, &si.info)?;
             let outcome = (|| -> Result<()> {
                 for cfs_file in cfs_dir.list_all()? {
                     check_header(&*cfs_dir, &cfs_file, names_to_extensions, &id)?;

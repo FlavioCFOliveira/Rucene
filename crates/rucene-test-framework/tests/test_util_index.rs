@@ -808,7 +808,7 @@ impl LeafReader for Liar {
     fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
         None
     }
-    fn terms(&self, field: &str) -> rucene::error::Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> rucene::error::Result<Option<std::sync::Arc<dyn Terms>>> {
         self.inner.terms(field)
     }
     fn get_numeric_doc_values(

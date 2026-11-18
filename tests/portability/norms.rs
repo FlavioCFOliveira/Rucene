@@ -1089,7 +1089,7 @@ fn rucene_reads_the_norms_of_a_compound_file_segment_written_by_lucene() {
     let segment_info = infos.info(0).info.clone();
     let compound = codec
         .compound_format()
-        .get_compound_reader(directory.as_ref(), &segment_info)
+        .get_compound_reader(&directory, &segment_info)
         .expect("compound reader");
     let field_infos = codec
         .field_infos_format()

@@ -750,7 +750,7 @@ mod tests {
 // producer-shaped API Lucene gives it and the iterator is still built lazily,
 // on the consumer's own schedule.
 
-use crate::index::doc_values::{OrdinalMap, SortedDocValuesTermsEnum, SortedSetDocValuesTermsEnum};
+use crate::index::doc_values::OrdinalMap;
 use crate::index::merge::{DocIDMerger, DocIDMergerSub, DocMap};
 use crate::index::terms::{SeekStatus, TermState, TermsEnum};
 use crate::index::DocValuesType;
@@ -1343,7 +1343,9 @@ pub fn create_ordinal_map_for_sorted_dv(
         match merge_state.live_docs.get(sub).and_then(Option::as_ref) {
             None => {
                 weights.push(i64::from(dv.get_value_count()?));
-                live_terms.push(SortedDocValuesTermsEnum::new(dv));
+                // `dv.termsEnum()` (`DocValuesConsumer.java:690`): the
+                // producer's own dictionary enum, which lends its terms.
+                live_terms.push(dv.terms_enum()?);
             }
             Some(live_docs) => {
                 let mut bitset = LongBitSet::new(i64::from(dv.get_value_count()?))?;
@@ -1360,8 +1362,10 @@ pub fn create_ordinal_map_for_sorted_dv(
                     }
                 }
                 weights.push(bitset.cardinality());
+                // `new BitsFilteredTermsEnum(dv.termsEnum(), bitset)`
+                // (`DocValuesConsumer.java:703`).
                 live_terms.push(Box::new(BitsFilteredTermsEnum::new(
-                    SortedDocValuesTermsEnum::new(dv),
+                    dv.terms_enum()?,
                     bitset,
                 )));
             }
@@ -1557,7 +1561,9 @@ pub fn create_ordinal_map_for_sorted_set_dv(
         match merge_state.live_docs.get(sub).and_then(Option::as_ref) {
             None => {
                 weights.push(dv.get_value_count()?);
-                live_terms.push(SortedSetDocValuesTermsEnum::new(dv));
+                // `dv.termsEnum()` (`DocValuesConsumer.java:884`): the
+                // producer's own dictionary enum, which lends its terms.
+                live_terms.push(dv.terms_enum()?);
             }
             Some(live_docs) => {
                 let mut bitset = LongBitSet::new(dv.get_value_count()?)?;
@@ -1575,8 +1581,10 @@ pub fn create_ordinal_map_for_sorted_set_dv(
                     }
                 }
                 weights.push(bitset.cardinality());
+                // `new BitsFilteredTermsEnum(dv.termsEnum(), bitset)`
+                // (`DocValuesConsumer.java:896`).
                 live_terms.push(Box::new(BitsFilteredTermsEnum::new(
-                    SortedSetDocValuesTermsEnum::new(dv),
+                    dv.terms_enum()?,
                     bitset,
                 )));
             }

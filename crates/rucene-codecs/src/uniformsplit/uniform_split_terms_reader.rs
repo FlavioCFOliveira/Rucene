@@ -56,10 +56,10 @@ pub enum FieldTerms {
 }
 
 impl FieldTerms {
-    fn to_terms(&self) -> Box<dyn Terms> {
+    fn to_terms(&self) -> Arc<dyn Terms> {
         match self {
-            FieldTerms::Plain(t) => Box::new(t.clone()),
-            FieldTerms::Shared(t) => Box::new(t.clone()),
+            FieldTerms::Plain(t) => Arc::new(t.clone()),
+            FieldTerms::Shared(t) => Arc::new(t.clone()),
         }
     }
 }
@@ -503,7 +503,7 @@ impl Fields for UniformSplitTermsReader {
         Box::new(self.sorted_field_names.iter().cloned())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         if self.fields_cleared.load(Ordering::SeqCst) {
             return Ok(None);
         }

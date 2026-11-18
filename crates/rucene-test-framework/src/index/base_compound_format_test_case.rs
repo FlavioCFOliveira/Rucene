@@ -160,7 +160,10 @@ fn write_compound(dir: &dyn Directory, si: &SegmentInfo, context: &dyn IOContext
 }
 
 /// `si.getCodec().compoundFormat().getCompoundReader(dir, si)`.
-fn compound_reader(dir: &dyn Directory, si: &SegmentInfo) -> Result<Box<dyn CompoundDirectory>> {
+fn compound_reader(
+    dir: &Arc<dyn Directory>,
+    si: &SegmentInfo,
+) -> Result<Box<dyn CompoundDirectory>> {
     codec_of(si).compound_format().get_compound_reader(dir, si)
 }
 
@@ -351,7 +354,7 @@ pub fn create_large_cfs(dir: &Arc<dyn Directory>) -> Result<Box<dyn CompoundDire
 
     si.set_files(files)?;
     write_compound(&**dir, &si, &*DEFAULT_IO_CONTEXT)?;
-    compound_reader(&**dir, &si)
+    compound_reader(dir, &si)
 }
 
 /// Writes the test file of the read-only tests: `writeInt(3)`, no header.
@@ -400,7 +403,7 @@ fn assert_read_only(
         let si = new_segment_info(&directory, "_123")?;
         si.set_files(Vec::<String>::new())?;
         write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-        let cfs = compound_reader(&*directory, &si)?;
+        let cfs = compound_reader(&directory, &si)?;
         expect_throws_lucene(
             "java.lang.UnsupportedOperationException",
             is_unsupported_operation,
@@ -542,7 +545,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
             let si = new_segment_info(&directory, "_123")?;
             si.set_files(Vec::<String>::new())?;
             write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-            let cfs = compound_reader(&*directory, &si)?;
+            let cfs = compound_reader(&directory, &si)?;
             Assert::assert_equals(0, cfs.list_all()?.len() as i64);
             cfs.close()?;
             drop(directory);
@@ -564,7 +567,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
                 si.set_files([testfile.clone()])?;
                 write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-                let cfs = compound_reader(&*directory, &si)?;
+                let cfs = compound_reader(&directory, &si)?;
 
                 let mut expected = directory.open_input(&testfile, &*random_io_context())?;
                 let mut actual = cfs.open_input(&testfile, &*random_io_context())?;
@@ -592,7 +595,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
             si.set_files(files.clone())?;
             write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-            let cfs = compound_reader(&*directory, &si)?;
+            let cfs = compound_reader(&directory, &si)?;
 
             for file in &files {
                 let mut expected = directory.open_input(file, &*random_io_context())?;
@@ -622,7 +625,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
             si.set_files([testfile.to_string()])?;
             write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-            let cfs = compound_reader(&*directory, &si)?;
+            let cfs = compound_reader(&directory, &si)?;
             Assert::assert_equals(1, cfs.list_all()?.len() as i64);
             cfs.close()?;
             cfs.close()?; // second close should not throw exception
@@ -725,7 +728,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
             for si in infos.iter() {
                 if si.info.get_use_compound_file() {
                     try_with(
-                        compound_reader(&*directory, &si.info)?,
+                        compound_reader(&directory, &si.info)?,
                         |d| d.close(),
                         |cfs_dir| {
                             for cfs_file in cfs_dir.list_all()? {
@@ -810,7 +813,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
             si.set_files(files.clone())?;
             write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-            let cfs = compound_reader(&*directory, &si)?;
+            let cfs = compound_reader(&directory, &si)?;
 
             for file in &files {
                 let mut check = directory.open_input(file, &*random_io_context())?;
@@ -856,7 +859,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
         si.set_files(files)?;
         write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-        let cfs = compound_reader(&*directory, &si)?;
+        let cfs = compound_reader(&directory, &si)?;
 
         let mut ins: Vec<Box<dyn IndexInput>> = Vec::with_capacity(file_count as usize);
         for file_idx in 0..file_count {
@@ -1032,7 +1035,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
             si.set_files([sub_file.to_string()])?;
             write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-            let cfs = compound_reader(&*directory, &si)?;
+            let cfs = compound_reader(&directory, &si)?;
             let r#in = cfs.open_input(sub_file, &*DEFAULT_IO_CONTEXT)?;
             let desc = r#in.to_java_string();
             Assert::assert_true_msg(
@@ -1119,8 +1122,10 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
             write_compound(&write_tracking_dir, &si, &*DEFAULT_IO_CONTEXT)?;
             let created_files: HashSet<String> = write_tracking_dir.get_files();
 
-            let read_tracking_dir = ReadBytesDirectoryWrapper::new(Arc::clone(&directory));
-            let compound_dir = compound_reader(&read_tracking_dir, &si)?;
+            let read_tracking_dir =
+                Arc::new(ReadBytesDirectoryWrapper::new(Arc::clone(&directory)));
+            let compound_dir =
+                compound_reader(&(Arc::clone(&read_tracking_dir) as Arc<dyn Directory>), &si)?;
             compound_dir.check_integrity()?;
             let read_bytes = read_tracking_dir.get_read_bytes();
             Assert::assert_equals(

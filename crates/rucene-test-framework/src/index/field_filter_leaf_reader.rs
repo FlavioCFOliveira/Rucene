@@ -213,7 +213,7 @@ impl LeafReader for FieldFilterLeafReader {
         }))
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         if self.has_field(field) {
             LeafReader::core(&self.base).ensure_open()?;
             self.r#in.terms(field)
@@ -332,7 +332,7 @@ impl Fields for FieldFilterFields {
         )
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         if self.filter.has_field(field) {
             self.r#in.terms(field)
         } else {

@@ -121,7 +121,7 @@ impl Fields for LeafFields {
         Box::new(self.indexed_field_names().into_iter())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.reader.terms(field)
     }
 
@@ -241,9 +241,8 @@ impl MultiFields {
     /// Repeated calls for the same field return the *same* instance, as in
     /// Lucene, which memoises in a `ConcurrentHashMap` (`MultiFields.java:44`).
     /// Java can hand back a bare reference to the cached object; Rust needs an
-    /// owned handle, so the shared instance is returned as an
-    /// [`Arc`] — `Arc<MultiTerms>` itself implements [`Terms`], so callers can
-    /// use it wherever a `Terms` is expected.
+    /// owned handle, so the shared instance is returned as an [`Arc`], which
+    /// [`Fields::terms`] hands out as an `Arc<dyn Terms>`.
     pub fn multi_terms(&self, field: &str) -> Result<Option<Arc<MultiTerms>>> {
         // Fast path: an existing memo. A poisoned lock is treated as "no memo"
         // rather than an error — the cache is an optimisation, and rebuilding
@@ -254,7 +253,7 @@ impl MultiFields {
             }
         }
 
-        let mut subs2: Vec<Box<dyn Terms>> = Vec::new();
+        let mut subs2: Vec<Arc<dyn Terms>> = Vec::new();
         let mut slices2: Vec<ReaderSlice> = Vec::new();
         for (i, sub) in self.subs.iter().enumerate() {
             if let Some(terms) = sub.terms(field)? {
@@ -293,10 +292,10 @@ impl Fields for MultiFields {
         ))
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(self
             .multi_terms(field)?
-            .map(|terms| Box::new(terms) as Box<dyn Terms>))
+            .map(|terms| terms as Arc<dyn Terms>))
     }
 
     fn size(&self) -> i32 {
@@ -321,7 +320,7 @@ impl Fields for MultiFields {
 /// are AND (all subs must have the feature); `hasPayloads` is
 /// `hasPositions && any sub has payloads`.
 pub struct MultiTerms {
-    subs: Vec<Box<dyn Terms>>,
+    subs: Vec<Arc<dyn Terms>>,
     sub_slices: Vec<ReaderSlice>,
     has_freqs: bool,
     has_offsets: bool,
@@ -334,7 +333,7 @@ impl MultiTerms {
     /// corresponding [`ReaderSlice`]s.
     ///
     /// Equivalent to `MultiTerms(Terms[] subs, ReaderSlice[] subSlices)`.
-    pub fn new(subs: Vec<Box<dyn Terms>>, sub_slices: Vec<ReaderSlice>) -> Result<Self> {
+    pub fn new(subs: Vec<Arc<dyn Terms>>, sub_slices: Vec<ReaderSlice>) -> Result<Self> {
         assert_eq!(
             subs.len(),
             sub_slices.len(),
@@ -380,12 +379,12 @@ impl MultiTerms {
     /// field, and it differs from [`MultiFields::get_fields`], which sets
     /// `length` to the leaf's own `max_doc()`. See the note on
     /// [`ReaderSlice`] for why both are correct.
-    pub fn get_terms(reader: &Arc<dyn IndexReader>, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    pub fn get_terms(reader: &Arc<dyn IndexReader>, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let leaves = Arc::clone(reader).leaves()?;
         if leaves.len() == 1 {
             return leaves[0].leaf_reader().terms(field);
         }
-        let mut subs2: Vec<Box<dyn Terms>> = Vec::with_capacity(leaves.len());
+        let mut subs2: Vec<Arc<dyn Terms>> = Vec::with_capacity(leaves.len());
         let mut slices2: Vec<ReaderSlice> = Vec::with_capacity(leaves.len());
         let max_doc = reader.max_doc();
         for (idx, ctx) in leaves.iter().enumerate() {
@@ -397,7 +396,7 @@ impl MultiTerms {
         if subs2.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(Box::new(MultiTerms::new(subs2, slices2)?)))
+            Ok(Some(Arc::new(MultiTerms::new(subs2, slices2)?)))
         }
     }
 
@@ -453,7 +452,7 @@ impl MultiTerms {
     }
 
     /// Returns the sub-`Terms` being merged.
-    pub fn get_sub_terms(&self) -> &[Box<dyn Terms>] {
+    pub fn get_sub_terms(&self) -> &[Arc<dyn Terms>] {
         &self.subs
     }
 
@@ -647,72 +646,6 @@ impl Terms for MultiTerms {
             }
         }
         Ok(max_term)
-    }
-}
-
-/// Delegating [`Terms`] implementation for the shared handle returned by
-/// [`MultiFields::multi_terms`].
-///
-/// Lucene's `MultiFields` hands the *same* `MultiTerms` object back on every
-/// call for a field. Rust callers need an owned value, so the shared instance
-/// travels as an `Arc`; this impl lets that `Arc` be used directly as a
-/// `Terms`, keeping `Fields::terms` a one-liner and avoiding a rebuild per
-/// call.
-impl Terms for Arc<MultiTerms> {
-    fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
-        (**self).iterator()
-    }
-
-    fn intersect(
-        &self,
-        compiled: &CompiledAutomaton,
-        start_term: Option<&BytesRef>,
-    ) -> Result<Box<dyn TermsEnum>> {
-        (**self).intersect(compiled, start_term)
-    }
-
-    fn size(&self) -> Result<i64> {
-        (**self).size()
-    }
-
-    fn sum_total_term_freq(&self) -> Result<i64> {
-        (**self).sum_total_term_freq()
-    }
-
-    fn sum_doc_freq(&self) -> Result<i64> {
-        (**self).sum_doc_freq()
-    }
-
-    fn doc_count(&self) -> Result<i32> {
-        (**self).doc_count()
-    }
-
-    fn has_freqs(&self) -> bool {
-        (**self).has_freqs()
-    }
-
-    fn has_offsets(&self) -> bool {
-        (**self).has_offsets()
-    }
-
-    fn has_positions(&self) -> bool {
-        (**self).has_positions()
-    }
-
-    fn has_payloads(&self) -> bool {
-        (**self).has_payloads()
-    }
-
-    fn min(&self) -> Result<Option<BytesRef>> {
-        (**self).min()
-    }
-
-    fn max(&self) -> Result<Option<BytesRef>> {
-        (**self).max()
-    }
-
-    fn stats(&self) -> Result<Box<dyn crate::index::terms::StatsObject>> {
-        (**self).stats()
     }
 }
 
@@ -2339,11 +2272,11 @@ mod tests {
             Box::new(self.fields.keys().cloned().collect::<Vec<_>>().into_iter())
         }
 
-        fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(self
                 .fields
                 .get(field)
-                .map(|t| Box::new(t.clone()) as Box<dyn Terms>))
+                .map(|t| Arc::new(t.clone()) as Arc<dyn Terms>))
         }
 
         fn size(&self) -> i32 {
@@ -2444,7 +2377,7 @@ mod tests {
             false,
         );
         let mt = MultiTerms::new(
-            vec![Box::new(t0), Box::new(t1)],
+            vec![Arc::new(t0), Arc::new(t1)],
             vec![ReaderSlice::new(0, 3, 0), ReaderSlice::new(3, 3, 1)],
         )
         .unwrap();
@@ -2496,7 +2429,7 @@ mod tests {
             false,
         );
         let mt = MultiTerms::new(
-            vec![Box::new(t0), Box::new(t1)],
+            vec![Arc::new(t0), Arc::new(t1)],
             vec![ReaderSlice::new(0, 3, 0), ReaderSlice::new(3, 3, 1)],
         )
         .unwrap();
@@ -2530,7 +2463,7 @@ mod tests {
             false,
         );
         let mt = MultiTerms::new(
-            vec![Box::new(t0), Box::new(t1)],
+            vec![Arc::new(t0), Arc::new(t1)],
             vec![ReaderSlice::new(0, 2, 0), ReaderSlice::new(2, 2, 1)],
         )
         .unwrap();
@@ -2559,7 +2492,7 @@ mod tests {
             false,
         );
         let mt = MultiTerms::new(
-            vec![Box::new(t0), Box::new(t1)],
+            vec![Arc::new(t0), Arc::new(t1)],
             vec![ReaderSlice::new(0, 1, 0), ReaderSlice::new(1, 1, 1)],
         )
         .unwrap();
@@ -2586,7 +2519,7 @@ mod tests {
             false,
         );
         let mt = MultiTerms::new(
-            vec![Box::new(t0), Box::new(t1)],
+            vec![Arc::new(t0), Arc::new(t1)],
             vec![ReaderSlice::new(0, 3, 0), ReaderSlice::new(3, 2, 1)],
         )
         .unwrap();
@@ -2614,7 +2547,7 @@ mod tests {
             false,
         );
         let mt = MultiTerms::new(
-            vec![Box::new(t0), Box::new(t1)],
+            vec![Arc::new(t0), Arc::new(t1)],
             vec![ReaderSlice::new(0, 1, 0), ReaderSlice::new(1, 1, 1)],
         )
         .unwrap();
@@ -2653,7 +2586,7 @@ mod tests {
             false,
         );
         let mt = MultiTerms::new(
-            vec![Box::new(t0), Box::new(t1)],
+            vec![Arc::new(t0), Arc::new(t1)],
             vec![ReaderSlice::new(0, 2, 0), ReaderSlice::new(2, 2, 1)],
         )
         .unwrap();
@@ -2671,7 +2604,7 @@ mod tests {
     #[test]
     fn multi_terms_enum_empty_sub_terms_returns_empty_enum() {
         let mt = MultiTerms::new(
-            vec![Box::new(EmptyTerms::new()), Box::new(EmptyTerms::new())],
+            vec![Arc::new(EmptyTerms::new()), Arc::new(EmptyTerms::new())],
             vec![ReaderSlice::new(0, 1, 0), ReaderSlice::new(1, 1, 1)],
         )
         .unwrap();
@@ -2687,7 +2620,7 @@ mod tests {
         let t0 = VecTerms::new(vec![], true, false, true, false);
         let t1 = VecTerms::new(vec![], true, true, true, true);
         let mt = MultiTerms::new(
-            vec![Box::new(t0), Box::new(t1)],
+            vec![Arc::new(t0), Arc::new(t1)],
             vec![ReaderSlice::new(0, 1, 0), ReaderSlice::new(1, 1, 1)],
         )
         .unwrap();
@@ -2701,7 +2634,7 @@ mod tests {
         let t0 = VecTerms::new(vec![], true, false, false, false);
         let t1 = VecTerms::new(vec![], true, false, false, true);
         let mt = MultiTerms::new(
-            vec![Box::new(t0), Box::new(t1)],
+            vec![Arc::new(t0), Arc::new(t1)],
             vec![ReaderSlice::new(0, 1, 0), ReaderSlice::new(1, 1, 1)],
         )
         .unwrap();
@@ -2729,7 +2662,7 @@ mod tests {
             false,
         );
         let mt = MultiTerms::new(
-            vec![Box::new(t0), Box::new(t1)],
+            vec![Arc::new(t0), Arc::new(t1)],
             vec![ReaderSlice::new(0, 3, 0), ReaderSlice::new(3, 4, 1)],
         )
         .unwrap();
@@ -2845,13 +2778,13 @@ mod tests {
         fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
             None
         }
-        fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
             // Mirrors SegmentReader::terms: a field with IndexOptions::NONE has
             // no terms dictionary at all.
             Ok(self
                 .terms
                 .get(field)
-                .map(|t| Box::new(t.clone()) as Box<dyn Terms>))
+                .map(|t| Arc::new(t.clone()) as Arc<dyn Terms>))
         }
         fn get_numeric_doc_values(&self, _: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
             Ok(None)
@@ -3074,7 +3007,7 @@ mod tests {
             false,
         );
         MultiTerms::new(
-            vec![Box::new(t0), Box::new(t1)],
+            vec![Arc::new(t0), Arc::new(t1)],
             vec![ReaderSlice::new(0, 10, 0), ReaderSlice::new(10, 10, 1)],
         )
         .unwrap()
@@ -3145,7 +3078,7 @@ mod tests {
         );
         let t1 = VecTerms::new(vec![(term(b"b"), 1, 1, vec![0])], true, false, false, false);
         let mt = MultiTerms::new(
-            vec![Box::new(t0), Box::new(t1)],
+            vec![Arc::new(t0), Arc::new(t1)],
             vec![ReaderSlice::new(0, 10, 0), ReaderSlice::new(10, 10, 1)],
         )
         .unwrap();
@@ -3380,7 +3313,7 @@ mod tests {
             }))
         }
 
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
 
@@ -3432,7 +3365,7 @@ mod tests {
             self.inner.iterator()
         }
 
-        fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.inner.terms(field)
         }
@@ -3486,8 +3419,13 @@ mod tests {
             "Lucene hands back the same Terms instance for a field"
         );
 
-        // The trait-object path shares the same memo.
-        assert!(mf.terms("body").unwrap().is_some());
+        // The trait-object path shares the same memo and hands out the very
+        // instance, as Java's `terms(field)` returns the memoised object.
+        let as_terms = mf.terms("body").unwrap().unwrap();
+        assert!(std::ptr::addr_eq(
+            Arc::as_ptr(&as_terms),
+            Arc::as_ptr(&first)
+        ));
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
@@ -3504,12 +3442,13 @@ mod tests {
         assert!(a.next().unwrap().is_none());
         assert!(b.next().unwrap().is_none());
 
-        // ... and the Arc handle itself satisfies `Terms`.
-        assert_eq!(Terms::doc_count(&shared).unwrap(), 2);
-        assert_eq!(Terms::sum_doc_freq(&shared).unwrap(), 2);
-        assert!(Terms::has_freqs(&shared));
-        assert_eq!(Terms::min(&shared).unwrap(), Some(term(b"apple")));
-        assert_eq!(Terms::max(&shared).unwrap(), Some(term(b"apple")));
+        // ... and the shared handle is a `Terms` handle.
+        let shared: Arc<dyn Terms> = shared;
+        assert_eq!(shared.doc_count().unwrap(), 2);
+        assert_eq!(shared.sum_doc_freq().unwrap(), 2);
+        assert!(shared.has_freqs());
+        assert_eq!(shared.min().unwrap(), Some(term(b"apple")));
+        assert_eq!(shared.max().unwrap(), Some(term(b"apple")));
     }
 
     #[test]
@@ -3544,7 +3483,7 @@ mod tests {
             false,
         );
         let mt = MultiTerms::new(
-            vec![Box::new(EmptyTerms::new()), Box::new(populated)],
+            vec![Arc::new(EmptyTerms::new()), Arc::new(populated)],
             vec![ReaderSlice::new(0, 2, 0), ReaderSlice::new(2, 2, 1)],
         )
         .unwrap();
@@ -3553,7 +3492,7 @@ mod tests {
 
         // Every sub empty: None rather than a panic.
         let all_empty = MultiTerms::new(
-            vec![Box::new(EmptyTerms::new()), Box::new(EmptyTerms::new())],
+            vec![Arc::new(EmptyTerms::new()), Arc::new(EmptyTerms::new())],
             vec![ReaderSlice::new(0, 1, 0), ReaderSlice::new(1, 1, 1)],
         )
         .unwrap();
@@ -3921,7 +3860,7 @@ mod tests {
     /// leaf 0 = {a, c}, leaf 1 = {b, c}, leaf 2 = {a, c}.
     fn three_leaves() -> MultiTerms {
         let leaf = |terms: [&[u8]; 2]| {
-            Box::new(VecTerms::new(
+            Arc::new(VecTerms::new(
                 vec![
                     (term(terms[0]), 1, 1, vec![0]),
                     (term(terms[1]), 1, 1, vec![1]),
@@ -3930,7 +3869,7 @@ mod tests {
                 false,
                 false,
                 false,
-            )) as Box<dyn Terms>
+            )) as Arc<dyn Terms>
         };
         MultiTerms::new(
             vec![leaf([b"a", b"c"]), leaf([b"b", b"c"]), leaf([b"a", b"c"])],
@@ -3979,14 +3918,14 @@ mod tests {
         // `Objects.toString(null)` is `null`.
         let mt = MultiTerms::new(
             vec![
-                Box::new(VecTerms::new(
+                Arc::new(VecTerms::new(
                     vec![(term(b"a"), 1, 1, vec![0])],
                     true,
                     false,
                     false,
                     false,
                 )),
-                Box::new(VecTerms::new(vec![], true, false, false, false)),
+                Arc::new(VecTerms::new(vec![], true, false, false, false)),
             ],
             vec![ReaderSlice::new(0, 5, 0), ReaderSlice::new(5, 5, 1)],
         )

@@ -598,52 +598,14 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
     }
 }
 
-#[derive(Debug)]
-struct BufferedDocIdSetIterator {
-    docs: Vec<i32>,
-    index: usize,
-    doc: i32,
-}
-
-impl BufferedDocIdSetIterator {
-    fn new(docs: Vec<i32>) -> Self {
-        Self {
-            docs,
-            index: 0,
-            doc: -1,
-        }
-    }
-}
-
-impl DocIdSetIterator for BufferedDocIdSetIterator {
-    fn doc_id(&self) -> i32 {
-        self.doc
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        if self.index < self.docs.len() {
-            self.doc = self.docs[self.index];
-            self.index += 1;
-        } else {
-            self.doc = NO_MORE_DOCS;
-        }
-        Ok(self.doc)
-    }
-
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        while self.index < self.docs.len() && self.docs[self.index] < target {
-            self.index += 1;
-        }
-        self.next_doc()
-    }
-
-    fn cost(&self) -> i64 {
-        self.docs.len() as i64
-    }
-}
-
+/// The statistics `writeValues` gathers in its second pass over the values
+/// (`Lucene90DocValuesConsumer.java:382-433`).
 #[derive(Debug, Clone)]
 struct NumericStats {
+    /// `numDocsWithValue`.
+    num_docs_with_value: i32,
+    /// `minMax.numValues`.
+    num_values: i64,
     min: i64,
     max: i64,
     gcd: i64,
@@ -653,51 +615,58 @@ struct NumericStats {
 
 impl NumericStats {
     /// The statistics pass of `writeValues`
-    /// (`Lucene90DocValuesConsumer.java:373-430`): the GCD of the deltas from
-    /// the first value, the global and per-block bit budgets, and the unique
-    /// values up to 256 of them.
+    /// (`Lucene90DocValuesConsumer.java:382-433`) over a fresh iterator: the
+    /// GCD of the deltas from `first_value`, the global and per-block bit
+    /// budgets, and the unique values up to 256 of them.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalState`] with Java's messages when
     /// ordinals do not start at zero or share a GCD other than one
-    /// (`Lucene90DocValuesConsumer.java:421-430`).
-    fn compute(values: &[i64], ords: bool) -> Result<Self> {
-        // `firstValue` is the first value of the first document, or `0` when no
-        // document has one (`Lucene90DocValuesConsumer.java:376-381`). A field
-        // whose every value belongs to a deleted document has none left after
-        // a merge; the trackers then keep their initial bounds and the `gcd`
-        // its initial `0`, and `writeValues` writes them as they are.
-        let first = values.first().copied().unwrap_or(0);
+    /// (`Lucene90DocValuesConsumer.java:421-430`), and propagates whatever
+    /// reading the values raises.
+    fn compute(
+        values: &mut dyn SortedNumericDocValues,
+        first_value: i64,
+        ords: bool,
+    ) -> Result<Self> {
+        let mut num_docs_with_value = 0i32;
         let mut min_max = MinMaxTracker::new();
         let mut block_min_max = MinMaxTracker::new();
         let mut gcd = 0i64;
         let mut unique = if ords { None } else { Some(HashSet::new()) };
 
-        for &v in values {
-            // Ordinals take the same GCD computation as any other value; Java
-            // only checks the result afterwards.
-            if gcd != 1 {
-                if !(i64::MIN / 2..=i64::MAX / 2).contains(&v) {
-                    // In that case `v - minValue` might overflow and make the
-                    // GCD computation return wrong results.
-                    gcd = 1;
-                } else {
-                    gcd = MathUtil::gcd(gcd, v - first);
+        let mut doc = values.next_doc()?;
+        while doc != NO_MORE_DOCS {
+            let count = values.doc_value_count()?;
+            for _ in 0..count {
+                let v = values.next_value()?;
+                // Ordinals take the same GCD computation as any other value;
+                // Java only checks the result afterwards.
+                if gcd != 1 {
+                    if !(i64::MIN / 2..=i64::MAX / 2).contains(&v) {
+                        // In that case `v - minValue` might overflow and make
+                        // the GCD computation return wrong results.
+                        gcd = 1;
+                    } else {
+                        gcd = MathUtil::gcd(gcd, v - first_value);
+                    }
+                }
+
+                block_min_max.update(v);
+                if block_min_max.num_values == NUMERIC_BLOCK_SIZE as i64 {
+                    min_max.update_from(&block_min_max);
+                    block_min_max.next_block();
+                }
+
+                if let Some(ref mut set) = unique {
+                    if set.insert(v) && set.len() > 256 {
+                        unique = None;
+                    }
                 }
             }
-
-            block_min_max.update(v);
-            if block_min_max.num_values == NUMERIC_BLOCK_SIZE as i64 {
-                min_max.update_from(&block_min_max);
-                block_min_max.next_block();
-            }
-
-            if let Some(ref mut set) = unique {
-                if set.insert(v) && set.len() > 256 {
-                    unique = None;
-                }
-            }
+            num_docs_with_value += 1;
+            doc = values.next_doc()?;
         }
 
         min_max.update_from(&block_min_max);
@@ -732,6 +701,8 @@ impl NumericStats {
             && (block_min_max.space_in_bits as f64 / min_max.space_in_bits as f64) <= 0.9;
 
         Ok(Self {
+            num_docs_with_value,
+            num_values: min_max.num_values,
             min: min_max.min,
             max: min_max.max,
             gcd,
@@ -809,39 +780,102 @@ impl MinMaxTracker {
 }
 
 impl<'a> Lucene90DocValuesConsumer<'a> {
-    fn write_docs_with_field(&mut self, docs: &[i32]) -> Result<(i64, i64, i16, i8)> {
-        if docs.is_empty() {
-            return Ok((-2, 0, -1, -1));
+    /// Writes the docs-with-field entry of a field that `num_docs_with_field`
+    /// documents have: `-2` for none, `-1` for all, otherwise the
+    /// `IndexedDISI` bit set of a fresh iterator over the documents
+    /// (`Lucene90DocValuesConsumer.java:437-456, 629-648`).
+    ///
+    /// PERF: the documents are streamed from `docs`, a new iterator of the
+    /// producer, as Java's `IndexedDISI.writeBitSet(valuesProducer.get…(field),
+    /// …)` streams them; no copy of the document list is kept.
+    fn write_docs_with_field(
+        &mut self,
+        num_docs_with_field: i32,
+        docs: impl FnOnce() -> Result<Box<dyn DocIdSetIterator>>,
+    ) -> Result<()> {
+        if num_docs_with_field == 0 {
+            // meta[-2, 0]: No documents with values
+            self.meta.write_long(-2)?; // docsWithFieldOffset
+            self.meta.write_long(0)?; // docsWithFieldLength
+            self.meta.write_short(-1)?; // jumpTableEntryCount
+            self.meta.write_byte(-1i8 as u8)?; // denseRankPower
+        } else if num_docs_with_field == self.max_doc {
+            // meta[-1, 0]: All documents have values
+            self.meta.write_long(-1)?; // docsWithFieldOffset
+            self.meta.write_long(0)?; // docsWithFieldLength
+            self.meta.write_short(-1)?; // jumpTableEntryCount
+            self.meta.write_byte(-1i8 as u8)?; // denseRankPower
+        } else {
+            // meta[data.offset, data.length]: IndexedDISI structure for
+            // documents with values
+            let offset = self.data.file_pointer();
+            self.meta.write_long(offset)?; // docsWithFieldOffset
+            let mut docs = docs()?;
+            let jump_table_entry_count =
+                write_bit_set(docs.as_mut(), self.data.as_mut(), DEFAULT_DENSE_RANK_POWER)?;
+            self.meta.write_long(self.data.file_pointer() - offset)?; // docsWithFieldLength
+            self.meta.write_short(jump_table_entry_count)?;
+            self.meta.write_byte(DEFAULT_DENSE_RANK_POWER as u8)?;
         }
-        if docs.len() == self.max_doc as usize {
-            return Ok((-1, 0, -1, -1));
-        }
-        let offset = self.data.file_pointer();
-        let mut it = BufferedDocIdSetIterator::new(docs.to_vec());
-        let jump_count = write_bit_set(&mut it, self.data.as_mut(), DEFAULT_DENSE_RANK_POWER)?;
-        let length = self.data.file_pointer() - offset;
-        Ok((offset, length, jump_count, DEFAULT_DENSE_RANK_POWER))
+        Ok(())
     }
 
-    fn write_numeric_values_impl(
+    /// Writes the values of a numeric, sorted-numeric or ordinal field and
+    /// returns `(numDocsWithValue, numValues)`.
+    ///
+    /// Equivalent to `Lucene90DocValuesConsumer.writeValues(FieldInfo,
+    /// DocValuesProducer, boolean)` (`Lucene90DocValuesConsumer.java:373-519`).
+    /// PERF: like Java, it streams the producer once per pass — the first
+    /// value, the statistics, the docs-with-field bit set and the values —
+    /// instead of holding every document and value of the field in memory
+    /// for the whole write.
+    ///
+    /// # Errors
+    ///
+    /// Returns the ordinal checks of [`NumericStats::compute`] and propagates
+    /// whatever reading the values or writing the outputs raises.
+    fn write_values(
         &mut self,
-        _field: &FieldInfo,
-        docs: &[i32],
-        values: &[i64],
+        field: &FieldInfo,
+        values_producer: &dyn DocValuesProducer,
         ords: bool,
     ) -> Result<(i32, i64)> {
-        let num_docs_with_value = docs.len() as i32;
-        let (docs_offset, docs_length, jump_count, dense_rank_power) =
-            self.write_docs_with_field(docs)?;
-        self.meta.write_long(docs_offset)?;
-        self.meta.write_long(docs_length)?;
-        self.meta.write_short(jump_count)?;
-        self.meta.write_byte(dense_rank_power as u8)?;
+        // `firstValue` is the first value of the first document, or `0` when
+        // no document has one (`Lucene90DocValuesConsumer.java:375-381`). A
+        // field whose every value belongs to a deleted document has none left
+        // after a merge; the trackers then keep their initial bounds and the
+        // `gcd` its initial `0`, and the values are written as they are.
+        let first_value = {
+            let mut values = crate::codecs::doc_values::non_null(
+                values_producer.get_sorted_numeric(field)?,
+                field,
+            )?;
+            if values.next_doc()? != NO_MORE_DOCS {
+                values.next_value()?
+            } else {
+                0
+            }
+        };
+        let mut stats = {
+            let mut values = crate::codecs::doc_values::non_null(
+                values_producer.get_sorted_numeric(field)?,
+                field,
+            )?;
+            NumericStats::compute(values.as_mut(), first_value, ords)?
+        };
+        let num_docs_with_value = stats.num_docs_with_value;
+        let num_values = stats.num_values;
 
-        let num_values = values.len() as i64;
+        self.write_docs_with_field(num_docs_with_value, || {
+            let values: Box<dyn DocIdSetIterator> = crate::codecs::doc_values::non_null(
+                values_producer.get_sorted_numeric(field)?,
+                field,
+            )?;
+            Ok(values)
+        })?;
+
         self.meta.write_long(num_values)?;
 
-        let mut stats = NumericStats::compute(values, ords)?;
         let mut min = stats.min;
         let mut gcd = stats.gcd;
 
@@ -902,10 +936,18 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         let jump_table_offset = if num_values == 0 || num_bits_per_value == 0 {
             -1i64
         } else if num_bits_per_value == 0xFF {
-            self.write_values_multiple_blocks(values, gcd)?
+            let mut values = crate::codecs::doc_values::non_null(
+                values_producer.get_sorted_numeric(field)?,
+                field,
+            )?;
+            self.write_values_multiple_blocks(values.as_mut(), gcd)?
         } else {
+            let mut values = crate::codecs::doc_values::non_null(
+                values_producer.get_sorted_numeric(field)?,
+                field,
+            )?;
             self.write_values_single_block(
-                values,
+                values.as_mut(),
                 num_values,
                 num_bits_per_value as i32,
                 min,
@@ -921,9 +963,11 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         Ok((num_docs_with_value, num_values))
     }
 
+    /// `writeValuesSingleBlock` (`Lucene90DocValuesConsumer.java:521-541`),
+    /// over a fresh iterator of the field.
     fn write_values_single_block(
         &mut self,
-        values: &[i64],
+        values: &mut dyn SortedNumericDocValues,
         num_values: i64,
         num_bits_per_value: i32,
         min: i64,
@@ -931,31 +975,49 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         encode: Option<&HashMap<i64, i64>>,
     ) -> Result<i64> {
         let mut writer = DirectWriter::new(self.data.as_mut(), num_values, num_bits_per_value)?;
-        for &v in values {
-            let encoded = if let Some(map) = encode {
-                *map.get(&v).expect("value not in table")
-            } else {
-                v.wrapping_sub(min) / gcd
-            };
-            writer.add(encoded)?;
+        let mut doc = values.next_doc()?;
+        while doc != NO_MORE_DOCS {
+            let count = values.doc_value_count()?;
+            for _ in 0..count {
+                let v = values.next_value()?;
+                let encoded = if let Some(map) = encode {
+                    *map.get(&v).expect("value not in table")
+                } else {
+                    v.wrapping_sub(min) / gcd
+                };
+                writer.add(encoded)?;
+            }
+            doc = values.next_doc()?;
         }
         writer.finish()?;
         Ok(-1)
     }
 
-    fn write_values_multiple_blocks(&mut self, values: &[i64], gcd: i64) -> Result<i64> {
+    /// `writeValuesMultipleBlocks` (`Lucene90DocValuesConsumer.java:544-575`),
+    /// over a fresh iterator of the field; returns the offset of the jump
+    /// table.
+    fn write_values_multiple_blocks(
+        &mut self,
+        values: &mut dyn SortedNumericDocValues,
+        gcd: i64,
+    ) -> Result<i64> {
         let mut offsets: Vec<i64> = Vec::new();
         let mut buffer = vec![0i64; NUMERIC_BLOCK_SIZE];
         let mut encode_buffer = ByteBuffersDataOutput::new_resettable_instance();
         let mut up_to = 0;
-        for &v in values {
-            buffer[up_to] = v;
-            up_to += 1;
-            if up_to == NUMERIC_BLOCK_SIZE {
-                offsets.push(self.data.file_pointer());
-                self.write_block(&buffer[..NUMERIC_BLOCK_SIZE], gcd, &mut encode_buffer)?;
-                up_to = 0;
+        let mut doc = values.next_doc()?;
+        while doc != NO_MORE_DOCS {
+            let count = values.doc_value_count()?;
+            for _ in 0..count {
+                buffer[up_to] = values.next_value()?;
+                up_to += 1;
+                if up_to == NUMERIC_BLOCK_SIZE {
+                    offsets.push(self.data.file_pointer());
+                    self.write_block(&buffer[..NUMERIC_BLOCK_SIZE], gcd, &mut encode_buffer)?;
+                    up_to = 0;
+                }
             }
+            doc = values.next_doc()?;
         }
         if up_to > 0 {
             offsets.push(self.data.file_pointer());
@@ -1003,63 +1065,6 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             self.data.write_long(min)?;
             self.data.write_int(encode_buffer.size() as i32)?;
             encode_buffer.copy_to(self.data.as_mut())?;
-        }
-        Ok(())
-    }
-
-    fn add_binary_internal(
-        &mut self,
-        _field: &FieldInfo,
-        docs: &[i32],
-        bytes: &[Vec<u8>],
-    ) -> Result<()> {
-        debug_assert_eq!(docs.len(), bytes.len());
-        let start = self.data.file_pointer();
-        for b in bytes {
-            self.data.write_bytes(b, 0, b.len())?;
-        }
-        let data_length = self.data.file_pointer() - start;
-        debug_assert!(docs.len() as i64 <= i64::from(self.max_doc));
-        self.meta.write_long(start)?;
-        self.meta.write_long(data_length)?;
-
-        let (docs_offset, docs_length, jump_count, dense_rank_power) =
-            self.write_docs_with_field(docs)?;
-        self.meta.write_long(docs_offset)?;
-        self.meta.write_long(docs_length)?;
-        self.meta.write_short(jump_count)?;
-        self.meta.write_byte(dense_rank_power as u8)?;
-
-        let num_docs = docs.len() as i32;
-        let mut min_length = i32::MAX;
-        let mut max_length = 0i32;
-        for b in bytes {
-            let len = b.len() as i32;
-            min_length = min_length.min(len);
-            max_length = max_length.max(len);
-        }
-        self.meta.write_int(num_docs)?;
-        self.meta.write_int(min_length)?;
-        self.meta.write_int(max_length)?;
-
-        if max_length > min_length {
-            let start = self.data.file_pointer();
-            self.meta.write_long(start)?;
-            self.meta.write_v_int(DIRECT_MONOTONIC_BLOCK_SHIFT)?;
-            let mut writer = DirectMonotonicWriter::new(
-                self.meta.as_mut(),
-                self.data.as_mut(),
-                num_docs as i64 + 1,
-                DIRECT_MONOTONIC_BLOCK_SHIFT,
-            )?;
-            let mut addr = 0i64;
-            writer.add(addr)?;
-            for b in bytes {
-                addr += b.len() as i64;
-                writer.add(addr)?;
-            }
-            writer.finish()?;
-            self.meta.write_long(self.data.file_pointer() - start)?;
         }
         Ok(())
     }
@@ -1125,19 +1130,15 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         if add_type_byte {
             self.meta.write_byte(0u8)?; // multiValued (0 = singleValued)
         }
+        // PERF: `writeValues(field, producer, true)` streams the ordinals
+        // (`Lucene90DocValuesConsumer.java:741`).
+        self.write_values(field, &producer, true)?;
 
-        let mut sorted =
+        // `addTermsDict(DocValues.singleton(valuesProducer.getSorted(field)))`
+        // (`Lucene90DocValuesConsumer.java:742`).
+        let sorted =
             crate::codecs::doc_values::non_null(values_producer.get_sorted(field)?, field)?;
         let value_count = sorted.get_value_count()? as i64;
-        let mut docs = Vec::new();
-        let mut ords = Vec::new();
-        let mut doc = sorted.next_doc()?;
-        while doc != NO_MORE_DOCS {
-            docs.push(doc);
-            ords.push(sorted.ord_value()? as i64);
-            doc = sorted.next_doc()?;
-        }
-        self.write_numeric_values_impl(field, &docs, &ords, true)?;
         self.add_terms_dict_values(value_count, |ord| sorted.lookup_ord(ord as i32))?;
         Ok(())
     }
@@ -1170,24 +1171,9 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         if ords {
             self.meta.write_byte(1u8)?; // multiValued (1 = multiValued)
         }
-
-        let mut numeric =
-            crate::codecs::doc_values::non_null(values_producer.get_sorted_numeric(field)?, field)?;
-        let mut docs = Vec::new();
-        let mut counts = Vec::new();
-        let mut all_values = Vec::new();
-        let mut doc = numeric.next_doc()?;
-        while doc != NO_MORE_DOCS {
-            docs.push(doc);
-            let count = numeric.doc_value_count()?;
-            counts.push(count);
-            for _ in 0..count {
-                all_values.push(numeric.next_value()?);
-            }
-            doc = numeric.next_doc()?;
-        }
-        let (num_docs_with_field, num_values) =
-            self.write_numeric_values_impl(field, &docs, &all_values, ords)?;
+        // PERF: streamed by `writeValues`, and the addresses below by one more
+        // pass, as in Java (`Lucene90DocValuesConsumer.java:914, 930-937`).
+        let (num_docs_with_field, num_values) = self.write_values(field, values_producer, ords)?;
         debug_assert!(num_values >= num_docs_with_field as i64);
 
         self.meta.write_int(num_docs_with_field)?;
@@ -1204,9 +1190,15 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             )?;
             let mut addr = 0i64;
             addresses_writer.add(addr)?;
-            for &count in &counts {
-                addr += count as i64;
+            let mut values = crate::codecs::doc_values::non_null(
+                values_producer.get_sorted_numeric(field)?,
+                field,
+            )?;
+            let mut doc = values.next_doc()?;
+            while doc != NO_MORE_DOCS {
+                addr += values.doc_value_count()? as i64;
                 addresses_writer.add(addr)?;
+                doc = values.next_doc()?;
             }
             addresses_writer.finish()?;
             self.meta.write_long(self.data.file_pointer() - start)?;
@@ -1491,29 +1483,16 @@ impl<'a> DocValuesConsumer for Lucene90DocValuesConsumer<'a> {
     ) -> Result<()> {
         self.meta.write_int(field.number)?;
         self.meta.write_byte(TYPE_NUMERIC)?;
-        // Lucene writes the skip index between the type byte and the values,
-        // and the reader reads it in the same place
-        // (`Lucene90DocValuesConsumer.java:160-165`). A numeric field is seen
-        // as a single-valued sorted-numeric one, which is the shape the skip
-        // index is built from.
+        // A numeric field is seen as a single-valued sorted-numeric one, the
+        // shape both the skip index and `writeValues` read; Lucene writes the
+        // skip index between the type byte and the values, and the reader
+        // reads it in the same place (`Lucene90DocValuesConsumer.java:152-166`).
+        let producer = SingletonNumericProducer { inner: values };
         if field.doc_values_skip_index_type != crate::index::DocValuesSkipIndexType::NONE {
-            let producer = SingletonNumericProducer {
-                inner: values,
-                field: field.clone(),
-            };
             self.write_skip_index(field, &producer)?;
         }
-
-        let mut numeric = crate::codecs::doc_values::non_null(values.get_numeric(field)?, field)?;
-        let mut docs = Vec::new();
-        let mut values_vec = Vec::new();
-        let mut doc = numeric.next_doc()?;
-        while doc != NO_MORE_DOCS {
-            docs.push(doc);
-            values_vec.push(numeric.long_value()?);
-            doc = numeric.next_doc()?;
-        }
-        self.write_numeric_values_impl(field, &docs, &values_vec, false)?;
+        // PERF: streamed by `writeValues`, as in Java.
+        self.write_values(field, &producer, false)?;
         Ok(())
     }
 
@@ -1525,17 +1504,60 @@ impl<'a> DocValuesConsumer for Lucene90DocValuesConsumer<'a> {
         self.meta.write_int(field.number)?;
         self.meta.write_byte(TYPE_BINARY)?;
 
+        // PERF: Java's three passes (`Lucene90DocValuesConsumer.java:608-673`):
+        // the values are written as they are read, then the docs-with-field
+        // bit set and the addresses are each streamed from a fresh iterator;
+        // no copy of the field's documents or values is kept.
         let mut binary = crate::codecs::doc_values::non_null(values.get_binary(field)?, field)?;
-        let mut docs = Vec::new();
-        let mut bytes = Vec::new();
+        let start = self.data.file_pointer();
+        self.meta.write_long(start)?; // dataOffset
+        let mut num_docs_with_field = 0i32;
+        let mut min_length = i32::MAX;
+        let mut max_length = 0i32;
         let mut doc = binary.next_doc()?;
         while doc != NO_MORE_DOCS {
-            docs.push(doc);
-            let value = binary.binary_value()?;
-            bytes.push(BytesRef::deep_copy_of(&value).bytes);
+            num_docs_with_field += 1;
+            let v = binary.binary_value()?;
+            let length = v.length as i32;
+            self.data.write_bytes(&v.bytes, v.offset, v.length)?;
+            min_length = min_length.min(length);
+            max_length = max_length.max(length);
             doc = binary.next_doc()?;
         }
-        self.add_binary_internal(field, &docs, &bytes)?;
+        debug_assert!(num_docs_with_field <= self.max_doc);
+        self.meta.write_long(self.data.file_pointer() - start)?; // dataLength
+
+        self.write_docs_with_field(num_docs_with_field, || {
+            let binary: Box<dyn DocIdSetIterator> =
+                crate::codecs::doc_values::non_null(values.get_binary(field)?, field)?;
+            Ok(binary)
+        })?;
+
+        self.meta.write_int(num_docs_with_field)?;
+        self.meta.write_int(min_length)?;
+        self.meta.write_int(max_length)?;
+        if max_length > min_length {
+            let start = self.data.file_pointer();
+            self.meta.write_long(start)?;
+            self.meta.write_v_int(DIRECT_MONOTONIC_BLOCK_SHIFT)?;
+            let mut writer = DirectMonotonicWriter::new(
+                self.meta.as_mut(),
+                self.data.as_mut(),
+                num_docs_with_field as i64 + 1,
+                DIRECT_MONOTONIC_BLOCK_SHIFT,
+            )?;
+            let mut addr = 0i64;
+            writer.add(addr)?;
+            let mut binary = crate::codecs::doc_values::non_null(values.get_binary(field)?, field)?;
+            let mut doc = binary.next_doc()?;
+            while doc != NO_MORE_DOCS {
+                addr += binary.binary_value()?.length as i64;
+                writer.add(addr)?;
+                doc = binary.next_doc()?;
+            }
+            writer.finish()?;
+            self.meta.write_long(self.data.file_pointer() - start)?;
+        }
         Ok(())
     }
 
@@ -6023,6 +6045,153 @@ mod tests {
         assert_eq!(numeric.next_doc().unwrap(), NO_MORE_DOCS);
     }
 
+    /// Counts the iterators a consumer asks a [`TestDocValuesProducer`] for.
+    #[derive(Debug)]
+    struct CountingProducer {
+        inner: TestDocValuesProducer,
+        iterators: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingProducer {
+        fn new(inner: TestDocValuesProducer) -> Self {
+            Self {
+                inner,
+                iterators: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn count(&self) {
+            self.iterators
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        fn iterators(&self) -> usize {
+            self.iterators.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl DocValuesProducer for CountingProducer {
+        fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+            self.count();
+            self.inner.get_numeric(field)
+        }
+
+        fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+            self.count();
+            self.inner.get_binary(field)
+        }
+
+        fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+            self.count();
+            self.inner.get_sorted(field)
+        }
+
+        fn get_sorted_numeric(
+            &self,
+            field: &FieldInfo,
+        ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+            self.count();
+            self.inner.get_sorted_numeric(field)
+        }
+
+        fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+            self.count();
+            self.inner.get_sorted_set(field)
+        }
+
+        fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+            self.inner.get_skipper(field)
+        }
+
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
+            self.inner.get_merge_instance()
+        }
+
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The consumer streams the producer pass by pass, as Java does, and
+    /// keeps no copy of a field's documents or values: one iterator per pass
+    /// of `writeValues` — first value, statistics, docs-with-field, values
+    /// (`Lucene90DocValuesConsumer.java:375, 382, 450, 514`) — plus the
+    /// addresses of a multi-valued field (`:930`), and the data,
+    /// docs-with-field and addresses passes of a variable-length binary field
+    /// (`:612, 642, 663`). The values still round-trip.
+    #[test]
+    fn the_consumer_streams_each_field_pass_by_pass() {
+        let field = FieldInfo::new("num", 0);
+        let values = CountingProducer::new(TestDocValuesProducer::with_numeric(
+            0,
+            vec![0, 2, 4],
+            vec![1, 3, 5],
+        ));
+        let producer = write_and_read(5, &field, |consumer| {
+            consumer.add_numeric_field(&field, &values).unwrap();
+        });
+        assert_eq!(values.iterators(), 4);
+        let mut numeric = producer.get_numeric(&field).unwrap().unwrap();
+        let mut read = Vec::new();
+        while numeric.next_doc().unwrap() != NO_MORE_DOCS {
+            read.push((numeric.doc_id(), numeric.long_value().unwrap()));
+        }
+        assert_eq!(read, vec![(0, 1), (2, 3), (4, 5)]);
+
+        let field = FieldInfo::new("sorted_num", 0);
+        let values = CountingProducer::new(TestDocValuesProducer::with_sorted_numeric(
+            0,
+            vec![0, 1, 3],
+            vec![vec![1, 2], vec![3], vec![4, 5, 6]],
+        ));
+        let producer = write_and_read(5, &field, |consumer| {
+            consumer.add_sorted_numeric_field(&field, &values).unwrap();
+        });
+        assert_eq!(values.iterators(), 5);
+        let mut sorted_numeric = producer.get_sorted_numeric(&field).unwrap().unwrap();
+        let mut read = Vec::new();
+        while sorted_numeric.next_doc().unwrap() != NO_MORE_DOCS {
+            for _ in 0..sorted_numeric.doc_value_count().unwrap() {
+                read.push((
+                    sorted_numeric.doc_id(),
+                    sorted_numeric.next_value().unwrap(),
+                ));
+            }
+        }
+        assert_eq!(read, vec![(0, 1), (0, 2), (1, 3), (3, 4), (3, 5), (3, 6)]);
+
+        let field = FieldInfo::new("bin", 0);
+        let values = CountingProducer::new(TestDocValuesProducer::with_binary(
+            0,
+            vec![0, 2, 4],
+            vec![b"alpha".to_vec(), b"beta".to_vec(), b"gamma".to_vec()],
+        ));
+        let producer = write_and_read(5, &field, |consumer| {
+            consumer.add_binary_field(&field, &values).unwrap();
+        });
+        assert_eq!(values.iterators(), 3);
+        let mut binary = producer.get_binary(&field).unwrap().unwrap();
+        let mut read = Vec::new();
+        while binary.next_doc().unwrap() != NO_MORE_DOCS {
+            read.push((
+                binary.doc_id(),
+                binary.binary_value().unwrap().slice().to_vec(),
+            ));
+        }
+        assert_eq!(
+            read,
+            vec![
+                (0, b"alpha".to_vec()),
+                (2, b"beta".to_vec()),
+                (4, b"gamma".to_vec())
+            ]
+        );
+    }
+
     #[test]
     fn round_trip_numeric_table_compression() {
         let field = FieldInfo::new("num", 0);
@@ -6324,7 +6493,6 @@ mod tests {
 #[derive(Debug)]
 struct SingletonNumericProducer<'a> {
     inner: &'a dyn DocValuesProducer,
-    field: FieldInfo,
 }
 
 impl DocValuesProducer for SingletonNumericProducer<'_> {
@@ -6377,7 +6545,6 @@ impl DocValuesProducer for SingletonNumericProducer<'_> {
     }
 
     fn close(&self) -> Result<()> {
-        let _ = &self.field;
         Ok(())
     }
 }

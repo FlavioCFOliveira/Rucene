@@ -89,10 +89,11 @@ impl SegmentCoreReaders {
     /// Returns a `CorruptIndexException` if any required file is missing or
     /// truncated, or any other I/O error thrown by the codec.
     pub fn new(
-        dir: &dyn Directory,
+        shared_dir: &Arc<dyn Directory>,
         si: &SegmentCommitInfo,
         context: &dyn IOContext,
     ) -> Result<Self> {
+        let dir: &dyn Directory = shared_dir.as_ref();
         let codec = si
             .info
             .codec()
@@ -106,7 +107,7 @@ impl SegmentCoreReaders {
             Some(
                 codec
                     .compound_format()
-                    .get_compound_reader(dir, &si.info)
+                    .get_compound_reader(shared_dir, &si.info)
                     .map_err(wrap)?,
             )
         } else {
@@ -963,7 +964,7 @@ impl LeafReader for DocValuesLeafReader {
         )
     }
 
-    fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
         // `throw new UnsupportedOperationException()`.
         Err(LuceneError::unsupported_operation(String::new()))
     }
@@ -1184,7 +1185,11 @@ impl SegmentReader {
             original_si.info.get_has_blocks(),
         )?;
 
-        let core_readers = Arc::new(SegmentCoreReaders::new(dir, &original_si, context)?);
+        let core_readers = Arc::new(SegmentCoreReaders::new(
+            &original_si.info.directory,
+            &original_si,
+            context,
+        )?);
         let seg_doc_values = Arc::new(SegmentDocValues::new());
 
         let result: Result<Self> = {
@@ -1695,7 +1700,7 @@ impl LeafReader for SegmentReader {
         Some(Box::new(self.core_cache_helper.clone()))
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.ensure_open()?;
         let fi = self.field_infos.field_info(field);
         if fi.is_none() || fi.unwrap().index_options == crate::index::IndexOptions::NONE {
@@ -2626,7 +2631,7 @@ mod tests {
             self.inner.iterator()
         }
 
-        fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
             self.inner.terms(field)
         }
 
@@ -3412,7 +3417,7 @@ mod tests {
 
         fn get_compound_reader(
             &self,
-            _dir: &dyn Directory,
+            _dir: &Arc<dyn Directory>,
             _segment_info: &SegmentInfo,
         ) -> Result<Box<dyn CompoundDirectory>> {
             Ok(Box::new(RecordingCompoundDirectory::new(

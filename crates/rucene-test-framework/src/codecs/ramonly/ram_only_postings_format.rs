@@ -316,14 +316,14 @@ impl Fields for RAMPostingsProducer {
         Box::new(names.into_iter())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(self
             .0
             .field_to_terms
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&JavaString::of(field))
-            .map(|f| Box::new(RAMTerms(Arc::clone(f))) as Box<dyn Terms>))
+            .map(|f| Arc::new(RAMTerms(Arc::clone(f))) as Arc<dyn Terms>))
     }
 
     fn size(&self) -> i32 {
@@ -369,7 +369,7 @@ impl Fields for MissingPostings {
         Box::new(std::iter::empty())
     }
 
-    fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(None)
     }
 

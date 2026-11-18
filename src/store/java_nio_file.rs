@@ -1712,6 +1712,13 @@ fn is_separator(b: u8) -> bool {
 
 /// `UnixPath.normalizeAndCheck`: redundant and trailing separators removed,
 /// a NUL refused.
+///
+/// The path's bytes are made once, as `UnixPath(UnixFileSystem, String)`
+/// makes them (`UnixPath.java:74-77`): an already-normal input is returned
+/// itself by `normalizeAndCheck` (`:81-94`) and copied once by `encode`
+/// (`:124-132`); only an input with a redundant separator is rebuilt.
+// PERF: one allocation per path; the bytes used to be normalized into a
+// buffer that was then copied into the path, two allocations per path.
 fn normalize_and_check(path: &OsStr) -> PathBuf {
     let bytes = os_bytes(path);
     if bytes.contains(&0) {
@@ -1722,6 +1729,12 @@ fn normalize_and_check(path: &OsStr) -> PathBuf {
                 String::from_utf8_lossy(&bytes)
             )),
         )
+    }
+    if is_normal(&bytes) {
+        return match bytes {
+            Cow::Borrowed(normal) => bytes_to_path(normal),
+            Cow::Owned(normal) => owned_bytes_to_path(normal),
+        };
     }
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut prev_sep = false;
@@ -1736,8 +1749,23 @@ fn normalize_and_check(path: &OsStr) -> PathBuf {
     if out.len() > 1 && is_separator(*out.last().expect("non-empty")) {
         out.pop();
     }
-    let _ = OsString::new();
-    bytes_to_path(&out)
+    owned_bytes_to_path(out)
+}
+
+/// Whether [`normalize_and_check`] would leave `bytes` unchanged: no
+/// separator follows another, none is a non-native separator, and none ends
+/// a path longer than one byte (`UnixPath.normalizeAndCheck`'s two `return
+/// normalize(...)` conditions, `UnixPath.java:86-92`).
+fn is_normal(bytes: &[u8]) -> bool {
+    let mut prev_sep = false;
+    for &b in bytes {
+        let sep = is_separator(b);
+        if sep && (prev_sep || b != SEPARATOR_BYTES[0]) {
+            return false;
+        }
+        prev_sep = sep;
+    }
+    !(prev_sep && bytes.len() > 1)
 }
 
 /// The `(start, end)` byte offsets of the last name of a path: the last

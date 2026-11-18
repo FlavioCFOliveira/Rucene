@@ -7,7 +7,7 @@
 
 use crate::util::{IOUtils, PriorityQueue, PriorityQueueComparator};
 use std::collections::HashSet;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::codecs::codec_util;
 use crate::codecs::compound::CompoundFormat;
@@ -62,7 +62,7 @@ impl CompoundFormat for Lucene90CompoundFormat {
 
     fn get_compound_reader(
         &self,
-        dir: &dyn Directory,
+        dir: &Arc<dyn Directory>,
         segment_info: &SegmentInfo,
     ) -> Result<Box<dyn CompoundDirectory>> {
         let reader = Lucene90CompoundReader::new(dir, segment_info)?;
@@ -210,19 +210,16 @@ fn write_compound_file(
 /// Equivalent to `org.apache.lucene.codecs.lucene90.Lucene90CompoundReader`:
 /// the `.cfs` is opened once as `handle` and every sub-file is a slice of it.
 pub struct Lucene90CompoundReader {
+    /// The directory the compound file was opened from, as Java's `final
+    /// Directory directory` (`Lucene90CompoundReader.java:50`): read only by
+    /// `toString()`.
+    directory: Arc<dyn Directory>,
     segment_name: String,
     entries: CompoundEntries,
     ///
     /// Behind a mutex because `close()` closes it through the shared
     /// reader, as Java's `IOUtils.close(handle)` does.
     handle: Mutex<Box<dyn IndexInput>>,
-    /// How the directory this reader was opened from renders itself.
-    ///
-    /// Java keeps the `Directory` in a field and concatenates it in
-    /// `toString()`, the only place it reads it. The reader cannot borrow the
-    /// directory it was opened from beyond the constructor, so the rendering
-    /// is captured instead — which is all `toString()` ever asked of it.
-    directory_description: String,
 }
 
 impl std::fmt::Debug for Lucene90CompoundReader {
@@ -250,9 +247,11 @@ impl Lucene90CompoundReader {
     /// Returns [`LuceneErrorKind::CorruptIndex`] when the entries file or the data
     /// file's header or footer structure is invalid, or when the data file's
     /// length is not the one the entries imply; propagates any I/O error.
-    pub fn new(dir: &dyn Directory, segment_info: &SegmentInfo) -> Result<Self> {
+    pub fn new(directory: &Arc<dyn Directory>, segment_info: &SegmentInfo) -> Result<Self> {
+        // PERF: the directory is kept and rendered by `toString()` only, as
+        // Java does; its rendering used to be formatted at every open.
+        let dir: &dyn Directory = directory.as_ref();
         let segment_name = segment_info.name.clone();
-        let directory_description = dir.directory_to_string();
         let data_file = segment_file_name(&segment_name, "", COMPOUND_FILE_EXTENSION);
         let entries_file = segment_file_name(&segment_name, "", COMPOUND_FILE_ENTRIES_EXTENSION);
 
@@ -306,10 +305,10 @@ impl Lucene90CompoundReader {
         }
 
         Ok(Self {
+            directory: Arc::clone(directory),
             segment_name,
             entries,
             handle: Mutex::new(handle),
-            directory_description,
         })
     }
 }
@@ -508,7 +507,8 @@ impl std::fmt::Display for Lucene90CompoundReader {
         write!(
             f,
             "CompoundFileDirectory(segment=\"{}\" in dir={})",
-            self.segment_name, self.directory_description
+            self.segment_name,
+            self.directory.directory_to_string()
         )
     }
 }
@@ -575,6 +575,31 @@ mod tests {
     }
 
     /// Replaces `name` in `dir` with `bytes`.
+    /// `dir` as the shared handle a compound reader keeps.
+    fn shared<D: Directory + 'static>(dir: &Arc<D>) -> Arc<dyn Directory> {
+        Arc::clone(dir) as Arc<dyn Directory>
+    }
+
+    /// The reader keeps the directory it was opened from and renders it only
+    /// in `toString()` (`Lucene90CompoundReader.java:50,58-59,200-203`).
+    #[test]
+    fn a_reader_keeps_its_directory_and_renders_it_in_to_string() {
+        let dir = Arc::new(ByteBuffersDirectory::default());
+        let info = write_compound(&*dir);
+        let shared_dir = shared(&dir);
+        let before = Arc::strong_count(&dir);
+        let reader = Lucene90CompoundReader::new(&shared_dir, &info).unwrap();
+        assert_eq!(Arc::strong_count(&dir), before + 1);
+        let expected = format!(
+            "CompoundFileDirectory(segment=\"_0\" in dir={})",
+            dir.directory_to_string()
+        );
+        assert_eq!(reader.to_string(), expected);
+        assert_eq!(reader.directory_to_string(), expected);
+        drop(reader);
+        assert_eq!(Arc::strong_count(&dir), before);
+    }
+
     fn overwrite(dir: &ByteBuffersDirectory, name: &str, bytes: &[u8]) {
         dir.delete_file(name).unwrap();
         let mut out = dir
@@ -599,15 +624,15 @@ mod tests {
     /// (`Lucene90CompoundReader.java:86-94`).
     #[test]
     fn a_truncated_data_file_is_rejected_on_open() {
-        let dir = ByteBuffersDirectory::default();
-        let info = write_compound(&dir);
+        let dir = Arc::new(ByteBuffersDirectory::default());
+        let info = write_compound(&*dir);
         let mut cfs = read_all(&dir, "_0.cfs");
         // Drop sixteen bytes before the footer, keeping a well-formed footer.
         let footer = cfs.split_off(cfs.len() - codec_util::footer_length() as usize);
         cfs.truncate(cfs.len() - 16);
         cfs.extend_from_slice(&footer);
         overwrite(&dir, "_0.cfs", &cfs);
-        match Lucene90CompoundReader::new(&dir, &info) {
+        match Lucene90CompoundReader::new(&shared(&dir), &info) {
             Err(LuceneError {
                 kind: LuceneErrorKind::CorruptIndex { message, .. },
                 ..
@@ -626,9 +651,9 @@ mod tests {
     #[test]
     fn niofs_sub_file_clones_share_the_open_handle() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = crate::store::NIOFSDirectory::open(tmp.path()).unwrap();
-        let info = write_compound(&dir);
-        let reader = Lucene90CompoundReader::new(&dir, &info).unwrap();
+        let dir = Arc::new(crate::store::NIOFSDirectory::open(tmp.path()).unwrap());
+        let info = write_compound(&*dir);
+        let reader = Lucene90CompoundReader::new(&shared(&dir), &info).unwrap();
         let input = reader
             .open_input("_0.fdt", &*crate::store::DEFAULT_IO_CONTEXT)
             .unwrap();
@@ -643,8 +668,8 @@ mod tests {
     /// (`Lucene90CompoundReader.java:131-145`).
     #[test]
     fn a_duplicate_entry_id_is_rejected() {
-        let dir = ByteBuffersDirectory::default();
-        let info = write_compound(&dir);
+        let dir = Arc::new(ByteBuffersDirectory::default());
+        let info = write_compound(&*dir);
         dir.delete_file("_0.cfe").unwrap();
         let mut out = dir
             .create_output("_0.cfe", &*crate::store::DEFAULT_IO_CONTEXT)
@@ -659,7 +684,7 @@ mod tests {
         }
         codec_util::write_footer(out.as_mut()).unwrap();
         out.close().unwrap();
-        match Lucene90CompoundReader::new(&dir, &info) {
+        match Lucene90CompoundReader::new(&shared(&dir), &info) {
             Err(LuceneError {
                 kind: LuceneErrorKind::CorruptIndex { message, .. },
                 ..
@@ -684,7 +709,7 @@ mod tests {
     /// different order from the file's.
     #[test]
     fn a_missing_sub_file_lists_the_ids_in_java_order() {
-        let dir = ByteBuffersDirectory::default();
+        let dir = Arc::new(ByteBuffersDirectory::default());
         let info = test_segment_info("_0", 10);
         info.set_files(HashSet::from([
             "_0.fdt".to_string(),
@@ -692,13 +717,13 @@ mod tests {
             "_0.fnm".to_string(),
         ]))
         .unwrap();
-        write_dummy_file(&dir, "_0.fdx", "DummyStoredFieldsIndex", b"").unwrap();
-        write_dummy_file(&dir, "_0.fnm", "DummyFieldInfos", &[7u8; 20]).unwrap();
-        write_dummy_file(&dir, "_0.fdt", "DummyStoredFields", &[9u8; 40]).unwrap();
+        write_dummy_file(&*dir, "_0.fdx", "DummyStoredFieldsIndex", b"").unwrap();
+        write_dummy_file(&*dir, "_0.fnm", "DummyFieldInfos", &[7u8; 20]).unwrap();
+        write_dummy_file(&*dir, "_0.fdt", "DummyStoredFields", &[9u8; 40]).unwrap();
         Lucene90CompoundFormat::new()
-            .write(&dir, &info, &*crate::store::DEFAULT_IO_CONTEXT)
+            .write(&*dir, &info, &*crate::store::DEFAULT_IO_CONTEXT)
             .unwrap();
-        let reader = Lucene90CompoundReader::new(&dir, &info).unwrap();
+        let reader = Lucene90CompoundReader::new(&shared(&dir), &info).unwrap();
         let Err(err) = reader.open_input("_0.tim", &*crate::store::DEFAULT_IO_CONTEXT) else {
             panic!("a missing sub-file must not open")
         };
@@ -729,9 +754,9 @@ mod tests {
     /// the whole data file (`Lucene90CompoundReader.java:248-251`).
     #[test]
     fn sub_files_are_slices_of_the_data_file() {
-        let dir = ByteBuffersDirectory::default();
-        let info = write_compound(&dir);
-        let reader = Lucene90CompoundReader::new(&dir, &info).unwrap();
+        let dir = Arc::new(ByteBuffersDirectory::default());
+        let info = write_compound(&*dir);
+        let reader = Lucene90CompoundReader::new(&shared(&dir), &info).unwrap();
         reader.check_integrity().unwrap();
         let input = reader
             .open_input("_0.fnm", &*crate::store::DEFAULT_IO_CONTEXT)
@@ -748,13 +773,13 @@ mod tests {
         let at = cfs.len() / 2;
         cfs[at] ^= 0xFF;
         overwrite(&dir, "_0.cfs", &cfs);
-        let reader = Lucene90CompoundReader::new(&dir, &info).unwrap();
+        let reader = Lucene90CompoundReader::new(&shared(&dir), &info).unwrap();
         assert!(reader.check_integrity().is_err());
     }
 
     #[test]
     fn round_trip_small_files() {
-        let dir = ByteBuffersDirectory::default();
+        let dir = Arc::new(ByteBuffersDirectory::default());
         let format = Lucene90CompoundFormat::new();
         let info = test_segment_info("_0", 10);
         info.set_files(HashSet::from([
@@ -764,15 +789,15 @@ mod tests {
         ]))
         .unwrap();
 
-        write_dummy_file(&dir, "_0.fdt", "DummyStoredFields", b"hello stored fields").unwrap();
-        write_dummy_file(&dir, "_0.fdx", "DummyStoredFieldsIndex", b"index data").unwrap();
-        write_dummy_file(&dir, "_0.fnm", "DummyFieldInfos", b"field info bytes").unwrap();
+        write_dummy_file(&*dir, "_0.fdt", "DummyStoredFields", b"hello stored fields").unwrap();
+        write_dummy_file(&*dir, "_0.fdx", "DummyStoredFieldsIndex", b"index data").unwrap();
+        write_dummy_file(&*dir, "_0.fnm", "DummyFieldInfos", b"field info bytes").unwrap();
 
         format
-            .write(&dir, &info, &*crate::store::DEFAULT_IO_CONTEXT)
+            .write(&*dir, &info, &*crate::store::DEFAULT_IO_CONTEXT)
             .unwrap();
 
-        let reader = format.get_compound_reader(&dir, &info).unwrap();
+        let reader = format.get_compound_reader(&shared(&dir), &info).unwrap();
 
         let mut names = reader.list_all().unwrap();
         names.sort();

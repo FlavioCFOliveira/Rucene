@@ -273,6 +273,11 @@ impl FileSystem for DefaultFileSystem {
     /// `UnixFileSystem.getPath(first, more...)`: the non-empty parts joined
     /// with the separator.
     fn get_path(self: Arc<Self>, first: &str, more: &[&str]) -> Path {
+        // `path = first` when `more` is empty (`UnixFileSystem.java:299-300`).
+        // PERF: no copy of `first` before the path's own bytes are made.
+        if more.is_empty() {
+            return Path::new(default_file_system(), first);
+        }
         let mut joined = String::from(first);
         for segment in more {
             if !segment.is_empty() {

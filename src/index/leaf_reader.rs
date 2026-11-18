@@ -119,7 +119,7 @@ pub trait TermVectors: Send + Sync + Debug {
 
     /// Returns term vectors for `doc` restricted to `field`, or `None` if none
     /// were indexed for that field.
-    fn get_field(&self, doc: i32, field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
+    fn get_field(&self, doc: i32, field: &str) -> Result<Option<Arc<dyn crate::index::Terms>>> {
         if let Some(fields) = self.get(doc)? {
             if let Some(terms) = fields.terms(field)? {
                 return Ok(Some(terms));
@@ -294,7 +294,7 @@ pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
     fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>>;
 
     /// Returns the [`Terms`] index for `field`, or `None` if it has none.
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>>;
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>>;
 
     /// Returns [`NumericDocValues`] for `field`, if any.
     fn get_numeric_doc_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>>;
@@ -663,7 +663,7 @@ mod tests {
             None
         }
 
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
 

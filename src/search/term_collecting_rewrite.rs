@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::error::Result;
 use crate::index::TermStates;
-use crate::index::{IndexReaderContext, LeafReaderContext, Term, Terms, TermsEnum};
+use crate::index::{IndexReaderContext, LeafReaderContext, Term, TermsEnum};
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::multi_term_query::{MultiTermQuery, RewriteMethod};
 use crate::search::query::Query;
@@ -162,7 +162,6 @@ pub fn collect_terms(
             // The field does not exist.
             continue;
         };
-        let terms: Arc<dyn Terms> = Arc::from(terms);
 
         let mut terms_enum =
             rewrite_method.get_terms_enum(query, &terms, collector.attributes())?;

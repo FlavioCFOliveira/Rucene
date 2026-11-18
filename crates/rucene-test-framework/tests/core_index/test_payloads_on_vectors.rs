@@ -76,7 +76,7 @@ fn with_payload_stream() -> Arc<AtomicRefCell<dyn TokenStream>> {
 
 /// The term vector checks both mixup tests make: `withPayload` at
 /// `position`, with the payload `"test"`.
-fn check_with_payload(terms: Option<Box<dyn Terms>>, position: i32) -> Result<()> {
+fn check_with_payload(terms: Option<Arc<dyn Terms>>, position: i32) -> Result<()> {
     debug_assert!(terms.is_some());
     let terms = terms.unwrap_or_else(|| npe("terms"));
     let mut terms_enum = terms.iterator()?;

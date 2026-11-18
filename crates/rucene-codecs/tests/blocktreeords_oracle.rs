@@ -261,7 +261,7 @@ fn ords_index(dir: &TempDir, docs: &[Vec<String>]) -> Arc<dyn IndexReader> {
     directory_reader::open(open_dir(&dir.0)).unwrap()
 }
 
-fn field_terms(reader: &Arc<dyn IndexReader>) -> Box<dyn Terms> {
+fn field_terms(reader: &Arc<dyn IndexReader>) -> Arc<dyn Terms> {
     let leaves = Arc::clone(reader).leaves().unwrap();
     assert_eq!(leaves.len(), 1);
     leaves[0].leaf_reader().terms("field").unwrap().unwrap()

@@ -216,9 +216,10 @@ impl MappingMultiPostingsEnum {
         self.return_sub_postings();
         self.multi_docs_and_positions_enum = Some(postings_enum);
 
-        // subs.clear()
-        let subs = std::mem::take(self.doc_id_merger.subs_mut());
-        for mut sub in subs {
+        // subs.clear(); PERF: drained in place, so the list keeps its
+        // capacity as Java's `ArrayList.clear` does
+        // (`MappingMultiPostingsEnum.java:69`).
+        for mut sub in self.doc_id_merger.subs_mut().drain(..) {
             sub.postings = None;
             let reader_index = sub.reader_index;
             self.all_subs[reader_index] = Some(sub);
@@ -748,6 +749,42 @@ mod tests {
             vec![0, 2, 4],
             "segment 1's local doc 1 becomes merged doc 4"
         );
+    }
+
+    /// `subs.clear()` keeps the list's storage (`ArrayList.clear`,
+    /// `MappingMultiPostingsEnum.java:69`): a term with fewer subs than the
+    /// previous one refills the same buffer at the same capacity, and still
+    /// yields its own documents only.
+    #[test]
+    fn reset_keeps_the_subs_buffer_across_terms() {
+        // Five one-document segments, so the first term's five subs grow the
+        // buffer past the smallest capacity a fresh vector would get.
+        let state = merge_state(
+            (0..5).map(|i| identity_doc_map(1, i)).collect(),
+            vec![1; 5],
+            false,
+        );
+        let subs = (0..5)
+            .map(|i| EnumWithSlice::new(VecPostings::boxed(&[0]), ReaderSlice::new(i, 1, i)))
+            .collect();
+        let mut postings = mapping(state, subs).unwrap();
+        assert_eq!(drain(&mut postings), vec![0, 1, 2, 3, 4]);
+        let capacity = postings.doc_id_merger.subs_mut().capacity();
+        assert!(capacity >= 5);
+
+        postings
+            .reset(merged(vec![EnumWithSlice::new(
+                VecPostings::boxed(&[0]),
+                ReaderSlice::new(3, 1, 3),
+            )]))
+            .unwrap();
+        assert_eq!(postings.doc_id_merger.subs_mut().len(), 1);
+        assert_eq!(
+            postings.doc_id_merger.subs_mut().capacity(),
+            capacity,
+            "the second term reuses the first term's buffer"
+        );
+        assert_eq!(drain(&mut postings), vec![3]);
     }
 
     #[test]

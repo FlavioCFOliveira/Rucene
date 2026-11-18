@@ -26,7 +26,7 @@ use rucene::analysis::tokenattributes::CharTermAttribute;
 use rucene::analysis::Analyzer;
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::TermsEnum;
-use rucene::index::{IndexReader, MultiTerms, Term, TermStates, Terms};
+use rucene::index::{IndexReader, MultiTerms, Term, TermStates};
 use rucene::search::boolean_clause::Occur;
 use rucene::search::boolean_query::Builder as BooleanQueryBuilder;
 use rucene::search::boost_query::BoostQuery;
@@ -211,7 +211,6 @@ impl FuzzyLikeThisQuery {
         let Some(terms) = MultiTerms::get_terms(reader, field_name)? else {
             return Ok(());
         };
-        let terms: Arc<dyn Terms> = Arc::from(terms);
         // `analyzer.tokenStream(...)` dereferences a `null` analyzer; the
         // message is JDK 25's helpful one
         let analyzer = self.analyzer.as_ref().ok_or_else(|| {

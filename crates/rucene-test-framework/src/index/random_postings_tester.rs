@@ -513,7 +513,7 @@ impl Fields for SeedFields {
         Box::new(self.fields.keys().cloned())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         match self.fields.get(field) {
             None => Ok(None),
             Some(terms) => {
@@ -522,7 +522,7 @@ impl Fields for SeedFields {
                         "no FieldInfo for field {field}"
                     ))
                 })?;
-                Ok(Some(Box::new(SeedTerms {
+                Ok(Some(Arc::new(SeedTerms {
                     terms: Arc::clone(terms),
                     index_options: field_info.get_index_options(),
                     has_payloads: field_info.has_payloads(),
@@ -2696,7 +2696,7 @@ mod tests {
             Box::new(Restarting(0))
         }
 
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
 

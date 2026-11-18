@@ -271,15 +271,15 @@ impl Fields for BloomFilteredFieldsProducer {
         self.delegate_fields_producer.iterator()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         match self.blooms_by_field_name.get(field) {
             None => self.delegate_fields_producer.terms(field),
             Some(filter) => {
                 let Some(result) = self.delegate_fields_producer.terms(field)? else {
                     return Ok(None);
                 };
-                Ok(Some(Box::new(BloomFilteredTerms {
-                    delegate_terms: Arc::from(result),
+                Ok(Some(Arc::new(BloomFilteredTerms {
+                    delegate_terms: result,
                     filter: Arc::clone(filter),
                 })))
             }
@@ -718,7 +718,7 @@ mod producer_to_string_tests {
         fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
             Box::new(std::iter::empty())
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
         fn size(&self) -> i32 {
@@ -841,7 +841,7 @@ mod fidelity_tests {
         fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
             Box::new(std::iter::empty())
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
         fn size(&self) -> i32 {
@@ -903,7 +903,7 @@ mod producer_to_string_tests_support {
         fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
             Box::new(std::iter::empty())
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
         fn size(&self) -> i32 {

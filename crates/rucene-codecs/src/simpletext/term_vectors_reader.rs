@@ -357,12 +357,12 @@ impl Fields for SimpleTVFields {
         Box::new(self.fields.iter().map(|(name, _)| name.clone()))
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(self
             .fields
             .iter()
             .find(|(name, _)| name == field)
-            .map(|(_, terms)| Box::new(terms.clone()) as Box<dyn Terms>))
+            .map(|(_, terms)| Arc::new(terms.clone()) as Arc<dyn Terms>))
     }
 
     fn size(&self) -> i32 {

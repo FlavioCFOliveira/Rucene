@@ -61,9 +61,7 @@ use crate::index::doc_values::{DocValues, DocValuesIterator, NumericDocValues};
 use crate::index::index_file_names::{segment_file_name, NORMS_EXTENSION, NORMS_META_EXTENSION};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{DataInput, IndexInput, IndexOutput, RandomAccessInput};
-use crate::util::packed::{
-    lock_random_access_input, shared_random_access_input, SharedRandomAccessInput,
-};
+use crate::util::atomic_ref_cell::AtomicRefCell;
 use crate::util::IOUtils;
 
 const DATA_CODEC: &str = "Lucene90NormsData";
@@ -395,9 +393,21 @@ pub struct Lucene90NormsProducer {
     data_inputs: Mutex<HashMap<i32, SharedRandomAccessSlice>>,
 }
 
-/// An `IndexInput` several readers of a merge instance share (Java shares the
-/// object; a Rust input reads through `&mut self`, hence the lock).
-type SharedIndexInput = Arc<Mutex<Box<dyn IndexInput>>>;
+/// An `IndexInput` several readers of a merge instance share: Java shares
+/// the object, a Rust input reads through `&mut self`.
+///
+/// PERF: an [`AtomicRefCell`], the crate's stand-in for a Java shared
+/// reference, not a `Mutex`. Java reads the shared inputs without any lock
+/// (`Lucene90NormsProducer.java:246-356`), and a merge instance "may only be
+/// used from the thread that acquires it" (`NormsProducer.java:51-57`), so a
+/// read only borrows the input for its own duration; a conflicting borrow,
+/// which only a use outside that contract can cause, panics instead of
+/// blocking.
+type SharedIndexInput = Arc<AtomicRefCell<Box<dyn IndexInput>>>;
+
+/// The positional counterpart of [`SharedIndexInput`], for the values slices
+/// and jump tables a merge instance caches.
+type SharedRandomAccessInput = Arc<AtomicRefCell<Box<dyn RandomAccessInput>>>;
 
 impl fmt::Debug for Lucene90NormsProducer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -517,11 +527,7 @@ impl Lucene90NormsProducer {
     /// (`Lucene90NormsProducer.java:246-265`): a merge instance keeps the
     /// slice of each field and hands it out again; a new slice prefetches its
     /// first page.
-    fn get_data_input(
-        &self,
-        field: &FieldInfo,
-        entry: &NormsEntry,
-    ) -> Result<Box<dyn RandomAccessInput>> {
+    fn get_data_input(&self, field: &FieldInfo, entry: &NormsEntry) -> Result<NormsSlice> {
         let mut slice: Option<SharedRandomAccessSlice> = None;
         if self.merging {
             slice = lock(&self.data_inputs).get(&field.number).cloned();
@@ -536,16 +542,16 @@ impl Lucene90NormsProducer {
                     slice.prefetch(0, 1)?;
                 }
                 if !self.merging {
-                    return Ok(slice);
+                    return Ok(NormsSlice::Owned(slice));
                 }
-                let slice = SharedRandomAccessSlice::new(shared_random_access_input(slice));
+                let slice = SharedRandomAccessSlice::new(Arc::new(AtomicRefCell::new(slice)));
                 lock(&self.data_inputs).insert(field.number, slice.clone());
                 slice
             }
         };
-        // PERF: the cached handle, as Java returns its cached slice; cloning
-        // it copies two reference counts, not the resource description.
-        Ok(Box::new(slice))
+        // PERF: the cached handle itself, as Java returns its cached slice:
+        // cloning it copies two reference counts, and it is not boxed.
+        Ok(NormsSlice::Shared(slice))
     }
 
     /// Opens the packed-values slice of one field:
@@ -590,7 +596,7 @@ impl Lucene90NormsProducer {
         let r#in = match disi_inputs.get(&field.number) {
             Some(r#in) => Arc::clone(r#in),
             None => {
-                let r#in = Arc::new(Mutex::new(create_block_slice(
+                let r#in = Arc::new(AtomicRefCell::new(create_block_slice(
                     &**self.data.read(),
                     "docs",
                     entry.docs_with_field_offset,
@@ -644,7 +650,7 @@ impl Lucene90NormsProducer {
                     return Ok(Some(jump_table));
                 }
                 let jump_table =
-                    SharedRandomAccessSlice::new(shared_random_access_input(jump_table));
+                    SharedRandomAccessSlice::new(Arc::new(AtomicRefCell::new(jump_table)));
                 lock(&self.disi_jump_tables).insert(field.number, jump_table.clone());
                 jump_table
             }
@@ -813,8 +819,7 @@ struct SharedRandomAccessSlice {
 
 impl SharedRandomAccessSlice {
     fn new(input: SharedRandomAccessInput) -> Self {
-        let resource_description =
-            Arc::from(lock_random_access_input(&input).resource_description());
+        let resource_description = Arc::from(input.borrow().resource_description());
         Self {
             input,
             resource_description,
@@ -824,7 +829,7 @@ impl SharedRandomAccessSlice {
 
 impl DataInput for SharedRandomAccessSlice {
     fn read_byte(&mut self) -> Result<u8> {
-        lock_random_access_input(&self.input).read_byte()
+        self.input.borrow_mut().read_byte()
     }
 
     fn to_java_string(&self) -> String {
@@ -832,29 +837,29 @@ impl DataInput for SharedRandomAccessSlice {
     }
 
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
-        lock_random_access_input(&self.input).read_bytes(b, offset, len)
+        self.input.borrow_mut().read_bytes(b, offset, len)
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
-        lock_random_access_input(&self.input).skip_bytes(num_bytes)
+        self.input.borrow_mut().skip_bytes(num_bytes)
     }
 }
 
 impl IndexInput for SharedRandomAccessSlice {
     fn close(&mut self) -> Result<()> {
-        lock_random_access_input(&self.input).close()
+        self.input.borrow_mut().close()
     }
 
     fn file_pointer(&self) -> Result<i64> {
-        lock_random_access_input(&self.input).file_pointer()
+        self.input.borrow().file_pointer()
     }
 
     fn length(&self) -> i64 {
-        lock_random_access_input(&self.input).length()
+        self.input.borrow().length()
     }
 
     fn seek(&mut self, pos: i64) -> Result<()> {
-        lock_random_access_input(&self.input).seek(pos)
+        self.input.borrow_mut().seek(pos)
     }
 
     fn slice(
@@ -863,11 +868,11 @@ impl IndexInput for SharedRandomAccessSlice {
         offset: i64,
         length: i64,
     ) -> Result<Box<dyn IndexInput>> {
-        lock_random_access_input(&self.input).slice(slice_description, offset, length)
+        self.input.borrow().slice(slice_description, offset, length)
     }
 
     fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
-        lock_random_access_input(&self.input).clone_input()
+        self.input.borrow().clone_input()
     }
 
     fn resource_description(&self) -> &str {
@@ -875,13 +880,13 @@ impl IndexInput for SharedRandomAccessSlice {
     }
 
     fn prefetch(&self, offset: i64, length: i64) -> Result<()> {
-        lock_random_access_input(&self.input).prefetch(offset, length)
+        self.input.borrow().prefetch(offset, length)
     }
 }
 
 impl RandomAccessInput for SharedRandomAccessSlice {
     fn read_byte_at(&mut self, pos: i64) -> Result<u8> {
-        lock_random_access_input(&self.input).read_byte_at(pos)
+        self.input.borrow_mut().read_byte_at(pos)
     }
 
     fn read_bytes_at(
@@ -891,19 +896,21 @@ impl RandomAccessInput for SharedRandomAccessSlice {
         offset: usize,
         len: usize,
     ) -> Result<()> {
-        lock_random_access_input(&self.input).read_bytes_at(pos, bytes, offset, len)
+        self.input
+            .borrow_mut()
+            .read_bytes_at(pos, bytes, offset, len)
     }
 
     fn read_short_at(&mut self, pos: i64) -> Result<i16> {
-        lock_random_access_input(&self.input).read_short_at(pos)
+        self.input.borrow_mut().read_short_at(pos)
     }
 
     fn read_int_at(&mut self, pos: i64) -> Result<i32> {
-        lock_random_access_input(&self.input).read_int_at(pos)
+        self.input.borrow_mut().read_int_at(pos)
     }
 
     fn read_long_at(&mut self, pos: i64) -> Result<i64> {
-        lock_random_access_input(&self.input).read_long_at(pos)
+        self.input.borrow_mut().read_long_at(pos)
     }
 }
 
@@ -927,10 +934,6 @@ fn unused_by_indexed_disi<T>() -> Result<T> {
 }
 
 impl MergingDisiInput {
-    fn shared(&self) -> std::sync::MutexGuard<'_, Box<dyn IndexInput>> {
-        self.r#in.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// `inF.seek(offset); offset += n;` then `read` on `inF`.
     fn read_at<T>(
         &mut self,
@@ -938,8 +941,9 @@ impl MergingDisiInput {
         read: impl FnOnce(&mut dyn IndexInput) -> Result<T>,
     ) -> Result<T> {
         // PERF: `r#in` and `offset` are disjoint fields, so the shared input is
-        // locked through `self` directly; no reference-count round trip per read.
-        let mut r#in = self.r#in.lock().unwrap_or_else(PoisonError::into_inner);
+        // borrowed through `self` directly; no reference-count round trip per
+        // read, and no lock (see [`SharedIndexInput`]).
+        let mut r#in = self.r#in.borrow_mut();
         r#in.seek(self.offset)?;
         self.offset += n;
         read(r#in.as_mut())
@@ -989,7 +993,7 @@ impl IndexInput for MergingDisiInput {
     }
 
     fn length(&self) -> i64 {
-        self.shared().length()
+        self.r#in.borrow().length()
     }
 
     fn seek(&mut self, pos: i64) -> Result<()> {
@@ -1031,7 +1035,11 @@ impl IndexInput for MergingDisiInput {
 /// Equivalent to the four `slice.readByte(...)`/`readShort(...)`/`readInt(...)`/
 /// `readLong(...)` bodies of `Lucene90NormsProducer.getNorms`, whose positions
 /// are `((long) index) << log2(bytesPerNorm)`.
-fn read_norm_at(slice: &mut dyn RandomAccessInput, index: i32, bytes_per_norm: i8) -> Result<i64> {
+fn read_norm_at<S: RandomAccessInput + ?Sized>(
+    slice: &mut S,
+    index: i32,
+    bytes_per_norm: i8,
+) -> Result<i64> {
     let index = index as i64;
     match bytes_per_norm {
         1 => Ok(slice.read_byte_at(index)? as i8 as i64),
@@ -1043,6 +1051,26 @@ fn read_norm_at(slice: &mut dyn RandomAccessInput, index: i32, bytes_per_norm: i
         _ => Err(LuceneError::from(LuceneErrorKind::AssertionError(
             String::new(),
         ))),
+    }
+}
+
+/// The values slice a norms iterator reads, as `getDataInput` returns it
+/// (`Lucene90NormsProducer.java:246-265`).
+enum NormsSlice {
+    /// A slice of its own (`merging == false`).
+    Owned(Box<dyn RandomAccessInput>),
+    /// The merge instance's cached slice of the field, which Java hands to
+    /// every reader of the field.
+    Shared(SharedRandomAccessSlice),
+}
+
+impl NormsSlice {
+    /// [`read_norm_at`] on the slice.
+    fn read_norm_at(&mut self, index: i32, bytes_per_norm: i8) -> Result<i64> {
+        match self {
+            Self::Owned(slice) => read_norm_at(slice.as_mut(), index, bytes_per_norm),
+            Self::Shared(slice) => read_norm_at(slice, index, bytes_per_norm),
+        }
     }
 }
 
@@ -1128,7 +1156,7 @@ impl NumericDocValues for DenseConstantNormsIterator {
 struct DenseNormsIterator {
     max_doc: i32,
     doc: i32,
-    slice: RefCell<Box<dyn RandomAccessInput>>,
+    slice: RefCell<NormsSlice>,
     bytes_per_norm: i8,
 }
 
@@ -1143,7 +1171,7 @@ impl fmt::Debug for DenseNormsIterator {
 }
 
 impl DenseNormsIterator {
-    fn new(max_doc: i32, slice: Box<dyn RandomAccessInput>, bytes_per_norm: i8) -> Self {
+    fn new(max_doc: i32, slice: NormsSlice, bytes_per_norm: i8) -> Self {
         Self {
             max_doc,
             doc: -1,
@@ -1197,11 +1225,9 @@ impl NumericDocValues for DenseNormsIterator {
     /// Reads the norm of `doc`, wherever the iterator stands; the slice
     /// rejects a position it does not hold, as in Java.
     fn long_value(&self) -> Result<i64> {
-        read_norm_at(
-            self.slice.borrow_mut().as_mut(),
-            self.doc,
-            self.bytes_per_norm,
-        )
+        self.slice
+            .borrow_mut()
+            .read_norm_at(self.doc, self.bytes_per_norm)
     }
 }
 
@@ -1275,7 +1301,7 @@ impl NumericDocValues for SparseConstantNormsIterator {
 /// `disi.index()`. See [`DenseNormsIterator`] for the [`RefCell`].
 struct SparseNormsIterator {
     disi: IndexedDISI,
-    slice: RefCell<Box<dyn RandomAccessInput>>,
+    slice: RefCell<NormsSlice>,
     bytes_per_norm: i8,
 }
 
@@ -1289,7 +1315,7 @@ impl fmt::Debug for SparseNormsIterator {
 }
 
 impl SparseNormsIterator {
-    fn new(disi: IndexedDISI, slice: Box<dyn RandomAccessInput>, bytes_per_norm: i8) -> Self {
+    fn new(disi: IndexedDISI, slice: NormsSlice, bytes_per_norm: i8) -> Self {
         Self {
             disi,
             slice: RefCell::new(slice),
@@ -1338,11 +1364,9 @@ impl DocValuesIterator for SparseNormsIterator {
 
 impl NumericDocValues for SparseNormsIterator {
     fn long_value(&self) -> Result<i64> {
-        read_norm_at(
-            self.slice.borrow_mut().as_mut(),
-            self.disi.index(),
-            self.bytes_per_norm,
-        )
+        self.slice
+            .borrow_mut()
+            .read_norm_at(self.disi.index(), self.bytes_per_norm)
     }
 }
 
@@ -2146,6 +2170,44 @@ mod tests {
             collect_values(&mut *merge.get_norms(&body).unwrap().unwrap(), 50),
             expected
         );
+    }
+
+    /// `getDataInput` on a merge instance returns the slice it cached for the
+    /// field, the same object on every call (`Lucene90NormsProducer.java:246-265`):
+    /// every handle shares the cached input, none is a slice of its own; the
+    /// search instance (the positive control) opens a slice per call.
+    #[test]
+    fn the_merge_instance_hands_out_its_cached_values_slice() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let body = write_one_field(
+            &dir,
+            50,
+            (0..50)
+                .filter(|d| d % 5 == 1)
+                .map(|d| (d, 300 + d as i64))
+                .collect(),
+        );
+        let info = test_segment_info("_0", 50);
+        let fis = field_infos(vec![body.clone()]);
+        let producer = Lucene90NormsProducer::new(&read_state(&dir, &info, &fis)).unwrap();
+        let entry = producer.norms[&body.number];
+        assert!(matches!(
+            producer.get_data_input(&body, &entry).unwrap(),
+            NormsSlice::Owned(_)
+        ));
+
+        let merge = producer.merge_instance().unwrap();
+        let shared = |slice: NormsSlice| match slice {
+            NormsSlice::Shared(slice) => slice.input,
+            NormsSlice::Owned(_) => panic!("a merge instance hands out its cached slice"),
+        };
+        let first = shared(merge.get_data_input(&body, &entry).unwrap());
+        let second = shared(merge.get_data_input(&body, &entry).unwrap());
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(
+            &first,
+            &lock(&merge.data_inputs)[&body.number].input
+        ));
     }
 
     #[test]

@@ -240,7 +240,7 @@ pub mod final_members {
     pub fn terms<R: CodecReader + ?Sized>(
         reader: &R,
         field: &str,
-    ) -> Result<Option<Box<dyn Terms>>> {
+    ) -> Result<Option<std::sync::Arc<dyn Terms>>> {
         reader.core().ensure_open()?;
         let field_infos = reader.get_field_infos();
         match field_infos.field_info(field) {

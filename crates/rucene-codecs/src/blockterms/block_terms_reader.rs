@@ -269,11 +269,11 @@ impl Fields for BlockTermsReader {
         Box::new(self.field_names.iter().cloned())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let Some(data) = self.fields.get(field) else {
             return Ok(None);
         };
-        Ok(Some(Box::new(FieldReader {
+        Ok(Some(Arc::new(FieldReader {
             shared: Arc::clone(self.shared()?),
             data: Arc::clone(data),
         })))

@@ -2373,7 +2373,7 @@ impl LeafReader for NoCacheHelperLeafReader {
     fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
         None
     }
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn rucene::index::Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn rucene::index::Terms>>> {
         self.inner.terms(field)
     }
     fn get_numeric_doc_values(

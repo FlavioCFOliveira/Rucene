@@ -768,11 +768,11 @@ impl Fields for DataFields {
         )
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         // Slow linear search:
         for field_data in &self.fields {
             if field_data.field_info.get_name() == field {
-                return Ok(Some(Box::new(DataTerms {
+                return Ok(Some(Arc::new(DataTerms {
                     field_data: field_data.clone(),
                 })));
             }

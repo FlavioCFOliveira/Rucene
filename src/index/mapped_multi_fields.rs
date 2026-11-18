@@ -94,13 +94,13 @@ impl Fields for MappedMultiFields {
         self.base.iterator()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(self.base.get_delegate().multi_terms(field)?.map(|terms| {
-            Box::new(MappedMultiTerms::new(
+            Arc::new(MappedMultiTerms::new(
                 field,
                 Arc::clone(&self.merge_state),
                 terms,
-            )) as Box<dyn Terms>
+            )) as Arc<dyn Terms>
         }))
     }
 
@@ -648,11 +648,11 @@ mod tests {
             Box::new(self.fields.keys().cloned().collect::<Vec<_>>().into_iter())
         }
 
-        fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(self
                 .fields
                 .get(field)
-                .map(|t| Box::new(t.clone()) as Box<dyn Terms>))
+                .map(|t| Arc::new(t.clone()) as Arc<dyn Terms>))
         }
 
         fn size(&self) -> i32 {

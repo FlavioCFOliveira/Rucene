@@ -409,3 +409,38 @@ fn directory_entries_are_the_paths_new_builds() {
     seen.sort();
     assert_eq!(seen, ["_0.cfs", "segments_1", "write.lock", "ä"]);
 }
+
+/// An input `UnixPath.normalizeAndCheck` returns as it is (`UnixPath.java:81-94`)
+/// is exactly one the separator rebuild would leave unchanged, so taking the
+/// input's bytes as they are gives the same path as rebuilding them; the
+/// others are rebuilt as the JDK rebuilds them.
+#[test]
+fn already_normal_inputs_are_taken_as_they_are() {
+    for (input, normal) in [
+        ("", true),
+        ("/", true),
+        ("a", true),
+        ("/a/b", true),
+        ("/data/dev/index/_0.cfs", true),
+        ("a/", false),
+        ("//", false),
+        ("a//b", false),
+        ("/a/b/", false),
+        ("//a//bc//", false),
+    ] {
+        assert_eq!(is_normal(input.as_bytes()), normal, "{input:?}");
+        let built = path(input).to_string();
+        assert_eq!(built == input, normal, "{input:?} -> {built:?}");
+    }
+    assert_eq!(path("//").to_string(), "/");
+    assert_eq!(path("//a//bc//").to_string(), "/a/bc");
+}
+
+/// `getPath(first)` with no further parts is the path of `first` itself
+/// (`UnixFileSystem.java:299-300`).
+#[test]
+fn get_path_of_one_part_is_that_part() {
+    for first in ["", "/", "a", "a//b/", "/data/dev/index/_0.cfs"] {
+        assert_eq!(default_file_system().get_path(first, &[]), path(first));
+    }
+}

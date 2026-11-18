@@ -330,7 +330,7 @@ impl LeafReader for SortingCodecReader {
         None
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         final_members::terms(self, field)
     }
 
@@ -604,7 +604,7 @@ impl LeafReader for AlreadySortedCodecReader {
         None
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         final_members::terms(self, field)
     }
 
@@ -1409,7 +1409,7 @@ impl LeafReader for SlowCompositeCodecReaderWrapper {
         None
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         final_members::terms(self, field)
     }
 
@@ -2062,7 +2062,7 @@ impl Fields for SharedFields {
         self.0.iterator()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.0.terms(field)
     }
 
@@ -2110,7 +2110,7 @@ impl Fields for SlowCompositeFieldsProducer {
         self.fields.iterator()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.fields.terms(field)
     }
 
@@ -3947,7 +3947,7 @@ impl Fields for SortingFieldsProducer {
 
     /// Equivalent to the anonymous producer's `terms(String)`
     /// (`SortingCodecReader.java:471-477`).
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let Some(terms) = self.postings_reader.terms(field)? else {
             return Ok(None);
         };
@@ -3957,7 +3957,7 @@ impl Fields for SortingFieldsProducer {
             // `fieldInfos.fieldInfo(field).getIndexOptions()` on `null`.
             .ok_or_else(crate::error::LuceneError::null_pointer)?
             .index_options;
-        Ok(Some(Box::new(SortingTerms::new(
+        Ok(Some(Arc::new(SortingTerms::new(
             terms,
             index_options,
             Arc::clone(&self.doc_map),
@@ -4765,9 +4765,9 @@ mod tests {
             Box::new(std::iter::once("f".to_string()))
         }
 
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(Some(Box::new(crate::index::EmptyTerms::new())))
+            Ok(Some(Arc::new(crate::index::EmptyTerms::new())))
         }
 
         fn size(&self) -> i32 {

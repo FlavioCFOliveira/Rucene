@@ -1132,7 +1132,7 @@ impl TermVectors for CompositeTermVectors {
         self.with_sub(doc_id, |sub, local| sub.get(local))
     }
 
-    fn get_field(&self, doc_id: i32, field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
+    fn get_field(&self, doc_id: i32, field: &str) -> Result<Option<Arc<dyn crate::index::Terms>>> {
         self.with_sub(doc_id, |sub, local| sub.get_field(local, field))
     }
 }

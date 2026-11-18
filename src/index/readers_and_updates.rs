@@ -1100,7 +1100,7 @@ impl PendingSoftDeletes {
             // thrown from `finally` does.
             let cfs = codec
                 .compound_format()
-                .get_compound_reader(seg_info.directory.as_ref(), seg_info)?;
+                .get_compound_reader(&seg_info.directory, seg_info)?;
             let read = fis_format.read(&*cfs, seg_info, "", context);
             crate::util::IOUtils::close([Some(|| cfs.close())])?;
             read

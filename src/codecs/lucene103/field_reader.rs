@@ -4,7 +4,7 @@
 //! read from the `.tmd` file, plus the file pointers into the `.tim` and `.tip`
 //! files that a terms cursor starts from.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 
 use crate::codecs::lucene103::trie_reader::TrieReader;
 use crate::error::{LuceneError, Result};
@@ -96,6 +96,10 @@ pub struct FieldReader {
     /// `Lucene103BlockTreeTermsReader::terms` and the terms enums hold, made
     /// the first time one is needed; see [`handle`](Self::handle).
     shared_self: OnceLock<Arc<FieldReader>>,
+    /// On the shared copy, the copy itself; empty on the field map's reader.
+    /// It lets the shared copy, which `terms()` hands out, give its enums
+    /// itself rather than a further copy.
+    self_handle: Weak<FieldReader>,
 }
 
 impl std::fmt::Debug for FieldReader {
@@ -145,6 +149,7 @@ impl FieldReader {
             root_fp,
             index_end,
             shared_self: OnceLock::new(),
+            self_handle: Weak::new(),
         })
     }
 
@@ -153,20 +158,32 @@ impl FieldReader {
     /// Java's `terms(field)` returns the field map's `FieldReader` itself
     /// (`Lucene103BlockTreeTermsReader.java:292-296`) and every terms enum
     /// keeps a reference to it (`FieldReader.java:139-141`), so nothing is
-    /// copied. A Rust `Box<dyn Terms>` and an enum must own what they hold, so
-    /// they share one copy through an [`Arc`]; it is made the first time a
-    /// handle is asked for rather than at open, because most fields of an
-    /// opened segment are never queried.
+    /// copied. The [`Arc<dyn Terms>`](Terms) `terms()` returns and every enum
+    /// must own what they hold, so they share one copy through an [`Arc`]; it
+    /// is made the first time a handle is asked for rather than at open,
+    /// because most fields of an opened segment are never queried. Asked of
+    /// the shared copy, the handle is the copy itself.
     pub(crate) fn handle(&self) -> Arc<FieldReader> {
+        if let Some(shared) = self.self_handle.upgrade() {
+            return shared;
+        }
         // PERF: one copy per field for the reader's lifetime, instead of one
         // copy (two term buffers) per `terms()` and per `iterator()`.
-        Arc::clone(self.shared_self.get_or_init(|| Arc::new(self.clone())))
+        Arc::clone(self.shared_self.get_or_init(|| {
+            Arc::new_cyclic(|shared| FieldReader {
+                shared_self: OnceLock::new(),
+                self_handle: Weak::clone(shared),
+                ..self.clone()
+            })
+        }))
     }
 
     /// The [`Terms`] that `Lucene103BlockTreeTermsReader::terms` returns for
-    /// this field: a handle on its shared reader.
-    pub(crate) fn shared_terms(&self) -> Box<dyn Terms> {
-        Box::new(SharedFieldReader(self.handle()))
+    /// this field: its shared reader itself, as Java returns the field map's
+    /// `FieldReader` (`Lucene103BlockTreeTermsReader.java:292-296`).
+    // PERF: a reference count, not a box per call.
+    pub(crate) fn shared_terms(&self) -> Arc<dyn Terms> {
+        self.handle()
     }
 
     /// Equivalent to `FieldReader.intersect(CompiledAutomaton, BytesRef)`
@@ -371,85 +388,6 @@ impl FieldReader {
         let mut terms_enum =
             crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(self.handle())?;
         terms_enum.compute_block_stats()
-    }
-}
-
-/// The [`Terms`] that `Lucene103BlockTreeTermsReader::terms` hands out: the
-/// field's shared [`FieldReader`] (see [`FieldReader::handle`]).
-///
-/// Java returns the `FieldReader` itself; every method here answers as that
-/// reader does, and [`as_any`](Terms::as_any) exposes the reader, so the casts
-/// Java makes (`(FieldReader) reader.terms(field)`) see it.
-struct SharedFieldReader(Arc<FieldReader>);
-
-impl Terms for SharedFieldReader {
-    fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
-        Ok(Box::new(
-            crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(Arc::clone(
-                &self.0,
-            ))?,
-        ))
-    }
-
-    fn intersect(
-        &self,
-        compiled: &crate::util::automaton::CompiledAutomaton,
-        start_term: Option<&BytesRef>,
-    ) -> Result<Box<dyn TermsEnum>> {
-        FieldReader::intersect_shared(Arc::clone(&self.0), compiled, start_term)
-    }
-
-    fn size(&self) -> Result<i64> {
-        self.0.size()
-    }
-
-    fn sum_total_term_freq(&self) -> Result<i64> {
-        self.0.sum_total_term_freq()
-    }
-
-    fn sum_doc_freq(&self) -> Result<i64> {
-        self.0.sum_doc_freq()
-    }
-
-    fn doc_count(&self) -> Result<i32> {
-        self.0.doc_count()
-    }
-
-    fn has_freqs(&self) -> bool {
-        self.0.has_freqs()
-    }
-
-    fn has_offsets(&self) -> bool {
-        self.0.has_offsets()
-    }
-
-    fn has_positions(&self) -> bool {
-        self.0.has_positions()
-    }
-
-    fn has_payloads(&self) -> bool {
-        self.0.has_payloads()
-    }
-
-    fn min(&self) -> Result<Option<BytesRef>> {
-        self.0.min()
-    }
-
-    fn max(&self) -> Result<Option<BytesRef>> {
-        self.0.max()
-    }
-
-    fn stats(&self) -> Result<Box<dyn crate::index::terms::StatsObject>> {
-        Ok(Box::new(
-            crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(Arc::clone(
-                &self.0,
-            ))?
-            .compute_block_stats()?,
-        ))
-    }
-
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(&*self.0)
     }
 }
 

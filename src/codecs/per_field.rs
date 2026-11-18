@@ -395,7 +395,7 @@ impl Fields for MaskedFields<'_> {
         self.base.size()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.base.terms(field)
     }
 
@@ -515,7 +515,7 @@ impl Fields for FieldsReader {
     /// null : fieldsProducer.terms(field)`, so a field this segment does not
     /// index has no terms. A merge asks every reader for every merged field
     /// (`MultiFields.terms`), including readers that lack it.
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let Some(suffix) = self.fields.get(field) else {
             return Ok(None);
         };
@@ -1757,7 +1757,7 @@ impl Fields for FilterFieldsProducer {
         self.filtered.len() as i32
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         if !self.filtered.iter().any(|name| name == field) {
             return Err(LuceneError::illegal_argument(format!(
                 "The field named '{field}' is not accessible in the current merge context, \
@@ -1870,7 +1870,7 @@ mod tests {
             0
         }
 
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
 
@@ -1984,7 +1984,7 @@ mod tests {
         fn size(&self) -> i32 {
             2
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
         fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
@@ -2086,7 +2086,7 @@ mod tests {
             fn size(&self) -> i32 {
                 2
             }
-            fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+            fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
                 Ok(None)
             }
             fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
@@ -2133,7 +2133,7 @@ mod tests {
             fn size(&self) -> i32 {
                 2
             }
-            fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+            fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
                 Ok(None)
             }
             fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
@@ -2354,7 +2354,7 @@ mod close_family_tests {
         fn size(&self) -> i32 {
             0
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
         fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {

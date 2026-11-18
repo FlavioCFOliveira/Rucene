@@ -66,12 +66,12 @@ impl LeafReader for PreferSeekExactLeafReader {
         get_point_values, check_integrity, get_meta_data);
 
     /// `new FilterTerms(in.terms(field)) { … }`.
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let terms = self.inner.get_delegate().terms(field)?;
         Ok(terms.map(|terms| {
-            Box::new(PreferSeekExactTerms {
+            Arc::new(PreferSeekExactTerms {
                 inner: FilterTerms::new(terms),
-            }) as Box<dyn Terms>
+            }) as Arc<dyn Terms>
         }))
     }
 

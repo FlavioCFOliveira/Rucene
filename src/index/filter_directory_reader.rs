@@ -1060,11 +1060,11 @@ impl LeafReader for ExitableFilterLeafReader {
         self.inner.get_core_cache_helper()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn crate::index::Terms>>> {
         let Some(terms) = self.inner.terms(field)? else {
             return Ok(None);
         };
-        Ok(Some(Box::new(ExitableTerms::new(
+        Ok(Some(Arc::new(ExitableTerms::new(
             terms,
             Arc::clone(&self.query_timeout),
         ))))
@@ -1274,7 +1274,7 @@ impl ExitableTerms {
     /// Wraps `terms`, checking `query_timeout` as its enumerations are walked.
     ///
     /// Equivalent to `ExitableTerms(Terms, QueryTimeout)`.
-    pub fn new(terms: Box<dyn Terms>, query_timeout: Arc<dyn QueryTimeout>) -> Self {
+    pub fn new(terms: Arc<dyn Terms>, query_timeout: Arc<dyn QueryTimeout>) -> Self {
         Self {
             inner: FilterTerms::new(terms),
             query_timeout,
@@ -3021,7 +3021,7 @@ impl LeafReader for SlowCodecReader {
         self.reader.get_core_cache_helper()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         final_members::terms(self, field)
     }
 
@@ -3463,7 +3463,7 @@ impl Fields for SlowFieldsProducer {
         Box::new(self.indexed_fields.iter().cloned())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.reader.terms(field)
     }
 
@@ -3814,7 +3814,7 @@ impl LeafReader for SoftDeletesFilterLeafReader {
         self.inner.get_core_cache_helper()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.inner.terms(field)
     }
 
@@ -4019,7 +4019,7 @@ impl LeafReader for SoftDeletesFilterCodecReader {
         self.inner.get_core_cache_helper()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         final_members::terms(self, field)
     }
 

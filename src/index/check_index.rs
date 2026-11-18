@@ -6895,7 +6895,7 @@ mod census_gap_tests {
             fn size(&self) -> i32 {
                 1
             }
-            fn terms(&self, _field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
+            fn terms(&self, _field: &str) -> Result<Option<Arc<dyn crate::index::Terms>>> {
                 Ok(None)
             }
             fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {

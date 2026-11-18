@@ -1236,9 +1236,9 @@ mod tests {
             1
         }
 
-        fn terms(&self, field: &str) -> crate::error::Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, field: &str) -> crate::error::Result<Option<Arc<dyn Terms>>> {
             if field == "body" {
-                Ok(Some(Box::new(TestTerms {
+                Ok(Some(Arc::new(TestTerms {
                     terms: self.terms.clone(),
                 })))
             } else {

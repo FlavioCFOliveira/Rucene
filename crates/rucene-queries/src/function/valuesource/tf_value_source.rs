@@ -74,7 +74,7 @@ impl TFValueSource {
 /// reaches the same similarity.
 struct TFValues {
     this: Arc<TFValueSource>,
-    terms: Box<dyn Terms>,
+    terms: Arc<dyn Terms>,
     similarity: Arc<dyn Similarity>,
     docs: TermPostings,
     at_doc: i32,

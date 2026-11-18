@@ -175,7 +175,7 @@ fn a_terms_enumeration_runs_to_completion_when_the_timeout_never_fires() {
     );
 }
 
-fn leaf_terms(leaf: &Arc<dyn rucene::index::LeafReader>) -> Box<dyn rucene::index::Terms> {
+fn leaf_terms(leaf: &Arc<dyn rucene::index::LeafReader>) -> Arc<dyn rucene::index::Terms> {
     leaf.terms("body").expect("terms").expect("the field")
 }
 

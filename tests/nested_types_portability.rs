@@ -2049,7 +2049,10 @@ impl Fields for LeafFieldsView {
         Box::new(self.names.iter().cloned())
     }
 
-    fn terms(&self, field: &str) -> rucene::error::Result<Option<Box<dyn rucene::index::Terms>>> {
+    fn terms(
+        &self,
+        field: &str,
+    ) -> rucene::error::Result<Option<std::sync::Arc<dyn rucene::index::Terms>>> {
         self.leaf.terms(field)
     }
 

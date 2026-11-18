@@ -1349,8 +1349,10 @@ struct TermsWriter<'a> {
     pending: Vec<PendingEntry>,
     prefix_starts: Vec<i32>,
     last_term: BytesRefBuilder,
-    first_pending_term: Option<PendingTerm>,
-    last_pending_term: Option<PendingTerm>,
+    /// The bytes of Java's `firstPendingTerm`. Java's `lastPendingTerm`
+    /// aliases the last entry pushed to `pending`, whose bytes `last_term`
+    /// holds until `finish` closes the blocks.
+    first_pending_term: Option<Vec<u8>>,
     suffix_lengths_writer: ByteBuffersDataOutput,
     suffix_writer: BytesRefBuilder,
     stats_writer: ByteBuffersDataOutput,
@@ -1397,7 +1399,6 @@ impl<'a> TermsWriter<'a> {
             prefix_starts: vec![0; 8],
             last_term: BytesRefBuilder::new(),
             first_pending_term: None,
-            last_pending_term: None,
             suffix_lengths_writer: ByteBuffersDataOutput::new_resettable_instance(),
             suffix_writer: BytesRefBuilder::new(),
             stats_writer: ByteBuffersDataOutput::new_resettable_instance(),
@@ -1433,14 +1434,18 @@ impl<'a> TermsWriter<'a> {
             );
             self.push_term(term, postings_writer)?;
             let pending = PendingTerm::new(term, state);
-            self.pending.push(PendingEntry::Term(pending.clone()));
             self.sum_doc_freq += state.doc_freq as i64;
             self.sum_total_term_freq += state.total_term_freq;
             self.num_terms += 1;
             if self.first_pending_term.is_none() {
-                self.first_pending_term = Some(pending.clone());
+                // Once per field: Java keeps a second reference to the object.
+                self.first_pending_term = Some(pending.term_bytes.clone());
             }
-            self.last_pending_term = Some(pending);
+            // PERF: the entry is moved into `pending`, not copied. Java's
+            // `lastPendingTerm = term` aliases it; its bytes equal `last_term`,
+            // which `push_term` has just set, and `finish` reads them there
+            // (`Lucene103BlockTreeTermsWriter.java:1000-1011`).
+            self.pending.push(PendingEntry::Term(pending));
         }
         Ok(())
     }
@@ -1450,24 +1455,27 @@ impl<'a> TermsWriter<'a> {
         text: &BytesRef,
         postings_writer: &mut dyn PostingsWriterBase,
     ) -> Result<()> {
-        let prefix_length = if self.last_term.length() == 0 {
-            0
-        } else {
-            let last = self.last_term.get();
-            let last_ref = BytesRef {
-                bytes: last.bytes.clone(),
-                offset: last.offset,
-                length: last.length,
-            };
-            let text_ref = BytesRef {
-                bytes: text.bytes.clone(),
-                offset: text.offset,
-                length: text.length,
-            };
-            StringHelper::bytes_difference(&last_ref, &text_ref).unwrap_or(0)
+        // `Arrays.mismatch(lastTerm.bytes(), 0, lastTerm.length(), text.bytes,
+        // text.offset, text.offset + text.length)`, `-1` (equal ranges, only
+        // the empty first term) read as `0`
+        // (`Lucene103BlockTreeTermsWriter.java:1017-1029`).
+        // PERF: compared in place; no copy of either term.
+        let prefix_length = {
+            let last = &self.last_term.bytes()[..self.last_term.length()];
+            let current = text.slice();
+            let shared = last.len().min(current.len());
+            match last[..shared]
+                .iter()
+                .zip(&current[..shared])
+                .position(|(a, b)| a != b)
+            {
+                Some(mismatch) => mismatch,
+                None if last.len() == current.len() => 0,
+                None => shared,
+            }
         };
 
-        for i in ((prefix_length as usize)..self.last_term.length()).rev() {
+        for i in (prefix_length..self.last_term.length()).rev() {
             let prefix_top_size = self.pending.len() as i32 - self.prefix_starts[i];
             if prefix_top_size >= self.min_items_in_block {
                 self.write_blocks(i as i32 + 1, prefix_top_size, postings_writer)?;
@@ -1478,7 +1486,7 @@ impl<'a> TermsWriter<'a> {
         if self.prefix_starts.len() < text.length {
             self.prefix_starts.resize(text.length + 1, 0);
         }
-        for i in prefix_length as usize..text.length {
+        for i in prefix_length..text.length {
             self.prefix_starts[i] = self.pending.len() as i32;
         }
 
@@ -1615,9 +1623,11 @@ impl<'a> TermsWriter<'a> {
         // empty, so the block prefix must be materialised before it is written
         // into; the extra byte is the floor lead label appended below.
         let mut prefix = BytesRef::new(vec![0u8; prefix_len]);
-        let last = self.last_term.get();
+        // `System.arraycopy(lastTerm.get().bytes, 0, prefix.bytes, 0,
+        // prefixLength)`; PERF: read through the builder's own buffer, as
+        // `lastTerm.get()` lends it (`BytesRefBuilder::get` would copy it).
         prefix.bytes[..prefix_length as usize]
-            .copy_from_slice(&last.bytes[last.offset..last.offset + prefix_length as usize]);
+            .copy_from_slice(&self.last_term.bytes()[..prefix_length as usize]);
         prefix.length = prefix_length as usize;
 
         let num_entries = end - start;
@@ -1635,13 +1645,13 @@ impl<'a> TermsWriter<'a> {
         };
         let mut absolute = true;
 
-        // Snapshot pending entries so we can mutate self while iterating.
-        let entries: Vec<PendingEntry> = self.pending[start..end].to_vec();
-
+        // PERF: the entries are read in place, as Java iterates
+        // `pending.get(i)` (`Lucene103BlockTreeTermsWriter.java:773, 808`); the
+        // writers they feed are other fields of `self`.
         if is_leaf_block {
-            for (k, ent) in entries.into_iter().enumerate() {
-                debug_assert!(matches!(ent, PendingEntry::Term(_)), "i={}", start + k);
-                if let PendingEntry::Term(term) = ent {
+            for i in start..end {
+                debug_assert!(matches!(self.pending[i], PendingEntry::Term(_)), "i={i}");
+                if let PendingEntry::Term(term) = &self.pending[i] {
                     // `assert StringHelper.startsWith(term.termBytes, prefix) :
                     // term + " prefix=" + prefix` (`Lucene103BlockTreeTermsWriter.java:779`).
                     debug_assert!(
@@ -1660,11 +1670,12 @@ impl<'a> TermsWriter<'a> {
                             || i32::from(term.term_bytes[prefix_length as usize])
                                 >= floor_lead_label
                     );
-                    self.write_term_stats(term.state.doc_freq, term.state.total_term_freq)?;
+                    let state = term.state;
+                    self.write_term_stats(state.doc_freq, state.total_term_freq)?;
                     postings_writer.encode_term(
                         &mut self.meta_writer,
                         &self.field_info,
-                        &term.state,
+                        &state,
                         absolute,
                     )?;
                     absolute = false;
@@ -1674,8 +1685,8 @@ impl<'a> TermsWriter<'a> {
             }
             self.finish_term_stats()?;
         } else {
-            for ent in entries {
-                match ent {
+            for i in start..end {
+                match &mut self.pending[i] {
                     PendingEntry::Term(term) => {
                         // `Lucene103BlockTreeTermsWriter.java:813`.
                         debug_assert!(
@@ -1690,11 +1701,12 @@ impl<'a> TermsWriter<'a> {
                             prefix_length as usize,
                             suffix,
                         );
-                        self.write_term_stats(term.state.doc_freq, term.state.total_term_freq)?;
+                        let state = term.state;
+                        self.write_term_stats(state.doc_freq, state.total_term_freq)?;
                         postings_writer.encode_term(
                             &mut self.meta_writer,
                             &self.field_info,
-                            &term.state,
+                            &state,
                             absolute,
                         )?;
                         absolute = false;
@@ -1732,8 +1744,12 @@ impl<'a> TermsWriter<'a> {
                         debug_assert!(block.fp < start_fp);
                         self.suffix_lengths_writer
                             .write_v_long(start_fp - block.fp)?;
-                        if let Some(idx) = &block.index {
-                            sub_indices.as_mut().unwrap().push(idx.clone());
+                        // PERF: Java adds `block.index` by reference and
+                        // `writeBlocks` then drops the block from `pending`
+                        // (`Lucene103BlockTreeTermsWriter.java:877, 688`): the
+                        // index is moved, not copied.
+                        if let Some(idx) = block.index.take() {
+                            sub_indices.as_mut().unwrap().push(idx);
                         }
                     }
                 }
@@ -1896,6 +1912,9 @@ impl<'a> TermsWriter<'a> {
     /// `numTerms > 0`.
     fn finish(&mut self, postings_writer: &mut dyn PostingsWriterBase) -> Result<Option<Vec<u8>>> {
         if self.num_terms > 0 {
+            // `lastPendingTerm.termBytes`: the last term `write` pushed, read
+            // before the closing empty terms below replace `last_term`.
+            let last_pending_term = self.last_term.get_ref().slice().to_vec();
             self.push_term(&BytesRef::new(Vec::new()), postings_writer)?;
             self.push_term(&BytesRef::new(Vec::new()), postings_writer)?;
             self.write_blocks(0, self.pending.len() as i32, postings_writer)?;
@@ -1921,24 +1940,13 @@ impl<'a> TermsWriter<'a> {
             }
             meta.write_v_long(self.sum_doc_freq)?;
             meta.write_v_int(self.docs_seen.cardinality() as i32)?;
-            Self::write_bytes_ref(
-                &mut meta,
-                &BytesRef::new(self.first_pending_term.as_ref().unwrap().term_bytes.clone()),
-            )?;
-            Self::write_bytes_ref(
-                &mut meta,
-                &BytesRef::new(self.last_pending_term.as_ref().unwrap().term_bytes.clone()),
-            )?;
+            Self::write_bytes_ref(&mut meta, self.first_pending_term.as_ref().unwrap())?;
+            Self::write_bytes_ref(&mut meta, &last_pending_term)?;
 
-            let first_term = self.first_pending_term.take().unwrap();
             // `root.index.save(...)` on a `null` index: the JVM's
             // `NullPointerException`.
             let root_index = root.index.ok_or_else(LuceneError::null_pointer)?;
             root_index.save(&mut meta, self.index_out)?;
-
-            // Keep postings writer in sync.
-            let _ = postings_writer;
-            let _ = first_term;
 
             Ok(Some(meta.to_array_copy()?))
         } else {
@@ -1953,9 +1961,11 @@ impl<'a> TermsWriter<'a> {
         }
     }
 
-    fn write_bytes_ref(out: &mut dyn DataOutput, bytes: &BytesRef) -> Result<()> {
-        out.write_v_int(bytes.length as i32)?;
-        out.write_bytes(&bytes.bytes, bytes.offset, bytes.length)?;
+    /// `writeBytesRef(metaOut, new BytesRef(termBytes))`
+    /// (`Lucene103BlockTreeTermsWriter.java:1092-1093`).
+    fn write_bytes_ref(out: &mut dyn DataOutput, bytes: &[u8]) -> Result<()> {
+        out.write_v_int(bytes.len() as i32)?;
+        out.write_bytes(bytes, 0, bytes.len())?;
         Ok(())
     }
 }
@@ -2686,7 +2696,7 @@ impl Fields for Lucene103BlockTreeTermsReader {
         self.fields.size()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         if self.fields_cleared() {
             return Ok(None);
         }
@@ -3300,9 +3310,9 @@ mod tests {
             1
         }
 
-        fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
             if field == self.field {
-                Ok(Some(Box::new(TestTerms {
+                Ok(Some(Arc::new(TestTerms {
                     terms: self.terms.clone(),
                 })))
             } else {
@@ -3834,13 +3844,13 @@ mod tests {
             self.0.len() as i32
         }
 
-        fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(self
                 .0
                 .iter()
                 .find(|(name, _)| name == field)
-                .map(|(_, terms)| -> Box<dyn Terms> {
-                    Box::new(TestTerms {
+                .map(|(_, terms)| -> Arc<dyn Terms> {
+                    Arc::new(TestTerms {
                         terms: terms.clone(),
                     })
                 }))
@@ -3935,6 +3945,36 @@ mod tests {
         let two = reader.terms("two").unwrap().expect("written");
         assert_eq!(two.min().unwrap(), Some(BytesRef::new(b"a".to_vec())));
         assert_eq!(two.max().unwrap(), Some(BytesRef::new(b"b".to_vec())));
+    }
+
+    /// `terms(field)` hands out the field's one shared reader on every call,
+    /// as Java returns `fieldMap.get(fieldInfo.number)`
+    /// (`Lucene103BlockTreeTermsReader.java:292-296`): no handle is made per
+    /// call, and the shared reader's own enums and handle are itself, not a
+    /// further copy.
+    #[test]
+    fn terms_hands_out_the_fields_one_shared_reader() {
+        let reader = open_fields(vec![("one", vec!["a", "b"]), ("two", vec!["c"])]);
+        let first = reader.terms("one").unwrap().expect("written");
+        let second = reader.terms("one").unwrap().expect("written");
+        assert!(Arc::ptr_eq(&first, &second));
+        let shared = first
+            .as_any()
+            .and_then(|any| any.downcast_ref::<FieldReader>())
+            .expect("a FieldReader");
+        assert!(std::ptr::eq(Arc::as_ptr(&shared.handle()), shared));
+        let other = reader.terms("two").unwrap().expect("written");
+        assert!(!std::ptr::addr_eq(Arc::as_ptr(&first), Arc::as_ptr(&other)));
+        let mut terms_enum = first.iterator().unwrap();
+        assert_eq!(
+            terms_enum.next().unwrap(),
+            Some(&BytesRef::new(b"a".to_vec()))
+        );
+        assert_eq!(
+            terms_enum.next().unwrap(),
+            Some(&BytesRef::new(b"b".to_vec()))
+        );
+        assert_eq!(terms_enum.next().unwrap(), None);
     }
 
     /// Writes `a`, `ab`, `b` into field `body` and opens its `FieldReader`.

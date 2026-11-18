@@ -552,7 +552,7 @@ impl LeafReader for ParallelLeafReader {
         }
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.ensure_open()?;
         match self.terms_field_to_reader.get(field) {
             Some(&idx) => self.parallel_readers[idx].terms(field),
@@ -806,7 +806,7 @@ impl Fields for ParallelFields {
         Box::new(sorted.into_iter())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         for sf in &self.sub_fields {
             if let Some(t) = sf.terms(field)? {
                 return Ok(Some(t));
@@ -1435,7 +1435,7 @@ mod tests {
         fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
             None
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
         fn get_numeric_doc_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {

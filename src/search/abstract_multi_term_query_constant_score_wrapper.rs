@@ -411,7 +411,6 @@ pub fn rewriting_scorer_supplier(
     let Some(terms) = context.leaf_reader().terms(state.query.get_field())? else {
         return Ok(None);
     };
-    let terms: Arc<dyn Terms> = Arc::from(terms);
 
     let field_doc_count = terms.doc_count()?;
     let mut terms_enum = get_terms_enum(&*state.query, &terms)?;
@@ -527,7 +526,6 @@ pub fn rewriting_matches(
             let Some(terms) = context.leaf_reader().terms(&supplier_field)? else {
                 return Ok(None);
             };
-            let terms: Arc<dyn Terms> = Arc::from(terms);
             let terms_enum = get_terms_enum(&*query, &terms)?;
             crate::search::disjunction_matches_iterator::from_terms_enum(
                 &context,

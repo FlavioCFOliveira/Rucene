@@ -5318,7 +5318,7 @@ impl TemporalMergePolicy {
             Some(
                 codec
                     .compound_format()
-                    .get_compound_reader(si.directory.as_ref(), si)?,
+                    .get_compound_reader(&si.directory, si)?,
             )
         } else {
             None

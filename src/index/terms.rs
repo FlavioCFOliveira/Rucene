@@ -933,10 +933,13 @@ impl TermState for EmptyTermState {
 ///
 /// Propagates whatever [`LeafReader::terms`](crate::index::LeafReader::terms)
 /// raises.
-pub fn get_terms(reader: &dyn crate::index::LeafReader, field: &str) -> Result<Box<dyn Terms>> {
+pub fn get_terms(reader: &dyn crate::index::LeafReader, field: &str) -> Result<Arc<dyn Terms>> {
+    /// `Terms.EMPTY`, the one instance every absent field shares.
+    static EMPTY: std::sync::LazyLock<Arc<dyn Terms>> =
+        std::sync::LazyLock::new(|| Arc::new(EmptyTerms));
     Ok(match reader.terms(field)? {
         Some(terms) => terms,
-        None => Box::new(EmptyTerms),
+        None => Arc::clone(&EMPTY),
     })
 }
 
@@ -1121,7 +1124,7 @@ pub trait Fields: Send + Sync {
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_>;
 
     /// Returns the [`Terms`] for the given field, or `None` if absent.
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>>;
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>>;
 
     /// Returns the number of fields, or `-1` if unknown.
     fn size(&self) -> i32;
@@ -1139,7 +1142,7 @@ impl<T: Fields + ?Sized> Fields for &T {
         (**self).iterator()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         (**self).terms(field)
     }
 
@@ -2030,7 +2033,7 @@ impl Fields for EmptyFields {
         Box::new(std::iter::empty())
     }
 
-    fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(None)
     }
 

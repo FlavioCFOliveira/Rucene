@@ -583,12 +583,12 @@ impl LeafReader for NoSeekLeafReader {
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
         self.inner.get_delegate().get_reader_cache_helper()
     }
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let terms = self.inner.terms(field)?;
         Ok(terms.map(|terms| {
-            Box::new(NoSeekTerms {
+            Arc::new(NoSeekTerms {
                 inner: FilterTerms::new(terms),
-            }) as Box<dyn Terms>
+            }) as Arc<dyn Terms>
         }))
     }
     fn get_numeric_doc_values(

@@ -228,11 +228,11 @@ impl Fields for DirectFields {
         Box::new(self.field_names.iter().cloned())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(self
             .fields
             .get(field)
-            .map(|t| Box::new(DirectTerms(Arc::clone(t))) as Box<dyn Terms>))
+            .map(|t| Arc::new(DirectTerms(Arc::clone(t))) as Arc<dyn Terms>))
     }
 
     fn size(&self) -> i32 {

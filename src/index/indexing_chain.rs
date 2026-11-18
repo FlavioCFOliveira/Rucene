@@ -5152,7 +5152,7 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn terms(&self, _field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
+    fn terms(&self, _field: &str) -> Result<Option<Arc<dyn crate::index::Terms>>> {
         // `throw new UnsupportedOperationException()` (`DocValuesLeafReader`).
         Err(LuceneError::unsupported_operation(String::new()))
     }

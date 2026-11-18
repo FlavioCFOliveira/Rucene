@@ -157,13 +157,13 @@ impl Fields for SimpleTextFieldsReader {
     }
 
     /// Port of the `synchronized` `SimpleTextFieldsReader.terms`.
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let mut cache = self
             .terms_cache
             .lock()
             .map_err(|_| LuceneError::illegal_state("terms cache lock was poisoned".to_string()))?;
         if let Some(terms) = cache.get(field) {
-            return Ok(Some(Box::new(terms.clone())));
+            return Ok(Some(Arc::new(terms.clone())));
         }
         let Some(fp) = self
             .fields
@@ -181,7 +181,7 @@ impl Fields for SimpleTextFieldsReader {
             Arc::clone(&self.input),
         )?;
         cache.insert(field.to_string(), terms.clone());
-        Ok(Some(Box::new(terms)))
+        Ok(Some(Arc::new(terms)))
     }
 
     fn size(&self) -> i32 {

@@ -108,10 +108,10 @@ impl Fields for AssertingFieldsProducer {
         self.r#in.iterator()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(match self.r#in.terms(field)? {
             None => None,
-            Some(terms) => Some(Box::new(AssertingTerms::new(terms))),
+            Some(terms) => Some(Arc::new(AssertingTerms::new(terms))),
         })
     }
 
@@ -314,7 +314,7 @@ mod tests {
                 fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
                     Box::new(std::iter::empty())
                 }
-                fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+                fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
                     Ok(None)
                 }
                 fn size(&self) -> i32 {

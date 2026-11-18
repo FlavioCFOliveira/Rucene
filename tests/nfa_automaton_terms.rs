@@ -90,7 +90,7 @@ fn drain(mut terms_enum: Box<dyn TermsEnum>) -> Vec<String> {
 /// The terms of field `f`, with the reader they are read from: the reader
 /// stays open while the terms are used, as a Java caller holds it (closing
 /// it closes the files the terms read).
-fn field_terms() -> (Arc<dyn directory_reader::DirectoryReader>, Box<dyn Terms>) {
+fn field_terms() -> (Arc<dyn directory_reader::DirectoryReader>, Arc<dyn Terms>) {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let config = IndexWriterConfig::new();
     config

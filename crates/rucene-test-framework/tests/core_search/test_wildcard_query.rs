@@ -184,9 +184,8 @@ fn test_prefix_term() -> Result<()> {
 
     let wq = WildcardQuery::new(Term::from_text("field", "*"))?;
     assert_matches(&searcher, &(Arc::new(wq.clone()) as Arc<dyn Query>), 2)?;
-    let terms: Arc<dyn Terms> = Arc::from(
-        MultiTerms::get_terms(searcher.get_index_reader(), "field")?.expect("field is indexed"),
-    );
+    let terms: Arc<dyn Terms> =
+        MultiTerms::get_terms(searcher.get_index_reader(), "field")?.expect("field is indexed");
     // `wq.getTermsEnum(terms).getClass().getSimpleName().contains("AutomatonTermsEnum")`:
     // the port's `AutomatonTermsEnum` is the filter of a `FilteredTermsEnum`.
     let te = get_terms_enum(&wq, &terms)?;
@@ -880,11 +879,11 @@ impl LeafReader for NextCountingLeafReader {
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
         None
     }
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let Some(terms) = self.inner.terms(field)? else {
             return Ok(None);
         };
-        Ok(Some(Box::new(NextCountingTerms {
+        Ok(Some(Arc::new(NextCountingTerms {
             inner: FilterTerms::new(terms),
             counter: Arc::clone(&self.counter),
         })))
