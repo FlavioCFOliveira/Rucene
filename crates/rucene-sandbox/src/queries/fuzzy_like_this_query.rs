@@ -246,7 +246,7 @@ impl FuzzyLikeThisQuery {
                     // maxNum variants considered for any one term
                     let mut variants_q = ScoreTermQueue::new(self.max_variants_per_term)?;
                     let mut min_score = 0f32;
-                    let start_term = Term::from_text(field_name, &term);
+                    let start_term = Term::from_text(field_name.to_string(), &term);
                     let mut fe = FuzzyTermsEnum::new(
                         Arc::clone(&terms),
                         start_term.clone(),
@@ -269,7 +269,7 @@ impl FuzzyLikeThisQuery {
                             || score > min_score
                         {
                             let st = ScoreTerm::new(
-                                Term::new(start_term.field(), possible_match),
+                                Term::new(start_term.field().to_string(), possible_match),
                                 score,
                                 start_term.clone(),
                             );

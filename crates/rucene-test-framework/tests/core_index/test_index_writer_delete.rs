@@ -143,7 +143,7 @@ fn plain_iwc() -> IndexWriterConfig {
 
 /// `new Term(field, text)`.
 fn term(field: &str, text: &str) -> Term {
-    Term::from_text(field, text)
+    Term::from_text(field.to_string(), text)
 }
 
 /// The document `addDoc` and `updateDoc` index.

@@ -237,7 +237,7 @@ impl IndexableField for MyField {
 
 /// `new TermQuery(new Term(field, text))`.
 fn tq(field: &str, text: &str) -> Arc<dyn Query> {
-    Arc::new(TermQuery::new(Term::from_text(field, text)))
+    Arc::new(TermQuery::new(Term::from_text(field.to_string(), text)))
 }
 
 /// Silly test showing how to index documents w/o using Lucene's core

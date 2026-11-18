@@ -1283,7 +1283,7 @@ pub struct FieldName(NameRepr);
 // its jump, on every `IndexableField::name` call.
 #[derive(Clone)]
 #[repr(u8)]
-enum NameRepr {
+pub(crate) enum NameRepr {
     Static(&'static str),
     Owned(String),
     Shared(Arc<str>),
@@ -1296,6 +1296,11 @@ impl FieldName {
     /// The name `field_info` holds, shared with it.
     pub(crate) fn of_field_info(field_info: &Arc<FieldInfo>) -> Self {
         Self(NameRepr::Info(Arc::clone(field_info)))
+    }
+
+    /// The name's representation, for [`Term`](crate::index::Term) to keep.
+    pub(crate) fn into_repr(self) -> NameRepr {
+        self.0
     }
 
     /// The name as a string slice.
@@ -3265,7 +3270,7 @@ impl KeywordField {
     /// Query stub: exact match on a binary value.
     pub fn new_exact_query(field: &str, value: &BytesRef) -> Arc<dyn Query> {
         Arc::new(ConstantScoreQuery::new(Arc::new(TermQuery::new(
-            Term::new(field, value.clone()),
+            Term::new(field.to_string(), value.clone()),
         ))))
     }
 

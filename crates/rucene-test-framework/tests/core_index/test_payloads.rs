@@ -422,7 +422,7 @@ fn generate_terms(field_name: &str, n: i32) -> Vec<Term> {
             sb.push('0');
         }
         sb.push_str(&i.to_string());
-        terms.push(Term::from_text(field_name, &sb));
+        terms.push(Term::from_text(field_name.to_string(), &sb));
     }
     terms
 }

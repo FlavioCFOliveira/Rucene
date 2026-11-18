@@ -1355,7 +1355,7 @@ pub fn nbr(s: &str) -> BytesRef {
 /// `searcher.count(new TermQuery(new Term(field, text)))`.
 pub fn count_term(s: &rucene::search::IndexSearcher, field: &str, text: &str) -> Result<i32> {
     s.count(Arc::new(rucene::search::TermQuery::new(
-        rucene::index::Term::from_text(field, text),
+        rucene::index::Term::from_text(field.to_string(), text),
     )))
 }
 

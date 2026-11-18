@@ -434,7 +434,7 @@ fn check_one_doc(p: &mut dyn PostingsEnum, freq: FreqIs, positions: &[PositionIs
 
 /// `new Term(field, text)`.
 fn term(field: &str, text: &str) -> Term {
-    Term::new(field, BytesRef::from_char_sequence(text))
+    Term::new(field.to_string(), BytesRef::from_char_sequence(text))
 }
 
 /// The analyzer of the `testPostingsEnum*` tests: `new Analyzer() {

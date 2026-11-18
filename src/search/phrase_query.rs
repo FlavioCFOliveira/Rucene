@@ -433,7 +433,7 @@ impl PhraseQuery {
     pub fn to_terms(field: &str, term_strings: &[&str]) -> Vec<Term> {
         term_strings
             .iter()
-            .map(|t| Term::from_text(field, t))
+            .map(|t| Term::from_text(field.to_string(), t))
             .collect()
     }
 
@@ -443,7 +443,7 @@ impl PhraseQuery {
     pub fn to_terms_from_bytes(field: &str, term_bytes: &[BytesRef]) -> Vec<Term> {
         term_bytes
             .iter()
-            .map(|b| Term::new(field, b.clone()))
+            .map(|b| Term::new(field.to_string(), b.clone()))
             .collect()
     }
 

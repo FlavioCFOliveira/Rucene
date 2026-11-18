@@ -497,7 +497,7 @@ fn searcher(dir: &Arc<dyn Directory>) -> (Arc<dyn DirectoryReader>, IndexSearche
 }
 
 fn term_query(field: &str, text: &str) -> Arc<dyn Query> {
-    Arc::new(TermQuery::new(Term::new(field, bytes(text))))
+    Arc::new(TermQuery::new(Term::new(field.to_string(), bytes(text))))
 }
 
 /// Every live document's `id` term finds exactly one document, every merged

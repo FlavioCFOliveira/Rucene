@@ -11754,7 +11754,10 @@ mod tests {
     }
 
     fn term(field: &str, text: &str) -> Term {
-        Term::new(field, crate::util::BytesRef::new(text.as_bytes().to_vec()))
+        Term::new(
+            field.to_string(),
+            crate::util::BytesRef::new(text.as_bytes().to_vec()),
+        )
     }
 
     /// How long a test waits for a racing thread that the fixed code must keep
@@ -12908,7 +12911,8 @@ mod tests {
         .unwrap();
         searcher
             .count(Arc::new(crate::search::TermQuery::new(Term::from_text(
-                field, text,
+                field.to_string(),
+                text,
             ))))
             .unwrap()
     }

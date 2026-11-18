@@ -74,7 +74,10 @@ pub fn class_def() -> Arc<Class> {
 
 /// `new WildcardQuery(new Term(field, text))`.
 fn wq(field: &str, text: &str) -> Result<Arc<dyn Query>> {
-    Ok(Arc::new(WildcardQuery::new(Term::from_text(field, text))?))
+    Ok(Arc::new(WildcardQuery::new(Term::from_text(
+        field.to_string(),
+        text,
+    ))?))
 }
 
 /// Port of `TestWildcardQuery.testEquals`.

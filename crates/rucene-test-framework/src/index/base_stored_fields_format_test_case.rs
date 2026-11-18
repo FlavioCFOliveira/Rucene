@@ -154,7 +154,7 @@ fn random() -> Arc<dyn Random> {
 
 /// `new Term(field, text)`.
 fn term(field: &str, text: &str) -> Term {
-    Term::new(field, BytesRef::from_char_sequence(text))
+    Term::new(field.to_string(), BytesRef::from_char_sequence(text))
 }
 
 /// `new TermQuery(new Term(field, text))`.

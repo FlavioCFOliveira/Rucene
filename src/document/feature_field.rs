@@ -386,7 +386,7 @@ impl FeatureField {
         feature_name: &str,
     ) -> Result<f32> {
         // `new Term(featureField, featureName)` (`FeatureField.java`).
-        let term = Term::from_text(feature_field, feature_name);
+        let term = Term::from_text(feature_field.to_string(), feature_name);
         let states = crate::index::terms::TermStates::build(searcher, &term, true)?;
         let doc_freq = states.doc_freq()?;
         if doc_freq == 0 {

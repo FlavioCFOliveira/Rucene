@@ -636,7 +636,7 @@ mod tests {
 
     fn term(field: &str) -> Arc<dyn Query> {
         Arc::new(TermQuery::new(Term::new(
-            field,
+            field.to_string(),
             BytesRef::new(b"x".to_vec()),
         )))
     }

@@ -196,7 +196,7 @@ fn check(q: Arc<dyn SpanQuery>, docs: &[i32]) -> Result<()> {
 }
 
 fn term(field: &str, text: &str) -> Term {
-    Term::from_text(field, text)
+    Term::from_text(field.to_string(), text)
 }
 
 fn stq(field: &str, text: &str) -> Arc<dyn SpanQuery> {

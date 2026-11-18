@@ -536,7 +536,7 @@ impl FieldsIndexReader {
             &index_file,
             /* withHints, `FieldsIndexReader.java:72` */
             io_context
-                .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Index)])
+                .with_hints(&[crate::store::FileTypeHint::Index.shared()])
                 .as_ref(),
         )?;
 
@@ -2451,8 +2451,8 @@ impl Lucene90CompressingStoredFieldsReader {
                     /* withHints, `Lucene90CompressingStoredFieldsReader.java:146` */
                     io_context
                         .with_hints(&[
-                            std::sync::Arc::new(crate::store::FileTypeHint::Data),
-                            std::sync::Arc::new(crate::store::DataAccessHint::Random),
+                            crate::store::FileTypeHint::Data.shared(),
+                            crate::store::DataAccessHint::Random.shared(),
                         ])
                         .as_ref(),
                 )?,

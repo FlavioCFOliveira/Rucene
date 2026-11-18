@@ -151,7 +151,7 @@ impl BayesianScoreEstimator {
             let end = (offset + tokens_per_query).min(sampled_terms.len());
             for term in &sampled_terms[offset..end] {
                 builder.add(
-                    Arc::new(TermQuery::new(Term::new(field, term.clone()))),
+                    Arc::new(TermQuery::new(Term::new(field.to_string(), term.clone()))),
                     Occur::SHOULD,
                 )?;
             }

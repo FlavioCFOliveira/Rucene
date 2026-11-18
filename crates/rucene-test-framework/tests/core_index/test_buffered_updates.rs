@@ -109,7 +109,10 @@ fn test_deleted_terms() -> Result<()> {
         let mut actual_sorted: Vec<(Term, i32)> = Vec::new();
         actual
             .for_each_ordered(|term, doc_id| {
-                let copy = Term::new(term.field(), BytesRef::deep_copy_of(term.bytes()));
+                let copy = Term::new(
+                    term.field().to_string(),
+                    BytesRef::deep_copy_of(term.bytes()),
+                );
                 actual_sorted.push((copy, doc_id));
                 Ok::<(), std::convert::Infallible>(())
             })

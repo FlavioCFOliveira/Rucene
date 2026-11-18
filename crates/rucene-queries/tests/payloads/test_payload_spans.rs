@@ -187,7 +187,7 @@ fn stq(text: &str) -> Arc<dyn SpanQuery> {
 }
 
 fn stq_field(field: &str, text: &str) -> Arc<dyn SpanQuery> {
-    Arc::new(SpanTermQuery::new(Term::from_text(field, text)))
+    Arc::new(SpanTermQuery::new(Term::from_text(field.to_string(), text)))
 }
 
 fn test_span_term_query(f: &mut PayloadSpans) -> Result<()> {

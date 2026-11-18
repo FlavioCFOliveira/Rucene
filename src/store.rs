@@ -3707,6 +3707,26 @@ impl_file_open_hint!(
     }
 );
 
+impl DataAccessHint {
+    /// The shared handle of this constant, for [`IOContext::with_hints`].
+    ///
+    /// Java passes the enum constant itself (`DataAccessHint.java:20`), one
+    /// object per constant, so `withHints(…, DataAccessHint.RANDOM)` allocates
+    /// no hint.
+    pub(crate) fn shared(self) -> Arc<dyn FileOpenHint> {
+        // PERF: one `Arc` per constant, cloned per call: a call allocates no
+        // hint.
+        static RANDOM: std::sync::LazyLock<Arc<dyn FileOpenHint>> =
+            std::sync::LazyLock::new(|| Arc::new(DataAccessHint::Random));
+        static SEQUENTIAL: std::sync::LazyLock<Arc<dyn FileOpenHint>> =
+            std::sync::LazyLock::new(|| Arc::new(DataAccessHint::Sequential));
+        Arc::clone(match self {
+            Self::Random => &RANDOM,
+            Self::Sequential => &SEQUENTIAL,
+        })
+    }
+}
+
 /// Port of `org.apache.lucene.store.ReadOnceHint`.
 ///
 /// Hint that the file will only be read once, sequentially.
@@ -3776,6 +3796,26 @@ impl_file_open_hint!(
     }
 );
 
+impl FileTypeHint {
+    /// The shared handle of this constant, for [`IOContext::with_hints`].
+    ///
+    /// Java passes the enum constant itself (`FileTypeHint.java:25`), one
+    /// object per constant, so `withHints(FileTypeHint.DATA)` allocates no
+    /// hint.
+    pub(crate) fn shared(self) -> Arc<dyn FileOpenHint> {
+        // PERF: one `Arc` per constant, cloned per call: a call allocates no
+        // hint.
+        static INDEX: std::sync::LazyLock<Arc<dyn FileOpenHint>> =
+            std::sync::LazyLock::new(|| Arc::new(FileTypeHint::Index));
+        static DATA: std::sync::LazyLock<Arc<dyn FileOpenHint>> =
+            std::sync::LazyLock::new(|| Arc::new(FileTypeHint::Data));
+        Arc::clone(match self {
+            Self::Index => &INDEX,
+            Self::Data => &DATA,
+        })
+    }
+}
+
 /// Hint on the type of data stored in the file.
 ///
 /// Equivalent to `org.apache.lucene.store.FileDataHint`.
@@ -3802,6 +3842,26 @@ impl_file_open_hint!(
         FileDataHint::KnnVectors => "KNN_VECTORS",
     }
 );
+
+impl FileDataHint {
+    /// The shared handle of this constant, for [`IOContext::with_hints`].
+    ///
+    /// Java passes the enum constant itself (`FileDataHint.java:20`), one
+    /// object per constant, so `withHints(…, FileDataHint.POSTINGS)`
+    /// allocates no hint.
+    pub(crate) fn shared(self) -> Arc<dyn FileOpenHint> {
+        // PERF: one `Arc` per constant, cloned per call: a call allocates no
+        // hint.
+        static POSTINGS: std::sync::LazyLock<Arc<dyn FileOpenHint>> =
+            std::sync::LazyLock::new(|| Arc::new(FileDataHint::Postings));
+        static KNN_VECTORS: std::sync::LazyLock<Arc<dyn FileOpenHint>> =
+            std::sync::LazyLock::new(|| Arc::new(FileDataHint::KnnVectors));
+        Arc::clone(match self {
+            Self::Postings => &POSTINGS,
+            Self::KnnVectors => &KNN_VECTORS,
+        })
+    }
+}
 
 /// Metadata associated with a merge [`Context`].
 ///
@@ -13273,6 +13333,62 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(ok.hints().len(), 2);
+    }
+
+    /// A hint enum constant is one object, as in Java: every
+    /// [`FileTypeHint::shared`] (and `FileDataHint`, `DataAccessHint`) call
+    /// hands out the same allocation, a different one per constant, and a
+    /// context built from it carries exactly that constant.
+    #[test]
+    fn shared_hints_are_one_object_per_constant() {
+        let constants: Vec<(Arc<dyn FileOpenHint>, Arc<dyn FileOpenHint>)> = vec![
+            (FileTypeHint::Index.shared(), FileTypeHint::Index.shared()),
+            (FileTypeHint::Data.shared(), FileTypeHint::Data.shared()),
+            (
+                FileDataHint::Postings.shared(),
+                FileDataHint::Postings.shared(),
+            ),
+            (
+                FileDataHint::KnnVectors.shared(),
+                FileDataHint::KnnVectors.shared(),
+            ),
+            (
+                DataAccessHint::Random.shared(),
+                DataAccessHint::Random.shared(),
+            ),
+            (
+                DataAccessHint::Sequential.shared(),
+                DataAccessHint::Sequential.shared(),
+            ),
+        ];
+        for (i, (a, b)) in constants.iter().enumerate() {
+            assert!(Arc::ptr_eq(a, b), "constant {i} is not shared");
+            for (j, (c, _)) in constants.iter().enumerate() {
+                assert_eq!(Arc::ptr_eq(a, c), i == j, "constants {i} and {j}");
+            }
+        }
+        assert_eq!(FileTypeHint::Data.shared().java_to_string(), "DATA");
+        assert_eq!(FileDataHint::Postings.shared().java_to_string(), "POSTINGS");
+        assert_eq!(DataAccessHint::Random.shared().java_to_string(), "RANDOM");
+
+        let context = DEFAULT_IO_CONTEXT
+            .with_hints(&[FileTypeHint::Data.shared(), DataAccessHint::Random.shared()]);
+        let types: Vec<FileTypeHint> = hints_of::<FileTypeHint>(context.as_ref())
+            .into_iter()
+            .copied()
+            .collect();
+        assert_eq!(types, [FileTypeHint::Data]);
+        let access: Vec<DataAccessHint> = hints_of::<DataAccessHint>(context.as_ref())
+            .into_iter()
+            .copied()
+            .collect();
+        assert_eq!(access, [DataAccessHint::Random]);
+        // Two constants of one enum are still rejected, shared or not.
+        assert!(DefaultIOContext::with_hints_slice(&[
+            FileTypeHint::Data.shared(),
+            FileTypeHint::Index.shared(),
+        ])
+        .is_err());
     }
 
     // -------------------------------------------------------------------------

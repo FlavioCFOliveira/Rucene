@@ -127,7 +127,7 @@ mod search {
     fn prefix_dv_query(field: &str, prefix: &str) -> Arc<dyn Query> {
         Arc::new(
             PrefixQuery::with_rewrite_method(
-                Term::from_text(field, prefix),
+                Term::from_text(field.to_string(), prefix),
                 Arc::new(DocValuesRewriteMethod),
             )
             .unwrap(),

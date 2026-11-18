@@ -109,7 +109,7 @@ fn assert_query(expected: &Arc<dyn Query>, actual: &Option<Arc<dyn Query>>) {
 
 /// `new Term(field, text)`.
 fn term(field: &str, text: &str) -> Term {
-    Term::from_text(field, text)
+    Term::from_text(field.to_string(), text)
 }
 
 /// `new TermQuery(new Term(field, text))`.

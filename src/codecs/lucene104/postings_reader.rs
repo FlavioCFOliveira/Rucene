@@ -298,8 +298,8 @@ impl Lucene104PostingsReader {
                     state
                         .context
                         .with_hints(&[
-                            std::sync::Arc::new(crate::store::FileTypeHint::Data),
-                            std::sync::Arc::new(crate::store::FileDataHint::Postings),
+                            crate::store::FileTypeHint::Data.shared(),
+                            crate::store::FileDataHint::Postings.shared(),
                         ])
                         .as_ref(),
                 )?,
@@ -314,7 +314,7 @@ impl Lucene104PostingsReader {
                         /* withHints, `Lucene104PostingsReader.java:146` */
                         state
                             .context
-                            .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Data)])
+                            .with_hints(&[crate::store::FileTypeHint::Data.shared()])
                             .as_ref(),
                     )?,
                 );

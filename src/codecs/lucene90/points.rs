@@ -732,7 +732,7 @@ impl Lucene90PointsReader {
                 /* withHints, `Lucene90PointsReader.java:64` */
                 state
                     .context
-                    .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Index)])
+                    .with_hints(&[crate::store::FileTypeHint::Index.shared()])
                     .as_ref(),
             )?,
         )));
@@ -757,7 +757,7 @@ impl Lucene90PointsReader {
                 /* withHints, `Lucene90PointsReader.java:78` */
                 state
                     .context
-                    .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Data)])
+                    .with_hints(&[crate::store::FileTypeHint::Data.shared()])
                     .as_ref(),
             )?,
         )));

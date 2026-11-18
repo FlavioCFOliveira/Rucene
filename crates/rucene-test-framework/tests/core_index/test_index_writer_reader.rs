@@ -136,7 +136,7 @@ fn no_wait_iwc() -> Result<IndexWriterConfig> {
 
 /// `new Term(field, text)`.
 fn term(field: &str, text: &str) -> Term {
-    Term::from_text(field, text)
+    Term::from_text(field.to_string(), text)
 }
 
 /// `reader` as the `IndexReader` it is.

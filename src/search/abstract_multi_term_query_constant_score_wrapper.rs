@@ -193,7 +193,7 @@ pub fn rewrite_as_boolean_query(
         );
         bq.add(
             Arc::new(TermQuery::with_states(
-                Term::new(state.query.get_field(), t.term.clone()),
+                Term::new(state.query.get_field().to_string(), t.term.clone()),
                 Arc::new(term_states),
             )),
             Occur::SHOULD,

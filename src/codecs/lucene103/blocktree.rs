@@ -2400,7 +2400,7 @@ impl Lucene103BlockTreeTermsReader {
                 &terms_name,
                 state
                     .context
-                    .with_hints(&[Arc::new(crate::store::FileTypeHint::Data)])
+                    .with_hints(&[crate::store::FileTypeHint::Data.shared()])
                     .as_ref(),
             )?,
         )));
@@ -2421,7 +2421,7 @@ impl Lucene103BlockTreeTermsReader {
                 &index_name,
                 state
                     .context
-                    .with_hints(&[Arc::new(crate::store::FileTypeHint::Index)])
+                    .with_hints(&[crate::store::FileTypeHint::Index.shared()])
                     .as_ref(),
             )?,
         )));

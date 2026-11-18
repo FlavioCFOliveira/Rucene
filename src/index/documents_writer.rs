@@ -390,7 +390,7 @@ impl DeletedTerms {
         let mut scratch = Term::empty("");
         for field in fields {
             // `scratch.field = deleteFieldEntry.getKey()`.
-            scratch.set(field.as_str(), crate::util::BytesRef::default());
+            scratch.set(field, crate::util::BytesRef::default());
             let terms = &self.delete_terms[field];
             let mut hash = terms.lock_hash();
             let size = hash.size() as usize;
@@ -7332,7 +7332,7 @@ mod tests {
     }
 
     fn term(field: &str, text: &str) -> Term {
-        Term::new(field, BytesRef::new(text.as_bytes().to_vec()))
+        Term::new(field.to_string(), BytesRef::new(text.as_bytes().to_vec()))
     }
 
     /// A real [`Query`] identified by `label`, on the field `q`.

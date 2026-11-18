@@ -464,7 +464,7 @@ impl Lucene90NormsProducer {
             /* withHints, `Lucene90NormsProducer.java:85` */
             state
                 .context
-                .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Data)])
+                .with_hints(&[crate::store::FileTypeHint::Data.shared()])
                 .as_ref(),
         )?;
         let checked = (|| -> Result<()> {

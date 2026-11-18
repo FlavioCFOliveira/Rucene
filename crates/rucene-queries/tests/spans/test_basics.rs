@@ -196,7 +196,7 @@ fn assert_explain_positive(query: &Arc<dyn SpanQuery>, doc: i32) -> Result<()> {
 }
 
 fn tq(field: &str, text: &str) -> Arc<dyn Query> {
-    Arc::new(TermQuery::new(Term::from_text(field, text)))
+    Arc::new(TermQuery::new(Term::from_text(field.to_string(), text)))
 }
 
 fn test_term() -> Result<()> {

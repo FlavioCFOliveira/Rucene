@@ -140,7 +140,7 @@ fn bytes(text: &str) -> BytesRef {
 }
 
 fn term(field: &str, text: &str) -> Term {
-    Term::new(field, bytes(text))
+    Term::new(field.to_string(), bytes(text))
 }
 
 fn keyword(field: &str, value: String) -> Box<StringField> {

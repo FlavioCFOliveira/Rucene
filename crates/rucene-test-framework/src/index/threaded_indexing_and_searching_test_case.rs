@@ -417,7 +417,7 @@ fn doc_get(doc: &Document, name: &str) -> Option<String> {
 
 /// `new Term(field, text)`.
 fn term(field: &str, text: &str) -> Term {
-    Term::new(field, BytesRef::new(text.as_bytes().to_vec()))
+    Term::new(field.to_string(), BytesRef::new(text.as_bytes().to_vec()))
 }
 
 /// `new TermQuery(new Term(field, text))`.

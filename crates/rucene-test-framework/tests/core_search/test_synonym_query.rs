@@ -63,7 +63,7 @@ fn builder(field: &str) -> SynonymQueryBuilder {
 
 /// `new Term(field, text)`.
 fn t(field: &str, text: &str) -> Term {
-    Term::from_text(field, text)
+    Term::from_text(field.to_string(), text)
 }
 
 /// Port of `TestSynonymQuery.testEquals`.

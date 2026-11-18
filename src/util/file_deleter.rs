@@ -156,13 +156,19 @@ impl FileDeleter {
         }
     }
 
-    /// Returns the reference count of `file_name`, creating it at zero when the
-    /// file is not tracked yet.
+    /// Starts tracking `file_name`, which is not tracked yet, at a count of
+    /// zero, and returns that count.
     ///
-    /// Equivalent to the private `FileDeleter.getRefCountInternal(String)`.
-    /// Java calls it on `this`; Rust would then borrow the whole deleter while
-    /// the caller still needs to log through it, so the map is passed in.
-    fn get_ref_count_internal<'a>(
+    /// The absent branch of the private `FileDeleter.getRefCountInternal(String)`,
+    /// `refCounts.computeIfAbsent(fileName, RefCount::new)`
+    /// (`FileDeleter.java:132-134`): the only place a name is copied into a
+    /// key. Callers look the name up first, as `computeIfAbsent` does, so a
+    /// tracked file costs no copy. Java's method returns the count on both
+    /// branches; a Rust function returning the map's borrow cannot try the
+    /// lookup first (the borrow of the lookup would extend over the insert),
+    /// so each caller writes the lookup and calls this on a miss. The map is
+    /// passed in so that the caller can still log through the deleter.
+    fn track_new_file<'a>(
         ref_counts: &'a mut HashMap<String, RefCount>,
         file_name: &str,
     ) -> &'a mut RefCount {
@@ -175,7 +181,11 @@ impl FileDeleter {
     ///
     /// Equivalent to `FileDeleter.incRef(String)`.
     pub fn inc_ref(&mut self, file_name: &str) {
-        let rc = Self::get_ref_count_internal(&mut self.ref_counts, file_name);
+        // PERF: `getRefCountInternal` copies the name only for a new file.
+        let rc = match self.ref_counts.get_mut(file_name) {
+            Some(rc) => rc,
+            None => Self::track_new_file(&mut self.ref_counts, file_name),
+        };
         let pre = rc.count;
         rc.inc_ref();
         self.message(MsgType::Ref, || {
@@ -223,10 +233,11 @@ impl FileDeleter {
     ///
     /// Equivalent to the private `FileDeleter.decRef(String)`.
     fn dec_ref_one(&mut self, file_name: &str) -> bool {
-        let rc = self
-            .ref_counts
-            .entry(file_name.to_string())
-            .or_insert_with(|| RefCount::new(file_name));
+        // PERF: `getRefCountInternal` copies the name only for a new file.
+        let rc = match self.ref_counts.get_mut(file_name) {
+            Some(rc) => rc,
+            None => Self::track_new_file(&mut self.ref_counts, file_name),
+        };
         let pre = rc.count;
         let now = rc.dec_ref();
         self.message(MsgType::Ref, || {
@@ -242,11 +253,12 @@ impl FileDeleter {
 
     /// Records `file_name` with a count of zero if it is not yet tracked.
     ///
-    /// Equivalent to `FileDeleter.initRefCount`.
+    /// Equivalent to `FileDeleter.initRefCount`, whose `computeIfAbsent`
+    /// copies the name only for a new file.
     pub fn init_ref_count(&mut self, file_name: &str) {
-        self.ref_counts
-            .entry(file_name.to_string())
-            .or_insert_with(|| RefCount::new(file_name));
+        if !self.ref_counts.contains_key(file_name) {
+            Self::track_new_file(&mut self.ref_counts, file_name);
+        }
     }
 
     /// Returns the reference count of `file_name`, or `0` if untracked.
@@ -457,6 +469,33 @@ mod tests {
             deleter.get_unrefed_files(),
             HashSet::from(["_0.si".to_string()])
         );
+    }
+
+    /// The calls on a file already tracked (`computeIfAbsent`'s present
+    /// branch) change only its count: `initRefCount` keeps a non-zero count,
+    /// `incRef` and `decRef` update the one entry, and the count reaching
+    /// zero deletes the file, exactly as for a file seen for the first time.
+    #[test]
+    fn calls_on_a_tracked_file_update_its_single_entry() {
+        let directory = dir();
+        write_file(directory.as_ref(), "_0.si");
+        let mut deleter = FileDeleter::new(Arc::clone(&directory), None);
+
+        deleter.init_ref_count("_0.si");
+        deleter.inc_ref("_0.si");
+        deleter.init_ref_count("_0.si");
+        assert_eq!(deleter.get_ref_count("_0.si"), 1);
+        deleter.inc_ref("_0.si");
+        deleter.inc_ref("_0.si");
+        assert_eq!(deleter.get_ref_count("_0.si"), 3);
+        assert_eq!(deleter.get_all_files().collect::<Vec<_>>(), ["_0.si"]);
+
+        deleter.dec_ref_files(["_0.si", "_0.si"]).unwrap();
+        assert_eq!(deleter.get_ref_count("_0.si"), 1);
+        assert!(directory.list_all().unwrap().contains(&"_0.si".to_string()));
+        deleter.dec_ref_files(["_0.si"]).unwrap();
+        assert_eq!(deleter.get_all_files().count(), 0);
+        assert!(!directory.list_all().unwrap().contains(&"_0.si".to_string()));
     }
 
     #[test]

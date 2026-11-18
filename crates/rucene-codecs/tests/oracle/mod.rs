@@ -289,7 +289,7 @@ pub fn bytes(text: &str) -> BytesRef {
 }
 
 pub fn term(field: &str, text: &str) -> Term {
-    Term::new(field, bytes(text))
+    Term::new(field.to_string(), bytes(text))
 }
 
 pub fn doc(i: i32) -> Document {

@@ -75,7 +75,7 @@ pub fn fixture_class_annotated<F: Any + Send + Default>(
 
 /// `new Term(field, text)`.
 pub fn term(field: &str, text: &str) -> Term {
-    Term::from_text(field, text)
+    Term::from_text(field.to_string(), text)
 }
 
 /// `new TermQuery(new Term(field, text))`.

@@ -102,7 +102,7 @@ fn bytes(text: &str) -> BytesRef {
 }
 
 fn term(field: &str, text: &str) -> Term {
-    Term::from_text(field, text)
+    Term::from_text(field.to_string(), text)
 }
 
 fn term_query(field: &str, text: &str) -> Arc<dyn Query> {

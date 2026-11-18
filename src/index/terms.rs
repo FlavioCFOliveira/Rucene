@@ -12,6 +12,7 @@ use std::fmt;
 
 use std::sync::Arc;
 
+use crate::document::{FieldName, NameRepr};
 use crate::error::{LuceneError, Result};
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::reader_context::{IndexReaderContext, LeafReaderContext};
@@ -33,12 +34,76 @@ use crate::util::{BytesRef, IOBooleanSupplier, RamUsageEstimator};
 /// default field is configured): [`field_opt`](Self::field_opt) is Java's
 /// `field()`, and `toString`, `equals`, `hashCode`, `compareTo` and
 /// `ramBytesUsed` treat a `null` field as Java's do.
+///
+/// The constructors take the field as a [`FieldName`], Java's `String`
+/// reference: a `&'static str` or an `Arc<str>` is kept without a copy and a
+/// `String` is moved in, as `Term(String fld, BytesRef bytes)` keeps
+/// `field = fld` (`Term.java:52-55`); a `&String` is copied, as the term
+/// cannot keep the borrow.
 #[derive(Debug, Clone)]
 pub struct Term {
     /// Field this term belongs to; `None` for Java's `null`.
-    field: Option<String>,
+    // PERF: the caller's name, kept (static or shared) or moved, not copied
+    // per term.
+    field: Option<TermField>,
     /// Term bytes (should not be modified in place).
     bytes: BytesRef,
+}
+
+/// The name a [`Term`] holds: Java's `Term.field`, the `String` reference its
+/// constructor was given.
+///
+/// **This has no counterpart in Lucene 10.5.0**, where the term keeps the
+/// caller's `String` reference (`Term.java:52-55`). It is [`FieldName`]
+/// without the variant that shares a `FieldInfo`, which only the stored-fields
+/// visitor builds, for the fields it reads back; a `FieldInfo`'s interior
+/// mutability would make `Term`, a map key, a mutable one for clippy. A
+/// [`FieldName`] of that variant is copied into [`Owned`](Self::Owned).
+// PERF: three variants in `String`'s capacity niche keep `Term` at 64 bytes,
+// and `as_str` decodes them without a branch.
+#[derive(Clone)]
+enum TermField {
+    Static(&'static str),
+    Owned(String),
+    Shared(Arc<str>),
+}
+
+impl TermField {
+    /// The name as a string slice.
+    #[inline]
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Static(name) => name,
+            Self::Owned(name) => name,
+            Self::Shared(name) => name,
+        }
+    }
+}
+
+impl From<FieldName> for TermField {
+    fn from(name: FieldName) -> Self {
+        match name.into_repr() {
+            NameRepr::Static(name) => Self::Static(name),
+            NameRepr::Owned(name) => Self::Owned(name),
+            NameRepr::Shared(name) => Self::Shared(name),
+            NameRepr::Info(field_info) => Self::Owned(field_info.name.clone()),
+        }
+    }
+}
+
+impl std::ops::Deref for TermField {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Debug for TermField {
+    /// The name itself, as the former `String` field formatted.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), f)
+    }
 }
 
 /// The helpful message of the `NullPointerException` the JVM throws at
@@ -63,9 +128,13 @@ fn null_field_dereference(message: Option<&str>) -> ! {
 
 impl Term {
     /// Creates a term from a field and a byte sequence.
-    pub fn new(field: impl Into<String>, bytes: BytesRef) -> Self {
+    ///
+    /// Equivalent to `Term(String fld, BytesRef bytes)` (`Term.java:52-55`),
+    /// which keeps the caller's `fld` reference: a `&'static str` or an
+    /// `Arc<str>` is kept and a `String` moved in (see [`FieldName`]).
+    pub fn new(field: impl Into<FieldName>, bytes: BytesRef) -> Self {
         Self {
-            field: Some(field.into()),
+            field: Some(TermField::from(field.into())),
             bytes,
         }
     }
@@ -76,7 +145,10 @@ impl Term {
     /// may be `null` (`Term.java:52-55`), which the constructor accepts and
     /// documents as undefined behaviour for most Lucene APIs.
     pub fn with_nullable_field(field: Option<String>, bytes: BytesRef) -> Self {
-        Self { field, bytes }
+        Self {
+            field: field.map(TermField::Owned),
+            bytes,
+        }
     }
 
     /// Creates a term from a field that may be `null` and text.
@@ -97,7 +169,7 @@ impl Term {
     /// [`BytesRef::from_char_sequence`], and `Term(String, BytesRef)` keeps a
     /// `BytesRef.deepCopyOf` of it, so the term's buffer holds exactly the
     /// UTF-8 bytes.
-    pub fn from_text(field: impl Into<String>, text: &str) -> Self {
+    pub fn from_text(field: impl Into<FieldName>, text: &str) -> Self {
         Self::new(
             field,
             BytesRef::deep_copy_of(&BytesRef::from_char_sequence(text)),
@@ -105,7 +177,9 @@ impl Term {
     }
 
     /// Creates a term with the given field and empty bytes.
-    pub fn empty(field: impl Into<String>) -> Self {
+    ///
+    /// Equivalent to `Term(String fld)` (`Term.java:84-86`).
+    pub fn empty(field: impl Into<FieldName>) -> Self {
         Self::new(field, BytesRef::new(Vec::new()))
     }
 
@@ -180,8 +254,8 @@ impl Term {
     /// Replaces the field and bytes in place (bytes are not copied).
     ///
     /// Equivalent to the Java `Term.set`.
-    pub fn set(&mut self, field: impl Into<String>, bytes: BytesRef) {
-        self.field = Some(field.into());
+    pub fn set(&mut self, field: impl Into<FieldName>, bytes: BytesRef) {
+        self.field = Some(TermField::from(field.into()));
         self.bytes = bytes;
     }
 
@@ -229,7 +303,7 @@ impl PartialEq for Term {
     /// Equivalent to `Term.equals(Object)` (`Term.java:141-157`): two `null`
     /// fields are equal, a `null` field differs from any other.
     fn eq(&self, other: &Self) -> bool {
-        self.field == other.field && self.bytes == other.bytes
+        self.field.as_deref() == other.field.as_deref() && self.bytes == other.bytes
     }
 }
 
@@ -248,7 +322,8 @@ impl std::hash::Hash for Term {
     ///
     /// [`Hasher`]: std::hash::Hasher
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.field.hash(state);
+        // `Option<&str>` feeds the hasher what `Option<String>` did.
+        self.field.as_deref().hash(state);
         self.bytes.slice().hash(state);
     }
 }
@@ -1335,10 +1410,10 @@ impl PrefixCodedTermsBuilder {
         // `PrefixCodedTerms.java:74`.
         debug_assert!({
             let last_term = Term::new(
-                self.last_field.as_str(),
+                self.last_field.clone(),
                 BytesRef::new(self.last_term_bytes.clone()),
             );
-            last_term == Term::empty("") || Term::new(field, bytes.clone()) > last_term
+            last_term == Term::empty("") || Term::new(field.to_string(), bytes.clone()) > last_term
         });
 
         let bytes_slice = bytes.slice();
@@ -2241,6 +2316,71 @@ mod tests {
         assert!(a < b);
         assert!(a < c);
         assert!(b < c);
+    }
+
+    /// `Term(String fld, BytesRef bytes)` keeps the caller's `fld` reference
+    /// (`Term.java:52-55`): a static name, a moved `String` and a shared
+    /// `Arc<str>` are the caller's own bytes; a `&String` is copied (positive
+    /// control: a different buffer with the same text).
+    #[test]
+    fn term_keeps_the_callers_field_name() {
+        static NAME: &str = "_key";
+        let term = Term::new(NAME, BytesRef::new(b"k".to_vec()));
+        assert_eq!(term.field().as_ptr(), NAME.as_ptr());
+
+        let owned = String::from("body");
+        let owned_ptr = owned.as_ptr();
+        assert_eq!(Term::from_text(owned, "x").field().as_ptr(), owned_ptr);
+
+        let shared: Arc<str> = Arc::from("title");
+        let term = Term::empty(Arc::clone(&shared));
+        assert_eq!(term.field().as_ptr(), shared.as_ptr());
+
+        let mut set = Term::empty("");
+        set.set(NAME, BytesRef::default());
+        assert_eq!(set.field().as_ptr(), NAME.as_ptr());
+
+        let borrowed = String::from("body");
+        let copied = Term::from_text(&borrowed, "x");
+        assert_ne!(copied.field().as_ptr(), borrowed.as_ptr());
+        assert_eq!(copied.field(), "body");
+    }
+
+    /// How the name is held changes nothing that `Term` exposes: equality,
+    /// `compareTo`, `hashCode`, `toString`, and the Rust `Hash`, which feeds
+    /// the hasher the same input as the former `Option<String>` field.
+    #[test]
+    fn term_behaviour_does_not_depend_on_how_the_name_is_held() {
+        use std::hash::{BuildHasher, BuildHasherDefault, Hash};
+        type Fixed = BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
+        let rust_hash = |term: &Term| Fixed::default().hash_one(term);
+
+        let bytes = || BytesRef::new(b"cat".to_vec());
+        let forms = [
+            Term::new("body", bytes()),
+            Term::new(String::from("body"), bytes()),
+            Term::new(Arc::<str>::from("body"), bytes()),
+            Term::with_nullable_field(Some(String::from("body")), bytes()),
+        ];
+        let mut former = Fixed::default().build_hasher();
+        Some(String::from("body")).hash(&mut former);
+        b"cat".as_slice().hash(&mut former);
+        let former = std::hash::Hasher::finish(&former);
+        for term in &forms {
+            assert_eq!(term, &forms[0]);
+            assert_eq!(term.cmp(&forms[0]), Ordering::Equal);
+            assert_eq!(term.hash_code(), forms[0].hash_code());
+            assert_eq!(term.to_string(), "body:cat");
+            assert_eq!(rust_hash(term), former);
+        }
+
+        let null = Term::with_nullable_field(None, bytes());
+        let mut former = Fixed::default().build_hasher();
+        None::<String>.hash(&mut former);
+        b"cat".as_slice().hash(&mut former);
+        assert_eq!(rust_hash(&null), std::hash::Hasher::finish(&former));
+        assert_ne!(null, forms[0]);
+        assert_eq!(null.to_string(), "null:cat");
     }
 
     #[test]

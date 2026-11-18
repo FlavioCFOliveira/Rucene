@@ -268,7 +268,7 @@ fn after_class() -> Result<()> {
 
 fn psq_max(field: &str, text: &str) -> Arc<dyn SpanQuery> {
     Arc::new(PayloadScoreQuery::with_span_score(
-        Arc::new(SpanTermQuery::new(Term::from_text(field, text))),
+        Arc::new(SpanTermQuery::new(Term::from_text(field.to_string(), text))),
         Arc::new(MaxPayloadFunction::new()),
         float_decoder(),
     ))

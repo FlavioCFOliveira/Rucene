@@ -143,7 +143,7 @@ fn java_lines(prefix: &str) -> Vec<String> {
 }
 
 fn term(field: &str, text: &str) -> Term {
-    Term::new(field, BytesRef::new(text.as_bytes().to_vec()))
+    Term::new(field.to_string(), BytesRef::new(text.as_bytes().to_vec()))
 }
 
 /// `PostingsSkipFixture.describe`: doc, freq, then pos/start-end/payload.

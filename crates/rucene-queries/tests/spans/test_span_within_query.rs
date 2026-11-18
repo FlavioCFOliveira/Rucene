@@ -221,8 +221,14 @@ fn test_descending_sequence() -> Result<()> {
 
 /// `spanQuery(String field, String term1, String term2)`.
 fn span_query(field: &str, term1: &str, term2: &str) -> Result<Arc<dyn SpanQuery>> {
-    let t1: Arc<dyn SpanQuery> = Arc::new(SpanTermQuery::new(Term::from_text(field, term1)));
-    let t2: Arc<dyn SpanQuery> = Arc::new(SpanTermQuery::new(Term::from_text(field, term2)));
+    let t1: Arc<dyn SpanQuery> = Arc::new(SpanTermQuery::new(Term::from_text(
+        field.to_string(),
+        term1,
+    )));
+    let t2: Arc<dyn SpanQuery> = Arc::new(SpanTermQuery::new(Term::from_text(
+        field.to_string(),
+        term2,
+    )));
     Ok(Arc::new(SpanNearQuery::new(vec![t1, t2], 5, true)?))
 }
 
@@ -231,7 +237,8 @@ fn span_near_query(field: &str, terms: &[&str]) -> Result<Arc<dyn SpanQuery>> {
     let mut clauses: Vec<Arc<dyn SpanQuery>> = Vec::with_capacity(terms.len());
     for i in 0..terms.len() {
         clauses.push(Arc::new(SpanTermQuery::new(Term::from_text(
-            field, terms[i],
+            field.to_string(),
+            terms[i],
         ))));
     }
     Ok(Arc::new(SpanNearQuery::new(clauses, 5, true)?))

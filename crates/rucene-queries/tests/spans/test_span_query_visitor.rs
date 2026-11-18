@@ -37,7 +37,7 @@ use rucene_queries::spans::span_term_query::SpanTermQuery;
 use crate::queries_support::core_support::{assert_equals, class, test};
 
 fn term(field: &str, text: &str) -> Term {
-    Term::from_text(field, text)
+    Term::from_text(field.to_string(), text)
 }
 
 fn tq(field: &str, text: &str) -> Arc<dyn Query> {
