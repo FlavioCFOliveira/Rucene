@@ -90,7 +90,7 @@ fn dv_rewrite_set_up(f: &mut DocValuesRewrite) -> Result<()> {
                 BytesRef::from_char_sequence(&s),
             ));
             doc.add(SortedSetDocValuesField::indexed_field(
-                &format!("{}_with-skip", f.field_name),
+                format!("{}_with-skip", f.field_name),
                 BytesRef::from_char_sequence(&s),
             ));
             terms.push(s);

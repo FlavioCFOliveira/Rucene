@@ -82,7 +82,7 @@ use std::time::Duration;
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::Codec;
 use crate::error::{LuceneError, LuceneErrorKind, Result};
-use crate::index::buffered_updates_stream::{FieldTermIterator, SegmentState};
+use crate::index::buffered_updates_stream::SegmentState;
 use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
 use crate::index::doc_values_update::{DocValuesUpdate, DocValuesUpdateValue};
 use crate::index::field_infos::{FieldInfosBuilder, FieldNumbers};
@@ -1190,9 +1190,10 @@ impl FrozenBufferedUpdates {
     /// BufferedUpdatesStream.SegmentState[])`.
     ///
     /// The terms were frozen into a sorted `PrefixCodedTerms` when the packet
-    /// was built, and are walked through its [`FieldTermIterator`] to visit
-    /// each segment's term dictionary forwards
-    /// (`FrozenBufferedUpdates.java:464-482`).
+    /// was built, and are walked through its iterator to visit each segment's
+    /// term dictionary forwards (`FrozenBufferedUpdates.java:464-482`); each
+    /// term is read in the iterator's reused buffer, as Java's `iter.next()`
+    /// returns it.
     ///
     /// # Errors
     ///
@@ -1230,13 +1231,12 @@ impl FrozenBufferedUpdates {
             }
 
             let mut iter = frozen_terms.iterator();
-            let iter: &mut dyn FieldTermIterator = &mut iter;
             let mut term_docs = TermDocsIterator::new(seg_state.reader.as_ref(), true);
-            while let Some(del_term) = iter.next()? {
-                let field = iter
-                    .field()
-                    .expect("INVARIANT: a term was just read, so the iterator is on a field");
-                if !term_docs.next_term(field, &del_term)? {
+            // PERF: `while ((delTerm = iter.next()) != null)` on the iterator's
+            // reused term (`FrozenBufferedUpdates.java:464-467`), not a copy
+            // per term and segment.
+            while let Some((field, del_term)) = iter.next_field_term()? {
+                if !term_docs.next_term(field, del_term)? {
                     continue;
                 }
                 loop {

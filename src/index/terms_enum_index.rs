@@ -410,7 +410,7 @@ impl TermsEnumIndex {
     /// **Deliberate divergence**: as with [`compare_term_to`](Self::compare_term_to),
     /// an absent term on either side reports "not equal" rather than throwing.
     pub fn term_equals(&self, state: &TermsEnumIndexState) -> bool {
-        match (self.current.get(), &state.term) {
+        match (self.current.get(), state.term()) {
             (Some(this), Some(that)) => self.current.prefix8 == state.term_prefix8 && this == that,
             _ => false,
         }
@@ -437,30 +437,44 @@ impl Debug for TermsEnumIndex {
 /// [`TermState`](crate::index::terms::TermState) is already the crate-root name
 /// of the unrelated codec-position trait that Java calls
 /// `org.apache.lucene.index.TermState`.
+///
+/// A new state captures nothing ([`term`](Self::term) is `None`) until its
+/// first [`copy_from`](Self::copy_from).
 #[derive(Debug, Clone, Default)]
 pub struct TermsEnumIndexState {
-    term: Option<BytesRef>,
+    /// `TermState.term`, the one buffer every `copyFrom` refills
+    /// (`TermsEnumIndex.java:160, 164`); meaningful only when `present`.
+    term: BytesRef,
+    /// Whether a term was captured.
+    present: bool,
     term_prefix8: u64,
 }
 
 impl TermsEnumIndexState {
-    /// Captures `tei`'s current term, if any.
+    /// Captures `tei`'s current term, if any, into this state's buffer.
     ///
-    /// Equivalent to `TermsEnumIndex.TermState.copyFrom(TermsEnumIndex)`.
+    /// Equivalent to `TermsEnumIndex.TermState.copyFrom(TermsEnumIndex)`
+    /// (`TermsEnumIndex.java:163-166`), `term.copyBytes(tei.term())`: one
+    /// state is refilled for every term, and the copy allocates only when a
+    /// term outgrows the buffer.
     ///
     /// **Deliberate divergence**: Java throws `NullPointerException` when the
     /// enum has no current term; this port records "no term", which
     /// [`TermsEnumIndex::term_equals`] then reports as unequal to everything.
-    pub fn copy_from(tei: &TermsEnumIndex) -> Self {
-        Self {
-            term: tei.current.get().cloned(),
-            term_prefix8: tei.current.prefix8,
+    pub fn copy_from(&mut self, tei: &TermsEnumIndex) {
+        match tei.current.get() {
+            Some(term) => {
+                self.term.copy_from(term);
+                self.present = true;
+            }
+            None => self.present = false,
         }
+        self.term_prefix8 = tei.current.prefix8;
     }
 
     /// Returns the captured term, or `None` if the source had no current term.
     pub fn term(&self) -> Option<&BytesRef> {
-        self.term.as_ref()
+        self.present.then_some(&self.term)
     }
 }
 
@@ -928,7 +942,8 @@ mod tests {
     fn term_equals_matches_the_captured_term() {
         let mut tei = index_over(vec![b"aa", b"ab"], 0);
         assert!(tei.next().unwrap().is_some());
-        let state = TermsEnumIndexState::copy_from(&tei);
+        let mut state = TermsEnumIndexState::default();
+        state.copy_from(&tei);
         assert_eq!(state.term().unwrap().slice(), b"aa");
         assert!(tei.term_equals(&state));
 
@@ -942,7 +957,8 @@ mod tests {
         // compare the bytes.
         let short = positioned_on(vec![b"\x01"], 0, b"\x01");
         let long = positioned_on(vec![b"\x01\x00"], 1, b"\x01\x00");
-        let state = TermsEnumIndexState::copy_from(&short);
+        let mut state = TermsEnumIndexState::default();
+        state.copy_from(&short);
         assert_eq!(short.term_prefix8(), long.term_prefix8());
         assert!(short.term_equals(&state));
         assert!(!long.term_equals(&state));
@@ -951,7 +967,8 @@ mod tests {
     #[test]
     fn term_equals_is_false_when_either_side_has_no_term() {
         let mut tei = index_over(vec![b"aa"], 0);
-        let empty_state = TermsEnumIndexState::copy_from(&tei);
+        let mut empty_state = TermsEnumIndexState::default();
+        empty_state.copy_from(&tei);
         assert!(empty_state.term().is_none());
 
         // Unpositioned wrapper against an empty capture.
@@ -962,7 +979,8 @@ mod tests {
         assert!(!tei.term_equals(&empty_state));
 
         // Exhausted wrapper against a real capture.
-        let real_state = TermsEnumIndexState::copy_from(&tei);
+        let mut real_state = TermsEnumIndexState::default();
+        real_state.copy_from(&tei);
         assert!(tei.next().unwrap().is_none());
         assert!(!tei.term_equals(&real_state));
     }
@@ -972,9 +990,35 @@ mod tests {
         // The empty term is a legitimate Lucene term and folds to prefix 0,
         // the same value an absent term reports. Equality must still hold.
         let tei = positioned_on(vec![b""], 0, b"");
-        let state = TermsEnumIndexState::copy_from(&tei);
+        let mut state = TermsEnumIndexState::default();
+        state.copy_from(&tei);
         assert_eq!(tei.term_prefix8(), 0);
         assert!(tei.term_equals(&state));
+    }
+
+    /// One state serves a whole `OrdinalMap.build`, as Java's `topState`
+    /// (`OrdinalMap.java:277, 282`): every `copyFrom` refills its one buffer
+    /// (`TermsEnumIndex.java:163-166`), so a term no longer than an earlier
+    /// one is captured without growing it, and the last capture is the one
+    /// compared.
+    #[test]
+    fn copy_from_refills_one_buffer() {
+        let mut tei = index_over(vec![&b"a-long-first-term"[..], b"b", b"c-mid"], 0);
+        let mut state = TermsEnumIndexState::default();
+        assert!(state.term().is_none(), "a new state captured nothing");
+        assert!(tei.next().unwrap().is_some());
+        state.copy_from(&tei);
+        let buffer = state.term().unwrap().bytes.as_ptr();
+        for expected in [&b"b"[..], b"c-mid"] {
+            assert!(tei.next().unwrap().is_some());
+            state.copy_from(&tei);
+            assert_eq!(state.term().unwrap().slice(), expected);
+            assert_eq!(state.term().unwrap().bytes.as_ptr(), buffer, "no regrowth");
+            assert!(tei.term_equals(&state));
+        }
+        assert!(tei.next().unwrap().is_none());
+        state.copy_from(&tei);
+        assert!(state.term().is_none());
     }
 
     #[test]

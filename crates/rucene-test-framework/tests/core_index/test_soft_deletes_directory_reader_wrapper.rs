@@ -65,7 +65,7 @@ fn soft_wrap(r#in: Arc<dyn DirectoryReader>, field: &str) -> Result<Arc<dyn Dire
 /// take.
 fn ndv_field(name: &str, value: i64) -> Result<Field> {
     Field::new_with_number(
-        name,
+        name.to_string(),
         NumericValue::Long(value),
         NumericDocValuesField::type_().clone(),
     )

@@ -1289,8 +1289,8 @@ mod tests {
     }
 
     impl DataInput for ReadsOnly<'_> {
-        fn to_java_string(&self) -> String {
-            "ReadsOnly".to_string()
+        fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed("ReadsOnly")
         }
 
         fn read_byte(&mut self) -> Result<u8> {

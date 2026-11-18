@@ -116,7 +116,7 @@ fn offsets_type(base: &FieldType) -> Result<FieldType> {
 fn canned_field(name: &str, tokens: Vec<Token>, ft: &FieldType) -> Result<Field> {
     let stream: Arc<AtomicRefCell<dyn TokenStream>> =
         Arc::new(AtomicRefCell::new(CannedTokenStream::new(tokens)));
-    Field::new_with_token_stream(name, stream, FieldType::new_from(ft))
+    Field::new_with_token_stream(name.to_string(), stream, FieldType::new_from(ft))
 }
 
 /// `MultiTerms.getTermPostingsEnum(r, field, new BytesRef(term))`.

@@ -116,7 +116,7 @@ fn segments_n_lists_doc_values_update_files_in_lucenes_order() {
             let mut doc = Document::new();
             doc.add(StringField::new("id", format!("d{i}"), Store::NO).unwrap());
             for f in 0..20i64 {
-                doc.add(NumericDocValuesField::new(&format!("f{f}"), i * 100 + f));
+                doc.add(NumericDocValuesField::new(format!("f{f}"), i * 100 + f));
             }
             writer.add_document(&doc).unwrap();
         }

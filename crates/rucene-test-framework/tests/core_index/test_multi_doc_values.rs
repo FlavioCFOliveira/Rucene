@@ -230,9 +230,9 @@ fn test_sorted() -> Result<()> {
         if single.doc_id() == NO_MORE_DOCS {
             break;
         }
-        let expected = BytesRef::deep_copy_of(&single.lookup_ord(single.ord_value()?)?);
+        let expected = BytesRef::deep_copy_of(single.lookup_ord(single.ord_value()?)?);
         let actual = multi.lookup_ord(multi.ord_value()?)?;
-        assert_equals(&expected, &actual);
+        assert_equals(&expected, actual);
         assert_equals(&single.ord_value()?, &multi.ord_value()?);
     }
     sorted_advances(&ix)?;
@@ -262,9 +262,9 @@ fn test_sorted_with_lots_of_dups() -> Result<()> {
         assert_equals(&i, &multi.next_doc()?);
         assert_equals(&i, &single.next_doc()?);
         assert_equals(&single.ord_value()?, &multi.ord_value()?);
-        let expected = BytesRef::deep_copy_of(&single.lookup_ord(single.ord_value()?)?);
+        let expected = BytesRef::deep_copy_of(single.lookup_ord(single.ord_value()?)?);
         let actual = multi.lookup_ord(multi.ord_value()?)?;
-        assert_equals(&expected, &actual);
+        assert_equals(&expected, actual);
     }
     sorted_advances(&ix)?;
     ix.close()
@@ -293,9 +293,9 @@ fn sorted_set_case(value: impl Fn() -> String) -> Result<()> {
             let mut single = single.unwrap_or_else(|| npe("single"));
             assert_equals(&single.get_value_count()?, &multi.get_value_count()?);
             for i in 0..single.get_value_count()? {
-                let expected = BytesRef::deep_copy_of(&single.lookup_ord(i)?);
+                let expected = BytesRef::deep_copy_of(single.lookup_ord(i)?);
                 let actual = multi.lookup_ord(i)?;
-                assert_equals(&expected, &actual);
+                assert_equals(&expected, actual);
             }
             loop {
                 let doc_id = single.next_doc()?;

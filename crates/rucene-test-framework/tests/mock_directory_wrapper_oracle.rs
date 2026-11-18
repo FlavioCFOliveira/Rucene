@@ -459,11 +459,11 @@ fn tracking(r: &mut Recorder) {
     let mut c1 = r.rec_obj("clone", || x2.clone_input()).unwrap();
     let mut s1 = r.rec_obj("slice", || x2.slice("sl", 2, 5)).unwrap();
     r.rec("slice readByte", || Ok((s1.read_byte()? as i8).to_string()));
-    r.rec("slice toString", || Ok(s1.to_java_string()));
+    r.rec("slice toString", || Ok(s1.to_java_string().into_owned()));
     r.rec("getInputCloneCount", || {
         Ok(d.get_input_clone_count().to_string())
     });
-    r.rec("toString", || Ok(x2.to_java_string()));
+    r.rec("toString", || Ok(x2.to_java_string().into_owned()));
     r.rec_void("deleteFile x (open, allowed)", || d.delete_file("x"));
     r.rec("getOpenDeletedFiles", || Ok(open_deleted(&d)));
     r.rec("readByte", || Ok((x2.read_byte()? as i8).to_string()));
@@ -942,7 +942,7 @@ fn serial_io(r: &mut Recorder) {
     o.close().unwrap();
     let mut input = dir.open_input("s", default()).unwrap();
     let count = |dir: &SerialIOCountingDirectory| Ok(dir.count().to_string());
-    r.rec("toString", || Ok(input.to_java_string()));
+    r.rec("toString", || Ok(input.to_java_string().into_owned()));
     r.rec("readByte@0", || {
         input.read_byte()?;
         count(&dir)

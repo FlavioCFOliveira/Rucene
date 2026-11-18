@@ -1627,7 +1627,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             for _ in 0..num_fields {
                 let value = TestUtil::random_simple_string_max(&*LuceneTestCase::random(), 2);
                 doc.add(
-                    Field::new(&format!("f_{opts:?}"), value, ft.clone())
+                    Field::new(format!("f_{opts:?}"), value, ft.clone())
                         .unwrap_or_else(|e| rethrow(e)),
                 );
             }

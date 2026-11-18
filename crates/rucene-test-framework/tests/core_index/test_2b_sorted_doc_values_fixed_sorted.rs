@@ -88,7 +88,7 @@ fn test_fixed_sorted() -> Result<()> {
             bytes[0] = (expected_value >> 8) as u8;
             bytes[1] = (expected_value) as u8;
             let term = dv.lookup_ord(dv.ord_value()?)?;
-            assert_equals(&BytesRef::new(bytes.to_vec()), &term);
+            assert_equals(&BytesRef::new(bytes.to_vec()), term);
             expected_value += 1;
         }
     }

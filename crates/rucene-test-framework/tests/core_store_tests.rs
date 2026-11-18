@@ -621,8 +621,8 @@ struct MyBufferedIndexInput {
 }
 
 impl DataInput for MyBufferedIndexInput {
-    fn to_java_string(&self) -> String {
-        self.description.clone()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.description)
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -1899,7 +1899,7 @@ impl InterceptingChecksumIndexInput {
 }
 
 impl DataInput for InterceptingChecksumIndexInput {
-    fn to_java_string(&self) -> String {
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
         self.main.to_java_string()
     }
 
@@ -2330,7 +2330,7 @@ impl NoReadInputStreamDataInput {
 }
 
 impl DataInput for NoReadInputStreamDataInput {
-    fn to_java_string(&self) -> String {
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
         self.inner.to_java_string()
     }
 

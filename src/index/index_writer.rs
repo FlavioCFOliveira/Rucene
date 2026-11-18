@@ -21,7 +21,7 @@ use crate::index::directory_reader::{
 use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
 use crate::index::doc_values_update::{DocValuesUpdate, DocValuesUpdateValue};
 use crate::internal::hppc::LongObjectHashMap;
-use crate::util::java_collections::{JavaHashMap, JavaStringMap};
+use crate::util::java_collections::{JavaHashMap, JavaHashSet, JavaStringMap};
 
 use crate::index::documents_writer::{DeleteNode, DocumentsWriter, FlushNotifications, MAX_DOCS};
 use crate::index::field_infos::FieldNumbers;
@@ -129,7 +129,7 @@ struct WriterState {
     /// without that reference a merge committing in between would delete the
     /// files of the segments it merged away while the pending commit still
     /// names them.
-    files_to_commit: Option<HashSet<String>>,
+    files_to_commit: Option<JavaHashSet>,
     /// Deletes files no commit references any more.
     deleter: IndexFileDeleter,
     /// Merges the policy asked for but the scheduler has not started.
@@ -1265,9 +1265,9 @@ impl IndexWriter {
         // files must exist even in the NRT case (`IndexWriter.java:1183-1185`).
         debug_assert!(
             create || {
-                for file_name in segment_infos.files(false)? {
+                for file_name in segment_infos.files_ordered(false)?.iter() {
                     assert!(
-                        deleter.exists(&file_name),
+                        deleter.exists(file_name),
                         "IndexFileDeleter doesn't know about file {file_name}"
                     );
                 }
@@ -3036,7 +3036,7 @@ impl IndexWriter {
                     // This is important in case, eg, while we are trying to sync all
                     // referenced files, a merge completes which would otherwise have
                     // removed the files we are now syncing.
-                    let files = to_commit.files(false)?;
+                    let files = to_commit.files_ordered(false)?;
                     state.deleter.inc_ref_files(files.iter());
                     state.files_to_commit = Some(files);
                     // `IndexWriter.java:3848-3855`: we can safely prepare the
@@ -3132,7 +3132,7 @@ impl IndexWriter {
             .clone();
         {
             let mut state = self.state()?;
-            state.files_to_commit = Some(to_commit.files(false)?);
+            state.files_to_commit = Some(to_commit.files_ordered(false)?);
         }
         if any_changes {
             // `maybeMerge.set(true)` (`IndexWriter.java:3891-3893`).
@@ -3259,7 +3259,7 @@ impl IndexWriter {
             // success = true; } finally { if (!success) { pendingCommitSet =
             // false; pendingCommit = null; toSync.rollbackCommit(directory); } }`
             // (`IndexWriter.java:5770-5782`): listing the files is guarded too.
-            let synced_files = synced.files(false).and_then(|files| {
+            let synced_files = synced.files_ordered(false).and_then(|files| {
                 let files_to_sync: Vec<String> = files.into_iter().collect();
                 self.directory.sync(&files_to_sync)?;
                 Ok(files_to_sync)
@@ -7454,9 +7454,9 @@ impl IndexWriter {
     /// only from an assertion: a missing file means a `checkpoint` call was
     /// skipped somewhere.
     fn files_exist(&self, state: &WriterState, to_sync: &SegmentInfos) -> Result<bool> {
-        for file_name in to_sync.files(false)? {
+        for file_name in to_sync.files_ordered(false)?.iter() {
             assert!(
-                state.deleter.exists(&file_name),
+                state.deleter.exists(file_name),
                 "IndexFileDeleter doesn't know about file {file_name}"
             );
         }
@@ -11283,6 +11283,117 @@ mod tests {
         }
     }
 
+    /// A directory that records the names of every `sync` call, in order.
+    struct SyncRecordingDirectory {
+        inner: Arc<dyn Directory>,
+        synced: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl Directory for SyncRecordingDirectory {
+        fn list_all(&self) -> Result<Vec<String>> {
+            self.inner.list_all()
+        }
+
+        fn delete_file(&self, name: &str) -> Result<()> {
+            self.inner.delete_file(name)
+        }
+
+        fn file_length(&self, name: &str) -> Result<i64> {
+            self.inner.file_length(name)
+        }
+
+        fn create_output(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexOutput>> {
+            self.inner.create_output(name, context)
+        }
+
+        fn create_temp_output(
+            &self,
+            prefix: &str,
+            suffix: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexOutput>> {
+            self.inner.create_temp_output(prefix, suffix, context)
+        }
+
+        fn sync(&self, names: &[String]) -> Result<()> {
+            self.synced.lock().unwrap().push(names.to_vec());
+            self.inner.sync(names)
+        }
+
+        fn sync_metadata(&self) -> Result<()> {
+            self.inner.sync_metadata()
+        }
+
+        fn rename(&self, source: &str, dest: &str) -> Result<()> {
+            self.inner.rename(source, dest)
+        }
+
+        fn open_input(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexInput>> {
+            self.inner.open_input(name, context)
+        }
+
+        fn obtain_lock(&self, name: &str) -> Result<Box<dyn crate::store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+            self.inner.get_pending_deletions()
+        }
+    }
+
+    /// A commit syncs its files in the iteration order of the `HashSet`
+    /// `SegmentInfos.files(false)` builds, the collection Java hands to
+    /// `directory.sync` (`IndexWriter.java:5773-5774`), and not in an order
+    /// of the port's own.
+    #[test]
+    fn a_commit_syncs_its_files_in_the_java_hash_set_order() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let inner: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let recording = Arc::new(SyncRecordingDirectory {
+            inner: Arc::clone(&inner),
+            synced: Mutex::new(Vec::new()),
+        });
+        let writer = IndexWriter::new(
+            Arc::clone(&recording) as Arc<dyn Directory>,
+            IndexWriterConfig::new(),
+        )
+        .unwrap();
+        for segment in 0..3 {
+            for i in 0..5 {
+                let mut doc = Document::new();
+                doc.add(StringField::new("id", format!("{segment}-{i}"), Store::YES).unwrap());
+                doc.add(NumericDocValuesField::new("price", i64::from(i)));
+                writer.add_document(&doc).unwrap();
+            }
+            writer.flush().unwrap();
+        }
+        writer.commit().unwrap();
+
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&inner)).unwrap();
+        assert_eq!(infos.size(), 3);
+        let expected: Vec<String> = infos.files_ordered(false).unwrap().into_iter().collect();
+        assert!(expected.len() > 5, "{expected:?}");
+        let synced = recording.synced.lock().unwrap().clone();
+        let commit_sync = synced
+            .iter()
+            .rev()
+            .find(|names| names.len() > 1)
+            .expect("the commit synced its files");
+        assert_eq!(commit_sync, &expected);
+    }
+
     fn recording_writer() -> (Arc<RecordingInfoStream>, Arc<IndexWriter>) {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
@@ -13487,7 +13598,7 @@ mod tests {
     /// A document with a stored `id` and a stored string field.
     fn stored_doc(id: &str, field: &str, value: &str) -> Document {
         let mut doc = Document::new();
-        doc.add(StringField::new(field, value.to_string(), Store::YES).unwrap());
+        doc.add(StringField::new(field.to_string(), value.to_string(), Store::YES).unwrap());
         doc.add(StringField::new("id", id.to_string(), Store::YES).unwrap());
         doc
     }

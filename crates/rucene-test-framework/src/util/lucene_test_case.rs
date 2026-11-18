@@ -4256,9 +4256,11 @@ impl LuceneTestCase {
         field_type: rucene::document::FieldType,
     ) -> rucene::document::Field {
         let field = match value {
-            NewFieldValue::String(value) => rucene::document::Field::new(name, value, field_type),
+            NewFieldValue::String(value) => {
+                rucene::document::Field::new(name.to_string(), value, field_type)
+            }
             NewFieldValue::BytesRef(value) => {
-                rucene::document::Field::new_with_bytes(name, value, field_type)
+                rucene::document::Field::new_with_bytes(name.to_string(), value, field_type)
             }
         };
         io(field)
@@ -5368,9 +5370,9 @@ impl LuceneTestCase {
                         assert_long_equals(i, value_count.into(), io(r.get_value_count()).into());
                         // ords
                         for ord in 0..value_count {
-                            let left = BytesRef::deep_copy_of(&io(l.lookup_ord(ord)));
+                            let left = BytesRef::deep_copy_of(io(l.lookup_ord(ord)));
                             let right = io(r.lookup_ord(ord));
-                            Assert::assert_equals_msg(i, left, right);
+                            Assert::assert_equals_msg(i, &left, right);
                         }
                         // bytes
                         loop {
@@ -5379,9 +5381,9 @@ impl LuceneTestCase {
                             if doc_id == NO_MORE_DOCS {
                                 break;
                             }
-                            let left = BytesRef::deep_copy_of(&io(l.lookup_ord(io(l.ord_value()))));
+                            let left = BytesRef::deep_copy_of(io(l.lookup_ord(io(l.ord_value()))));
                             let right = io(r.lookup_ord(io(r.ord_value())));
-                            Assert::assert_equals_msg(i, left, right);
+                            Assert::assert_equals_msg(i, &left, right);
                         }
                     }
                     (l, r) => {
@@ -5401,9 +5403,9 @@ impl LuceneTestCase {
                         assert_long_equals(i, value_count, io(r.get_value_count()));
                         // ords
                         for ord in 0..value_count {
-                            let left = BytesRef::deep_copy_of(&io(l.lookup_ord(ord)));
+                            let left = BytesRef::deep_copy_of(io(l.lookup_ord(ord)));
                             let right = io(r.lookup_ord(ord));
-                            Assert::assert_equals_msg(i, left, right);
+                            Assert::assert_equals_msg(i, &left, right);
                         }
                         // ord lists
                         loop {

@@ -81,25 +81,27 @@ fn mock_iwc() -> IndexWriterConfig {
 fn ndv_update(name: &str, value: Option<i64>) -> Result<Field> {
     match value {
         Some(v) => Field::new_with_number(
-            name,
+            name.to_string(),
             NumericValue::Long(v),
             NumericDocValuesField::type_().clone(),
         ),
-        None => Field::new_with_type(name, NumericDocValuesField::type_().clone()),
+        None => Field::new_with_type(name.to_string(), NumericDocValuesField::type_().clone()),
     }
 }
 
 /// `new BinaryDocValuesField(name, value)` as the `Field` an update takes.
 fn bdv_update(name: &str, value: Option<BytesRef>) -> Result<Field> {
     match value {
-        Some(v) => Field::new_with_bytes(name, v, BinaryDocValuesField::type_().clone()),
-        None => Field::new_with_type(name, BinaryDocValuesField::type_().clone()),
+        Some(v) => {
+            Field::new_with_bytes(name.to_string(), v, BinaryDocValuesField::type_().clone())
+        }
+        None => Field::new_with_type(name.to_string(), BinaryDocValuesField::type_().clone()),
     }
 }
 
 /// `new StringField(name, value, store)`.
 fn string_field(name: &str, value: String, store: Store) -> Result<Box<StringField>> {
-    Ok(Box::new(StringField::new(name, value, store)?))
+    Ok(Box::new(StringField::new(name.to_string(), value, store)?))
 }
 
 /// Port of `TestMixedDocValuesUpdates.testManyReopensAndFields`.
@@ -137,13 +139,10 @@ fn test_many_reopens_and_fields() -> Result<()> {
                                                                      // add all fields with their current value
             for f in 0..field_values.len() {
                 if (f as i32) < num_ndv_fields {
-                    doc.add(NumericDocValuesField::new(
-                        &format!("f{f}"),
-                        field_values[f],
-                    ));
+                    doc.add(NumericDocValuesField::new(format!("f{f}"), field_values[f]));
                 } else {
                     doc.add(BinaryDocValuesField::new(
-                        &format!("f{f}"),
+                        format!("f{f}"),
                         to_bytes(field_values[f]),
                     ));
                 }
@@ -271,9 +270,9 @@ fn test_stress_multi_threading() -> Result<()> {
         doc.add(*string_field("updKey", g.into(), Store::NO)?);
         for j in 0..num_fields {
             let value = i64::from(random().next_int());
-            doc.add(BinaryDocValuesField::new(&format!("f{j}"), to_bytes(value)));
+            doc.add(BinaryDocValuesField::new(format!("f{j}"), to_bytes(value)));
             doc.add(NumericDocValuesField::new(
-                &format!("cf{j}"),
+                format!("cf{j}"),
                 value.wrapping_mul(2),
             )); // control, always updated to f * 2
         }
@@ -507,9 +506,9 @@ fn test_tons_of_updates() -> Result<()> {
         }
         for j in 0..num_binary_fields {
             let val = i64::from(random.next_int());
-            doc.add(BinaryDocValuesField::new(&format!("f{j}"), to_bytes(val)));
+            doc.add(BinaryDocValuesField::new(format!("f{j}"), to_bytes(val)));
             doc.add(NumericDocValuesField::new(
-                &format!("cf{j}"),
+                format!("cf{j}"),
                 val.wrapping_mul(2),
             ));
         }

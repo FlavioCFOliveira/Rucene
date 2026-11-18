@@ -343,7 +343,7 @@ mod tests {
     struct TestOnlyInput(FilterIndexInput);
 
     impl DataInput for TestOnlyInput {
-        fn to_java_string(&self) -> String {
+        fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
             self.0.to_java_string()
         }
 

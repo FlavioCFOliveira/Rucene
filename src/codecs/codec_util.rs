@@ -1168,8 +1168,8 @@ mod tests {
         #[derive(Debug)]
         struct ClosedInput;
         impl crate::store::DataInput for ClosedInput {
-            fn to_java_string(&self) -> String {
-                "closed".to_string()
+            fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+                std::borrow::Cow::Borrowed("closed")
             }
             fn skip_bytes(&mut self, _num_bytes: i64) -> Result<()> {
                 panic!("Abusing closed IndexInput!")

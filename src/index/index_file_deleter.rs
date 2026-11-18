@@ -85,6 +85,7 @@ use crate::index::index_writer::IndexWriter;
 use crate::index::segment_infos::SegmentInfos;
 use crate::store::Directory;
 use crate::util::file_deleter::{FileDeleter, Messenger, MsgType};
+use crate::util::java_collections::JavaHashSet;
 use crate::util::InfoStream;
 
 /// The info-stream component name Lucene logs index-file deletion under.
@@ -119,7 +120,11 @@ const MAX_RADIX: u32 = 36;
 /// Note, as Lucene notes, that the natural ordering of commit points (by
 /// generation) is inconsistent with equality.
 pub struct CommitPoint {
-    files: HashSet<String>,
+    /// `Collections.unmodifiableCollection(segmentInfos.files(true))`
+    /// (`IndexFileDeleter.java:670`): the `java.util.HashSet`
+    /// `SegmentInfos.files` builds, iteration order included, which is the
+    /// order `deleteCommits` decrements it in.
+    files: JavaHashSet,
     segments_file_name: String,
     deleted: AtomicBool,
     directory_orig: Arc<dyn Directory>,
@@ -166,7 +171,7 @@ impl CommitPoint {
             .segments_file_name()
             .expect("INVARIANT: a commit point's SegmentInfos names its segments file");
         let generation = segment_infos.generation();
-        let files = segment_infos.files(true)?;
+        let files = segment_infos.files_ordered(true)?;
         let segment_count = segment_infos.size() as i32;
 
         Ok(Arc::new_cyclic(|self_ref| CommitPoint {
@@ -184,7 +189,7 @@ impl CommitPoint {
 
     /// Returns the files this commit point references, including its
     /// `segments_N`.
-    fn files(&self) -> &HashSet<String> {
+    fn files(&self) -> &JavaHashSet {
         &self.files
     }
 }
@@ -208,7 +213,7 @@ impl IndexCommit for CommitPoint {
     }
 
     fn get_file_names(&self) -> Result<HashSet<String>> {
-        Ok(self.files.clone())
+        Ok(self.files.to_std())
     }
 
     fn get_directory(&self) -> Arc<dyn Directory> {
@@ -428,8 +433,8 @@ impl IndexFileDeleter {
                         current_commit_point = Some(Arc::clone(&commit_point));
                     }
                     commits.push(commit_point);
-                    for file in sis.files(true)? {
-                        file_deleter.inc_ref(&file);
+                    for file in sis.files_ordered(true)?.iter() {
+                        file_deleter.inc_ref(file);
                     }
 
                     if last_segment_infos
@@ -476,8 +481,8 @@ impl IndexFileDeleter {
             )?;
             current_commit_point = Some(Arc::clone(&commit_point));
             commits.push(commit_point);
-            for file in sis.files(true)? {
-                file_deleter.inc_ref(&file);
+            for file in sis.files_ordered(true)?.iter() {
+                file_deleter.inc_ref(file);
             }
         }
 
@@ -757,7 +762,7 @@ impl IndexFileDeleter {
             self.file_deleter.dec_ref_files(previous)?;
 
             // Save files so we can decr on next checkpoint/commit.
-            self.last_files.extend(segment_infos.files(false)?);
+            self.last_files.extend(segment_infos.files_ordered(false)?);
         }
 
         if self.info_stream.is_enabled(IFD) {
@@ -784,8 +789,8 @@ impl IndexFileDeleter {
         is_commit: bool,
     ) -> Result<()> {
         debug_assert!(self.locked());
-        for file_name in segment_infos.files(is_commit)? {
-            self.file_deleter.inc_ref(&file_name);
+        for file_name in segment_infos.files_ordered(is_commit)?.iter() {
+            self.file_deleter.inc_ref(file_name);
         }
         Ok(())
     }
@@ -827,8 +832,8 @@ impl IndexFileDeleter {
     /// Equivalent to `IndexFileDeleter.decRef(SegmentInfos)`.
     pub fn dec_ref_segment_infos(&mut self, segment_infos: &SegmentInfos) -> Result<()> {
         debug_assert!(self.locked());
-        let files = segment_infos.files(false)?;
-        self.file_deleter.dec_ref_files(files)
+        let files = segment_infos.files_ordered(false)?;
+        self.file_deleter.dec_ref_files(files.iter())
     }
 
     /// Fails once the owning writer has been closed or has hit a tragic error.

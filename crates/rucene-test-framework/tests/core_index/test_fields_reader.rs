@@ -298,8 +298,8 @@ impl FaultyIndexInput {
 }
 
 impl DataInput for FaultyIndexInput {
-    fn to_java_string(&self) -> String {
-        self.description.clone()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.description)
     }
 
     fn read_byte(&mut self) -> Result<u8> {

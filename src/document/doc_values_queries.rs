@@ -774,14 +774,14 @@ impl Debug for OrdinalSkipperRange {
 impl SkipperRangeSource for OrdinalSkipperRange {
     fn lower_value(&mut self) -> Result<i64> {
         if self.min_ord == -1 {
-            self.min_ord = self.range.min_ord(self.values.as_ref())?;
+            self.min_ord = self.range.min_ord(self.values.as_mut())?;
         }
         Ok(self.min_ord)
     }
 
     fn upper_value(&mut self) -> Result<i64> {
         if self.max_ord == -1 {
-            self.max_ord = self.range.max_ord(self.values.as_ref())?;
+            self.max_ord = self.range.max_ord(self.values.as_mut())?;
         }
         Ok(self.max_ord)
     }
@@ -1094,7 +1094,7 @@ impl SortedSetRangeSource {
     ///
     /// Equivalent to the private
     /// `SortedSetDocValuesRangeQuery.minOrd(SortedSetDocValues)`.
-    fn min_ord(&self, values: &dyn SortedSetDocValues) -> Result<i64> {
+    fn min_ord(&self, values: &mut dyn SortedSetDocValues) -> Result<i64> {
         let Some(lower) = self.lower_value.as_ref() else {
             return Ok(0);
         };
@@ -1112,7 +1112,7 @@ impl SortedSetRangeSource {
     ///
     /// Equivalent to the private
     /// `SortedSetDocValuesRangeQuery.maxOrd(SortedSetDocValues)`.
-    fn max_ord(&self, values: &dyn SortedSetDocValues) -> Result<i64> {
+    fn max_ord(&self, values: &mut dyn SortedSetDocValues) -> Result<i64> {
         let Some(upper) = self.upper_value.as_ref() else {
             return Ok(values.get_value_count()? - 1);
         };
@@ -1134,9 +1134,9 @@ impl DocValuesScorerSource for SortedSetRangeSource {
 
     fn iterator(&self, reader: &dyn LeafReader) -> Result<Option<ScorerIterator>> {
         let skipper = reader.get_doc_values_skipper(&self.field)?;
-        let values = DocValues::get_sorted_set(reader, &self.field)?;
-        let min_ord = self.min_ord(values.as_ref())?;
-        let max_ord = self.max_ord(values.as_ref())?;
+        let mut values = DocValues::get_sorted_set(reader, &self.field)?;
+        let min_ord = self.min_ord(values.as_mut())?;
+        let max_ord = self.max_ord(values.as_mut())?;
 
         // No term matched in this segment.
         if min_ord > max_ord {
@@ -1224,9 +1224,9 @@ impl DocValuesScorerSource for SortedSetRangeSource {
         if reader.get_field_infos().field_info(&self.field).is_none() {
             return Ok(0);
         }
-        let values = DocValues::get_sorted_set(reader, &self.field)?;
-        let min_ord = self.min_ord(values.as_ref())?;
-        let max_ord = self.max_ord(values.as_ref())?;
+        let mut values = DocValues::get_sorted_set(reader, &self.field)?;
+        let min_ord = self.min_ord(values.as_mut())?;
+        let max_ord = self.max_ord(values.as_mut())?;
         if min_ord > max_ord {
             return Ok(0);
         }

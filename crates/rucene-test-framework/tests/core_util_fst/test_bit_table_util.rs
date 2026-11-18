@@ -134,8 +134,8 @@ impl DataInput for ByteArrayBytesReader<'_> {
         Ok(b)
     }
 
-    fn to_java_string(&self) -> String {
-        "ByteArrayBytesReader".to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed("ByteArrayBytesReader")
     }
 
     fn read_bytes(&mut self, _b: Option<&mut [u8]>, _offset: usize, _len: usize) -> Result<()> {

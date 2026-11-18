@@ -2301,13 +2301,13 @@ fn test_null_stored_bytes_field() -> Result<()> {
 /// `new StoredField(name, bytes)` as the `Field` a test keeps: a field of
 /// `StoredField.TYPE` over the bytes (`Field(name, value, TYPE)`).
 fn stored_bytes_field(name: &str, bytes: BytesRef) -> Result<Field> {
-    Field::new_with_bytes(name, bytes, StoredField::type_().clone())
+    Field::new_with_bytes(name.to_string(), bytes, StoredField::type_().clone())
 }
 
 /// A copy of a binary field, for the document added again.
 fn copy_bytes_field(field: &Field) -> Result<Field> {
     Field::new_with_bytes(
-        field.name(),
+        field.name().to_string(),
         field.binary_value().unwrap_or_else(|| npe("binaryValue")),
         FieldType::new_from(field.field_type()),
     )

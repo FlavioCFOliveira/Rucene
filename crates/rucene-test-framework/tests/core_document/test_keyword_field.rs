@@ -128,7 +128,7 @@ fn index_one(field: KeywordField, check_stored: impl FnOnce(&Document)) -> Resul
     assert_equals(&0i64, &values.next_ord()?);
     assert_equals(
         &BytesRef::from_char_sequence("value"),
-        &values.lookup_ord(0)?,
+        values.lookup_ord(0)?,
     );
 
     let stored_doc = leaf.stored_fields()?.document(0)?;

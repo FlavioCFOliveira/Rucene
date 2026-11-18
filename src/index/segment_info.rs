@@ -406,12 +406,25 @@ impl SegmentInfo {
     /// Returns `LuceneErrorKind::IllegalState` if the file set has not been
     /// computed.
     pub fn files_ordered(&self) -> Result<JavaHashSet> {
+        self.with_files(JavaHashSet::clone)
+    }
+
+    /// Runs `read` over the files referenced by this segment, in place.
+    ///
+    /// Equivalent to reading `SegmentInfo.files()`, an unmodifiable view of
+    /// the `HashSet` itself (`SegmentInfo.java:205-212`): nothing is copied.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LuceneErrorKind::IllegalState` if the file set has not been
+    /// computed.
+    pub(crate) fn with_files<R>(&self, read: impl FnOnce(&JavaHashSet) -> R) -> Result<R> {
         let files = self
             .files
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match files.as_ref() {
-            Some(f) => Ok(f.clone()),
+            Some(f) => Ok(read(f)),
             None => Err(LuceneError::illegal_state(format!(
                 "files were not computed yet; segment={} maxDoc={}",
                 self.name, self.max_doc
@@ -1123,7 +1136,9 @@ impl SegmentCommitInfo {
     /// field-infos files, in that order.
     ///
     pub fn files_ordered(&self) -> Result<JavaHashSet> {
-        let mut files = JavaHashSet::from_collection(self.info.files_ordered()?);
+        // PERF: `new HashSet<>(info.files())` copies the segment's set once,
+        // read in place, not a clone of it.
+        let mut files = self.info.with_files(JavaHashSet::from_set)?;
 
         if self.has_deletions() {
             if let Some(codec) = self.info.codec() {

@@ -4696,7 +4696,7 @@ fn wait_for_docs_in_buffers(w: &IndexWriter, buffers_with_docs: usize) {
 /// methods take.
 fn soft_field(name: &str, value: i64) -> Result<Field> {
     Field::new_with_number(
-        name,
+        name.to_string(),
         NumericValue::Long(value),
         NumericDocValuesField::type_().clone(),
     )
@@ -5236,7 +5236,7 @@ fn copy_document(doc: &Document) -> Result<Document> {
     let mut copy = Document::new();
     for field in doc.get_fields() {
         copy.add(StringField::new(
-            field.name(),
+            field.name().to_string(),
             field.string_value().unwrap_or_default(),
             if field.field_type().stored() {
                 Store::YES

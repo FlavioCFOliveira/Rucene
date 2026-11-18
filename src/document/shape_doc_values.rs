@@ -212,11 +212,11 @@ impl<'a> SliceDataInput<'a> {
 
 impl DataInput for SliceDataInput<'_> {
     /// `Object.toString()` of `org.apache.lucene.document.ShapeDocValues$Reader`, which declares no `toString()`.
-    fn to_java_string(&self) -> String {
-        crate::index::index_reader::java_object_to_string(
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(crate::index::index_reader::java_object_to_string(
             "org.apache.lucene.document.ShapeDocValues$Reader",
             self,
-        )
+        ))
     }
 
     fn read_byte(&mut self) -> Result<u8> {

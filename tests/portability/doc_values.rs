@@ -346,7 +346,7 @@ fn dump(producer: &dyn DocValuesProducer, field_infos: &FieldInfos) -> Vec<Strin
                 }
             }
             DocValuesType::SORTED => {
-                let values = producer.get_sorted(info).expect("sorted").unwrap();
+                let mut values = producer.get_sorted(info).expect("sorted").unwrap();
                 let count = values.get_value_count().expect("value count");
                 let dictionary: Vec<String> = (0..count)
                     .map(|ord| hex(values.lookup_ord(ord).expect("term").slice()))

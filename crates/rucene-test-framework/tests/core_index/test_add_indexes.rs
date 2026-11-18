@@ -195,7 +195,7 @@ fn mock_ram_copy_of(dir: &Arc<dyn Directory>) -> Result<MockDirectoryWrapper> {
 /// update and soft-delete methods take.
 fn ndv_field(name: &str, value: i64) -> Result<Field> {
     Field::new_with_number(
-        name,
+        name.to_string(),
         NumericValue::Long(value),
         NumericDocValuesField::type_().clone(),
     )

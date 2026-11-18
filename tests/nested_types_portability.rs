@@ -889,7 +889,7 @@ fn numeric_dv_type() -> FieldType {
 /// of the numeric doc-values type carrying no number — which is what
 /// `IndexWriter::update_doc_values` reads as "no value".
 fn numeric_reset(name: &str) -> Field {
-    Field::new_with_bytes(name, BytesRef::default(), numeric_dv_type()).unwrap()
+    Field::new_with_bytes(name.to_string(), BytesRef::default(), numeric_dv_type()).unwrap()
 }
 
 fn rust_dv_update(variant: &str) -> Arc<dyn Directory> {

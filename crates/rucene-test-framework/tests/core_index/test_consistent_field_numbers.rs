@@ -48,7 +48,11 @@ fn no_merge_iwc() -> Result<IndexWriterConfig> {
 
 /// `new TextField(name, value, store)`.
 fn text(name: &str, value: &str, store: Store) -> Result<Box<TextField>> {
-    Ok(Box::new(TextField::new(name, value.to_string(), store)?))
+    Ok(Box::new(TextField::new(
+        name.to_string(),
+        value.to_string(),
+        store,
+    )?))
 }
 
 /// `fis.fieldInfo(number).name` (Java dereferences a `null` field info).

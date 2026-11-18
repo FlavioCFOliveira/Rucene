@@ -1203,7 +1203,10 @@ pub struct PrefixCodedTerms {
     /// `hashCode()` folds one `ByteBuffer.hashCode()` per block (`:190-197`),
     /// so both answers change if the same bytes are held in a different number
     /// of blocks.
-    content: Vec<Vec<u8>>,
+    ///
+    /// Shared, because every [`iterator`](Self::iterator) reads these blocks in
+    /// place, as Java's iterators all wrap the same buffers.
+    content: Arc<[Vec<u8>]>,
     size: i64,
     del_gen: i64,
 }
@@ -1221,7 +1224,8 @@ impl PrefixCodedTerms {
     /// (`PrefixCodedTerms.java:170-172`): a fresh reader with its own position
     /// over the same blocks.
     pub fn iterator(&self) -> PrefixCodedTermsIterator {
-        let input = ByteBuffersDataInput::new(self.content.clone())
+        // PERF: the reader shares the blocks instead of copying them.
+        let input = ByteBuffersDataInput::over_blocks(Arc::clone(&self.content), 0)
             .expect("the content is the block list of a ByteBuffersDataOutput");
         PrefixCodedTermsIterator::new(self.del_gen, input)
     }
@@ -1254,7 +1258,7 @@ impl PrefixCodedTerms {
     /// caller changes the generation of a packet it has already hashed.
     pub fn hash_code(&self) -> i32 {
         let mut h: i32 = 1;
-        for block in &self.content {
+        for block in self.content.iter() {
             let mut bb: i32 = 1;
             for &byte in block.iter().rev() {
                 bb = bb.wrapping_mul(31).wrapping_add(i32::from(byte as i8));
@@ -1383,7 +1387,7 @@ impl PrefixCodedTermsBuilder {
         PrefixCodedTerms {
             // `new PrefixCodedTerms(output.toBufferList(), size)`
             // (`PrefixCodedTerms.java:103`).
-            content: self.output.into_buffer_list(),
+            content: Arc::from(self.output.into_buffer_list()),
             size: self.size,
             del_gen: -1,
         }
@@ -1400,16 +1404,9 @@ pub struct PrefixCodedTermsIterator {
     /// Equivalent to `final ByteBuffersDataInput input`
     /// (`PrefixCodedTerms.java:107`), which `iterator()` opens over the very
     /// blocks the `PrefixCodedTerms` holds (`:170-172`); it keeps its own
-    /// position, so `next()` simply reads on.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java's `ByteBuffersDataInput` wraps
-    /// the shared `ByteBuffer` views without copying their bytes, so opening an
-    /// iterator is free. This port's `ByteBuffersDataInput` owns its blocks,
-    /// because a Rust view would borrow from a buffer the iterator is stored
-    /// next to, so each iterator copies the payload. The copy is the same one
-    /// this iterator already made, and it is the input type — not the payload
-    /// layout — that carries it.
-    input: ByteBuffersDataInput,
+    /// position, so `next()` simply reads on. The blocks are shared, not
+    /// copied, as Java's views over them are.
+    input: ByteBuffersDataInput<Arc<[Vec<u8>]>>,
     end: i64,
     del_gen: i64,
     /// `TermIterator.field`: `""` before the first term, the current term's
@@ -1417,18 +1414,20 @@ pub struct PrefixCodedTermsIterator {
     /// field name is a legal field (`TestIndexWriter.java:640-680`), so
     /// exhaustion is not encoded in the name.
     field: Option<String>,
-    bytes: Vec<u8>,
+    /// `TermIterator.bytes`, the one term buffer every `next()` refills
+    /// (`PrefixCodedTerms.java:109-110`).
+    bytes: BytesRef,
 }
 
 impl PrefixCodedTermsIterator {
-    fn new(del_gen: i64, input: ByteBuffersDataInput) -> Self {
+    fn new(del_gen: i64, input: ByteBuffersDataInput<Arc<[Vec<u8>]>>) -> Self {
         let end = input.length() as i64;
         Self {
             input,
             end,
             del_gen,
             field: Some(String::new()),
-            bytes: Vec::new(),
+            bytes: BytesRef::default(),
         }
     }
 
@@ -1461,9 +1460,39 @@ impl PrefixCodedTermsIterator {
     /// (`PrefixCodedTerms.java:123-142`), which returns its one reused
     /// `bytes`; [`next`](Self::next) is the owned form.
     pub(crate) fn next_bytes(&mut self) -> Result<Option<&[u8]>> {
+        Ok(if self.advance()? {
+            Some(self.bytes.slice())
+        } else {
+            None
+        })
+    }
+
+    /// Advances to the next term and lends it with its field, or returns
+    /// `None` when exhausted.
+    ///
+    /// Equivalent to `TermIterator.next()` followed by `field()`, the pair
+    /// `FrozenBufferedUpdates.applyTermDeletes` reads per term
+    /// (`FrozenBufferedUpdates.java:464-467`): the term is the iterator's one
+    /// reused `bytes`, not a copy. The two come back together because the
+    /// lent term holds the iterator borrowed.
+    pub(crate) fn next_field_term(&mut self) -> Result<Option<(&str, &BytesRef)>> {
+        if !self.advance()? {
+            return Ok(None);
+        }
+        let field = self
+            .field
+            .as_deref()
+            .expect("INVARIANT: a term was just read, so the iterator is on a field");
+        Ok(Some((field, &self.bytes)))
+    }
+
+    /// The body of `TermIterator.next()` (`PrefixCodedTerms.java:123-148`):
+    /// reads the next term into `bytes`, or clears `field` and returns
+    /// `false` at the end.
+    fn advance(&mut self) -> Result<bool> {
         if (self.input.position() as i64) >= self.end {
             self.field = None;
-            return Ok(None);
+            return Ok(false);
         }
 
         let code = self.input.read_v_int()? as usize;
@@ -1475,12 +1504,16 @@ impl PrefixCodedTermsIterator {
         }
 
         let suffix = self.input.read_v_int()? as usize;
-        self.bytes.resize(prefix + suffix, 0);
+        // `readTermBytes(prefix, suffix)`: `builder.grow(prefix + suffix)`,
+        // the suffix read after the shared prefix, `setLength`.
+        let bytes = &mut self.bytes.bytes;
+        bytes.resize(prefix + suffix, 0);
         self.input
-            .read_bytes(Some(&mut self.bytes[..]), prefix, suffix)?;
-        self.bytes.truncate(prefix + suffix);
+            .read_bytes(Some(&mut bytes[..]), prefix, suffix)?;
+        self.bytes.offset = 0;
+        self.bytes.length = prefix + suffix;
 
-        Ok(Some(&self.bytes))
+        Ok(true)
     }
 }
 
@@ -2269,6 +2302,84 @@ mod tests {
         let mut terms = builder.finish();
         terms.set_del_gen(7);
         assert_eq!(terms.iterator().del_gen(), 7);
+    }
+
+    /// `iterator()` opens a reader over the packet's own blocks
+    /// (`PrefixCodedTerms.java:170-172`): every live iterator holds the one
+    /// shared block list, none a copy of it, and each keeps its own position.
+    /// A payload of several blocks is read across the block boundaries.
+    #[test]
+    fn iterators_read_the_shared_blocks_in_place() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        let expected: Vec<String> = (0..400u32).map(|i| format!("term{i:08}")).collect();
+        for term in &expected {
+            builder.add(&Term::from_text("f", term)).unwrap();
+        }
+        let terms = builder.finish();
+        assert!(terms.content().len() > 1, "a payload of several blocks");
+        assert_eq!(Arc::strong_count(&terms.content), 1);
+
+        let mut first = terms.iterator();
+        let mut second = terms.iterator();
+        assert_eq!(
+            Arc::strong_count(&terms.content),
+            3,
+            "both share the blocks"
+        );
+        assert_eq!(first.next().unwrap().unwrap().slice(), b"term00000000");
+        let mut read = Vec::new();
+        while let Some(term) = second.next_bytes().unwrap() {
+            read.push(String::from_utf8(term.to_vec()).unwrap());
+        }
+        assert_eq!(read, expected);
+        assert_eq!(first.next().unwrap().unwrap().slice(), b"term00000001");
+        drop((first, second));
+        assert_eq!(Arc::strong_count(&terms.content), 1);
+    }
+
+    /// `next_field_term` is `TermIterator.next()` then `field()`, as
+    /// `FrozenBufferedUpdates.applyTermDeletes` reads them
+    /// (`FrozenBufferedUpdates.java:464-467`): each term comes back with its
+    /// field, in the iterator's one reused buffer, and the same sequence as
+    /// the owned [`next`](PrefixCodedTermsIterator::next).
+    #[test]
+    fn next_field_term_lends_each_term_with_its_field() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        let expected = [
+            ("", "a"),
+            ("body", "apple"),
+            ("body", "apricot"),
+            ("body", "b"),
+            ("title", "banana"),
+            ("title", "bandana"),
+        ];
+        for (field, text) in expected {
+            builder.add(&Term::from_text(field, text)).unwrap();
+        }
+        let terms = builder.finish();
+
+        let mut owned = Vec::new();
+        let mut it = terms.iterator();
+        while let Some(term) = it.next().unwrap() {
+            owned.push((it.field().unwrap().to_string(), term.slice().to_vec()));
+        }
+
+        let mut lent = Vec::new();
+        let mut it = terms.iterator();
+        let buffer: *const BytesRef = &it.bytes;
+        while let Some((field, term)) = it.next_field_term().unwrap() {
+            assert!(std::ptr::eq(term, buffer), "the iterator's own buffer");
+            lent.push((field.to_string(), term.slice().to_vec()));
+        }
+        assert_eq!(it.field(), None, "`field` is null once exhausted");
+        assert!(it.next_field_term().unwrap().is_none());
+
+        let expected: Vec<(String, Vec<u8>)> = expected
+            .iter()
+            .map(|(field, text)| (field.to_string(), text.as_bytes().to_vec()))
+            .collect();
+        assert_eq!(lent, expected);
+        assert_eq!(owned, expected);
     }
 
     /// Simple list-backed [`TermsEnum`] for tests.

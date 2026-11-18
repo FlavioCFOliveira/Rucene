@@ -1341,7 +1341,7 @@ pub(crate) mod tests {
     }
 
     impl crate::store::DataInput for TrackedInput {
-        fn to_java_string(&self) -> String {
+        fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
             self.inner.to_java_string()
         }
 

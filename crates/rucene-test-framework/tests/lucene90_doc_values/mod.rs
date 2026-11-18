@@ -622,7 +622,7 @@ fn do_test_sparse_doc_values_vs_stored_fields() -> Result<()> {
                     Assert::assert_equals(value, numeric.long_value()?);
                     Assert::assert_true(sorted.ord_value()? >= 0);
                     Assert::assert_true(
-                        bytes(&value.to_string()) == sorted.lookup_ord(sorted.ord_value()?)?,
+                        bytes(&value.to_string()) == *sorted.lookup_ord(sorted.ord_value()?)?,
                     );
                     Assert::assert_true(bytes(&value.to_string()) == binary.binary_value()?);
                 }
@@ -949,7 +949,7 @@ fn test_sorted_set_around_block_size(_suite: &CompressingDocValuesSuite) -> Resu
                 let mut b = vec![0u8; length];
                 input.read_bytes(Some(&mut b), 0, length)?;
                 let ord = values.next_ord()?;
-                Assert::assert_true(BytesRef::new(b) == values.lookup_ord(ord)?);
+                Assert::assert_true(BytesRef::new(b) == *values.lookup_ord(ord)?);
             }
         }
         drop((values, sr));
@@ -1357,7 +1357,7 @@ fn test_reseek_after_skip_decompression(suite: &CompressingDocValuesSuite) -> Re
         let reader =
             LuceneTestCase::get_only_leaf_reader(Arc::clone(&d_reader) as Arc<dyn IndexReader>)?;
         // Check values count.
-        let ssdv_multi = reader
+        let mut ssdv_multi = reader
             .get_sorted_doc_values("sdv")?
             .unwrap_or_else(|| npe("ssdvMulti"));
         Assert::assert_equals(doc_values as i32, ssdv_multi.get_value_count()?);
@@ -1749,8 +1749,8 @@ impl std::fmt::Debug for NoSliceIndexInput {
 }
 
 impl DataInput for NoSliceIndexInput {
-    fn to_java_string(&self) -> String {
-        self.resource_description.clone()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.resource_description)
     }
 
     fn read_byte(&mut self) -> Result<u8> {

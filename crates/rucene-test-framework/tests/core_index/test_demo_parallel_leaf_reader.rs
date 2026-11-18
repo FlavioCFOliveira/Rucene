@@ -1200,7 +1200,7 @@ impl ReindexingHooks for NewDvFieldsReindexer {
                 let mut new_doc = Document::new();
                 let value = number_of(&old_doc);
                 new_doc.add(NumericDocValuesField::new(
-                    &format!("number_{new_schema_gen}"),
+                    format!("number_{new_schema_gen}"),
                     value,
                 ));
                 new_doc.add(LongPoint::new("number", &[value])?);
@@ -1220,7 +1220,7 @@ impl ReindexingHooks for NewDvFieldsReindexer {
                 stored_fields.document(i)?;
                 let mut new_doc = Document::new();
                 new_doc.add(NumericDocValuesField::new(
-                    &format!("number_{new_schema_gen}"),
+                    format!("number_{new_schema_gen}"),
                     old_values.long_value()?,
                 ));
                 w.add_document(&new_doc)?;

@@ -209,7 +209,12 @@ pub trait DataInput {
     /// `toString()` every Java object inherits; Rust has no such method on a
     /// trait object, so the trait carries it. It has no default, so that every
     /// input states the text of its Java class rather than inherit one.
-    fn to_java_string(&self) -> String;
+    ///
+    /// The text is lent when the input holds it, as Java's
+    /// `IndexInput.toString()` returns the `resourceDescription` field itself
+    /// (`IndexInput.java:98-100`), and owned when it is built per call, as a
+    /// `toString()` that concatenates builds a new `String`.
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str>;
 
     /// Reads `len` bytes into `b[offset..offset + len]`.
     ///
@@ -986,6 +991,32 @@ pub trait IndexInput: DataInput + Send + Sync {
     }
 }
 
+/// Concatenates `parts` into one shared immutable string, Java's `a + b + c`
+/// whose `String` every holder then shares by reference.
+///
+/// The text is assembled on the stack and copied into the shared string, so
+/// it costs one allocation, as Java's concatenation does; a text longer than
+/// the stack buffer is assembled on the heap first.
+pub(crate) fn concat_shared(parts: &[&str]) -> Arc<str> {
+    // PERF: `Arc::<str>::from(String)` would copy a concatenated `String`
+    // into a second allocation.
+    const STACK: usize = 512;
+    let len: usize = parts.iter().map(|part| part.len()).sum();
+    if len <= STACK {
+        let mut buffer = [0u8; STACK];
+        let mut at = 0;
+        for part in parts {
+            buffer[at..at + part.len()].copy_from_slice(part.as_bytes());
+            at += part.len();
+        }
+        // Whole `str`s joined end to end are always valid UTF-8.
+        if let Ok(text) = std::str::from_utf8(&buffer[..len]) {
+            return Arc::from(text);
+        }
+    }
+    Arc::from(parts.concat().as_str())
+}
+
 /// Default seek+read adapter used by [`IndexInput::random_access_slice`].
 ///
 /// This is equivalent to the anonymous `RandomAccessInput` implementation
@@ -1006,8 +1037,8 @@ impl RandomAccessInputAdapter {
 
 impl DataInput for RandomAccessInputAdapter {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -1194,8 +1225,8 @@ impl FilterIndexInput {
 
 impl DataInput for FilterIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -1522,8 +1553,8 @@ impl BufferedIndexInput {
 
 impl DataInput for BufferedIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -2004,8 +2035,8 @@ impl SlicedIndexInput {
 
 impl DataInput for SlicedIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -2713,11 +2744,11 @@ impl<'a> ByteArrayDataInput<'a> {
 
 impl DataInput for ByteArrayDataInput<'_> {
     /// `ByteArrayDataInput` overrides no `toString()`, so `Object`'s applies.
-    fn to_java_string(&self) -> String {
-        crate::index::index_reader::java_object_to_string(
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(crate::index::index_reader::java_object_to_string(
             "org.apache.lucene.store.ByteArrayDataInput",
             self,
-        )
+        ))
     }
 
     /// Equivalent to `ByteArrayDataInput#readByte` (`return bytes[pos++]`):
@@ -3118,11 +3149,11 @@ impl<R: Read> InputStreamDataInput<R> {
 
 impl<R: Read> DataInput for InputStreamDataInput<R> {
     /// `InputStreamDataInput` overrides no `toString()`, so `Object`'s applies.
-    fn to_java_string(&self) -> String {
-        crate::index::index_reader::java_object_to_string(
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(crate::index::index_reader::java_object_to_string(
             "org.apache.lucene.store.InputStreamDataInput",
             self,
-        )
+        ))
     }
 
     /// Equivalent to `InputStreamDataInput.readByte()`
@@ -3344,8 +3375,8 @@ impl MockIndexInput {
 
 impl DataInput for MockIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -5426,7 +5457,8 @@ impl BufferedChecksumIndexInput {
     /// (`MockIndexInputWrapper`).
     pub fn new(main: Box<dyn IndexInput>) -> Self {
         // PERF: sized once, as Java's concatenation is
-        // (`BufferedChecksumIndexInput.java:31`); `format!` grew it.
+        // (`BufferedChecksumIndexInput.java:31`); `format!` grew it. `main`
+        // lends its text, as Java's `main.toString()` returns its field.
         let resource_description =
             ["BufferedChecksumIndexInput(", &main.to_java_string(), ")"].concat();
         Self {
@@ -5440,8 +5472,8 @@ impl BufferedChecksumIndexInput {
 
 impl DataInput for BufferedChecksumIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -7306,9 +7338,14 @@ const MAX_CHARS_PER_WINDOW: usize = 1024;
 /// Equivalent to `org.apache.lucene.store.ByteBuffersDataInput`. All buffers
 /// except the last must share an identical power-of-two length; the last may be
 /// shorter.
+///
+/// The blocks are held as `B`. By default the input owns them. A shared `B`,
+/// such as `Arc<[Vec<u8>]>`, lets several inputs read one block list in place,
+/// as Java's inputs do: each one wraps the same `ByteBuffer`s in read-only
+/// views (`ByteBuffersDataInput.java:55-61`) and copies no bytes.
 #[derive(Clone, Debug)]
-pub struct ByteBuffersDataInput {
-    blocks: Vec<Vec<u8>>,
+pub struct ByteBuffersDataInput<B = Vec<Vec<u8>>> {
+    blocks: B,
     block_bits: usize,
     block_mask: usize,
     length: usize,
@@ -7332,7 +7369,7 @@ pub struct ByteBuffersDataInput {
 /// Java calls this "a rough estimation for allocated blocks" and deliberately
 /// leaves out the shallow size of the object itself, so nothing is added for it
 /// here either.
-impl crate::util::Accountable for ByteBuffersDataInput {
+impl<B: std::ops::Deref<Target = [Vec<u8>]>> crate::util::Accountable for ByteBuffersDataInput<B> {
     fn ram_bytes_used(&self) -> i64 {
         self.blocks.len() as i64 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF
             + self.blocks.iter().map(Vec::capacity).sum::<usize>() as i64
@@ -7365,6 +7402,24 @@ impl ByteBuffersDataInput {
     /// Returns [`LuceneErrorKind::IllegalArgument`] if the buffer layout
     /// assumptions are violated or `first_position` exceeds the first buffer.
     pub fn with_first_position(buffers: Vec<Vec<u8>>, first_position: usize) -> Result<Self> {
+        Self::over_blocks(buffers, first_position)
+    }
+}
+
+impl<B: std::ops::Deref<Target = [Vec<u8>]>> ByteBuffersDataInput<B> {
+    /// Creates an input over `buffers`, held as they are given, whose first
+    /// buffer is positioned at `first_position`.
+    ///
+    /// [`with_first_position`](ByteBuffersDataInput::with_first_position) for
+    /// any block storage: given a shared `B`, the input reads the shared
+    /// blocks in place, as Java's constructor wraps the caller's buffers in
+    /// views (`ByteBuffersDataInput.java:55-83`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the buffer layout
+    /// assumptions are violated or `first_position` exceeds the first buffer.
+    pub(crate) fn over_blocks(buffers: B, first_position: usize) -> Result<Self> {
         ensure_assumptions(&buffers)?;
         if first_position > buffers[0].len() {
             // `Buffer.position(int)`: `newPosition > limit`.
@@ -7609,7 +7664,7 @@ impl ByteBuffersDataInput {
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`] if the slice is out of bounds.
-    pub fn slice(&self, offset: usize, length: usize) -> Result<Self> {
+    pub fn slice(&self, offset: usize, length: usize) -> Result<ByteBuffersDataInput> {
         if offset > self.length || length > self.length - offset {
             return Err(self.slice_out_of_bounds(offset as i64, length as i64));
         }
@@ -7622,7 +7677,7 @@ impl ByteBuffersDataInput {
         for view in slice_buffer_list(&self.blocks, self.offset, offset, length)? {
             data.extend_from_slice(view);
         }
-        Self::new(vec![data])
+        ByteBuffersDataInput::new(vec![data])
     }
 
     /// The `IllegalArgumentException` of `ByteBuffersDataInput.slice(long,
@@ -7727,10 +7782,10 @@ fn read_long_byte_by_byte(input: &mut dyn DataInput) -> Result<i64> {
     Ok((high << 32) | low)
 }
 
-impl DataInput for ByteBuffersDataInput {
+impl<B: std::ops::Deref<Target = [Vec<u8>]>> DataInput for ByteBuffersDataInput<B> {
     /// `ByteBuffersDataInput.toString()`, ported as this type's `Display`.
-    fn to_java_string(&self) -> String {
-        self.to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(self.to_string())
     }
 
     /// Equivalent to `ByteBuffersDataInput.readByte()`
@@ -9190,8 +9245,8 @@ impl ByteBuffersIndexInput {
 
 impl DataInput for ByteBuffersIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -10561,8 +10616,8 @@ impl FileIndexInput {
 
 impl DataInput for FileIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -10955,8 +11010,8 @@ impl RawNioFsIndexInput {
 
 impl DataInput for RawNioFsIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -11171,8 +11226,8 @@ impl NIOFSIndexInput {
 
 impl DataInput for NIOFSIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -11375,7 +11430,7 @@ pub(crate) fn matches_java_text(actual: &str, pattern: &str) -> bool {
 // Object contracts: the `toString()` bodies of this module's store types
 // ---------------------------------------------------------------------------
 
-impl std::fmt::Display for ByteBuffersDataInput {
+impl<B: std::ops::Deref<Target = [Vec<u8>]>> std::fmt::Display for ByteBuffersDataInput<B> {
     /// Port of `ByteBuffersDataInput.toString()`, which is
     /// `String.format(Locale.ROOT, "%,d bytes, block size: %,d, blocks: %,d,
     /// position: %,d%s", length(), blockSize(), blocks.length, position(),
@@ -11448,6 +11503,21 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
+
+    /// `concat_shared` is Java's `a + b + c`: the same text, whether it fits
+    /// the stack buffer or not.
+    #[test]
+    fn concat_shared_joins_the_parts() {
+        assert_eq!(&*concat_shared(&[]), "");
+        assert_eq!(
+            &*concat_shared(&["a(", "\u{e9}\u{1f600}", ")"]),
+            "a(\u{e9}\u{1f600})"
+        );
+        let long = "x".repeat(600);
+        assert_eq!(&*concat_shared(&["<", &long, ">"]), format!("<{long}>"));
+        let exact = "y".repeat(510);
+        assert_eq!(&*concat_shared(&["<", &exact, ">"]), format!("<{exact}>"));
+    }
 
     /// `ByteBuffersDataOutput.toArrayCopy()` refuses content larger than a
     /// Java array with `RuntimeException("Data exceeds maximum size of a
@@ -12885,7 +12955,7 @@ mod tests {
             closes: Arc<AtomicUsize>,
         }
         impl DataInput for Tracked {
-            fn to_java_string(&self) -> String {
+            fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
                 self.inner.to_java_string()
             }
             fn read_byte(&mut self) -> Result<u8> {
@@ -13092,8 +13162,8 @@ mod tests {
     fn buffered_checksum_index_input_quotes_main_to_string() {
         struct Renamed(FilterIndexInput);
         impl DataInput for Renamed {
-            fn to_java_string(&self) -> String {
-                "Renamed(toString)".to_string()
+            fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+                std::borrow::Cow::Borrowed("Renamed(toString)")
             }
             fn read_byte(&mut self) -> Result<u8> {
                 self.0.read_byte()

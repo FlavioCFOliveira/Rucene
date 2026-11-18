@@ -3354,7 +3354,7 @@ impl SortedDocValues for SortingSortedDocValues {
         self.old.get_value_count()
     }
 
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
         self.old.lookup_ord(ord)
     }
 }
@@ -3606,7 +3606,7 @@ impl SortedSetDocValues for SortingSortedSetDocValues {
         Ok(self.dvs.ords[self.doc_id as usize].len() as i32)
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
         self.old.lookup_ord(ord)
     }
 

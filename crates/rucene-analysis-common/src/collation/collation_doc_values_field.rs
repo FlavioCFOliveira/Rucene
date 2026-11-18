@@ -77,7 +77,7 @@ impl CollationDocValuesField {
     pub fn new(name: &str, collator: &RuleBasedCollator) -> Result<Self> {
         Ok(Self {
             base: Field::new_with_bytes(
-                name,
+                name.to_string(),
                 BytesRef::default(),
                 SortedDocValuesField::type_shared(),
             )?,

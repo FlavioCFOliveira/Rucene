@@ -1904,24 +1904,24 @@ impl TestUtil {
                 // `new KeywordField(name, (String) null, store)` fails in
                 // `Field(String, CharSequence, IndexableFieldType)`.
                 let value = f.string_value().ok_or_else(value_must_not_be_null)?;
-                Box::new(KeywordField::new(f.name(), value, stored(f))?)
+                Box::new(KeywordField::new(f.name().to_string(), value, stored(f))?)
             } else if any.is_some_and(|a| a.is::<IntField>()) {
                 let value = number_int_value(f.numeric_value().ok_or_else(null_pointer)?);
-                Box::new(IntField::new(f.name(), value, stored(f)))
+                Box::new(IntField::new(f.name().to_string(), value, stored(f)))
             } else if dv_type != DocValuesType::NONE {
                 match dv_type {
                     DocValuesType::NUMERIC => {
                         let value = number_long_value(f.numeric_value().ok_or_else(null_pointer)?);
-                        Box::new(NumericDocValuesField::new(f.name(), value))
+                        Box::new(NumericDocValuesField::new(f.name().to_string(), value))
                     }
                     // `Field(String, BytesRef, IndexableFieldType)` refuses a
                     // null value.
                     DocValuesType::BINARY => Box::new(BinaryDocValuesField::new(
-                        f.name(),
+                        f.name().to_string(),
                         f.binary_value().ok_or_else(bytes_must_not_be_null)?,
                     )),
                     DocValuesType::SORTED => Box::new(SortedDocValuesField::new(
-                        f.name(),
+                        f.name().to_string(),
                         f.binary_value().ok_or_else(bytes_must_not_be_null)?,
                     )),
                     other => {
@@ -1934,14 +1934,14 @@ impl TestUtil {
                 let br = f.binary_value().ok_or_else(null_pointer)?;
                 let bytes = BytesRef::new(br.bytes[br.offset..br.offset + br.length].to_vec());
                 Box::new(BinaryPoint::new_with_packed(
-                    f.name(),
+                    f.name().to_string(),
                     bytes,
                     FieldType::new_from(field_type),
                 )?)
             } else {
                 let value = f.string_value().ok_or_else(value_must_not_be_null)?;
                 Box::new(Field::new(
-                    f.name(),
+                    f.name().to_string(),
                     value,
                     FieldType::new_from(field_type),
                 )?)

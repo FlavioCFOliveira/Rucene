@@ -221,11 +221,11 @@ impl SortedDocValues for SelectedValue {
         Ok(self.inner.get_value_count()? as i32)
     }
 
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
         self.inner.lookup_ord(i64::from(ord))
     }
 
-    fn lookup_term(&self, key: &BytesRef) -> Result<i32> {
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i32> {
         Ok(self.inner.lookup_term(key)? as i32)
     }
 }

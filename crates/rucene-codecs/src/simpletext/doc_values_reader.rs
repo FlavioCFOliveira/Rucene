@@ -31,7 +31,7 @@ use rucene::index::{
 use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
 use rucene::store::{BufferedChecksumIndexInput, IndexInput};
 use rucene::util::java_fmt::java_utf8_to_string;
-use rucene::util::BytesRef;
+use rucene::util::{BytesRef, BytesRefBuilder};
 
 use super::doc_values_writer::{
     SkipInterval, DOCCOUNT, END, FIELD, LENGTH, MAXLENGTH, MAXVALUE, MAXVALUECOUNT, MINVALUE,
@@ -723,6 +723,8 @@ impl BinaryDocValues for TextBinaryDocValues {
 struct TextSortedDocValues {
     input: RefCell<Box<dyn IndexInput>>,
     scratch: RefCell<JavaScratch>,
+    /// `term`: the builder `lookupOrd` reads each value into and lends.
+    term: BytesRefBuilder,
     decoder: DecimalFormat,
     ord_decoder: DecimalFormat,
     field: OneField,
@@ -793,33 +795,36 @@ impl SortedDocValues for TextSortedDocValues {
         Ok(self.field.num_values as i32)
     }
 
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
         if ord < 0 || i64::from(ord) >= self.field.num_values {
             return Err(ord_out_of_bounds(self.field.num_values, i64::from(ord)));
         }
-        let mut input = self.input.borrow_mut();
+        let input = self.input.get_mut();
         // `ord * (long) (9 + pattern.length() + maxLength)`.
         input.seek(
             self.field
                 .data_start_file_pointer
                 .wrapping_add(i64::from(ord).wrapping_mul(self.field.value_stride())),
         )?;
-        let mut scratch = self.scratch.borrow_mut();
+        let scratch = self.scratch.get_mut();
         scratch.read_line(input.as_mut())?;
         debug_assert!(
             scratch.starts_with(LENGTH),
             "got {} in={}",
-            java_utf8_to_string(&scratch),
+            java_utf8_to_string(scratch),
             input.resource_description()
         );
         let len = grow_no_copy_length(parse_length(
             &self.decoder,
-            &scratch,
+            scratch,
             input.resource_description(),
         )?)?;
-        let mut term = vec![0u8; len];
-        input.read_bytes(Some(&mut term), 0, len)?;
-        Ok(BytesRef::new(term))
+        // `term.growNoCopy(len); term.setLength(len); in.readBytes(term.bytes(),
+        // 0, len); return term.get();`: the values' own builder, lent.
+        self.term.grow_no_copy(len);
+        self.term.set_length(len);
+        input.read_bytes(Some(self.term.bytes_mut()), 0, len)?;
+        Ok(self.term.get_ref())
     }
 }
 
@@ -902,6 +907,8 @@ impl SortedNumericDocValues for TextSortedNumericDocValues {
 struct TextSortedSetDocValues {
     input: RefCell<Box<dyn IndexInput>>,
     scratch: RefCell<JavaScratch>,
+    /// `term`: the builder `lookupOrd` reads each value into and lends.
+    term: BytesRefBuilder,
     decoder: DecimalFormat,
     field: OneField,
     max_doc: i32,
@@ -990,33 +997,36 @@ impl SortedSetDocValues for TextSortedSetDocValues {
         Ok(self.current_ords.len() as i32)
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
         if ord < 0 || ord >= self.field.num_values {
             return Err(ord_out_of_bounds(self.field.num_values, ord));
         }
-        let mut input = self.input.borrow_mut();
+        let input = self.input.get_mut();
         // `ord * (9 + pattern.length() + maxLength)`.
         input.seek(
             self.field
                 .data_start_file_pointer
                 .wrapping_add(ord.wrapping_mul(self.field.value_stride())),
         )?;
-        let mut scratch = self.scratch.borrow_mut();
+        let scratch = self.scratch.get_mut();
         scratch.read_line(input.as_mut())?;
         debug_assert!(
             scratch.starts_with(LENGTH),
             "got {} in={}",
-            java_utf8_to_string(&scratch),
+            java_utf8_to_string(scratch),
             input.resource_description()
         );
         let len = grow_no_copy_length(parse_length(
             &self.decoder,
-            &scratch,
+            scratch,
             input.resource_description(),
         )?)?;
-        let mut term = vec![0u8; len];
-        input.read_bytes(Some(&mut term), 0, len)?;
-        Ok(BytesRef::new(term))
+        // `term.growNoCopy(len); term.setLength(len); in.readBytes(term.bytes(),
+        // 0, len); return term.get();`: the values' own builder, lent.
+        self.term.grow_no_copy(len);
+        self.term.set_length(len);
+        input.read_bytes(Some(self.term.bytes_mut()), 0, len)?;
+        Ok(self.term.get_ref())
     }
 
     fn get_value_count(&self) -> Result<i64> {
@@ -1144,6 +1154,7 @@ impl DocValuesProducer for SimpleTextDocValuesReader {
         Ok(Some(Box::new(TextSortedDocValues {
             input,
             scratch: RefCell::new(JavaScratch::new()),
+            term: BytesRefBuilder::new(),
             decoder,
             ord_decoder,
             field,
@@ -1177,6 +1188,7 @@ impl DocValuesProducer for SimpleTextDocValuesReader {
         Ok(Some(Box::new(TextSortedSetDocValues {
             input,
             scratch: RefCell::new(JavaScratch::new()),
+            term: BytesRefBuilder::new(),
             decoder,
             field,
             max_doc: self.max_doc,

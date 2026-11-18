@@ -24,7 +24,7 @@
 macro_rules! forward_mock_index_input {
     ($ty:ident, |$this:ident| $close:expr) => {
         impl rucene::store::DataInput for $ty {
-            fn to_java_string(&self) -> String {
+            fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
                 self.inner.to_java_string()
             }
             fn read_byte(&mut self) -> rucene::error::Result<u8> {

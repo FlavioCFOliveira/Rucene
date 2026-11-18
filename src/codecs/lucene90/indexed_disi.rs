@@ -16,6 +16,7 @@ use crate::index::doc_values::DocValuesIterator;
 use crate::index::vector_values::DocIndexIterator;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{IndexInput, IndexOutput, RandomAccessInput};
+use crate::util::atomic_ref_cell::AtomicRefCell;
 use crate::util::FixedBitSet;
 
 const BLOCK_SIZE: usize = 65536;
@@ -270,12 +271,37 @@ pub enum Method {
     All,
 }
 
+/// The jump table an [`IndexedDISI`] reads.
+///
+/// Java's `final RandomAccessInput jumpTable` (`IndexedDISI.java:276`) is a
+/// reference: a norms merge instance points every iterator of a field at the
+/// one jump table it caches (`Lucene90NormsProducer.java:358-375`). A Rust
+/// input reads through `&mut self`, so that shared table is held through
+/// a shared cell, and an iterator's own table is boxed.
+pub(crate) enum JumpTable {
+    /// A jump table of the iterator's own.
+    Owned(Box<dyn RandomAccessInput>),
+    /// A jump table a merge instance shares between the iterators it hands
+    /// out.
+    Shared(Arc<AtomicRefCell<Box<dyn RandomAccessInput>>>),
+}
+
+impl JumpTable {
+    /// `jumpTable.readInt(pos)`.
+    fn read_int_at(&mut self, pos: i64) -> Result<i32> {
+        match self {
+            Self::Owned(jump_table) => jump_table.read_int_at(pos),
+            Self::Shared(jump_table) => jump_table.borrow_mut().read_int_at(pos),
+        }
+    }
+}
+
 /// An indexed, random-accessible DISI.
 ///
 /// Equivalent to `org.apache.lucene.codecs.lucene90.IndexedDISI`.
 pub struct IndexedDISI {
     slice: Box<dyn IndexInput>,
-    jump_table: Option<Box<dyn RandomAccessInput>>,
+    jump_table: Option<JumpTable>,
     jump_table_entry_count: i32,
     dense_rank_power: i8,
     dense_rank_table: Vec<u8>,
@@ -335,6 +361,25 @@ impl IndexedDISI {
     pub fn with_slices(
         slice: Box<dyn IndexInput>,
         jump_table: Option<Box<dyn RandomAccessInput>>,
+        jump_table_entry_count: i32,
+        dense_rank_power: i8,
+        cost: i64,
+    ) -> Result<Self> {
+        Self::with_jump_table(
+            slice,
+            jump_table.map(JumpTable::Owned),
+            jump_table_entry_count,
+            dense_rank_power,
+            cost,
+        )
+    }
+
+    /// [`with_slices`](Self::with_slices), with a jump table that may be
+    /// shared: Java's `IndexedDISI(IndexInput, RandomAccessInput, int, byte,
+    /// long)` (`IndexedDISI.java:318-345`) takes the table by reference.
+    pub(crate) fn with_jump_table(
+        slice: Box<dyn IndexInput>,
+        jump_table: Option<JumpTable>,
         jump_table_entry_count: i32,
         dense_rank_power: i8,
         cost: i64,

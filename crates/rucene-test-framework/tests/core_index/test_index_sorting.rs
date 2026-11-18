@@ -350,34 +350,44 @@ fn bytes_ref(s: &str) -> BytesRef {
 
 /// `new NumericDocValuesField(name, value)`.
 fn ndv(name: &str, value: i64) -> Box<NumericDocValuesField> {
-    Box::new(NumericDocValuesField::new(name, value))
+    Box::new(NumericDocValuesField::new(name.to_string(), value))
 }
 
 /// `new SortedNumericDocValuesField(name, value)`.
 fn sndv(name: &str, value: i64) -> Box<SortedNumericDocValuesField> {
-    Box::new(SortedNumericDocValuesField::new(name, value))
+    Box::new(SortedNumericDocValuesField::new(name.to_string(), value))
 }
 
 /// `new SortedSetDocValuesField(name, newBytesRef(value))`.
 fn ssdv(name: &str, value: &str) -> Box<SortedSetDocValuesField> {
-    Box::new(SortedSetDocValuesField::new(name, bytes_ref(value)))
+    Box::new(SortedSetDocValuesField::new(
+        name.to_string(),
+        bytes_ref(value),
+    ))
 }
 
 /// `new SortedDocValuesField(name, newBytesRef(value))`.
 fn sdv(name: &str, value: &str) -> Box<SortedDocValuesField> {
-    Box::new(SortedDocValuesField::new(name, bytes_ref(value)))
+    Box::new(SortedDocValuesField::new(
+        name.to_string(),
+        bytes_ref(value),
+    ))
 }
 
 /// `new StringField(name, value, stored)`.
 fn string_field(name: &str, value: &str, stored: Store) -> Result<Box<StringField>> {
-    Ok(Box::new(StringField::new(name, value.to_string(), stored)?))
+    Ok(Box::new(StringField::new(
+        name.to_string(),
+        value.to_string(),
+        stored,
+    )?))
 }
 
 /// `new NumericDocValuesField(name, value)` as the `Field` the doc-values
 /// update methods take.
 fn ndv_update(name: &str, value: i64) -> Result<Field> {
     Field::new_with_number(
-        name,
+        name.to_string(),
         NumericValue::Long(value),
         NumericDocValuesField::type_().clone(),
     )
@@ -904,12 +914,12 @@ fn long_dv(name: &str, value: f64) -> Box<dyn rucene::index::IndexableField> {
 
 /// `new DoubleDocValuesField(name, value)`.
 fn double_dv(name: &str, value: f64) -> Box<dyn rucene::index::IndexableField> {
-    Box::new(DoubleDocValuesField::new(name, value))
+    Box::new(DoubleDocValuesField::new(name.to_string(), value))
 }
 
 /// `new FloatDocValuesField(name, (float) value)`.
 fn float_dv(name: &str, value: f64) -> Box<dyn rucene::index::IndexableField> {
-    Box::new(FloatDocValuesField::new(name, value as f32))
+    Box::new(FloatDocValuesField::new(name.to_string(), value as f32))
 }
 
 /// Port of `TestIndexSorting.testMissingLongFirst`.

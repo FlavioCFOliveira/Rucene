@@ -708,12 +708,12 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
             for i in 0..100 {
                 let mut doc = Document::new();
                 doc.add(rucene::document::Field::new(
-                    id_field.name(),
+                    id_field.name().to_string(),
                     i.to_string(),
                     id_field.field_type().clone(),
                 )?);
                 doc.add(rucene::document::Field::new(
-                    body_field.name(),
+                    body_field.name().to_string(),
                     TestUtil::random_unicode_string(&*LuceneTestCase::random()),
                     body_field.field_type().clone(),
                 )?);

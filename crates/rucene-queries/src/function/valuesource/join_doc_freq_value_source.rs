@@ -80,7 +80,7 @@ impl FunctionValues for JoinDocFreqValues {
         }
         if doc == cur_doc_id {
             let term = self.terms.lookup_ord(self.terms.ord_value()?)?;
-            if self.terms_enum.seek_exact(&term)? {
+            if self.terms_enum.seek_exact(term)? {
                 return self.terms_enum.doc_freq();
             }
         }

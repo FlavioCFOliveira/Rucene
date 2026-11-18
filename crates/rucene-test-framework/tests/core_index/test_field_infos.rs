@@ -97,7 +97,7 @@ fn test_field_infos() -> Result<()> {
     let mut d1 = Document::new();
     for i in 0..15 {
         d1.add(StringField::new(
-            &format!("f{i}"),
+            format!("f{i}"),
             format!("v{i}"),
             Store::YES,
         )?);

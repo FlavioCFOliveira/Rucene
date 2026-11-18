@@ -143,11 +143,11 @@ fn test_sorted_sparse() -> Result<()> {
     assert_not_null(&sdv);
     let mut sdv = nn(sdv);
     assert_equals(&0, &sdv.next_doc()?);
-    assert_equals(&br("red"), &sdv.lookup_ord(sdv.ord_value()?)?);
+    assert_equals(&br("red"), sdv.lookup_ord(sdv.ord_value()?)?);
     assert_equals(&1, &sdv.next_doc()?);
-    assert_equals(&br("blue"), &sdv.lookup_ord(sdv.ord_value()?)?);
+    assert_equals(&br("blue"), sdv.lookup_ord(sdv.ord_value()?)?);
     assert_equals(&2, &sdv.next_doc()?);
-    assert_equals(&br("green"), &sdv.lookup_ord(sdv.ord_value()?)?);
+    assert_equals(&br("green"), sdv.lookup_ord(sdv.ord_value()?)?);
     assert_equals(&NO_MORE_DOCS, &sdv.next_doc()?);
     assert_equals(&3, &sdv.get_value_count()?); // 3 distinct terms used
     c.close(Some(r))
@@ -177,7 +177,7 @@ fn test_sorted_sparse_large_batch_reuses_dictionary() -> Result<()> {
     for i in 0..n {
         assert_equals(&i, &sdv.next_doc()?);
         let expected = if i % 2 == 0 { br("blue") } else { br("green") };
-        assert_equals(&expected, &sdv.lookup_ord(sdv.ord_value()?)?);
+        assert_equals(&expected, sdv.lookup_ord(sdv.ord_value()?)?);
     }
     assert_equals(&NO_MORE_DOCS, &sdv.next_doc()?);
     c.close(Some(r))
@@ -200,11 +200,11 @@ fn test_sorted_dense() -> Result<()> {
     assert_not_null(&sdv);
     let mut sdv = nn(sdv);
     assert_equals(&0, &sdv.next_doc()?);
-    assert_equals(&br("blue"), &sdv.lookup_ord(sdv.ord_value()?)?);
+    assert_equals(&br("blue"), sdv.lookup_ord(sdv.ord_value()?)?);
     assert_equals(&1, &sdv.next_doc()?);
-    assert_equals(&br("blue"), &sdv.lookup_ord(sdv.ord_value()?)?);
+    assert_equals(&br("blue"), sdv.lookup_ord(sdv.ord_value()?)?);
     assert_equals(&2, &sdv.next_doc()?);
-    assert_equals(&br("red"), &sdv.lookup_ord(sdv.ord_value()?)?);
+    assert_equals(&br("red"), sdv.lookup_ord(sdv.ord_value()?)?);
     assert_equals(&NO_MORE_DOCS, &sdv.next_doc()?);
     // green was in the dictionary but never used; getValueCount must reflect only used terms
     assert_equals(&2, &sdv.get_value_count()?);
@@ -214,7 +214,7 @@ fn test_sorted_dense() -> Result<()> {
 /// `ssdv.lookupOrd(ssdv.nextOrd())`.
 fn next_term(ssdv: &mut Box<dyn rucene::index::SortedSetDocValues>) -> Result<BytesRef> {
     let o = ssdv.next_ord()?;
-    ssdv.lookup_ord(o)
+    ssdv.lookup_ord(o).cloned()
 }
 
 /// Port of `testSortedSet`.
@@ -335,9 +335,9 @@ fn test_dictionary_with_duplicate_entries() -> Result<()> {
     let mut sdv = nn(leaf.get_sorted_doc_values("color")?);
     // Both docs have "blue"; getValueCount should be 1 (not 2)
     assert_equals(&0, &sdv.next_doc()?);
-    assert_equals(&br("blue"), &sdv.lookup_ord(sdv.ord_value()?)?);
+    assert_equals(&br("blue"), sdv.lookup_ord(sdv.ord_value()?)?);
     assert_equals(&1, &sdv.next_doc()?);
-    assert_equals(&br("blue"), &sdv.lookup_ord(sdv.ord_value()?)?);
+    assert_equals(&br("blue"), sdv.lookup_ord(sdv.ord_value()?)?);
     assert_equals(&1, &sdv.get_value_count()?);
     c.close(Some(r))
 }
@@ -406,11 +406,11 @@ fn test_mixed_with_plain_document() -> Result<()> {
     assert_equals(&3, &sdv.get_value_count()?); // blue, green, red
                                                 // Verify each doc
     assert_equals(&0, &sdv.next_doc()?);
-    assert_equals(&br("blue"), &sdv.lookup_ord(sdv.ord_value()?)?);
+    assert_equals(&br("blue"), sdv.lookup_ord(sdv.ord_value()?)?);
     assert_equals(&1, &sdv.next_doc()?);
-    assert_equals(&br("red"), &sdv.lookup_ord(sdv.ord_value()?)?);
+    assert_equals(&br("red"), sdv.lookup_ord(sdv.ord_value()?)?);
     assert_equals(&2, &sdv.next_doc()?);
-    assert_equals(&br("green"), &sdv.lookup_ord(sdv.ord_value()?)?);
+    assert_equals(&br("green"), sdv.lookup_ord(sdv.ord_value()?)?);
     c.close(Some(r))
 }
 
@@ -581,11 +581,11 @@ fn test_inverted_with_sorted_doc_values() -> Result<()> {
     let leaf = only_leaf(&r)?;
     let mut dv = nn(leaf.get_sorted_doc_values("color")?);
     assert_equals(&0, &dv.next_doc()?);
-    assert_equals(&br("blue"), &dv.lookup_ord(dv.ord_value()?)?);
+    assert_equals(&br("blue"), dv.lookup_ord(dv.ord_value()?)?);
     assert_equals(&1, &dv.next_doc()?);
-    assert_equals(&br("red"), &dv.lookup_ord(dv.ord_value()?)?);
+    assert_equals(&br("red"), dv.lookup_ord(dv.ord_value()?)?);
     assert_equals(&2, &dv.next_doc()?);
-    assert_equals(&br("blue"), &dv.lookup_ord(dv.ord_value()?)?);
+    assert_equals(&br("blue"), dv.lookup_ord(dv.ord_value()?)?);
     c.close(Some(r))
 }
 
@@ -963,7 +963,7 @@ fn check_sorted_by_insertion_id(
             };
             assert_equals_msg(
                 Some(&format!("{label} at insertionId {insertion_id}")),
-                want,
+                &want.as_ref(),
                 &got,
             );
             seen += 1;
@@ -1045,7 +1045,7 @@ fn collect(dv: &mut Box<dyn rucene::index::SortedSetDocValues>) -> Result<JavaHa
     let mut out = JavaHashSet::new();
     for _i in 0..dv.doc_value_count()? {
         let o = dv.next_ord()?;
-        out.add(BytesRef::deep_copy_of(&dv.lookup_ord(o)?));
+        out.add(BytesRef::deep_copy_of(dv.lookup_ord(o)?));
     }
     Ok(out)
 }

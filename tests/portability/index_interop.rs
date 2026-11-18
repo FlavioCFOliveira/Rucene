@@ -420,7 +420,7 @@ fn print_doc_values(out: &mut String, leaves: &[Arc<LeafReaderContext>], doc: i3
     if let Some(mut v) = leaf.get_sorted_doc_values("dv_sorted").unwrap() {
         if v.advance_exact(local).unwrap() {
             let ord = v.ord_value().unwrap();
-            sorted = format!("{ord}:{}", utf8(&v.lookup_ord(ord).unwrap()));
+            sorted = format!("{ord}:{}", utf8(v.lookup_ord(ord).unwrap()));
         }
     }
     writeln!(out, "  dv dv_sorted {sorted}").unwrap();
@@ -445,7 +445,7 @@ fn print_doc_values(out: &mut String, leaves: &[Arc<LeafReaderContext>], doc: i3
             present = true;
             for _ in 0..v.doc_value_count().unwrap() {
                 let ord = v.next_ord().unwrap();
-                write!(line, " {ord}:{}", utf8(&v.lookup_ord(ord).unwrap())).unwrap();
+                write!(line, " {ord}:{}", utf8(v.lookup_ord(ord).unwrap())).unwrap();
             }
         }
     }

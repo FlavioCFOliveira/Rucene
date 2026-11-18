@@ -162,7 +162,7 @@ macro_rules! byte_case {
                 similarity_function: VectorSimilarityFunction,
             ) -> Result<Box<dyn IndexableField>> {
                 Ok(Box::new(KnnByteVectorField::new(
-                    name,
+                    name.to_string(),
                     &float_to_bytes(vector),
                     similarity_function,
                 )?))
@@ -170,7 +170,7 @@ macro_rules! byte_case {
 
             fn get_knn_vector_field(name: &str, vector: &[f32]) -> Result<Box<dyn IndexableField>> {
                 Ok(Box::new(KnnByteVectorField::new(
-                    name,
+                    name.to_string(),
                     &float_to_bytes(vector),
                     VectorSimilarityFunction::EUCLIDEAN,
                 )?))

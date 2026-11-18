@@ -850,14 +850,14 @@ fn create_missing_value_document() -> Result<Document> {
 
 fn create_sndv_and_point_document(field: &str, value: i64) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(SortedNumericDocValuesField::new(field, value));
-    doc.add(LongPoint::new(field, &[value])?);
+    doc.add(SortedNumericDocValuesField::new(field.to_string(), value));
+    doc.add(LongPoint::new(field.to_string(), &[value])?);
     Ok(doc)
 }
 
 fn create_document(field: &str, value: i64) -> Document {
     let mut doc = Document::new();
-    doc.add(SortedNumericDocValuesField::new(field, value));
+    doc.add(SortedNumericDocValuesField::new(field.to_string(), value));
     doc
 }
 
@@ -1027,8 +1027,8 @@ fn add_doc_with_bkd(
 ) -> Result<()> {
     for _i in 0..repeat {
         let mut doc = Document::new();
-        doc.add(SortedNumericDocValuesField::new(field, value));
-        doc.add(LongPoint::new(field, &[value])?);
+        doc.add(SortedNumericDocValuesField::new(field.to_string(), value));
+        doc.add(LongPoint::new(field.to_string(), &[value])?);
         index_writer.add_document(&doc)?;
     }
     Ok(())

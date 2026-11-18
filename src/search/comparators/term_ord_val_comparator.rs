@@ -652,7 +652,7 @@ impl TermOrdValComparator {
                     let built = init_postings(
                         reader.as_ref(),
                         field,
-                        leaf.terms_index.as_ref(),
+                        leaf.terms_index.as_mut(),
                         min_ord,
                         max_ord,
                     )?;
@@ -709,7 +709,7 @@ impl TermOrdValComparator {
 fn init_postings(
     reader: &dyn LeafReader,
     field: &str,
-    terms_index: &dyn SortedDocValues,
+    terms_index: &mut dyn SortedDocValues,
     min_ord: i32,
     max_ord: i32,
 ) -> Result<PostingsDisjunction> {
@@ -726,7 +726,7 @@ fn init_postings(
             ));
         };
         let mut terms_enum = terms.iterator()?;
-        if !terms_enum.seek_exact(&min_term)? {
+        if !terms_enum.seek_exact(min_term)? {
             return Err(LuceneError::illegal_state(format!(
                 "Term {min_term} exists in doc values but not in the terms index"
             )));
@@ -795,7 +795,7 @@ impl SlotComparator for TermOrdValComparator {
         self.current_reader_gen += 1;
         let reader = context.leaf_reader();
         let max_doc = reader.max_doc();
-        let terms_index = self.open_sorted_doc_values(reader.as_ref())?;
+        let mut terms_index = self.open_sorted_doc_values(reader.as_ref())?;
 
         let missing_ord = if self.sort_missing_last { i32::MAX } else { -1 };
 
@@ -1018,7 +1018,7 @@ impl SlotComparator for TermOrdValComparator {
             None
         } else {
             debug_assert!(ord >= 0);
-            Some(BytesRef::deep_copy_of(&leaf.terms_index.lookup_ord(ord)?))
+            Some(BytesRef::deep_copy_of(leaf.terms_index.lookup_ord(ord)?))
         };
         self.values[slot as usize] = value;
         self.ords[slot as usize] = ord;

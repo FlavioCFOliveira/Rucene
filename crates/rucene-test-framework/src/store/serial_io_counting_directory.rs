@@ -242,7 +242,7 @@ impl SerializedIOCountingIndexInput {
         let random = hints_of::<DataAccessHint>(context).contains(&&DataAccessHint::Random);
         SerializedIOCountingIndexInput {
             shared,
-            resource_description: r#in.to_java_string(),
+            resource_description: r#in.to_java_string().into_owned(),
             r#in,
             slice_offset: offset,
             slice_length: length,
@@ -281,8 +281,8 @@ impl SerializedIOCountingIndexInput {
 
 impl DataInput for SerializedIOCountingIndexInput {
     /// `IndexInput.toString()`: the resource description.
-    fn to_java_string(&self) -> String {
-        self.resource_description.clone()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.resource_description)
     }
 
     /// `readByte()`.

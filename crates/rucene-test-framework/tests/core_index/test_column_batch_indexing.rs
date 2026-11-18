@@ -303,7 +303,7 @@ fn test_multiple_columns() -> Result<()> {
         assert_equals(&(i as i32), &ndv.next_doc()?);
         assert_equals(&numeric_values[i], &ndv.long_value()?);
         assert_equals(&(i as i32), &sdv.next_doc()?);
-        assert_equals(&sorted_values[i], &sdv.lookup_ord(sdv.ord_value()?)?);
+        assert_equals(&sorted_values[i], sdv.lookup_ord(sdv.ord_value()?)?);
     }
 
     c.close(Some(r))

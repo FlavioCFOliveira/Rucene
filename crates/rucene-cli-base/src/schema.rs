@@ -612,7 +612,7 @@ fn add_value(document: &mut Document, spec: &FieldSpec, value: &Value) -> Result
         (FieldKind::Name, Value::String(text)) => {
             document.add(TextField::new(name, text.clone(), Store::YES)?);
             document.add(KeywordField::new(
-                &spec.exact_field(),
+                spec.exact_field(),
                 text.clone(),
                 Store::NO,
             )?);

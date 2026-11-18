@@ -2867,7 +2867,7 @@ pub fn check_sorted_doc_values(
                 )));
             }
         }
-        last_value = Some(BytesRef::deep_copy_of(&term));
+        last_value = Some(BytesRef::deep_copy_of(term));
     }
     Ok(())
 }
@@ -2977,7 +2977,7 @@ pub fn check_sorted_set_doc_values(
                 )));
             }
         }
-        last_value = Some(BytesRef::deep_copy_of(&term));
+        last_value = Some(BytesRef::deep_copy_of(term));
     }
     Ok(())
 }

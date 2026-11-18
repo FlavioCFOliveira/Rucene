@@ -188,7 +188,11 @@ pub fn class_def() -> Arc<Class> {
 }
 
 fn text_field(name: &str, value: &str, store: Store) -> Result<Box<TextField>> {
-    Ok(Box::new(TextField::new(name, value.to_string(), store)?))
+    Ok(Box::new(TextField::new(
+        name.to_string(),
+        value.to_string(),
+        store,
+    )?))
 }
 
 fn log_odds_set_up(f: &mut LogOddsFusion) -> Result<()> {
@@ -629,7 +633,7 @@ static QUERY_A: LazyLock<Vec<f32>> = LazyLock::new(|| normalize(&[1.0, 0.0, 0.0]
 
 fn knn_field(name: &str, v: &[f32]) -> Result<Box<KnnFloatVectorField>> {
     Ok(Box::new(KnnFloatVectorField::new(
-        name,
+        name.to_string(),
         &normalize(v),
         VectorSimilarityFunction::COSINE,
     )?))

@@ -763,6 +763,13 @@ struct PerField {
     /// `IndexingChain.java:1774-1775`), which `invertTokenStream` assigns from
     /// `field.tokenStream(analyzer, tokenStream)` (`IndexingChain.java:1908`).
     token_stream: Option<Box<dyn TokenStream>>,
+    /// The buffer every token's term is encoded into, kept across the field's
+    /// instances.
+    ///
+    /// Java encodes it into the term attribute's own `BytesRefBuilder`
+    /// (`CharTermAttributeImpl.java:39, 92-95`), which lives as long as the
+    /// reused token stream and only grows to the longest term.
+    term_bytes: BytesRef,
 }
 
 impl PerField {
@@ -1764,6 +1771,7 @@ impl DefaultIndexingChain {
             knn_field_vectors_writer: None,
             column_features: 0,
             token_stream: None,
+            term_bytes: BytesRef::default(),
         });
         self.field_hash[hash_pos] = Some(index);
         // `totalFieldCount++`; at most 50% load factor.
@@ -2660,6 +2668,10 @@ impl DefaultIndexingChain {
             }
         };
         let mut term_vectors = term_vectors;
+        // PERF: the buffer of the previous instance, as Java's term attribute
+        // keeps its builder (see `PerField::term_bytes`); a new one per
+        // field value grew on its first token.
+        let mut term_bytes = std::mem::take(&mut per_field.term_bytes);
 
         let outcome = (|| -> Result<()> {
             stream.reset()?;
@@ -2673,7 +2685,6 @@ impl DefaultIndexingChain {
             // (`IndexingChain.java:1908-1912`).
             Self::start_vectors(term_vectors.as_deref_mut(), per_field, field, first)?;
 
-            let mut term_bytes = BytesRef::default();
             while stream.increment_token()? {
                 let token = read_token(per_field.invert_state.attributes()?, &mut term_bytes)?;
                 let state = &mut per_field.invert_state;
@@ -2801,6 +2812,7 @@ impl DefaultIndexingChain {
             per_field.invert_state.offset += end_offset;
             Ok(())
         })();
+        per_field.term_bytes = term_bytes;
 
         let close_outcome = stream.close();
         // `tokenStream = field.tokenStream(...)`: the stream is kept, closed,
@@ -5504,7 +5516,7 @@ mod tests {
         let stream: Arc<AtomicRefCell<dyn TokenStream>> =
             Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens)));
         Box::new(
-            Field::new_with_token_stream(name, stream, field_type(options))
+            Field::new_with_token_stream(name.to_string(), stream, field_type(options))
                 .expect("token stream field"),
         )
     }
@@ -6388,7 +6400,7 @@ mod tests {
         let stream: Arc<AtomicRefCell<dyn TokenStream>> =
             Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens)));
         Box::new(
-            Field::new_with_token_stream(name, stream, norm_field_type(options))
+            Field::new_with_token_stream(name.to_string(), stream, norm_field_type(options))
                 .expect("token stream field"),
         )
     }
@@ -7183,7 +7195,9 @@ mod tests {
 
     /// Builds a stored-and-indexed text field.
     fn stored_text_field(name: &str, value: &str) -> Box<dyn crate::index::IndexableField> {
-        Box::new(TextField::new(name, value.to_string(), Store::YES).expect("text field"))
+        Box::new(
+            TextField::new(name.to_string(), value.to_string(), Store::YES).expect("text field"),
+        )
     }
 
     /// Reads every document of the flushed segment back as a `Document`.
@@ -7494,7 +7508,7 @@ mod tests {
             Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens)));
         Box::new(
             Field::new_with_token_stream(
-                name,
+                name.to_string(),
                 stream,
                 tv_field_type(options, vectors, positions, offsets, payloads),
             )
@@ -7782,6 +7796,43 @@ mod tests {
                 payloads: Vec::new(),
             }]
         );
+    }
+
+    /// The term buffer is kept across the field's instances, as Java's term
+    /// attribute keeps its `BytesRefBuilder` (`CharTermAttributeImpl.java:39,
+    /// 92-95`): a shorter term after a longer one, in a later document, is
+    /// indexed with its own bytes only.
+    #[test]
+    fn a_kept_term_buffer_never_leaks_an_earlier_longer_term() {
+        let documents: Vec<Document> = [
+            vec![Tok::new("longerterm", 1, 0, 10)],
+            vec![Tok::new("ab", 1, 0, 2), Tok::new("abc", 1, 3, 6)],
+        ]
+        .into_iter()
+        .map(|tokens| {
+            let mut document = Document::new();
+            document.add_shared(std::sync::Arc::from(tv_field(
+                "body",
+                IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+                true,
+                false,
+                false,
+                false,
+                tokens,
+            )));
+            document
+        })
+        .collect();
+        let (_, vectors) = flush_and_read_vectors(documents);
+        let terms = |doc: usize| {
+            vectors[doc].as_ref().expect("the document has vectors")[0]
+                .terms
+                .iter()
+                .map(|term| term.term.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(terms(0), vec!["longerterm"]);
+        assert_eq!(terms(1), vec!["ab", "abc"]);
     }
 
     #[test]

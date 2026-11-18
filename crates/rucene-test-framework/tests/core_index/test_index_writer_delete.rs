@@ -690,10 +690,7 @@ fn test_delete_all_repeated() -> Result<()> {
     let mut document = Document::new();
     let fields_per_doc: i64 = 1_000;
     for i in 0..fields_per_doc {
-        document.add(StoredField::new_string(
-            &format!("field{i}"),
-            String::new(),
-        )?);
+        document.add(StoredField::new_string(format!("field{i}"), String::new())?);
     }
     let document = Arc::new(document);
     let num_fields = Arc::new(AtomicI64::new(0));

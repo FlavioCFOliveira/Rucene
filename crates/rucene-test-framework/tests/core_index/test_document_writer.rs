@@ -575,7 +575,7 @@ fn do_test_ram_usage(
 fn test_ram_usage_stored(_inst: &Instance) -> Result<()> {
     do_test_ram_usage(|field| {
         Ok(Box::new(StoredField::new_bytes(
-            field,
+            field.to_string(),
             BytesRef::from_char_sequence("Lucene"),
         )?))
     })
@@ -585,7 +585,7 @@ fn test_ram_usage_stored(_inst: &Instance) -> Result<()> {
 fn test_ram_usage_indexed(_inst: &Instance) -> Result<()> {
     do_test_ram_usage(|field| {
         Ok(Box::new(StringField::new_with_bytes(
-            field,
+            field.to_string(),
             BytesRef::from_char_sequence("Lucene"),
             Store::NO,
         )?))
@@ -594,19 +594,19 @@ fn test_ram_usage_indexed(_inst: &Instance) -> Result<()> {
 
 /// Port of `TestDocumentWriter.testRAMUsagePoint`.
 fn test_ram_usage_point(_inst: &Instance) -> Result<()> {
-    do_test_ram_usage(|field| Ok(Box::new(IntPoint::new(field, &[42])?)))
+    do_test_ram_usage(|field| Ok(Box::new(IntPoint::new(field.to_string(), &[42])?)))
 }
 
 /// Port of `TestDocumentWriter.testRAMUsageNumericDocValue`.
 fn test_ram_usage_numeric_doc_value(_inst: &Instance) -> Result<()> {
-    do_test_ram_usage(|field| Ok(Box::new(NumericDocValuesField::new(field, 42))))
+    do_test_ram_usage(|field| Ok(Box::new(NumericDocValuesField::new(field.to_string(), 42))))
 }
 
 /// Port of `TestDocumentWriter.testRAMUsageSortedDocValue`.
 fn test_ram_usage_sorted_doc_value(_inst: &Instance) -> Result<()> {
     do_test_ram_usage(|field| {
         Ok(Box::new(SortedDocValuesField::new(
-            field,
+            field.to_string(),
             BytesRef::from_char_sequence("Lucene"),
         )))
     })
@@ -616,7 +616,7 @@ fn test_ram_usage_sorted_doc_value(_inst: &Instance) -> Result<()> {
 fn test_ram_usage_binary_doc_value(_inst: &Instance) -> Result<()> {
     do_test_ram_usage(|field| {
         Ok(Box::new(BinaryDocValuesField::new(
-            field,
+            field.to_string(),
             BytesRef::from_char_sequence("Lucene"),
         )))
     })
@@ -624,14 +624,19 @@ fn test_ram_usage_binary_doc_value(_inst: &Instance) -> Result<()> {
 
 /// Port of `TestDocumentWriter.testRAMUsageSortedNumericDocValue`.
 fn test_ram_usage_sorted_numeric_doc_value(_inst: &Instance) -> Result<()> {
-    do_test_ram_usage(|field| Ok(Box::new(SortedNumericDocValuesField::new(field, 42))))
+    do_test_ram_usage(|field| {
+        Ok(Box::new(SortedNumericDocValuesField::new(
+            field.to_string(),
+            42,
+        )))
+    })
 }
 
 /// Port of `TestDocumentWriter.testRAMUsageSortedSetDocValue`.
 fn test_ram_usage_sorted_set_doc_value(_inst: &Instance) -> Result<()> {
     do_test_ram_usage(|field| {
         Ok(Box::new(SortedSetDocValuesField::new(
-            field,
+            field.to_string(),
             BytesRef::from_char_sequence("Lucene"),
         )))
     })
@@ -641,7 +646,7 @@ fn test_ram_usage_sorted_set_doc_value(_inst: &Instance) -> Result<()> {
 fn test_ram_usage_vector(_inst: &Instance) -> Result<()> {
     do_test_ram_usage(|field| {
         Ok(Box::new(KnnFloatVectorField::new(
-            field,
+            field.to_string(),
             &[1.0, 2.0, 3.0, 4.0],
             VectorSimilarityFunction::EUCLIDEAN,
         )?))

@@ -298,8 +298,8 @@ fn files_row(seed: i64) -> String {
     let mut d = Document::new();
     d.add(StringField::new("id", "0".to_string(), Store::NO).unwrap());
     for i in 0..10 {
-        d.add(StringField::new(&format!("f{i}"), format!("v{i}"), Store::NO).unwrap());
-        d.add(NumericDocValuesField::new(&format!("d{i}"), i));
+        d.add(StringField::new(format!("f{i}"), format!("v{i}"), Store::NO).unwrap());
+        d.add(NumericDocValuesField::new(format!("d{i}"), i));
     }
     w.add_document(&d).unwrap();
     w.commit().unwrap();

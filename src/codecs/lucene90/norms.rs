@@ -51,7 +51,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::codecs::codec_util;
 use crate::codecs::lucene90::indexed_disi::{
-    create_block_slice, create_jump_table, write_bit_set, IndexedDISI, DEFAULT_DENSE_RANK_POWER,
+    create_block_slice, create_jump_table, write_bit_set, IndexedDISI, JumpTable,
+    DEFAULT_DENSE_RANK_POWER,
 };
 use crate::codecs::norms::{NormsConsumer, NormsFormat, NormsProducer};
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
@@ -387,7 +388,7 @@ pub struct Lucene90NormsProducer {
     disi_inputs: Mutex<HashMap<i32, SharedIndexInput>>,
     /// `disiJumpTables`: the jump tables a merge instance opened, by field
     /// number, each with its resource description read once.
-    disi_jump_tables: Mutex<HashMap<i32, SharedRandomAccessSlice>>,
+    disi_jump_tables: Mutex<HashMap<i32, SharedRandomAccessInput>>,
     /// `dataInputs`: the values slices a merge instance opened, by field
     /// number, each with its resource description read once.
     data_inputs: Mutex<HashMap<i32, SharedRandomAccessSlice>>,
@@ -629,8 +630,8 @@ impl Lucene90NormsProducer {
         &self,
         field: &FieldInfo,
         entry: &NormsEntry,
-    ) -> Result<Option<Box<dyn RandomAccessInput>>> {
-        let mut jump_table: Option<SharedRandomAccessSlice> = None;
+    ) -> Result<Option<JumpTable>> {
+        let mut jump_table: Option<SharedRandomAccessInput> = None;
         if self.merging {
             jump_table = lock(&self.disi_jump_tables).get(&field.number).cloned();
         }
@@ -647,15 +648,17 @@ impl Lucene90NormsProducer {
                     return Ok(None);
                 };
                 if !self.merging {
-                    return Ok(Some(jump_table));
+                    return Ok(Some(JumpTable::Owned(jump_table)));
                 }
-                let jump_table =
-                    SharedRandomAccessSlice::new(Arc::new(AtomicRefCell::new(jump_table)));
-                lock(&self.disi_jump_tables).insert(field.number, jump_table.clone());
+                let jump_table = Arc::new(AtomicRefCell::new(jump_table));
+                lock(&self.disi_jump_tables).insert(field.number, Arc::clone(&jump_table));
                 jump_table
             }
         };
-        Ok(Some(Box::new(jump_table)))
+        // PERF: a merge instance hands out the cached table itself, as
+        // `getDisiJumpTable` returns its cached object, not a new box around
+        // it per call.
+        Ok(Some(JumpTable::Shared(jump_table)))
     }
 
     /// Opens the docs-with-field iterator of one sparse field.
@@ -667,7 +670,7 @@ impl Lucene90NormsProducer {
     fn disi(&self, field: &FieldInfo, entry: &NormsEntry) -> Result<IndexedDISI> {
         let disi_input = self.get_disi_input(field, entry)?;
         let disi_jump_table = self.get_disi_jump_table(field, entry)?;
-        IndexedDISI::with_slices(
+        IndexedDISI::with_jump_table(
             disi_input,
             disi_jump_table,
             entry.jump_table_entry_count as i32,
@@ -832,8 +835,8 @@ impl DataInput for SharedRandomAccessSlice {
         self.input.borrow_mut().read_byte()
     }
 
-    fn to_java_string(&self) -> String {
-        self.resource_description.to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.resource_description)
     }
 
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
@@ -959,8 +962,8 @@ impl DataInput for MergingDisiInput {
         unused_by_indexed_disi()
     }
 
-    fn to_java_string(&self) -> String {
-        "docs".to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed("docs")
     }
 
     /// `IndexInput.skipBytes`: `seek(getFilePointer() + numBytes)`.
@@ -2170,6 +2173,55 @@ mod tests {
             collect_values(&mut *merge.get_norms(&body).unwrap().unwrap(), 50),
             expected
         );
+    }
+
+    /// `getDisiJumpTable` on a merge instance returns the jump table it cached
+    /// for the field, the same object on every call
+    /// (`Lucene90NormsProducer.java:358-375`): every iterator reads the one
+    /// cached table, none a box of its own; the search instance (the positive
+    /// control) opens a table per call. A value in the third block, reached
+    /// through the shared table, reads back.
+    #[test]
+    fn the_merge_instance_hands_out_its_cached_jump_table() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let max_doc = 3 * 65536 + 10;
+        let values: Vec<(i32, i64)> = (0..max_doc)
+            .filter(|d| d % 1000 == 7)
+            .map(|d| (d, 1 + i64::from(d % 100)))
+            .collect();
+        let body = write_one_field(&dir, max_doc, values.clone());
+        let info = test_segment_info("_0", max_doc);
+        let fis = field_infos(vec![body.clone()]);
+        let producer = Lucene90NormsProducer::new(&read_state(&dir, &info, &fis)).unwrap();
+        let entry = producer.norms[&body.number];
+        assert!(
+            entry.jump_table_entry_count > 0,
+            "a field with a jump table"
+        );
+        assert!(matches!(
+            producer.get_disi_jump_table(&body, &entry).unwrap(),
+            Some(JumpTable::Owned(_))
+        ));
+        assert!(lock(&producer.disi_jump_tables).is_empty());
+
+        let merge = producer.merge_instance().unwrap();
+        let shared = |table: Option<JumpTable>| match table {
+            Some(JumpTable::Shared(table)) => table,
+            _ => panic!("a merge instance hands out its cached jump table"),
+        };
+        let first = shared(merge.get_disi_jump_table(&body, &entry).unwrap());
+        let second = shared(merge.get_disi_jump_table(&body, &entry).unwrap());
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(
+            &first,
+            &lock(&merge.disi_jump_tables)[&body.number]
+        ));
+
+        let (target, value) = *values.last().unwrap();
+        assert!(target >= 2 * 65536, "a value in the third block");
+        let mut norms = merge.get_norms(&body).unwrap().unwrap();
+        assert_eq!(norms.advance(target).unwrap(), target);
+        assert_eq!(norms.long_value().unwrap(), value);
     }
 
     /// `getDataInput` on a merge instance returns the slice it cached for the

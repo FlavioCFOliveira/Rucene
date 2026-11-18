@@ -142,8 +142,8 @@ impl DataInput for CountingIndexInput {
         Ok(0)
     }
 
-    fn to_java_string(&self) -> String {
-        self.resource_description().to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(self.resource_description())
     }
 
     fn read_bytes(&mut self, _b: Option<&mut [u8]>, _offset: usize, _len: usize) -> Result<()> {

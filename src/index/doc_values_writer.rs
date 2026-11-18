@@ -1600,12 +1600,16 @@ impl Dictionary {
         self.sorted_values.len()
     }
 
-    /// `hash.get(sortedValues[Math.toIntExact(ord)], scratch)`
+    /// `hash.get(sortedValues[Math.toIntExact(ord)], scratch); return scratch;`
     /// (`SortedSetDocValuesWriter.java:411-416`): an ordinal outside the `int`
     /// range is Java's `ArithmeticException("integer overflow")`, and an
     /// out-of-range `int` one is the `ArrayIndexOutOfBoundsException` of
     /// indexing the array.
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+    ///
+    /// `scratch` is the calling view's own `BytesRef`, as in Java. Java points
+    /// it into the pool; a port `BytesRef` owns its bytes, so the value is
+    /// copied into `scratch`'s reused buffer, which allocates only to grow.
+    fn lookup_ord<'s>(&self, ord: i64, scratch: &'s mut BytesRef) -> Result<&'s BytesRef> {
         debug_assert!(
             ord >= 0 && ord < self.sorted_values.len() as i64,
             "ord={ord} is out of bounds 0 .. {}",
@@ -1619,7 +1623,14 @@ impl Dictionary {
         usize::try_from(ord)
             .ok()
             .and_then(|ord| self.sorted_values.get(ord))
-            .map(|&term_id| BytesRef::new(self.hash.get(&self.pool, term_id).to_vec()))
+            .map(|&term_id| {
+                let value = self.hash.get(&self.pool, term_id);
+                scratch.bytes.clear();
+                scratch.bytes.extend_from_slice(value);
+                scratch.offset = 0;
+                scratch.length = value.len();
+                &*scratch
+            })
             .ok_or_else(|| {
                 // `sortedValues[ord]` on an `int[]`.
                 LuceneError::unchecked(
@@ -2222,6 +2233,9 @@ where
 /// the ordinals iterator and is mapped through `ordMap`.
 struct BufferedSorted<V: PackedLongValuesAccess> {
     dictionary: Dictionary,
+    /// `scratch`: the value `lookupOrd` last read, lent to the caller
+    /// (`SortedDocValuesWriter.java:297`).
+    scratch: BytesRef,
     ord: i32,
     iter: OwnedPackedLongValuesIterator<V>,
     docs_with_field: Box<dyn DocIdSetIterator + Send + Sync>,
@@ -2235,6 +2249,7 @@ impl<V: PackedLongValuesAccess> BufferedSorted<V> {
     ) -> Self {
         Self {
             dictionary,
+            scratch: BytesRef::default(),
             ord: 0,
             iter: OwnedPackedLongValuesIterator::new(doc_to_ord),
             docs_with_field: DocsWithFieldSet::shared_iterator(docs_with_field),
@@ -2304,8 +2319,11 @@ impl<V: PackedLongValuesAccess> SortedDocValues for BufferedSorted<V> {
         Ok(self.dictionary.len() as i32)
     }
 
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
-        self.dictionary.lookup_ord(i64::from(ord))
+    /// `hash.get(sortedValues[ord], scratch); return scratch;`
+    /// (`SortedDocValuesWriter.java:363-368`).
+    fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
+        self.dictionary
+            .lookup_ord(i64::from(ord), &mut self.scratch)
     }
 }
 
@@ -2393,7 +2411,7 @@ impl SortedDocValues for SortingSorted {
         self.in_values.get_value_count()
     }
 
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
         self.in_values.lookup_ord(ord)
     }
 }
@@ -2522,7 +2540,7 @@ impl SortedSetDocValues for SingletonSortedAsSortedSet {
     /// the narrowing wraps, and an ordinal outside the `int` range reaches
     /// the single-valued lookup as whatever it wraps to, which rejects it as
     /// Java's array access does.
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
         self.inner.lookup_ord(ord as i32)
     }
 
@@ -3649,6 +3667,7 @@ impl BufferedSortedSetProducer {
     fn buffered(&self) -> BufferedSortedSet {
         BufferedSortedSet {
             dictionary: self.dictionary.clone(),
+            scratch: BytesRef::default(),
             ords_iter: OwnedPackedLongValuesIterator::new(Arc::clone(&self.ords)),
             ord_counts_iter: OwnedPackedLongValuesIterator::new(Arc::clone(&self.ord_counts)),
             docs_with_field: DocsWithFieldSet::shared_iterator(&self.docs_with_field),
@@ -3683,6 +3702,9 @@ impl DocValuesProducer for BufferedSortedSetProducer {
 /// mapped through `ordMap` and sorted as the document is reached.
 struct BufferedSortedSet {
     dictionary: Dictionary,
+    /// `scratch`: the value `lookupOrd` last read, lent to the caller
+    /// (`SortedSetDocValuesWriter.java:324`).
+    scratch: BytesRef,
     ords_iter: OwnedPackedLongValuesIterator<PackedLongValues>,
     ord_counts_iter: OwnedPackedLongValuesIterator<DeltaPackedLongValues>,
     docs_with_field: Box<dyn DocIdSetIterator + Send + Sync>,
@@ -3761,8 +3783,10 @@ impl SortedSetDocValues for BufferedSortedSet {
         Ok(self.ord_count)
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
-        self.dictionary.lookup_ord(ord)
+    /// `hash.get(sortedValues[Math.toIntExact(ord)], scratch); return scratch;`
+    /// (`SortedSetDocValuesWriter.java:411-416`).
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
+        self.dictionary.lookup_ord(ord, &mut self.scratch)
     }
 
     fn get_value_count(&self) -> Result<i64> {
@@ -3921,7 +3945,7 @@ impl SortedSetDocValues for SortingSortedSet {
         Ok(self.count)
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
         self.in_values.lookup_ord(ord)
     }
 
@@ -3953,7 +3977,7 @@ mod tests {
     }
 
     /// A single-valued sorted iterator over the dictionary `["a", "b"]`.
-    struct TwoTerms;
+    struct TwoTerms([BytesRef; 2]);
     impl DocIdSetIterator for TwoTerms {
         fn doc_id(&self) -> i32 {
             -1
@@ -3980,10 +4004,10 @@ mod tests {
         fn get_value_count(&self) -> Result<i32> {
             Ok(2)
         }
-        fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+        fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
             match ord {
-                0 => Ok(BytesRef::new(b"a".to_vec())),
-                1 => Ok(BytesRef::new(b"b".to_vec())),
+                0 => Ok(&self.0[0]),
+                1 => Ok(&self.0[1]),
                 // Java's array access throws; any refusal stands for it.
                 _ => Err(LuceneError::illegal_argument(format!("ord={ord}"))),
             }
@@ -3997,7 +4021,10 @@ mod tests {
     /// `ArithmeticException`.
     #[test]
     fn singleton_sorted_set_lookup_ord_wraps_the_ordinal_as_java_casts_it() {
-        let set = SingletonSortedAsSortedSet::new(Box::new(TwoTerms));
+        let mut set = SingletonSortedAsSortedSet::new(Box::new(TwoTerms([
+            BytesRef::new(b"a".to_vec()),
+            BytesRef::new(b"b".to_vec()),
+        ])));
         assert_eq!(set.lookup_ord((1i64 << 32) + 1).unwrap().slice(), b"b");
         assert!(matches!(
             set.lookup_ord(1i64 << 31),
@@ -4019,9 +4046,36 @@ mod tests {
         let mut hash = Arc::new(crate::util::bytes_ref_hash::BytesRefHash::new(counter()));
         let dictionary = Dictionary::build(&mut hash, &pool).unwrap();
         assert!(matches!(
-            dictionary.lookup_ord(i64::from(i32::MAX) + 1),
+            dictionary.lookup_ord(i64::from(i32::MAX) + 1, &mut BytesRef::default()),
             Err(LuceneError { kind: LuceneErrorKind::Arithmetic(ref message), .. }) if message == "integer overflow"
         ));
+    }
+
+    /// `hash.get(sortedValues[ord], scratch); return scratch;`
+    /// (`SortedDocValuesWriter.java:363-368`, `SortedSetDocValuesWriter.java:411-416`):
+    /// the flush views lend every value from their one `scratch`, in sorted
+    /// order, and a shorter value reuses the buffer a longer one grew, so a
+    /// lookup allocates only to grow (the port copies out of the pool where
+    /// Java points into it).
+    #[test]
+    fn the_dictionary_lends_each_value_from_the_views_one_scratch() {
+        let mut pool = ByteBlockPool::new(counter());
+        let mut hash = crate::util::bytes_ref_hash::BytesRefHash::new(counter());
+        for value in [&b"pear"[..], b"apple", b"", b"fig", b"banana-split"] {
+            hash.add(&mut pool, value).unwrap();
+        }
+        let (pool, mut hash) = (Arc::new(pool), Arc::new(hash));
+        let dictionary = Dictionary::build(&mut hash, &pool).unwrap();
+        let sorted: [&[u8]; 5] = [b"", b"apple", b"banana-split", b"fig", b"pear"];
+
+        let mut scratch = BytesRef::default();
+        dictionary.lookup_ord(2, &mut scratch).unwrap();
+        let grown = scratch.bytes.as_ptr();
+        for (ord, value) in sorted.iter().enumerate() {
+            let lent = dictionary.lookup_ord(ord as i64, &mut scratch).unwrap();
+            assert_eq!(lent.slice(), *value);
+            assert_eq!(lent.bytes.as_ptr(), grown, "no regrowth at ord {ord}");
+        }
     }
 
     /// The indexing chain's shared `docValuesBytePool`, standing alone.
@@ -4104,7 +4158,11 @@ mod tests {
             docs_ords.push((doc, ords));
         }
         let dictionary = (0..sorted_set.get_value_count()?)
-            .map(|ord| sorted_set.lookup_ord(ord).map(|value| value.bytes))
+            .map(|ord| {
+                sorted_set
+                    .lookup_ord(ord)
+                    .map(|value| value.slice().to_vec())
+            })
             .collect::<Result<Vec<_>>>()?;
         Ok((docs_ords, dictionary))
     }
@@ -4172,7 +4230,7 @@ mod tests {
                 docs_ords.push((doc, sorted.ord_value()?));
             }
             let dictionary = (0..sorted.get_value_count()?)
-                .map(|ord| sorted.lookup_ord(ord).map(|value| value.bytes))
+                .map(|ord| sorted.lookup_ord(ord).map(|value| value.slice().to_vec()))
                 .collect::<Result<Vec<_>>>()?;
             self.fields.push((
                 field.name.clone(),

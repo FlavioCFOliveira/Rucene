@@ -144,7 +144,7 @@ fn term(field: &str, text: &str) -> Term {
 }
 
 fn keyword(field: &str, value: String) -> Box<StringField> {
-    Box::new(StringField::new(field, value, Store::NO).unwrap())
+    Box::new(StringField::new(field.to_string(), value, Store::NO).unwrap())
 }
 
 /// `TermsDictFixture.doc(int)`; the perturbed corpus gives document 0 the

@@ -659,7 +659,7 @@ fn assert_setters(lmp: &dyn MergePolicy) -> Result<()> {
 /// methods take.
 fn soft_field(name: &str, value: i64) -> Result<Field> {
     Field::new_with_number(
-        name,
+        name.to_string(),
         NumericValue::Long(value),
         NumericDocValuesField::type_().clone(),
     )
@@ -1279,8 +1279,8 @@ impl MockAssertFileExistIndexInput {
 
 impl DataInput for MockAssertFileExistIndexInput {
     /// The inherited `IndexInput.toString()`: the resource description.
-    fn to_java_string(&self) -> String {
-        self.resource_description.clone()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.resource_description)
     }
 
     fn read_byte(&mut self) -> Result<u8> {

@@ -104,7 +104,9 @@ enum Layout {
 ///   miss, which issues the `madvise` Java would skip for resident pages. The
 ///   advice is a hint, so this costs a system call and changes no result.
 pub struct MemorySegmentIndexInput {
-    resource_description: String,
+    /// Shared by every clone, as Java's clones are built from the same
+    /// `String` (`MemorySegmentIndexInput.java:570-584`).
+    resource_description: Arc<str>,
     length: i64,
     chunk_size_mask: i64,
     chunk_size_power: i32,
@@ -139,7 +141,7 @@ impl MemorySegmentIndexInput {
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`] if `segments` is empty.
     pub fn new_instance(
-        resource_description: impl Into<String>,
+        resource_description: impl Into<Arc<str>>,
         arena: Arc<dyn Arena>,
         segments: Vec<MemorySegment>,
         length: i64,
@@ -169,7 +171,7 @@ impl MemorySegmentIndexInput {
     /// The shared part of Lucene's two private constructors.
     #[allow(clippy::too_many_arguments)]
     fn build(
-        resource_description: String,
+        resource_description: Arc<str>,
         arena: Option<Arc<dyn Arena>>,
         segments: Vec<MemorySegment>,
         length: i64,
@@ -613,7 +615,20 @@ impl MemorySegmentIndexInput {
             slices
         };
 
-        let new_resource_description = self.full_slice_description(slice_description);
+        // `getFullSliceDescription(sliceDescription)` (`IndexInput.java:144-151`):
+        // a clone's description is this input's own `String`, a slice's is one
+        // concatenation.
+        // PERF: shared, not copied, and built straight into the shared string.
+        let new_resource_description = if slice_description.is_empty() {
+            Arc::clone(&self.resource_description)
+        } else {
+            crate::store::concat_shared(&[
+                &self.resource_description,
+                " [slice=",
+                slice_description,
+                "]",
+            ])
+        };
         if slices.len() == 1 {
             let segment = if is_clone {
                 slices[0].clone()
@@ -663,7 +678,9 @@ impl MemorySegmentIndexInput {
         self.ensure_open()?;
         self.ensure_accessible()?;
         let mut clone = Self::build(
-            self.resource_description.clone(),
+            // PERF: the same description, shared (`toString()` in Java's
+            // `clone()`, `MemorySegmentIndexInput.java:570-584`).
+            Arc::clone(&self.resource_description),
             // Clones don't have an arena, as they can't close.
             None,
             self.segments.clone(),
@@ -757,8 +774,8 @@ impl MemorySegmentIndexInput {
 
 impl DataInput for MemorySegmentIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     #[inline]

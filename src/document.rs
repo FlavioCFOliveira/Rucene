@@ -1255,26 +1255,93 @@ fn string_token_stream(
     ))
 }
 
-/// The name a [`Field`] holds: Java's `Field.name`, a `String` reference.
+/// The name a field holds: Java's `Field.name`, the `String` reference its
+/// constructor was given.
 ///
-/// A field built from a `&str` owns a copy of it. A field the stored-fields
-/// visitor reads back shares the `FieldInfo` it was read under, as Java's
-/// `new StoredField(fieldInfo.name, ...)` keeps a reference to that
-/// `FieldInfo`'s own name (`DocumentStoredFieldVisitor.java:62-95`).
+/// **This has no counterpart in Lucene 10.5.0**, where every field constructor
+/// takes a `String` and keeps that reference, never a copy (`Field.java:81-90`).
+/// A Rust field cannot keep a borrow, so the constructors take
+/// `impl Into<FieldName>`:
+///
+/// * a `&'static str` (and a reference to one) and an `Arc<str>` are kept
+///   without a copy, as Java keeps its reference;
+/// * a `String` is moved in;
+/// * a `&String` is copied, as the field cannot keep the borrow.
+///
+/// A borrowed `&str` of a shorter lifetime is not accepted: pass a `String`
+/// (or `name.to_string()`) to hand the field a name of its own.
+///
+/// A field the stored-fields visitor reads back shares the `FieldInfo` it was
+/// read under, as Java's `new StoredField(fieldInfo.name, ...)` keeps a
+/// reference to that `FieldInfo`'s own name
+/// (`DocumentStoredFieldVisitor.java:62-95`).
 #[derive(Clone)]
-enum FieldName {
+pub struct FieldName(NameRepr);
+
+// PERF: an explicit tag; with the discriminant in `String`'s capacity niche,
+// `as_str` decoded it with a branch-free sequence of eight instructions before
+// its jump, on every `IndexableField::name` call.
+#[derive(Clone)]
+#[repr(u8)]
+enum NameRepr {
+    Static(&'static str),
     Owned(String),
+    Shared(Arc<str>),
     // PERF: one reference-count increment per value read back, instead of a
     // copy of the field's name.
-    Shared(Arc<FieldInfo>),
+    Info(Arc<FieldInfo>),
 }
 
 impl FieldName {
-    fn as_str(&self) -> &str {
-        match self {
-            FieldName::Owned(name) => name,
-            FieldName::Shared(field_info) => &field_info.name,
+    /// The name `field_info` holds, shared with it.
+    pub(crate) fn of_field_info(field_info: &Arc<FieldInfo>) -> Self {
+        Self(NameRepr::Info(Arc::clone(field_info)))
+    }
+
+    /// The name as a string slice.
+    pub fn as_str(&self) -> &str {
+        match &self.0 {
+            NameRepr::Static(name) => name,
+            NameRepr::Owned(name) => name,
+            NameRepr::Shared(name) => name,
+            NameRepr::Info(field_info) => &field_info.name,
         }
+    }
+}
+
+impl From<&'static str> for FieldName {
+    /// Keeps the static name itself.
+    fn from(name: &'static str) -> Self {
+        Self(NameRepr::Static(name))
+    }
+}
+
+impl From<&&'static str> for FieldName {
+    /// Keeps the static name itself, as an iterator over a static name list
+    /// lends it.
+    fn from(name: &&'static str) -> Self {
+        Self(NameRepr::Static(name))
+    }
+}
+
+impl From<String> for FieldName {
+    /// Moves the name in.
+    fn from(name: String) -> Self {
+        Self(NameRepr::Owned(name))
+    }
+}
+
+impl From<&String> for FieldName {
+    /// Copies the name, which the field cannot borrow.
+    fn from(name: &String) -> Self {
+        Self(NameRepr::Owned(name.clone()))
+    }
+}
+
+impl From<Arc<str>> for FieldName {
+    /// Shares the name.
+    fn from(name: Arc<str>) -> Self {
+        Self(NameRepr::Shared(name))
     }
 }
 
@@ -1292,6 +1359,20 @@ impl std::ops::Deref for FieldName {
         self.as_str()
     }
 }
+
+impl AsRef<str> for FieldName {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq for FieldName {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for FieldName {}
 
 impl std::fmt::Display for FieldName {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -1327,19 +1408,28 @@ impl Field {
     /// type)` (`Field.java:81-90`), `pub` here so that a doc-values field
     /// with a `null` value (`new NumericDocValuesField(name, (Long) null)`)
     /// can be handed to [`IndexWriter::update_doc_values`](crate::index::index_writer::IndexWriter::update_doc_values).
-    pub fn new_with_type(name: &str, field_type: impl Into<Arc<FieldType>>) -> Result<Self> {
+    pub fn new_with_type(
+        name: impl Into<FieldName>,
+        field_type: impl Into<Arc<FieldType>>,
+    ) -> Result<Self> {
+        let name: FieldName = name.into();
         let field_type: Arc<FieldType> = field_type.into();
-        Self::validate_name_and_type(name, &field_type)?;
+        Self::validate_name_and_type(&name, &field_type)?;
         Ok(Self {
-            name: FieldName::Owned(name.to_string()),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Null),
         })
     }
 
     /// Creates a field with a string value.
-    pub fn new(name: &str, value: String, field_type: impl Into<Arc<FieldType>>) -> Result<Self> {
-        Self::new_named(FieldName::Owned(name.to_string()), value, field_type.into())
+    pub fn new(
+        name: impl Into<FieldName>,
+        value: String,
+        field_type: impl Into<Arc<FieldType>>,
+    ) -> Result<Self> {
+        let name: FieldName = name.into();
+        Self::new_named(name, value, field_type.into())
     }
 
     /// [`new`](Self::new) under the name of `field_info`, shared rather than
@@ -1350,7 +1440,7 @@ impl Field {
         value: String,
         field_type: Arc<FieldType>,
     ) -> Result<Self> {
-        Self::new_named(FieldName::Shared(Arc::clone(field_info)), value, field_type)
+        Self::new_named(FieldName::of_field_info(field_info), value, field_type)
     }
 
     /// The body of `Field(String, CharSequence, IndexableFieldType)` (`Field.java:240-257`).
@@ -1373,12 +1463,13 @@ impl Field {
     ///
     /// Equivalent to `Field(String, Reader, IndexableFieldType)`.
     pub fn new_with_reader(
-        name: &str,
+        name: impl Into<FieldName>,
         reader: Box<dyn CharReader>,
         field_type: impl Into<Arc<FieldType>>,
     ) -> Result<Self> {
+        let name: FieldName = name.into();
         let field_type: Arc<FieldType> = field_type.into();
-        Self::validate_name_and_type(name, &field_type)?;
+        Self::validate_name_and_type(&name, &field_type)?;
         if field_type.stored() {
             return Err(LuceneError::illegal_argument(
                 "fields with a Reader value cannot be stored".to_string(),
@@ -1390,7 +1481,7 @@ impl Field {
             ));
         }
         Ok(Self {
-            name: FieldName::Owned(name.to_string()),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Reader(Arc::new(AtomicRefCell::new(
                 reader,
@@ -1400,12 +1491,13 @@ impl Field {
 
     /// Creates a field with a pre-analyzed token stream.
     pub fn new_with_token_stream(
-        name: &str,
+        name: impl Into<FieldName>,
         token_stream: Arc<AtomicRefCell<dyn TokenStream>>,
         field_type: impl Into<Arc<FieldType>>,
     ) -> Result<Self> {
+        let name: FieldName = name.into();
         let field_type: Arc<FieldType> = field_type.into();
-        Self::validate_name_and_type(name, &field_type)?;
+        Self::validate_name_and_type(&name, &field_type)?;
         if field_type.index_options() == IndexOptions::NONE || !field_type.tokenized() {
             return Err(LuceneError::illegal_argument(
                 "TokenStream fields must be indexed and tokenized".to_string(),
@@ -1417,7 +1509,7 @@ impl Field {
             ));
         }
         Ok(Self {
-            name: FieldName::Owned(name.to_string()),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::TokenStream(token_stream)),
         })
@@ -1425,11 +1517,12 @@ impl Field {
 
     /// Creates a field with a binary value.
     pub fn new_with_bytes(
-        name: &str,
+        name: impl Into<FieldName>,
         bytes: BytesRef,
         field_type: impl Into<Arc<FieldType>>,
     ) -> Result<Self> {
-        Self::new_with_bytes_named(FieldName::Owned(name.to_string()), bytes, field_type.into())
+        let name: FieldName = name.into();
+        Self::new_with_bytes_named(name, bytes, field_type.into())
     }
 
     /// The body of `Field(String, BytesRef, IndexableFieldType)` (`Field.java:199-226`).
@@ -1471,11 +1564,12 @@ impl Field {
 
     /// Creates a field with a numeric value.
     pub fn new_with_number(
-        name: &str,
+        name: impl Into<FieldName>,
         value: NumericValue,
         field_type: impl Into<Arc<FieldType>>,
     ) -> Result<Self> {
-        Self::new_with_number_named(FieldName::Owned(name.to_string()), value, field_type.into())
+        let name: FieldName = name.into();
+        Self::new_with_number_named(name, value, field_type.into())
     }
 
     /// The body of the numeric `Field` constructors.
@@ -1494,15 +1588,16 @@ impl Field {
 
     /// Creates a field from a stored data input.
     pub fn new_with_stored_input(
-        name: &str,
+        name: impl Into<FieldName>,
         input: Box<dyn DataInput + Send + Sync>,
         length: i32,
         field_type: impl Into<Arc<FieldType>>,
     ) -> Result<Self> {
+        let name: FieldName = name.into();
         let field_type: Arc<FieldType> = field_type.into();
-        Self::validate_name_and_type(name, &field_type)?;
+        Self::validate_name_and_type(&name, &field_type)?;
         Ok(Self {
-            name: FieldName::Owned(name.to_string()),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::StoredInput {
                 input: AtomicRefCell::new(input),
@@ -2323,7 +2418,7 @@ fn string_field_type_stored() -> &'static Arc<FieldType> {
 /// Equivalent to `org.apache.lucene.document.StringField`.
 #[derive(Debug)]
 pub struct StringField {
-    name: String,
+    name: FieldName,
     /// `TYPE_STORED` or `TYPE_NOT_STORED`, the one static object every Java
     /// `StringField` references (`StringField.java:35-50`).
     field_type: Arc<FieldType>,
@@ -2345,7 +2440,8 @@ impl StringField {
     }
 
     /// Creates a new textual StringField.
-    pub fn new(name: &str, value: String, stored: Store) -> Result<Self> {
+    pub fn new(name: impl Into<FieldName>, value: String, stored: Store) -> Result<Self> {
+        let name: FieldName = name.into();
         let field_type = Arc::clone(if stored == Store::YES {
             string_field_type_stored()
         } else {
@@ -2358,7 +2454,7 @@ impl StringField {
         // which its `storedValue` mirrors (see `stored_value`).
         let fields_data = FieldData::String(value);
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(fields_data),
             binary_value: AtomicRefCell::new(binary_value),
@@ -2366,14 +2462,19 @@ impl StringField {
     }
 
     /// Creates a new binary StringField.
-    pub fn new_with_bytes(name: &str, value: BytesRef, stored: Store) -> Result<Self> {
+    pub fn new_with_bytes(
+        name: impl Into<FieldName>,
+        value: BytesRef,
+        stored: Store,
+    ) -> Result<Self> {
+        let name: FieldName = name.into();
         let field_type = Arc::clone(if stored == Store::YES {
             string_field_type_stored()
         } else {
             string_field_type_not_stored()
         });
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Bytes(value.clone())),
             binary_value: AtomicRefCell::new(Some(value)),
@@ -2499,7 +2600,7 @@ fn text_field_type_stored() -> &'static Arc<FieldType> {
 /// Equivalent to `org.apache.lucene.document.TextField`.
 #[derive(Debug)]
 pub struct TextField {
-    name: String,
+    name: FieldName,
     /// `TYPE_STORED` or `TYPE_NOT_STORED`, the one static object every Java
     /// `TextField` references (`TextField.java:33-46`).
     field_type: Arc<FieldType>,
@@ -2518,9 +2619,13 @@ impl TextField {
     }
 
     /// Creates a new un-stored TextField with a reader value.
-    pub fn new_with_reader(name: &str, reader: Box<dyn CharReader>) -> Result<Self> {
+    pub fn new_with_reader(
+        name: impl Into<FieldName>,
+        reader: Box<dyn CharReader>,
+    ) -> Result<Self> {
+        let name: FieldName = name.into();
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(text_field_type_not_stored()),
             fields_data: AtomicRefCell::new(FieldData::Reader(Arc::new(AtomicRefCell::new(
                 reader,
@@ -2529,7 +2634,8 @@ impl TextField {
     }
 
     /// Creates a new TextField with a string value.
-    pub fn new(name: &str, value: String, stored: Store) -> Result<Self> {
+    pub fn new(name: impl Into<FieldName>, value: String, stored: Store) -> Result<Self> {
+        let name: FieldName = name.into();
         let field_type = Arc::clone(if stored == Store::YES {
             text_field_type_stored()
         } else {
@@ -2539,7 +2645,7 @@ impl TextField {
         // (`TextField.java:74`) wraps the same `String`: read off `fieldsData`
         // by `stored_value`, so the value is held once.
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::String(value)),
         })
@@ -2547,11 +2653,12 @@ impl TextField {
 
     /// Creates a new un-stored TextField with a token stream value.
     pub fn new_with_token_stream(
-        name: &str,
+        name: impl Into<FieldName>,
         token_stream: Arc<AtomicRefCell<dyn TokenStream>>,
     ) -> Result<Self> {
+        let name: FieldName = name.into();
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(text_field_type_not_stored()),
             fields_data: AtomicRefCell::new(FieldData::TokenStream(token_stream)),
         })
@@ -2675,7 +2782,10 @@ impl StoredField {
     /// Java's `null`, which `Field(String, CharSequence, IndexableFieldType)`
     /// rejects with `IllegalArgumentException("value must not be null")`
     /// (`Field.java:244-246`). A plain `String` converts into `Some`.
-    pub fn new_string(name: &str, value: impl Into<Option<String>>) -> Result<Self> {
+    pub fn new_string(
+        name: impl Into<FieldName>,
+        value: impl Into<Option<String>>,
+    ) -> Result<Self> {
         let Some(value) = value.into() else {
             return Err(LuceneError::illegal_argument(
                 "value must not be null".to_string(),
@@ -2694,7 +2804,10 @@ impl StoredField {
     /// Java's `null`, which `Field(String, BytesRef, IndexableFieldType)`
     /// rejects with `IllegalArgumentException("bytes must not be null")`
     /// (`Field.java:203-205`). A plain `BytesRef` converts into `Some`.
-    pub fn new_bytes(name: &str, value: impl Into<Option<BytesRef>>) -> Result<Self> {
+    pub fn new_bytes(
+        name: impl Into<FieldName>,
+        value: impl Into<Option<BytesRef>>,
+    ) -> Result<Self> {
         let Some(value) = value.into() else {
             return Err(LuceneError::illegal_argument(
                 "bytes must not be null".to_string(),
@@ -2713,7 +2826,7 @@ impl StoredField {
     /// `Field(name, value, 0, value.length, TYPE)` (`StoredField.java:75-77`,
     /// `Field.java:165-167`): `None` is Java's `null`, on which
     /// `value.length` throws `NullPointerException`.
-    pub fn new_byte_array(name: &str, value: Option<&[u8]>) -> Result<Self> {
+    pub fn new_byte_array(name: impl Into<FieldName>, value: Option<&[u8]>) -> Result<Self> {
         let Some(value) = value else {
             // The JVM computes the helpful message; the port keeps none.
             return Err(LuceneError::from(LuceneErrorKind::Unchecked {
@@ -2726,7 +2839,7 @@ impl StoredField {
     }
 
     /// Creates a stored-only field with a numeric value.
-    pub fn new_number(name: &str, value: NumericValue) -> Result<Self> {
+    pub fn new_number(name: impl Into<FieldName>, value: NumericValue) -> Result<Self> {
         Ok(Self(Field::new_with_number(
             name,
             value,
@@ -2742,7 +2855,7 @@ impl StoredField {
         value: NumericValue,
     ) -> Result<Self> {
         Ok(Self(Field::new_with_number_named(
-            FieldName::Shared(Arc::clone(field_info)),
+            FieldName::of_field_info(field_info),
             value,
             Arc::clone(stored_field_type()),
         )?))
@@ -2756,7 +2869,7 @@ impl StoredField {
         value: BytesRef,
     ) -> Result<Self> {
         Ok(Self(Field::new_with_bytes_named(
-            FieldName::Shared(Arc::clone(field_info)),
+            FieldName::of_field_info(field_info),
             value,
             Arc::clone(stored_field_type()),
         )?))
@@ -2769,7 +2882,7 @@ impl StoredField {
     /// `IllegalArgumentException("store field data input must not be null")`
     /// (`StoredField.java:116-122`).
     pub fn new_stored_input(
-        name: &str,
+        name: impl Into<FieldName>,
         input: Option<Box<dyn DataInput + Send + Sync>>,
         length: i32,
     ) -> Result<Self> {
@@ -2787,7 +2900,11 @@ impl StoredField {
     }
 
     /// Expert: creates a stored field with a custom field type.
-    pub fn new_with_field_type(name: &str, value: String, field_type: FieldType) -> Result<Self> {
+    pub fn new_with_field_type(
+        name: impl Into<FieldName>,
+        value: String,
+        field_type: FieldType,
+    ) -> Result<Self> {
         Ok(Self(Field::new(name, value, field_type)?))
     }
 
@@ -2800,7 +2917,7 @@ impl StoredField {
     /// # Errors
     ///
     /// Propagates whatever the `Field` constructor raises.
-    pub fn new_type_only(name: &str, field_type: FieldType) -> Result<Self> {
+    pub fn new_type_only(name: impl Into<FieldName>, field_type: FieldType) -> Result<Self> {
         Ok(Self(Field::new_with_type(name, field_type)?))
     }
 
@@ -2813,7 +2930,7 @@ impl StoredField {
     ///
     /// Propagates whatever the `Field` constructor raises.
     pub fn new_bytes_with_field_type(
-        name: &str,
+        name: impl Into<FieldName>,
         bytes: BytesRef,
         field_type: FieldType,
     ) -> Result<Self> {
@@ -3051,7 +3168,7 @@ fn keyword_field_type_stored() -> &'static Arc<FieldType> {
 /// Equivalent to `org.apache.lucene.document.KeywordField`.
 #[derive(Debug)]
 pub struct KeywordField {
-    name: String,
+    name: FieldName,
     /// `FIELD_TYPE_STORED` or `FIELD_TYPE`, the one static object every Java
     /// `KeywordField` references (`KeywordField.java:52-65`).
     field_type: Arc<FieldType>,
@@ -3061,14 +3178,19 @@ pub struct KeywordField {
 
 impl KeywordField {
     /// Creates a new KeywordField from a binary value.
-    pub fn new_with_bytes(name: &str, value: BytesRef, stored: Store) -> Result<Self> {
+    pub fn new_with_bytes(
+        name: impl Into<FieldName>,
+        value: BytesRef,
+        stored: Store,
+    ) -> Result<Self> {
+        let name: FieldName = name.into();
         let field_type = Arc::clone(if stored == Store::YES {
             keyword_field_type_stored()
         } else {
             keyword_field_type()
         });
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Bytes(value.clone())),
             binary_value: AtomicRefCell::new(Some(value)),
@@ -3083,7 +3205,8 @@ impl KeywordField {
     /// while indexing the UTF-8 bytes. Delegating to
     /// [`Self::new_with_bytes`] instead would store a binary value and change
     /// the bytes written to the `.fdt` file.
-    pub fn new(name: &str, value: String, stored: Store) -> Result<Self> {
+    pub fn new(name: impl Into<FieldName>, value: String, stored: Store) -> Result<Self> {
+        let name: FieldName = name.into();
         let field_type = Arc::clone(if stored == Store::YES {
             keyword_field_type_stored()
         } else {
@@ -3095,7 +3218,7 @@ impl KeywordField {
         // wraps the same `String`: read off `fieldsData` by `stored_value`, so
         // the value is held once.
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::String(value)),
             binary_value: AtomicRefCell::new(Some(binary_value)),
@@ -3430,21 +3553,22 @@ pub fn pack_binary_point(point: &[BytesRef]) -> Result<BytesRef> {
 /// Equivalent to `org.apache.lucene.document.IntPoint`.
 #[derive(Debug)]
 pub struct IntPoint {
-    name: String,
+    name: FieldName,
     field_type: FieldType,
     fields_data: AtomicRefCell<FieldData>,
 }
 
 impl IntPoint {
     /// Creates a new IntPoint.
-    pub fn new(name: &str, point: &[i32]) -> Result<Self> {
+    pub fn new(name: impl Into<FieldName>, point: &[i32]) -> Result<Self> {
+        let name: FieldName = name.into();
         // `super(name, pack(point), getType(point.length))`: Java evaluates
         // the arguments in order, so an empty point is refused by `pack`
         // before `getType` sees it.
         let packed = pack_int_point(point)?;
         let field_type = int_point_field_type(point.len())?;
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Bytes(packed)),
         })
@@ -3694,21 +3818,22 @@ impl IndexableField for IntPoint {
 /// Equivalent to `org.apache.lucene.document.LongPoint`.
 #[derive(Debug)]
 pub struct LongPoint {
-    name: String,
+    name: FieldName,
     field_type: FieldType,
     fields_data: AtomicRefCell<FieldData>,
 }
 
 impl LongPoint {
     /// Creates a new LongPoint.
-    pub fn new(name: &str, point: &[i64]) -> Result<Self> {
+    pub fn new(name: impl Into<FieldName>, point: &[i64]) -> Result<Self> {
+        let name: FieldName = name.into();
         // `super(name, pack(point), getType(point.length))`: Java evaluates
         // the arguments in order, so an empty point is refused by `pack`
         // before `getType` sees it.
         let packed = pack_long_point(point)?;
         let field_type = long_point_field_type(point.len())?;
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Bytes(packed)),
         })
@@ -4011,7 +4136,7 @@ fn java_math_next_down_f64(value: f64) -> f64 {
 /// Equivalent to `org.apache.lucene.document.FloatPoint`.
 #[derive(Debug)]
 pub struct FloatPoint {
-    name: String,
+    name: FieldName,
     field_type: FieldType,
     fields_data: AtomicRefCell<FieldData>,
 }
@@ -4048,14 +4173,15 @@ impl FloatPoint {
     }
 
     /// Creates a new FloatPoint.
-    pub fn new(name: &str, point: &[f32]) -> Result<Self> {
+    pub fn new(name: impl Into<FieldName>, point: &[f32]) -> Result<Self> {
+        let name: FieldName = name.into();
         // `super(name, pack(point), getType(point.length))`: Java evaluates
         // the arguments in order, so an empty point is refused by `pack`
         // before `getType` sees it.
         let packed = pack_float_point(point)?;
         let field_type = float_point_field_type(point.len())?;
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Bytes(packed)),
         })
@@ -4305,7 +4431,7 @@ impl IndexableField for FloatPoint {
 /// Equivalent to `org.apache.lucene.document.DoublePoint`.
 #[derive(Debug)]
 pub struct DoublePoint {
-    name: String,
+    name: FieldName,
     field_type: FieldType,
     fields_data: AtomicRefCell<FieldData>,
 }
@@ -4342,14 +4468,15 @@ impl DoublePoint {
     }
 
     /// Creates a new DoublePoint.
-    pub fn new(name: &str, point: &[f64]) -> Result<Self> {
+    pub fn new(name: impl Into<FieldName>, point: &[f64]) -> Result<Self> {
+        let name: FieldName = name.into();
         // `super(name, pack(point), getType(point.length))`: Java evaluates
         // the arguments in order, so an empty point is refused by `pack`
         // before `getType` sees it.
         let packed = pack_double_point(point)?;
         let field_type = double_point_field_type(point.len())?;
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Bytes(packed)),
         })
@@ -4599,7 +4726,7 @@ impl IndexableField for DoublePoint {
 /// Equivalent to `org.apache.lucene.document.BinaryPoint`.
 #[derive(Debug)]
 pub struct BinaryPoint {
-    name: String,
+    name: FieldName,
     field_type: FieldType,
     fields_data: AtomicRefCell<FieldData>,
 }
@@ -4635,13 +4762,14 @@ impl BinaryPoint {
     }
 
     /// Creates a new BinaryPoint.
-    pub fn new(name: &str, point: &[BytesRef]) -> Result<Self> {
+    pub fn new(name: impl Into<FieldName>, point: &[BytesRef]) -> Result<Self> {
+        let name: FieldName = name.into();
         // `super(name, pack(point), getType(point))` (`BinaryPoint.java:129-131`):
         // Java evaluates `pack` before `getType`.
         let packed = pack_binary_point(point)?;
         let field_type = Self::field_type_for_point(point)?;
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Bytes(packed)),
         })
@@ -4650,10 +4778,11 @@ impl BinaryPoint {
     /// Expert: creates a BinaryPoint with an already-packed value and custom
     /// field type.
     pub fn new_with_packed(
-        name: &str,
+        name: impl Into<FieldName>,
         packed_point: BytesRef,
         field_type: FieldType,
     ) -> Result<Self> {
+        let name: FieldName = name.into();
         let expected = field_type.point_dimension_count() * field_type.point_num_bytes();
         if packed_point.length as i32 != expected {
             // `BinaryPoint.java:136-144`.
@@ -4665,7 +4794,7 @@ impl BinaryPoint {
             )));
         }
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Bytes(packed_point)),
         })
@@ -4955,7 +5084,7 @@ fn binary_doc_values_field_type_shared() -> &'static Arc<FieldType> {
 /// Equivalent to `org.apache.lucene.document.NumericDocValuesField`.
 #[derive(Debug)]
 pub struct NumericDocValuesField {
-    name: String,
+    name: FieldName,
     /// The one static `FieldType` every Java instance references, shared.
     field_type: Arc<FieldType>,
     /// `fieldsData`: `None` for the `null` value
@@ -4970,7 +5099,7 @@ impl NumericDocValuesField {
     }
 
     /// Creates a new NumericDocValuesField.
-    pub fn new(name: &str, value: i64) -> Self {
+    pub fn new(name: impl Into<FieldName>, value: i64) -> Self {
         Self::new_nullable(name, Some(value))
     }
 
@@ -4979,18 +5108,20 @@ impl NumericDocValuesField {
     /// Equivalent to `NumericDocValuesField(String name, Long value)`; a
     /// `None` value is rejected when the document is indexed
     /// (`field="name": null value not allowed`).
-    pub fn new_nullable(name: &str, value: Option<i64>) -> Self {
+    pub fn new_nullable(name: impl Into<FieldName>, value: Option<i64>) -> Self {
+        let name: FieldName = name.into();
         Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(numeric_doc_values_field_type_shared()),
             value: AtomicRefCell::new(value),
         }
     }
 
     /// Creates a NumericDocValuesField with a skip index.
-    pub fn indexed_field(name: &str, value: i64) -> Self {
+    pub fn indexed_field(name: impl Into<FieldName>, value: i64) -> Self {
+        let name: FieldName = name.into();
         Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(numeric_doc_values_indexed_field_type()),
             value: AtomicRefCell::new(Some(value)),
         }
@@ -5095,7 +5226,7 @@ impl FloatDocValuesField {
     ///
     /// Equivalent to `FloatDocValuesField(String, float)`, which stores
     /// `Float.floatToRawIntBits(value)` as the numeric doc value.
-    pub fn new(name: &str, value: f32) -> Self {
+    pub fn new(name: impl Into<FieldName>, value: f32) -> Self {
         Self {
             inner: NumericDocValuesField::new(name, raw_float_bits_as_long(value)),
         }
@@ -5186,7 +5317,7 @@ pub struct DoubleDocValuesField {
 
 impl DoubleDocValuesField {
     /// Creates a new DoubleDocValuesField.
-    pub fn new(name: &str, value: f64) -> Self {
+    pub fn new(name: impl Into<FieldName>, value: f64) -> Self {
         let bits = value.to_bits() as i64;
         Self {
             inner: NumericDocValuesField::new(name, bits),
@@ -5253,7 +5384,7 @@ impl IndexableField for DoubleDocValuesField {
 /// Equivalent to `org.apache.lucene.document.SortedDocValuesField`.
 #[derive(Debug)]
 pub struct SortedDocValuesField {
-    name: String,
+    name: FieldName,
     /// The one static `FieldType` every Java instance references, shared.
     field_type: Arc<FieldType>,
     value: AtomicRefCell<BytesRef>,
@@ -5276,18 +5407,20 @@ impl SortedDocValuesField {
     }
 
     /// Creates a new SortedDocValuesField.
-    pub fn new(name: &str, value: BytesRef) -> Self {
+    pub fn new(name: impl Into<FieldName>, value: BytesRef) -> Self {
+        let name: FieldName = name.into();
         Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(sorted_doc_values_field_type_shared()),
             value: AtomicRefCell::new(value),
         }
     }
 
     /// Creates a SortedDocValuesField with a skip index.
-    pub fn indexed_field(name: &str, value: BytesRef) -> Self {
+    pub fn indexed_field(name: impl Into<FieldName>, value: BytesRef) -> Self {
+        let name: FieldName = name.into();
         Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(sorted_doc_values_indexed_field_type()),
             value: AtomicRefCell::new(value),
         }
@@ -5411,7 +5544,7 @@ impl IndexableField for SortedDocValuesField {
 /// Equivalent to `org.apache.lucene.document.SortedSetDocValuesField`.
 #[derive(Debug)]
 pub struct SortedSetDocValuesField {
-    name: String,
+    name: FieldName,
     /// The one static `FieldType` every Java instance references, shared.
     field_type: Arc<FieldType>,
     value: AtomicRefCell<BytesRef>,
@@ -5424,18 +5557,20 @@ impl SortedSetDocValuesField {
     }
 
     /// Creates a new SortedSetDocValuesField.
-    pub fn new(name: &str, value: BytesRef) -> Self {
+    pub fn new(name: impl Into<FieldName>, value: BytesRef) -> Self {
+        let name: FieldName = name.into();
         Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(sorted_set_doc_values_field_type_shared()),
             value: AtomicRefCell::new(value),
         }
     }
 
     /// Creates a SortedSetDocValuesField with a skip index.
-    pub fn indexed_field(name: &str, value: BytesRef) -> Self {
+    pub fn indexed_field(name: impl Into<FieldName>, value: BytesRef) -> Self {
+        let name: FieldName = name.into();
         Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(sorted_set_doc_values_indexed_field_type()),
             value: AtomicRefCell::new(value),
         }
@@ -5560,7 +5695,7 @@ impl IndexableField for SortedSetDocValuesField {
 /// Equivalent to `org.apache.lucene.document.SortedNumericDocValuesField`.
 #[derive(Debug)]
 pub struct SortedNumericDocValuesField {
-    name: String,
+    name: FieldName,
     /// The one static `FieldType` every Java instance references, shared.
     field_type: Arc<FieldType>,
     value: AtomicRefCell<i64>,
@@ -5573,9 +5708,10 @@ impl SortedNumericDocValuesField {
     }
 
     /// Creates a new SortedNumericDocValuesField.
-    pub fn new(name: &str, value: i64) -> Self {
+    pub fn new(name: impl Into<FieldName>, value: i64) -> Self {
+        let name: FieldName = name.into();
         Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(sorted_numeric_doc_values_field_type_shared()),
             value: AtomicRefCell::new(value),
         }
@@ -5591,9 +5727,10 @@ impl SortedNumericDocValuesField {
     }
 
     /// Creates a SortedNumericDocValuesField with a skip index.
-    pub fn indexed_field(name: &str, value: i64) -> Self {
+    pub fn indexed_field(name: impl Into<FieldName>, value: i64) -> Self {
+        let name: FieldName = name.into();
         Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(sorted_numeric_doc_values_indexed_field_type()),
             value: AtomicRefCell::new(value),
         }
@@ -5685,7 +5822,7 @@ impl IndexableField for SortedNumericDocValuesField {
 /// Equivalent to `org.apache.lucene.document.BinaryDocValuesField`.
 #[derive(Debug)]
 pub struct BinaryDocValuesField {
-    name: String,
+    name: FieldName,
     /// The one static `FieldType` every Java instance references, shared.
     field_type: Arc<FieldType>,
     /// `fieldsData`: `None` for the `null` value
@@ -5700,7 +5837,7 @@ impl BinaryDocValuesField {
     }
 
     /// Creates a new BinaryDocValuesField.
-    pub fn new(name: &str, value: BytesRef) -> Self {
+    pub fn new(name: impl Into<FieldName>, value: BytesRef) -> Self {
         Self::new_nullable(name, Some(value))
     }
 
@@ -5710,9 +5847,10 @@ impl BinaryDocValuesField {
     /// with a `null` value, which Java accepts; a `None` value is rejected
     /// when the document is indexed (`field="name": null value not
     /// allowed`).
-    pub fn new_nullable(name: &str, value: Option<BytesRef>) -> Self {
+    pub fn new_nullable(name: impl Into<FieldName>, value: Option<BytesRef>) -> Self {
+        let name: FieldName = name.into();
         Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(binary_doc_values_field_type_shared()),
             value: AtomicRefCell::new(value),
         }
@@ -5903,7 +6041,7 @@ fn double_combined_field_type(stored: bool) -> &'static Arc<FieldType> {
 /// Equivalent to `org.apache.lucene.document.IntField`.
 #[derive(Debug)]
 pub struct IntField {
-    name: String,
+    name: FieldName,
     /// `FIELD_TYPE` or `FIELD_TYPE_STORED`, the one static object every Java
     /// `IntField` references (`IntField.java:49-50`).
     field_type: Arc<FieldType>,
@@ -5913,14 +6051,15 @@ pub struct IntField {
 
 impl IntField {
     /// Creates a new IntField.
-    pub fn new(name: &str, value: i32, stored: Store) -> Self {
+    pub fn new(name: impl Into<FieldName>, value: i32, stored: Store) -> Self {
+        let name: FieldName = name.into();
         let stored_value = if stored == Store::YES {
             Some(StoredValue::Integer(value))
         } else {
             None
         };
         Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(int_combined_field_type(stored == Store::YES)),
             value: AtomicRefCell::new(value),
             stored_value: AtomicRefCell::new(stored_value),
@@ -6109,7 +6248,7 @@ impl IndexableField for IntField {
 /// Equivalent to `org.apache.lucene.document.LongField`.
 #[derive(Debug)]
 pub struct LongField {
-    name: String,
+    name: FieldName,
     /// `FIELD_TYPE` or `FIELD_TYPE_STORED`, the one static object every Java
     /// `LongField` references (`LongField.java:52-53`).
     field_type: Arc<FieldType>,
@@ -6119,14 +6258,15 @@ pub struct LongField {
 
 impl LongField {
     /// Creates a new LongField.
-    pub fn new(name: &str, value: i64, stored: Store) -> Self {
+    pub fn new(name: impl Into<FieldName>, value: i64, stored: Store) -> Self {
+        let name: FieldName = name.into();
         let stored_value = if stored == Store::YES {
             Some(StoredValue::Long(value))
         } else {
             None
         };
         Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(long_combined_field_type(stored == Store::YES)),
             value: AtomicRefCell::new(value),
             stored_value: AtomicRefCell::new(stored_value),
@@ -6352,7 +6492,7 @@ impl IndexableField for LongField {
 /// Equivalent to `org.apache.lucene.document.FloatField`.
 #[derive(Debug)]
 pub struct FloatField {
-    name: String,
+    name: FieldName,
     /// `FIELD_TYPE` or `FIELD_TYPE_STORED`, the one static object every Java
     /// `FloatField` references (`FloatField.java:47-48`).
     field_type: Arc<FieldType>,
@@ -6362,14 +6502,15 @@ pub struct FloatField {
 
 impl FloatField {
     /// Creates a new FloatField.
-    pub fn new(name: &str, value: f32, stored: Store) -> Self {
+    pub fn new(name: impl Into<FieldName>, value: f32, stored: Store) -> Self {
+        let name: FieldName = name.into();
         let stored_value = if stored == Store::YES {
             Some(StoredValue::Float(value))
         } else {
             None
         };
         Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(float_combined_field_type(stored == Store::YES)),
             value: AtomicRefCell::new(value),
             stored_value: AtomicRefCell::new(stored_value),
@@ -6568,7 +6709,7 @@ impl IndexableField for FloatField {
 /// Equivalent to `org.apache.lucene.document.DoubleField`.
 #[derive(Debug)]
 pub struct DoubleField {
-    name: String,
+    name: FieldName,
     /// `FIELD_TYPE` or `FIELD_TYPE_STORED`, the one static object every Java
     /// `DoubleField` references (`DoubleField.java:47-48`).
     field_type: Arc<FieldType>,
@@ -6578,14 +6719,15 @@ pub struct DoubleField {
 
 impl DoubleField {
     /// Creates a new DoubleField.
-    pub fn new(name: &str, value: f64, stored: Store) -> Self {
+    pub fn new(name: impl Into<FieldName>, value: f64, stored: Store) -> Self {
+        let name: FieldName = name.into();
         let stored_value = if stored == Store::YES {
             Some(StoredValue::Double(value))
         } else {
             None
         };
         Self {
-            name: name.to_string(),
+            name,
             field_type: Arc::clone(double_combined_field_type(stored == Store::YES)),
             value: AtomicRefCell::new(value),
             stored_value: AtomicRefCell::new(stored_value),
@@ -7307,7 +7449,7 @@ fn check_knn_vector_against_type(
 /// the downcast `IndexingChain.indexVectorValue` performs.
 #[derive(Debug, Clone)]
 pub struct KnnFloatVectorField {
-    name: String,
+    name: FieldName,
     field_type: FieldType,
     vector: AtomicRefCell<Vec<f32>>,
 }
@@ -7320,11 +7462,16 @@ impl KnnFloatVectorField {
     /// Returns [`LuceneErrorKind::IllegalArgument`] for an empty vector, for a zero
     /// vector under [`VectorSimilarityFunction::COSINE`], and for a vector with
     /// a non-finite component.
-    pub fn new(name: &str, vector: &[f32], similarity: VectorSimilarityFunction) -> Result<Self> {
+    pub fn new(
+        name: impl Into<FieldName>,
+        vector: &[f32],
+        similarity: VectorSimilarityFunction,
+    ) -> Result<Self> {
+        let name: FieldName = name.into();
         let field_type = Self::create_type(vector, similarity)?;
         crate::util::vector_util::check_finite(vector)?;
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             vector: AtomicRefCell::new(vector.to_vec()),
         })
@@ -7336,7 +7483,7 @@ impl KnnFloatVectorField {
     /// # Errors
     ///
     /// As [`KnnFloatVectorField::new`].
-    pub fn with_euclidean(name: &str, vector: &[f32]) -> Result<Self> {
+    pub fn with_euclidean(name: impl Into<FieldName>, vector: &[f32]) -> Result<Self> {
         Self::new(name, vector, VectorSimilarityFunction::EUCLIDEAN)
     }
 
@@ -7410,9 +7557,14 @@ impl KnnFloatVectorField {
     /// type's dimension count, when the vector is zero under
     /// [`VectorSimilarityFunction::COSINE`], and when a component is
     /// non-finite.
-    pub fn with_field_type(name: &str, vector: &[f32], field_type: FieldType) -> Result<Self> {
+    pub fn with_field_type(
+        name: impl Into<FieldName>,
+        vector: &[f32],
+        field_type: FieldType,
+    ) -> Result<Self> {
+        let name: FieldName = name.into();
         check_knn_vector_against_type(
-            name,
+            &name,
             &field_type,
             VectorEncoding::FLOAT32,
             vector.len(),
@@ -7420,7 +7572,7 @@ impl KnnFloatVectorField {
         )?;
         crate::util::vector_util::check_finite(vector)?;
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             vector: AtomicRefCell::new(vector.to_vec()),
         })
@@ -7533,7 +7685,7 @@ impl IndexableField for KnnFloatVectorField {
 /// this port carries the same bytes as `u8` and the on-disk value is identical.
 #[derive(Debug, Clone)]
 pub struct KnnByteVectorField {
-    name: String,
+    name: FieldName,
     field_type: FieldType,
     vector: AtomicRefCell<Vec<u8>>,
 }
@@ -7545,10 +7697,15 @@ impl KnnByteVectorField {
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`] for an empty vector and for a
     /// zero vector under [`VectorSimilarityFunction::COSINE`].
-    pub fn new(name: &str, vector: &[u8], similarity: VectorSimilarityFunction) -> Result<Self> {
+    pub fn new(
+        name: impl Into<FieldName>,
+        vector: &[u8],
+        similarity: VectorSimilarityFunction,
+    ) -> Result<Self> {
+        let name: FieldName = name.into();
         let field_type = Self::create_type(vector, similarity)?;
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             vector: AtomicRefCell::new(vector.to_vec()),
         })
@@ -7560,7 +7717,7 @@ impl KnnByteVectorField {
     /// # Errors
     ///
     /// As [`KnnByteVectorField::new`].
-    pub fn with_euclidean(name: &str, vector: &[u8]) -> Result<Self> {
+    pub fn with_euclidean(name: impl Into<FieldName>, vector: &[u8]) -> Result<Self> {
         Self::new(name, vector, VectorSimilarityFunction::EUCLIDEAN)
     }
 
@@ -7629,16 +7786,21 @@ impl KnnByteVectorField {
     /// [`VectorEncoding::BYTE`], when the vector's length does not match the
     /// type's dimension count, and when the vector is zero under
     /// [`VectorSimilarityFunction::COSINE`].
-    pub fn with_field_type(name: &str, vector: &[u8], field_type: FieldType) -> Result<Self> {
+    pub fn with_field_type(
+        name: impl Into<FieldName>,
+        vector: &[u8],
+        field_type: FieldType,
+    ) -> Result<Self> {
+        let name: FieldName = name.into();
         check_knn_vector_against_type(
-            name,
+            &name,
             &field_type,
             VectorEncoding::BYTE,
             vector.len(),
             crate::util::vector_util::is_zero_vector_bytes(vector),
         )?;
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             vector: AtomicRefCell::new(vector.to_vec()),
         })
@@ -8732,6 +8894,33 @@ impl FieldValueSetters for TextField {
 mod tests {
     use super::*;
     use crate::index::IndexableFieldType;
+
+    /// Java's field constructors keep the caller's `String` reference
+    /// (`Field.java:81-90`): a static or shared name is kept without a copy and
+    /// an owned one is moved in; only a borrowed `&String` is copied.
+    #[test]
+    fn field_constructors_keep_the_callers_name() {
+        static NAME: &str = "static_name";
+        let keyword = KeywordField::new(NAME, "v".to_string(), Store::YES).unwrap();
+        assert_eq!(keyword.name().as_ptr(), NAME.as_ptr());
+        let names: &[&'static str] = &["listed"];
+        let text = TextField::new(names[0], "v".to_string(), Store::NO).unwrap();
+        assert_eq!(text.name().as_ptr(), names[0].as_ptr());
+        let owned = String::from("owned_name");
+        let owned_ptr = owned.as_ptr();
+        let string = StringField::new(owned, "v".to_string(), Store::NO).unwrap();
+        assert_eq!(string.name().as_ptr(), owned_ptr);
+        let shared: Arc<str> = Arc::from("shared_name");
+        let long = LongField::new(Arc::clone(&shared), 1, Store::NO);
+        assert_eq!(long.name().as_ptr(), shared.as_ptr());
+        let stored = StoredField::new_string(NAME, "v".to_string()).unwrap();
+        assert_eq!(stored.name().as_ptr(), NAME.as_ptr());
+        // A borrow of a `String` the field cannot keep is copied.
+        let borrowed = String::from("borrowed_name");
+        let int = IntField::new(&borrowed, 1, Store::NO);
+        assert_ne!(int.name().as_ptr(), borrowed.as_ptr());
+        assert_eq!(int.name(), "borrowed_name");
+    }
 
     /// Regression: `Field` accepts an empty name, as Java's constructors
     /// only reject `null` (`Field.java:81-90`); every constructor that

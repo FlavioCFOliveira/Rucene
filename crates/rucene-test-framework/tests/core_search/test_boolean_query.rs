@@ -1115,7 +1115,11 @@ fn index_string_docs(
         for values in doc_content {
             let mut doc = Document::new();
             for value in values {
-                doc.add(StringField::new(field, value.clone(), Store::NO)?);
+                doc.add(StringField::new(
+                    field.to_string(),
+                    value.clone(),
+                    Store::NO,
+                )?);
             }
             w.add_document(&doc)?;
         }

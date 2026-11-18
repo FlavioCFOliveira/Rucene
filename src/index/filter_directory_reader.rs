@@ -2533,11 +2533,11 @@ impl SortedDocValues for ExitableSortedDocValues {
         self.inner.get_value_count()
     }
 
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
         self.inner.lookup_ord(ord)
     }
 
-    fn lookup_term(&self, key: &BytesRef) -> Result<i32> {
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i32> {
         self.inner.lookup_term(key)
     }
 
@@ -2731,7 +2731,7 @@ impl SortedSetDocValues for ExitableSortedSetDocValues {
         self.inner.doc_value_count()
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
         self.inner.lookup_ord(ord)
     }
 
@@ -2739,7 +2739,7 @@ impl SortedSetDocValues for ExitableSortedSetDocValues {
         self.inner.get_value_count()
     }
 
-    fn lookup_term(&self, key: &BytesRef) -> Result<i64> {
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i64> {
         self.inner.lookup_term(key)
     }
 

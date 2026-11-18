@@ -103,7 +103,7 @@ pub fn class_def() -> Arc<Class> {
 /// `new StringField(name, value, Field.Store.NO)`.
 fn string_field(name: &str, value: &str) -> Result<Box<StringField>> {
     Ok(Box::new(StringField::new(
-        name,
+        name.to_string(),
         value.to_string(),
         Store::NO,
     )?))
@@ -985,7 +985,7 @@ impl LeafCollector for NoOpCollector {
 /// A `TextField` with `Store.NO`.
 fn text(name: &str, value: &str) -> Result<Box<TextField>> {
     Ok(Box::new(TextField::new(
-        name,
+        name.to_string(),
         value.to_string(),
         Store::NO,
     )?))

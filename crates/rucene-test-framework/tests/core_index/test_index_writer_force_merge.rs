@@ -414,7 +414,7 @@ fn test_merge_per_field() -> Result<()> {
                         ));
                     }
                     doc.add(LongPoint::new(
-                        &format!("p{f}"),
+                        format!("p{f}"),
                         &[random().next_int_bound(10000) as i64],
                     )?);
                 }

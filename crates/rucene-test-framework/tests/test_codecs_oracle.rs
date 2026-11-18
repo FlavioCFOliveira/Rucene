@@ -563,7 +563,7 @@ fn misuses(nocfs: &Path, scratch: &Path) -> Vec<(String, (String, String))> {
             .map(drop)
     });
     misuse("dv.sorted lookupOrd out of range", &|| {
-        let dv = leaf.get_sorted_doc_values("dv_sorted")?.unwrap();
+        let mut dv = leaf.get_sorted_doc_values("dv_sorted")?.unwrap();
         let count = dv.get_value_count()?;
         dv.lookup_ord(count).map(drop)
     });

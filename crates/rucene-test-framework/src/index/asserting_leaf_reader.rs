@@ -1542,15 +1542,15 @@ impl SortedDocValues for AssertingSortedDocValues {
         Ok(value_count)
     }
 
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
         assert_thread("Sorted doc values", &self.creation_thread)?;
         java_assert!(ord >= 0 && ord < self.value_count);
         let result = self.r#in.lookup_ord(ord)?;
-        assert_valid(&result)?;
+        assert_valid(result)?;
         Ok(result)
     }
 
-    fn lookup_term(&self, key: &BytesRef) -> Result<i32> {
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i32> {
         assert_thread("Sorted doc values", &self.creation_thread)?;
         assert_valid(key)?;
         let result = self.r#in.lookup_term(key)?;
@@ -1849,11 +1849,11 @@ impl SortedSetDocValues for AssertingSortedSetDocValues {
         self.r#in.doc_value_count()
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
         assert_thread("Sorted set doc values", &self.creation_thread)?;
         java_assert!(ord >= 0 && ord < self.value_count);
         let result = self.r#in.lookup_ord(ord)?;
-        assert_valid(&result)?;
+        assert_valid(result)?;
         Ok(result)
     }
 
@@ -1864,7 +1864,7 @@ impl SortedSetDocValues for AssertingSortedSetDocValues {
         Ok(value_count)
     }
 
-    fn lookup_term(&self, key: &BytesRef) -> Result<i64> {
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i64> {
         assert_thread("Sorted set doc values", &self.creation_thread)?;
         assert_valid(key)?;
         let result = self.r#in.lookup_term(key)?;

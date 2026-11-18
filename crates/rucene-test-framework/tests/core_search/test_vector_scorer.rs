@@ -83,12 +83,15 @@ fn get_index_store(
                 v[j] = contents[i][j] as i8 as u8;
             }
             doc.add(KnnByteVectorField::new(
-                field,
+                field.to_string(),
                 &v,
                 VectorSimilarityFunction::EUCLIDEAN,
             )?);
         } else {
-            doc.add(KnnFloatVectorField::with_euclidean(field, contents[i])?);
+            doc.add(KnnFloatVectorField::with_euclidean(
+                field.to_string(),
+                contents[i],
+            )?);
         }
         doc.add(StringField::new("id", format!("id{i}"), Store::YES)?);
         writer.add_document(&doc)?;

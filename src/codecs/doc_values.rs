@@ -654,7 +654,7 @@ mod tests {
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_sorted_doc_values_has_no_values() {
-        let values = EmptySortedDocValues::new();
+        let mut values = EmptySortedDocValues::new();
         assert_eq!(values.get_value_count().unwrap(), 0);
         assert_eq!(values.lookup_ord(0).unwrap().length, 0);
         assert!(values.ord_value().is_err());
@@ -1317,10 +1317,12 @@ impl SortedDocValues for MergedSortedDocValues {
         Ok(self.map.get_value_count() as i32)
     }
 
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+    /// `subs.get(segmentNumber).values.lookupOrd(segmentOrd)`
+    /// (`DocValuesConsumer.java:801-806`): the sub's value, lent.
+    fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
         let segment_number = self.map.get_first_segment_number(i64::from(ord));
         let segment_ord = self.map.get_first_segment_ord(i64::from(ord)) as i32;
-        self.merger.subs()[segment_number]
+        self.merger.subs_mut()[segment_number]
             .values
             .lookup_ord(segment_ord)
     }
@@ -1505,10 +1507,12 @@ impl SortedSetDocValues for MergedSortedSetDocValues {
         }
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+    /// `toMerge.get(segmentNumber).lookupOrd(segmentOrd)`
+    /// (`DocValuesConsumer.java:1031-1036`): the sub's value, lent.
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
         let segment_number = self.map.get_first_segment_number(ord);
         let segment_ord = self.map.get_first_segment_ord(ord);
-        self.merger.subs()[segment_number]
+        self.merger.subs_mut()[segment_number]
             .values
             .lookup_ord(segment_ord)
     }

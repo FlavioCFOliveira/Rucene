@@ -261,7 +261,7 @@ impl Lucene90CompoundReader {
         let expected_length = entries
             .mapping
             .values()
-            .map(|e| e.offset + e.length)
+            .map(|e| e.entry.offset + e.entry.length)
             .max()
             .unwrap_or_else(|| codec_util::index_header_length(DATA_CODEC, "") as i64)
             + codec_util::footer_length() as i64;
@@ -352,7 +352,6 @@ fn read_entries(
 fn read_mapping(entries_stream: &mut dyn IndexInput) -> Result<CompoundEntries> {
     let num_entries = entries_stream.read_v_int()?;
     let mut mapping = std::collections::HashMap::new();
-    let mut ids = Vec::new();
     for _ in 0..num_entries {
         let id = entries_stream.read_string()?;
         if mapping.contains_key(&id) {
@@ -364,29 +363,57 @@ fn read_mapping(entries_stream: &mut dyn IndexInput) -> Result<CompoundEntries> 
         }
         let offset = entries_stream.read_long()?;
         let length = entries_stream.read_long()?;
-        mapping.insert(id.clone(), CompoundFileEntry { offset, length });
-        ids.push(id);
+        // PERF: the map holds the one `String` read, as Java's does
+        // (`mapping.put(id, fileEntry)`); the file order the error message
+        // needs is the entry's position, not a second copy of the id.
+        let order = mapping.len();
+        mapping.insert(
+            id,
+            OrderedEntry {
+                order,
+                entry: CompoundFileEntry { offset, length },
+            },
+        );
     }
-    Ok(CompoundEntries { mapping, ids })
+    Ok(CompoundEntries { mapping })
 }
 
-/// The entries of a compound file: the lookup map, and the ids in the order
-/// the entries file lists them, which is what Java's `HashMap` was filled in.
+/// A compound-file entry and its position in the entries file.
+struct OrderedEntry {
+    /// The entry's position in the entries file, the order Java's `HashMap`
+    /// was filled in.
+    order: usize,
+    entry: CompoundFileEntry,
+}
+
+/// The entries of a compound file: the lookup map, each entry carrying its
+/// position in the entries file, which is the order Java's `HashMap` was
+/// filled in.
 struct CompoundEntries {
-    mapping: std::collections::HashMap<String, CompoundFileEntry>,
-    ids: Vec<String>,
+    mapping: std::collections::HashMap<String, OrderedEntry>,
 }
 
 impl CompoundEntries {
+    /// The entry of `id`, if the compound file has one.
+    fn get(&self, id: &str) -> Option<&CompoundFileEntry> {
+        self.mapping.get(id).map(|ordered| &ordered.entry)
+    }
+
     /// Renders `entries.keySet()` as Java does: `[a, b]` in the iteration
     /// order of the `HashMap.newHashMap(numEntries)` that `readMapping` fills
     /// in file order (`Lucene90CompoundReader.java:131-145`).
     fn java_key_set(&self) -> String {
-        let capacity = (self.ids.len() as f64 / 0.75).ceil() as i32;
+        let mut ids: Vec<(&str, usize)> = self
+            .mapping
+            .iter()
+            .map(|(id, ordered)| (id.as_str(), ordered.order))
+            .collect();
+        ids.sort_unstable_by_key(|&(_, order)| order);
+        let capacity = (ids.len() as f64 / 0.75).ceil() as i32;
         let mut java_map =
             crate::util::java_collections::JavaHashMap::<()>::with_initial_capacity(capacity);
-        for id in &self.ids {
-            java_map.insert(id.clone(), ());
+        for (id, _) in ids {
+            java_map.insert(id.to_string(), ());
         }
         let keys: Vec<&str> = java_map.keys().map(String::as_str).collect();
         format!("[{}]", keys.join(", "))
@@ -423,16 +450,12 @@ impl Directory for Lucene90CompoundReader {
     fn file_length(&self, name: &str) -> Result<i64> {
         let id = strip_segment_name(name);
         // `if (e == null) throw new FileNotFoundException(name)`
-        self.entries
-            .mapping
-            .get(id)
-            .map(|e| e.length)
-            .ok_or_else(|| {
-                LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    name.to_string(),
-                )))
-            })
+        self.entries.get(id).map(|e| e.length).ok_or_else(|| {
+            LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                name.to_string(),
+            )))
+        })
     }
 
     fn create_output(&self, _name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
@@ -464,7 +487,7 @@ impl Directory for Lucene90CompoundReader {
     /// (`Lucene90CompoundReader.java:152-171`): a slice of the handle.
     fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
         let id = strip_segment_name(name);
-        let Some(entry) = self.entries.mapping.get(id) else {
+        let Some(entry) = self.entries.get(id) else {
             let dat_file_name = segment_file_name(&self.segment_name, "", COMPOUND_FILE_EXTENSION);
             return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,

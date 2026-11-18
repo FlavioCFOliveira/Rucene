@@ -81,7 +81,7 @@ fn random_indexed_field(random: &dyn Random, field_name: &str) -> Result<SharedF
     field_type.set_stored(random.next_boolean())?;
     field_type.freeze();
     Ok(Arc::new(Field::new(
-        field_name,
+        field_name.to_string(),
         "randomValue".to_string(),
         field_type,
     )?))
@@ -91,16 +91,19 @@ fn random_indexed_field(random: &dyn Random, field_name: &str) -> Result<SharedF
 fn random_point_field(random: &dyn Random, field_name: &str) -> Result<SharedField> {
     Ok(match random.next_int_bound(4) {
         0 => Arc::new(LongPoint::new(
-            field_name,
+            field_name.to_string(),
             &[RandomizedTest::random_long()],
         )?),
-        1 => Arc::new(IntPoint::new(field_name, &[RandomizedTest::random_int()])?),
+        1 => Arc::new(IntPoint::new(
+            field_name.to_string(),
+            &[RandomizedTest::random_int()],
+        )?),
         2 => Arc::new(DoublePoint::new(
-            field_name,
+            field_name.to_string(),
             &[RandomizedTest::random_double()],
         )?),
         _ => Arc::new(FloatPoint::new(
-            field_name,
+            field_name.to_string(),
             &[RandomizedTest::random_float()],
         )?),
     })
@@ -110,19 +113,19 @@ fn random_point_field(random: &dyn Random, field_name: &str) -> Result<SharedFie
 fn random_doc_values_field(random: &dyn Random, field_name: &str) -> SharedField {
     match random.next_int_bound(4) {
         0 => Arc::new(BinaryDocValuesField::new(
-            field_name,
+            field_name.to_string(),
             BytesRef::from_char_sequence("randomValue"),
         )),
         1 => Arc::new(NumericDocValuesField::new(
-            field_name,
+            field_name.to_string(),
             RandomizedTest::random_long(),
         )),
         2 => Arc::new(DoubleDocValuesField::new(
-            field_name,
+            field_name.to_string(),
             RandomizedTest::random_double(),
         )),
         _ => Arc::new(SortedSetDocValuesField::new(
-            field_name,
+            field_name.to_string(),
             BytesRef::from_char_sequence("randomValue"),
         )),
     }
@@ -136,7 +139,7 @@ fn random_knn_vector_field(random: &dyn Random, field_name: &str) -> Result<Shar
         *v = RandomizedTest::random_float();
     }
     Ok(Arc::new(KnnFloatVectorField::new(
-        field_name,
+        field_name.to_string(),
         &values,
         similarity_function,
     )?))

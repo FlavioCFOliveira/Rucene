@@ -1138,8 +1138,8 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         // (`Lucene90DocValuesConsumer.java:742`).
         let sorted =
             crate::codecs::doc_values::non_null(values_producer.get_sorted(field)?, field)?;
-        let value_count = sorted.get_value_count()? as i64;
-        self.add_terms_dict_values(value_count, |ord| sorted.lookup_ord(ord as i32))?;
+        let mut singleton = crate::index::doc_values::SingletonSortedSetDocValues::new(sorted)?;
+        self.add_terms_dict_values(&mut singleton)?;
         Ok(())
     }
 
@@ -1303,10 +1303,17 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         Ok(buffered_output.position())
     }
 
-    fn add_terms_dict_values<F>(&mut self, value_count: i64, mut lookup: F) -> Result<()>
-    where
-        F: FnMut(i64) -> Result<BytesRef>,
-    {
+    /// Writes the terms dictionary of a sorted or sorted-set field, then its
+    /// reverse index.
+    ///
+    /// Equivalent to `Lucene90DocValuesConsumer.addTermsDict(SortedSetDocValues)`
+    /// (`Lucene90DocValuesConsumer.java:745-829`). Java walks
+    /// `values.termsEnum()`, whose `next()` copies `values.lookupOrd(ord)`
+    /// into the enum's scratch (`SortedSetDocValuesTermsEnum.java:73-81`);
+    /// here each term is read straight from the value `lookup_ord` lends, in
+    /// the same order.
+    fn add_terms_dict_values(&mut self, values: &mut dyn SortedSetDocValues) -> Result<()> {
+        let value_count = values.get_value_count()?;
         self.meta.write_v_long(value_count)?;
         self.meta.write_int(DIRECT_MONOTONIC_BLOCK_SHIFT)?;
 
@@ -1337,7 +1344,7 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         let mut dict_length = 0usize;
 
         for ord in 0..value_count {
-            let term = lookup(ord)?;
+            let term = values.lookup_ord(ord)?;
             if (ord as usize & TERMS_DICT_BLOCK_LZ4_MASK) == 0 {
                 if ord != 0 {
                     // flush the previous block
@@ -1360,15 +1367,18 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
                 // use it as a dictionary for compression
                 self.data.write_v_int(term.length as i32)?;
                 self.data
-                    .write_bytes(term.slice(), term.offset, term.length)?;
+                    .write_bytes(&term.bytes, term.offset, term.length)?;
                 Self::maybe_grow_buffer(terms_dict_buffer, buffered_position, term.length);
                 buffered_position =
                     Self::write_buffered(terms_dict_buffer, buffered_position, |out| {
-                        out.write_bytes(term.slice(), term.offset, term.length)
+                        out.write_bytes(&term.bytes, term.offset, term.length)
                     })?;
                 dict_length = term.length;
             } else {
-                let prefix = StringHelper::bytes_difference(&previous.get(), &term)? as usize;
+                // PERF: `StringHelper.bytesDifference(previous.get(), term)`
+                // (`Lucene90DocValuesConsumer.java:790`) on the builder's own
+                // buffer, not a clone of it per term.
+                let prefix = StringHelper::bytes_difference(previous.get_ref(), term)? as usize;
                 let suffix_length = term.length - prefix;
                 debug_assert!(suffix_length > 0); // terms are unique
                                                   // Will write (suffixLength + 1 byte + 2 vint) bytes. Grow the buffer in need.
@@ -1385,11 +1395,11 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
                         if suffix_length >= 16 {
                             out.write_v_int((suffix_length - 16) as i32)?;
                         }
-                        out.write_bytes(term.slice(), term.offset + prefix, suffix_length)
+                        out.write_bytes(&term.bytes, term.offset + prefix, suffix_length)
                     })?;
             }
             max_length = max_length.max(term.length as i32);
-            previous.copy_ref(&term);
+            previous.copy_ref(term);
         }
         // Compress and write out the last block
         if buffered_position > dict_length {
@@ -1416,14 +1426,17 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         self.meta.write_long(start)?;
         self.meta.write_long(self.data.file_pointer() - start)?;
 
-        self.write_terms_index_values(value_count, lookup)?;
+        self.write_terms_index_values(values)?;
         Ok(())
     }
 
-    fn write_terms_index_values<F>(&mut self, value_count: i64, mut lookup: F) -> Result<()>
-    where
-        F: FnMut(i64) -> Result<BytesRef>,
-    {
+    /// Writes the reverse terms index of a sorted or sorted-set field.
+    ///
+    /// Equivalent to `Lucene90DocValuesConsumer.writeTermsIndex(SortedSetDocValues)`
+    /// (`Lucene90DocValuesConsumer.java:849-896`), reading the values as
+    /// [`add_terms_dict_values`](Self::add_terms_dict_values) does.
+    fn write_terms_index_values(&mut self, values: &mut dyn SortedSetDocValues) -> Result<()> {
+        let value_count = values.get_value_count()?;
         self.meta.write_int(TERMS_DICT_REVERSE_INDEX_SHIFT)?;
         let start = self.data.file_pointer();
         let num_blocks = 1
@@ -1444,21 +1457,23 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         let mut previous = BytesRefBuilder::new();
         let mut offset = 0i64;
         for ord in 0..value_count {
-            let term = lookup(ord)?;
+            let term = values.lookup_ord(ord)?;
             if (ord as usize & TERMS_DICT_REVERSE_INDEX_MASK) == 0 {
                 writer.add(offset)?;
                 let sort_key_length = if ord == 0 {
                     0
                 } else {
-                    StringHelper::sort_key_length(&previous.get(), &term)?
+                    // PERF: `sortKeyLength(previous.get(), term)` (`:877`) on
+                    // the builder's own buffer.
+                    StringHelper::sort_key_length(previous.get_ref(), term)?
                 };
                 offset += sort_key_length as i64;
                 self.data
-                    .write_bytes(term.slice(), term.offset, sort_key_length as usize)?;
+                    .write_bytes(&term.bytes, term.offset, sort_key_length as usize)?;
             } else if (ord as usize & TERMS_DICT_REVERSE_INDEX_MASK)
                 == TERMS_DICT_REVERSE_INDEX_MASK
             {
-                previous.copy_ref(&term);
+                previous.copy_ref(term);
             }
         }
         writer.add(offset)?;
@@ -1611,9 +1626,10 @@ impl<'a> DocValuesConsumer for Lucene90DocValuesConsumer<'a> {
         let producer = OrdinalsAsSortedNumericProducer { inner: values };
         self.do_add_sorted_numeric_field(field, &producer, true)?;
 
-        let sorted_set = crate::codecs::doc_values::non_null(values.get_sorted_set(field)?, field)?;
-        let value_count = sorted_set.get_value_count()?;
-        self.add_terms_dict_values(value_count, |ord| sorted_set.lookup_ord(ord))?;
+        // `addTermsDict(valuesProducer.getSortedSet(field))` (`:1048`).
+        let mut sorted_set =
+            crate::codecs::doc_values::non_null(values.get_sorted_set(field)?, field)?;
+        self.add_terms_dict_values(sorted_set.as_mut())?;
         Ok(())
     }
 
@@ -4279,8 +4295,8 @@ fn check_ordinals_entry(ords: &NumericEntry) -> Result<()> {
 struct LazySortedDocValues {
     ords: LazyNumericDocValues,
     /// `BaseSortedDocValues.termsEnum`, the dictionary `lookupOrd` and
-    /// `lookupTerm` both position.
-    terms: RefCell<TermsDict>,
+    /// `lookupTerm` both position; `lookupOrd` lends its term.
+    terms: TermsDict,
     value_count: i64,
     /// The data file and the dictionary's entry, from which `termsEnum()`
     /// opens a dictionary of its own (`new TermsDict(entry.termsDictEntry,
@@ -4299,7 +4315,7 @@ impl LazySortedDocValues {
         check_ordinals_entry(&entry.ords)?;
         Ok(Self {
             ords: LazyNumericDocValues::new(data, max_doc, &entry.ords, merging)?,
-            terms: RefCell::new(TermsDict::new(data, &entry.terms_dict)?),
+            terms: TermsDict::new(data, &entry.terms_dict)?,
             value_count: entry.terms_dict.terms_dict_size,
             data: data.clone_input()?,
             terms_dict_entry: entry.terms_dict.clone(),
@@ -4347,17 +4363,20 @@ impl SortedDocValues for LazySortedDocValues {
         crate::error::to_int_exact(self.value_count)
     }
 
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
-        let term = self.terms.borrow_mut().seek_exact(i64::from(ord))?.to_vec();
-        Ok(BytesRef::new(term))
+    /// `BaseSortedDocValues.lookupOrd(int)`
+    /// (`Lucene90DocValuesProducer.java:1506-1510`): `termsEnum.seekExact(ord);
+    /// return termsEnum.term()`, the dictionary's own term, lent.
+    fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
+        self.terms.seek_exact(i64::from(ord))?;
+        Ok(&self.terms.term)
     }
 
     /// `BaseSortedDocValues.lookupTerm(BytesRef)`
     /// (`Lucene90DocValuesProducer.java:1513-1523`): a `seekCeil` on the
     /// dictionary, whose ordinal — or `-1 - ord` when the term is absent — is
     /// narrowed with `Math.toIntExact`.
-    fn lookup_term(&self, key: &BytesRef) -> Result<i32> {
-        let mut terms = self.terms.borrow_mut();
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i32> {
+        let terms = &mut self.terms;
         match terms.seek_ceil_term(key.slice())? {
             crate::index::SeekStatus::FOUND => crate::error::to_int_exact(terms.ord),
             crate::index::SeekStatus::NOT_FOUND | crate::index::SeekStatus::END => {
@@ -4656,8 +4675,9 @@ struct LazySortedSetDocValues {
     ords: LazySortedNumericDocValues,
     /// `BaseSortedSetDocValues.termsEnum` — or, for a single-valued entry,
     /// the `BaseSortedDocValues.termsEnum` `DocValues.singleton` wraps — the
-    /// dictionary `lookupOrd` and `lookupTerm` position.
-    terms: RefCell<TermsDict>,
+    /// dictionary `lookupOrd` and `lookupTerm` position; `lookupOrd` lends
+    /// its term.
+    terms: TermsDict,
     value_count: i64,
     /// The data file and the dictionary's entry, from which `termsEnum()`
     /// opens a dictionary of its own (`new TermsDict(entry.termsDictEntry,
@@ -4701,7 +4721,7 @@ impl LazySortedSetDocValues {
         };
         Ok(Self {
             ords: LazySortedNumericDocValues::new(data, max_doc, &ords_entry, -1, merging)?,
-            terms: RefCell::new(TermsDict::new(data, terms_dict)?),
+            terms: TermsDict::new(data, terms_dict)?,
             value_count: terms_dict.terms_dict_size,
             data: data.clone_input()?,
             terms_dict_entry: terms_dict.clone(),
@@ -4759,9 +4779,12 @@ impl SortedSetDocValues for LazySortedSetDocValues {
         self.ords.doc_value_count()
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
-        let term = self.terms.borrow_mut().seek_exact(ord)?.to_vec();
-        Ok(BytesRef::new(term))
+    /// `BaseSortedSetDocValues.lookupOrd(long)`
+    /// (`Lucene90DocValuesProducer.java:1548-1552`): `termsEnum.seekExact(ord);
+    /// return termsEnum.term()`, the dictionary's own term, lent.
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
+        self.terms.seek_exact(ord)?;
+        Ok(&self.terms.term)
     }
 
     fn get_value_count(&self) -> Result<i64> {
@@ -4773,8 +4796,8 @@ impl SortedSetDocValues for LazySortedSetDocValues {
     /// dictionary, answering its ordinal or `-1 - ord`. For a single-valued
     /// entry it is `BaseSortedDocValues.lookupTerm` (`:1513-1523`), whose
     /// result `Math.toIntExact` narrows first.
-    fn lookup_term(&self, key: &BytesRef) -> Result<i64> {
-        let mut terms = self.terms.borrow_mut();
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i64> {
+        let terms = &mut self.terms;
         let ord = match terms.seek_ceil_term(key.slice())? {
             crate::index::SeekStatus::FOUND => terms.ord,
             crate::index::SeekStatus::NOT_FOUND | crate::index::SeekStatus::END => {
@@ -5211,7 +5234,7 @@ mod tests {
         let reader = crate::index::directory_reader::open(dir).unwrap();
         let leaves = Arc::clone(&reader).leaves().unwrap();
         let leaf = leaves[0].leaf_reader();
-        let values = leaf.get_sorted_doc_values("s").unwrap().unwrap();
+        let mut values = leaf.get_sorted_doc_values("s").unwrap().unwrap();
 
         let keys = [
             "t0000", "t0063", "t0064", "t1023", "t1024", "t1500", "t15005", "t2999", "a", "z", "t",
@@ -5273,6 +5296,64 @@ mod tests {
         drop(reader);
     }
 
+    /// `lookupOrd` is `termsEnum.seekExact(ord); return termsEnum.term()`
+    /// (`Lucene90DocValuesProducer.java:1506-1510, 1548-1552`): the sorted
+    /// and sorted-set values lend every value from their dictionary's one
+    /// term buffer, `new BytesRef(entry.maxTermLength)` (`:1603`), whatever
+    /// the order of the lookups (forwards, backwards across blocks), so a
+    /// lookup allocates nothing.
+    #[test]
+    fn lookup_ord_lends_the_dictionarys_one_term_buffer() {
+        use crate::document::{Document, SortedDocValuesField, SortedSetDocValuesField};
+        // 200 distinct values of 2 to 10 bytes: more than three 64-term blocks.
+        let value = |i: usize| format!("v{i:0width$}", width = 1 + i % 9);
+        let docs = (0..200)
+            .map(|i| {
+                let mut doc = Document::new();
+                doc.add(SortedDocValuesField::new(
+                    "s",
+                    BytesRef::new(value(i).into_bytes()),
+                ));
+                for k in [i, (i + 1) % 200] {
+                    doc.add(SortedSetDocValuesField::new(
+                        "ss",
+                        BytesRef::new(value(k).into_bytes()),
+                    ));
+                }
+                doc
+            })
+            .collect();
+        let mut sorted: Vec<Vec<u8>> = (0..200).map(|i| value(i).into_bytes()).collect();
+        sorted.sort();
+        let max_term_length = sorted.iter().map(Vec::len).max().unwrap();
+        let ords: Vec<usize> = (0..200).chain((0..200).rev()).collect();
+
+        let dir = indexed_segment(docs);
+        let reader = crate::index::directory_reader::open(dir).unwrap();
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        let leaf = leaves[0].leaf_reader();
+
+        let mut single = leaf.get_sorted_doc_values("s").unwrap().unwrap();
+        let buffer = single.lookup_ord(0).unwrap().bytes.as_ptr();
+        for &ord in &ords {
+            let lent = single.lookup_ord(ord as i32).unwrap();
+            assert_eq!(lent.slice(), sorted[ord].as_slice(), "sorted ord {ord}");
+            assert_eq!(lent.bytes.as_ptr(), buffer, "sorted ord {ord}");
+            assert_eq!(lent.bytes.len(), max_term_length);
+        }
+
+        let mut set = leaf.get_sorted_set_doc_values("ss").unwrap().unwrap();
+        let buffer = set.lookup_ord(0).unwrap().bytes.as_ptr();
+        for &ord in &ords {
+            let lent = set.lookup_ord(ord as i64).unwrap();
+            assert_eq!(lent.slice(), sorted[ord].as_slice(), "sorted-set ord {ord}");
+            assert_eq!(lent.bytes.as_ptr(), buffer, "sorted-set ord {ord}");
+            assert_eq!(lent.bytes.len(), max_term_length);
+        }
+        drop((single, set, leaves));
+        drop(reader);
+    }
+
     /// `BaseSortedSetDocValues.lookupTerm` and `termsEnum`
     /// (`Lucene90DocValuesProducer.java:1554-1570`). Measured against
     /// `lucene-core-10.5.0.jar` (`oracle/fix/LastPass.java`, case C4) over a
@@ -5298,7 +5379,7 @@ mod tests {
         let dir = indexed_segment(docs);
         let reader = crate::index::directory_reader::open(dir).unwrap();
         let leaves = Arc::clone(&reader).leaves().unwrap();
-        let values = leaves[0]
+        let mut values = leaves[0]
             .leaf_reader()
             .get_sorted_set_doc_values("s")
             .unwrap()
@@ -5349,7 +5430,7 @@ mod tests {
         let dir = indexed_segment(docs);
         let reader = crate::index::directory_reader::open(dir).unwrap();
         let leaves = Arc::clone(&reader).leaves().unwrap();
-        let values = leaves[0]
+        let mut values = leaves[0]
             .leaf_reader()
             .get_sorted_doc_values("s")
             .unwrap()
@@ -5706,7 +5787,7 @@ mod tests {
     struct VecSorted {
         cursor: DocCursor,
         ords: Vec<i32>,
-        terms: Vec<Vec<u8>>,
+        terms: Vec<BytesRef>,
     }
     delegate_cursor!(VecSorted);
     impl SortedDocValues for VecSorted {
@@ -5718,8 +5799,8 @@ mod tests {
             Ok(self.terms.len() as i32)
         }
 
-        fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
-            Ok(BytesRef::new(self.terms[ord as usize].clone()))
+        fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
+            Ok(&self.terms[ord as usize])
         }
     }
 
@@ -5768,7 +5849,7 @@ mod tests {
     struct VecSortedSet {
         cursor: DocCursor,
         ords: Vec<Vec<i64>>,
-        terms: Vec<Vec<u8>>,
+        terms: Vec<BytesRef>,
         index: usize,
     }
     impl DocIdSetIterator for VecSortedSet {
@@ -5807,8 +5888,8 @@ mod tests {
             Ok(self.ords[self.cursor.pos].len() as i32)
         }
 
-        fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
-            Ok(BytesRef::new(self.terms[ord as usize].clone()))
+        fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
+            Ok(&self.terms[ord as usize])
         }
 
         fn get_value_count(&self) -> Result<i64> {
@@ -5849,7 +5930,7 @@ mod tests {
                     Some((docs, ords, terms)) => Ok(Box::new(VecSorted {
                         cursor: DocCursor::new(docs.clone()),
                         ords: ords.clone(),
-                        terms: terms.clone(),
+                        terms: terms.iter().cloned().map(BytesRef::new).collect(),
                     })),
                     None => Ok(Box::new(EmptySortedDocValues::new())),
                 }
@@ -5880,7 +5961,7 @@ mod tests {
                     Some((docs, ords, terms)) => Ok(Box::new(VecSortedSet {
                         cursor: DocCursor::new(docs.clone()),
                         ords: ords.clone(),
-                        terms: terms.clone(),
+                        terms: terms.iter().cloned().map(BytesRef::new).collect(),
                         index: 0,
                     })),
                     None => Ok(Box::new(EmptySortedSetDocValues::new())),
@@ -6278,9 +6359,9 @@ mod tests {
         assert_eq!(sorted.next_doc().unwrap(), NO_MORE_DOCS);
 
         assert_eq!(sorted.get_value_count().unwrap(), 3);
-        assert_eq!(sorted.lookup_ord(0).unwrap().bytes, b"bar");
-        assert_eq!(sorted.lookup_ord(1).unwrap().bytes, b"baz");
-        assert_eq!(sorted.lookup_ord(2).unwrap().bytes, b"foo");
+        assert_eq!(sorted.lookup_ord(0).unwrap().slice(), b"bar");
+        assert_eq!(sorted.lookup_ord(1).unwrap().slice(), b"baz");
+        assert_eq!(sorted.lookup_ord(2).unwrap().slice(), b"foo");
     }
 
     #[test]
@@ -6333,9 +6414,9 @@ mod tests {
         assert_eq!(sorted_set.next_doc().unwrap(), NO_MORE_DOCS);
 
         assert_eq!(sorted_set.get_value_count().unwrap(), 3);
-        assert_eq!(sorted_set.lookup_ord(0).unwrap().bytes, b"a");
-        assert_eq!(sorted_set.lookup_ord(1).unwrap().bytes, b"b");
-        assert_eq!(sorted_set.lookup_ord(2).unwrap().bytes, b"c");
+        assert_eq!(sorted_set.lookup_ord(0).unwrap().slice(), b"a");
+        assert_eq!(sorted_set.lookup_ord(1).unwrap().slice(), b"b");
+        assert_eq!(sorted_set.lookup_ord(2).unwrap().slice(), b"c");
     }
 
     fn capture_doc_values_bytes(

@@ -382,13 +382,13 @@ impl LineFileDocs {
             let title_length = title.encode_utf16().count() as i32;
             if self.random.next_int_bound(3) == 1 {
                 let x = self.random.next_int_bound(4);
-                doc.add(IntPoint::new(&format!("docLength{x}"), &[line_length])?);
+                doc.add(IntPoint::new(format!("docLength{x}"), &[line_length])?);
             }
 
             if self.random.next_int_bound(3) == 1 {
                 let x = self.random.next_int_bound(4);
                 doc.add(IntPoint::new(
-                    &format!("docTitleLength{x}"),
+                    format!("docTitleLength{x}"),
                     &[title_length],
                 )?);
             }
@@ -396,7 +396,7 @@ impl LineFileDocs {
             if self.random.next_int_bound(3) == 1 {
                 let x = self.random.next_int_bound(4);
                 doc.add(NumericDocValuesField::new(
-                    &format!("docLength{x}"),
+                    format!("docLength{x}"),
                     i64::from(line_length),
                 ));
             }

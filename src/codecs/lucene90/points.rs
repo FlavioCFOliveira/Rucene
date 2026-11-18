@@ -1663,8 +1663,8 @@ mod tests {
             for i in 0..600 {
                 let i = segment * 600 + i;
                 let mut doc = Document::new();
-                doc.add(IntPoint::new(one_dim, &[i * 7 % 1013]).unwrap());
-                doc.add(IntPoint::new(two_dims, &[i % 97, i % 89]).unwrap());
+                doc.add(IntPoint::new(one_dim.to_string(), &[i * 7 % 1013]).unwrap());
+                doc.add(IntPoint::new(two_dims.to_string(), &[i % 97, i % 89]).unwrap());
                 writer.add_document(&doc).unwrap();
             }
             writer.commit().unwrap();

@@ -1368,7 +1368,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             for _ in 0..num_fields {
                 doc.add(
                     Field::new(
-                        &format!("f_{opts}"),
+                        format!("f_{opts}"),
                         TestUtil::random_simple_string_max(&*random(), 2),
                         ft.clone(),
                     )
@@ -1664,7 +1664,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                     if let Some(index_sort) = &index_sort {
                         for sort_field in index_sort.fields() {
                             doc.add(NumericDocValuesField::new(
-                                npe(sort_field.field()),
+                                npe(sort_field.field()).to_string(),
                                 i64::from(TestUtil::next_int(&*random(), 0, 1024)),
                             ));
                         }

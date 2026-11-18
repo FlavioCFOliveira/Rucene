@@ -190,7 +190,7 @@ fn do_test_ranges(
             && LuceneTestCase::collate(collator, &s, end_point) <= 0;
         Assert::assert_equals(doc_id, dvs.next_doc()?);
         let br = dvs.lookup_ord(dvs.ord_value()?)?;
-        let lucene_accepts = br >= *start_br && br <= *end_br;
+        let lucene_accepts = *br >= *start_br && *br <= *end_br;
         Assert::assert_equals_msg(
             Some(&format!("{start_point} <= {s} <= {end_point}")),
             collator_accepts,

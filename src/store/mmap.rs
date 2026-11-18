@@ -615,6 +615,44 @@ mod tests {
         );
     }
 
+    /// Java builds a clone from the same `String` (`MemorySegmentIndexInput.java:570-584`)
+    /// and a slice without a description from `toString()` itself
+    /// (`IndexInput.java:144-151`), and `toString()` returns that field
+    /// (`IndexInput.java:98-100`): the port shares the one description and
+    /// lends it. A described slice gets a description of its own.
+    #[test]
+    fn clones_share_the_description_and_lend_it() {
+        let temp = TempDir::new().unwrap();
+        let dir = MMapDirectory::open(&temp).unwrap();
+        let context = &*DEFAULT_IO_CONTEXT;
+        {
+            let mut out = dir.create_output("data.bin", context).unwrap();
+            out.write_long(1).unwrap();
+            out.write_long(2).unwrap();
+            out.close().unwrap();
+        }
+        let input = dir.open_input("data.bin", context).unwrap();
+        let description = input.resource_description();
+        let clone = input.clone_input().unwrap();
+        assert_eq!(clone.resource_description().as_ptr(), description.as_ptr());
+        let clone_of_clone = clone.clone_input().unwrap();
+        assert_eq!(
+            clone_of_clone.resource_description().as_ptr(),
+            description.as_ptr()
+        );
+        let whole = input.slice("", 0, input.length()).unwrap();
+        assert_eq!(whole.resource_description().as_ptr(), description.as_ptr());
+        let part = input.slice("part", 8, 8).unwrap();
+        assert_ne!(part.resource_description().as_ptr(), description.as_ptr());
+        assert_eq!(
+            part.resource_description(),
+            format!("{description} [slice=part]")
+        );
+        let java = input.to_java_string();
+        assert!(matches!(java, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(java.as_ptr(), description.as_ptr());
+    }
+
     #[test]
     fn mmap_index_input_slices_and_clones() {
         let temp = TempDir::new().unwrap();

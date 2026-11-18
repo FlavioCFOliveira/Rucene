@@ -62,7 +62,11 @@ fn test_basics_filter() -> Result<()> {
 fn string_doc(field: &str, values: &[&str]) -> Result<Document> {
     let mut doc = Document::new();
     for value in values {
-        doc.add(StringField::new(field, value.to_string(), Store::NO)?);
+        doc.add(StringField::new(
+            field.to_string(),
+            value.to_string(),
+            Store::NO,
+        )?);
     }
     Ok(doc)
 }

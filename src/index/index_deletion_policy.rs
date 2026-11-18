@@ -2536,8 +2536,8 @@ mod tests {
     impl crate::store::DataInput for FailingCloseInput {
         /// `IndexInput.toString()` returns the resource description, which
         /// this input takes from the one it wraps.
-        fn to_java_string(&self) -> String {
-            crate::store::IndexInput::resource_description(self).to_string()
+        fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
         }
 
         fn read_byte(&mut self) -> Result<u8> {

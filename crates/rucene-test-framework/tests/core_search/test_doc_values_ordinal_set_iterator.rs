@@ -347,7 +347,7 @@ impl SortedDocValues for FakeSortedDocValues {
         Ok((QUERY_MAX + 10) as i32)
     }
 
-    fn lookup_ord(&self, _ord: i32) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, _ord: i32) -> Result<&BytesRef> {
         unsupported()
     }
 }
@@ -658,7 +658,7 @@ impl SortedSetDocValues for FakeSortedSetDocValues {
         Ok(2)
     }
 
-    fn lookup_ord(&self, _ord: i64) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, _ord: i64) -> Result<&BytesRef> {
         unsupported()
     }
 

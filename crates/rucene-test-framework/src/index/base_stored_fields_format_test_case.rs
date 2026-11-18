@@ -1040,7 +1040,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             id_stored.set_int_value(i as i32)?;
             for (j, bytes) in fields.iter().enumerate() {
                 doc.add(Field::new_with_bytes(
-                    &format!("bytes{j}"),
+                    format!("bytes{j}"),
                     BytesRef::new(bytes.clone()),
                     ty.clone(),
                 )?);
@@ -1352,7 +1352,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             let mut doc = Document::new();
             for j in 0..10 {
                 // add fields where name=value (e.g. 3=3) so we can detect if stuff gets screwed up.
-                doc.add(StringField::new(&j.to_string(), j.to_string(), Store::YES)?);
+                doc.add(StringField::new(j.to_string(), j.to_string(), Store::YES)?);
             }
             for _ in 0..10 {
                 iw.add_document(&doc)?;
@@ -1671,7 +1671,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
                                             {
                                                 // Disable indexing
                                                 Some(value) => Arc::new(StoredField::new_string(
-                                                    field.name(),
+                                                    field.name().to_string(),
                                                     value,
                                                 )?),
                                                 None => field,

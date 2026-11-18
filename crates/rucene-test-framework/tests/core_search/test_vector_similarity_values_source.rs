@@ -99,7 +99,9 @@ fn kf(
     similarity: VectorSimilarityFunction,
 ) -> Result<Box<KnnFloatVectorField>> {
     Ok(Box::new(KnnFloatVectorField::new(
-        field, vector, similarity,
+        field.to_string(),
+        vector,
+        similarity,
     )?))
 }
 
@@ -110,7 +112,7 @@ fn kb(
     similarity: VectorSimilarityFunction,
 ) -> Result<Box<KnnByteVectorField>> {
     Ok(Box::new(KnnByteVectorField::new(
-        field,
+        field.to_string(),
         &b(vector),
         similarity,
     )?))

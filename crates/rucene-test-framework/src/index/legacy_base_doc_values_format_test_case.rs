@@ -694,7 +694,7 @@ fn sorted_set_writer(log_mp: bool) -> Result<(TestDirectory, RandomIndexWriter)>
 fn sorted_set_doc(field: &str, values: &[&str]) -> Document {
     let mut doc = Document::new();
     for value in values {
-        doc.add(SortedSetDocValuesField::new(field, nbr(value)));
+        doc.add(SortedSetDocValuesField::new(field.to_string(), nbr(value)));
     }
     doc
 }
@@ -834,10 +834,10 @@ fn sorted_set_two_values(values: &[&str]) -> Result<()> {
         aeq(1, dv.next_ord()?);
 
         let bytes = dv.lookup_ord(0)?;
-        Assert::assert_equals(nbr("hello"), bytes);
+        Assert::assert_equals(&nbr("hello"), bytes);
 
         let bytes = dv.lookup_ord(1)?;
-        Assert::assert_equals(nbr("world"), bytes);
+        Assert::assert_equals(&nbr("world"), bytes);
 
         drop((dv, leaf));
         ireader.close()?;
@@ -880,7 +880,7 @@ fn sorted_set_one_missing(last_missing: bool, merge: bool) -> Result<()> {
         aeq(0, dv.next_ord()?);
 
         let bytes = dv.lookup_ord(0)?;
-        Assert::assert_equals(nbr("hello"), bytes);
+        Assert::assert_equals(&nbr("hello"), bytes);
 
         drop((dv, leaf));
         ireader.close()?;
@@ -1426,7 +1426,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                 aeq(doc_id, dv.advance(doc_id)?);
                 let ord = dv.ord_value()?;
                 let scratch = dv.lookup_ord(ord)?;
-                Assert::assert_equals(nbr("hello hello"), scratch);
+                Assert::assert_equals(&nbr("hello hello"), scratch);
                 let mut dv2 = npe_at(leaf.get_numeric_doc_values("dv2")?, "Cannot invoke \"org.apache.lucene.index.NumericDocValues.advance(int)\" because \"dv2\" is null");
                 aeq(doc_id, dv2.advance(doc_id)?);
                 aeq(5, dv2.long_value()?);
@@ -1454,7 +1454,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                 aeq(doc_id, dv.advance(doc_id)?);
                 let ord = dv.ord_value()?;
                 let scratch = dv.lookup_ord(ord)?;
-                Assert::assert_equals(nbr("hello hello"), scratch);
+                Assert::assert_equals(&nbr("hello hello"), scratch);
                 let mut dv2 = npe_at(leaf.get_numeric_doc_values("dv3")?, "Cannot invoke \"org.apache.lucene.index.NumericDocValues.advance(int)\" because \"dv2\" is null");
                 aeq(doc_id, dv2.advance(doc_id)?);
                 aeq(5, dv2.long_value()?);
@@ -1663,7 +1663,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                     let mut dv = npe_at(leaf.get_sorted_doc_values("dv")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.advance(int)\" because \"dv\" is null");
                     aeq(doc_id, dv.advance(doc_id)?);
                     let scratch = dv.lookup_ord(dv.ord_value()?)?;
-                    Assert::assert_equals(nbr("hello world"), scratch);
+                    Assert::assert_equals(&nbr("hello world"), scratch);
                     Ok(())
                 },
             )?;
@@ -1772,9 +1772,9 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             aeq(2, dv.get_value_count()?); // 2 ords
             aeq(0, dv.next_doc()?);
             let scratch = dv.lookup_ord(dv.ord_value()?)?;
-            Assert::assert_equals(nbr("hello world 1"), scratch);
+            Assert::assert_equals(&nbr("hello world 1"), scratch);
             let scratch = dv.lookup_ord(1)?;
-            Assert::assert_equals(nbr("hello world 2"), scratch);
+            Assert::assert_equals(&nbr("hello world 2"), scratch);
             let stored_fields = leaf.stored_fields()?;
             for i in 0..2 {
                 let doc2 = stored_fields.document(i)?;
@@ -1812,7 +1812,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                     SeekStatus::END,
                     terms_enum.seek_ceil(&BytesRef::from_char_sequence("lucene"))?,
                 );
-                let dv = npe_at(leaf.get_sorted_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.termsEnum()\" because \"dv\" is null");
+                let mut dv = npe_at(leaf.get_sorted_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.termsEnum()\" because \"dv\" is null");
                 aeq(-1, dv.lookup_term(&BytesRef::from_char_sequence("lucene"))?);
                 Ok(())
             },
@@ -1862,7 +1862,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             let mut dv = npe_at(leaf.get_sorted_doc_values("dv")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.nextDoc()\" because \"dv\" is null");
             aeq(0, dv.next_doc()?);
             let scratch = dv.lookup_ord(dv.ord_value()?)?;
-            Assert::assert_equals(nbr("hello world 2"), scratch);
+            Assert::assert_equals(&nbr("hello world 2"), scratch);
             aeq(NO_MORE_DOCS, dv.next_doc()?);
             drop((dv, leaf));
             ireader.close()?;
@@ -2114,7 +2114,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             let mut dv = DocValues::get_sorted(&*leaf, "dv")?;
             aeq(0, dv.next_doc()?);
             Assert::assert_equals(
-                LuceneTestCase::new_bytes_ref_bytes(&bytes),
+                &LuceneTestCase::new_bytes_ref_bytes(&bytes),
                 dv.lookup_ord(dv.ord_value()?)?,
             );
             drop((dv, leaf));
@@ -2278,7 +2278,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             }
             w.commit()?;
             let reader: Arc<dyn IndexReader> = w.get_reader()?;
-            let doc_values = npe_at(MultiDocValues::get_sorted_values(&reader, "field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.getValueCount()\" because \"docValues\" is null");
+            let mut doc_values = npe_at(MultiDocValues::get_sorted_values(&reader, "field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.getValueCount()\" because \"docValues\" is null");
             let size = hash.size();
             let sort: Vec<i32> = hash.sort(&pool).to_vec();
             let _expected = LuceneTestCase::new_bytes_ref();
@@ -2302,7 +2302,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                 let mut doc_values = npe_at(MultiDocValues::get_sorted_values(&reader, "field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.advance(int)\" because \"docValues\" is null");
                 aeq(doc_id, doc_values.advance(doc_id)?);
                 let actual = doc_values.lookup_ord(doc_values.ord_value()?)?;
-                Assert::assert_equals(expected, actual);
+                Assert::assert_equals(&expected, actual);
             }
 
             drop(doc_values);
@@ -2861,7 +2861,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                         Some(binary_value) => {
                             aeq(i, doc_values.doc_id());
                             Assert::assert_equals(
-                                binary_value,
+                                &binary_value,
                                 doc_values.lookup_ord(doc_values.ord_value()?)?,
                             );
                             doc_values.next_doc()?;
@@ -2967,7 +2967,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             aeq(0, dv.next_ord()?);
 
             let bytes = dv.lookup_ord(0)?;
-            Assert::assert_equals(nbr("hello"), bytes);
+            Assert::assert_equals(&nbr("hello"), bytes);
 
             drop((dv, leaf));
             ireader.close()?;
@@ -2997,7 +2997,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             aeq(0, dv.next_ord()?);
 
             let bytes = dv.lookup_ord(0)?;
-            Assert::assert_equals(nbr("hello"), bytes);
+            Assert::assert_equals(&nbr("hello"), bytes);
 
             let mut dv = npe_at(leaf.get_sorted_set_doc_values("field2")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.nextDoc()\" because \"dv\" is null");
             aeq(0, dv.next_doc()?);
@@ -3006,7 +3006,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             aeq(0, dv.next_ord()?);
 
             let bytes = dv.lookup_ord(0)?;
-            Assert::assert_equals(nbr("world"), bytes);
+            Assert::assert_equals(&nbr("world"), bytes);
 
             drop((dv, leaf));
             ireader.close()?;
@@ -3038,14 +3038,14 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             aeq(0, dv.next_ord()?);
 
             let bytes = dv.lookup_ord(0)?;
-            Assert::assert_equals(nbr("hello"), bytes);
+            Assert::assert_equals(&nbr("hello"), bytes);
 
             aeq(1, dv.next_doc()?);
             aeq(1, dv.doc_value_count()?);
             aeq(1, dv.next_ord()?);
 
             let bytes = dv.lookup_ord(1)?;
-            Assert::assert_equals(nbr("world"), bytes);
+            Assert::assert_equals(&nbr("world"), bytes);
 
             drop((dv, leaf));
             ireader.close()?;
@@ -3093,13 +3093,13 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             aeq(1, dv.next_ord()?);
 
             let bytes = dv.lookup_ord(0)?;
-            Assert::assert_equals(nbr("beer"), bytes);
+            Assert::assert_equals(&nbr("beer"), bytes);
 
             let bytes = dv.lookup_ord(1)?;
-            Assert::assert_equals(nbr("hello"), bytes);
+            Assert::assert_equals(&nbr("hello"), bytes);
 
             let bytes = dv.lookup_ord(2)?;
-            Assert::assert_equals(nbr("world"), bytes);
+            Assert::assert_equals(&nbr("world"), bytes);
 
             drop((dv, leaf));
             ireader.close()?;
@@ -3143,7 +3143,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                     SeekStatus::END,
                     terms_enum.seek_ceil(&BytesRef::from_char_sequence("lucene"))?,
                 );
-                let dv = npe_at(leaf.get_sorted_set_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.termsEnum()\" because \"dv\" is null");
+                let mut dv = npe_at(leaf.get_sorted_set_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.termsEnum()\" because \"dv\" is null");
                 aeq(-1, dv.lookup_term(&BytesRef::from_char_sequence("lucene"))?);
                 Ok(())
             },
@@ -3734,7 +3734,10 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                                 );
                                 aeq(j, sorted.next_doc()?);
                                 let scratch = sorted.lookup_ord(sorted.ord_value()?)?;
-                                Assert::assert_equals(Boxed(binary_value), Boxed(Some(scratch)));
+                                Assert::assert_equals(
+                                    Boxed(binary_value.as_ref()),
+                                    Boxed(Some(scratch)),
+                                );
                                 let expected = doc_get(&stored_fields.document(j)?, "storedNum");
                                 aeq(j, numerics.next_doc()?);
                                 // `Long.parseLong(expected)`: a `null`
@@ -3886,7 +3889,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                                         let sorted = npe_at(sorted.as_mut(), "Cannot invoke \"org.apache.lucene.index.SortedDocValues.nextDoc()\" because \"sorted\" is null");
                                         aeq(j, sorted.next_doc()?);
                                         let scratch = sorted.lookup_ord(sorted.ord_value()?)?;
-                                        Assert::assert_equals(binary_value, scratch);
+                                        Assert::assert_equals(&binary_value, scratch);
                                     }
                                 }
 
@@ -3962,29 +3965,29 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
 
                 for j in 0..num_sorted_sets {
                     doc.add(SortedSetDocValuesField::new(
-                        &format!("ss{j}"),
+                        format!("ss{j}"),
                         nbr(&TestUtil::random_simple_string(&*random())),
                     ));
                     doc.add(SortedSetDocValuesField::new(
-                        &format!("ss{j}"),
+                        format!("ss{j}"),
                         nbr(&TestUtil::random_simple_string(&*random())),
                     ));
                 }
 
                 for j in 0..num_binaries {
                     doc.add(BinaryDocValuesField::new(
-                        &format!("b{j}"),
+                        format!("b{j}"),
                         nbr(&TestUtil::random_simple_string(&*random())),
                     ));
                 }
 
                 for j in 0..num_sorted_nums {
                     doc.add(SortedNumericDocValuesField::new(
-                        &format!("sn{j}"),
+                        format!("sn{j}"),
                         TestUtil::next_long(&*random(), i64::MIN, i64::MAX),
                     ));
                     doc.add(SortedNumericDocValuesField::new(
-                        &format!("sn{j}"),
+                        format!("sn{j}"),
                         TestUtil::next_long(&*random(), i64::MIN, i64::MAX),
                     ));
                 }
@@ -4472,7 +4475,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                     SeekStatus::END,
                     terms_enum.seek_ceil(&BytesRef::from_char_sequence("lucene"))?,
                 );
-                let dv = npe_at(leaf.get_sorted_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.termsEnum()\" because \"dv\" is null");
+                let mut dv = npe_at(leaf.get_sorted_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.termsEnum()\" because \"dv\" is null");
                 aeq(-1, dv.lookup_term(&BytesRef::from_char_sequence("lucene"))?);
                 Ok(())
             },
@@ -4497,7 +4500,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                     SeekStatus::END,
                     terms_enum.seek_ceil(&BytesRef::from_char_sequence("lucene"))?,
                 );
-                let dv = npe_at(leaf.get_sorted_set_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.termsEnum()\" because \"dv\" is null");
+                let mut dv = npe_at(leaf.get_sorted_set_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.termsEnum()\" because \"dv\" is null");
                 aeq(-1, dv.lookup_term(&BytesRef::from_char_sequence("lucene"))?);
                 Ok(())
             },

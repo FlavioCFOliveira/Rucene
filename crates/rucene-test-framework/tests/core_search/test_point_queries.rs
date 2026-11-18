@@ -1275,7 +1275,7 @@ fn binary_range(field: &str, lower: Vec<u8>, upper: Vec<u8>) -> Result<Arc<dyn Q
 
 /// `new BinaryPoint(name, value)` over a one-dimensional value.
 fn binary_point(name: &str, value: Vec<u8>) -> Result<BinaryPoint> {
-    BinaryPoint::new(name, &[BytesRef::new(value)])
+    BinaryPoint::new(name.to_string(), &[BytesRef::new(value)])
 }
 
 /// Port of `TestPointQueries.testBasicSortedSet`.

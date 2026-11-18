@@ -1940,15 +1940,32 @@ impl JavaHashSet {
         I::IntoIter: ExactSizeIterator,
     {
         let values = values.into_iter();
-        // `HashMap.newHashMap(Math.max(c.size(), 12))`, i.e.
-        // `new HashMap<>((int) Math.ceil(max(size, 12) / 0.75))`.
-        let requested = (values.len() as i32).max(12);
-        let capacity = (requested as f64 / DEFAULT_LOAD_FACTOR as f64).ceil() as i32;
-        let mut set = JavaHashSet::with_initial_capacity(capacity);
+        let mut set = Self::sized_for_collection(values.len());
         for value in values {
             set.insert(value);
         }
         set
+    }
+
+    /// `new HashSet<>(Collection)` over another set, which is borrowed: the
+    /// same pre-sizing as [`from_collection`](Self::from_collection), and each
+    /// element cloned in `source`'s iteration order.
+    pub fn from_set(source: &JavaHashSet) -> Self {
+        let mut set = Self::sized_for_collection(source.len());
+        for value in source.iter() {
+            set.insert(value.clone());
+        }
+        set
+    }
+
+    /// The empty set `new HashSet<>(Collection)` starts from for a
+    /// collection of `size` elements.
+    fn sized_for_collection(size: usize) -> Self {
+        // `HashMap.newHashMap(Math.max(c.size(), 12))`, i.e.
+        // `new HashMap<>((int) Math.ceil(max(size, 12) / 0.75))`.
+        let requested = (size as i32).max(12);
+        let capacity = (requested as f64 / DEFAULT_LOAD_FACTOR as f64).ceil() as i32;
+        JavaHashSet::with_initial_capacity(capacity)
     }
 }
 
@@ -2549,6 +2566,26 @@ impl<'a, T: Eq + std::hash::Hash> IntoIterator for &'a ImmutableSet<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `from_set` is `new HashSet<>(Collection)` over a borrowed set: the
+    /// table length and the iteration order `from_collection` reaches from a
+    /// copy of the same set, which it leaves unchanged.
+    #[test]
+    fn java_hash_set_from_set_matches_from_collection_of_a_copy() {
+        for count in [0usize, 1, 11, 12, 13, 40, 300] {
+            // Built by one `add` per name, as `SegmentInfo.setFiles` does.
+            let source: JavaHashSet = (0..count).map(|i| format!("_{i}.si")).collect();
+            let copied = JavaHashSet::from_set(&source);
+            let collected = JavaHashSet::from_collection(source.clone());
+            assert_eq!(copied.table_length(), collected.table_length(), "{count}");
+            assert_eq!(
+                copied.iter().collect::<Vec<_>>(),
+                collected.iter().collect::<Vec<_>>(),
+                "{count}"
+            );
+            assert_eq!(source.len(), count);
+        }
+    }
 
     /// `into_std` moves exactly the entries `to_std` copies, for both shapes
     /// `readMapOfStrings` builds: sorted (up to ten entries) and hashed.
