@@ -1986,7 +1986,10 @@ struct FreqProxTermsEnum {
     ord: i64,
     /// Java's `scratch`: the bytes of the term last read from the pool,
     /// which `term()` returns whatever the position (empty before any).
-    scratch: Vec<u8>,
+    /// Its `bytes` hold exactly the term (`offset` 0, `length ==
+    /// bytes.len()`), so that [`TermsEnum::term`] and [`TermsEnum::next`]
+    /// lend it as Java returns `scratch`.
+    scratch: BytesRef,
     attributes: AttributeSource,
 }
 
@@ -1997,7 +2000,7 @@ impl FreqProxTermsEnum {
             field,
             num_terms,
             ord: -1,
-            scratch: Vec::new(),
+            scratch: BytesRef::default(),
             attributes: AttributeSource::new(),
         }
     }
@@ -2029,8 +2032,12 @@ impl FreqProxTermsEnum {
     /// `termsPool.fillBytesRef(scratch, textStarts[sortedTermIDs[ord]])` for
     /// an `ord` in `[0, numTerms)`.
     fn fill_scratch(&mut self, ord: usize) {
-        self.scratch.clear();
-        self.scratch.extend_from_slice(self.field.term_bytes(ord));
+        self.scratch.bytes.clear();
+        self.scratch
+            .bytes
+            .extend_from_slice(self.field.term_bytes(ord));
+        self.scratch.offset = 0;
+        self.scratch.length = self.scratch.bytes.len();
     }
 }
 
@@ -2060,7 +2067,7 @@ impl TermsEnum for FreqProxTermsEnum {
         while high >= low {
             let mid = (low + high) >> 1;
             self.fill_scratch(mid as usize);
-            match self.scratch.as_slice().cmp(target) {
+            match self.scratch.slice().cmp(target) {
                 std::cmp::Ordering::Less => low = mid + 1,
                 std::cmp::Ordering::Greater => high = mid - 1,
                 std::cmp::Ordering::Equal => {
@@ -2075,7 +2082,7 @@ impl TermsEnum for FreqProxTermsEnum {
             Ok(SeekStatus::END)
         } else {
             self.fill_scratch(self.ord as usize);
-            debug_assert!(self.scratch.as_slice() > target);
+            debug_assert!(self.scratch.slice() > target);
             Ok(SeekStatus::NOT_FOUND)
         }
     }
@@ -2092,8 +2099,8 @@ impl TermsEnum for FreqProxTermsEnum {
 
     /// `return scratch;` (`FreqProxFields.java:199-202`): the term last read,
     /// empty before any.
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(BytesRef::new(self.scratch.clone())))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(&self.scratch))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -2206,13 +2213,13 @@ impl TermsEnum for FreqProxTermsEnum {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.ord += 1;
         if self.ord as usize >= self.num_terms {
             Ok(None)
         } else {
             self.fill_scratch(self.ord as usize);
-            Ok(Some(BytesRef::new(self.scratch.clone())))
+            Ok(Some(&self.scratch))
         }
     }
 }
@@ -2958,11 +2965,11 @@ impl TermsEnum for SortingTermsEnum {
         self.base.seek_ord(ord)
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.base.next()
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.base.term()
     }
 
@@ -3807,7 +3814,7 @@ mod tests {
         let has_freqs = terms.has_freqs();
         let mut enumerator = terms.iterator().expect("iterator");
         let mut out = Vec::new();
-        while let Some(term) = enumerator.next().expect("next term") {
+        while let Some(term) = enumerator.next().expect("next term").cloned() {
             let flags = if has_positions {
                 if has_offsets && has_payloads {
                     crate::index::POSTINGS_ENUM_ALL
@@ -5325,8 +5332,8 @@ mod tests {
             Err(LuceneError::unsupported_operation("not used".to_string()))
         }
 
-        fn term(&self) -> Result<Option<BytesRef>> {
-            Ok(Some(self.terms[self.pos - 1].0.clone()))
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&self.terms[self.pos - 1].0))
         }
 
         fn ord(&self) -> Result<i64> {
@@ -5367,9 +5374,9 @@ mod tests {
             Err(LuceneError::unsupported_operation("not used".to_string()))
         }
 
-        fn next(&mut self) -> Result<Option<BytesRef>> {
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
             self.pos += 1;
-            Ok(self.terms.get(self.pos - 1).map(|(term, _)| term.clone()))
+            Ok(self.terms.get(self.pos - 1).map(|(term, _)| term))
         }
     }
 

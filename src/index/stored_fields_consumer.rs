@@ -775,28 +775,28 @@ mod tests {
     }
 
     impl StoredFieldVisitor for Recorder {
-        fn binary_field(&mut self, info: &FieldInfo, value: &[u8]) -> Result<()> {
+        fn binary_field(&mut self, info: &Arc<FieldInfo>, value: &[u8]) -> Result<()> {
             self.seen.push(format!("{}=bin{value:?}", info.name));
             Ok(())
         }
-        fn string_field(&mut self, info: &FieldInfo, value: String) -> Result<()> {
+        fn string_field(&mut self, info: &Arc<FieldInfo>, value: String) -> Result<()> {
             self.seen.push(format!("{}=str:{value}", info.name));
             Ok(())
         }
-        fn int_field(&mut self, info: &FieldInfo, value: i32) -> Result<()> {
+        fn int_field(&mut self, info: &Arc<FieldInfo>, value: i32) -> Result<()> {
             self.seen.push(format!("{}=i32:{value}", info.name));
             Ok(())
         }
-        fn long_field(&mut self, info: &FieldInfo, value: i64) -> Result<()> {
+        fn long_field(&mut self, info: &Arc<FieldInfo>, value: i64) -> Result<()> {
             self.seen.push(format!("{}=i64:{value}", info.name));
             Ok(())
         }
-        fn float_field(&mut self, info: &FieldInfo, value: f32) -> Result<()> {
+        fn float_field(&mut self, info: &Arc<FieldInfo>, value: f32) -> Result<()> {
             self.seen
                 .push(format!("{}=f32:{:08x}", info.name, value.to_bits()));
             Ok(())
         }
-        fn double_field(&mut self, info: &FieldInfo, value: f64) -> Result<()> {
+        fn double_field(&mut self, info: &Arc<FieldInfo>, value: f64) -> Result<()> {
             self.seen
                 .push(format!("{}=f64:{:016x}", info.name, value.to_bits()));
             Ok(())

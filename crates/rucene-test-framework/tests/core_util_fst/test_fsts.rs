@@ -499,10 +499,10 @@ fn test_real_terms() -> Result<()> {
             None,
         )?;
 
-        while let Some(term) = terms_enum.next()? {
+        while let Some(term) = terms_enum.next()?.cloned() {
             let term2 = terms_enum2.next()?;
             assert_not_null(&term2);
-            assert_equals(&term, &term2.expect("asserted not null"));
+            assert_equals(&term, term2.expect("asserted not null"));
             assert_equals(&terms_enum.doc_freq()?, &terms_enum2.doc_freq()?);
             assert_equals(
                 &terms_enum.total_term_freq()?,
@@ -632,7 +632,7 @@ fn assert_same(
             term.utf8_to_string()?,
             current.input.utf8_to_string()?
         )),
-        &term,
+        term,
         current.input,
     );
     let output = current.output.as_ref().copied().unwrap_or(0);
@@ -920,7 +920,7 @@ fn test_primary_keys() -> Result<()> {
                         term.utf8_to_string()?
                     )),
                     &LuceneTestCase::new_bytes_ref_str(next_id),
-                    &term,
+                    term,
                 );
             } else if !exists {
                 assert_equals(&SeekStatus::NOT_FOUND, &status);

@@ -2102,8 +2102,12 @@ impl DirectoryStream for DefaultDirectoryStream {
                 Ok(entry) => entry,
                 Err(e) => return Some(Err(translate(e, &dir, None))),
             };
-            let name = entry.file_name();
-            let path = dir.resolve(&Path::new(Arc::clone(dir.get_file_system()), &name));
+            // `dir.resolve(nameAsBytes)` (`UnixDirectoryStream`): the name is
+            // bound to the directory's filesystem as it was read.
+            let path = dir.resolve(&Path::from_os_name(
+                Arc::clone(dir.get_file_system()),
+                entry.file_name(),
+            ));
             match filter(&path) {
                 Ok(true) => Some(Ok(path)),
                 Ok(false) => None,

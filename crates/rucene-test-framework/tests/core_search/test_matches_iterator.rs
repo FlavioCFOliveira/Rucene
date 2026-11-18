@@ -952,10 +952,10 @@ impl TermsEnum for SeekCountingTermsEnum {
     fn seek_ord(&mut self, ord: i64) -> Result<()> {
         self.inner.seek_ord(ord)
     }
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.inner.next()
     }
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
     fn ord(&self) -> Result<i64> {

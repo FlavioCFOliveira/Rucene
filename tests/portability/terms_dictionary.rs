@@ -365,7 +365,7 @@ fn dump_terms(out: &mut String, reader: &Arc<dyn IndexReader>) {
                 writeln!(
                     out,
                     "  term {} docFreq={} ttf={}",
-                    text(Some(&t)),
+                    text(Some(t)),
                     te.doc_freq().unwrap(),
                     te.total_term_freq().unwrap()
                 )
@@ -379,7 +379,7 @@ fn dump_terms(out: &mut String, reader: &Arc<dyn IndexReader>) {
                 } else {
                     format!(
                         " {} docFreq={}",
-                        text(seeker.term().unwrap().as_ref()),
+                        text(seeker.term().unwrap()),
                         seeker.doc_freq().unwrap()
                     )
                 };

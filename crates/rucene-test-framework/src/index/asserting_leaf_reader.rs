@@ -417,7 +417,7 @@ impl TermsEnum for AssertingTermsEnum {
         )))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         assert_thread("Terms enums", &self.creation_thread)?;
         java_assert!(
             self.state == TermsEnumState::Initial || self.state == TermsEnumState::Positioned,
@@ -469,7 +469,7 @@ impl TermsEnum for AssertingTermsEnum {
         Ok(ttf)
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         assert_thread("Terms enums", &self.creation_thread)?;
         java_assert!(
             self.state == TermsEnumState::Positioned,
@@ -3116,6 +3116,8 @@ mod tests {
     /// breaking its contract.
     struct NullPostings {
         attributes: AttributeSource,
+        /// The term `term()` and `next()` lend: `a`.
+        term: BytesRef,
     }
 
     impl fmt::Display for NullPostings {
@@ -3134,8 +3136,8 @@ mod tests {
         fn seek_ord(&mut self, _ord: i64) -> Result<()> {
             Ok(())
         }
-        fn term(&self) -> Result<Option<BytesRef>> {
-            Ok(Some(BytesRef::new(b"a".to_vec())))
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&self.term))
         }
         fn ord(&self) -> Result<i64> {
             Ok(0)
@@ -3156,8 +3158,8 @@ mod tests {
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
             Err(npe())
         }
-        fn next(&mut self) -> Result<Option<BytesRef>> {
-            Ok(Some(BytesRef::new(b"a".to_vec())))
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&self.term))
         }
     }
 
@@ -3170,6 +3172,7 @@ mod tests {
         let mut terms_enum = AssertingTermsEnum::new(
             Box::new(NullPostings {
                 attributes: AttributeSource::new(),
+                term: BytesRef::new(b"a".to_vec()),
             }),
             true,
         );

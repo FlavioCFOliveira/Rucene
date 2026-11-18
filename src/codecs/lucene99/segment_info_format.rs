@@ -146,6 +146,9 @@ fn parse_segment_info(
         .try_into()
         .expect("INVARIANT: the index header check matched the segment id against 16 bytes");
 
+    // PERF: the read maps are moved into the segment, not copied: Java's
+    // constructor `Map.copyOf`s them, sharing their `String`s
+    // (`SegmentInfo.java:137,142`).
     let info = SegmentInfo::new_without_codec(
         directory,
         version,
@@ -154,9 +157,9 @@ fn parse_segment_info(
         doc_count,
         is_compound_file,
         has_blocks,
-        diagnostics.to_std(),
+        diagnostics.into_std(),
         id,
-        attributes.to_std(),
+        attributes.into_std(),
         index_sort,
     )?;
     info.set_files(files)?;

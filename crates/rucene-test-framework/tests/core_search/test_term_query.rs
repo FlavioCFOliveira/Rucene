@@ -499,7 +499,7 @@ impl TermsEnum for NoSeekTermsEnum {
         Err(no_seek())
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
 
@@ -531,7 +531,7 @@ impl TermsEnum for NoSeekTermsEnum {
         self.inner.term_state()
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.inner.next()
     }
 }

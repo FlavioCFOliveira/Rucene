@@ -1412,6 +1412,19 @@ impl FieldInfos {
             .and_then(|&number| self.field_info_by_number(number))
     }
 
+    /// [`field_info`](Self::field_info), answering the shared handle onto the
+    /// field's one `FieldInfo` object, as Java's `fieldInfo(String)` answers
+    /// the reference itself.
+    pub fn shared_field_info(&self, name: &str) -> Option<&Arc<FieldInfo>> {
+        if !self.is_visible(name) {
+            return None;
+        }
+        self.core
+            .by_name
+            .get(name)
+            .and_then(|&number| self.shared_field_info_by_number(number))
+    }
+
     /// Looks up a field by number with Java's argument check.
     ///
     /// Equivalent to `FieldInfos.fieldInfo(int)` (`FieldInfos.java:341-346`):
@@ -1444,17 +1457,19 @@ impl FieldInfos {
     /// # Errors
     ///
     /// As [`field_info_checked`](Self::field_info_checked).
-    pub(crate) fn field_info_checked_shared(&self, number: i32) -> Result<Option<Arc<FieldInfo>>> {
+    pub(crate) fn field_info_checked_shared(&self, number: i32) -> Result<Option<&Arc<FieldInfo>>> {
         if number < 0 {
             return Err(LuceneError::illegal_argument(format!(
                 "Illegal field number: {number}"
             )));
         }
-        Ok(self.shared_field_info_by_number(number).cloned())
+        Ok(self.shared_field_info_by_number(number))
     }
 
-    /// The shared handle behind [`field_info_by_number`](Self::field_info_by_number).
-    fn shared_field_info_by_number(&self, number: i32) -> Option<&Arc<FieldInfo>> {
+    /// The shared handle behind [`field_info_by_number`](Self::field_info_by_number):
+    /// the field's one `FieldInfo` object, as Java's `fieldInfo(int)` answers
+    /// the reference itself, for a stored-fields reader to hand its visitor.
+    pub fn shared_field_info_by_number(&self, number: i32) -> Option<&Arc<FieldInfo>> {
         if number < 0 || number as usize >= self.core.by_number.len() {
             return None;
         }

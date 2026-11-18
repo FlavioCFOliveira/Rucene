@@ -657,7 +657,7 @@ impl TermsEnum for SeedTermsEnum {
         }
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         let after = self
             .iterator_after
             .clone()
@@ -670,8 +670,8 @@ impl TermsEnum for SeedTermsEnum {
         match next {
             Some((key, value)) => {
                 self.iterator_after = Some(Bound::Excluded(key.clone()));
-                self.current = Some((key.clone(), value));
-                Ok(Some(key))
+                self.current = Some((key, value));
+                Ok(Some(&self.current()?.0))
             }
             None => Ok(None),
         }
@@ -681,8 +681,8 @@ impl TermsEnum for SeedTermsEnum {
         Err(unsupported())
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(self.current()?.0.clone()))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(&self.current()?.0))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -1351,7 +1351,7 @@ impl RandomPostingsTester {
 
         // Make sure TermsEnum really is positioned on the
         // expected term:
-        assert_equals_bytes(None, term, terms_enum.term()?.as_ref());
+        assert_equals_bytes(None, term, terms_enum.term()?);
 
         let current_field_infos = self
             .current_field_infos
@@ -2382,7 +2382,7 @@ impl RandomPostingsTester {
             }
 
             // check we really seeked to the right place
-            assert_equals_bytes(None, &field_and_term.term, terms_enum.term()?.as_ref());
+            assert_equals_bytes(None, &field_and_term.term, terms_enum.term()?);
 
             let term_ord = if supports_ords {
                 match terms_enum.ord() {
@@ -2505,10 +2505,10 @@ impl RandomPostingsTester {
                 let mut intersected = terms.intersect(&ca, start_term.as_ref())?;
 
                 let mut intersected_terms = std::collections::HashSet::new();
-                while let Some(term) = intersected.next()? {
+                while let Some(term) = intersected.next()?.cloned() {
                     if let Some(start_term) = &start_term {
                         // NOTE: not <=
-                        Assert::assert_true(*start_term < term);
+                        Assert::assert_true(*start_term < term.clone());
                     }
                     intersected_terms.insert(BytesRef::deep_copy_of(&term));
                     self.verify_enum(

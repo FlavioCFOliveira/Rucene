@@ -887,7 +887,7 @@ fn dump(reader: &dyn TermVectorsReader, max_doc: i32) -> Vec<String> {
             let has_offsets = terms.has_offsets();
             let has_payloads = terms.has_payloads();
             let mut iterator = terms.iterator().expect("terms enum");
-            while let Some(term) = iterator.next().expect("next term") {
+            while let Some(term) = iterator.next().expect("next term").cloned() {
                 let freq = iterator.total_term_freq().expect("total term freq") as i32;
                 let mut postings = iterator
                     .postings(None, POSTINGS_ENUM_ALL)

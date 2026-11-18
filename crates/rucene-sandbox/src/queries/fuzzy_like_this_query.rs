@@ -261,7 +261,7 @@ impl FuzzyLikeThisQuery {
                     let mut total_variant_doc_freqs = 0i32;
                     // `fe.attributes().addAttribute(BoostAttribute.class)` is the
                     // attribute the enum installed, which `get_boost` reads.
-                    while let Some(possible_match) = fe.next()? {
+                    while let Some(possible_match) = fe.next()?.cloned() {
                         num_variants = num_variants.wrapping_add(1);
                         total_variant_doc_freqs =
                             total_variant_doc_freqs.wrapping_add(fe.doc_freq()?);

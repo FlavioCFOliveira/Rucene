@@ -219,12 +219,12 @@ impl TermsEnum for TestTermsEnum {
         self.inner.seek_ord(ord)
     }
     /// Sleep between iterations to timeout things.
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         // Sleep for 100ms before each .next() call.
         std::thread::sleep(std::time::Duration::from_millis(100));
         self.inner.next()
     }
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
     fn ord(&self) -> Result<i64> {

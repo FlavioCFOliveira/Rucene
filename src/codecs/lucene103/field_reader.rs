@@ -81,7 +81,11 @@ pub struct FieldReader {
     sum_doc_freq: i64,
     doc_count: i32,
     min_term: BytesRef,
-    max_term: BytesRef,
+    /// The largest term, or `None` when it is [`Self::min_term`]: Java's
+    /// `maxTerm = minTerm` alias for a field with a single term
+    /// (`Lucene103BlockTreeTermsReader.java:181-185`).
+    // PERF: the alias, not a second copy of the term.
+    max_term: Option<BytesRef>,
     /// Offset in the `.tip` file where this field's trie starts.
     index_start: i64,
     /// Offset of the trie root, relative to `index_start`.
@@ -118,7 +122,7 @@ impl FieldReader {
         sum_doc_freq: i64,
         doc_count: i32,
         min_term: BytesRef,
-        max_term: BytesRef,
+        max_term: Option<BytesRef>,
         meta_in: &mut dyn crate::store::DataInput,
     ) -> Result<Self> {
         // The terms reader rejects `numTerms <= 0` before it builds the field
@@ -201,6 +205,11 @@ impl FieldReader {
         &self.field_info
     }
 
+    /// The shared handle onto the field's one `FieldInfo` object.
+    pub(crate) fn field_info_shared(&self) -> &Arc<FieldInfo> {
+        &self.field_info
+    }
+
     /// Returns the shared dictionary state.
     pub fn shared(&self) -> &Arc<BlockTreeShared> {
         &self.shared
@@ -257,7 +266,7 @@ impl FieldReader {
     ///
     /// Equivalent to `FieldReader.getMax()`.
     pub fn get_max(&self) -> &BytesRef {
-        &self.max_term
+        self.max_term.as_ref().unwrap_or(&self.min_term)
     }
 }
 
@@ -325,7 +334,7 @@ impl Terms for FieldReader {
     }
 
     fn max(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(self.max_term.clone()))
+        Ok(Some(self.get_max().clone()))
     }
 
     /// Walks every block of the field and reports the statistics `CheckIndex`

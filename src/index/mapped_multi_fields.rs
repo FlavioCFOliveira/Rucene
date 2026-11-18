@@ -258,7 +258,7 @@ impl TermsEnum for MappedMultiTermsEnum {
         self.inner.seek_term_state(text, state)
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
 
@@ -360,7 +360,7 @@ impl TermsEnum for MappedMultiTermsEnum {
         self.inner.prefer_seek_exact()
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.inner.next()
     }
 }
@@ -518,8 +518,8 @@ mod tests {
             Ok(())
         }
 
-        fn term(&self) -> Result<Option<BytesRef>> {
-            Ok(Some(self.entries[self.pos as usize].0.clone()))
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&self.entries[self.pos as usize].0))
         }
 
         fn ord(&self) -> Result<i64> {
@@ -546,13 +546,13 @@ mod tests {
             Err(LuceneError::unsupported_operation("not used".to_string()))
         }
 
-        fn next(&mut self) -> Result<Option<BytesRef>> {
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
             self.pos += 1;
             if (self.pos as usize) >= self.entries.len() {
                 self.pos = self.entries.len() as i32;
                 Ok(None)
             } else {
-                Ok(Some(self.entries[self.pos as usize].0.clone()))
+                Ok(Some(&self.entries[self.pos as usize].0))
             }
         }
     }
@@ -953,7 +953,7 @@ mod tests {
             enumerator.seek_ceil(&term("peach")).unwrap(),
             SeekStatus::NOT_FOUND
         );
-        assert_eq!(text_of(&enumerator.term().unwrap().unwrap()), "pear");
+        assert_eq!(text_of(enumerator.term().unwrap().unwrap()), "pear");
         assert_eq!(enumerator.seek_ceil(&term("zzz")).unwrap(), SeekStatus::END);
     }
 
@@ -1019,7 +1019,7 @@ mod tests {
         let compiled = CompiledAutomaton::new(automaton, true, false, false).unwrap();
         let terms = fields.terms("body").unwrap().unwrap();
         let mut enumerator = terms.intersect(&compiled, None).unwrap();
-        assert_eq!(text_of(&enumerator.next().unwrap().unwrap()), "apple");
+        assert_eq!(text_of(enumerator.next().unwrap().unwrap()), "apple");
         let mut postings = enumerator.postings(None, 0).unwrap().unwrap();
         assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
         assert!(enumerator.next().unwrap().is_none());
@@ -1045,7 +1045,7 @@ mod tests {
             let mut enumerator = terms.intersect(&compiled(), start).unwrap();
             let mut seen = Vec::new();
             while let Some(term) = enumerator.next().unwrap() {
-                seen.push(text_of(&term));
+                seen.push(text_of(term));
             }
             seen
         };
@@ -1151,13 +1151,13 @@ mod tests {
         let terms = fields.terms("body").unwrap().unwrap();
         let mut enumerator = terms.iterator().unwrap();
 
-        assert_eq!(enumerator.next().unwrap(), Some(term("apple")));
+        assert_eq!(enumerator.next().unwrap(), Some(&term("apple")));
         let mut postings = enumerator.postings(None, 0).unwrap().unwrap();
         let outer = identity(postings.as_ref());
         let inner = inner_identity(&mut postings);
         assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
 
-        assert_eq!(enumerator.next().unwrap(), Some(term("pear")));
+        assert_eq!(enumerator.next().unwrap(), Some(&term("pear")));
         let mut postings = enumerator.postings(Some(postings), 0).unwrap().unwrap();
         assert_eq!(
             identity(postings.as_ref()),
@@ -1174,7 +1174,7 @@ mod tests {
             "pear's only doc is deleted"
         );
 
-        assert_eq!(enumerator.next().unwrap(), Some(term("plum")));
+        assert_eq!(enumerator.next().unwrap(), Some(&term("plum")));
         let mut postings = enumerator.postings(Some(postings), 0).unwrap().unwrap();
         assert_eq!(identity(postings.as_ref()), outer);
         assert_eq!(inner_identity(&mut postings), inner);
@@ -1185,12 +1185,12 @@ mod tests {
     fn postings_does_not_reuse_a_mapping_enum_of_another_field() {
         let (_state, fields) = scenario();
         let mut title = fields.terms("title").unwrap().unwrap().iterator().unwrap();
-        assert_eq!(title.next().unwrap(), Some(term("rust")));
+        assert_eq!(title.next().unwrap(), Some(&term("rust")));
         let foreign = title.postings(None, 0).unwrap().unwrap();
         let foreign_identity = identity(foreign.as_ref());
 
         let mut body = fields.terms("body").unwrap().unwrap().iterator().unwrap();
-        assert_eq!(body.next().unwrap(), Some(term("apple")));
+        assert_eq!(body.next().unwrap(), Some(&term("apple")));
         let mut postings = body.postings(Some(foreign), 0).unwrap().unwrap();
         assert_ne!(
             identity(postings.as_ref()),
@@ -1209,7 +1209,7 @@ mod tests {
     fn postings_does_not_reuse_an_enum_of_another_type() {
         let (_state, fields) = scenario();
         let mut body = fields.terms("body").unwrap().unwrap().iterator().unwrap();
-        assert_eq!(body.next().unwrap(), Some(term("apple")));
+        assert_eq!(body.next().unwrap(), Some(&term("apple")));
         let other = VecPostings::boxed(&[0]);
         let other_identity = identity(other.as_ref());
         let mut postings = body.postings(Some(other), 0).unwrap().unwrap();

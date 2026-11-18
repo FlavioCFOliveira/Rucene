@@ -4,7 +4,6 @@
 #![deny(unsafe_code)]
 
 use crate::error::{LuceneError, Result};
-use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::leaf_field_comparator::LeafFieldComparator;
 use crate::search::scorable::Scorable;
 
@@ -128,7 +127,7 @@ impl LeafFieldComparator for MultiLeafFieldComparator {
     /// Equivalent to `MultiLeafFieldComparator.competitiveIterator()`, which
     /// only consults the first comparator: skipping is only relevant for the
     /// primary sort field.
-    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+    fn competitive_iterator(&mut self) -> Result<Option<crate::search::CompetitiveIterator>> {
         self.comparators[0].competitive_iterator()
     }
 }

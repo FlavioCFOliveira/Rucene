@@ -111,7 +111,7 @@ impl ConjunctionBulkScorer {
 fn align_others(
     scorers: &mut [Box<dyn Scorer>],
     others: &[usize],
-    competitive: &mut Option<Box<dyn DocIdSetIterator>>,
+    competitive: &mut Option<crate::search::CompetitiveIterator>,
     doc: i32,
 ) -> Result<Option<i32>> {
     for position in others {
@@ -124,7 +124,7 @@ fn align_others(
         }
         debug_assert_eq!(scorers[*position].doc_id(), doc);
     }
-    if let Some(competitive) = competitive.as_deref_mut() {
+    if let Some(competitive) = competitive.as_mut() {
         if competitive.doc_id() < doc {
             let next = competitive.advance(doc)?;
             if next != doc {

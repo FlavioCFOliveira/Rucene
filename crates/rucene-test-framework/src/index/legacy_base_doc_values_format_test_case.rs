@@ -1986,7 +1986,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                 npe_at(terms_enum.next()?, "Cannot invoke \"org.apache.lucene.util.BytesRef.utf8ToString()\" because the return value of \"org.apache.lucene.index.TermsEnum.next()\" is null").utf8_to_string()?,
             );
             aeq(2, terms_enum.ord()?);
-            assert_null(terms_enum.next()?);
+            assert_null(terms_enum.next()?.cloned());
 
             // SINGLE automaton
             let dv = npe_at(leaf.get_sorted_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.intersect(org.apache.lucene.util.automaton.CompiledAutomaton)\" because \"dv\" is null");
@@ -1996,7 +1996,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                 npe_at(terms_enum.next()?, "Cannot invoke \"org.apache.lucene.util.BytesRef.utf8ToString()\" because the return value of \"org.apache.lucene.index.TermsEnum.next()\" is null").utf8_to_string()?,
             );
             aeq(1, terms_enum.ord()?);
-            assert_null(terms_enum.next()?);
+            assert_null(terms_enum.next()?.cloned());
 
             drop((terms_enum, leaf));
             ireader.close()?;
@@ -3253,7 +3253,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                 npe_at(terms_enum.next()?, "Cannot invoke \"org.apache.lucene.util.BytesRef.utf8ToString()\" because the return value of \"org.apache.lucene.index.TermsEnum.next()\" is null").utf8_to_string()?,
             );
             aeq(2, terms_enum.ord()?);
-            assert_null(terms_enum.next()?);
+            assert_null(terms_enum.next()?.cloned());
 
             // SINGLE automaton
             let dv = npe_at(leaf.get_sorted_set_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.intersect(org.apache.lucene.util.automaton.CompiledAutomaton)\" because \"dv\" is null");
@@ -3263,7 +3263,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                 npe_at(terms_enum.next()?, "Cannot invoke \"org.apache.lucene.util.BytesRef.utf8ToString()\" because the return value of \"org.apache.lucene.index.TermsEnum.next()\" is null").utf8_to_string()?,
             );
             aeq(1, terms_enum.ord()?);
-            assert_null(terms_enum.next()?);
+            assert_null(terms_enum.next()?.cloned());
 
             drop((terms_enum, leaf));
             ireader.close()?;
@@ -4345,11 +4345,11 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         let mut terms: Vec<BytesRef> = Vec::new();
         let mut te = dv()?.terms_enum()?;
         terms.push(BytesRef::deep_copy_of(&npe_at(
-            te.next()?,
+            te.next()?.cloned(),
             "Cannot read field \"bytes\" because \"other\" is null",
         )));
         terms.push(BytesRef::deep_copy_of(&npe_at(
-            te.next()?,
+            te.next()?.cloned(),
             "Cannot read field \"bytes\" because \"other\" is null",
         )));
 
@@ -4360,20 +4360,20 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         let mut term2 = BytesRefBuilder::new();
 
         term1.copy_ref(&npe_at(
-            enum1.next()?,
+            enum1.next()?.cloned(),
             "Cannot read field \"bytes\" because \"ref\" is null",
         ));
         term2.copy_ref(&npe_at(
-            enum2.next()?,
+            enum2.next()?.cloned(),
             "Cannot read field \"bytes\" because \"ref\" is null",
         ));
         term1.copy_ref(&npe_at(
-            enum1.next()?,
+            enum1.next()?.cloned(),
             "Cannot read field \"bytes\" because \"ref\" is null",
         ));
 
-        Assert::assert_equals_nullable(Some(term1.get()), enum1.term()?);
-        Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?);
+        Assert::assert_equals_nullable(Some(term1.get()), enum1.term()?.cloned());
+        Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?.cloned());
 
         // Same for seekCeil
         let mut enum1 = dv()?.terms_enum()?;
@@ -4382,7 +4382,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         let mut term2 = BytesRefBuilder::new();
 
         term2.copy_ref(&npe_at(
-            enum2.next()?,
+            enum2.next()?.cloned(),
             "Cannot read field \"bytes\" because \"ref\" is null",
         ));
         let mut seek_term = BytesRefBuilder::new();
@@ -4390,12 +4390,12 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         seek_term.append(0);
         enum1.seek_ceil(&seek_term.get())?;
         term1.copy_ref(&npe_at(
-            enum1.term()?,
+            enum1.term()?.cloned(),
             "Cannot read field \"bytes\" because \"ref\" is null",
         ));
 
-        Assert::assert_equals_nullable(Some(term1.get()), enum1.term()?);
-        Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?);
+        Assert::assert_equals_nullable(Some(term1.get()), enum1.term()?.cloned());
+        Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?.cloned());
 
         // Same for seekCeil on an exact value
         let mut enum1 = dv()?.terms_enum()?;
@@ -4404,17 +4404,17 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         let mut term2 = BytesRefBuilder::new();
 
         term2.copy_ref(&npe_at(
-            enum2.next()?,
+            enum2.next()?.cloned(),
             "Cannot read field \"bytes\" because \"ref\" is null",
         ));
         enum1.seek_ceil(&terms[1])?;
         term1.copy_ref(&npe_at(
-            enum1.term()?,
+            enum1.term()?.cloned(),
             "Cannot read field \"bytes\" because \"ref\" is null",
         ));
 
-        Assert::assert_equals_nullable(Some(term1.get()), enum1.term()?);
-        Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?);
+        Assert::assert_equals_nullable(Some(term1.get()), enum1.term()?.cloned());
+        Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?.cloned());
 
         // Same for seekExact
         let mut enum1 = dv()?.terms_enum()?;
@@ -4423,13 +4423,13 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         let mut term2 = BytesRefBuilder::new();
 
         term2.copy_ref(&npe_at(
-            enum2.next()?,
+            enum2.next()?.cloned(),
             "Cannot read field \"bytes\" because \"ref\" is null",
         ));
         let found = enum1.seek_exact(&terms[1])?;
         Assert::assert_true(found);
         term1.copy_ref(&npe_at(
-            enum1.term()?,
+            enum1.term()?.cloned(),
             "Cannot read field \"bytes\" because \"ref\" is null",
         ));
 
@@ -4440,17 +4440,17 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         let mut term2 = BytesRefBuilder::new();
 
         term2.copy_ref(&npe_at(
-            enum2.next()?,
+            enum2.next()?.cloned(),
             "Cannot read field \"bytes\" because \"ref\" is null",
         ));
         enum1.seek_ord(1)?;
         term1.copy_ref(&npe_at(
-            enum1.term()?,
+            enum1.term()?.cloned(),
             "Cannot read field \"bytes\" because \"ref\" is null",
         ));
 
-        Assert::assert_equals_nullable(Some(term1.get()), enum1.term()?);
-        Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?);
+        Assert::assert_equals_nullable(Some(term1.get()), enum1.term()?.cloned());
+        Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?.cloned());
         Ok(())
     }
 

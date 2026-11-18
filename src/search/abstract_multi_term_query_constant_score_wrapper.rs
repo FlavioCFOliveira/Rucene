@@ -227,10 +227,13 @@ pub fn collect_terms(
         let Some(term) = terms_enum.next()? else {
             return Ok(true);
         };
+        // `BytesRef.deepCopyOf(term)`, taken before `termState()` moves the
+        // enum's borrow on; it reads only the term's bytes.
+        let term = BytesRef::deep_copy_of(term);
         let state = terms_enum.term_state()?;
         let doc_freq = terms_enum.doc_freq()?;
         let term_and_state = TermAndState {
-            term: BytesRef::deep_copy_of(&term),
+            term,
             state,
             doc_freq,
             total_term_freq: terms_enum.total_term_freq()?,

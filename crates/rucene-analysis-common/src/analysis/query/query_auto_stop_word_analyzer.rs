@@ -234,7 +234,7 @@ impl QueryAutoStopWordAnalyzer {
             let terms = MultiTerms::get_terms(index_reader, field)?;
             if let Some(terms) = terms {
                 let mut te = terms.iterator()?;
-                while let Some(text) = te.next()? {
+                while let Some(text) = te.next()?.cloned() {
                     if te.doc_freq()? > max_doc_freq {
                         // `spare.copyUTF8Bytes(text); spare.toString()`
                         stop_words.insert(text.utf8_to_string()?);

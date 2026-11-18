@@ -360,3 +360,52 @@ fn file_channel_map_matches_the_jdk() {
     );
     rw.close().unwrap();
 }
+
+/// The last name found from the end is the last entry of every name's
+/// offsets, for normalized and unnormalized byte strings alike.
+#[test]
+fn last_name_offsets_is_the_last_entry_of_name_offsets() {
+    for bytes in [
+        &b""[..],
+        b"/",
+        b"//",
+        b"a",
+        b"/a",
+        b"a/",
+        b"/a/b",
+        b"a/b/",
+        b"//a//bc//",
+        b"/data/dev/index/_0.cfs",
+        b"segments_2",
+    ] {
+        assert_eq!(
+            last_name_offsets(bytes),
+            name_offsets(bytes).last().copied(),
+            "{:?}",
+            String::from_utf8_lossy(bytes)
+        );
+    }
+}
+
+/// A directory entry's path is the one `Path::new` builds for the same name:
+/// a name `readdir` returns needs no normalization, as `UnixDirectoryStream`
+/// relies on when it uses the `UnixPath(fs, byte[])` constructor.
+#[test]
+fn directory_entries_are_the_paths_new_builds() {
+    let (_tmp, dir) = temp_dir();
+    for name in ["_0.cfs", "segments_1", "write.lock", "ä"] {
+        std::fs::write(dir.as_std_path().join(name), b"x").unwrap();
+    }
+    let mut stream = Files::new_directory_stream(&dir).unwrap();
+    let mut seen = Vec::new();
+    for entry in stream.iterator() {
+        let entry = entry.unwrap();
+        let name = entry.get_file_name().unwrap().to_string();
+        assert_eq!(entry, dir.resolve(&path(&name)));
+        assert_eq!(entry.to_string(), format!("{dir}/{name}"));
+        seen.push(name);
+    }
+    stream.close().unwrap();
+    seen.sort();
+    assert_eq!(seen, ["_0.cfs", "segments_1", "write.lock", "ä"]);
+}

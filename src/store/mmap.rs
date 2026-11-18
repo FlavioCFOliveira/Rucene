@@ -581,6 +581,40 @@ mod tests {
         assert_eq!(dir.directory_type_name(), "MMapDirectory");
     }
 
+    /// The texts the open path builds are Java's: an input's resource
+    /// description (`MemorySegmentIndexInputProvider.java:57`), a slice's
+    /// (`IndexInput.java:150`) and a checksum input's
+    /// (`BufferedChecksumIndexInput.java:31`).
+    #[test]
+    fn inputs_describe_themselves_as_java_does() {
+        let temp = TempDir::new().unwrap();
+        let dir = MMapDirectory::open(&temp).unwrap();
+        let context = &*DEFAULT_IO_CONTEXT;
+        {
+            let mut out = dir.create_output("data.bin", context).unwrap();
+            out.write_long(1).unwrap();
+            out.write_long(2).unwrap();
+            out.close().unwrap();
+        }
+        let path = format!(
+            "{}/data.bin",
+            dir.as_fs_directory().unwrap().get_directory().unwrap()
+        );
+        let expected = format!("MemorySegmentIndexInput(path=\"{path}\")");
+        let input = dir.open_input("data.bin", context).unwrap();
+        assert_eq!(input.resource_description(), expected);
+        let slice = input.slice("part", 8, 8).unwrap();
+        assert_eq!(
+            slice.resource_description(),
+            format!("{expected} [slice=part]")
+        );
+        let checksum = dir.open_checksum_input("data.bin").unwrap();
+        assert_eq!(
+            checksum.resource_description(),
+            format!("BufferedChecksumIndexInput({expected})")
+        );
+    }
+
     #[test]
     fn mmap_index_input_slices_and_clones() {
         let temp = TempDir::new().unwrap();

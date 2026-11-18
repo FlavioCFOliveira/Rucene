@@ -120,8 +120,49 @@ pub fn prefix8_to_comparable_unsigned_long(term: &BytesRef) -> u64 {
 pub struct TermsEnumIndex {
     terms_enum: Option<Box<dyn TermsEnum>>,
     sub_index: usize,
-    current_term: Option<BytesRef>,
-    current_term_prefix8: u64,
+    current: CurrentTerm,
+}
+
+/// Java's `currentTerm` and `currentTermPrefix8` (`TermsEnumIndex.java:71-72`).
+///
+/// **Divergence from Lucene 10.5.0.** Java's `currentTerm` is the `BytesRef`
+/// the enum returned — the enum's own buffer, not a copy. [`TermsEnum`] lends
+/// that buffer, but the borrow cannot be kept while the wrapper moves the
+/// enum again, and re-reading it on demand would make
+/// [`TermsEnumIndex::compare_term_to`] — a priority-queue comparator, which
+/// cannot fail — depend on a fallible [`TermsEnum::term`]. The term is
+/// therefore copied, into a buffer this wrapper keeps from term to term, so
+/// the copy allocates only when a term outgrows it.
+#[derive(Default)]
+struct CurrentTerm {
+    /// The copy of the current term; meaningful only when `present`.
+    term: BytesRef,
+    /// `currentTerm != null`.
+    present: bool,
+    /// `currentTermPrefix8`.
+    prefix8: u64,
+}
+
+impl CurrentTerm {
+    /// `currentTerm`, or `None` for `null`.
+    fn get(&self) -> Option<&BytesRef> {
+        self.present.then_some(&self.term)
+    }
+
+    /// Equivalent to `TermsEnumIndex.setTerm(BytesRef)` (`TermsEnumIndex.java:83-90`).
+    fn set(&mut self, term: Option<&BytesRef>) {
+        match term {
+            Some(term) => {
+                self.term.copy_from(term);
+                self.present = true;
+                self.prefix8 = prefix8_to_comparable_unsigned_long(term);
+            }
+            None => {
+                self.present = false;
+                self.prefix8 = 0;
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for TermsEnumIndex {
@@ -167,8 +208,7 @@ impl TermsEnumIndex {
         Self {
             terms_enum,
             sub_index,
-            current_term: None,
-            current_term_prefix8: 0,
+            current: CurrentTerm::default(),
         }
     }
 
@@ -205,37 +245,32 @@ impl TermsEnumIndex {
         }
     }
 
-    /// Returns the wrapped enum, or Java's `NullPointerException` for a `null`
-    /// one, naming the `method` about to be invoked on it.
-    fn enum_for(&mut self, method: &str) -> Result<&mut dyn TermsEnum> {
-        match &mut self.terms_enum {
-            Some(terms_enum) => Ok(terms_enum.as_mut()),
-            None => Err(null_terms_enum(method)),
-        }
-    }
-
     /// Returns the current term, or `None` when the enum is exhausted or has
     /// not been positioned yet.
     ///
     /// Equivalent to `TermsEnumIndex.term()`.
     pub fn term(&self) -> Option<&BytesRef> {
-        self.current_term.as_ref()
+        self.current.get()
     }
 
     /// Returns the comparison prefix of the current term, as produced by
     /// [`prefix8_to_comparable_unsigned_long`]; zero when there is no current
     /// term.
     pub fn term_prefix8(&self) -> u64 {
-        self.current_term_prefix8
+        self.current.prefix8
     }
 
-    /// Records `term` as the current term and refreshes the cached prefix.
-    fn set_term(&mut self, term: Option<BytesRef>) {
-        self.current_term_prefix8 = match &term {
-            Some(term) => prefix8_to_comparable_unsigned_long(term),
-            None => 0,
-        };
-        self.current_term = term;
+    /// The wrapped enum, or Java's `NullPointerException` for a `null` one,
+    /// naming the `method` about to be invoked on it; takes the field so that
+    /// the term the enum lends can be stored beside it.
+    fn enum_in<'e>(
+        terms_enum: &'e mut Option<Box<dyn TermsEnum>>,
+        method: &str,
+    ) -> Result<&'e mut dyn TermsEnum> {
+        match terms_enum {
+            Some(terms_enum) => Ok(terms_enum.as_mut()),
+            None => Err(null_terms_enum(method)),
+        }
     }
 
     /// Advances to the next term, returning it, or `None` once the enum is
@@ -253,9 +288,9 @@ impl TermsEnumIndex {
     // signature nor the borrow shape fits that trait.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<&BytesRef>> {
-        let term = self.enum_for("next()")?.next()?;
-        self.set_term(term);
-        Ok(self.current_term.as_ref())
+        let term = Self::enum_in(&mut self.terms_enum, "next()")?.next()?;
+        self.current.set(term);
+        Ok(self.current.get())
     }
 
     /// Seeks to the smallest term greater than or equal to `term`.
@@ -268,14 +303,17 @@ impl TermsEnumIndex {
     /// Propagates any error raised by the wrapped enum, and reports Java's
     /// `NullPointerException` when there is none.
     pub fn seek_ceil(&mut self, term: &BytesRef) -> Result<SeekStatus> {
-        let terms_enum = self.enum_for("seekCeil(org.apache.lucene.util.BytesRef)")?;
+        let terms_enum = Self::enum_in(
+            &mut self.terms_enum,
+            "seekCeil(org.apache.lucene.util.BytesRef)",
+        )?;
         let status = terms_enum.seek_ceil(term)?;
         let positioned = if status == SeekStatus::END {
             None
         } else {
             terms_enum.term()?
         };
-        self.set_term(positioned);
+        self.current.set(positioned);
         Ok(status)
     }
 
@@ -289,10 +327,13 @@ impl TermsEnumIndex {
     /// Propagates any error raised by the wrapped enum, and reports Java's
     /// `NullPointerException` when there is none.
     pub fn seek_exact(&mut self, term: &BytesRef) -> Result<bool> {
-        let terms_enum = self.enum_for("seekExact(org.apache.lucene.util.BytesRef)")?;
+        let terms_enum = Self::enum_in(
+            &mut self.terms_enum,
+            "seekExact(org.apache.lucene.util.BytesRef)",
+        )?;
         let found = terms_enum.seek_exact(term)?;
         let positioned = if found { terms_enum.term()? } else { None };
-        self.set_term(positioned);
+        self.current.set(positioned);
         Ok(found)
     }
 
@@ -307,10 +348,10 @@ impl TermsEnumIndex {
     /// ordinals, and reports Java's `NullPointerException` when there is no
     /// enum.
     pub fn seek_ord(&mut self, ord: i64) -> Result<()> {
-        let terms_enum = self.enum_for("seekExact(long)")?;
+        let terms_enum = Self::enum_in(&mut self.terms_enum, "seekExact(long)")?;
         terms_enum.seek_ord(ord)?;
         let positioned = terms_enum.term()?;
-        self.set_term(positioned);
+        self.current.set(positioned);
         Ok(())
     }
 
@@ -328,8 +369,7 @@ impl TermsEnumIndex {
     /// value makes that responsibility unnecessary.
     pub fn reset(&mut self, other: TermsEnumIndex) {
         self.terms_enum = other.terms_enum;
-        self.current_term = other.current_term;
-        self.current_term_prefix8 = other.current_term_prefix8;
+        self.current = other.current;
     }
 
     /// Compares this wrapper's current term against `other`'s.
@@ -345,10 +385,10 @@ impl TermsEnumIndex {
     /// every positioned one — so that the result is a total order usable as a
     /// priority-queue comparator without a separate emptiness check.
     pub fn compare_term_to(&self, other: &TermsEnumIndex) -> Ordering {
-        match (&self.current_term, &other.current_term) {
+        match (self.current.get(), other.current.get()) {
             (Some(this), Some(that)) => {
-                if self.current_term_prefix8 != other.current_term_prefix8 {
-                    let cmp = self.current_term_prefix8.cmp(&other.current_term_prefix8);
+                if self.current.prefix8 != other.current.prefix8 {
+                    let cmp = self.current.prefix8.cmp(&other.current.prefix8);
                     debug_assert!(cmp == this.cmp(that));
                     cmp
                 } else {
@@ -370,10 +410,8 @@ impl TermsEnumIndex {
     /// **Deliberate divergence**: as with [`compare_term_to`](Self::compare_term_to),
     /// an absent term on either side reports "not equal" rather than throwing.
     pub fn term_equals(&self, state: &TermsEnumIndexState) -> bool {
-        match (&self.current_term, &state.term) {
-            (Some(this), Some(that)) => {
-                self.current_term_prefix8 == state.term_prefix8 && this == that
-            }
+        match (self.current.get(), &state.term) {
+            (Some(this), Some(that)) => self.current.prefix8 == state.term_prefix8 && this == that,
             _ => false,
         }
     }
@@ -386,7 +424,7 @@ impl Debug for TermsEnumIndex {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TermsEnumIndex")
             .field("sub_index", &self.sub_index)
-            .field("current_term", &self.current_term)
+            .field("current_term", &self.current.get())
             .finish()
     }
 }
@@ -415,8 +453,8 @@ impl TermsEnumIndexState {
     /// [`TermsEnumIndex::term_equals`] then reports as unequal to everything.
     pub fn copy_from(tei: &TermsEnumIndex) -> Self {
         Self {
-            term: tei.current_term.clone(),
-            term_prefix8: tei.current_term_prefix8,
+            term: tei.current.get().cloned(),
+            term_prefix8: tei.current.prefix8,
         }
     }
 
@@ -496,9 +534,9 @@ mod tests {
             Ok(())
         }
 
-        fn term(&self) -> Result<Option<BytesRef>> {
+        fn term(&self) -> Result<Option<&BytesRef>> {
             self.pos
-                .map(|idx| self.terms[idx].clone())
+                .map(|idx| &self.terms[idx])
                 .ok_or_else(|| LuceneError::illegal_state("not positioned".to_string()))
                 .map(Some)
         }
@@ -529,14 +567,14 @@ mod tests {
             Err(LuceneError::unsupported_operation("impacts".to_string()))
         }
 
-        fn next(&mut self) -> Result<Option<BytesRef>> {
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
             let next = match self.pos {
                 Some(idx) => idx + 1,
                 None => 0,
             };
             if next < self.terms.len() {
                 self.pos = Some(next);
-                Ok(Some(self.terms[next].clone()))
+                Ok(Some(&self.terms[next]))
             } else {
                 self.pos = None;
                 Ok(None)

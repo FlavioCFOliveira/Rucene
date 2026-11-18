@@ -134,7 +134,7 @@ impl IntervalsSource for MultiTermIntervalsSource {
         let mut sub_sources: Vec<Box<dyn IntervalIterator>> = Vec::new();
         let mut te = self.automaton.get_terms_enum(&*terms)?;
         let mut count = 0i32;
-        while let Some(term) = te.next()? {
+        while let Some(term) = te.next()?.cloned() {
             sub_sources.push(TermIntervalsSource::intervals_for_term(term, &mut *te)?);
             count += 1;
             if count > self.max_expansions {
@@ -164,7 +164,7 @@ impl IntervalsSource for MultiTermIntervalsSource {
         let mut sub_matches: Vec<Box<dyn MatchesIterator>> = Vec::new();
         let mut te = self.automaton.get_terms_enum(&*terms)?;
         let mut count = 0i32;
-        while let Some(term) = te.next()? {
+        while let Some(term) = te.next()?.cloned() {
             if let Some(mi) = TermIntervalsSource::matches_for_term(&mut *te, doc, field)? {
                 sub_matches.push(mi);
                 let previous = count;

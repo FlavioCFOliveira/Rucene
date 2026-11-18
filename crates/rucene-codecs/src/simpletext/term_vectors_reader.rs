@@ -496,18 +496,18 @@ impl TermsEnum for SimpleTVTermsEnum {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         if self.next >= self.terms.len() {
             Ok(None)
         } else {
             self.current = Some(self.next);
             self.next += 1;
-            Ok(Some(self.terms[self.next - 1].0.clone()))
+            Ok(Some(&self.terms[self.next - 1].0))
         }
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(self.current("getKey()")?.0.clone()))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(&self.current("getKey()")?.0))
     }
 
     fn ord(&self) -> Result<i64> {

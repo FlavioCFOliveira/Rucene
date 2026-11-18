@@ -609,6 +609,14 @@ impl<V: fmt::Debug> fmt::Debug for JavaHashMap<V> {
 }
 
 impl<V> JavaHashMap<V> {
+    /// Consumes the map and yields its entries in iteration order, without
+    /// collecting them first.
+    pub(crate) fn into_entries(self) -> impl Iterator<Item = (String, V)> {
+        self.table
+            .into_iter()
+            .flat_map(|bucket| bucket.into_iter().map(|e| (e.key, e.value)))
+    }
+
     /// Consumes the map and yields its keys in iteration order.
     pub fn into_keys(self) -> impl Iterator<Item = String> {
         self.table
@@ -2189,6 +2197,20 @@ impl JavaStringMap {
         self.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
+    /// [`to_std`](Self::to_std) for a map that is no longer needed: the
+    /// entries are moved, not copied.
+    pub fn into_std(self) -> HashMap<String, String> {
+        // PERF: the keys and values move into the new map, as Java's
+        // `Map.copyOf` shares the `String`s it copies (`SegmentInfo.java:137,142`);
+        // the table is sized once.
+        let mut map = HashMap::with_capacity(self.len());
+        match self {
+            JavaStringMap::Sorted(entries) => map.extend(entries),
+            JavaStringMap::Hash(hash) => map.extend(hash.into_entries()),
+        }
+        map
+    }
+
     /// `new HashMap<>(this)`, which is what `putAttribute` does before it puts.
     pub fn to_java_hash_map(&self) -> JavaHashMap<String> {
         JavaHashMap::copy_of_entries(self.iter().map(|(k, v)| (k.clone(), v.clone())))
@@ -2527,6 +2549,27 @@ impl<'a, T: Eq + std::hash::Hash> IntoIterator for &'a ImmutableSet<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `into_std` moves exactly the entries `to_std` copies, for both shapes
+    /// `readMapOfStrings` builds: sorted (up to ten entries) and hashed.
+    #[test]
+    fn java_string_map_into_std_moves_the_entries_to_std_copies() {
+        for count in [0usize, 1, 10, 11, 40] {
+            let entries: Vec<(String, String)> = (0..count)
+                .map(|i| (format!("key{i}"), format!("value{i}")))
+                .collect();
+            let map = JavaStringMap::from_read(entries);
+            assert_eq!(
+                matches!(map, JavaStringMap::Hash(_)),
+                count > 10,
+                "count {count}"
+            );
+            let copied = map.to_std();
+            let moved = map.into_std();
+            assert_eq!(moved, copied, "count {count}");
+            assert_eq!(moved.len(), count);
+        }
+    }
 
     #[test]
     fn table_size_for_matches_javas_edge_cases() {

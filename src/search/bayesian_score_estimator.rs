@@ -262,11 +262,11 @@ pub fn sample_vocabulary_terms(
     while let Some(term) = terms_enum.next()? {
         seen += 1;
         if reservoir.len() < sample_size {
-            reservoir.push(BytesRef::deep_copy_of(&term));
+            reservoir.push(BytesRef::deep_copy_of(term));
         } else {
             let replacement = next_long(rng, seen);
             if replacement < sample_size as i64 {
-                reservoir[replacement as usize] = BytesRef::deep_copy_of(&term);
+                reservoir[replacement as usize] = BytesRef::deep_copy_of(term);
             }
         }
     }

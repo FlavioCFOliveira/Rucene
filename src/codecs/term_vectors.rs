@@ -309,10 +309,12 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
             )?;
             let mut terms_enum = terms.iterator()?;
             let mut term_count = 0;
-            while let Some(term) = terms_enum.next()? {
+            while terms_enum.next()?.is_some() {
                 term_count += 1;
                 let freq = terms_enum.total_term_freq()? as i32;
-                self.start_term(&term, freq)?;
+                // `startTerm(termsEnum.term(), freq)` (`TermVectorsWriter.java:293-298`).
+                let term = terms_enum.term()?.ok_or_else(LuceneError::null_pointer)?;
+                self.start_term(term, freq)?;
 
                 if has_positions || has_offsets {
                     let postings = terms_enum

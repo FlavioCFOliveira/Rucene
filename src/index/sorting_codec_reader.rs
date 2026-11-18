@@ -1347,10 +1347,11 @@ fn doc_id_to_reader_id(doc_starts: &[i32], doc: i32) -> Result<usize> {
 ///
 /// None: every field a wrapped reader reports was merged into the field
 /// infos, so the lookup always succeeds; the `Result` is kept for the callers.
-fn remap(field_infos: &FieldInfos, info: &FieldInfo) -> Result<FieldInfo> {
+fn remap<'a>(field_infos: &'a FieldInfos, info: &FieldInfo) -> Result<&'a Arc<FieldInfo>> {
+    // PERF: the merged field's own object, as Java returns the reference
+    // `fieldInfos.fieldInfo(info.name)`, not a copy of it per visited value.
     Ok(field_infos
-        .field_info(&info.name)
-        .cloned()
+        .shared_field_info(&info.name)
         .expect("INVARIANT: every field of a wrapped reader is in the merged field infos"))
 }
 
@@ -1733,37 +1734,37 @@ struct RemappingStoredFieldVisitor<'a> {
 impl StoredFieldVisitor for RemappingStoredFieldVisitor<'_> {
     fn needs_field(&mut self, field_info: &FieldInfo) -> Result<StoredFieldVisitorStatus> {
         let info = remap(self.field_infos, field_info)?;
-        self.visitor.needs_field(&info)
+        self.visitor.needs_field(info)
     }
 
-    fn binary_field(&mut self, field_info: &FieldInfo, value: &[u8]) -> Result<()> {
+    fn binary_field(&mut self, field_info: &Arc<FieldInfo>, value: &[u8]) -> Result<()> {
         let info = remap(self.field_infos, field_info)?;
-        self.visitor.binary_field(&info, value)
+        self.visitor.binary_field(info, value)
     }
 
-    fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
+    fn string_field(&mut self, field_info: &Arc<FieldInfo>, value: String) -> Result<()> {
         let info = remap(self.field_infos, field_info)?;
-        self.visitor.string_field(&info, value)
+        self.visitor.string_field(info, value)
     }
 
-    fn int_field(&mut self, field_info: &FieldInfo, value: i32) -> Result<()> {
+    fn int_field(&mut self, field_info: &Arc<FieldInfo>, value: i32) -> Result<()> {
         let info = remap(self.field_infos, field_info)?;
-        self.visitor.int_field(&info, value)
+        self.visitor.int_field(info, value)
     }
 
-    fn long_field(&mut self, field_info: &FieldInfo, value: i64) -> Result<()> {
+    fn long_field(&mut self, field_info: &Arc<FieldInfo>, value: i64) -> Result<()> {
         let info = remap(self.field_infos, field_info)?;
-        self.visitor.long_field(&info, value)
+        self.visitor.long_field(info, value)
     }
 
-    fn float_field(&mut self, field_info: &FieldInfo, value: f32) -> Result<()> {
+    fn float_field(&mut self, field_info: &Arc<FieldInfo>, value: f32) -> Result<()> {
         let info = remap(self.field_infos, field_info)?;
-        self.visitor.float_field(&info, value)
+        self.visitor.float_field(info, value)
     }
 
-    fn double_field(&mut self, field_info: &FieldInfo, value: f64) -> Result<()> {
+    fn double_field(&mut self, field_info: &Arc<FieldInfo>, value: f64) -> Result<()> {
         let info = remap(self.field_infos, field_info)?;
-        self.visitor.double_field(&info, value)
+        self.visitor.double_field(info, value)
     }
 }
 
@@ -4570,7 +4571,7 @@ mod tests {
             Ok(StoredFieldVisitorStatus::Yes)
         }
 
-        fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
+        fn string_field(&mut self, field_info: &Arc<FieldInfo>, value: String) -> Result<()> {
             self.0
                 .push((field_info.name.clone(), field_info.number, value));
             Ok(())

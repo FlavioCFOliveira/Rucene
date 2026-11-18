@@ -509,7 +509,7 @@ fn a_reused_block_postings_enum_keeps_the_last_offsets_until_next_doc() {
         .unwrap()
         .iterator()
         .unwrap();
-    assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"aaa".to_vec())));
+    assert_eq!(terms.next().unwrap(), Some(&BytesRef::new(b"aaa".to_vec())));
     let mut postings = terms
         .postings(None, POSTINGS_ENUM_OFFSETS)
         .unwrap()
@@ -520,7 +520,7 @@ fn a_reused_block_postings_enum_keeps_the_last_offsets_until_next_doc() {
     assert_eq!((postings.start_offset(), postings.end_offset()), (0, 3));
     let first = identity(postings.as_ref());
 
-    assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"bbb".to_vec())));
+    assert_eq!(terms.next().unwrap(), Some(&BytesRef::new(b"bbb".to_vec())));
     let reused = terms
         .postings(Some(postings), POSTINGS_ENUM_OFFSETS)
         .unwrap()
@@ -636,7 +636,7 @@ fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
         .unwrap()
         .iterator()
         .unwrap();
-    assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"aaa".to_vec())));
+    assert_eq!(terms.next().unwrap(), Some(&BytesRef::new(b"aaa".to_vec())));
     let mut postings = terms
         .postings(None, POSTINGS_ENUM_PAYLOADS)
         .unwrap()
@@ -646,7 +646,7 @@ fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
     assert_eq!(postings.get_payload().unwrap(), Some(&[1u8, 2][..]));
     let first = identity(postings.as_ref());
 
-    assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"bbb".to_vec())));
+    assert_eq!(terms.next().unwrap(), Some(&BytesRef::new(b"bbb".to_vec())));
     let reused = terms
         .postings(Some(postings), POSTINGS_ENUM_PAYLOADS)
         .unwrap()
@@ -763,7 +763,7 @@ impl TermsEnum for RecordingTermsEnum<'_> {
         self.inner.seek_term_state(text, state)
     }
 
-    fn term(&self) -> rucene::error::Result<Option<BytesRef>> {
+    fn term(&self) -> rucene::error::Result<Option<&BytesRef>> {
         self.inner.term()
     }
 
@@ -810,7 +810,7 @@ impl TermsEnum for RecordingTermsEnum<'_> {
         self.inner.prefer_seek_exact()
     }
 
-    fn next(&mut self) -> rucene::error::Result<Option<BytesRef>> {
+    fn next(&mut self) -> rucene::error::Result<Option<&BytesRef>> {
         self.inner.next()
     }
 }

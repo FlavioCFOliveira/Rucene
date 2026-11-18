@@ -746,7 +746,7 @@ fn init_postings(
             };
             // `docValuesTerms.seekExact(next) && docValuesTerms.ord() == ord`:
             // the doc values hold `next` at exactly this ordinal.
-            debug_assert!(terms_index.lookup_term(&next)? == ord);
+            debug_assert!(terms_index.lookup_term(next)? == ord);
             postings.push_back(Rc::new(RefCell::new(PostingsEnumAndOrd {
                 postings: terms_enum
                     .postings(None, POSTINGS_ENUM_NONE)?
@@ -1037,11 +1037,12 @@ impl SlotComparator for TermOrdValComparator {
     fn competitive_iterator(
         &mut self,
         leaf: &mut TermOrdValLeafState,
-    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+    ) -> Result<Option<crate::search::CompetitiveIterator>> {
         Ok(leaf
             .competitive_state
             .as_ref()
-            .map(|state| Box::new(state.iterator.clone()) as Box<dyn DocIdSetIterator>))
+            // PERF: another handle onto the shared iterator, unboxed.
+            .map(|state| crate::search::CompetitiveIterator::Updateable(state.iterator.clone())))
     }
 
     fn set_hits_threshold_reached(&mut self, leaf: &mut TermOrdValLeafState) -> Result<()> {

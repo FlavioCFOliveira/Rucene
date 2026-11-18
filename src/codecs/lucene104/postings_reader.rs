@@ -681,7 +681,11 @@ pub struct BlockPostingsEnum {
     /// `level1SerializedImpacts.length` (`Lucene104PostingsReader.java:702`).
     level1_serialized_impacts_length: usize,
 
-    impacts: BlockImpacts,
+    /// The capacity Java grows `impactBuffer` to
+    /// (`Lucene104PostingsReader.java:434-444`): the size of the buffer each
+    /// [`BlockImpacts::get_impacts`] call fills, which this port allocates per
+    /// call because the trait returns it by value.
+    impact_capacity: usize,
 
     needs_refilling: bool,
 }
@@ -767,13 +771,16 @@ impl BlockPostingsEnum {
             Vec::new()
         };
 
-        let mut impact_buffer = FreqAndNormBuffer::new();
-        let capacity = if needs_impacts && needs_freq {
+        // `impactBuffer.growNoCopy(capacity)` (`Lucene104PostingsReader.java:434-444`).
+        // PERF: only the capacity is kept. The enum never reads a buffer of its
+        // own: each `Impacts::get_impacts` fills a new one, so growing one here
+        // (and cloning it into the impacts view) allocated four arrays per enum,
+        // with or without impacts.
+        let impact_capacity = if needs_impacts && needs_freq {
             (max_num_impacts_at_level0.max(max_num_impacts_at_level1)).max(1) as usize
         } else {
             1
         };
-        impact_buffer.grow_no_copy(capacity);
 
         let level0_serialized_impacts = if needs_impacts && needs_freq {
             vec![0u8; max_impact_num_bytes_at_level0 as usize]
@@ -802,17 +809,6 @@ impl BlockPostingsEnum {
                 .transpose()?
         } else {
             None
-        };
-
-        let impacts = BlockImpacts {
-            index_has_freq,
-            level0_last_doc_id: -1,
-            level1_last_doc_id: -1,
-            level0_serialized_impacts: level0_serialized_impacts.clone(),
-            level0_serialized_impacts_length: 0,
-            level1_serialized_impacts: level1_serialized_impacts.clone(),
-            level1_serialized_impacts_length: 0,
-            impact_buffer: impact_buffer.clone(),
         };
 
         // PERF: built straight into its box, which the reader hands out, so
@@ -890,7 +886,7 @@ impl BlockPostingsEnum {
             level1_block_pay_upto: 0,
             level1_serialized_impacts,
             level1_serialized_impacts_length: 0,
-            impacts,
+            impact_capacity,
             needs_refilling: false,
         }))
     }
@@ -1629,20 +1625,6 @@ impl BlockPostingsEnum {
             self.last_start_offset = self.start_offset;
         }
     }
-
-    fn update_impacts_state(&mut self) {
-        self.impacts.index_has_freq = self.index_has_freq;
-        self.impacts.level0_last_doc_id = self.level0_last_doc_id;
-        self.impacts.level1_last_doc_id = self.level1_last_doc_id;
-        self.impacts
-            .level0_serialized_impacts
-            .clone_from(&self.level0_serialized_impacts);
-        self.impacts.level0_serialized_impacts_length = self.level0_serialized_impacts_length;
-        self.impacts
-            .level1_serialized_impacts
-            .clone_from(&self.level1_serialized_impacts);
-        self.impacts.level1_serialized_impacts_length = self.level1_serialized_impacts_length;
-    }
 }
 
 impl BlockPostingsEnum {
@@ -2047,31 +2029,48 @@ impl ImpactsSource for BlockPostingsEnum {
             self.do_advance_shallow(target)?;
             self.needs_refilling = true;
         }
-        self.update_impacts_state();
         Ok(())
     }
 
+    /// Java returns its `impacts` view of the enum's own fields
+    /// (`Lucene104PostingsReader.java:1353-1408`); the trait returns an owned
+    /// box here, so the view holds a copy of the state it reads: the two
+    /// levels' doc IDs and the serialized bytes the last reads filled.
     fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
         debug_assert!(self.needs_impacts);
-        self.update_impacts_state();
-        Ok(Box::new(self.impacts.clone()))
+        // PERF: built from the enum's state at the call, copying only the
+        // filled bytes; a staging copy refreshed by every `advance_shallow`
+        // and cloned again here (whole buffers, plus an unused impact buffer)
+        // cost five allocations per call.
+        Ok(Box::new(BlockImpacts {
+            index_has_freq: self.index_has_freq,
+            level0_last_doc_id: self.level0_last_doc_id,
+            level1_last_doc_id: self.level1_last_doc_id,
+            level0_serialized_impacts: self.level0_serialized_impacts
+                [..self.level0_serialized_impacts_length]
+                .to_vec(),
+            level1_serialized_impacts: self.level1_serialized_impacts
+                [..self.level1_serialized_impacts_length]
+                .to_vec(),
+            impact_capacity: self.impact_capacity,
+        }))
     }
 }
 
 impl ImpactsEnum for BlockPostingsEnum {}
 
-#[derive(Clone)]
+/// The impacts view of a [`BlockPostingsEnum`]: Java's anonymous `Impacts`
+/// over the enum's fields (`Lucene104PostingsReader.java:1353-1408`).
 struct BlockImpacts {
     index_has_freq: bool,
     level0_last_doc_id: i32,
     level1_last_doc_id: i32,
+    /// The `level0SerializedImpacts.length` bytes the last read filled.
     level0_serialized_impacts: Vec<u8>,
-    /// `level0SerializedImpacts.length`.
-    level0_serialized_impacts_length: usize,
+    /// The `level1SerializedImpacts.length` bytes the last read filled.
     level1_serialized_impacts: Vec<u8>,
-    /// `level1SerializedImpacts.length`.
-    level1_serialized_impacts_length: usize,
-    impact_buffer: FreqAndNormBuffer,
+    /// The capacity of Java's `impactBuffer`.
+    impact_capacity: usize,
 }
 
 impl Impacts for BlockImpacts {
@@ -2098,7 +2097,7 @@ impl Impacts for BlockImpacts {
 
     fn get_impacts(&self, level: i32) -> FreqAndNormBuffer {
         let mut buffer = FreqAndNormBuffer::new();
-        buffer.grow_no_copy(self.impact_buffer.freqs.len().max(1));
+        buffer.grow_no_copy(self.impact_capacity.max(1));
         if !self.index_has_freq {
             buffer.size = 1;
             buffer.freqs[0] = 1;
@@ -2110,9 +2109,7 @@ impl Impacts for BlockImpacts {
             // (`Lucene104PostingsReader.java:1398`): only the bytes the last
             // read filled, never the stale tail of the buffer.
             read_impacts(
-                &mut crate::store::ByteArrayDataInput::new(
-                    &self.level0_serialized_impacts[..self.level0_serialized_impacts_length],
-                ),
+                &mut crate::store::ByteArrayDataInput::new(&self.level0_serialized_impacts),
                 &mut buffer,
             )
             .expect("impacts from memory");
@@ -2120,9 +2117,7 @@ impl Impacts for BlockImpacts {
         }
         if level == 1 {
             read_impacts(
-                &mut crate::store::ByteArrayDataInput::new(
-                    &self.level1_serialized_impacts[..self.level1_serialized_impacts_length],
-                ),
+                &mut crate::store::ByteArrayDataInput::new(&self.level1_serialized_impacts),
                 &mut buffer,
             )
             .expect("impacts from memory");

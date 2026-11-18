@@ -635,8 +635,9 @@ impl SegmentTermsEnum {
         Ok(())
     }
 
-    fn term_ref(&self) -> BytesRef {
-        BytesRef::new(self.term.get().to_vec())
+    /// `term.get()`, the enum's own term, lent.
+    fn term_ref(&self) -> &BytesRef {
+        self.term.get_ref()
     }
 }
 
@@ -854,7 +855,7 @@ impl TermsEnum for SegmentTermsEnum {
         }
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         // If seek was previously called and the term was cached,
         // usually caller is just going to pull a D/&PEnum or get
         // docFreq, etc.  But, if they then call next(),
@@ -887,7 +888,7 @@ impl TermsEnum for SegmentTermsEnum {
         })
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         Ok(Some(self.term_ref()))
     }
 

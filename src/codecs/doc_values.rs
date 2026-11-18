@@ -1731,7 +1731,7 @@ impl TermsEnum for BitsFilteredTermsEnum {
         self.inner.seek_term_state(text, state)
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
 
@@ -1759,15 +1759,17 @@ impl TermsEnum for BitsFilteredTermsEnum {
         self.inner.impacts(flags)
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    /// `FilteredTermsEnum.next()` with `accept` reading `liveTerms.get(ord())`
+    /// (`DocValuesConsumer.java:1064-1070`). The accepted term is lent by the
+    /// delegate's [`term`](TermsEnum::term), since the borrow `next` returned
+    /// cannot outlive the `ord()` call that decides it.
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         loop {
-            match self.inner.next()? {
-                None => return Ok(None),
-                Some(term) => {
-                    if self.live_terms.get(self.inner.ord()?) {
-                        return Ok(Some(term));
-                    }
-                }
+            if self.inner.next()?.is_none() {
+                return Ok(None);
+            }
+            if self.live_terms.get(self.inner.ord()?) {
+                return self.inner.term();
             }
         }
     }

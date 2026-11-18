@@ -364,7 +364,7 @@ impl TermsEnum for BoostingTermsEnum {
         self.inner.seek_term_state(text, state)
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
 
@@ -396,16 +396,23 @@ impl TermsEnum for BoostingTermsEnum {
         self.inner.term_state()
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
-        let next = self.inner.next()?;
-        if let Some(term) = &next {
-            let boost: f32 = term
-                .utf8_to_string()?
-                .parse()
-                .expect("java.lang.NumberFormatException");
-            set_boost(self.inner.attributes(), boost);
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        let boost: Option<f32> = match self.inner.next()? {
+            Some(term) => Some(
+                term.utf8_to_string()?
+                    .parse()
+                    .expect("java.lang.NumberFormatException"),
+            ),
+            None => None,
+        };
+        match boost {
+            Some(boost) => {
+                set_boost(self.inner.attributes(), boost);
+                // `return next`: the delegate's term, lent anew.
+                self.inner.term()
+            }
+            None => Ok(None),
         }
-        Ok(next)
     }
 }
 

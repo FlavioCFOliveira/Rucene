@@ -135,8 +135,18 @@ fn format_identity<T: ?Sized>(format: &Arc<T>) -> usize {
     Arc::as_ptr(format) as *const () as usize
 }
 
+/// `PerFieldPostingsFormat.getSuffix` (`PerFieldPostingsFormat.java:113-115`):
+/// `formatName + "_" + suffix`.
 fn get_suffix(format_name: &str, suffix: impl std::fmt::Display) -> String {
-    format!("{}_{}", format_name, suffix)
+    use std::fmt::Write as _;
+    // PERF: sized once, as Java's concatenation sizes its result; `format!`
+    // started this string empty and grew it twice per field at every open.
+    // A suffix is a decimal `int` (at most 11 characters).
+    let mut segment_suffix = String::with_capacity(format_name.len() + 1 + 11);
+    segment_suffix.push_str(format_name);
+    segment_suffix.push('_');
+    write!(segment_suffix, "{suffix}").expect("INVARIANT: writing to a String cannot fail");
+    segment_suffix
 }
 
 /// `PerFieldDocValuesFormat.getFullSegmentSuffix` (`PerFieldDocValuesFormat.java:250-256`),

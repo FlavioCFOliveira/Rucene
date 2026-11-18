@@ -679,12 +679,12 @@ impl TermsEnum for NextCountingTermsEnum {
         self.inner.seek_term_state(text, state)
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.counter.fetch_add(1, Ordering::SeqCst);
         self.inner.next()
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
 

@@ -705,7 +705,7 @@ impl MoreLikeThis {
         let mut terms_enum = vector.iterator()?;
         let mut spare = CharsRefBuilder::new();
         while let Some(text) = terms_enum.next()? {
-            spare.copy_utf8_bytes_ref(&text);
+            spare.copy_utf8_bytes_ref(text);
             let term = spare.to_string();
             if self.is_noise_word(&term) {
                 continue;

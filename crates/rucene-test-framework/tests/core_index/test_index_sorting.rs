@@ -2942,7 +2942,7 @@ fn test_sort_docs() -> Result<()> {
         .terms("field")?
         .unwrap_or_else(|| npe("terms(\"field\")"))
         .iterator()?;
-    assert_equals(&Some(utf8("a")), &field_terms.next()?);
+    assert_equals(&Some(utf8("a")), &field_terms.next()?.cloned());
     let mut postings = field_terms
         .postings(None, POSTINGS_ENUM_ALL)?
         .ok_or_else(rucene::error::LuceneError::null_pointer)?;
@@ -2950,7 +2950,7 @@ fn test_sort_docs() -> Result<()> {
     assert_equals(&1, &postings.next_doc()?);
     assert_equals(&3, &postings.next_doc()?);
     assert_equals(&NO_MORE_DOCS, &postings.next_doc()?);
-    assert_equals(&Some(utf8("b")), &field_terms.next()?);
+    assert_equals(&Some(utf8("b")), &field_terms.next()?.cloned());
     let mut postings = field_terms
         .postings(Some(postings), POSTINGS_ENUM_ALL)?
         .ok_or_else(rucene::error::LuceneError::null_pointer)?;
@@ -3030,7 +3030,7 @@ fn test_sort_docs_and_freqs() -> Result<()> {
         .terms("field")?
         .unwrap_or_else(|| npe("terms(\"field\")"))
         .iterator()?;
-    assert_equals(&Some(utf8("a")), &field_terms.next()?);
+    assert_equals(&Some(utf8("a")), &field_terms.next()?.cloned());
     let mut postings = field_terms
         .postings(None, POSTINGS_ENUM_ALL)?
         .ok_or_else(rucene::error::LuceneError::null_pointer)?;
@@ -3038,7 +3038,7 @@ fn test_sort_docs_and_freqs() -> Result<()> {
     assert_doc_freq(&mut *postings, 1, 2)?;
     assert_doc_freq(&mut *postings, 3, 1)?;
     assert_equals(&NO_MORE_DOCS, &postings.next_doc()?);
-    assert_equals(&Some(utf8("b")), &field_terms.next()?);
+    assert_equals(&Some(utf8("b")), &field_terms.next()?.cloned());
     let mut postings = field_terms
         .postings(Some(postings), POSTINGS_ENUM_ALL)?
         .ok_or_else(rucene::error::LuceneError::null_pointer)?;
@@ -3088,7 +3088,7 @@ fn sort_docs_and_positions(offsets: bool) -> Result<()> {
         .unwrap_or_else(|| npe("terms(\"field\")"))
         .iterator()?;
     let o = |start: i32, end: i32| if offsets { Some((start, end)) } else { None };
-    assert_equals(&Some(utf8("a")), &field_terms.next()?);
+    assert_equals(&Some(utf8("a")), &field_terms.next()?.cloned());
     let mut postings = field_terms
         .postings(None, POSTINGS_ENUM_ALL)?
         .ok_or_else(rucene::error::LuceneError::null_pointer)?;
@@ -3100,7 +3100,7 @@ fn sort_docs_and_positions(offsets: bool) -> Result<()> {
     assert_doc_freq(&mut *postings, 3, 1)?;
     assert_position(&mut *postings, 0, o(0, 1))?;
     assert_equals(&NO_MORE_DOCS, &postings.next_doc()?);
-    assert_equals(&Some(utf8("b")), &field_terms.next()?);
+    assert_equals(&Some(utf8("b")), &field_terms.next()?.cloned());
     let mut postings = field_terms
         .postings(Some(postings), POSTINGS_ENUM_ALL)?
         .ok_or_else(rucene::error::LuceneError::null_pointer)?;

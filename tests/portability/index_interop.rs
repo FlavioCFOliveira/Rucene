@@ -479,7 +479,7 @@ fn print_term_vectors(out: &mut String, reader: &Arc<dyn IndexReader>, doc: i32)
         while let Some(text) = te.next().unwrap() {
             let mut line = format!(
                 "   term {} freq={}",
-                utf8(&text),
+                utf8(text),
                 te.total_term_freq().unwrap()
             );
             let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap().unwrap();

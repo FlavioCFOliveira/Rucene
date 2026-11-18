@@ -1299,35 +1299,35 @@ impl StoredFieldVisitor for DumpVisitor {
         Ok(StoredFieldVisitorStatus::Yes)
     }
 
-    fn string_field(&mut self, fi: &FieldInfo, value: String) -> rucene::error::Result<()> {
+    fn string_field(&mut self, fi: &Arc<FieldInfo>, value: String) -> rucene::error::Result<()> {
         self.sb
             .push_str(&format!(" {}=string:{}", fi.name, hex(value.as_bytes())));
         Ok(())
     }
 
-    fn binary_field(&mut self, fi: &FieldInfo, value: &[u8]) -> rucene::error::Result<()> {
+    fn binary_field(&mut self, fi: &Arc<FieldInfo>, value: &[u8]) -> rucene::error::Result<()> {
         self.sb
             .push_str(&format!(" {}=binary:{}", fi.name, hex(value)));
         Ok(())
     }
 
-    fn int_field(&mut self, fi: &FieldInfo, value: i32) -> rucene::error::Result<()> {
+    fn int_field(&mut self, fi: &Arc<FieldInfo>, value: i32) -> rucene::error::Result<()> {
         self.sb.push_str(&format!(" {}=int:{value}", fi.name));
         Ok(())
     }
 
-    fn long_field(&mut self, fi: &FieldInfo, value: i64) -> rucene::error::Result<()> {
+    fn long_field(&mut self, fi: &Arc<FieldInfo>, value: i64) -> rucene::error::Result<()> {
         self.sb.push_str(&format!(" {}=long:{value}", fi.name));
         Ok(())
     }
 
-    fn float_field(&mut self, fi: &FieldInfo, value: f32) -> rucene::error::Result<()> {
+    fn float_field(&mut self, fi: &Arc<FieldInfo>, value: f32) -> rucene::error::Result<()> {
         self.sb
             .push_str(&format!(" {}=float:{}", fi.name, fbits(value)));
         Ok(())
     }
 
-    fn double_field(&mut self, fi: &FieldInfo, value: f64) -> rucene::error::Result<()> {
+    fn double_field(&mut self, fi: &Arc<FieldInfo>, value: f64) -> rucene::error::Result<()> {
         self.sb
             .push_str(&format!(" {}=double:{:x}", fi.name, value.to_bits()));
         Ok(())
@@ -1962,7 +1962,7 @@ pub fn enum_trace_with(path: &Path, known_panic: Option<&str>, panics: &mut usiz
                     sb.push('/');
                     sb.push_str(&te.total_term_freq()?.to_string());
                     let next = te.next()?;
-                    sb.push_str(&format!(" next={}", hex_or_null(next.as_ref())));
+                    sb.push_str(&format!(" next={}", hex_or_null(next)));
                     if next.is_some() {
                         sb.push('@');
                         sb.push_str(&te.ord()?.to_string());
@@ -2007,7 +2007,7 @@ pub fn enum_trace_with(path: &Path, known_panic: Option<&str>, panics: &mut usiz
                     sb.push_str(&first_doc(fresh.as_mut())?.to_string());
                     sb.push_str(" next=");
                     let next = fresh.next()?;
-                    sb.push_str(&hex_or_null(next.as_ref()));
+                    sb.push_str(&hex_or_null(next));
                     Ok(())
                 })(&mut sb);
                 if let Err(e) = step {
@@ -2019,7 +2019,7 @@ pub fn enum_trace_with(path: &Path, known_panic: Option<&str>, panics: &mut usiz
 
             let mut it = terms.iterator().unwrap();
             let second = if it.next().unwrap().is_some() {
-                it.next().unwrap()
+                it.next().unwrap().cloned()
             } else {
                 None
             };

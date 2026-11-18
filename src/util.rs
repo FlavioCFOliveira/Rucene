@@ -389,6 +389,21 @@ impl BytesRef {
         }
     }
 
+    /// Makes this value hold a copy of `other`'s active bytes, with offset
+    /// zero and `bytes` exactly that long, re-using this value's buffer.
+    ///
+    /// For a caller that keeps a term a [`TermsEnum`](crate::index::TermsEnum)
+    /// lent past the enum's next move, as a Java caller copies it into its own
+    /// `BytesRefBuilder` (`BytesRefBuilder.copyBytes(BytesRef)`,
+    /// `BytesRefBuilder.java:113-115`): once the buffer is large enough, no
+    /// allocation.
+    pub(crate) fn copy_from(&mut self, other: &BytesRef) {
+        self.bytes.clear();
+        self.bytes.extend_from_slice(other.slice());
+        self.offset = 0;
+        self.length = self.bytes.len();
+    }
+
     /// Returns the active slice of bytes.
     pub fn slice(&self) -> &[u8] {
         &self.bytes[self.offset..self.offset + self.length]
@@ -758,6 +773,20 @@ impl BytesRefBuilder {
         let written = UnicodeUtil::utf16_to_utf8(text, offset, length, &mut self.inner.bytes);
         self.inner.offset = 0;
         self.inner.length = written;
+    }
+
+    /// Returns the builder's own `BytesRef`, without copying it.
+    ///
+    /// Equivalent to `BytesRefBuilder.get()` (`BytesRefBuilder.java:155-158`),
+    /// which returns the builder's `ref`; the borrow ends before the builder
+    /// is next modified. A [`TermsEnum`](crate::index::TermsEnum) whose term
+    /// lives in a builder lends it through this.
+    pub fn get_ref(&self) -> &BytesRef {
+        debug_assert!(
+            self.inner.offset == 0,
+            "Modifying the offset of the returned ref is illegal"
+        );
+        &self.inner
     }
 
     /// Returns a `BytesRef` pointing to the builder's internal content.
@@ -6190,6 +6219,44 @@ mod tests {
 
         builder.clear();
         assert_eq!(builder.length(), 0);
+    }
+
+    /// `BytesRefBuilder.get()` returns the builder's own `ref`
+    /// (`BytesRefBuilder.java:155-158`): `get_ref` lends it, the same value
+    /// `get` copies, and the same object on every call.
+    #[test]
+    fn bytes_ref_builder_get_ref_lends_the_builders_own_ref() {
+        let mut builder = BytesRefBuilder::new();
+        builder.copy_bytes(b"term", 0, 4);
+        let lent: *const BytesRef = builder.get_ref();
+        assert_eq!(*builder.get_ref(), builder.get());
+        assert_eq!(builder.get_ref().slice(), b"term");
+        builder.append(b's');
+        assert!(std::ptr::eq(builder.get_ref(), lent));
+        assert_eq!(builder.get_ref().slice(), b"terms");
+    }
+
+    /// `copy_from` makes an exact copy of the active bytes (offset zero,
+    /// `bytes` exactly that long) and re-uses its buffer: a shorter term
+    /// after a longer one keeps the capacity, so no allocation.
+    #[test]
+    fn bytes_ref_copy_from_copies_the_active_bytes_into_its_own_buffer() {
+        let source = BytesRef {
+            bytes: b"xxlongtermyy".to_vec(),
+            offset: 2,
+            length: 8,
+        };
+        let mut copy = BytesRef::default();
+        copy.copy_from(&source);
+        assert_eq!(copy.slice(), b"longterm");
+        assert_eq!((copy.offset, copy.length, copy.bytes.len()), (0, 8, 8));
+        let capacity = copy.bytes.capacity();
+        let buffer = copy.bytes.as_ptr();
+        copy.copy_from(&BytesRef::new(b"short".to_vec()));
+        assert_eq!(copy.slice(), b"short");
+        assert_eq!((copy.offset, copy.length, copy.bytes.len()), (0, 5, 5));
+        assert_eq!(copy.bytes.capacity(), capacity);
+        assert_eq!(copy.bytes.as_ptr(), buffer);
     }
 
     #[test]

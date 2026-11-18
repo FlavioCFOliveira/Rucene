@@ -18,6 +18,7 @@
 //! Port of `org.apache.lucene.tests.codecs.ramonly.RAMOnlyPostingsFormat`.
 
 use std::any::Any;
+use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -713,6 +714,9 @@ struct RAMTermsEnum {
     /// `it`: the keys still to iterate, `None` for Java's `null`.
     it: Option<std::vec::IntoIter<JavaString>>,
     current: Option<JavaString>,
+    /// `new BytesRef(current)`, built when first read after `current`
+    /// changed, so that `term()` and `next()` can lend it.
+    current_ref: OnceCell<BytesRef>,
     ram_field: Arc<RAMField>,
     attributes: Option<AttributeSource>,
 }
@@ -722,6 +726,7 @@ impl RAMTermsEnum {
         RAMTermsEnum {
             it: None,
             current: None,
+            current_ref: OnceCell::new(),
             ram_field: field,
             attributes: None,
         }
@@ -733,9 +738,9 @@ impl RAMTermsEnum {
     }
 
     /// `new BytesRef(current)`.
-    fn current_bytes(&self) -> Result<BytesRef> {
+    fn current_bytes(&self) -> Result<&BytesRef> {
         match &self.current {
-            Some(current) => Ok(current.to_bytes_ref()),
+            Some(current) => Ok(self.current_ref.get_or_init(|| current.to_bytes_ref())),
             None => Err(npe(
                 "Cannot invoke \"java.lang.CharSequence.length()\" because \"text\" is null",
             )),
@@ -757,7 +762,7 @@ impl TermsEnum for RAMTermsEnum {
         self.attributes.get_or_insert_with(AttributeSource::new)
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         if self.it.is_none() {
             let keys: Vec<JavaString> = match &self.current {
                 None => self.ram_field.term_to_docs.keys().cloned().collect(),
@@ -773,6 +778,7 @@ impl TermsEnum for RAMTermsEnum {
         match self.it.as_mut().and_then(Iterator::next) {
             Some(next) => {
                 self.current = Some(next);
+                self.current_ref = OnceCell::new();
                 Ok(Some(self.current_bytes()?))
             }
             None => Ok(None),
@@ -782,6 +788,7 @@ impl TermsEnum for RAMTermsEnum {
     fn seek_ceil(&mut self, term: &BytesRef) -> Result<SeekStatus> {
         let key = JavaString::utf8_to_string(term.slice())?;
         self.current = Some(key.clone());
+        self.current_ref = OnceCell::new();
         self.it = None;
         if self.ram_field.term_to_docs.contains_key(&key) {
             Ok(SeekStatus::FOUND)
@@ -810,7 +817,7 @@ impl TermsEnum for RAMTermsEnum {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         // TODO: reuse BytesRef
         self.current_bytes().map(Some)
     }

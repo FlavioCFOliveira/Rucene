@@ -1024,7 +1024,10 @@ fn assert_empty_field_terms(reader: &Arc<dyn DirectoryReader>, expected: &[&str]
         .unwrap_or_else(|| npe("subreader.terms(\"\")"))
         .iterator()?;
     for term in expected {
-        assert_equals(&Some(LuceneTestCase::new_bytes_ref_str(term)), &te.next()?);
+        assert_equals(
+            &Some(LuceneTestCase::new_bytes_ref_str(term)),
+            &te.next()?.cloned(),
+        );
     }
     assert_null(&te.next()?);
     Ok(())

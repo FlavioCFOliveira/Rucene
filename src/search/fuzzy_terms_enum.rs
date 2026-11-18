@@ -392,11 +392,14 @@ impl FuzzyTermsEnum {
     ///
     /// Equivalent to the private
     /// `FuzzyTermsEnum.matches(BytesRef, int)`.
-    fn matches(&self, term_in: &BytesRef, k: i32) -> bool {
+    ///
+    /// Takes the two fields it reads, so that it can run while the delegate
+    /// lends `term_in`.
+    fn matches(term: &Term, automata: &[CompiledAutomaton], term_in: &BytesRef, k: i32) -> bool {
         if k == 0 {
-            return term_in == self.term.bytes();
+            return term_in == term.bytes();
         }
-        match self.automata[k as usize].run_automaton.as_ref() {
+        match automata[k as usize].run_automaton.as_ref() {
             Some(run_automaton) => {
                 run_automaton.run_range(&term_in.bytes, term_in.offset, term_in.length)
             }
@@ -427,7 +430,7 @@ impl TermsEnum for FuzzyTermsEnum {
         &mut self.atts
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         if let Some(queued_bottom) = self.queued_bottom.take() {
             self.bottom_changed(Some(&queued_bottom))?;
         }
@@ -441,7 +444,7 @@ impl TermsEnum for FuzzyTermsEnum {
 
         // The outer DFA always matches; now compute the exact edit distance.
         while ed > 0 {
-            if self.matches(&term, ed - 1) {
+            if Self::matches(&self.term, &self.automata, term, ed - 1) {
                 ed -= 1;
             } else {
                 break;
@@ -452,7 +455,7 @@ impl TermsEnum for FuzzyTermsEnum {
             // Exact match.
             set_boost(&mut self.atts, 1.0);
         } else {
-            let code_point_count = UnicodeUtil::code_point_count(&term)? as i32;
+            let code_point_count = UnicodeUtil::code_point_count(term)? as i32;
             let min_term_length = code_point_count.min(self.term_length);
             let similarity = 1.0f32 - (ed as f32 / min_term_length as f32);
             set_boost(&mut self.atts, similarity);
@@ -469,7 +472,7 @@ impl TermsEnum for FuzzyTermsEnum {
             // `bottom_changed` must be delayed until the next `next()` call,
             // otherwise the doc frequency and the rest of the current term's
             // statistics are lost.
-            self.queued_bottom = Some(BytesRef::deep_copy_of(&term));
+            self.queued_bottom = Some(BytesRef::deep_copy_of(term));
         }
 
         Ok(Some(term))
@@ -547,7 +550,7 @@ impl TermsEnum for FuzzyTermsEnum {
         self.actual_enum.seek_ord(ord)
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.actual_enum.term()
     }
 }

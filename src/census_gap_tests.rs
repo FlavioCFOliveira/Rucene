@@ -575,7 +575,7 @@ mod oracle {
             5 => exiting_outcome(
                 leaf.terms("s")
                     .and_then(|t| t.unwrap().iterator())
-                    .and_then(|mut e| e.next()),
+                    .and_then(|mut e| e.next().map(|term| term.cloned())),
             ),
             6 => exiting_outcome(leaf.get_point_values("p")),
             7 => exiting_outcome(

@@ -113,7 +113,7 @@ impl TermIntervalsSource {
         doc: i32,
         field: &str,
     ) -> Result<Option<Box<dyn IntervalMatchesIterator>>> {
-        let term = te.term()?.ok_or_else(LuceneError::null_pointer)?;
+        let term = te.term()?.ok_or_else(LuceneError::null_pointer)?.clone();
         let query: Arc<dyn Query> = Arc::new(TermQuery::new(Term::new(field.to_string(), term)));
         let mut pe = te
             .postings(None, POSTINGS_ENUM_OFFSETS)?

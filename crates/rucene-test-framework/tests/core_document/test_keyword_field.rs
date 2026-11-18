@@ -114,7 +114,10 @@ fn index_one(field: KeywordField, check_stored: impl FnOnce(&Document)) -> Resul
     w.close()?;
     let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader))?;
     let mut terms = leaf.terms("field")?.expect("terms").iterator()?;
-    assert_equals(&Some(BytesRef::from_char_sequence("value")), &terms.next()?);
+    assert_equals(
+        &Some(BytesRef::from_char_sequence("value")),
+        &terms.next()?.cloned(),
+    );
     assert_null(&terms.next()?);
 
     let mut values = leaf

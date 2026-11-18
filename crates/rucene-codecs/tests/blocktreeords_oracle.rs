@@ -210,7 +210,7 @@ fn check_intersect(terms: &dyn Terms, regexps: &[&str]) -> usize {
             .collect();
         let mut ie = terms.intersect(&compiled, None).unwrap();
         let mut actual = Vec::new();
-        while let Some(t) = ie.next().unwrap() {
+        while let Some(t) = ie.next().unwrap().cloned() {
             ie.doc_freq().unwrap();
             actual.push(t.slice().to_vec());
         }

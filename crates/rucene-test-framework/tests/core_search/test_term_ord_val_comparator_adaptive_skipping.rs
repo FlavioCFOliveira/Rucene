@@ -24,7 +24,7 @@ use rucene::search::pruning::Pruning;
 use rucene::search::scorable::Scorable;
 use rucene::search::sort::{Sort, SortField, SortFieldType};
 use rucene::search::top_field_collector_manager::TopFieldCollectorManager;
-use rucene::search::{TopFieldDocs, NO_MORE_DOCS};
+use rucene::search::{DocIdSetIterator, TopFieldDocs, NO_MORE_DOCS};
 use rucene::util::BytesRef;
 use rucene_test_framework::util::lucene_test_case::TestDirectory;
 use rucene_test_framework::util::LuceneTestCase;

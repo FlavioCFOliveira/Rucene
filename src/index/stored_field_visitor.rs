@@ -22,6 +22,12 @@
 //!   [`StoredFieldVisitor::binary_field`] and
 //!   [`StoredFieldVisitor::binary_field_data_input`]; the second still defaults
 //!   to reading every byte and delegating to the first, exactly as Java does.
+//! * Java hands every value callback the `FieldInfo` reference, which a
+//!   visitor may keep (`DocumentStoredFieldVisitor` keeps its `name`). The
+//!   value callbacks receive the shared handle onto the segment's one
+//!   `FieldInfo` object, `&Arc<FieldInfo>`, so a visitor keeps it the same
+//!   way instead of copying what it needs; [`StoredFieldVisitor::needs_field`]
+//!   only reads it and takes a plain reference.
 //! * Java hands `binaryField` a freshly allocated `byte[]` the visitor may keep.
 //!   Rust passes a borrowed slice: a visitor that needs to own the bytes copies
 //!   them, which is the same allocation Java performs eagerly for every visitor,
@@ -31,6 +37,7 @@
 
 use crate::error::{LuceneError, Result};
 use crate::index::{FieldInfo, StoredFieldDataInput};
+use std::sync::Arc;
 
 /// Expert: a low-level means of accessing the stored field values in an index.
 ///
@@ -66,7 +73,7 @@ pub trait StoredFieldVisitor {
     /// propagates any error raised while reading.
     fn binary_field_data_input(
         &mut self,
-        field_info: &FieldInfo,
+        field_info: &Arc<FieldInfo>,
         value: &mut StoredFieldDataInput<'_>,
     ) -> Result<()> {
         // `new byte[length]` (`StoredFieldVisitor.java:51-52`): a negative
@@ -100,7 +107,7 @@ pub trait StoredFieldVisitor {
     /// # Errors
     ///
     /// Propagates any error the implementation raises.
-    fn binary_field(&mut self, _field_info: &FieldInfo, _value: &[u8]) -> Result<()> {
+    fn binary_field(&mut self, _field_info: &Arc<FieldInfo>, _value: &[u8]) -> Result<()> {
         Ok(())
     }
 
@@ -114,7 +121,7 @@ pub trait StoredFieldVisitor {
     /// # Errors
     ///
     /// Propagates any error the implementation raises.
-    fn string_field(&mut self, _field_info: &FieldInfo, _value: String) -> Result<()> {
+    fn string_field(&mut self, _field_info: &Arc<FieldInfo>, _value: String) -> Result<()> {
         Ok(())
     }
 
@@ -125,7 +132,7 @@ pub trait StoredFieldVisitor {
     /// # Errors
     ///
     /// Propagates any error the implementation raises.
-    fn int_field(&mut self, _field_info: &FieldInfo, _value: i32) -> Result<()> {
+    fn int_field(&mut self, _field_info: &Arc<FieldInfo>, _value: i32) -> Result<()> {
         Ok(())
     }
 
@@ -136,7 +143,7 @@ pub trait StoredFieldVisitor {
     /// # Errors
     ///
     /// Propagates any error the implementation raises.
-    fn long_field(&mut self, _field_info: &FieldInfo, _value: i64) -> Result<()> {
+    fn long_field(&mut self, _field_info: &Arc<FieldInfo>, _value: i64) -> Result<()> {
         Ok(())
     }
 
@@ -147,7 +154,7 @@ pub trait StoredFieldVisitor {
     /// # Errors
     ///
     /// Propagates any error the implementation raises.
-    fn float_field(&mut self, _field_info: &FieldInfo, _value: f32) -> Result<()> {
+    fn float_field(&mut self, _field_info: &Arc<FieldInfo>, _value: f32) -> Result<()> {
         Ok(())
     }
 
@@ -158,7 +165,7 @@ pub trait StoredFieldVisitor {
     /// # Errors
     ///
     /// Propagates any error the implementation raises.
-    fn double_field(&mut self, _field_info: &FieldInfo, _value: f64) -> Result<()> {
+    fn double_field(&mut self, _field_info: &Arc<FieldInfo>, _value: f64) -> Result<()> {
         Ok(())
     }
 
@@ -211,13 +218,13 @@ mod tests {
     }
 
     impl StoredFieldVisitor for RecordingVisitor {
-        fn binary_field(&mut self, field_info: &FieldInfo, value: &[u8]) -> Result<()> {
+        fn binary_field(&mut self, field_info: &Arc<FieldInfo>, value: &[u8]) -> Result<()> {
             self.seen
                 .push(format!("binary {} {value:?}", field_info.name));
             Ok(())
         }
 
-        fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
+        fn string_field(&mut self, field_info: &Arc<FieldInfo>, value: String) -> Result<()> {
             self.seen
                 .push(format!("string {} {value}", field_info.name));
             Ok(())
@@ -246,7 +253,7 @@ mod tests {
     impl StoredFieldVisitor for StreamingVisitor {
         fn binary_field_data_input(
             &mut self,
-            _field_info: &FieldInfo,
+            _field_info: &Arc<FieldInfo>,
             value: &mut StoredFieldDataInput<'_>,
         ) -> Result<()> {
             let length = value.length() as usize;
@@ -258,7 +265,7 @@ mod tests {
             Ok(())
         }
 
-        fn binary_field(&mut self, _field_info: &FieldInfo, _value: &[u8]) -> Result<()> {
+        fn binary_field(&mut self, _field_info: &Arc<FieldInfo>, _value: &[u8]) -> Result<()> {
             self.delegated = true;
             Ok(())
         }
@@ -313,7 +320,7 @@ mod tests {
 
     #[test]
     fn the_default_data_input_callback_reads_every_byte_and_delegates() {
-        let info = FieldInfo::new("payload", 3);
+        let info = Arc::new(FieldInfo::new("payload", 3));
         let input_src = vec![1, 2, 3, 4, 5];
         let mut input = ByteArrayDataInput::new(&input_src);
         let mut value = StoredFieldDataInput::new(&mut input, 5);
@@ -326,7 +333,7 @@ mod tests {
     fn the_default_data_input_callback_leaves_the_cursor_after_the_value() {
         // The reader shares one cursor across the whole document, so the
         // default implementation must consume exactly `length` bytes.
-        let info = FieldInfo::new("payload", 3);
+        let info = Arc::new(FieldInfo::new("payload", 3));
         let input_src = vec![1, 2, 3, 9, 9];
         let mut input = ByteArrayDataInput::new(&input_src);
         {
@@ -340,7 +347,7 @@ mod tests {
 
     #[test]
     fn a_negative_length_is_rejected_instead_of_panicking() {
-        let info = FieldInfo::new("payload", 3);
+        let info = Arc::new(FieldInfo::new("payload", 3));
         let input_src = vec![1, 2, 3];
         let mut input = ByteArrayDataInput::new(&input_src);
         let mut value = StoredFieldDataInput::new(&mut input, -1);
@@ -362,7 +369,7 @@ mod tests {
 
     #[test]
     fn overriding_the_data_input_callback_bypasses_the_byte_slice_callback() {
-        let info = FieldInfo::new("payload", 3);
+        let info = Arc::new(FieldInfo::new("payload", 3));
         let input_src = vec![7, 8];
         let mut input = ByteArrayDataInput::new(&input_src);
         let mut value = StoredFieldDataInput::new(&mut input, 2);
@@ -383,7 +390,7 @@ mod tests {
                 Ok(StoredFieldVisitorStatus::Yes)
             }
         }
-        let info = FieldInfo::new("f", 0);
+        let info = Arc::new(FieldInfo::new("f", 0));
         let mut visitor = OnlyNeedsField;
         visitor.binary_field(&info, b"x").unwrap();
         visitor.string_field(&info, "x".to_string()).unwrap();

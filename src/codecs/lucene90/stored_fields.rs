@@ -98,7 +98,17 @@ pub const FIELDS_EXTENSION: &str = "fdt";
 const INDEX_EXTENSION: &str = "fdx";
 const META_EXTENSION: &str = "fdm";
 
-const INDEX_CODEC_NAME: &str = "Lucene90FieldsIndex";
+/// The literal of [`INDEX_CODEC_NAME`], shared with [`INDEX_META_CODEC_NAME`].
+macro_rules! index_codec_name {
+    () => {
+        "Lucene90FieldsIndex"
+    };
+}
+const INDEX_CODEC_NAME: &str = index_codec_name!();
+/// `INDEX_CODEC_NAME + "Meta"`, a constant expression that javac folds into
+/// one literal (`Lucene90CompressingStoredFieldsReader.java:158`).
+// PERF: a constant, as in Java, instead of a string formatted per open.
+const INDEX_META_CODEC_NAME: &str = concat!(index_codec_name!(), "Meta");
 
 const TYPE_STRING: i32 = 0x00;
 const TYPE_BYTE_ARR: i32 = 0x01;
@@ -530,7 +540,8 @@ impl FieldsIndexReader {
                 .as_ref(),
         )?;
 
-        let header_name = format!("{codec_name}Idx");
+        // PERF: sized once, as Java's `codecName + "Idx"` is; `format!` grew it.
+        let header_name = [codec_name, "Idx"].concat();
         let checked = check_index_header(
             index_input.as_mut(),
             &header_name,
@@ -2464,7 +2475,7 @@ impl Lucene90CompressingStoredFieldsReader {
             let meta_in = meta_in.insert(directory.open_checksum_input(&meta_file)?);
             check_index_header(
                 meta_in.as_mut(),
-                &format!("{INDEX_CODEC_NAME}Meta"),
+                INDEX_META_CODEC_NAME,
                 META_VERSION_START,
                 version,
                 &id,
@@ -2620,9 +2631,11 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             let bits = (info_and_bits & TYPE_MASK as u64) as i32;
             debug_assert!(bits <= TYPE_NUMERIC_DOUBLE, "bits={bits:x}");
 
+            // The shared handle onto the field's one `FieldInfo` object, which
+            // Java hands every callback as a reference the visitor may keep.
             let field_info = self
                 .field_infos
-                .field_info_checked(field_number)?
+                .field_info_checked_shared(field_number)?
                 .ok_or_else(|| {
                     LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                         "field number {field_number} not found"
@@ -2972,7 +2985,7 @@ impl Lucene90CompressingStoredFieldsReader {
     fn read_field(
         input: &mut dyn DataInput,
         visitor: &mut dyn StoredFieldVisitor,
-        info: &FieldInfo,
+        info: &Arc<FieldInfo>,
         bits: i32,
     ) -> Result<()> {
         match bits & TYPE_MASK {
@@ -3523,37 +3536,37 @@ mod tests {
     }
 
     impl StoredFieldVisitor for CollectingVisitor {
-        fn binary_field(&mut self, info: &FieldInfo, value: &[u8]) -> Result<()> {
+        fn binary_field(&mut self, info: &Arc<FieldInfo>, value: &[u8]) -> Result<()> {
             self.fields
                 .push((info.name.clone(), StoredValue::Bytes(value.to_vec())));
             Ok(())
         }
 
-        fn string_field(&mut self, info: &FieldInfo, value: String) -> Result<()> {
+        fn string_field(&mut self, info: &Arc<FieldInfo>, value: String) -> Result<()> {
             self.fields
                 .push((info.name.clone(), StoredValue::String(value)));
             Ok(())
         }
 
-        fn int_field(&mut self, info: &FieldInfo, value: i32) -> Result<()> {
+        fn int_field(&mut self, info: &Arc<FieldInfo>, value: i32) -> Result<()> {
             self.fields
                 .push((info.name.clone(), StoredValue::Int(value)));
             Ok(())
         }
 
-        fn long_field(&mut self, info: &FieldInfo, value: i64) -> Result<()> {
+        fn long_field(&mut self, info: &Arc<FieldInfo>, value: i64) -> Result<()> {
             self.fields
                 .push((info.name.clone(), StoredValue::Long(value)));
             Ok(())
         }
 
-        fn float_field(&mut self, info: &FieldInfo, value: f32) -> Result<()> {
+        fn float_field(&mut self, info: &Arc<FieldInfo>, value: f32) -> Result<()> {
             self.fields
                 .push((info.name.clone(), StoredValue::Float(value)));
             Ok(())
         }
 
-        fn double_field(&mut self, info: &FieldInfo, value: f64) -> Result<()> {
+        fn double_field(&mut self, info: &Arc<FieldInfo>, value: f64) -> Result<()> {
             self.fields
                 .push((info.name.clone(), StoredValue::Double(value)));
             Ok(())
@@ -3888,7 +3901,7 @@ mod tests {
         impl StoredFieldVisitor for StreamingVisitor {
             fn binary_field_data_input(
                 &mut self,
-                _info: &FieldInfo,
+                _info: &Arc<FieldInfo>,
                 value: &mut StoredFieldDataInput<'_>,
             ) -> Result<()> {
                 let length = value.length() as usize;
@@ -3898,7 +3911,7 @@ mod tests {
                 Ok(())
             }
 
-            fn binary_field(&mut self, _info: &FieldInfo, _value: &[u8]) -> Result<()> {
+            fn binary_field(&mut self, _info: &Arc<FieldInfo>, _value: &[u8]) -> Result<()> {
                 self.materialised += 1;
                 Ok(())
             }

@@ -1438,7 +1438,7 @@ impl TermsEnum for ExitableTermsEnum {
     ///
     /// Raises the exiting-reader error on a sampled call once the timeout has
     /// fired, and otherwise propagates the delegate's errors.
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         // Before every iteration, check if the iteration should exit.
         self.check_timeout_with_sampling()?;
         self.inner.next()
@@ -1460,7 +1460,7 @@ impl TermsEnum for ExitableTermsEnum {
         self.inner.seek_ord(ord)
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
 

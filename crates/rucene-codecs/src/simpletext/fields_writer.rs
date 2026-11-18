@@ -172,7 +172,7 @@ impl<'a> SimpleTextFieldsWriter<'a> {
             let mut postings_enum: Option<Box<dyn PostingsEnum>> = None;
 
             // for each term in field
-            while let Some(term) = terms_enum.next()? {
+            while let Some(term) = terms_enum.next()?.cloned() {
                 self.doc_count = 0;
                 self.skip_writer.reset_skip();
                 self.competitive_impact_accumulator.clear();

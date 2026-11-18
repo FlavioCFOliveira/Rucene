@@ -1025,7 +1025,10 @@ fn search_once(
                 // search 30 terms
                 if (seen_term_count + shift) % trigger == 0 {
                     tot_hits.fetch_add(
-                        run_query(searcher, Arc::new(TermQuery::new(Term::new("body", term))))?,
+                        run_query(
+                            searcher,
+                            Arc::new(TermQuery::new(Term::new("body", term.clone()))),
+                        )?,
                         Ordering::SeqCst,
                     );
                 }

@@ -522,7 +522,9 @@ impl SegmentInfo {
 
     /// Strips any segment name from `file` and renames it with this segment's name.
     pub fn named_for_this_segment(&self, file: &str) -> String {
-        format!("{}{}", self.name, strip_segment_name(file))
+        // PERF: sized once, as Java's `name + IndexFileNames.stripSegmentName(file)`
+        // is; `format!` grew it.
+        [self.name.as_str(), strip_segment_name(file)].concat()
     }
 
     /// Returns a short debug representation, optionally including a deletion count.

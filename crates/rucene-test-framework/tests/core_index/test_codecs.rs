@@ -560,7 +560,7 @@ impl Verify {
                 upto += 1;
                 Assert::assert_true_msg(
                     &format!("expected={expected} vs actual {term}"),
-                    expected.bytes_equals(&term),
+                    expected.bytes_equals(term),
                 );
             }
             assert_equals(&upto, &field.terms.len());
@@ -859,7 +859,7 @@ impl TermsEnum for DataTermsEnum {
         &mut self.attributes
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.upto += 1;
         if self.upto as usize == self.field_data.terms.len() {
             return Ok(None);
@@ -868,8 +868,8 @@ impl TermsEnum for DataTermsEnum {
         self.term()
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(self.field_data.terms[self.upto as usize].text.clone()))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(&self.field_data.terms[self.upto as usize].text))
     }
 
     fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {

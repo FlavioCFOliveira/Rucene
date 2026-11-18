@@ -210,8 +210,8 @@ impl FieldsConsumer for AssertingFieldsConsumer<'_> {
             java_assert!(has_offsets == terms.has_offsets());
 
             while let Some(term) = terms_enum.next()? {
-                java_assert!(last_term.as_ref().is_none_or(|last| *last < term));
-                last_term = Some(BytesRef::deep_copy_of(&term));
+                java_assert!(last_term.as_ref().is_none_or(|last| *last < term.clone()));
+                last_term = Some(BytesRef::deep_copy_of(term));
 
                 let mut flags = 0;
                 if !has_positions {

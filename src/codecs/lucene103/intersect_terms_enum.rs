@@ -568,7 +568,12 @@ pub struct IntersectTermsEnum {
     nodes: Vec<Node>,
     /// Index of the frame the cursor is in, or `None` once exhausted.
     current: Option<usize>,
-    term: Vec<u8>,
+    /// The current term: Java's `BytesRef term` (`IntersectTermsEnum.java:58`).
+    /// `bytes` holds exactly the term (`offset` 0, `length == bytes.len()`,
+    /// kept so by [`copy_term`](Self::copy_term)), so that
+    /// [`TermsEnum::term`] and [`TermsEnum::next`] lend it as Java returns
+    /// `term` (`IntersectTermsEnum.java:200-202`).
+    term: BytesRef,
     saved_start_term: Option<Vec<u8>>,
     attributes: AttributeSource,
 }
@@ -603,7 +608,7 @@ impl IntersectTermsEnum {
             stack: (0..5).map(IntersectTermsEnumFrame::new).collect(),
             nodes: vec![Node::default(); 5],
             current: None,
-            term: Vec::new(),
+            term: BytesRef::default(),
             saved_start_term: None,
             attributes: AttributeSource::new(),
         };
@@ -690,19 +695,14 @@ impl IntersectTermsEnum {
                 let is_sub_block = self.stack[cur].next()?;
                 self.copy_term();
 
-                if is_sub_block
-                    && StringHelper::starts_with_bytes(
-                        target_bytes,
-                        &BytesRef::new(self.term.clone()),
-                    )
-                {
+                if is_sub_block && StringHelper::starts_with_bytes(target_bytes, &self.term) {
                     // Recurse.
                     let state = self.get_state();
                     self.push_frame(state)?;
                     break;
                 }
 
-                match self.term.as_slice().cmp(target_bytes) {
+                match self.term.bytes.as_slice().cmp(target_bytes) {
                     std::cmp::Ordering::Less => {
                         if self.stack[cur].next_ent == self.stack[cur].ent_count {
                             if !self.stack[cur].is_last_in_floor {
@@ -792,7 +792,7 @@ impl IntersectTermsEnum {
         let mut idx = parent_prefix;
         debug_assert!(self.stack[cur].suffix > 0);
         while idx < prefix {
-            let target = i32::from(self.term[idx]);
+            let target = i32::from(self.term.bytes[idx]);
             let child = self.trie.lookup_child(target, &node)?;
             debug_assert!(child.is_some());
             // Java dereferences the null child (an NPE) when assertions are off.
@@ -826,10 +826,11 @@ impl IntersectTermsEnum {
             let frame = &self.stack[cur];
             (frame.prefix, frame.start_byte_pos, frame.suffix)
         };
-        self.term.truncate(prefix);
-        self.term.resize(prefix + len, 0);
+        self.term.bytes.truncate(prefix);
+        self.term.bytes.resize(prefix + len, 0);
+        self.term.length = self.term.bytes.len();
         let suffix: Vec<u8> = self.stack[cur].suffix_bytes[start..start + len].to_vec();
-        self.term[prefix..prefix + len].copy_from_slice(&suffix);
+        self.term.bytes[prefix..prefix + len].copy_from_slice(&suffix);
     }
 
     /// Advances to the next entry, popping exhausted frames first.
@@ -895,7 +896,7 @@ impl IntersectTermsEnum {
             debug_assert!(frame.prefix >= len_in_prefix);
             let mut term_pos = frame.prefix - len_in_prefix;
             while term_pos < frame.prefix {
-                if self.term[term_pos] != common[common_pos] {
+                if self.term.bytes[term_pos] != common[common_pos] {
                     return false;
                 }
                 term_pos += 1;
@@ -967,7 +968,7 @@ impl TermsEnum for IntersectTermsEnum {
         &mut self.attributes
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         let Some(mut is_sub_block) = self.pop_push_next()? else {
             return Ok(None);
         };
@@ -1081,12 +1082,12 @@ impl TermsEnum for IntersectTermsEnum {
                 debug_assert!(
                     self.saved_start_term
                         .as_deref()
-                        .is_none_or(|saved| self.term.as_slice() > saved),
+                        .is_none_or(|saved| self.term.bytes.as_slice() > saved),
                     "saveStartTerm={} term={}",
                     String::from_utf8_lossy(self.saved_start_term.as_deref().unwrap_or_default()),
-                    String::from_utf8_lossy(&self.term)
+                    String::from_utf8_lossy(&self.term.bytes)
                 );
-                return Ok(Some(BytesRef::new(self.term.clone())));
+                return Ok(Some(&self.term));
             }
 
             match self.pop_push_next()? {
@@ -1117,8 +1118,10 @@ impl TermsEnum for IntersectTermsEnum {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(BytesRef::new(self.term.clone())))
+    /// Equivalent to `IntersectTermsEnum.term()` (`IntersectTermsEnum.java:200-202`),
+    /// which returns the enum's own `term`.
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(&self.term))
     }
 
     /// Equivalent to `IntersectTermsEnum.ord()` (`IntersectTermsEnum.java:563-566`):

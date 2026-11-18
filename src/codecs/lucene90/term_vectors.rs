@@ -3300,8 +3300,10 @@ impl TermsEnum for TVTermsEnum {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(self.term.clone()))
+    /// `TVTermsEnum.term()` (`Lucene90CompressingTermVectorsReader.java:1162-1164`):
+    /// the enum's own `term`.
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(&self.term))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -3351,7 +3353,7 @@ impl TermsEnum for TVTermsEnum {
         Ok(Box::new(crate::index::SlowImpactsEnum::new(postings)))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         if self.ord == self.num_terms - 1 {
             return Ok(None);
         }
@@ -3387,7 +3389,9 @@ impl TermsEnum for TVTermsEnum {
         let new_len = new_len as usize;
         self.term.offset = 0;
         self.term.length = new_len;
-        Ok(Some(self.term.clone()))
+        // `return term` (`Lucene90CompressingTermVectorsReader.java:1112-1138`):
+        // the enum's own buffer.
+        Ok(Some(&self.term))
     }
 }
 
@@ -4857,7 +4861,7 @@ mod tests {
             );
             let mut decoded_terms = Vec::new();
             let mut it = terms.iterator().unwrap();
-            while let Some(term) = it.next().unwrap() {
+            while let Some(term) = it.next().unwrap().cloned() {
                 let freq = it.total_term_freq().unwrap();
                 let mut occurrences = Vec::new();
                 if positions || offsets {

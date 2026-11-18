@@ -427,6 +427,18 @@ pub enum SeekStatus {
 /// [`Display`](std::fmt::Display) is a supertrait because `MultiTermsEnum` and
 /// `TermsEnumIndex` render the enumerations they wrap: every Java `TermsEnum`
 /// has a `toString()`, inherited from `Object` unless overridden.
+///
+/// # The current term is lent, not copied
+///
+/// [`term`](Self::term), [`term_buffer`](Self::term_buffer) and
+/// [`next`](Self::next) return a borrow of the enum's own term buffer, as
+/// Lucene's `term()` and `BytesRefIterator.next()` return the enum's own
+/// `BytesRef`, which "may be re-used across calls to next"
+/// (`TermsEnum.java:118-119`, `BytesRefIterator.java:24-34`). The term is
+/// valid until the next call that moves the enum; the borrow checker enforces
+/// that, so a caller that keeps the term past such a call copies it first
+/// (for example with [`BytesRef::clone`] or into a reused buffer), as a Java
+/// caller does with `BytesRef.deepCopyOf` or `BytesRefBuilder.copyBytes`.
 pub trait TermsEnum: std::fmt::Display {
     /// Returns the attribute source attached to this enum.
     fn attributes(&mut self) -> &mut AttributeSource;
@@ -499,21 +511,25 @@ pub trait TermsEnum: std::fmt::Display {
     /// Returns the current term, or `None` where Java's `term()` returns
     /// `null` (for example `MultiTermsEnum` before it is positioned or after
     /// it is exhausted).
-    fn term(&self) -> Result<Option<BytesRef>>;
+    ///
+    /// The term is the enum's own buffer, valid until the enum next moves
+    /// (see [the trait docs](TermsEnum#the-current-term-is-lent-not-copied)).
+    fn term(&self) -> Result<Option<&BytesRef>>;
 
-    /// Returns the bytes of this enum's current-term buffer as they are now,
-    /// without the preconditions [`term`](Self::term) asserts.
+    /// Returns this enum's current-term buffer as it is now, without the
+    /// preconditions [`term`](Self::term) asserts.
     ///
     /// **This has no counterpart in Lucene 10.5.0.** Java's `term()` hands
     /// out the enum's own `BytesRef`, and a caller that keeps it — as
     /// `MultiTermsEnum.current` does (`MultiTermsEnum.java:208, 249`) — later
     /// reads whatever the enum has since written there, without calling
-    /// `term()` again. This port returns owned copies, so such a caller reads
-    /// the buffer through this method instead; an enum whose `term()` asserts
-    /// a state (`SegmentTermsEnum.term()` asserts `!eof`,
+    /// `term()` again. A Rust caller cannot keep that borrow while the enum
+    /// moves, so such a caller keeps the enum instead and reads the buffer
+    /// through this method; an enum whose `term()` asserts a state
+    /// (`SegmentTermsEnum.term()` asserts `!eof`,
     /// `SegmentTermsEnum.java:968-971`) overrides it to skip the assertion,
     /// exactly as the Java alias does. The default answers `term()`.
-    fn term_buffer(&self) -> Result<Option<BytesRef>> {
+    fn term_buffer(&self) -> Result<Option<&BytesRef>> {
         self.term()
     }
 
@@ -550,7 +566,11 @@ pub trait TermsEnum: std::fmt::Display {
     }
 
     /// Returns the next term, or `None` at the end of iteration.
-    fn next(&mut self) -> Result<Option<BytesRef>>;
+    ///
+    /// Equivalent to `BytesRefIterator.next()`: the term is the enum's own
+    /// buffer, valid until the enum next moves (see
+    /// [the trait docs](TermsEnum#the-current-term-is-lent-not-copied)).
+    fn next(&mut self) -> Result<Option<&BytesRef>>;
 }
 
 /// Acceptance result used by [`FilteredTermsEnum`].
@@ -612,7 +632,23 @@ pub struct FilteredTermsEnum {
     filter: Box<dyn FilteredTermsEnumFilter>,
     initial_seek_term: Option<BytesRef>,
     do_seek: bool,
-    actual_term: Option<BytesRef>,
+    /// Whether Java's `actualTerm` is not `null`. Java's `actualTerm` is the
+    /// `BytesRef` the delegate's `next()` or `term()` returned
+    /// (`FilteredTermsEnum.java:241, 244`): the delegate's own term buffer.
+    /// Where Java reads `actualTerm`, the term is read from that buffer
+    /// ([`actual_term`]), through the borrow [`TermsEnum::term_buffer`] lends.
+    has_actual_term: bool,
+}
+
+/// Java's `actualTerm`: the delegate's current term buffer when
+/// `has_actual_term`, else `null`. Takes the delegate rather than the enum so
+/// that the filter can be borrowed beside the term.
+fn actual_term(tenum: &dyn TermsEnum, has_actual_term: bool) -> Result<Option<&BytesRef>> {
+    if has_actual_term {
+        tenum.term_buffer()
+    } else {
+        Ok(None)
+    }
 }
 
 impl FilteredTermsEnum {
@@ -624,7 +660,7 @@ impl FilteredTermsEnum {
             filter,
             initial_seek_term: None,
             do_seek: false,
-            actual_term: None,
+            has_actual_term: false,
         }
     }
 
@@ -644,7 +680,7 @@ impl FilteredTermsEnum {
             filter,
             initial_seek_term: None,
             do_seek: start_with_seek,
-            actual_term: None,
+            has_actual_term: false,
         }
     }
 
@@ -659,7 +695,7 @@ impl FilteredTermsEnum {
             filter,
             initial_seek_term: Some(initial_seek_term),
             do_seek: true,
-            actual_term: None,
+            has_actual_term: false,
         }
     }
 }
@@ -694,7 +730,7 @@ impl TermsEnum for FilteredTermsEnum {
         self.tenum.attributes()
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.tenum.term()
     }
 
@@ -769,17 +805,20 @@ impl TermsEnum for FilteredTermsEnum {
         )))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         loop {
             if self.do_seek {
                 self.do_seek = false;
                 let seek_term = if self.initial_seek_term.is_some() {
                     self.initial_seek_term.take()
                 } else {
-                    self.filter.next_seek_term(self.actual_term.as_ref())?
+                    let actual = actual_term(&*self.tenum, self.has_actual_term)?;
+                    self.filter.next_seek_term(actual)?
                 };
-                if let Some(t) = &seek_term {
-                    if let Some(ref actual) = self.actual_term {
+                if cfg!(debug_assertions) {
+                    if let (Some(t), Ok(Some(actual))) =
+                        (&seek_term, actual_term(&*self.tenum, self.has_actual_term))
+                    {
                         // `assert actualTerm == null || t == null ||
                         // t.compareTo(actualTerm) > 0`.
                         debug_assert!(t.slice() > actual.slice(), "curTerm={actual} seekTerm={t}");
@@ -790,26 +829,30 @@ impl TermsEnum for FilteredTermsEnum {
                 {
                     return Ok(None);
                 }
-                self.actual_term = self.tenum.term()?;
+                // `actualTerm = tenum.term()`.
+                self.has_actual_term = self.tenum.term()?.is_some();
             } else {
-                self.actual_term = self.tenum.next()?;
-                if self.actual_term.is_none() {
+                // `actualTerm = tenum.next()`.
+                self.has_actual_term = self.tenum.next()?.is_some();
+                if !self.has_actual_term {
                     return Ok(None);
                 }
             }
 
             // `accept(actualTerm)`: a `null` from `tenum.term()` reaches the
             // filter, whose dereference raises `NullPointerException`.
-            let actual_term = self
-                .actual_term
-                .as_ref()
-                .ok_or_else(LuceneError::null_pointer)?;
-            match self.filter.accept(actual_term)? {
+            let status = {
+                let actual = actual_term(&*self.tenum, self.has_actual_term)?
+                    .ok_or_else(LuceneError::null_pointer)?;
+                self.filter.accept(actual)?
+            };
+            // `return actualTerm`: the delegate's buffer, borrowed anew.
+            match status {
                 AcceptStatus::YesAndSeek => {
                     self.do_seek = true;
-                    return Ok(self.actual_term.clone());
+                    return actual_term(&*self.tenum, self.has_actual_term);
                 }
-                AcceptStatus::Yes => return Ok(self.actual_term.clone()),
+                AcceptStatus::Yes => return actual_term(&*self.tenum, self.has_actual_term),
                 AcceptStatus::NoAndSeek => {
                     self.do_seek = true;
                 }
@@ -958,7 +1001,7 @@ pub trait Terms: Send + Sync {
     /// Returns the smallest term in this field, or `None` if empty.
     fn min(&self) -> Result<Option<BytesRef>> {
         let mut it = self.iterator()?;
-        it.next()
+        Ok(it.next()?.cloned())
     }
 
     /// Returns the largest term in this field, or `None` if empty.
@@ -970,7 +1013,7 @@ pub trait Terms: Send + Sync {
         if size > 0 {
             let mut it = self.iterator()?;
             if it.seek_ord(size - 1).is_ok() {
-                return it.term();
+                return Ok(it.term()?.cloned());
             }
         }
         // Fallback: binary-search for the last term one byte at a time.
@@ -1865,7 +1908,7 @@ impl TermsEnum for EmptyTermsEnum {
         ))
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         Err(LuceneError::illegal_state(
             "this method should never be called",
         ))
@@ -1911,7 +1954,7 @@ impl TermsEnum for EmptyTermsEnum {
         ))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         Ok(None)
     }
 }
@@ -2288,8 +2331,8 @@ mod tests {
             Ok(())
         }
 
-        fn term(&self) -> Result<Option<BytesRef>> {
-            Ok(Some(self.terms[self.pos].clone()))
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&self.terms[self.pos]))
         }
 
         fn ord(&self) -> Result<i64> {
@@ -2318,13 +2361,13 @@ mod tests {
             ))
         }
 
-        fn next(&mut self) -> Result<Option<BytesRef>> {
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
             if self.pos + 1 >= self.terms.len() {
                 self.pos = self.terms.len();
                 return Ok(None);
             }
             self.pos += 1;
-            Ok(Some(self.terms[self.pos].clone()))
+            Ok(Some(&self.terms[self.pos]))
         }
     }
 
@@ -2482,7 +2525,7 @@ mod max_tests {
     struct SortedTerms(Vec<Vec<u8>>);
 
     struct SortedTermsEnum {
-        terms: Vec<Vec<u8>>,
+        terms: Vec<BytesRef>,
         pos: usize,
         atts: AttributeSource,
     }
@@ -2498,10 +2541,10 @@ mod max_tests {
             &mut self.atts
         }
         fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
-            match self.terms.iter().position(|t| t.as_slice() >= text.slice()) {
+            match self.terms.iter().position(|t| t.slice() >= text.slice()) {
                 Some(i) => {
                     self.pos = i;
-                    Ok(if self.terms[i].as_slice() == text.slice() {
+                    Ok(if self.terms[i].slice() == text.slice() {
                         SeekStatus::FOUND
                     } else {
                         SeekStatus::NOT_FOUND
@@ -2516,8 +2559,8 @@ mod max_tests {
         fn seek_ord(&mut self, _ord: i64) -> Result<()> {
             Err(LuceneError::unsupported_operation(String::new()))
         }
-        fn term(&self) -> Result<Option<BytesRef>> {
-            Ok(self.terms.get(self.pos).map(|t| BytesRef::new(t.clone())))
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(self.terms.get(self.pos))
         }
         fn ord(&self) -> Result<i64> {
             Err(LuceneError::unsupported_operation(String::new()))
@@ -2538,7 +2581,7 @@ mod max_tests {
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
             Err(LuceneError::unsupported_operation(String::new()))
         }
-        fn next(&mut self) -> Result<Option<BytesRef>> {
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
             self.pos = if self.pos == usize::MAX {
                 0
             } else {
@@ -2551,7 +2594,7 @@ mod max_tests {
     impl Terms for SortedTerms {
         fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
             Ok(Box::new(SortedTermsEnum {
-                terms: self.0.clone(),
+                terms: self.0.iter().map(|t| BytesRef::new(t.clone())).collect(),
                 pos: usize::MAX,
                 atts: AttributeSource::new(),
             }))

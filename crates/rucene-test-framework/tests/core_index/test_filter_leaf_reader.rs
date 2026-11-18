@@ -228,15 +228,20 @@ impl TermsEnum for TestTermsEnum {
         self.inner.seek_ord(ord)
     }
     /// Scan for terms containing the letter 'e'.
-    fn next(&mut self) -> Result<Option<BytesRef>> {
-        while let Some(text) = self.inner.next()? {
-            if text.utf8_to_string()?.contains('e') {
-                return Ok(Some(text));
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        loop {
+            let keep = match self.inner.next()? {
+                Some(text) => text.utf8_to_string()?.contains('e'),
+                None => break,
+            };
+            if keep {
+                // `return text`: the delegate's term, lent anew.
+                return self.inner.term();
             }
         }
         Ok(None)
     }
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
     fn ord(&self) -> Result<i64> {

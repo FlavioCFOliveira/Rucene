@@ -1107,8 +1107,8 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> crate::error::Result<Option<BytesRef>> {
-            Ok(Some(self.terms[self.idx as usize].clone()))
+        fn term(&self) -> crate::error::Result<Option<&BytesRef>> {
+            Ok(Some(&self.terms[self.idx as usize]))
         }
 
         fn postings(
@@ -1168,12 +1168,12 @@ mod tests {
             Ok(Box::new(BlockTermState::default()))
         }
 
-        fn next(&mut self) -> crate::error::Result<Option<BytesRef>> {
+        fn next(&mut self) -> crate::error::Result<Option<&BytesRef>> {
             self.idx += 1;
             if self.idx as usize >= self.terms.len() {
                 Ok(None)
             } else {
-                Ok(Some(self.terms[self.idx as usize].clone()))
+                Ok(Some(&self.terms[self.idx as usize]))
             }
         }
     }

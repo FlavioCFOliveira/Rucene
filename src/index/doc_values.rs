@@ -2544,8 +2544,8 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         Ok(())
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(self.scratch.get()))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(self.scratch.get_ref()))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -2587,7 +2587,7 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         }))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.current_ord += 1;
         let value_count = self.values.get_value_count()? as i64;
         if self.current_ord >= value_count {
@@ -2595,7 +2595,7 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         }
         let term = self.values.lookup_ord(self.current_ord as i32)?;
         self.scratch.copy_ref(&term);
-        Ok(Some(self.scratch.get()))
+        Ok(Some(self.scratch.get_ref()))
     }
 }
 
@@ -2684,8 +2684,8 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         Ok(())
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(self.scratch.get()))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(self.scratch.get_ref()))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -2727,7 +2727,7 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         }))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.current_ord += 1;
         let value_count = self.values.get_value_count()?;
         if self.current_ord >= value_count {
@@ -2735,7 +2735,7 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         }
         let term = self.values.lookup_ord(self.current_ord)?;
         self.scratch.copy_ref(&term);
-        Ok(Some(self.scratch.get()))
+        Ok(Some(self.scratch.get_ref()))
     }
 }
 

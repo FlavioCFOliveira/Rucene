@@ -5024,10 +5024,10 @@ impl LuceneTestCase {
                 let code = random.next_int_bound(10);
                 if code == 0 {
                     // the term
-                    add(&mut tests, BytesRef::deep_copy_of(&term));
+                    add(&mut tests, BytesRef::deep_copy_of(term));
                 } else if code == 1 {
                     // truncated subsequence of term
-                    let mut term = BytesRef::deep_copy_of(&term);
+                    let mut term = BytesRef::deep_copy_of(term);
                     if term.length > 0 {
                         // truncate it
                         term.length = random.next_int_bound(term.length as i32) as usize;

@@ -577,7 +577,7 @@ impl TermsEnum for RecordingTermsEnum {
         self.inner.seek_term_state(text, state)
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
 
@@ -605,7 +605,7 @@ impl TermsEnum for RecordingTermsEnum {
         self.inner.impacts(flags)
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.inner.next()
     }
 }

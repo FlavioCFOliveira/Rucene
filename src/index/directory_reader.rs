@@ -2105,9 +2105,13 @@ pub fn list_commits(directory: Arc<dyn Directory>) -> Result<Vec<Arc<dyn IndexCo
 ///
 /// Equivalent to `DirectoryReader.indexExists(Directory)`.
 pub fn index_exists(directory: &dyn Directory) -> Result<bool> {
-    let prefix = format!("{}_", SEGMENTS);
+    // PERF: Java's `IndexFileNames.SEGMENTS + "_"` is a compile-time constant;
+    // the prefix is matched in place instead of formatted per call.
     for file in directory.list_all()? {
-        if file.starts_with(&prefix) {
+        if file
+            .strip_prefix(SEGMENTS)
+            .is_some_and(|rest| rest.starts_with('_'))
+        {
             return Ok(true);
         }
     }

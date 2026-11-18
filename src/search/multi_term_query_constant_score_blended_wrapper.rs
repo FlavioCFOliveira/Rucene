@@ -268,7 +268,8 @@ impl RewriteInner for BlendedRewrite {
                             state.query.get_field(),
                             terms_enum
                                 .term()?
-                                .ok_or_else(crate::error::LuceneError::null_pointer)?,
+                                .ok_or_else(crate::error::LuceneError::null_pointer)?
+                                .clone(),
                         ),
                         Arc::new(term_states),
                     ))));

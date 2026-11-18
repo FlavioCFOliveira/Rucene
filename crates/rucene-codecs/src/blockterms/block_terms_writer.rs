@@ -189,7 +189,7 @@ impl FieldsConsumer for BlockTermsWriter {
                 )
             })?;
             let mut terms_writer = self.add_field(&field_info)?;
-            while let Some(term) = terms_enum.next()? {
+            while let Some(term) = terms_enum.next()?.cloned() {
                 terms_writer.write(self, &term, terms_enum.as_mut(), norms)?;
             }
             terms_writer.finish(self)?;

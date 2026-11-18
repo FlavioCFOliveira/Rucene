@@ -1339,7 +1339,7 @@ fn misuse(rows: &mut Rows, c: &str, reader: &Arc<dyn DirectoryReader>) {
     rows.row(c, "misuse", "dv_thread", "not expressible".to_string());
     rows.rec(c, "misuse", "mismatched_bogus", || {
         let infos = r#in.get_field_infos();
-        let fi = infos.field_info("s_str").unwrap();
+        let fi = infos.shared_field_info("s_str").unwrap();
         let empty = FieldInfos::new(Vec::new())?;
         let mut yes = YesVisitor;
         MismatchedVisitor::new(&mut yes, &empty).string_field(fi, "x".to_string())?;

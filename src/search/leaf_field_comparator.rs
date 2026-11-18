@@ -4,7 +4,6 @@
 #![deny(unsafe_code)]
 
 use crate::error::Result;
-use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::scorable::Scorable;
 
 /// Expert: comparator that gets instantiated on each leaf from a top-level
@@ -141,7 +140,7 @@ pub trait LeafFieldComparator {
     /// # Errors
     ///
     /// Propagates any I/O error raised while building the iterator.
-    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+    fn competitive_iterator(&mut self) -> Result<Option<crate::search::CompetitiveIterator>> {
         Ok(None)
     }
 
@@ -180,7 +179,7 @@ impl<T: LeafFieldComparator + ?Sized> LeafFieldComparator for &mut T {
         (**self).set_scorer(scorer)
     }
 
-    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+    fn competitive_iterator(&mut self) -> Result<Option<crate::search::CompetitiveIterator>> {
         (**self).competitive_iterator()
     }
 

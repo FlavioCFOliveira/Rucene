@@ -1255,12 +1255,56 @@ fn string_token_stream(
     ))
 }
 
+/// The name a [`Field`] holds: Java's `Field.name`, a `String` reference.
+///
+/// A field built from a `&str` owns a copy of it. A field the stored-fields
+/// visitor reads back shares the `FieldInfo` it was read under, as Java's
+/// `new StoredField(fieldInfo.name, ...)` keeps a reference to that
+/// `FieldInfo`'s own name (`DocumentStoredFieldVisitor.java:62-95`).
+#[derive(Clone)]
+enum FieldName {
+    Owned(String),
+    // PERF: one reference-count increment per value read back, instead of a
+    // copy of the field's name.
+    Shared(Arc<FieldInfo>),
+}
+
+impl FieldName {
+    fn as_str(&self) -> &str {
+        match self {
+            FieldName::Owned(name) => name,
+            FieldName::Shared(field_info) => &field_info.name,
+        }
+    }
+}
+
+impl Debug for FieldName {
+    /// The name itself, as a `String` field formats.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl std::ops::Deref for FieldName {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for FieldName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A field in a document.
 ///
 /// Equivalent to `org.apache.lucene.document.Field`.
 #[derive(Debug)]
 pub struct Field {
-    name: String,
+    name: FieldName,
     /// The type, shared as Java shares the `FieldType` object a field holds
     /// a reference to (`Field.java:63`).
     field_type: Arc<FieldType>,
@@ -1287,7 +1331,7 @@ impl Field {
         let field_type: Arc<FieldType> = field_type.into();
         Self::validate_name_and_type(name, &field_type)?;
         Ok(Self {
-            name: name.to_string(),
+            name: FieldName::Owned(name.to_string()),
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Null),
         })
@@ -1295,8 +1339,23 @@ impl Field {
 
     /// Creates a field with a string value.
     pub fn new(name: &str, value: String, field_type: impl Into<Arc<FieldType>>) -> Result<Self> {
-        let field_type: Arc<FieldType> = field_type.into();
-        Self::validate_name_and_type(name, &field_type)?;
+        Self::new_named(FieldName::Owned(name.to_string()), value, field_type.into())
+    }
+
+    /// [`new`](Self::new) under the name of `field_info`, shared rather than
+    /// copied: Java's `new StoredField(fieldInfo.name, value, ft)`
+    /// (`DocumentStoredFieldVisitor.java:67-76`).
+    pub(crate) fn new_shared_name(
+        field_info: &Arc<FieldInfo>,
+        value: String,
+        field_type: Arc<FieldType>,
+    ) -> Result<Self> {
+        Self::new_named(FieldName::Shared(Arc::clone(field_info)), value, field_type)
+    }
+
+    /// The body of `Field(String, CharSequence, IndexableFieldType)` (`Field.java:240-257`).
+    fn new_named(name: FieldName, value: String, field_type: Arc<FieldType>) -> Result<Self> {
+        Self::validate_name_and_type(&name, &field_type)?;
         if !field_type.stored() && field_type.index_options() == IndexOptions::NONE {
             return Err(LuceneError::illegal_argument(
                 "it doesn't make sense to have a field that is neither indexed nor stored"
@@ -1304,7 +1363,7 @@ impl Field {
             ));
         }
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::String(value)),
         })
@@ -1331,7 +1390,7 @@ impl Field {
             ));
         }
         Ok(Self {
-            name: name.to_string(),
+            name: FieldName::Owned(name.to_string()),
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Reader(Arc::new(AtomicRefCell::new(
                 reader,
@@ -1358,7 +1417,7 @@ impl Field {
             ));
         }
         Ok(Self {
-            name: name.to_string(),
+            name: FieldName::Owned(name.to_string()),
             field_type,
             fields_data: AtomicRefCell::new(FieldData::TokenStream(token_stream)),
         })
@@ -1370,8 +1429,16 @@ impl Field {
         bytes: BytesRef,
         field_type: impl Into<Arc<FieldType>>,
     ) -> Result<Self> {
-        let field_type: Arc<FieldType> = field_type.into();
-        Self::validate_name_and_type(name, &field_type)?;
+        Self::new_with_bytes_named(FieldName::Owned(name.to_string()), bytes, field_type.into())
+    }
+
+    /// The body of `Field(String, BytesRef, IndexableFieldType)` (`Field.java:199-226`).
+    fn new_with_bytes_named(
+        name: FieldName,
+        bytes: BytesRef,
+        field_type: Arc<FieldType>,
+    ) -> Result<Self> {
+        Self::validate_name_and_type(&name, &field_type)?;
         if field_type
             .index_options()
             .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
@@ -1396,7 +1463,7 @@ impl Field {
             ));
         }
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Bytes(bytes)),
         })
@@ -1408,10 +1475,18 @@ impl Field {
         value: NumericValue,
         field_type: impl Into<Arc<FieldType>>,
     ) -> Result<Self> {
-        let field_type: Arc<FieldType> = field_type.into();
-        Self::validate_name_and_type(name, &field_type)?;
+        Self::new_with_number_named(FieldName::Owned(name.to_string()), value, field_type.into())
+    }
+
+    /// The body of the numeric `Field` constructors.
+    fn new_with_number_named(
+        name: FieldName,
+        value: NumericValue,
+        field_type: Arc<FieldType>,
+    ) -> Result<Self> {
+        Self::validate_name_and_type(&name, &field_type)?;
         Ok(Self {
-            name: name.to_string(),
+            name,
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Number(value)),
         })
@@ -1427,7 +1502,7 @@ impl Field {
         let field_type: Arc<FieldType> = field_type.into();
         Self::validate_name_and_type(name, &field_type)?;
         Ok(Self {
-            name: name.to_string(),
+            name: FieldName::Owned(name.to_string()),
             field_type,
             fields_data: AtomicRefCell::new(FieldData::StoredInput {
                 input: AtomicRefCell::new(input),
@@ -2659,6 +2734,34 @@ impl StoredField {
         )?))
     }
 
+    /// [`new_number`](Self::new_number) under the name of `field_info`,
+    /// shared rather than copied: Java's `new StoredField(fieldInfo.name,
+    /// value)` (`DocumentStoredFieldVisitor.java:78-95`).
+    pub(crate) fn new_number_shared_name(
+        field_info: &Arc<FieldInfo>,
+        value: NumericValue,
+    ) -> Result<Self> {
+        Ok(Self(Field::new_with_number_named(
+            FieldName::Shared(Arc::clone(field_info)),
+            value,
+            Arc::clone(stored_field_type()),
+        )?))
+    }
+
+    /// [`new_bytes`](Self::new_bytes) under the name of `field_info`, shared
+    /// rather than copied: Java's `new StoredField(fieldInfo.name, value)`
+    /// (`DocumentStoredFieldVisitor.java:62-64`).
+    pub(crate) fn new_bytes_shared_name(
+        field_info: &Arc<FieldInfo>,
+        value: BytesRef,
+    ) -> Result<Self> {
+        Ok(Self(Field::new_with_bytes_named(
+            FieldName::Shared(Arc::clone(field_info)),
+            value,
+            Arc::clone(stored_field_type()),
+        )?))
+    }
+
     /// Creates a stored-only field with a stored-data input.
     ///
     /// Equivalent to `StoredField(String, StoredFieldDataInput)`: `input` is
@@ -2848,15 +2951,15 @@ impl DocumentStoredFieldVisitor {
 }
 
 impl StoredFieldVisitor for DocumentStoredFieldVisitor {
-    fn binary_field(&mut self, field_info: &FieldInfo, value: &[u8]) -> Result<()> {
-        self.doc.add(StoredField::new_bytes(
-            &field_info.name,
+    fn binary_field(&mut self, field_info: &Arc<FieldInfo>, value: &[u8]) -> Result<()> {
+        self.doc.add(StoredField::new_bytes_shared_name(
+            field_info,
             BytesRef::new(value.to_vec()),
         )?);
         Ok(())
     }
 
-    fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
+    fn string_field(&mut self, field_info: &Arc<FieldInfo>, value: String) -> Result<()> {
         // Lucene rebuilds a `TextField.TYPE_STORED` and copies back the three
         // properties the segment's FieldInfo does carry, so that a document
         // round-tripped through the index keeps them.
@@ -2866,42 +2969,41 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
         field_type.set_index_options(field_info.index_options)?;
         // `new StoredField(name, value, ft)`, which is `Field(name, value,
         // ft)` (`StoredField.java:143-145`), as `StoredField::new_with_field_type`
-        // is, given the type already in the `Arc` the field holds.
-        self.doc.add(StoredField(Field::new(
-            &field_info.name,
-            value,
-            field_type,
+        // is, given the type already in the `Arc` the field holds; the name is
+        // `fieldInfo.name` itself.
+        self.doc.add(StoredField(Field::new_shared_name(
+            field_info, value, field_type,
         )?));
         Ok(())
     }
 
-    fn int_field(&mut self, field_info: &FieldInfo, value: i32) -> Result<()> {
-        self.doc.add(StoredField::new_number(
-            &field_info.name,
+    fn int_field(&mut self, field_info: &Arc<FieldInfo>, value: i32) -> Result<()> {
+        self.doc.add(StoredField::new_number_shared_name(
+            field_info,
             NumericValue::Int(value),
         )?);
         Ok(())
     }
 
-    fn long_field(&mut self, field_info: &FieldInfo, value: i64) -> Result<()> {
-        self.doc.add(StoredField::new_number(
-            &field_info.name,
+    fn long_field(&mut self, field_info: &Arc<FieldInfo>, value: i64) -> Result<()> {
+        self.doc.add(StoredField::new_number_shared_name(
+            field_info,
             NumericValue::Long(value),
         )?);
         Ok(())
     }
 
-    fn float_field(&mut self, field_info: &FieldInfo, value: f32) -> Result<()> {
-        self.doc.add(StoredField::new_number(
-            &field_info.name,
+    fn float_field(&mut self, field_info: &Arc<FieldInfo>, value: f32) -> Result<()> {
+        self.doc.add(StoredField::new_number_shared_name(
+            field_info,
             NumericValue::Float(value),
         )?);
         Ok(())
     }
 
-    fn double_field(&mut self, field_info: &FieldInfo, value: f64) -> Result<()> {
-        self.doc.add(StoredField::new_number(
-            &field_info.name,
+    fn double_field(&mut self, field_info: &Arc<FieldInfo>, value: f64) -> Result<()> {
+        self.doc.add(StoredField::new_number_shared_name(
+            field_info,
             NumericValue::Double(value),
         )?);
         Ok(())
@@ -9339,8 +9441,48 @@ mod tests {
 
     // -- DocumentStoredFieldVisitor -----------------------------------------
 
-    fn info(name: &str, number: i32) -> FieldInfo {
-        FieldInfo::new(name, number)
+    fn info(name: &str, number: i32) -> Arc<FieldInfo> {
+        Arc::new(FieldInfo::new(name, number))
+    }
+
+    /// The visitor's fields hold their `FieldInfo`'s own name, as Java's
+    /// `new StoredField(fieldInfo.name, ...)` keeps that `String`
+    /// (`DocumentStoredFieldVisitor.java:62-95`): each value adds one holder
+    /// of the `FieldInfo` instead of a copy of its name.
+    #[test]
+    fn the_document_visitor_shares_the_field_info_name() {
+        let s = info("s", 0);
+        let n = info("n", 1);
+        let b = info("b", 2);
+        let mut visitor = DocumentStoredFieldVisitor::new();
+        visitor.string_field(&s, "x".to_string()).unwrap();
+        visitor.string_field(&s, "y".to_string()).unwrap();
+        visitor.long_field(&n, 7).unwrap();
+        visitor.double_field(&n, 0.5).unwrap();
+        visitor.binary_field(&b, &[1]).unwrap();
+        assert_eq!(Arc::strong_count(&s), 3);
+        assert_eq!(Arc::strong_count(&n), 3);
+        assert_eq!(Arc::strong_count(&b), 2);
+        let document = visitor.into_document();
+        let names: Vec<&str> = document.get_fields().iter().map(|f| f.name()).collect();
+        assert_eq!(names, ["s", "s", "n", "n", "b"]);
+        drop(document);
+        assert_eq!(Arc::strong_count(&s), 1);
+    }
+
+    /// A field with a shared name formats exactly as one with its own copy.
+    #[test]
+    fn a_shared_field_name_formats_as_an_owned_one() {
+        let owned = Field::new("title", "x".to_string(), Arc::clone(stored_field_type())).unwrap();
+        let shared = Field::new_shared_name(
+            &info("title", 0),
+            "x".to_string(),
+            Arc::clone(stored_field_type()),
+        )
+        .unwrap();
+        assert_eq!(format!("{shared:?}"), format!("{owned:?}"));
+        assert_eq!(shared.to_string(), owned.to_string());
+        assert_eq!(shared.name(), "title");
     }
 
     /// `DocumentStoredFieldVisitor` adds a `StoredField` for every value
@@ -9439,7 +9581,7 @@ mod tests {
 
         let mut visitor = DocumentStoredFieldVisitor::new();
         visitor
-            .string_field(&field_info, "text".to_string())
+            .string_field(&Arc::new(field_info), "text".to_string())
             .unwrap();
         let document = visitor.into_document();
         let field_type = document.get_fields()[0].field_type();

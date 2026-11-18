@@ -90,7 +90,7 @@ fn terms_iterator(r: &Arc<dyn IndexReader>, field: &str) -> Result<Box<dyn Terms
 
 /// `te.term()`, `None` for Java's `null`.
 fn term(te: &dyn TermsEnum) -> Result<Option<BytesRef>> {
-    te.term()
+    Ok(te.term()?.cloned())
 }
 
 /// Port of `TestTermsEnum.test`.
@@ -112,7 +112,7 @@ fn test_() -> Result<()> {
     let mut terms: Vec<BytesRef> = Vec::new();
     let mut terms_enum = terms_iterator(&r, "body")?;
     while let Some(t) = terms_enum.next()? {
-        terms.push(BytesRef::deep_copy_of(&t));
+        terms.push(BytesRef::deep_copy_of(t));
     }
     if verbose() {
         println!("TEST: {} terms", terms.len());
@@ -458,7 +458,7 @@ fn test_intersect_random() -> Result<()> {
             let mut postings_enum: Option<Box<dyn PostingsEnum>> = None;
             while (loc as usize) < terms_array.len() {
                 let expected = &terms_array[loc as usize];
-                let actual = te.next()?;
+                let actual = te.next()?.cloned();
                 if verbose() {
                     println!(
                         "TEST:   next() expected={} actual={}",
@@ -910,7 +910,7 @@ fn test_random_seeks(r: &Arc<dyn IndexReader>, valid_term_strings: &[String]) ->
             if verbose() {
                 println!("\nTEST: next loc={loc} of {}", valid_terms.len());
             }
-            let t2 = te.next()?;
+            let t2 = te.next()?.cloned();
             loc += 1;
             if loc as usize == valid_terms.len() {
                 assert_null(&t2);

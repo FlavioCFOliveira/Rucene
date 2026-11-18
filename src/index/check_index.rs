@@ -3300,7 +3300,7 @@ fn check_terms_intersect(
         if run_automaton.run_range(&t.bytes, t.offset, t.length) {
             let filtered_term = filtered_terms.next()?;
             let same = match &filtered_term {
-                Some(f) => f.bytes_equals(&t),
+                Some(f) => f.bytes_equals(t),
                 None => false,
             };
             if !same {
@@ -3494,7 +3494,9 @@ fn check_fields(
         let mut sum_doc_freq = 0i64;
         let mut visited_docs = FixedBitSet::new(max_doc.max(0) as usize);
 
-        while let Some(term) = terms_enum.next()? {
+        // The term is copied: it is still read after `doc_freq` and `postings`
+        // move the enum's borrow on (Java keeps the enum's own `BytesRef`).
+        while let Some(term) = terms_enum.next()?.cloned() {
             debug_assert!(term.is_valid().is_ok());
             term.is_valid()?;
 
@@ -4246,7 +4248,7 @@ fn check_fields(
                             )));
                         }
                         seek_terms[i as usize] = BytesRef::deep_copy_of(
-                            &terms_enum.term()?.ok_or_else(LuceneError::null_pointer)?,
+                            terms_enum.term()?.ok_or_else(LuceneError::null_pointer)?,
                         );
                     }
 
@@ -6241,7 +6243,9 @@ fn cross_check_vector_field_against_postings(
 
     let mut seek_exact_counter = 0i32;
 
-    while let Some(term) = terms_enum.next()? {
+    // The term is copied: it is still read after `postings` moves the enum's
+    // borrow on (Java keeps the enum's own `BytesRef`).
+    while let Some(term) = terms_enum.next()?.cloned() {
         // This is the term vector's own postings.
         let postings = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
         debug_assert!(postings.is_some());

@@ -8,7 +8,6 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -29,6 +28,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::index_file_names::segment_file_name;
 use crate::index::IndexOptions;
 use crate::index::SegmentInfo;
+use crate::internal::hppc::IntObjectHashMap;
 use crate::store::{
     ByteArrayDataOutput, ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput,
     IndexOutput, SharedIndexInput,
@@ -2171,6 +2171,8 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
     /// `Terms`, or whose terms all turn out to have no document, adds nothing.
     fn write(&mut self, fields: &dyn Fields, norms: Option<&dyn NormsProducer>) -> Result<()> {
         let mut last_field: Option<String> = None;
+        // The current term, copied out of the terms enum (see the term loop).
+        let mut term = BytesRef::default();
         for field in fields.iterator() {
             debug_assert!(
                 last_field
@@ -2209,7 +2211,14 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
                 self.index_out.as_mut(),
                 &mut self.scratch_bytes,
             );
-            while let Some(term) = terms_enum.next()? {
+            // `termsWriter.write(term, termsEnum, norms)` for each `term =
+            // termsEnum.next()` (`Lucene103BlockTreeTermsWriter.java:383-391`).
+            // PERF: `next()` lends the enum's own term buffer, which cannot
+            // stay borrowed while `write` hands the enum to the postings
+            // writer, so the term is copied into one buffer reused for every
+            // term of the field (no allocation per term).
+            while let Some(next) = terms_enum.next()? {
+                term.copy_from(next);
                 terms_writer.write(&term, &mut *terms_enum, postings_writer, norms)?;
             }
             if let Some(field_meta) = terms_writer.finish(postings_writer)? {
@@ -2283,10 +2292,24 @@ pub struct Lucene103BlockTreeTermsReader {
     /// The `.tim` and `.tip` inputs and the postings reader, which Java holds
     /// as `termsIn`, `indexIn` and `postingsReader`.
     shared: Arc<BlockTreeShared>,
-    /// One reader per field that has terms, keyed by field name.
-    fields: BTreeMap<String, FieldReader>,
-    /// The names of those fields, sorted, as [`Fields::iterator`] hands them out.
-    field_list: Vec<String>,
+    /// The segment's field infos, which resolve a field name to the number
+    /// [`Self::fields`] is keyed by.
+    ///
+    /// Equivalent to `Lucene103BlockTreeTermsReader.fieldInfos`
+    /// (`Lucene103BlockTreeTermsReader.java:98`).
+    field_infos: FieldInfos,
+    /// One reader per field that has terms, keyed by field number.
+    ///
+    /// Equivalent to `Lucene103BlockTreeTermsReader.fieldMap`
+    /// (`Lucene103BlockTreeTermsReader.java:99`).
+    // PERF: keyed by number, as Java's `IntObjectHashMap` is, instead of by a
+    // copy of each field's name.
+    fields: IntObjectHashMap<FieldReader>,
+    /// The fields of [`Self::fields`] in name order, as [`Fields::iterator`]
+    /// hands their names out: Java's `fieldList` of `fieldInfo.name`
+    /// references (`Lucene103BlockTreeTermsReader.java:100,260-268`), here
+    /// handles onto the same `FieldInfo` objects.
+    field_list: Vec<Arc<FieldInfo>>,
     segment: String,
     segment_suffix: String,
     version: i32,
@@ -2298,7 +2321,7 @@ impl std::fmt::Debug for Lucene103BlockTreeTermsReader {
             .field("segment", &self.segment)
             .field("segment_suffix", &self.segment_suffix)
             .field("version", &self.version)
-            .field("fields", &self.fields.len())
+            .field("fields", &self.fields.size())
             .finish_non_exhaustive()
     }
 }
@@ -2442,7 +2465,9 @@ impl Lucene103BlockTreeTermsReader {
             }
 
             let max_doc = state.segment_info.max_doc()?;
-            let mut fields = BTreeMap::new();
+            // `fieldMap = new IntObjectHashMap<>(numFields)`
+            // (`Lucene103BlockTreeTermsReader.java:159`).
+            let mut fields = IntObjectHashMap::with_expected_elements(num_fields);
             for _ in 0..num_fields {
                 let field_number = meta_in.read_v_int()?;
                 let num_terms = meta_in.read_v_long()?;
@@ -2457,6 +2482,7 @@ impl Lucene103BlockTreeTermsReader {
                 let field_info = state
                     .field_infos
                     .field_info_checked_shared(field_number)?
+                    .cloned()
                     .ok_or_else(|| {
                         LuceneError::corrupt_index(
                             format!("invalid field number: {field_number}"),
@@ -2482,11 +2508,15 @@ impl Lucene103BlockTreeTermsReader {
                 // and bytes in the stream, which threw off every field decoded after
                 // it and made the `.tmd` footer land in the wrong place.
                 let max_term_read = read_bytes_ref(meta_in.as_mut(), &meta_desc)?;
+                // `maxTerm = minTerm` for a single term, "to save heap"
+                // (`Lucene103BlockTreeTermsReader.java:181-185`): `None` is
+                // that alias, and the field reader answers its minimum term.
+                // PERF: no copy of the minimum term.
                 let max_term = if num_terms == 1 {
                     debug_assert_eq!(max_term_read, min_term);
-                    min_term.clone()
+                    None
                 } else {
-                    max_term_read
+                    Some(max_term_read)
                 };
 
                 if doc_count < 0 || doc_count > max_doc {
@@ -2510,7 +2540,7 @@ impl Lucene103BlockTreeTermsReader {
                     ));
                 }
 
-                let name = field_info.name.clone();
+                let number = field_info.number;
                 let reader = FieldReader::new(
                     Arc::clone(&shared),
                     field_info,
@@ -2522,9 +2552,11 @@ impl Lucene103BlockTreeTermsReader {
                     max_term,
                     meta_in.as_mut(),
                 )?;
-                if fields.insert(name.clone(), reader).is_some() {
+                // `fieldMap.put(fieldInfo.number, ...)`, then `previous != null`
+                // (`Lucene103BlockTreeTermsReader.java:201-217`).
+                if let Some(previous) = fields.put(number, reader) {
                     return Err(LuceneError::corrupt_index(
-                        format!("duplicate field: {name}"),
+                        format!("duplicate field: {}", previous.field_info().name),
                         &meta_desc,
                     ));
                 }
@@ -2555,6 +2587,7 @@ impl Lucene103BlockTreeTermsReader {
 
         Ok(Self {
             shared,
+            field_infos: state.field_infos.clone(),
             fields,
             field_list,
             segment,
@@ -2582,29 +2615,33 @@ impl Lucene103BlockTreeTermsReader {
     }
 }
 
-/// Returns the names of every field the terms dictionary holds, sorted.
+/// Returns every field the terms dictionary holds, sorted by name.
 ///
-/// Java keys its field map by field number and resolves each number to a name
-/// through `FieldInfos`; this port keys the map by name, and each
-/// [`FieldReader`] carries the [`FieldInfo`] its number came from, so the same
-/// resolution goes through the same `FieldInfos`.
+/// Java resolves each key of its field map to `fieldInfos.fieldInfo(number).name`
+/// and sorts the names with `String.compareTo`; this port resolves each number
+/// to the same `FieldInfo` object (the one its [`FieldReader`] holds when the
+/// `FieldInfos` lacks it) and sorts in the same UTF-16 order.
 ///
 /// Equivalent to
-/// `org.apache.lucene.codecs.lucene103.blocktree.Lucene103BlockTreeTermsReader#sortFieldNames`.
+/// `org.apache.lucene.codecs.lucene103.blocktree.Lucene103BlockTreeTermsReader#sortFieldNames`
+/// (`Lucene103BlockTreeTermsReader.java:260-268`).
 fn sort_field_names(
-    field_map: &BTreeMap<String, FieldReader>,
+    field_map: &IntObjectHashMap<FieldReader>,
     field_infos: &FieldInfos,
-) -> Vec<String> {
-    let mut field_names: Vec<String> = Vec::with_capacity(field_map.len());
-    for reader in field_map.values() {
+) -> Vec<Arc<FieldInfo>> {
+    // PERF: the `FieldInfo` handles, as Java collects references to the names,
+    // instead of a copy of each name.
+    let mut field_names: Vec<Arc<FieldInfo>> = Vec::with_capacity(field_map.size() as usize);
+    for cursor in field_map.values() {
+        let reader = cursor.value;
         let number = reader.field_info().number;
-        let name = match field_infos.field_info_by_number(number) {
-            Some(field_info) => field_info.name.clone(),
-            None => reader.field_info().name.clone(),
-        };
-        field_names.push(name);
+        let field_info = field_infos
+            .shared_field_info_by_number(number)
+            .unwrap_or_else(|| reader.field_info_shared());
+        field_names.push(Arc::clone(field_info));
     }
-    field_names.sort();
+    // `fieldNames.sort(null)`: `String.compareTo`, UTF-16 order.
+    field_names.sort_by(|a, b| crate::util::java_collections::java_compare_to(&a.name, &b.name));
     field_names
 }
 
@@ -2626,6 +2663,13 @@ fn read_bytes_ref(input: &mut dyn DataInput, resource: &str) -> Result<BytesRef>
 }
 
 impl Lucene103BlockTreeTermsReader {
+    /// The reader of `field`: `fieldInfos.fieldInfo(field)`, then
+    /// `fieldMap.get(fieldInfo.number)` (`Lucene103BlockTreeTermsReader.java:292-296`).
+    fn field_reader(&self, field: &str) -> Option<&FieldReader> {
+        let field_info = self.field_infos.field_info(field)?;
+        self.fields.get(field_info.number)
+    }
+
     /// Whether `close()` cleared `fieldMap`.
     fn fields_cleared(&self) -> bool {
         self.shared
@@ -2639,23 +2683,27 @@ impl Fields for Lucene103BlockTreeTermsReader {
         if self.fields_cleared() {
             return 0;
         }
-        self.fields.len() as i32
+        self.fields.size()
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
         if self.fields_cleared() {
             return Ok(None);
         }
-        // `fieldMap.get(field)` (`Lucene103BlockTreeTermsReader.java:292-296`):
+        // `fieldMap.get(fieldInfo.number)` (`Lucene103BlockTreeTermsReader.java:292-296`):
         // the field's shared reader, not a copy.
-        Ok(self.fields.get(field).map(FieldReader::shared_terms))
+        Ok(self.field_reader(field).map(FieldReader::shared_terms))
     }
 
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
         if self.fields_cleared() {
             return Box::new(std::iter::empty());
         }
-        Box::new(self.field_list.iter().cloned())
+        Box::new(
+            self.field_list
+                .iter()
+                .map(|field_info| field_info.name.clone()),
+        )
     }
 }
 
@@ -2692,6 +2740,7 @@ impl FieldsProducer for Lucene103BlockTreeTermsReader {
     fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
         Ok(Box::new(Self {
             shared: Arc::clone(&self.shared),
+            field_infos: self.field_infos.clone(),
             fields: self.fields.clone(),
             field_list: self.field_list.clone(),
             segment: self.segment.clone(),
@@ -3336,19 +3385,24 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> Result<Option<BytesRef>> {
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            /// The empty term lent before the first `next()`.
+            static EMPTY: BytesRef = BytesRef {
+                bytes: Vec::new(),
+                offset: 0,
+                length: 0,
+            };
             if self.pos == 0 {
-                Ok(Some(BytesRef::default()))
+                Ok(Some(&EMPTY))
             } else {
-                Ok(Some(self.terms[self.pos - 1].clone()))
+                Ok(Some(&self.terms[self.pos - 1]))
             }
         }
 
-        fn next(&mut self) -> Result<Option<BytesRef>> {
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
             if self.pos < self.terms.len() {
-                let term = self.terms[self.pos].clone();
                 self.pos += 1;
-                Ok(Some(term))
+                Ok(Some(&self.terms[self.pos - 1]))
             } else {
                 Ok(None)
             }
@@ -3608,8 +3662,7 @@ mod tests {
         let reader = Lucene103BlockTreeTermsReader::new(Box::new(StubPostingsReader), &read_state)
             .expect("reader should open");
         let field = reader
-            .fields
-            .get("body")
+            .field_reader("body")
             .expect("the field was written")
             .clone();
 
@@ -3622,12 +3675,91 @@ mod tests {
         );
         assert_eq!(
             terms.next().expect("next should succeed"),
-            Some(BytesRef::new(b"a".to_vec()))
+            Some(&BytesRef::new(b"a".to_vec()))
         );
         assert!(
             terms.index_input_initialized(),
             "loading the first block clones the terms input"
         );
+    }
+
+    /// `next()` and `term()` lend the cursor's own term buffer, as Java's return
+    /// `term.get()` (`SegmentTermsEnum.java:962, 968-970`): every call hands
+    /// out the same `BytesRef`, rewritten in place, never a copy; and the lent
+    /// term holds exactly the term (`offset` 0, `bytes` as long as `length`).
+    #[test]
+    fn segment_terms_enum_lends_its_own_term_buffer() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
+        let segment_info = test_segment_info("_0", 10);
+        let field_infos = FieldInfos::new(vec![indexed_body_field()]).expect("valid field infos");
+        {
+            let state = test_write_state(&dir, &segment_info, &field_infos);
+            let fields = TestFields {
+                field: "body".to_string(),
+                terms: vec![
+                    BytesRef::new(b"a".to_vec()),
+                    BytesRef::new(b"ab".to_vec()),
+                    BytesRef::new(b"b".to_vec()),
+                ],
+            };
+            let mut writer = Lucene103BlockTreeTermsWriter::new(
+                &state,
+                Box::new(CountingPostingsWriter),
+                DEFAULT_MIN_BLOCK_SIZE,
+                DEFAULT_MAX_BLOCK_SIZE,
+            )
+            .expect("writer should be created");
+            writer.write(&fields, None).expect("write should succeed");
+            writer.close().expect("close should succeed");
+        }
+        let read_state = SegmentReadState::new(
+            dir_ref,
+            &segment_info,
+            &field_infos,
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        );
+        let reader = Lucene103BlockTreeTermsReader::new(Box::new(StubPostingsReader), &read_state)
+            .expect("reader should open");
+        let field = reader
+            .field_reader("body")
+            .expect("the field was written")
+            .clone();
+        let mut terms =
+            crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(Arc::new(field))
+                .expect("cursor should open");
+
+        let exact = |term: &BytesRef| term.offset == 0 && term.bytes.len() == term.length;
+        let first = terms.next().expect("next").expect("a term");
+        assert_eq!(first.slice(), b"a");
+        assert!(exact(first));
+        let buffer: *const BytesRef = first;
+        let current = terms.term().expect("term").expect("positioned");
+        assert!(
+            std::ptr::eq(current, buffer),
+            "term() lends the buffer next() lent"
+        );
+        let second = terms.next().expect("next").expect("a term");
+        assert_eq!(second.slice(), b"ab");
+        assert!(exact(second));
+        assert!(
+            std::ptr::eq(second, buffer),
+            "next() rewrites the same buffer"
+        );
+        assert_eq!(
+            terms
+                .seek_ceil(&BytesRef::new(b"b".to_vec()))
+                .expect("seek"),
+            SeekStatus::FOUND
+        );
+        let sought = terms.term().expect("term").expect("positioned");
+        assert_eq!(sought.slice(), b"b");
+        assert!(exact(sought));
+        assert!(
+            std::ptr::eq(sought, buffer),
+            "a seek rewrites the same buffer"
+        );
+        assert_eq!(terms.next().expect("next"), None);
     }
 
     /// `terms(field)` returns the field map's one `FieldReader`
@@ -3690,8 +3822,119 @@ mod tests {
         assert_eq!(first.size().unwrap(), 3);
         assert_eq!(
             terms_enum.next().expect("next should succeed"),
-            Some(BytesRef::new(b"a".to_vec()))
+            Some(&BytesRef::new(b"a".to_vec()))
         );
+    }
+
+    /// Several fields, each with its own terms, in the order given.
+    struct MultiTestFields(Vec<(String, Vec<BytesRef>)>);
+
+    impl Fields for MultiTestFields {
+        fn size(&self) -> i32 {
+            self.0.len() as i32
+        }
+
+        fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+            Ok(self
+                .0
+                .iter()
+                .find(|(name, _)| name == field)
+                .map(|(_, terms)| -> Box<dyn Terms> {
+                    Box::new(TestTerms {
+                        terms: terms.clone(),
+                    })
+                }))
+        }
+
+        fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            Box::new(self.0.iter().map(|(name, _)| name.clone()))
+        }
+    }
+
+    /// Writes `fields` (all indexed with frequencies, numbered in order) and
+    /// opens the terms reader over them.
+    fn open_fields(fields: Vec<(&str, Vec<&str>)>) -> Lucene103BlockTreeTermsReader {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let segment_info = test_segment_info("_0", 10);
+        let infos = fields
+            .iter()
+            .enumerate()
+            .map(|(number, (name, _))| {
+                let mut field = FieldInfo::new(*name, number as i32);
+                field.index_options = IndexOptions::DOCS_AND_FREQS;
+                field
+            })
+            .collect();
+        let field_infos = FieldInfos::new(infos).expect("valid field infos");
+        {
+            let state = test_write_state(&dir, &segment_info, &field_infos);
+            let fields = MultiTestFields(
+                fields
+                    .into_iter()
+                    .map(|(name, terms)| {
+                        (
+                            name.to_string(),
+                            terms
+                                .into_iter()
+                                .map(|t| BytesRef::new(t.as_bytes().to_vec()))
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            );
+            let mut writer = Lucene103BlockTreeTermsWriter::new(
+                &state,
+                Box::new(CountingPostingsWriter),
+                DEFAULT_MIN_BLOCK_SIZE,
+                DEFAULT_MAX_BLOCK_SIZE,
+            )
+            .expect("writer should be created");
+            writer.write(&fields, None).expect("write should succeed");
+            writer.close().expect("close should succeed");
+        }
+        let read_state = SegmentReadState::new(
+            &*dir,
+            &segment_info,
+            &field_infos,
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        );
+        Lucene103BlockTreeTermsReader::new(Box::new(StubPostingsReader), &read_state)
+            .expect("reader should open")
+    }
+
+    /// `sortFieldNames` sorts with `String.compareTo`, UTF-16 order
+    /// (`Lucene103BlockTreeTermsReader.java:260-268`): U+10000 (UTF-16
+    /// `D800 DC00`, UTF-8 `F0 ..`) sorts before U+FFFD (`FFFD`, UTF-8 `EF ..`),
+    /// the reverse of their byte order.
+    #[test]
+    fn fields_iterate_in_java_string_order() {
+        // Written in byte order, which this writer's debug assertion checks.
+        let reader = open_fields(vec![
+            ("a", vec!["t"]),
+            ("\u{FFFD}", vec!["t"]),
+            ("\u{10000}", vec!["t"]),
+        ]);
+        let names: Vec<String> = reader.iterator().collect();
+        assert_eq!(names, ["a", "\u{10000}", "\u{FFFD}"]);
+        assert_eq!(reader.size(), 3);
+    }
+
+    /// A field's reader is found through the field infos, as Java's
+    /// `fieldMap.get(fieldInfo.number)` is, and a single-term field answers its
+    /// one term as both bounds (`maxTerm = minTerm`,
+    /// `Lucene103BlockTreeTermsReader.java:181-185`).
+    #[test]
+    fn terms_are_found_by_number_and_a_single_term_is_both_bounds() {
+        let reader = open_fields(vec![("one", vec!["only"]), ("two", vec!["a", "b"])]);
+        assert!(reader.terms("absent").unwrap().is_none());
+        let one = reader.terms("one").unwrap().expect("written");
+        assert_eq!(one.min().unwrap(), Some(BytesRef::new(b"only".to_vec())));
+        assert_eq!(one.max().unwrap(), Some(BytesRef::new(b"only".to_vec())));
+        let one = reader.field_reader("one").expect("written");
+        assert_eq!(one.get_max(), one.get_min());
+        let two = reader.terms("two").unwrap().expect("written");
+        assert_eq!(two.min().unwrap(), Some(BytesRef::new(b"a".to_vec())));
+        assert_eq!(two.max().unwrap(), Some(BytesRef::new(b"b".to_vec())));
     }
 
     /// Writes `a`, `ab`, `b` into field `body` and opens its `FieldReader`.
@@ -3726,8 +3969,7 @@ mod tests {
         let reader = Lucene103BlockTreeTermsReader::new(Box::new(StubPostingsReader), &read_state)
             .expect("reader should open");
         reader
-            .fields
-            .get("body")
+            .field_reader("body")
             .expect("the field was written")
             .clone()
     }
@@ -3786,7 +4028,7 @@ impl std::fmt::Display for Lucene103BlockTreeTermsReader {
         write!(
             f,
             "Lucene103BlockTreeTermsReader(fields={},delegate={})",
-            self.fields.len(),
+            self.fields.size(),
             self.shared.postings_reader
         )
     }

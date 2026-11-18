@@ -1959,13 +1959,30 @@ impl DocValuesSkipper for Lucene90DocValuesSkipper {
     }
 }
 
-#[derive(Debug, Clone)]
-enum FieldEntry {
-    Numeric(NumericEntry),
-    Binary(BinaryEntry),
-    Sorted(SortedEntry),
-    SortedNumeric(SortedNumericEntry),
-    SortedSet(SortedSetEntry),
+/// The metadata entries of a [`Lucene90DocValuesProducer`], one map per
+/// entry type, as Java's `numerics`, `binaries`, `sorted`, `sortedSets`,
+/// `sortedNumerics` and `skippers` (`Lucene90DocValuesProducer.java:63-68`).
+// PERF: one map per type sizes each slot to its own entry type; one map of a
+// five-variant enum sized every slot to the largest (`SortedSetEntry`).
+#[derive(Debug, Default)]
+struct DocValuesEntries {
+    numerics: HashMap<i32, NumericEntry>,
+    binaries: HashMap<i32, BinaryEntry>,
+    sorted: HashMap<i32, SortedEntry>,
+    sorted_sets: HashMap<i32, SortedSetEntry>,
+    sorted_numerics: HashMap<i32, SortedNumericEntry>,
+    skippers: HashMap<i32, DocValuesSkipperEntry>,
+}
+
+impl DocValuesEntries {
+    /// How many fields have a values entry.
+    fn len(&self) -> usize {
+        self.numerics.len()
+            + self.binaries.len()
+            + self.sorted.len()
+            + self.sorted_sets.len()
+            + self.sorted_numerics.len()
+    }
 }
 
 /// Reader for [`Lucene90DocValuesFormat`].
@@ -1976,8 +1993,10 @@ enum FieldEntry {
 pub struct Lucene90DocValuesProducer {
     data: SharedIndexInput,
     max_doc: i32,
-    entries: HashMap<i32, FieldEntry>,
-    skippers: HashMap<i32, DocValuesSkipperEntry>,
+    /// The metadata maps, shared with every merge instance as Java's cloning
+    /// constructor shares its maps (`Lucene90DocValuesProducer.java:187-216`).
+    // PERF: shared, not copied, by `get_merge_instance`.
+    entries: Arc<DocValuesEntries>,
     /// The `.dvs` skip-index file, opened when the segment was written at
     /// [`VERSION_SKIPPER_SEPARATE_FILE`] or later; older segments keep their
     /// skip index inside the data file.
@@ -2022,16 +2041,15 @@ impl Lucene90DocValuesProducer {
                 &state.segment_suffix,
             )?;
 
-            let (entries, mut skippers) =
-                Self::read_fields(&mut *meta, state.field_infos, version)?;
+            let mut entries = Self::read_fields(&mut *meta, state.field_infos, version)?;
 
             if version < VERSION_SKIPPER_MAX_VALUE_COUNT {
-                Self::infer_max_value_counts(&mut skippers, &entries, state.field_infos);
+                Self::infer_max_value_counts(&mut entries, state.field_infos);
             }
-            Ok((version, entries, skippers))
+            Ok((version, entries))
         })();
         let read = check_footer_after(&mut *meta, read);
-        let (version, entries, skippers) = crate::store::close_after(&mut *meta, read)?;
+        let (version, entries) = crate::store::close_after(&mut *meta, read)?;
 
         // The data file is opened once the metadata is read, as Java does
         // (`Lucene90DocValuesProducer.java:131-152`).
@@ -2132,8 +2150,7 @@ impl Lucene90DocValuesProducer {
         Ok(Self {
             data: SharedIndexInput::new(data),
             max_doc,
-            entries,
-            skippers,
+            entries: Arc::new(entries),
             skip_index_data: skip_index_data.map(SharedIndexInput::new),
             merging: false,
         })
@@ -2153,12 +2170,8 @@ impl Lucene90DocValuesProducer {
         meta: &mut dyn IndexInput,
         field_infos: &crate::index::FieldInfos,
         version: i32,
-    ) -> Result<(
-        HashMap<i32, FieldEntry>,
-        HashMap<i32, DocValuesSkipperEntry>,
-    )> {
-        let mut entries = HashMap::new();
-        let mut skippers = HashMap::new();
+    ) -> Result<DocValuesEntries> {
+        let mut entries = DocValuesEntries::default();
         loop {
             let field_number = meta.read_int()?;
             if field_number == -1 {
@@ -2170,23 +2183,42 @@ impl Lucene90DocValuesProducer {
             };
             let kind = meta.read_byte()?;
             if info.doc_values_skip_index_type != crate::index::DocValuesSkipIndexType::NONE {
-                skippers.insert(
+                entries.skippers.insert(
                     info.number,
                     Self::read_doc_value_skipper_meta(meta, version)?,
                 );
             }
-            let entry = match kind {
-                TYPE_NUMERIC => FieldEntry::Numeric(Self::read_numeric(meta)?),
-                TYPE_BINARY => FieldEntry::Binary(Self::read_binary(meta)?),
-                TYPE_SORTED => FieldEntry::Sorted(Self::read_sorted(meta)?),
-                TYPE_SORTED_SET => FieldEntry::SortedSet(Self::read_sorted_set(meta)?),
-                TYPE_SORTED_NUMERIC => FieldEntry::SortedNumeric(Self::read_sorted_numeric(meta)?),
+            // `numerics.put(info.number, readNumeric(meta))` and its siblings
+            // (`Lucene90DocValuesProducer.java:287-298`).
+            match kind {
+                TYPE_NUMERIC => {
+                    entries
+                        .numerics
+                        .insert(info.number, Self::read_numeric(meta)?);
+                }
+                TYPE_BINARY => {
+                    entries
+                        .binaries
+                        .insert(info.number, Self::read_binary(meta)?);
+                }
+                TYPE_SORTED => {
+                    entries.sorted.insert(info.number, Self::read_sorted(meta)?);
+                }
+                TYPE_SORTED_SET => {
+                    entries
+                        .sorted_sets
+                        .insert(info.number, Self::read_sorted_set(meta)?);
+                }
+                TYPE_SORTED_NUMERIC => {
+                    entries
+                        .sorted_numerics
+                        .insert(info.number, Self::read_sorted_numeric(meta)?);
+                }
                 // `Lucene90DocValuesProducer.java:298`.
                 _ => return corrupt_in(format!("invalid type: {kind}"), meta),
-            };
-            entries.insert(field_number, entry);
+            }
         }
-        Ok((entries, skippers))
+        Ok(entries)
     }
 
     /// Reads one field's skip-index metadata: where its intervals live in the
@@ -2245,10 +2277,15 @@ impl Lucene90DocValuesProducer {
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene90.Lucene90DocValuesProducer#inferMaxValueCounts`.
     fn infer_max_value_counts(
-        skippers: &mut HashMap<i32, DocValuesSkipperEntry>,
-        entries: &HashMap<i32, FieldEntry>,
+        entries: &mut DocValuesEntries,
         field_infos: &crate::index::FieldInfos,
     ) {
+        let DocValuesEntries {
+            sorted_sets,
+            sorted_numerics,
+            skippers,
+            ..
+        } = entries;
         for (field_number, entry) in skippers.iter_mut() {
             if entry.max_value_count != -1 || entry.doc_count == 0 {
                 continue;
@@ -2260,23 +2297,26 @@ impl Lucene90DocValuesProducer {
                         inferred_max_value_count = 1;
                     }
                     crate::index::DocValuesType::SORTED_NUMERIC => {
-                        if let Some(FieldEntry::SortedNumeric(sne)) = entries.get(field_number) {
+                        if let Some(sne) = sorted_numerics.get(field_number) {
                             if sne.numeric.num_values == i64::from(sne.num_docs_with_field) {
                                 inferred_max_value_count = 1;
                             }
                         }
                     }
-                    crate::index::DocValuesType::SORTED_SET => match entries.get(field_number) {
-                        Some(FieldEntry::SortedSet(SortedSetEntry::Single(_))) => {
-                            inferred_max_value_count = 1;
+                    crate::index::DocValuesType::SORTED_SET => {
+                        match sorted_sets.get(field_number) {
+                            Some(SortedSetEntry::Single(_)) => {
+                                inferred_max_value_count = 1;
+                            }
+                            Some(SortedSetEntry::Multi { ords, .. })
+                                if ords.numeric.num_values
+                                    == i64::from(ords.num_docs_with_field) =>
+                            {
+                                inferred_max_value_count = 1;
+                            }
+                            _ => {}
                         }
-                        Some(FieldEntry::SortedSet(SortedSetEntry::Multi { ords, .. }))
-                            if ords.numeric.num_values == i64::from(ords.num_docs_with_field) =>
-                        {
-                            inferred_max_value_count = 1;
-                        }
-                        _ => {}
-                    },
+                    }
                     // Every other doc-values type leaves the count unknown.
                     _ => {}
                 }
@@ -3696,10 +3736,13 @@ struct TermsDict {
     size: i64,
     data_length: i64,
     ord: i64,
-    /// `term.bytes`: `new BytesRef(entry.maxTermLength)`.
-    term: Vec<u8>,
-    /// `term.length`.
-    term_length: i32,
+    /// `term`: `new BytesRef(entry.maxTermLength)`
+    /// (`Lucene90DocValuesProducer.java:1603`), a buffer of `maxTermLength`
+    /// bytes whose `length` is the current term's, which
+    /// [`TermsEnum::term`](crate::index::TermsEnum::term) and
+    /// [`TermsEnum::next`](crate::index::TermsEnum::next) lend as Java returns
+    /// `term` (`Lucene90DocValuesProducer.java:1613-1634, 1790-1792`).
+    term: BytesRef,
     /// `blockBuffer.bytes`: `entry.maxBlockLength + entry.maxTermLength +
     /// LZ4_DECOMPRESSOR_PADDING` bytes.
     block_buffer: Vec<u8>,
@@ -3763,8 +3806,11 @@ impl TermsDict {
             size: entry.terms_dict_size,
             data_length: entry.terms_data_length,
             ord: -1,
-            term,
-            term_length: 0,
+            term: BytesRef {
+                bytes: term,
+                offset: 0,
+                length: 0,
+            },
             block_buffer,
             block_offset: 0,
             block_length: buffer_size,
@@ -3778,7 +3824,7 @@ impl TermsDict {
 
     /// The current term: `term.bytes[0, term.length)`.
     fn term_bytes(&self) -> &[u8] {
-        &self.term[..self.term_length as usize]
+        &self.term.bytes[..self.term.length]
     }
 
     /// Reads `length` bytes from `bytes` into `term.bytes[0, length)` and
@@ -3786,8 +3832,9 @@ impl TermsDict {
     /// 0, term.length)`. The input rejects a length the buffer does not hold.
     fn read_term_from_bytes(&mut self, length: i32) -> Result<()> {
         self.bytes
-            .read_bytes(Some(&mut self.term), 0, length as usize)?;
-        self.term_length = length;
+            .read_bytes(Some(&mut self.term.bytes), 0, length as usize)?;
+        // Non-negative: the read rejected a negative `length`.
+        self.term.length = length as usize;
         Ok(())
     }
 
@@ -3839,11 +3886,12 @@ impl TermsDict {
         let length = end.wrapping_sub(start) as i32;
         lock_random_access_input(&self.index_bytes).read_bytes_at(
             start,
-            &mut self.term,
+            &mut self.term.bytes,
             0,
             length as usize,
         )?;
-        self.term_length = length;
+        // Non-negative: the read rejected a negative `length`.
+        self.term.length = length as usize;
         Ok(())
     }
 
@@ -4015,11 +4063,11 @@ impl TermsDict {
         if offset < self.data_length.wrapping_sub(1) {
             // Avoid decompress again if we are reading a same block.
             if self.current_compressed_block_start != offset {
-                self.block_offset = self.term_length;
+                self.block_offset = self.term.length as i32;
                 self.block_length = self.bytes.read_v_int()?;
                 // Decompress the remaining of current block, using the first term as a dictionary
                 crate::util::java_byte_arraycopy(
-                    &self.term,
+                    &self.term.bytes,
                     0,
                     &mut self.block_buffer,
                     0,
@@ -4075,12 +4123,14 @@ impl TermsDict {
         crate::util::java_byte_arraycopy(
             array,
             self.block_pos,
-            &mut self.term,
+            &mut self.term.bytes,
             prefix_length,
             suffix_length,
         )?;
         self.block_pos = self.block_pos.wrapping_add(suffix_length);
-        self.term_length = prefix_length.wrapping_add(suffix_length);
+        // Non-negative and within the buffer: the copy checked both lengths
+        // against it.
+        self.term.length = prefix_length.wrapping_add(suffix_length) as usize;
         Ok(true)
     }
 
@@ -4139,8 +4189,10 @@ impl crate::index::TermsEnum for TermsDict {
         self.seek_exact(ord).map(|_| ())
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(BytesRef::new(self.term_bytes().to_vec())))
+    /// `TermsDict.term()` (`Lucene90DocValuesProducer.java:1790-1792`): the
+    /// enum's own `term`.
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(&self.term))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -4167,9 +4219,9 @@ impl crate::index::TermsEnum for TermsDict {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         if TermsDict::next(self)? {
-            Ok(Some(BytesRef::new(self.term_bytes().to_vec())))
+            Ok(Some(&self.term))
         } else {
             Ok(None)
         }
@@ -4740,8 +4792,8 @@ fn null_entry(field: &str) -> LuceneError {
 impl DocValuesProducer for Lucene90DocValuesProducer {
     fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         let values: Result<Box<dyn NumericDocValues>> = {
-            match self.entries.get(&field.number) {
-                Some(FieldEntry::Numeric(entry)) => Ok(Box::new(LazyNumericDocValues::new(
+            match self.entries.numerics.get(&field.number) {
+                Some(entry) => Ok(Box::new(LazyNumericDocValues::new(
                     &**self.data.read(),
                     self.max_doc,
                     entry,
@@ -4758,17 +4810,17 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
 
     fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
         let values: Result<Box<dyn BinaryDocValues>> = {
-            match self.entries.get(&field.number) {
+            match self.entries.binaries.get(&field.number) {
                 // A field no document has a value for: `DocValues.emptyBinary()`,
                 // before anything else of the entry is looked at
                 // (`Lucene90DocValuesProducer.java:1210-1215`). Its lengths are
                 // the consumer's initial `Integer.MAX_VALUE` and `0`
                 // (`Lucene90DocValuesConsumer.java:616-617, 651-652`), which describe
                 // no value.
-                Some(FieldEntry::Binary(entry)) if entry.docs_with_field_offset == -2 => {
+                Some(entry) if entry.docs_with_field_offset == -2 => {
                     Ok(Box::new(EmptyBinaryDocValues::new()))
                 }
-                Some(FieldEntry::Binary(entry)) => Ok(Box::new(LazyBinaryDocValues::new(
+                Some(entry) => Ok(Box::new(LazyBinaryDocValues::new(
                     &**self.data.read(),
                     self.max_doc,
                     entry,
@@ -4783,8 +4835,8 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
 
     fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
         let values: Result<Box<dyn SortedDocValues>> = {
-            match self.entries.get(&field.number) {
-                Some(FieldEntry::Sorted(entry)) => Ok(Box::new(LazySortedDocValues::new(
+            match self.entries.sorted.get(&field.number) {
+                Some(entry) => Ok(Box::new(LazySortedDocValues::new(
                     &**self.data.read(),
                     self.max_doc,
                     entry,
@@ -4803,14 +4855,12 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
         field: &FieldInfo,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
         let values: Result<Box<dyn SortedNumericDocValues>> = {
-            match self.entries.get(&field.number) {
+            match self.entries.sorted_numerics.get(&field.number) {
                 // `if (entry.numValues == entry.numDocsWithField) return
                 // DocValues.singleton(getNumeric(entry));`
                 // (`Lucene90DocValuesProducer.java:1828-1830`), so that
                 // `DocValues.unwrapSingleton` answers the numeric view.
-                Some(FieldEntry::SortedNumeric(entry))
-                    if entry.numeric.num_values == i64::from(entry.num_docs_with_field) =>
-                {
+                Some(entry) if entry.numeric.num_values == i64::from(entry.num_docs_with_field) => {
                     Ok(Box::new(crate::index::DocValues::singleton_numeric(
                         Box::new(LazyNumericDocValues::new(
                             &**self.data.read(),
@@ -4820,12 +4870,13 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
                         )?),
                     )?))
                 }
-                Some(FieldEntry::SortedNumeric(entry)) => {
+                Some(entry) => {
                     // `Lucene90DocValuesProducer.java:1823,1843`.
                     let dense_fixed_cardinality = Self::fixed_cardinality(
                         entry.numeric.num_values,
                         entry.num_docs_with_field,
-                        self.skippers
+                        self.entries
+                            .skippers
                             .get(&field.number)
                             .map(|skipper| skipper.max_value_count),
                     );
@@ -4848,12 +4899,12 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
 
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         let values: Result<Box<dyn SortedSetDocValues>> = {
-            match self.entries.get(&field.number) {
+            match self.entries.sorted_sets.get(&field.number) {
                 // `if (entry.singleValueEntry != null) return
                 // DocValues.singleton(getSorted(entry.singleValueEntry));`
                 // (`Lucene90DocValuesProducer.java:2059-2062`), so that
                 // `DocValues.unwrapSingleton` answers the sorted view.
-                Some(FieldEntry::SortedSet(SortedSetEntry::Single(single))) => Ok(Box::new(
+                Some(SortedSetEntry::Single(single)) => Ok(Box::new(
                     crate::index::DocValues::singleton_sorted(Box::new(LazySortedDocValues::new(
                         &**self.data.read(),
                         self.max_doc,
@@ -4861,7 +4912,7 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
                         self.merging,
                     )?))?,
                 )),
-                Some(FieldEntry::SortedSet(entry)) => Ok(Box::new(LazySortedSetDocValues::new(
+                Some(entry) => Ok(Box::new(LazySortedSetDocValues::new(
                     &**self.data.read(),
                     self.max_doc,
                     entry,
@@ -4890,7 +4941,7 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
     /// `docValuesSkipIndexType()` is `NONE` (`index/CodecReader.java:198-206`).
     /// The port fails the same call, with an error instead of a panic.
     fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        let Some(entry) = self.skippers.get(&field.number).copied() else {
+        let Some(entry) = self.entries.skippers.get(&field.number).copied() else {
             return Err(LuceneError::null_pointer_with_message(
                 "Cannot read field \"offset\" because \"entry\" is null",
             ));
@@ -4924,8 +4975,7 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
         Ok(Box::new(Self {
             data: SharedIndexInput::new(self.data.clone_input()?),
             max_doc: self.max_doc,
-            entries: self.entries.clone(),
-            skippers: self.skippers.clone(),
+            entries: Arc::clone(&self.entries),
             skip_index_data: match &self.skip_index_data {
                 Some(skip_index_data) => {
                     Some(SharedIndexInput::new(skip_index_data.clone_input()?))

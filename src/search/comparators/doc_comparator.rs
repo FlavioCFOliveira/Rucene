@@ -198,11 +198,12 @@ impl SlotComparator for DocComparator {
     fn competitive_iterator(
         &mut self,
         leaf: &mut DocLeafState,
-    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+    ) -> Result<Option<crate::search::CompetitiveIterator>> {
         Ok(leaf
             .competitive_iterator
             .as_ref()
-            .map(|it| Box::new(it.clone()) as Box<dyn DocIdSetIterator>))
+            // PERF: another handle onto the shared iterator, unboxed.
+            .map(|it| crate::search::CompetitiveIterator::Updateable(it.clone())))
     }
 
     fn set_hits_threshold_reached(&mut self, leaf: &mut DocLeafState) -> Result<()> {

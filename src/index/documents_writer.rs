@@ -1582,7 +1582,24 @@ pub struct TermDocsIterator<'a> {
     terms_enum: Option<Box<dyn TermsEnum>>,
     postings_enum: Option<Box<dyn PostingsEnum>>,
     sorted_terms: bool,
-    reader_term: Option<BytesRef>,
+    /// Java's `readerTerm` (`FrozenBufferedUpdates.java:549`), the term the
+    /// enum's `next()` or `term()` returned (lines 580, 607), meaningful only
+    /// when [`has_reader_term`](Self::has_reader_term).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java keeps the enum's own `BytesRef`;
+    /// the term [`TermsEnum`] lends cannot be kept while the enum moves, so it
+    /// is copied here, into one buffer reused for every term (no allocation
+    /// once it is large enough). Re-reading the enum at each comparison
+    /// (line 596) instead costs a dynamic call per requested term and
+    /// segment, where a copy is made only when the enum is positioned by
+    /// `next()` or a `NOT_FOUND` seek. Java's alias also follows the enum
+    /// after a `FOUND` seek, where this copy keeps the earlier term: every
+    /// later requested term sorts after both, so each comparison answers
+    /// "greater" either way, and only an equal requested term is sought
+    /// again instead of read from the enum, landing on the same postings.
+    reader_term: BytesRef,
+    /// `readerTerm != null`.
+    has_reader_term: bool,
     /// The last term [`next_term`](Self::next_term) was asked for; kept, as in
     /// Java, only for the assert-only `assertSorted`.
     last_term: Option<BytesRef>,
@@ -1599,7 +1616,8 @@ impl<'a> TermDocsIterator<'a> {
             terms_enum: None,
             postings_enum: None,
             sorted_terms,
-            reader_term: None,
+            reader_term: BytesRef::default(),
+            has_reader_term: false,
             last_term: None,
         }
     }
@@ -1633,14 +1651,21 @@ impl<'a> TermDocsIterator<'a> {
             match self.reader.terms(field)? {
                 Some(terms) => {
                     let mut terms_enum = terms.iterator()?;
-                    self.reader_term = if self.sorted_terms {
+                    self.has_reader_term = if self.sorted_terms {
                         // need to reset, otherwise the sortedness check below
                         // fails, since we sort per field: `assert (lastTerm =
                         // null) == null;` (`FrozenBufferedUpdates.java:577-578`)
                         self.last_term = None;
-                        terms_enum.next()?
+                        // `readerTerm = termsEnum.next()`.
+                        match terms_enum.next()? {
+                            Some(term) => {
+                                self.reader_term.copy_from(term);
+                                true
+                            }
+                            None => false,
+                        }
                     } else {
-                        None
+                        false
                     };
                     self.terms_enum = Some(terms_enum);
                 }
@@ -1674,11 +1699,11 @@ impl<'a> TermDocsIterator<'a> {
             // property; depending on the term dictionary implementation this
             // reuses internal data structures and speeds up iteration over terms
             // and docs significantly.
-            let Some(reader_term) = self.reader_term.as_ref() else {
+            if !self.has_reader_term {
                 // no more terms in this segment
                 return Ok(false);
-            };
-            match term.cmp(reader_term) {
+            }
+            match term.cmp(&self.reader_term) {
                 std::cmp::Ordering::Less => {
                     // requested term does not exist in this segment
                     return Ok(false);
@@ -1687,7 +1712,14 @@ impl<'a> TermDocsIterator<'a> {
                 std::cmp::Ordering::Greater => match terms_enum.seek_ceil(term)? {
                     SeekStatus::FOUND => return self.get_docs(),
                     SeekStatus::NOT_FOUND => {
-                        self.reader_term = terms_enum.term()?;
+                        // `readerTerm = termsEnum.term()`: the term after `term`.
+                        self.has_reader_term = match terms_enum.term()? {
+                            Some(next) => {
+                                self.reader_term.copy_from(next);
+                                true
+                            }
+                            None => false,
+                        };
                         return Ok(false);
                     }
                     SeekStatus::END => {

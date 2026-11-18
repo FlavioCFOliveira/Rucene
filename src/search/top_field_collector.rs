@@ -9,7 +9,6 @@ use crate::error::{LuceneError, Result};
 use crate::index::{sub_index_from_leaves, LeafReaderContext};
 use crate::search::collection_terminated_exception::{CollectionError, CollectionResult};
 use crate::search::collector::{Collector, LeafCollector};
-use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::field_comparator::is_relevance_comparator;
 use crate::search::field_doc::FieldDoc;
 use crate::search::field_value_hit_queue::{Entry, FieldValueHitQueue};
@@ -713,7 +712,7 @@ impl LeafCollector for TopFieldLeafCollector<'_> {
         Ok(())
     }
 
-    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+    fn competitive_iterator(&mut self) -> Result<Option<crate::search::CompetitiveIterator>> {
         self.comparator.competitive_iterator()
     }
 }

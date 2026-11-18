@@ -973,10 +973,15 @@ pub trait IndexInput: DataInput + Send + Sync {
         if slice_description.is_empty() {
             self.resource_description().to_string()
         } else {
-            format!(
-                "{} [slice={slice_description}]",
-                self.resource_description()
-            )
+            // PERF: sized once, as Java's `toString() + " [slice=" + sliceDescription
+            // + "]"` (`IndexInput.java:150`) is; `format!` grew it twice.
+            [
+                self.resource_description(),
+                " [slice=",
+                slice_description,
+                "]",
+            ]
+            .concat()
         }
     }
 }
@@ -4173,11 +4178,14 @@ pub trait LockFactory: Send + Sync {
     /// factory prints the same digits — as every user of one of Java's
     /// singleton factories (`NativeFSLockFactory.INSTANCE`) does.
     fn lock_factory_to_string(&self) -> String {
-        format!(
-            "org.apache.lucene.store.{}@{}",
+        // PERF: sized once, as Java's concatenation is; `format!` grew it.
+        [
+            "org.apache.lucene.store.",
             java_simple_name(self.directory_type_name()),
-            crate::util::java_fmt::to_hex_string(self as *const Self as *const () as usize as i32)
-        )
+            "@",
+            &crate::util::java_fmt::to_hex_string(self as *const Self as *const () as usize as i32),
+        ]
+        .concat()
     }
 }
 
@@ -5417,7 +5425,10 @@ impl BufferedChecksumIndexInput {
     /// the resource description for an input that overrides `toString()`
     /// (`MockIndexInputWrapper`).
     pub fn new(main: Box<dyn IndexInput>) -> Self {
-        let resource_description = format!("BufferedChecksumIndexInput({})", main.to_java_string());
+        // PERF: sized once, as Java's concatenation is
+        // (`BufferedChecksumIndexInput.java:31`); `format!` grew it.
+        let resource_description =
+            ["BufferedChecksumIndexInput(", &main.to_java_string(), ")"].concat();
         Self {
             main,
             digest: BufferedChecksum::new(),
@@ -10119,7 +10130,9 @@ impl FSDirectory {
         }
         closed?;
         // `Arrays.sort(String[])`: UTF-16 order.
-        entries.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+        // PERF: `java_compare_to` gives that order from the UTF-8 bytes,
+        // without transcoding both names to UTF-16 per comparison.
+        entries.sort_by(|a, b| crate::util::java_collections::java_compare_to(a, b));
         Ok(entries)
     }
 
@@ -10154,12 +10167,16 @@ impl FSDirectory {
     /// `this.getClass().getSimpleName() + "@" + directory + " lockFactory=" +
     /// lockFactory`.
     pub fn directory_to_string_of(&self, dir: &dyn Directory) -> String {
-        format!(
-            "{}@{} lockFactory={}",
+        // PERF: sized once, as Java's concatenation is (`FSDirectory.java:294-296`);
+        // `format!` grew it four times. The path is its `Display` text.
+        [
             java_simple_name(dir.directory_type_name()),
-            self.directory,
-            self.base.lock_factory().lock_factory_to_string()
-        )
+            "@",
+            &self.directory.as_std_path().to_string_lossy(),
+            " lockFactory=",
+            &self.base.lock_factory().lock_factory_to_string(),
+        ]
+        .concat()
     }
 
     fn check_open(&self) -> Result<()> {

@@ -353,15 +353,16 @@ impl TermsEnum for SimpleTextTermsEnum {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
-        let result = self
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        let meta = self
             .fst_enum
             .next()?
-            .map(|result| (TermMeta::from_output(result.output), result.input.clone()));
-        match result {
-            Some((meta, term)) => {
+            .map(|result| TermMeta::from_output(result.output));
+        match meta {
+            Some(meta) => {
                 self.meta = meta;
-                Ok(Some(BytesRef::new(term.slice().to_vec())))
+                // `return result.input`: the enum's current term, lent.
+                Ok(Some(self.fst_enum.current().input))
             }
             None => Ok(None),
         }
@@ -369,10 +370,8 @@ impl TermsEnum for SimpleTextTermsEnum {
 
     /// `fstEnum.current().input`: empty before the first term, the last term
     /// once the enumeration is exhausted.
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(BytesRef::new(
-            self.fst_enum.current().input.slice().to_vec(),
-        )))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(self.fst_enum.current().input))
     }
 
     fn ord(&self) -> Result<i64> {

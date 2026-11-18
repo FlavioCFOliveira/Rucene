@@ -351,7 +351,7 @@ fn test_arbitrary_fields() -> Result<()> {
                     let mut terms_enum = tfv.unwrap_or_else(|| npe("tfv")).iterator()?;
                     assert_equals(
                         &Some(LuceneTestCase::new_bytes_ref_str(&counter.to_string())),
-                        &terms_enum.next()?,
+                        &terms_enum.next()?.cloned(),
                     );
                     assert_equals(&1, &terms_enum.total_term_freq()?);
                     let mut dp_enum = terms_enum
@@ -363,7 +363,7 @@ fn test_arbitrary_fields() -> Result<()> {
 
                     assert_equals(
                         &Some(LuceneTestCase::new_bytes_ref_str("text")),
-                        &terms_enum.next()?,
+                        &terms_enum.next()?.cloned(),
                     );
                     assert_equals(&1, &terms_enum.total_term_freq()?);
                     let mut dp_enum = terms_enum

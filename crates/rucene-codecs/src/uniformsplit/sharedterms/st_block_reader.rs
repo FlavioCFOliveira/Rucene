@@ -83,7 +83,7 @@ impl STBlockReader {
     }
 
     /// Port of `BlockReader.term()`, Java's `null` being `None`.
-    pub fn term_bytes(&self) -> Option<BytesRef> {
+    pub fn term_bytes(&self) -> Option<&BytesRef> {
         self.base.term_bytes()
     }
 
@@ -184,7 +184,7 @@ impl TermsEnum for STBlockReader {
         self.base.seek_exact_state(text, state)
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         Ok(self.base.term_bytes())
     }
 
@@ -216,7 +216,8 @@ impl TermsEnum for STBlockReader {
         self.base.term_state_impl()
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
-        self.next_impl()
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        self.base.next_term = self.next_impl()?;
+        Ok(self.base.next_term.as_ref())
     }
 }
