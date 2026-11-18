@@ -2184,10 +2184,14 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
         // The current term, copied out of the terms enum (see the term loop).
         let mut term = BytesRef::default();
         for field in fields.iterator() {
+            // `assert lastField == null || lastField.compareTo(field) < 0`
+            // (`Lucene103BlockTreeTermsWriter.java:372`): `String.compareTo`,
+            // UTF-16 order.
             debug_assert!(
-                last_field
-                    .as_deref()
-                    .is_none_or(|last| last < field.as_str()),
+                last_field.as_deref().is_none_or(|last| {
+                    crate::util::java_collections::java_compare_to(last, &field)
+                        == std::cmp::Ordering::Less
+                }),
                 "fields must arrive in increasing order: {last_field:?} then {field}"
             );
             let Some(terms) = fields.terms(&field)? else {
@@ -3919,15 +3923,47 @@ mod tests {
     /// the reverse of their byte order.
     #[test]
     fn fields_iterate_in_java_string_order() {
-        // Written in byte order, which this writer's debug assertion checks.
+        // Written in `String.compareTo` order, which this writer's debug
+        // assertion checks.
         let reader = open_fields(vec![
             ("a", vec!["t"]),
-            ("\u{FFFD}", vec!["t"]),
             ("\u{10000}", vec!["t"]),
+            ("\u{FFFD}", vec!["t"]),
         ]);
         let names: Vec<String> = reader.iterator().collect();
         assert_eq!(names, ["a", "\u{10000}", "\u{FFFD}"]);
         assert_eq!(reader.size(), 3);
+    }
+
+    /// rmp #570: `write` asserts `lastField.compareTo(field) < 0`
+    /// (`Lucene103BlockTreeTermsWriter.java:372`), `String.compareTo` order.
+    /// Fields in UTF-16 order pass where their UTF-8 bytes descend — U+10000
+    /// and U+1D400 (surrogate pairs; UTF-8 `F0 ..`) before U+E000 and U+FFFD
+    /// (UTF-8 `EE ..`, `EF ..`) — as Lucene's own writer, run with `-ea`,
+    /// accepts them (task #570 oracle, `E2Oracle.java`).
+    #[test]
+    fn write_asserts_field_order_in_java_string_order() {
+        let reader = open_fields(vec![
+            ("a", vec!["t"]),
+            ("\u{10000}", vec!["t"]),
+            ("\u{1D400}", vec!["t"]),
+            ("\u{E000}", vec!["t"]),
+            ("\u{FFFD}", vec!["t"]),
+        ]);
+        let names: Vec<String> = reader.iterator().collect();
+        assert_eq!(
+            names,
+            ["a", "\u{10000}", "\u{1D400}", "\u{E000}", "\u{FFFD}"]
+        );
+    }
+
+    /// rmp #570: the same assertion rejects fields that ascend in UTF-8 byte
+    /// order but descend in `String.compareTo` order: U+E000 then U+10000.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "fields must arrive in increasing order")]
+    fn write_rejects_field_order_that_only_bytes_ascend() {
+        open_fields(vec![("\u{E000}", vec!["t"]), ("\u{10000}", vec!["t"])]);
     }
 
     /// A field's reader is found through the field infos, as Java's

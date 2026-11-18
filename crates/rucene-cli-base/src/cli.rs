@@ -55,7 +55,9 @@ optional or prohibited):
   --phrase WORDS            the phrase in some default text field
   --phrase-in FIELD=WORDS   the phrase in the text or name field
   --term FIELD=VALUE        exact value (id, code, flag, name, number, date)
-  --terms FIELD=V1,V2,..    any of the values
+  --terms FIELD=V1,V2,..    any of the values; \\, is a comma inside a value,
+                            \\\\ a backslash, e.g.
+                            --terms 'local=Portugal\\, Lisboa,Porto'
   --range FIELD=LO..HI      inclusive number or date range; LO or HI may be empty
   --key KEY                 document key
 
@@ -274,6 +276,41 @@ fn split_pair<'a>(flag: &str, value: &'a str) -> Result<(&'a str, &'a str)> {
         .ok_or_else(|| CliError::Usage(format!("{flag} expects FIELD=VALUE, got {value:?}")))
 }
 
+/// Splits the values of `--terms` at every unescaped comma.
+///
+/// `\,` is a comma inside a value and `\\` a backslash. A backslash before
+/// any other character is kept as written, so values without `\,` or `\\`
+/// split exactly as they did before the escape existed, empty values included.
+///
+/// # Errors
+///
+/// Returns [`CliError::Usage`] when the values end in a lone backslash.
+fn split_terms(values: &str) -> Result<Vec<String>> {
+    let mut split = Vec::new();
+    let mut value = String::new();
+    let mut chars = values.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            ',' => split.push(std::mem::take(&mut value)),
+            '\\' => match chars.next() {
+                Some(escaped @ (',' | '\\')) => value.push(escaped),
+                Some(other) => {
+                    value.push('\\');
+                    value.push(other);
+                }
+                None => {
+                    return Err(CliError::Usage(format!(
+                        "--terms: {values:?} ends in a lone backslash; write \\\\ for a backslash"
+                    )))
+                }
+            },
+            _ => value.push(c),
+        }
+    }
+    split.push(value);
+    Ok(split)
+}
+
 /// Where the records of `add` / `update` come from.
 enum RecordSource<'a> {
     /// The JSON Lines file given with `--file`.
@@ -420,7 +457,7 @@ pub fn parse_search(schema: &EntitySchema, args: &[String], full: bool) -> Resul
                 let (field, values) = split_pair(flag, flag_value(args, &mut index, flag)?)?;
                 Criterion::Terms {
                     field: field.to_owned(),
-                    values: values.split(',').map(str::to_owned).collect(),
+                    values: split_terms(values)?,
                 }
             }
             "--range" => {
@@ -525,4 +562,60 @@ pub fn parse_sort(value: &str) -> Result<Vec<SortSpec>> {
             Ok(SortSpec { key, descending })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn terms_of(argument: &str) -> Result<Vec<String>> {
+        let schema = entities::by_name("locais").expect("the locais index exists");
+        let args = ["--terms".to_owned(), argument.to_owned()];
+        let request = parse_search(schema, &args, true)?;
+        match &request.clauses[..] {
+            [Clause {
+                criterion: Criterion::Terms { field, values },
+                ..
+            }] => {
+                assert_eq!(field, "local");
+                Ok(values.clone())
+            }
+            other => panic!("one --terms clause expected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn terms_escaped_comma_stays_inside_the_value() {
+        assert_eq!(
+            terms_of(r"local=Portugal\, Lisboa,Porto").unwrap(),
+            ["Portugal, Lisboa", "Porto"]
+        );
+        assert_eq!(terms_of(r"local=\,").unwrap(), [","]);
+    }
+
+    #[test]
+    fn terms_escaped_backslash_is_one_backslash() {
+        assert_eq!(terms_of(r"local=a\\,b").unwrap(), [r"a\", "b"]);
+        assert_eq!(terms_of(r"local=a\\\,b").unwrap(), [r"a\,b"]);
+        // A backslash before any other character is kept as written.
+        assert_eq!(terms_of(r"local=C:\dir,x").unwrap(), [r"C:\dir", "x"]);
+    }
+
+    #[test]
+    fn terms_without_escapes_split_at_every_comma_as_before() {
+        for values in ["Porto", "a,b", "a,,b", ",", "", "Lisboa,Porto,"] {
+            let expected: Vec<String> = values.split(',').map(str::to_owned).collect();
+            assert_eq!(terms_of(&format!("local={values}")).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn terms_ending_in_a_lone_backslash_is_a_usage_error() {
+        for argument in [r"local=Porto\", r"local=a\\\", r"local=\"] {
+            match terms_of(argument) {
+                Err(error @ CliError::Usage(_)) => assert_eq!(error.exit_code(), 2),
+                other => panic!("{argument:?}: usage error expected, got {other:?}"),
+            }
+        }
+    }
 }

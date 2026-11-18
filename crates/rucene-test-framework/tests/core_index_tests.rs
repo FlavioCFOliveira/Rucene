@@ -277,6 +277,8 @@ mod test_nrt_reader_cleanup;
 #[path = "core_index/test_nrt_reader_with_threads.rs"]
 mod test_nrt_reader_with_threads;
 use core_support::run;
+use rucene_test_framework::store::fake_io_exception;
+use rucene_test_framework::util::java_exceptions::is_instance;
 
 #[test]
 fn test_2b_binary_doc_values() {
@@ -701,6 +703,23 @@ fn test_indexable_field() {
 #[test]
 fn test_index_file_deleter() {
     run(test_index_file_deleter::class_def);
+}
+
+/// Regression test of rmp #569: on master seed `F0E80753B483FA00`,
+/// `testThrowExceptionWhileDeleteCommits` makes `deleteUnusedFiles` throw the
+/// injected `MockDirectoryWrapper.FakeIOException`, which the test catches as
+/// an `IOException`. The port missed the catch (the class was absent from the
+/// framework's class table) and failed; Lucene 10.5.0 passes on this seed
+/// (JDK 25). The first assertion keeps the cause locked even if the seed's
+/// random route ever changes.
+#[test]
+fn test_index_file_deleter_seed_f0e80753b483fa00() {
+    assert!(is_instance(&fake_io_exception(), "java.io.IOException"));
+    core_support::run_method_on_seed(
+        test_index_file_deleter::class_def,
+        "testThrowExceptionWhileDeleteCommits",
+        "F0E80753B483FA00",
+    );
 }
 
 #[test]

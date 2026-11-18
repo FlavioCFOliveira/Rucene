@@ -72,6 +72,15 @@ impl FieldInfosFormat for Lucene94FieldInfosFormat {
             )?;
 
             let size = input.read_v_int()?;
+            // `infos = new FieldInfo[size]` (`Lucene94FieldInfosFormat.java:148`):
+            // the JVM's `NegativeArraySizeException` (message: the size) for a
+            // negative count.
+            if size < 0 {
+                return Err(LuceneError::unchecked(
+                    "java.lang.NegativeArraySizeException",
+                    size.to_string(),
+                ));
+            }
             let mut infos = Vec::with_capacity(size as usize);
             // previous field's attribute map, we share when possible:
             // `lastAttributes = Collections.emptyMap()`
@@ -852,6 +861,48 @@ mod tests {
                 .to_string()
                 .contains("unused bits are set \"11111111111111111111111110000000\""),
             "{error}"
+        );
+    }
+
+    /// rmp #570: `infos = new FieldInfo[size]`
+    /// (`Lucene94FieldInfosFormat.java:147-148`) throws the JVM's
+    /// `NegativeArraySizeException` for a negative count, which
+    /// `checkFooter(input, priorE)` rethrows once the checksum passes. Task
+    /// #570 oracle (`E2Oracle.java`, Lucene 10.5.0): header, `writeVInt(-1)`,
+    /// valid footer → `java.lang.NegativeArraySizeException: -1`.
+    #[test]
+    fn negative_field_count_raises_negative_array_size_exception() {
+        let dir = ByteBuffersDirectory::default();
+        let info = test_segment_info("_0", 10);
+        {
+            let mut out = dir
+                .create_output("_0.fnm", &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            codec_util::write_index_header(
+                out.as_mut(),
+                CODEC_NAME,
+                FORMAT_CURRENT,
+                &info.id(),
+                "",
+            )
+            .unwrap();
+            out.write_v_int(-1).unwrap();
+            codec_util::write_footer(out.as_mut()).unwrap();
+            out.close().unwrap();
+        }
+        let error = Lucene94FieldInfosFormat::new()
+            .read(&dir, &info, "", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.NegativeArraySizeException",
+                    message: Some(m),
+                    ..
+                } if m == "-1"
+            ),
+            "{error:?}"
         );
     }
 }

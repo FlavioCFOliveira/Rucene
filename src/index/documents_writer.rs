@@ -3669,7 +3669,9 @@ pub struct DocumentsWriterPerThread {
     /// when one is queued (`DocumentsWriterPerThread.java:139, 829-831`); a
     /// futex `Condvar::notify_one` makes a `FUTEX_WAKE` system call whether or
     /// not anyone waits, which was one system call per indexed document. The
-    /// count lets [`DwptGuard`]'s `drop` notify only when a thread waits.
+    /// count lets [`DwptGuard`]'s `drop` notify only when a thread waits, and
+    /// a woken renderer pass the wake-up on to the next waiter
+    /// ([`Display for DocumentsWriterPerThread`](DocumentsWriterPerThread)).
     ///
     /// Only read or written while `state` is locked: the mutex orders every
     /// access, so `Relaxed` is enough, and a waiter counted before it blocks
@@ -3794,16 +3796,39 @@ impl Display for DocumentsWriterPerThread {
     /// produces the identical string from the state it is holding; going
     /// through the DWPT from that thread would wait for a guard it will not
     /// release until it returns.
+    ///
+    /// A renderer waits on the same [`unlocked`](Self::unlocked) condition as
+    /// [`lock`](Self::lock), so the one waiter a guard's drop wakes may be a
+    /// renderer, which then leaves the state where it is. A renderer that was
+    /// woken therefore passes the wake-up on to the next counted waiter, so
+    /// that, as in Java, the release reaches a thread that takes the lock:
+    /// `toString()` never queues on the `ReentrantLock`
+    /// (`DocumentsWriterPerThread.java:139, 736-752`), and the successor
+    /// `unlock()` wakes (`:829-831`) is always a locker.
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let mut slot = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut woken = false;
         loop {
             if let Some(state) = slot.as_ref() {
-                return dwpt_to_string(self, state, f);
+                let rendered = dwpt_to_string(self, state, f);
+                // Read under the lock the count is kept under, as `DwptGuard`'s
+                // drop does; a renderer that never waited took no wake-up.
+                let waiters = if woken {
+                    self.unlock_waiters.load(Ordering::Relaxed)
+                } else {
+                    0
+                };
+                drop(slot);
+                if waiters > 0 {
+                    self.unlocked.notify_one();
+                }
+                return rendered;
             }
             slot = self.wait_unlocked(slot);
+            woken = true;
         }
     }
 }
@@ -8095,6 +8120,109 @@ mod tests {
         waiter.join().unwrap();
         assert_eq!(dwpt.unlock_waiters.load(Ordering::Relaxed), 0);
         assert!(DocumentsWriterPerThread::try_lock(&dwpt).is_some());
+    }
+
+    /// The `/proc` path of the calling thread's `stat` file.
+    #[cfg(target_os = "linux")]
+    fn own_task_stat() -> std::path::PathBuf {
+        // `/proc/thread-self` links to `<pid>/task/<tid>`.
+        std::path::Path::new("/proc")
+            .join(std::fs::read_link("/proc/thread-self").unwrap())
+            .join("stat")
+    }
+
+    /// Spins (never sleeps) until `dwpt` counts `waiters` threads blocked on
+    /// `unlocked` and the thread whose `stat` file is `stat` is asleep in the
+    /// kernel, so a `notify_one` issued now reaches the kernel's queue of
+    /// waiters instead of racing a thread still on its way into `wait`.
+    ///
+    /// Once counted, the thread's only blocking call is the condition
+    /// variable's futex wait, so the sleeping state `S` means it is queued.
+    #[cfg(target_os = "linux")]
+    fn await_parked(
+        dwpt: &DocumentsWriterPerThread,
+        waiters: usize,
+        stat: &std::path::Path,
+        deadline: std::time::Instant,
+    ) {
+        loop {
+            if dwpt.unlock_waiters.load(Ordering::Relaxed) == waiters {
+                let line = std::fs::read_to_string(stat).unwrap();
+                // `pid (comm) state ...`; `comm` may itself contain `)`.
+                let state = line[line.rfind(')').unwrap() + 1..]
+                    .trim_start()
+                    .chars()
+                    .next();
+                if state == Some('S') {
+                    return;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "waiter {waiters} never parked on the held DWPT"
+            );
+            thread::yield_now();
+        }
+    }
+
+    /// Rendering a DWPT never swallows the wake-up a blocked locker is owed
+    /// (#571). Java's `toString()` takes no lock (`DocumentsWriterPerThread.
+    /// java:736-752`), so the successor `ReentrantLock.unlock()` wakes
+    /// (`:829-831`) is always a locker. Here the renderer waits on the same
+    /// condition variable as `lock()`: the test parks a renderer and then a
+    /// locker in the kernel, in that order, so the guard's `notify_one`
+    /// reaches the renderer first (Linux queues equal-priority futex waiters
+    /// in arrival order), and requires the locker to get the DWPT.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dwpt_render_passes_on_the_wake_up_a_blocked_locker_is_owed() {
+        let fixture = new_writer(config(2, 16.0));
+        let pool = fixture.writer.per_thread_pool();
+        let guard = pool.get_and_lock().unwrap();
+        let dwpt = Arc::clone(guard.dwpt());
+        let expected = guard.to_string();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+
+        let (stat_tx, stat_rx) = std::sync::mpsc::channel();
+        let (rendered_tx, rendered_rx) = std::sync::mpsc::channel();
+        let renderer = {
+            let dwpt = Arc::clone(&dwpt);
+            let stat_tx = stat_tx.clone();
+            thread::spawn(move || {
+                stat_tx.send(own_task_stat()).unwrap();
+                rendered_tx.send(dwpt.to_string()).unwrap();
+            })
+        };
+        await_parked(&dwpt, 1, &stat_rx.recv().unwrap(), deadline);
+
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let locker = {
+            let dwpt = Arc::clone(&dwpt);
+            thread::spawn(move || {
+                stat_tx.send(own_task_stat()).unwrap();
+                let guard = DocumentsWriterPerThread::lock(&dwpt);
+                acquired_tx.send(()).unwrap();
+                drop(guard);
+            })
+        };
+        await_parked(&dwpt, 2, &stat_rx.recv().unwrap(), deadline);
+
+        drop(guard);
+        let rendered = rendered_rx.recv_timeout(Duration::from_secs(10));
+        let acquired = acquired_rx.recv_timeout(Duration::from_secs(10));
+        if acquired.is_err() {
+            // Wake the stranded locker so that no thread outlives the test:
+            // a fresh lock finds the DWPT free and its drop notifies.
+            drop(DocumentsWriterPerThread::lock(&dwpt));
+        }
+        renderer.join().unwrap();
+        locker.join().unwrap();
+        assert_eq!(
+            rendered.expect("the renderer must finish once the guard is dropped"),
+            expected
+        );
+        acquired.expect("the blocked locker must get the DWPT once the guard is dropped");
+        assert_eq!(dwpt.unlock_waiters.load(Ordering::Relaxed), 0);
     }
 
     // -- DocumentsWriterPerThread ------------------------------------------

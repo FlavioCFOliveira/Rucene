@@ -23,14 +23,13 @@
 //! has no overloading, so the collection forms are named `inc_ref_files` and
 //! `dec_ref_files`. Behaviour is unchanged.
 
-use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::Arc;
 
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_file_names::SEGMENTS;
 use crate::store::Directory;
-use crate::util::java_collections::JavaHashSet;
+use crate::util::java_collections::{JavaHashMap, JavaHashSet};
 
 /// Kinds of message a [`FileDeleter`] broadcasts to its messenger.
 ///
@@ -95,14 +94,25 @@ impl RefCount {
     /// Decrements and returns the new count.
     ///
     /// Equivalent to `FileDeleter.RefCount.decRef`.
-    fn dec_ref(&mut self) -> i32 {
-        debug_assert!(
-            self.count > 0,
-            "RefCount is 0 pre-decrement for file \"{}\"",
-            self.file_name
-        );
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneErrorKind::AssertionError`] when the count is not positive, in
+    /// builds with `debug_assertions` only: Java's `assert count > 0`
+    /// (`FileDeleter.java:276-283`), evaluated under this port's `-ea`. The
+    /// count is then left unchanged, as the failed `assert` throws before
+    /// `--count`. It is an error rather than a panic because Java's caller,
+    /// `decRef(Collection)`, catches it and goes on (`FileDeleter.java:98-106`).
+    /// Java prefixes the message with the thread's name; this port does not.
+    fn dec_ref(&mut self) -> Result<i32> {
+        if cfg!(debug_assertions) && self.count <= 0 {
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
+                "RefCount is 0 pre-decrement for file \"{}\"",
+                self.file_name
+            ))));
+        }
         self.count -= 1;
-        self.count
+        Ok(self.count)
     }
 }
 
@@ -111,7 +121,11 @@ impl RefCount {
 ///
 /// Port of `org.apache.lucene.util.FileDeleter`.
 pub struct FileDeleter {
-    ref_counts: HashMap<String, RefCount>,
+    /// `refCounts`, a `java.util.HashMap` (`FileDeleter.java:41`). Its
+    /// iteration order is Java's, because [`FileDeleter::get_unrefed_files`]
+    /// walks it to fill the set `IndexFileDeleter`'s constructor deletes in
+    /// iteration order.
+    ref_counts: JavaHashMap<RefCount>,
     directory: Arc<dyn Directory>,
     messenger: Option<Messenger>,
 }
@@ -131,7 +145,7 @@ impl FileDeleter {
     /// Pass `None` for `messenger` to discard progress messages.
     pub fn new(directory: Arc<dyn Directory>, messenger: Option<Messenger>) -> Self {
         Self {
-            ref_counts: HashMap::new(),
+            ref_counts: JavaHashMap::new(),
             directory,
             messenger,
         }
@@ -157,36 +171,26 @@ impl FileDeleter {
         }
     }
 
-    /// Starts tracking `file_name`, which is not tracked yet, at a count of
-    /// zero, and returns that count.
+    /// Returns `file_name`'s count, tracking it at zero first if it is not
+    /// tracked yet.
     ///
-    /// The absent branch of the private `FileDeleter.getRefCountInternal(String)`,
+    /// Equivalent to the private `FileDeleter.getRefCountInternal(String)`,
     /// `refCounts.computeIfAbsent(fileName, RefCount::new)`
-    /// (`FileDeleter.java:132-134`): the only place a name is copied into a
-    /// key. Callers look the name up first, as `computeIfAbsent` does, so a
-    /// tracked file costs no copy. Java's method returns the count on both
-    /// branches; a Rust function returning the map's borrow cannot try the
-    /// lookup first (the borrow of the lookup would extend over the insert),
-    /// so each caller writes the lookup and calls this on a miss. The map is
-    /// passed in so that the caller can still log through the deleter.
-    fn track_new_file<'a>(
-        ref_counts: &'a mut HashMap<String, RefCount>,
+    /// (`FileDeleter.java:132-134`), which copies the name only for a new
+    /// file. The map is passed in, rather than borrowed through `self`, so
+    /// that the caller can still reach the messenger while it holds the count.
+    fn ref_count_internal<'a>(
+        ref_counts: &'a mut JavaHashMap<RefCount>,
         file_name: &str,
     ) -> &'a mut RefCount {
-        ref_counts
-            .entry(file_name.to_string())
-            .or_insert_with(|| RefCount::new(file_name))
+        ref_counts.compute_if_absent(file_name, || RefCount::new(file_name))
     }
 
     /// Increments the reference count of `file_name`.
     ///
     /// Equivalent to `FileDeleter.incRef(String)`.
     pub fn inc_ref(&mut self, file_name: &str) {
-        // PERF: `getRefCountInternal` copies the name only for a new file.
-        let rc = match self.ref_counts.get_mut(file_name) {
-            Some(rc) => rc,
-            None => Self::track_new_file(&mut self.ref_counts, file_name),
-        };
+        let rc = Self::ref_count_internal(&mut self.ref_counts, file_name);
         let pre = rc.count;
         rc.inc_ref();
         self.message(MsgType::Ref, || {
@@ -197,16 +201,20 @@ impl FileDeleter {
     /// Decrements the reference count of every file in `file_names`, deleting
     /// each file whose count reaches zero.
     ///
-    /// Every file is processed even if an earlier one fails; the first error is
-    /// returned. Lucene attaches the later failures as suppressed exceptions
-    /// (`IOUtils.useOrSuppress`, `FileDeleter.java:104`); Rust has no exception
-    /// suppression, so the later errors are dropped and only the first is
-    /// reported — the observable contract ("throws first exception hit") is the
-    /// same.
-    ///
     /// The files reaching zero are collected in a `java.util.HashSet`, in
     /// `file_names` order, and deleted in that set's iteration order
     /// (`FileDeleter.java:95-116`), `segments_N` files first.
+    ///
+    /// # Errors
+    ///
+    /// The first error hit, with every later one added to it as suppressed
+    /// (`IOUtils.useOrSuppress`, `FileDeleter.java:97-116`). Each file's count
+    /// is decremented even after a decrement failed, and the files that
+    /// reached zero are deleted before the error is returned. A decrement
+    /// fails only on the `RefCount` assertion (see `RefCount::dec_ref`), in
+    /// builds with `debug_assertions`. The delete stops at its first failed
+    /// file, as Java's `delete(Collection)` does (`FileDeleter.java:207-229`),
+    /// so it adds at most one error.
     ///
     /// Equivalent to `FileDeleter.decRef(Collection<String>)`.
     pub fn dec_ref_files<I, S>(&mut self, file_names: I) -> Result<()>
@@ -216,17 +224,24 @@ impl FileDeleter {
     {
         // `Set<String> toDelete = new HashSet<>()`.
         let mut to_delete = JavaHashSet::new();
+        // `Throwable firstThrowable = null`.
         let mut first_error: Option<LuceneError> = None;
 
         for file in file_names {
             let file = file.as_ref();
-            if self.dec_ref_one(file) {
-                to_delete.insert(file.to_string());
+            // `try { ... } catch (Throwable t) { firstThrowable =
+            // IOUtils.useOrSuppress(firstThrowable, t); }`.
+            match self.dec_ref_one(file) {
+                Ok(true) => {
+                    to_delete.insert(file.to_string());
+                }
+                Ok(false) => {}
+                Err(e) => use_or_suppress(&mut first_error, e),
             }
         }
 
         if let Err(e) = self.delete_all(&to_delete) {
-            first_error.get_or_insert(e);
+            use_or_suppress(&mut first_error, e);
         }
 
         match first_error {
@@ -237,34 +252,37 @@ impl FileDeleter {
 
     /// Decrements one file's count. Returns `true` if it should now be deleted.
     ///
-    /// Equivalent to the private `FileDeleter.decRef(String)`.
-    fn dec_ref_one(&mut self, file_name: &str) -> bool {
-        // PERF: `getRefCountInternal` copies the name only for a new file.
-        let rc = match self.ref_counts.get_mut(file_name) {
-            Some(rc) => rc,
-            None => Self::track_new_file(&mut self.ref_counts, file_name),
-        };
-        let pre = rc.count;
-        let now = rc.dec_ref();
-        self.message(MsgType::Ref, || {
-            format!("DecRef \"{file_name}\": pre-decr count is {pre}")
-        });
-        if now == 0 {
+    /// Equivalent to the private `FileDeleter.decRef(String)`
+    /// (`FileDeleter.java:120-130`): the message is sent before the
+    /// decrement, so also when the decrement's assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// The `RefCount` assertion of `RefCount::dec_ref`; the file then stays
+    /// tracked, at the count it had.
+    fn dec_ref_one(&mut self, file_name: &str) -> Result<bool> {
+        let rc = Self::ref_count_internal(&mut self.ref_counts, file_name);
+        if let Some(messenger) = &self.messenger {
+            messenger(
+                MsgType::Ref,
+                &format!("DecRef \"{file_name}\": pre-decr count is {}", rc.count),
+            );
+        }
+        if rc.dec_ref()? == 0 {
             self.ref_counts.remove(file_name);
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
     /// Records `file_name` with a count of zero if it is not yet tracked.
     ///
-    /// Equivalent to `FileDeleter.initRefCount`, whose `computeIfAbsent`
-    /// copies the name only for a new file.
+    /// Equivalent to `FileDeleter.initRefCount`,
+    /// `refCounts.computeIfAbsent(fileName, RefCount::new)`
+    /// (`FileDeleter.java:137-139`).
     pub fn init_ref_count(&mut self, file_name: &str) {
-        if !self.ref_counts.contains_key(file_name) {
-            Self::track_new_file(&mut self.ref_counts, file_name);
-        }
+        Self::ref_count_internal(&mut self.ref_counts, file_name);
     }
 
     /// Returns the reference count of `file_name`, or `0` if untracked.
@@ -274,7 +292,8 @@ impl FileDeleter {
         self.ref_counts.get(file_name).map_or(0, |rc| rc.count)
     }
 
-    /// Returns every tracked file name; some may have a count of zero.
+    /// Returns every tracked file name, in `refCounts.keySet()` order; some
+    /// may have a count of zero.
     ///
     /// Equivalent to `FileDeleter.getAllFiles`.
     pub fn get_all_files(&self) -> impl Iterator<Item = &str> + '_ {
@@ -291,12 +310,16 @@ impl FileDeleter {
             .is_some_and(|rc| rc.count > 0)
     }
 
-    /// Returns every file that is tracked but has never been incremented.
+    /// Returns every file that is tracked at a count of zero.
+    ///
+    /// The names are added to a `java.util.HashSet` in `refCounts.entrySet()`
+    /// order (`FileDeleter.java:159-170`), so the set iterates as Java's does.
     ///
     /// Equivalent to `FileDeleter.getUnrefedFiles`.
-    pub fn get_unrefed_files(&self) -> HashSet<String> {
-        let mut unrefed = HashSet::new();
-        for (file_name, rc) in &self.ref_counts {
+    pub fn get_unrefed_files(&self) -> JavaHashSet {
+        // `Set<String> unrefed = new HashSet<>()`.
+        let mut unrefed = JavaHashSet::new();
+        for (file_name, rc) in self.ref_counts.iter() {
             if rc.count == 0 {
                 self.message(MsgType::File, || {
                     format!("removing unreferenced file \"{file_name}\"")
@@ -313,13 +336,18 @@ impl FileDeleter {
     /// `IndexWriter` opens a crashed index, removes unreferenced files, and then
     /// reuses the same segment name for new work.
     ///
+    /// The files to delete are collected in a `java.util.HashSet`, in `files`
+    /// order, and deleted in that set's iteration order
+    /// (`FileDeleter.java:173-191`), `segments_N` files first.
+    ///
     /// Equivalent to `FileDeleter.deleteFilesIfNoRef`.
     pub fn delete_files_if_no_ref<I, S>(&mut self, files: I) -> Result<()>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut to_delete = HashSet::new();
+        // `Set<String> toDelete = new HashSet<>()`.
+        let mut to_delete = JavaHashSet::new();
         for file in files {
             let file_name = file.as_ref();
             if !self.exists(file_name) {
@@ -362,12 +390,12 @@ impl FileDeleter {
     ///
     /// Equivalent to the private `FileDeleter.delete(Collection<String>)`:
     /// each pass walks `to_delete` in its iteration order.
-    fn delete_all(&mut self, to_delete: &impl DeleteBatch) -> Result<()> {
+    fn delete_all(&mut self, to_delete: &JavaHashSet) -> Result<()> {
         self.message(MsgType::File, || {
             format!("now delete {} files: {to_delete:?}", to_delete.len())
         });
 
-        for file_name in to_delete.names() {
+        for file_name in to_delete.iter() {
             debug_assert!(!self.exists(file_name));
             if file_name.starts_with(SEGMENTS) {
                 self.delete_one(file_name)?;
@@ -376,7 +404,7 @@ impl FileDeleter {
 
         // Only now that every commit point is gone do we remove what they
         // referenced, so a crash never leaves a corrupt commit behind.
-        for file_name in to_delete.names() {
+        for file_name in to_delete.iter() {
             debug_assert!(!self.exists(file_name));
             if !file_name.starts_with(SEGMENTS) {
                 self.delete_one(file_name)?;
@@ -407,38 +435,19 @@ impl FileDeleter {
     }
 }
 
-/// The collection `FileDeleter.delete(Collection<String>)` walks: its size,
-/// its names in its iteration order, and its `Debug` form for the FILE
-/// message.
-trait DeleteBatch: std::fmt::Debug {
-    /// `Collection.size()`.
-    fn len(&self) -> usize;
-    /// `Collection.iterator()`, in iteration order.
-    fn names(&self) -> impl Iterator<Item = &String>;
-}
-
-/// The `java.util.HashSet` `decRef(Collection<String>)` builds.
-impl DeleteBatch for JavaHashSet {
-    fn len(&self) -> usize {
-        JavaHashSet::len(self)
-    }
-    fn names(&self) -> impl Iterator<Item = &String> {
-        self.iter()
-    }
-}
-
-/// The set [`FileDeleter::delete_files_if_no_ref`] builds.
-impl DeleteBatch for HashSet<String> {
-    fn len(&self) -> usize {
-        HashSet::len(self)
-    }
-    fn names(&self) -> impl Iterator<Item = &String> {
-        self.iter()
+/// `first = IOUtils.useOrSuppress(first, second)` (`IOUtils.java:491-498`):
+/// keeps the first error and adds every later one to it as suppressed.
+fn use_or_suppress(first: &mut Option<LuceneError>, second: LuceneError) {
+    match first {
+        Some(first) => first.add_suppressed(second),
+        None => *first = Some(second),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
     use crate::store::ByteBuffersDirectory;
 
@@ -503,7 +512,7 @@ mod tests {
         assert!(directory.list_all().unwrap().contains(&"_0.si".to_string()));
 
         assert_eq!(
-            deleter.get_unrefed_files(),
+            deleter.get_unrefed_files().to_std(),
             HashSet::from(["_0.si".to_string()])
         );
     }
@@ -535,10 +544,12 @@ mod tests {
         assert!(!directory.list_all().unwrap().contains(&"_0.si".to_string()));
     }
 
-    /// A directory that records the name of every `delete_file` call, in order.
+    /// A directory that records the name of every `delete_file` call, in order,
+    /// and fails the deletion of the names in `failing` with an `IOException`.
     struct DeleteRecordingDirectory {
         inner: Arc<dyn Directory>,
         deleted: std::sync::Mutex<Vec<String>>,
+        failing: Vec<String>,
     }
 
     impl Directory for DeleteRecordingDirectory {
@@ -547,6 +558,11 @@ mod tests {
         }
         fn delete_file(&self, name: &str) -> Result<()> {
             self.deleted.lock().unwrap().push(name.to_string());
+            if self.failing.iter().any(|f| f == name) {
+                return Err(LuceneError::from(io::Error::other(format!(
+                    "fake delete failure: {name}"
+                ))));
+            }
             self.inner.delete_file(name)
         }
         fn file_length(&self, name: &str) -> Result<i64> {
@@ -649,6 +665,7 @@ mod tests {
         let recording = Arc::new(DeleteRecordingDirectory {
             inner,
             deleted: std::sync::Mutex::new(Vec::new()),
+            failing: Vec::new(),
         });
         let mut deleter = FileDeleter::new(Arc::clone(&recording) as Arc<dyn Directory>, None);
         deleter.inc_ref_files(dec_ref_order);
@@ -661,6 +678,189 @@ mod tests {
 
     fn inner_is_empty(directory: &dyn Directory) -> bool {
         directory.list_all().unwrap().is_empty()
+    }
+
+    /// `deleteFilesIfNoRef(Collection<String>)` collects the unreferenced
+    /// files in a `java.util.HashSet`, in call order, and deletes them in its
+    /// iteration order, `segments_N` files first
+    /// (`FileDeleter.java:173-191, 207-229`). The expected sequence is the one
+    /// Lucene 10.5.0's own `FileDeleter` records on JDK 25.0.5 for the same
+    /// calls (`incRef` of the two referenced files, then
+    /// `deleteFilesIfNoRef` over `call_order`). Five buckets of the 32-entry
+    /// table hold two or three of the names, which Java keeps in insertion
+    /// order (`_5.vec` before `_1_Lucene104_0.tmd`); neither the sorted nor
+    /// the call order matches the sequence.
+    #[test]
+    fn delete_files_if_no_ref_deletes_in_java_hash_set_order() {
+        let call_order = [
+            "_5.vec",
+            "_5.vem",
+            "_4.kdm",
+            "_4.kdi",
+            "_4.kdd",
+            "segments_2",
+            "_3.si",
+            "_2_1.liv",
+            "_1_Lucene104_0.tmd",
+            "_1_Lucene104_0.tip",
+            "_1_Lucene104_0.tim",
+            "_1_Lucene104_0.doc",
+            "_1.nvm",
+            "_1.nvd",
+            "_1.fnm",
+            "_1.fdx",
+            "_1.fdt",
+            "_1.fdm",
+            "_1.si",
+            "segments_3",
+            "_0.si",
+            "_0.cfe",
+            "_0.cfs",
+            "pending_segments_4",
+            "_3.si",
+        ];
+        let referenced = ["_1.si", "segments_3"];
+        let java_order = [
+            "segments_2",
+            "_5.vec",
+            "_1_Lucene104_0.tmd",
+            "_3.si",
+            "_0.si",
+            "_0.cfs",
+            "_1.nvd",
+            "_1.nvm",
+            "_1.fnm",
+            "pending_segments_4",
+            "_1_Lucene104_0.tip",
+            "_0.cfe",
+            "_4.kdm",
+            "_1_Lucene104_0.tim",
+            "_1_Lucene104_0.doc",
+            "_1.fdm",
+            "_4.kdi",
+            "_5.vem",
+            "_1.fdx",
+            "_2_1.liv",
+            "_4.kdd",
+            "_1.fdt",
+        ];
+        let inner = dir();
+        for name in call_order {
+            if !inner.list_all().unwrap().iter().any(|f| f == name) {
+                write_file(inner.as_ref(), name);
+            }
+        }
+        let recording = Arc::new(DeleteRecordingDirectory {
+            inner,
+            deleted: std::sync::Mutex::new(Vec::new()),
+            failing: Vec::new(),
+        });
+        let mut deleter = FileDeleter::new(Arc::clone(&recording) as Arc<dyn Directory>, None);
+        deleter.inc_ref_files(referenced);
+
+        deleter.delete_files_if_no_ref(call_order).unwrap();
+
+        assert_eq!(*recording.deleted.lock().unwrap(), java_order);
+        let mut left = recording.inner.list_all().unwrap();
+        left.sort();
+        assert_eq!(left, referenced);
+    }
+
+    /// The message and the suppressed exceptions of an error, as Java prints
+    /// them (`Throwable.getMessage()`, then each of `getSuppressed()`).
+    fn messages(error: &LuceneError) -> Vec<String> {
+        fn message(error: &LuceneError) -> String {
+            match error.kind() {
+                LuceneErrorKind::AssertionError(m) => format!("AssertionError: {m}"),
+                LuceneErrorKind::Io(e) => format!("IOException: {e}"),
+                other => panic!("unexpected error kind {other:?}"),
+            }
+        }
+        std::iter::once(message(error))
+            .chain(error.get_suppressed().iter().map(|s| message(s.as_ref())))
+            .collect()
+    }
+
+    /// `decRef(Collection<String>)` catches each decrement's `Throwable`,
+    /// goes on decrementing, deletes the files that reached zero, and only
+    /// then throws the first error, with the later ones (another failed count
+    /// assertion, a failed delete) suppressed into it
+    /// (`FileDeleter.java:95-130, 276-283`; `IOUtils.useOrSuppress`). The
+    /// expected results are those of Lucene 10.5.0's own `FileDeleter` on
+    /// JDK 25.0.5 for the same calls, run with `-ea` (this port's
+    /// `debug_assertions`) and without it. Java prefixes the assertion
+    /// message with the thread's name (`main: `); the port does not.
+    #[test]
+    fn dec_ref_files_keeps_going_after_a_failed_count_assertion() {
+        let tracked = ["segments_1", "_0.si", "_0.cfs", "_0.cfe"];
+        let inner = dir();
+        for name in tracked {
+            write_file(inner.as_ref(), name);
+        }
+        let recording = Arc::new(DeleteRecordingDirectory {
+            inner,
+            deleted: std::sync::Mutex::new(Vec::new()),
+            failing: vec!["_0.cfe".to_string()],
+        });
+        let log: Arc<std::sync::Mutex<Vec<(MsgType, String)>>> = Arc::default();
+        let sink = Arc::clone(&log);
+        let messenger: Messenger = Arc::new(move |t, m| {
+            sink.lock().unwrap().push((t, m.to_string()));
+        });
+        let mut deleter = FileDeleter::new(
+            Arc::clone(&recording) as Arc<dyn Directory>,
+            Some(messenger),
+        );
+        deleter.inc_ref_files(tracked);
+        log.lock().unwrap().clear();
+
+        let error = deleter
+            .dec_ref_files(["segments_1", "_x.si", "_0.si", "_y.si", "_0.cfs", "_0.cfe"])
+            .unwrap_err();
+
+        let (expected_errors, untracked_count) = if cfg!(debug_assertions) {
+            (
+                vec![
+                    "AssertionError: RefCount is 0 pre-decrement for file \"_x.si\"",
+                    "AssertionError: RefCount is 0 pre-decrement for file \"_y.si\"",
+                    "IOException: fake delete failure: _0.cfe",
+                ],
+                0,
+            )
+        } else {
+            (vec!["IOException: fake delete failure: _0.cfe"], -1)
+        };
+        assert_eq!(messages(&error), expected_errors);
+        // Every decrement ran, the delete ran up to its failure.
+        assert_eq!(
+            *recording.deleted.lock().unwrap(),
+            ["segments_1", "_0.si", "_0.cfe"]
+        );
+        assert_eq!(recording.inner.list_all().unwrap(), ["_0.cfe", "_0.cfs"]);
+        let ref_messages: Vec<String> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _)| *t == MsgType::Ref)
+            .map(|(_, m)| m.clone())
+            .collect();
+        assert_eq!(
+            ref_messages,
+            [
+                "DecRef \"segments_1\": pre-decr count is 1",
+                "DecRef \"_x.si\": pre-decr count is 0",
+                "DecRef \"_0.si\": pre-decr count is 1",
+                "DecRef \"_y.si\": pre-decr count is 0",
+                "DecRef \"_0.cfs\": pre-decr count is 1",
+                "DecRef \"_0.cfe\": pre-decr count is 1",
+            ]
+        );
+        // The two unknown names stay tracked (`computeIfAbsent` added them).
+        let mut all: Vec<&str> = deleter.get_all_files().collect();
+        all.sort_unstable();
+        assert_eq!(all, ["_x.si", "_y.si"]);
+        assert_eq!(deleter.get_ref_count("_x.si"), untracked_count);
+        assert_eq!(deleter.get_ref_count("_y.si"), untracked_count);
     }
 
     #[test]

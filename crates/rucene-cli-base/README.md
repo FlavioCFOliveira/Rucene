@@ -169,7 +169,7 @@ optional or prohibited.
 | `--phrase WORDS` | the phrase in any default text field |
 | `--phrase-in FIELD=WORDS` | the phrase in that field (`QueryBuilder.createPhraseQuery`) |
 | `--term FIELD=VALUE` | the exact value: `TermQuery` on ids, `KeywordField.newExactQuery` on codes, flags and names (on the `_exact` copy), `newExactQuery` of the point field on numbers and dates |
-| `--terms FIELD=V1,V2` | any of the values (`TermInSetQuery`, `newSetQuery`) |
+| `--terms FIELD=V1,V2` | any of the values (`TermInSetQuery`, `newSetQuery`); `\,` is a comma inside a value and `\\` a backslash, e.g. `--terms 'local=Portugal\, Lisboa,Porto'` |
 | `--range FIELD=LO..HI` | an inclusive number or date range; either bound may be empty |
 | `--key KEY` | the document key |
 

@@ -522,9 +522,11 @@ impl IndexFileDeleter {
         inflate_gens(segment_infos, &relevant_files, info_stream.as_ref())?;
 
         // Anything still at a count of zero is abandoned — typically the debris
-        // of an IndexWriter that crashed.
+        // of an IndexWriter that crashed. `getUnrefedFiles` returns a
+        // `java.util.HashSet` filled in `refCounts` order, and it is walked and
+        // handed on in that set's order (`IndexFileDeleter.java:222-233`).
         let to_delete = this.file_deleter.get_unrefed_files();
-        for file_name in &to_delete {
+        for file_name in to_delete.iter() {
             if file_name.starts_with(SEGMENTS) {
                 return Err(LuceneError::illegal_state(format!(
                     "file \"{file_name}\" has refCount=0, which should never happen on init"
@@ -537,7 +539,7 @@ impl IndexFileDeleter {
                 );
             }
         }
-        this.file_deleter.delete_files_if_no_ref(&to_delete)?;
+        this.file_deleter.delete_files_if_no_ref(to_delete.iter())?;
 
         // Finally let the policy drop commits on startup.
         this.policy.on_init(&this.commits_as_index_commits())?;
@@ -585,7 +587,13 @@ impl IndexFileDeleter {
 
     /// Removes the commit points the policy queued, decrementing their files.
     ///
-    /// Equivalent to `IndexFileDeleter.deleteCommits`.
+    /// # Errors
+    ///
+    /// The first commit's error, with the later commits' errors added to it
+    /// as suppressed; the commit list is compacted first either way.
+    ///
+    /// Equivalent to `IndexFileDeleter.deleteCommits`
+    /// (`IndexFileDeleter.java:409-455`).
     fn delete_commits(&mut self) -> Result<()> {
         let queued: Vec<Arc<CommitPoint>> = {
             let mut guard = self
@@ -600,7 +608,9 @@ impl IndexFileDeleter {
         }
 
         // Decrement everything the now-dead commits referenced. Every commit is
-        // processed even if one fails; the first error is the one reported.
+        // processed even if one fails; the first error is the one reported,
+        // with every later one added to it as suppressed: `firstThrowable =
+        // IOUtils.useOrSuppress(firstThrowable, t)` (`IndexFileDeleter.java:417-429`).
         let mut first_error: Option<LuceneError> = None;
         for commit in &queued {
             if self.info_stream.is_enabled(IFD) {
@@ -613,7 +623,10 @@ impl IndexFileDeleter {
                 );
             }
             if let Err(e) = self.file_deleter.dec_ref_files(commit.files()) {
-                first_error.get_or_insert(e);
+                match &mut first_error {
+                    Some(first) => first.add_suppressed(e),
+                    None => first_error = Some(e),
+                }
             }
         }
 
@@ -629,12 +642,15 @@ impl IndexFileDeleter {
     /// Re-lists the directory and removes files nothing references.
     ///
     /// The writer calls this after an error forced a rollback, since that may
-    /// have left unreferenced files behind.
+    /// have left unreferenced files behind. The names are collected in a
+    /// `java.util.HashSet`, in listing order, and handed on in that set's
+    /// order (`IndexFileDeleter.java:463-493`).
     ///
     /// Equivalent to `IndexFileDeleter.refresh`.
     pub fn refresh(&mut self) -> Result<()> {
         debug_assert!(self.locked());
-        let mut to_delete: HashSet<String> = HashSet::new();
+        // `Set<String> toDelete = new HashSet<>()`.
+        let mut to_delete = JavaHashSet::new();
 
         for file_name in self.directory.list_all()? {
             if file_name.ends_with(WRITE_LOCK_NAME) || self.file_deleter.exists(&file_name) {
@@ -659,7 +675,7 @@ impl IndexFileDeleter {
             }
         }
 
-        self.file_deleter.delete_files_if_no_ref(&to_delete)
+        self.file_deleter.delete_files_if_no_ref(to_delete.iter())
     }
 
     /// Decrements the files held by the last non-commit checkpoint.
@@ -1372,6 +1388,90 @@ mod tests {
         dir.list_all().unwrap().into_iter().collect()
     }
 
+    /// A directory that records the name of every `delete_file` call, in
+    /// order, and fails the deletion of the names in `failing` with an
+    /// `IOException("fake delete failure: " + name)`, as the `FilterDirectory`
+    /// the Java oracle of these tests runs on does.
+    struct RecordingDirectory {
+        inner: Arc<dyn Directory>,
+        deleted: Mutex<Vec<String>>,
+        failing: Mutex<Vec<String>>,
+    }
+
+    impl RecordingDirectory {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                inner: Arc::new(ByteBuffersDirectory::new()),
+                deleted: Mutex::new(Vec::new()),
+                failing: Mutex::new(Vec::new()),
+            })
+        }
+
+        /// Returns the deletions recorded since the last call, and forgets
+        /// them.
+        fn take_deleted(&self) -> Vec<String> {
+            std::mem::take(&mut *self.deleted.lock().unwrap())
+        }
+    }
+
+    impl Directory for RecordingDirectory {
+        fn list_all(&self) -> Result<Vec<String>> {
+            self.inner.list_all()
+        }
+        fn delete_file(&self, name: &str) -> Result<()> {
+            self.deleted.lock().unwrap().push(name.to_string());
+            if self.failing.lock().unwrap().iter().any(|f| f == name) {
+                return Err(LuceneError::from(std::io::Error::other(format!(
+                    "fake delete failure: {name}"
+                ))));
+            }
+            self.inner.delete_file(name)
+        }
+        fn file_length(&self, name: &str) -> Result<i64> {
+            self.inner.file_length(name)
+        }
+        fn create_output(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexOutput>> {
+            self.inner.create_output(name, context)
+        }
+        fn create_temp_output(
+            &self,
+            prefix: &str,
+            suffix: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexOutput>> {
+            self.inner.create_temp_output(prefix, suffix, context)
+        }
+        fn sync(&self, names: &[String]) -> Result<()> {
+            self.inner.sync(names)
+        }
+        fn sync_metadata(&self) -> Result<()> {
+            self.inner.sync_metadata()
+        }
+        fn rename(&self, source: &str, dest: &str) -> Result<()> {
+            self.inner.rename(source, dest)
+        }
+        fn open_input(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexInput>> {
+            self.inner.open_input(name, context)
+        }
+        fn obtain_lock(&self, name: &str) -> Result<Box<dyn crate::store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+            self.inner.get_pending_deletions()
+        }
+    }
+
     // -- construction ---------------------------------------------------------
 
     #[test]
@@ -1452,6 +1552,209 @@ mod tests {
         assert!(!files.contains("_0.fdm"), "{files:?}");
         assert!(!files.contains("_0.fdt"), "{files:?}");
         assert_eq!(sis.counter, 1, "the next segment is not named _0 again");
+    }
+
+    /// The constructor deletes the debris of a crashed writer, and `refresh`
+    /// the debris of a rollback, in the order Lucene 10.5.0's own
+    /// `IndexFileDeleter` does on JDK 25.0.5 for the same directory.
+    ///
+    /// The constructor hands `deleteFilesIfNoRef` the set `getUnrefedFiles`
+    /// fills in `refCounts` order (`IndexFileDeleter.java:222-233`,
+    /// `FileDeleter.java:159-170`), so the order depends on the map's buckets
+    /// too: `refCounts` has 64, the set 32. `_1.nvm` precedes `_1.fnm` (one
+    /// map bucket, where `computeIfAbsent` puts the newer name first), and
+    /// `_2.cfe` precedes `_1_Lucene104_0.doc` and `.tim` (map buckets 20, 20,
+    /// 52); filling the set in listing order would reverse both. `refresh`
+    /// fills its set in listing order (`IndexFileDeleter.java:463-493`), so
+    /// there `_1.fnm` precedes `_1.nvm`.
+    #[test]
+    fn init_and_refresh_delete_in_lucenes_order() {
+        let recording = RecordingDirectory::new();
+        let dir: Arc<dyn Directory> = Arc::clone(&recording) as Arc<dyn Directory>;
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        for name in [
+            "_1.fdt",
+            "_1.fdm",
+            "_1.fdx",
+            "_1.fnm",
+            "_1.si",
+            "_1.nvd",
+            "_1.nvm",
+            "_1_Lucene104_0.doc",
+            "_1_Lucene104_0.tim",
+            "_1_Lucene104_0.tip",
+            "_1_Lucene104_0.tmd",
+            "_2.cfs",
+            "_2.cfe",
+            "_2.si",
+            "_2_1.liv",
+            "_3.kdd",
+            "_3.kdi",
+            "_3.kdm",
+            "_3.vec",
+            "_3.vem",
+            "_3.vex",
+            "pending_segments_2",
+            "write.lock",
+        ] {
+            touch(dir.as_ref(), name);
+        }
+        assert_eq!(dir.list_all().unwrap().len(), 27, "the oracle's listing");
+        recording.take_deleted();
+
+        let mut d = deleter(&dir, Arc::new(KeepOnlyLastCommitDeletionPolicy), &mut sis);
+
+        assert_eq!(
+            recording.take_deleted(),
+            [
+                "_1_Lucene104_0.tmd",
+                "_1.si",
+                "_2.si",
+                "_1.nvd",
+                "_3.vem",
+                "_2.cfs",
+                "pending_segments_2",
+                "_1.nvm",
+                "_1.fnm",
+                "_3.vex",
+                "_3.kdd",
+                "_1_Lucene104_0.tip",
+                "_2.cfe",
+                "_1_Lucene104_0.doc",
+                "_1_Lucene104_0.tim",
+                "_1.fdm",
+                "_3.kdi",
+                "_3.vec",
+                "_1.fdx",
+                "_3.kdm",
+                "_2_1.liv",
+                "_1.fdt",
+            ]
+        );
+        assert_eq!(
+            dir.list_all().unwrap(),
+            ["_0.fdt", "_0.fnm", "_0.si", "segments_1", "write.lock"]
+        );
+
+        for name in [
+            "_4.fdt",
+            "_4.fdm",
+            "_4.fdx",
+            "_4.fnm",
+            "_4.si",
+            "_4.cfs",
+            "_4.cfe",
+            "_4_Lucene104_0.doc",
+            "_4_Lucene104_0.tim",
+            "_4_Lucene104_0.tip",
+            "_4_Lucene104_0.tmd",
+            "_1.fnm",
+            "_1.nvm",
+            "_2_1.liv",
+            "pending_segments_3",
+            "extra.txt",
+        ] {
+            touch(dir.as_ref(), name);
+        }
+        d.refresh().unwrap();
+
+        assert_eq!(
+            recording.take_deleted(),
+            [
+                "_4.fnm",
+                "_4_Lucene104_0.tmd",
+                "_4.cfe",
+                "_1.fnm",
+                "_1.nvm",
+                "_4.fdx",
+                "pending_segments_3",
+                "_4.fdt",
+                "_4_Lucene104_0.tip",
+                "_4_Lucene104_0.doc",
+                "_4_Lucene104_0.tim",
+                "_4.cfs",
+                "_4.fdm",
+                "_2_1.liv",
+                "_4.si",
+            ]
+        );
+        assert_eq!(
+            dir.list_all().unwrap(),
+            [
+                "_0.fdt",
+                "_0.fnm",
+                "_0.si",
+                "extra.txt",
+                "segments_1",
+                "write.lock"
+            ]
+        );
+    }
+
+    /// `deleteCommits` decrements every queued commit even after one failed,
+    /// and throws the first commit's error with the later commits' errors
+    /// suppressed into it: `firstThrowable =
+    /// IOUtils.useOrSuppress(firstThrowable, t)` (`IndexFileDeleter.java:417-429,
+    /// 452-454`). The expected result is that of Lucene 10.5.0's own
+    /// `IndexFileDeleter` on JDK 25.0.5 for the same directory: three
+    /// commits, the policy dropping the two older ones, and both their
+    /// `segments_N` deletes failing.
+    #[test]
+    fn delete_commits_suppresses_the_errors_of_later_commits() {
+        let recording = RecordingDirectory::new();
+        let dir: Arc<dyn Directory> = Arc::clone(&recording) as Arc<dyn Directory>;
+        let sis1 = commit_with(dir.as_ref(), &["_0"], 1);
+        let sis2 = next_commit(dir.as_ref(), &sis1, &["_1"], 2);
+        let mut sis3 = next_commit(dir.as_ref(), &sis2, &["_2"], 3);
+        let before = dir.list_all().unwrap();
+        assert_eq!(
+            before,
+            [
+                "_0.fdt",
+                "_0.fnm",
+                "_0.si",
+                "_1.fdt",
+                "_1.fnm",
+                "_1.si",
+                "_2.fdt",
+                "_2.fnm",
+                "_2.si",
+                "segments_1",
+                "segments_2",
+                "segments_3"
+            ]
+        );
+        *recording.failing.lock().unwrap() =
+            vec!["segments_1".to_string(), "segments_2".to_string()];
+        recording.take_deleted();
+
+        let Err(error) = IndexFileDeleter::new(
+            &before,
+            Arc::clone(&dir),
+            Arc::clone(&dir),
+            Arc::new(KeepOnlyLastCommitDeletionPolicy),
+            &mut sis3,
+            info_stream(),
+            &names,
+            true,
+            false,
+        ) else {
+            panic!("the failed deletes must surface");
+        };
+
+        let io_message = |e: &LuceneError| match e.kind() {
+            LuceneErrorKind::Io(io) => io.to_string(),
+            other => panic!("expected an IOException, got {other:?}"),
+        };
+        assert_eq!(io_message(&error), "fake delete failure: segments_1");
+        let suppressed: Vec<String> = error
+            .get_suppressed()
+            .iter()
+            .map(|e| io_message(e.as_ref()))
+            .collect();
+        assert_eq!(suppressed, ["fake delete failure: segments_2"]);
+        assert_eq!(recording.take_deleted(), ["segments_1", "segments_2"]);
+        assert_eq!(dir.list_all().unwrap(), before);
     }
 
     #[test]
