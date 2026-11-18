@@ -15,7 +15,9 @@ use std::sync::{Arc, RwLock};
 
 use crate::codecs::codec_util;
 use crate::error::{LuceneError, LuceneErrorKind, Result};
-use crate::index::index_file_names::{file_name_from_generation, PENDING_SEGMENTS, SEGMENTS};
+use crate::index::index_file_names::{
+    file_name_from_generation, IndexFileName, PENDING_SEGMENTS, SEGMENTS,
+};
 use crate::index::SegmentCommitInfo;
 use crate::store::{Directory, IndexOutput};
 use crate::util::java_collections::{JavaHashSet, JavaIntHashMap, JavaStringMap};
@@ -535,11 +537,15 @@ impl SegmentInfos {
     /// Equivalent to `SegmentInfos.files(boolean)` (`SegmentInfos.java:932-947`):
     /// a `java.util.HashSet` that receives the `segments_N` name first, then
     /// every segment's [`SegmentCommitInfo::files_ordered`] in segment order.
-    pub fn files_ordered(&self, include_segments_file: bool) -> Result<JavaHashSet> {
-        let mut files = JavaHashSet::new();
+    /// The segments' names are shared with their [`SegmentInfo`]s, as Java's
+    /// `addAll` shares the `String` objects (`SegmentInfos.java:943`).
+    ///
+    /// [`SegmentInfo`]: crate::index::SegmentInfo
+    pub fn files_ordered(&self, include_segments_file: bool) -> Result<JavaHashSet<IndexFileName>> {
+        let mut files = JavaHashSet::default();
         if include_segments_file {
             if let Some(segment_file_name) = self.segments_file_name() {
-                files.insert(segment_file_name);
+                files.insert(IndexFileName::from(segment_file_name));
             }
         }
         for info in &self.segments {

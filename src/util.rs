@@ -4683,8 +4683,16 @@ impl FixedBitSet {
     }
 
     /// Writes word `i`, Java's `bits[i] = value`.
+    ///
+    /// Crate-visible for the callers that write the array `getBits()` returns,
+    /// as `docIn.readLongs(docBitSet.getBits(), 0, numLongs)` does
+    /// (`Lucene104PostingsReader.java:611`).
+    ///
+    /// # Panics
+    ///
+    /// If `i` is past the word array (Java's `ArrayIndexOutOfBoundsException`).
     #[inline]
-    fn set_word(&mut self, i: usize, value: u64) {
+    pub(crate) fn set_word(&mut self, i: usize, value: u64) {
         self.bits[i].store(value, AtomicOrdering::Relaxed);
     }
 

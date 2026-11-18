@@ -30,6 +30,7 @@ use std::sync::Arc;
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_file_names::SEGMENTS;
 use crate::store::Directory;
+use crate::util::java_collections::JavaHashSet;
 
 /// Kinds of message a [`FileDeleter`] broadcasts to its messenger.
 ///
@@ -203,13 +204,18 @@ impl FileDeleter {
     /// reported — the observable contract ("throws first exception hit") is the
     /// same.
     ///
+    /// The files reaching zero are collected in a `java.util.HashSet`, in
+    /// `file_names` order, and deleted in that set's iteration order
+    /// (`FileDeleter.java:95-116`), `segments_N` files first.
+    ///
     /// Equivalent to `FileDeleter.decRef(Collection<String>)`.
     pub fn dec_ref_files<I, S>(&mut self, file_names: I) -> Result<()>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut to_delete = HashSet::new();
+        // `Set<String> toDelete = new HashSet<>()`.
+        let mut to_delete = JavaHashSet::new();
         let mut first_error: Option<LuceneError> = None;
 
         for file in file_names {
@@ -354,13 +360,14 @@ impl FileDeleter {
     /// crash midway through can never leave a `segments_N` that points at files
     /// which are already gone. See `FileDeleter.java:212-229`.
     ///
-    /// Equivalent to the private `FileDeleter.delete(Collection<String>)`.
-    fn delete_all(&mut self, to_delete: &HashSet<String>) -> Result<()> {
+    /// Equivalent to the private `FileDeleter.delete(Collection<String>)`:
+    /// each pass walks `to_delete` in its iteration order.
+    fn delete_all(&mut self, to_delete: &impl DeleteBatch) -> Result<()> {
         self.message(MsgType::File, || {
             format!("now delete {} files: {to_delete:?}", to_delete.len())
         });
 
-        for file_name in to_delete {
+        for file_name in to_delete.names() {
             debug_assert!(!self.exists(file_name));
             if file_name.starts_with(SEGMENTS) {
                 self.delete_one(file_name)?;
@@ -369,7 +376,7 @@ impl FileDeleter {
 
         // Only now that every commit point is gone do we remove what they
         // referenced, so a crash never leaves a corrupt commit behind.
-        for file_name in to_delete {
+        for file_name in to_delete.names() {
             debug_assert!(!self.exists(file_name));
             if !file_name.starts_with(SEGMENTS) {
                 self.delete_one(file_name)?;
@@ -397,6 +404,36 @@ impl FileDeleter {
             }
             Err(e) => Err(e),
         }
+    }
+}
+
+/// The collection `FileDeleter.delete(Collection<String>)` walks: its size,
+/// its names in its iteration order, and its `Debug` form for the FILE
+/// message.
+trait DeleteBatch: std::fmt::Debug {
+    /// `Collection.size()`.
+    fn len(&self) -> usize;
+    /// `Collection.iterator()`, in iteration order.
+    fn names(&self) -> impl Iterator<Item = &String>;
+}
+
+/// The `java.util.HashSet` `decRef(Collection<String>)` builds.
+impl DeleteBatch for JavaHashSet {
+    fn len(&self) -> usize {
+        JavaHashSet::len(self)
+    }
+    fn names(&self) -> impl Iterator<Item = &String> {
+        self.iter()
+    }
+}
+
+/// The set [`FileDeleter::delete_files_if_no_ref`] builds.
+impl DeleteBatch for HashSet<String> {
+    fn len(&self) -> usize {
+        HashSet::len(self)
+    }
+    fn names(&self) -> impl Iterator<Item = &String> {
+        self.iter()
     }
 }
 
@@ -496,6 +533,134 @@ mod tests {
         deleter.dec_ref_files(["_0.si"]).unwrap();
         assert_eq!(deleter.get_all_files().count(), 0);
         assert!(!directory.list_all().unwrap().contains(&"_0.si".to_string()));
+    }
+
+    /// A directory that records the name of every `delete_file` call, in order.
+    struct DeleteRecordingDirectory {
+        inner: Arc<dyn Directory>,
+        deleted: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Directory for DeleteRecordingDirectory {
+        fn list_all(&self) -> Result<Vec<String>> {
+            self.inner.list_all()
+        }
+        fn delete_file(&self, name: &str) -> Result<()> {
+            self.deleted.lock().unwrap().push(name.to_string());
+            self.inner.delete_file(name)
+        }
+        fn file_length(&self, name: &str) -> Result<i64> {
+            self.inner.file_length(name)
+        }
+        fn create_output(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexOutput>> {
+            self.inner.create_output(name, context)
+        }
+        fn create_temp_output(
+            &self,
+            prefix: &str,
+            suffix: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexOutput>> {
+            self.inner.create_temp_output(prefix, suffix, context)
+        }
+        fn sync(&self, names: &[String]) -> Result<()> {
+            self.inner.sync(names)
+        }
+        fn sync_metadata(&self) -> Result<()> {
+            self.inner.sync_metadata()
+        }
+        fn rename(&self, source: &str, dest: &str) -> Result<()> {
+            self.inner.rename(source, dest)
+        }
+        fn open_input(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexInput>> {
+            self.inner.open_input(name, context)
+        }
+        fn obtain_lock(&self, name: &str) -> Result<Box<dyn crate::store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+            self.inner.get_pending_deletions()
+        }
+    }
+
+    /// `decRef(Collection<String>)` collects the files reaching zero in a
+    /// `java.util.HashSet` and deletes them in its iteration order,
+    /// `segments_N` files first (`FileDeleter.java:95-116, 207-229`). The
+    /// expected sequence is the one JDK 25.0.5 prints for these names added in
+    /// this order to `new HashSet<>()` and walked by those two passes; neither
+    /// the sorted nor the insertion order matches it.
+    #[test]
+    fn dec_ref_files_deletes_in_java_hash_set_order() {
+        let dec_ref_order = [
+            "_0.cfs",
+            "_0.cfe",
+            "_0.si",
+            "segments_2",
+            "_1.fdt",
+            "_1.fdx",
+            "_1.fdm",
+            "_1.fnm",
+            "_1_Lucene104_0.doc",
+            "_1_Lucene104_0.tim",
+            "_1_Lucene104_0.tip",
+            "_1_Lucene104_0.tmd",
+            "_1.nvd",
+            "_1.nvm",
+            "_1.si",
+            "segments_1",
+            "_2_1.liv",
+            "_a.si",
+        ];
+        let java_order = [
+            "segments_2",
+            "segments_1",
+            "_1_Lucene104_0.tmd",
+            "_0.si",
+            "_1.si",
+            "_0.cfs",
+            "_1.nvd",
+            "_a.si",
+            "_1.fnm",
+            "_1.nvm",
+            "_1_Lucene104_0.tip",
+            "_0.cfe",
+            "_1_Lucene104_0.doc",
+            "_1_Lucene104_0.tim",
+            "_1.fdm",
+            "_1.fdx",
+            "_2_1.liv",
+            "_1.fdt",
+        ];
+        let inner = dir();
+        for name in dec_ref_order {
+            write_file(inner.as_ref(), name);
+        }
+        let recording = Arc::new(DeleteRecordingDirectory {
+            inner,
+            deleted: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut deleter = FileDeleter::new(Arc::clone(&recording) as Arc<dyn Directory>, None);
+        deleter.inc_ref_files(dec_ref_order);
+
+        deleter.dec_ref_files(dec_ref_order).unwrap();
+
+        assert_eq!(*recording.deleted.lock().unwrap(), java_order);
+        assert!(inner_is_empty(recording.inner.as_ref()));
+    }
+
+    fn inner_is_empty(directory: &dyn Directory) -> bool {
+        directory.list_all().unwrap().is_empty()
     }
 
     #[test]

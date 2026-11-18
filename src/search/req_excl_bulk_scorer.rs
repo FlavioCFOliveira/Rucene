@@ -67,6 +67,14 @@ impl ReqExclBulkScorer {
 
 /// The loop of `ReqExclBulkScorer.score(LeafCollector, Bits, int, int)`
 /// (`ReqExclBulkScorer.java:51-78`), over the prohibited clause's view.
+///
+/// **Divergence from Lucene 10.5.0 (declared, user decision 2026-11-18).** Java
+/// keeps the exclusion's approximation and its two-phase view as two fields
+/// (`ReqExclBulkScorer.java:24-26`, set at `:28-48`). Here both are one `&mut`
+/// view, so the approximation is fetched again (`excl.approximation()`) at each
+/// move. Holding both at once would need a split-borrow accessor on
+/// [`TwoPhaseIterator`] that Lucene does not have. Measured cost: 0.313 % of the
+/// instructions of a 310-request query workload, by exact call count.
 fn score_excluding(
     req: &mut dyn BulkScorer,
     excl: &mut MemberView<'_>,

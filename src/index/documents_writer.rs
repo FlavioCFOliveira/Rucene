@@ -94,7 +94,7 @@ use crate::index::postings_enum::{PostingsEnum, POSTINGS_ENUM_NONE};
 use crate::index::terms::{SeekStatus, TermsEnum};
 use crate::index::DocValuesType;
 use crate::index::{DocumentsIterable, IndexableFieldIterable, SingleDocument};
-use crate::index::{FieldInfos, SegmentCommitInfo, SegmentInfo, Term};
+use crate::index::{FieldInfos, IndexFileName, SegmentCommitInfo, SegmentInfo, Term};
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::query::{query_to_string, Query, QueryKey};
 use crate::store::{
@@ -103,6 +103,7 @@ use crate::store::{
 };
 use crate::util::byte_block_pool::ByteBlockPool;
 use crate::util::bytes_ref_hash::BytesRefHash;
+use crate::util::java_collections::JavaHashMap;
 use crate::util::string_helper::StringHelper;
 use crate::util::{Accountable, BytesRef, FixedBitSet, InfoStream, Version};
 use crate::util::{ArrayUtil, RamUsageEstimator};
@@ -264,8 +265,8 @@ pub struct DeletedTerms {
     /// Equivalent to `DeletedTerms.pool`.
     pool: ByteBlockPool,
     /// Equivalent to `DeletedTerms.deleteTerms`, a `HashMap<String,
-    /// BytesRefIntMap>`.
-    delete_terms: HashMap<String, BytesRefIntMap>,
+    /// BytesRefIntMap>`: Java's `HashMap`, hashed with `String.hashCode`.
+    delete_terms: JavaHashMap<BytesRefIntMap>,
     /// Equivalent to `DeletedTerms.termsSize`.
     terms_size: usize,
 }
@@ -283,7 +284,7 @@ impl DeletedTerms {
         Self {
             pool: ByteBlockPool::new(Arc::clone(&bytes_used)),
             bytes_used,
-            delete_terms: HashMap::new(),
+            delete_terms: JavaHashMap::new(),
             terms_size: 0,
         }
     }
@@ -310,20 +311,16 @@ impl DeletedTerms {
     /// pool block can hold, which is Java's
     /// `BytesRefHash.MaxBytesLengthExceededException`.
     pub fn put(&mut self, term: &Term, value: i32) -> Result<()> {
-        if !self.delete_terms.contains_key(term.field()) {
-            self.bytes_used.fetch_add(
+        // PERF: one lookup, `deleteTerms.computeIfAbsent(term.field, ...)`
+        // (`BufferedUpdates.java:210-216`), where `containsKey` + `get` made two.
+        let bytes_used = &self.bytes_used;
+        let hash = self.delete_terms.compute_if_absent(term.field(), || {
+            bytes_used.fetch_add(
                 RamUsageEstimator::size_of_string(term.field()),
                 Ordering::AcqRel,
             );
-            self.delete_terms.insert(
-                term.field().to_string(),
-                BytesRefIntMap::new(Arc::clone(&self.bytes_used)),
-            );
-        }
-        let hash = self
-            .delete_terms
-            .get_mut(term.field())
-            .expect("INVARIANT: the field's map was just inserted");
+            BytesRefIntMap::new(Arc::clone(bytes_used))
+        });
         if hash.put(&mut self.pool, term.bytes().slice(), value)? {
             self.terms_size += 1;
         }
@@ -384,14 +381,15 @@ impl DeletedTerms {
         &self,
         mut consumer: impl FnMut(&Term, i32) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
-        let mut fields: Vec<&String> = self.delete_terms.keys().collect();
-        fields.sort_by(|left, right| crate::util::compare_utf16(left, right));
+        // `new ArrayList<>(deleteTerms.entrySet())` sorted with
+        // `Map.Entry.comparingByKey()`.
+        let mut fields: Vec<(&String, &BytesRefIntMap)> = self.delete_terms.iter().collect();
+        fields.sort_by(|(left, _), (right, _)| crate::util::compare_utf16(left, right));
         // `Term scratch = new Term("", new BytesRef())`.
         let mut scratch = Term::empty("");
-        for field in fields {
+        for (field, terms) in fields {
             // `scratch.field = deleteFieldEntry.getKey()`.
             scratch.set(field, crate::util::BytesRef::default());
-            let terms = &self.delete_terms[field];
             let mut hash = terms.lock_hash();
             let size = hash.size() as usize;
             // `int[] indices = terms.bytesRefHash.sort()`: the sorted ids stay
@@ -4865,11 +4863,9 @@ impl DwptGuard {
             );
             // `"flushedFiles=" + segmentInfoPerCommit.files()`: the
             // `java.util.HashSet` rendered in its own iteration order.
-            let flushed_files: Vec<String> = segment_commit_info
-                .files_ordered()?
-                .iter()
-                .cloned()
-                .collect();
+            let flushed_files = segment_commit_info.files_ordered()?;
+            let flushed_files: Vec<&str> =
+                flushed_files.iter().map(IndexFileName::as_str).collect();
             info_stream.message(
                 "DWPT",
                 &format!("flushedFiles=[{}]", flushed_files.join(", ")),

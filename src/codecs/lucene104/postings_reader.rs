@@ -1043,12 +1043,15 @@ impl BlockPostingsEnum {
             // block is encoded as a bit set
             debug_assert!(self.level0_last_doc_id != NO_MORE_DOCS);
             self.doc_bit_set_base = self.prev_doc_id + 1;
-            self.doc_bit_set.clear_all();
+            // PERF: as Java, the block's words are written in place and the
+            // set is never cleared (`Lucene104PostingsReader.java:600-612`).
+            // The words past the block keep an earlier block's bits; no
+            // reader reaches them, since every read stops at
+            // `level0_last_doc_id`, the block's last set bit.
             if bits_per_value == 0 {
-                // A full 256-doc block: no bitset longs are written.
-                for i in 0..BS {
-                    self.doc_bit_set.set(i);
-                }
+                // A full 256-doc block: no bitset longs are written; Java's
+                // `docBitSet.set(0, BLOCK_SIZE)` writes words 0..4.
+                self.doc_bit_set.set_range(0, BS);
                 if self.needs_freq {
                     // The cumulative pop counts of the words of the bit set,
                     // written over `docBuffer` as Java's
@@ -1060,17 +1063,19 @@ impl BlockPostingsEnum {
                 }
             } else {
                 let num_longs = (-bits_per_value) as usize;
-                let mut longs = vec![0i64; num_longs];
+                // PERF: Java reads the longs straight into
+                // `docBitSet.getBits()` (`Lucene104PostingsReader.java:611`).
+                // The set's words are atomics (see `FixedBitSet`), which
+                // `read_longs` cannot fill, so the longs pass through a stack
+                // array as long as the word array (`BS * 32` bits), then one
+                // store per word writes words `[0, numLongs)`.
+                let mut words = [0i64; BS * 32 / 64];
                 doc_in_util
                     .r#in
-                    .read_longs(Some(&mut longs), 0, num_longs)?;
+                    .read_longs(Some(&mut words), 0, num_longs)?;
+                let longs = &words[..num_longs];
                 for (i, &l) in longs.iter().enumerate() {
-                    let word = l as u64;
-                    for b in 0..64 {
-                        if (word >> b) & 1 != 0 {
-                            self.doc_bit_set.set(i * 64 + b);
-                        }
-                    }
+                    self.doc_bit_set.set_word(i, l as u64);
                 }
                 if self.needs_freq {
                     // The cumulative pop counts, over `docBuffer` as in Java.
@@ -2578,6 +2583,131 @@ mod tests {
         assert_eq!(it.advance(8192).unwrap(), 8192);
         assert_eq!(it.freq().unwrap(), 1);
         assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
+        reader.close().expect("close succeeds");
+    }
+
+    /// rmp #566: a bit-set block writes only its own words, as Java's
+    /// `docIn.readLongs(docBitSet.getBits(), 0, numLongs)` and
+    /// `docBitSet.set(0, BLOCK_SIZE)` do, with no clear
+    /// (`Lucene104PostingsReader.java:600-612`); the words past the block keep
+    /// an earlier block's bits. `nextDoc`, `advance`, `intoBitSet`,
+    /// `nextPostings` and `docIDRunEnd` all stop at the block's last doc, so
+    /// none of them observes those words.
+    #[test]
+    fn bit_set_blocks_never_observe_an_earlier_blocks_words() {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        const ALTERNATE: u64 = 0x5555_5555_5555_5555;
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let field_infos = field_infos_with_freqs();
+        let field_info = field_infos.field_info("body").unwrap();
+        // Block 1: every second doc of 0..=510, a bit set of 8 words.
+        let mut docs: Vec<i32> = (0..=510).step_by(2).collect();
+        // Block 2: 511..=765 and 767, a bit set of 5 words.
+        docs.extend(511..=765);
+        docs.push(767);
+        // Block 3: 768..=1023, the all-ones block (words 0..4).
+        docs.extend(768..=1023);
+        // A tail of two docs.
+        docs.extend([1030, 1040]);
+        assert_eq!(docs.len(), 3 * BS + 2);
+        let freqs: Vec<i32> = (0..docs.len()).map(|i| (i % 5) as i32 + 1).collect();
+        let postings = TestPostingsEnum::new(docs.clone(), freqs.clone(), vec![vec![]; docs.len()]);
+        let freq_of = |doc: i32| freqs[docs.binary_search(&doc).unwrap()];
+        let expected_next = |target: i32| {
+            docs.iter()
+                .copied()
+                .find(|&doc| doc >= target)
+                .unwrap_or(NO_MORE_DOCS)
+        };
+
+        let (reader, state) = write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
+            .expect("reader builds");
+        let open = |flags: i32| {
+            reader
+                .postings(field_info, &state, None, flags)
+                .expect("postings exist")
+        };
+        let words_of = |it: &mut Box<dyn PostingsEnum>| -> Vec<u64> {
+            let block = it
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<BlockPostingsEnum>())
+                .expect("a BlockPostingsEnum");
+            assert!(block.encoding == DeltaEncoding::Unary);
+            let words = block.doc_bit_set.get_bits();
+            words[..8].iter().map(|word| word.load(Relaxed)).collect()
+        };
+
+        // `nextDoc` and `freq` over every doc. Non-vacuity: blocks 2 and 3
+        // hold stale words of the blocks before them.
+        let mut it = open(crate::index::POSTINGS_ENUM_FREQS);
+        for (i, &doc) in docs.iter().enumerate() {
+            assert_eq!(it.next_doc().unwrap(), doc);
+            assert_eq!(it.freq().unwrap(), freqs[i]);
+            if doc == 767 {
+                let words = words_of(&mut it);
+                assert_eq!(words[3], u64::MAX >> 1, "doc 766 is missing");
+                assert_eq!(words[4], 1);
+                assert_eq!(words[5..8], [ALTERNATE; 3], "block 1's words");
+                assert_eq!(it.doc_id_run_end().unwrap(), 768);
+            }
+            if doc == 1000 {
+                let words = words_of(&mut it);
+                assert_eq!(words[..4], [u64::MAX; 4]);
+                assert_eq!(words[4], 1, "block 2's word");
+                assert_eq!(words[5..8], [ALTERNATE; 3], "block 1's words");
+                assert_eq!(it.doc_id_run_end().unwrap(), 1024);
+            }
+        }
+        assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
+
+        // `advance` then `nextDoc`, with and without freqs: within a block,
+        // into a gap, to a block's last doc, and across blocks (a refill).
+        let target_lists: [&[i32]; 2] = [
+            &[3, 505, 511, 700, 766, 1000, 1023, 1035],
+            &[3, 600, 800, 1024],
+        ];
+        for flags in [
+            crate::index::POSTINGS_ENUM_FREQS,
+            crate::index::POSTINGS_ENUM_NONE,
+        ] {
+            for targets in target_lists {
+                let mut it = open(flags);
+                for &target in targets {
+                    let expected = expected_next(target);
+                    assert_eq!(it.advance(target).unwrap(), expected, "advance({target})");
+                    if flags == crate::index::POSTINGS_ENUM_FREQS {
+                        assert_eq!(it.freq().unwrap(), freq_of(expected));
+                    }
+                    let after = expected_next(expected + 1);
+                    assert_eq!(it.next_doc().unwrap(), after, "next_doc after {expected}");
+                }
+            }
+        }
+
+        // `intoBitSet` up to the middle of block 2, then past the blocks.
+        let mut it = open(crate::index::POSTINGS_ENUM_FREQS);
+        assert_eq!(it.next_doc().unwrap(), 0);
+        let mut bits = FixedBitSet::new(1100);
+        it.into_bit_set(600, &mut bits, 0).unwrap();
+        assert_eq!(it.doc_id(), 600);
+        it.into_bit_set(1035, &mut bits, 0).unwrap();
+        assert_eq!(it.doc_id(), 1040);
+        for doc in 0..1100 {
+            let expected = doc < 1035 && docs.binary_search(&(doc as i32)).is_ok();
+            assert_eq!(bits.get(doc), expected, "bit {doc}");
+        }
+
+        // `nextPostings` from inside block 2: its docs only, then block 3.
+        let mut it = open(crate::index::POSTINGS_ENUM_FREQS);
+        assert_eq!(it.advance(600).unwrap(), 600);
+        let mut buffer = crate::index::postings_enum::DocAndFloatFeatureBuffer::new();
+        it.next_postings(NO_MORE_DOCS, &mut buffer).unwrap();
+        let expected: Vec<i32> = (600..=765).chain([767]).collect();
+        assert_eq!(buffer.docs[..buffer.size], expected[..]);
+        let expected_freqs: Vec<f32> = expected.iter().map(|&doc| freq_of(doc) as f32).collect();
+        assert_eq!(buffer.features[..buffer.size], expected_freqs[..]);
+        assert_eq!(it.doc_id(), 768);
         reader.close().expect("close succeeds");
     }
 }

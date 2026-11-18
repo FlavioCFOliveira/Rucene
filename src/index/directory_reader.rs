@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_commit::IndexCommit;
-use crate::index::index_file_names::SEGMENTS;
+use crate::index::index_file_names::{IndexFileName, SEGMENTS};
 use crate::index::index_reader::{
     add_closed_listener_to_set, build_composite_context, CacheHelper, CacheKey, ClosedListener,
     CompositeReader, IndexReader, IndexReaderCore, StoredFields,
@@ -1453,7 +1453,7 @@ struct ReaderCommit {
     /// `Collections.unmodifiableCollection(infos.files(true))`
     /// (`StandardDirectoryReader.java:593`): the `java.util.HashSet`
     /// `SegmentInfos.files` builds, iteration order included.
-    files: JavaHashSet,
+    files: JavaHashSet<IndexFileName>,
     directory: Arc<dyn Directory>,
     generation: i64,
     user_data: HashMap<String, String>,
@@ -1530,7 +1530,7 @@ impl std::fmt::Display for ReaderCommit {
     /// the files render as `AbstractCollection.toString` does, in the
     /// `HashSet`'s iteration order.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let files: Vec<&str> = self.files.iter().map(String::as_str).collect();
+        let files: Vec<&str> = self.files.iter().map(IndexFileName::as_str).collect();
         write!(
             f,
             "StandardDirectoryReader.ReaderCommit({} files=[{}])",

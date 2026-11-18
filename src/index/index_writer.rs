@@ -40,7 +40,7 @@ use crate::index::segment_infos::SegmentInfos;
 use crate::index::segment_merger::SegmentMerger;
 use crate::index::segment_reader::SegmentReader;
 use crate::index::{
-    DocValuesType, DocumentsIterable, DocumentsIterableRef, IndexableFieldIterable,
+    DocValuesType, DocumentsIterable, DocumentsIterableRef, IndexFileName, IndexableFieldIterable,
     IndexableFieldType, SingleDocument, Term,
 };
 use crate::search::Sort;
@@ -129,7 +129,7 @@ struct WriterState {
     /// without that reference a merge committing in between would delete the
     /// files of the segments it merged away while the pending commit still
     /// names them.
-    files_to_commit: Option<JavaHashSet>,
+    files_to_commit: Option<JavaHashSet<IndexFileName>>,
     /// Deletes files no commit references any more.
     deleter: IndexFileDeleter,
     /// Merges the policy asked for but the scheduler has not started.
@@ -3260,7 +3260,9 @@ impl IndexWriter {
             // false; pendingCommit = null; toSync.rollbackCommit(directory); } }`
             // (`IndexWriter.java:5770-5782`): listing the files is guarded too.
             let synced_files = synced.files_ordered(false).and_then(|files| {
-                let files_to_sync: Vec<String> = files.into_iter().collect();
+                // `Directory::sync` takes owned names: a shared name is copied
+                // here, where Java passes the set itself.
+                let files_to_sync: Vec<String> = files.into_iter().map(String::from).collect();
                 self.directory.sync(&files_to_sync)?;
                 Ok(files_to_sync)
             });
@@ -11383,7 +11385,12 @@ mod tests {
 
         let infos = SegmentInfos::read_latest_commit(Arc::clone(&inner)).unwrap();
         assert_eq!(infos.size(), 3);
-        let expected: Vec<String> = infos.files_ordered(false).unwrap().into_iter().collect();
+        let expected: Vec<String> = infos
+            .files_ordered(false)
+            .unwrap()
+            .into_iter()
+            .map(String::from)
+            .collect();
         assert!(expected.len() > 5, "{expected:?}");
         let synced = recording.synced.lock().unwrap().clone();
         let commit_sync = synced

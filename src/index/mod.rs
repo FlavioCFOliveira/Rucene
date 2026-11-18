@@ -87,7 +87,7 @@ pub use doc_values::{
 pub use field_infos::{FieldInfo, FieldInfos, FieldInfosBuilder, FieldNumbers};
 pub use index_file_names::{
     file_name_from_generation, get_extension, is_codec_file, matches_extension, parse_generation,
-    parse_segment_name, segment_file_name, strip_extension, strip_segment_name,
+    parse_segment_name, segment_file_name, strip_extension, strip_segment_name, IndexFileName,
     COMPOUND_FILE_ENTRIES_EXTENSION, COMPOUND_FILE_EXTENSION, DOC_VALUES_EXTENSION,
     DOC_VALUES_META_EXTENSION, FIELD_INFO_EXTENSION, KNN_VECTORS_EXTENSION,
     KNN_VECTORS_FORMAT_META_EXTENSION, KNN_VECTORS_INDEX_EXTENSION, KNN_VECTORS_META_EXTENSION,

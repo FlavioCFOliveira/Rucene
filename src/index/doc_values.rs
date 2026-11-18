@@ -214,7 +214,7 @@ pub trait SortedDocValues: DocValuesIterator {
     /// (`SortedDocValues.java:45-53`): the returned [`BytesRef`] is lent from
     /// these values and may be reused by the next call, so a caller that keeps
     /// it copies it ([`BytesRef::deep_copy_of`], or into its own
-    /// [`BytesRefBuilder`](crate::util::BytesRefBuilder)), as a Java caller
+    /// [`BytesRefBuilder`]), as a Java caller
     /// does. The borrow ends at the next call on these values.
     fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef>;
 

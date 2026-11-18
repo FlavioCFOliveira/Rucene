@@ -79,7 +79,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::index_commit::IndexCommit;
 use crate::index::index_deletion_policy::IndexDeletionPolicy;
 use crate::index::index_file_names::{
-    is_codec_file, parse_generation, parse_segment_name, PENDING_SEGMENTS, SEGMENTS,
+    is_codec_file, parse_generation, parse_segment_name, IndexFileName, PENDING_SEGMENTS, SEGMENTS,
 };
 use crate::index::index_writer::IndexWriter;
 use crate::index::segment_infos::SegmentInfos;
@@ -124,7 +124,7 @@ pub struct CommitPoint {
     /// (`IndexFileDeleter.java:670`): the `java.util.HashSet`
     /// `SegmentInfos.files` builds, iteration order included, which is the
     /// order `deleteCommits` decrements it in.
-    files: JavaHashSet,
+    files: JavaHashSet<IndexFileName>,
     segments_file_name: String,
     deleted: AtomicBool,
     directory_orig: Arc<dyn Directory>,
@@ -189,7 +189,7 @@ impl CommitPoint {
 
     /// Returns the files this commit point references, including its
     /// `segments_N`.
-    fn files(&self) -> &JavaHashSet {
+    fn files(&self) -> &JavaHashSet<IndexFileName> {
         &self.files
     }
 }
@@ -278,7 +278,7 @@ pub struct IndexFileDeleter {
     commits: Vec<Arc<CommitPoint>>,
 
     /// Files incremented by the previous *non-commit* checkpoint.
-    last_files: Vec<String>,
+    last_files: Vec<IndexFileName>,
 
     /// Commits the deletion policy has asked to remove, not yet processed.
     commits_to_delete: Arc<Mutex<Vec<Arc<CommitPoint>>>>,

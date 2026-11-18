@@ -2091,7 +2091,7 @@ impl BKDReader {
     ///
     /// The inputs must be positioned at the start of their respective BKD
     /// sections. A borrowed input cannot be kept, so the reader keeps a clone
-    /// of `index_in` and of `data_in`; see [`Self::new_shared`] for the
+    /// of `index_in` and of `data_in`; see `new_shared` (crate-private) for the
     /// constructor that keeps the inputs themselves, as Java does.
     pub fn new(
         meta_in: &mut dyn IndexInput,
