@@ -83,6 +83,26 @@ impl Similarity for MultiSimilarity {
             .collect();
         Box::new(MultiSimScorer::new(sub_scorers))
     }
+
+    /// The sum of the sub-similarities' owned scorers, each built once, as
+    /// `MultiSimilarity.scorer` builds `sims[i].scorer(...)` once per weight
+    /// (`MultiSimilarity.java:47-54`); see [`Similarity::scorer_owned`].
+    fn scorer_owned(
+        self: Arc<Self>,
+        boost: f32,
+        collection_stats: &CollectionStatistics,
+        term_stats: &[TermStatistics],
+    ) -> Box<dyn SimScorer + Send + Sync + 'static>
+    where
+        Self: 'static,
+    {
+        let sub_scorers: Vec<Box<dyn SimScorer + Send + Sync + 'static>> = self
+            .sims
+            .iter()
+            .map(|sim| Arc::clone(sim).scorer_owned(boost, collection_stats, term_stats))
+            .collect();
+        Box::new(MultiSimScorer::new(sub_scorers))
+    }
 }
 
 /// Sums the scores of several sub-scorers.
@@ -91,18 +111,22 @@ impl Similarity for MultiSimilarity {
 /// (`MultiSimilarity.java:56-80`), which Java declares package-private and
 /// reuses from `SimilarityBase.scorer` for multi-term queries; the crate
 /// visibility here plays the same role.
-pub(crate) struct MultiSimScorer<'a> {
-    sub_scorers: Vec<Box<dyn SimScorer + 'a>>,
+///
+/// `T` is the boxed sub-scorer type: `dyn SimScorer + 'a` for the scorers
+/// [`Similarity::scorer`] builds, `dyn SimScorer + Send + Sync` for the owned
+/// ones of [`Similarity::scorer_owned`].
+pub(crate) struct MultiSimScorer<T: SimScorer + ?Sized> {
+    sub_scorers: Vec<Box<T>>,
 }
 
-impl<'a> MultiSimScorer<'a> {
+impl<T: SimScorer + ?Sized> MultiSimScorer<T> {
     /// Creates a scorer summing `sub_scorers`.
-    pub(crate) fn new(sub_scorers: Vec<Box<dyn SimScorer + 'a>>) -> Self {
+    pub(crate) fn new(sub_scorers: Vec<Box<T>>) -> Self {
         Self { sub_scorers }
     }
 }
 
-impl SimScorer for MultiSimScorer<'_> {
+impl<T: SimScorer + ?Sized> SimScorer for MultiSimScorer<T> {
     fn score(&self, freq: f32, norm: i64) -> f32 {
         // Java accumulates into a `double` and narrows once at the end.
         let mut sum = 0.0f64;

@@ -56,6 +56,21 @@ impl Similarity for RawTFSimilarity {
         let _ = (collection_stats, term_stats);
         Box::new(RawTFScorer { boost })
     }
+
+    /// The very scorer [`scorer`](Similarity::scorer) builds, which borrows
+    /// nothing; see [`Similarity::scorer_owned`].
+    fn scorer_owned(
+        self: std::sync::Arc<Self>,
+        boost: f32,
+        collection_stats: &CollectionStatistics,
+        term_stats: &[TermStatistics],
+    ) -> Box<dyn SimScorer + Send + Sync + 'static>
+    where
+        Self: 'static,
+    {
+        let _ = (collection_stats, term_stats);
+        Box::new(RawTFScorer { boost })
+    }
 }
 
 /// Equivalent to the anonymous `SimScorer` subclass

@@ -1657,6 +1657,25 @@ impl FloatVectorValues for OffHeapFloatVectorValues {
         Ok(value)
     }
 
+    /// Reads vector `ord` straight into `dest`: `slice.seek(...)` and
+    /// `slice.readFloats(value, 0, value.length)` as Java's `vectorValue`
+    /// does (`OffHeapFloatVectorValues.java:78-86`), into the caller's buffer
+    /// instead of the reused `value` array.
+    fn vector_value_into(&self, ord: i32, dest: &mut [f32]) -> Result<()> {
+        if dest.len() != self.dimension as usize {
+            // The trait's answer, after the read it makes first.
+            let value = self.vector_value(ord)?;
+            return Err(LuceneError::illegal_argument(format!(
+                "destination length {} does not match vector dimension {}",
+                dest.len(),
+                value.len()
+            )));
+        }
+        let mut slice = self.get_slice()?;
+        slice.seek((ord as i64) * self.byte_size as i64)?;
+        slice.read_floats(Some(dest), 0, self.dimension as usize)
+    }
+
     /// Scores `query` against a copy of these values, driven by the copy's
     /// own iterator.
     ///
@@ -1992,6 +2011,21 @@ impl ByteVectorValues for OffHeapByteVectorValues {
         let mut value = vec![0u8; self.dimension as usize];
         self.read_value(ord, &mut value)?;
         Ok(value)
+    }
+
+    /// Reads vector `ord` straight into `dest`, as Java's `vectorValue` reads
+    /// into its reused `binaryValue` (`OffHeapByteVectorValues.java:75-82`).
+    fn vector_value_into(&self, ord: i32, dest: &mut [u8]) -> Result<()> {
+        if dest.len() != self.dimension as usize {
+            // The trait's answer, after the read it makes first.
+            let value = self.vector_value(ord)?;
+            return Err(LuceneError::illegal_argument(format!(
+                "destination length {} does not match vector dimension {}",
+                dest.len(),
+                value.len()
+            )));
+        }
+        self.read_value(ord, dest)
     }
 
     /// Scores `query` against a copy of these values, driven by the copy's

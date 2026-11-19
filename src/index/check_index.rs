@@ -3363,7 +3363,7 @@ fn check_fields(
     let mut computed_field_count = 0i32;
 
     let mut postings: Option<Box<dyn PostingsEnum>> = None;
-    let mut bulk_postings: Option<Box<dyn PostingsEnum>>;
+    let mut bulk_postings: Option<Box<dyn PostingsEnum>> = None;
 
     let mut last_field: Option<String> = None;
     let field_names: Vec<String> = fields.iterator().collect();
@@ -3555,8 +3555,11 @@ fn check_fields(
             let mut p = terms_enum
                 .postings(postings.take(), POSTINGS_ENUM_ALL)?
                 .ok_or_else(LuceneError::null_pointer)?;
+            // `bulkPostings = termsEnum.postings(bulkPostings, PostingsEnum.ALL)`
+            // (`CheckIndex.java:1633`): the previous term's enum is offered for
+            // reuse.
             let mut bulk = terms_enum
-                .postings(None, POSTINGS_ENUM_ALL)?
+                .postings(bulk_postings.take(), POSTINGS_ENUM_ALL)?
                 .ok_or_else(LuceneError::null_pointer)?;
             bulk.next_doc()?;
             let mut buffer = DocAndFloatFeatureBuffer::new();
@@ -4068,7 +4071,6 @@ fn check_fields(
 
             postings = Some(p);
             bulk_postings = Some(bulk);
-            let _ = bulk_postings;
         }
 
         if min_term.is_some() && status.term_count + status.del_term_count == 0 {

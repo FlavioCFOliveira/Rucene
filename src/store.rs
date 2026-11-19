@@ -770,18 +770,59 @@ pub trait DataOutput {
     ///
     /// Returns `LuceneErrorKind::IllegalArgument` when `num_bytes` is negative, and
     /// propagates whatever reading or writing raises.
-    fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
-        // `assert numBytes >= 0 : "numBytes=" + numBytes`; a negative count
-        // copies nothing, as Java's loop does.
-        debug_assert!(num_bytes >= 0, "numBytes={}", num_bytes);
+    ///
+    /// A trait method cannot hold Java's per-instance `copyBuffer`, so this
+    /// default allocates the 16 KiB buffer per call; the outputs that copy
+    /// large files keep one buffer each instead, as Java does
+    /// ([`CopyBuffer`]).
+    fn copy_bytes(&mut self, input: &mut dyn DataInput, num_bytes: i64) -> Result<()> {
         let mut buffer = vec![0u8; COPY_BUFFER_SIZE];
-        while num_bytes > 0 {
-            let to_copy = (num_bytes as usize).min(COPY_BUFFER_SIZE);
-            input.read_bytes(Some(&mut buffer), 0, to_copy)?;
-            self.write_bytes(&buffer, 0, to_copy)?;
-            num_bytes -= to_copy as i64;
-        }
-        Ok(())
+        copy_bytes_through(self, &mut buffer, input, num_bytes)
+    }
+}
+
+/// The loop of `DataOutput.copyBytes(DataInput, long)`
+/// (`DataOutput.java:284-293`): `num_bytes` bytes, at most `buffer.len()` at a
+/// time, read from `input` and written to `out`.
+pub(crate) fn copy_bytes_through<O: DataOutput + ?Sized>(
+    out: &mut O,
+    buffer: &mut [u8],
+    input: &mut dyn DataInput,
+    mut num_bytes: i64,
+) -> Result<()> {
+    // `assert numBytes >= 0 : "numBytes=" + numBytes`; a negative count
+    // copies nothing, as Java's loop does.
+    debug_assert!(num_bytes >= 0, "numBytes={}", num_bytes);
+    while num_bytes > 0 {
+        let to_copy = (num_bytes as usize).min(buffer.len());
+        input.read_bytes(Some(buffer), 0, to_copy)?;
+        out.write_bytes(buffer, 0, to_copy)?;
+        num_bytes -= to_copy as i64;
+    }
+    Ok(())
+}
+
+/// The `copyBuffer` field of a `DataOutput` (`DataOutput.java:278-279`): the
+/// 16 KiB buffer `copyBytes` allocates on its first call
+/// (`if (copyBuffer == null) copyBuffer = new byte[COPY_BUFFER_SIZE]`,
+/// `DataOutput.java:284`) and reuses on the next ones.
+///
+/// An output that owns one copies with [`take`](Self::take), then
+/// [`copy_bytes_through`], then [`restore`](Self::restore).
+#[derive(Default)]
+pub(crate) struct CopyBuffer(Option<Box<[u8]>>);
+
+impl CopyBuffer {
+    /// The buffer, allocated on first use.
+    pub(crate) fn take(&mut self) -> Box<[u8]> {
+        self.0
+            .take()
+            .unwrap_or_else(|| vec![0u8; COPY_BUFFER_SIZE].into_boxed_slice())
+    }
+
+    /// Keeps `buffer` for the next copy.
+    pub(crate) fn restore(&mut self, buffer: Box<[u8]>) {
+        self.0 = Some(buffer);
     }
 }
 
@@ -7393,19 +7434,211 @@ pub const MAX_BLOCKS_BEFORE_BLOCK_EXPANSION: usize = 100;
 /// `org.apache.lucene.store.ByteBuffersDataOutput.MAX_CHARS_PER_WINDOW`.
 const MAX_CHARS_PER_WINDOW: usize = 1024;
 
+/// A heap `java.nio.ByteBuffer` view of a byte block: the block's content is
+/// shared by every view of it, and each view has its own position and limit.
+///
+/// Equivalent to the heap `ByteBuffer`s a [`ByteBuffersDataInput`] reads:
+/// `ByteBuffer.wrap(byte[])` ([`wrap`](Self::wrap)), and the views
+/// `duplicate()` and `asReadOnlyBuffer()` ([`duplicate`](Self::duplicate)),
+/// which share the wrapped array and copy its position and limit. Several
+/// views of one block hold it once: `TestByteBuffersDataInput.testSlicingLargeBuffers`
+/// (`TestByteBuffersDataInput.java:255-265`) builds a 4 GB input from views of
+/// one 4 MB page, and [`ByteBuffersDataOutput::to_data_input`] hands out views
+/// of the output's own blocks (`ByteBuffersDataOutput.java:236-247`).
+///
+/// Only what `ByteBuffersDataInput` and its callers use is ported: absolute
+/// reads index the content from its start up to the limit, as Java's
+/// `get(int)` does. A view is read-only, which is the only kind
+/// `ByteBuffersDataInput` keeps (`ByteBuffersDataInput.java:58-60`).
+///
+/// `capacity()` is the block's `Vec::capacity`, the figure this port's
+/// accounting has always charged for a block (see [`ByteBuffersDataInput`]'s
+/// `ram_bytes_used`); the content readable through any view ends at the
+/// block's length, which bounds the limit as Java's capacity bounds it.
+#[derive(Clone)]
+pub struct ByteBuffer {
+    content: Arc<Vec<u8>>,
+    position: usize,
+    limit: usize,
+}
+
+impl ByteBuffer {
+    /// Wraps `array`: position 0, limit its length.
+    ///
+    /// Equivalent to `ByteBuffer.wrap(byte[])`. The vector moves into the
+    /// shared block; no byte is copied.
+    pub fn wrap(array: Vec<u8>) -> Self {
+        let limit = array.len();
+        Self {
+            content: Arc::new(array),
+            position: 0,
+            limit,
+        }
+    }
+
+    /// Wraps a block another owner already shares, as a view of its whole
+    /// content.
+    fn of_block(content: Arc<Vec<u8>>) -> Self {
+        let limit = content.len();
+        Self {
+            content,
+            position: 0,
+            limit,
+        }
+    }
+
+    /// A new view of the same content, with this view's position and limit.
+    ///
+    /// Equivalent to `ByteBuffer.duplicate()` (and, for a view that is
+    /// already read-only, `asReadOnlyBuffer()`): the content is shared, not
+    /// copied.
+    pub fn duplicate(&self) -> Self {
+        self.clone()
+    }
+
+    /// Equivalent to `ByteBuffer.position()`.
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
+    /// Sets the position.
+    ///
+    /// Equivalent to `ByteBuffer.position(int)`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException("newPosition > limit: (<p> > <limit>)")`
+    /// when `new_position` exceeds the limit, as `Buffer.createPositionException`
+    /// words it.
+    pub fn set_position(&mut self, new_position: usize) -> Result<()> {
+        if new_position > self.limit {
+            return Err(LuceneError::illegal_argument(format!(
+                "newPosition > limit: ({new_position} > {})",
+                self.limit
+            )));
+        }
+        self.position = new_position;
+        Ok(())
+    }
+
+    /// Equivalent to `ByteBuffer.limit()`.
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Sets the limit; a position past it moves back to it.
+    ///
+    /// Equivalent to `ByteBuffer.limit(int)`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException("newLimit > capacity: (<l> > <length>)")`
+    /// when `new_limit` exceeds the content, as `Buffer.createLimitException`
+    /// words it.
+    pub fn set_limit(&mut self, new_limit: usize) -> Result<()> {
+        if new_limit > self.content.len() {
+            return Err(LuceneError::illegal_argument(format!(
+                "newLimit > capacity: ({new_limit} > {})",
+                self.content.len()
+            )));
+        }
+        self.limit = new_limit;
+        if self.position > new_limit {
+            self.position = new_limit;
+        }
+        Ok(())
+    }
+
+    /// Equivalent to `ByteBuffer.remaining()`: `limit - position`.
+    pub fn remaining(&self) -> usize {
+        self.limit - self.position
+    }
+
+    /// The capacity charged for the block (see the type's documentation).
+    pub fn capacity(&self) -> usize {
+        self.content.capacity()
+    }
+
+    /// The bytes up to the limit, indexed as Java's absolute `get(int)`:
+    /// from the start of the block.
+    pub fn as_slice(&self) -> &[u8] {
+        &self.content[..self.limit]
+    }
+
+    /// The whole content of the block, past the limit too.
+    #[inline]
+    fn content(&self) -> &[u8] {
+        &self.content
+    }
+}
+
+impl PartialEq for ByteBuffer {
+    /// Equivalent to `ByteBuffer.equals(Object)`: the same remaining bytes.
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice()[self.position..] == other.as_slice()[other.position..]
+    }
+}
+
+impl Eq for ByteBuffer {}
+
+impl std::hash::Hash for ByteBuffer {
+    /// The remaining bytes, consistent with [`PartialEq`].
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_slice()[self.position..].hash(state);
+    }
+}
+
+impl From<Vec<u8>> for ByteBuffer {
+    /// [`ByteBuffer::wrap`].
+    fn from(array: Vec<u8>) -> Self {
+        Self::wrap(array)
+    }
+}
+
+impl std::fmt::Debug for ByteBuffer {
+    /// The bytes up to the limit, and the position when it is not zero.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.position == 0 {
+            self.as_slice().fmt(f)
+        } else {
+            f.debug_struct("ByteBuffer")
+                .field("position", &self.position)
+                .field("bytes", &self.as_slice())
+                .finish()
+        }
+    }
+}
+
+/// The block of a [`ByteBuffersDataOutput`] as a `Vec`, for a caller that
+/// needs to own it: the block itself when no input shares it any more, or a
+/// copy of the same content and capacity when one does.
+///
+/// Java hands its very block over (to `blockReuse`, or out of
+/// `toWriteableBufferList()`) and an input still viewing it then reads
+/// whatever is written there next; Rust cannot let one owner overwrite bytes
+/// another reads, so a shared block is copied, which leaves the input with
+/// the content its view was taken over.
+fn unshare_block(block: Arc<Vec<u8>>) -> Vec<u8> {
+    Arc::try_unwrap(block).unwrap_or_else(|shared| {
+        let mut copy = Vec::with_capacity(shared.capacity());
+        copy.extend_from_slice(&shared);
+        copy
+    })
+}
+
 /// A [`DataInput`] reading from a list of in-memory byte buffers.
 ///
 /// Equivalent to `org.apache.lucene.store.ByteBuffersDataInput`. All buffers
 /// except the last must share an identical power-of-two length; the last may be
 /// shorter.
 ///
-/// The blocks are held as `B`, by default an `Arc<[Vec<u8>]>` that every
+/// The blocks are held as `B`, by default an `Arc<[ByteBuffer]>` that every
 /// input over them shares, as Java's inputs share their `ByteBuffer`s: the
-/// constructor wraps the caller's buffers in read-only views
-/// (`ByteBuffersDataInput.java:55-61`), and [`slice`](Self::slice) — and
-/// with it every `ByteBuffersIndexInput` slice and clone — hands the new
-/// input views over the same blocks (`ByteBuffersDataInput.java:406-418,
-/// 487-523`), copying no bytes.
+/// constructor keeps the caller's views (`ByteBuffersDataInput.java:55-61`),
+/// which may all view one block, and [`slice`](Self::slice) — and with it
+/// every `ByteBuffersIndexInput` slice and clone — hands the new input views
+/// over the same blocks (`ByteBuffersDataInput.java:406-418, 487-523`),
+/// copying no bytes.
 ///
 /// A Java view is a position and a limit over a shared block. This input is
 /// the run of `block_count` views that starts at block `first_block` of
@@ -7415,7 +7648,7 @@ const MAX_CHARS_PER_WINDOW: usize = 1024;
 /// `ByteBuffer.allocate(0)` as its last view; `empty_tail` stands for that
 /// buffer, which belongs to no block of `blocks`.
 #[derive(Clone, Debug)]
-pub struct ByteBuffersDataInput<B = Arc<[Vec<u8>]>> {
+pub struct ByteBuffersDataInput<B = Arc<[ByteBuffer]>> {
     blocks: B,
     /// Index in `blocks` of this input's first view (Java's `blocks[0]`).
     first_block: usize,
@@ -7443,8 +7676,8 @@ pub struct ByteBuffersDataInput<B = Arc<[Vec<u8>]>> {
 /// `NUM_BYTES_OBJECT_REF * blocks.length + Sum(block.capacity())`
 /// (`ByteBuffersDataInput.java:86-91`). Java charges the *capacity* of each
 /// buffer, not the bytes readable through it, and adds one object reference per
-/// block; `Vec::capacity` is this port's `ByteBuffer.capacity()` just as
-/// `Vec::len` is its `remaining()`, so the same two terms are summed here.
+/// block; [`ByteBuffer::capacity`] is the block's `Vec::capacity`, so the same
+/// two terms are summed here.
 ///
 /// Java calls this "a rough estimation for allocated blocks" and deliberately
 /// leaves out the shallow size of the object itself, so nothing is added for it
@@ -7453,57 +7686,69 @@ pub struct ByteBuffersDataInput<B = Arc<[Vec<u8>]>> {
 /// A view's `capacity()` is that of the buffer it views (`asReadOnlyBuffer()`
 /// keeps it), so a slice is charged its whole blocks, and the empty tail of a
 /// slice ending on a block boundary, `ByteBuffer.allocate(0)`, nothing.
-impl<B: std::ops::Deref<Target = [Vec<u8>]>> crate::util::Accountable for ByteBuffersDataInput<B> {
+impl<B: std::ops::Deref<Target = [ByteBuffer]>> crate::util::Accountable
+    for ByteBuffersDataInput<B>
+{
     fn ram_bytes_used(&self) -> i64 {
         let real = self.block_count - usize::from(self.empty_tail);
         self.block_count as i64 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF
             + self.blocks[self.first_block..self.first_block + real]
                 .iter()
-                .map(Vec::capacity)
+                .map(ByteBuffer::capacity)
                 .sum::<usize>() as i64
     }
 }
 
 impl ByteBuffersDataInput {
-    /// Creates an input over a set of contiguous byte buffers.
+    /// Creates an input over a set of contiguous byte buffers: [`ByteBuffer`]
+    /// views, or `Vec<u8>` blocks, which are wrapped without a copy.
+    ///
+    /// Equivalent to `ByteBuffersDataInput(List<ByteBuffer>)`
+    /// (`ByteBuffersDataInput.java:55-83`): the input keeps the views, which
+    /// may share their blocks, and starts at the first view's `position()`.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`] if the buffer layout assumptions
     /// are violated.
-    pub fn new(buffers: Vec<Vec<u8>>) -> Result<Self> {
-        Self::with_first_position(buffers, 0)
+    pub fn new<T: Into<ByteBuffer>>(buffers: Vec<T>) -> Result<Self> {
+        let buffers: Arc<[ByteBuffer]> = buffers.into_iter().map(Into::into).collect();
+        let first_position = buffers.first().map_or(0, ByteBuffer::position);
+        Self::over_blocks(buffers, first_position)
     }
 
     /// Creates an input over a set of contiguous byte buffers whose first
     /// buffer is positioned at `first_position`: the stream starts there, and
     /// the bytes of the first buffer before it are not part of it.
     ///
-    /// Equivalent to `ByteBuffersDataInput(List<ByteBuffer>)`
-    /// (`ByteBuffersDataInput.java:55-83`) when `buffers.get(0).position()`
-    /// is `first_position`: a Rust buffer carries no position, so it is
-    /// given here, and the first buffer holds `position() + remaining()`
-    /// bytes, what `determineBlockPage` measures.
+    /// Equivalent to `buffers.get(0).position(firstPosition)` followed by
+    /// `ByteBuffersDataInput(List<ByteBuffer>)` (`ByteBuffersDataInput.java:55-83`).
     ///
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`] if the buffer layout
-    /// assumptions are violated or `first_position` exceeds the first buffer.
-    pub fn with_first_position(buffers: Vec<Vec<u8>>, first_position: usize) -> Result<Self> {
-        // The block list moves into the shared storage; the blocks' bytes are
-        // not copied.
-        Self::over_blocks(Arc::from(buffers), first_position)
+    /// assumptions are violated or `first_position` exceeds the first buffer's
+    /// limit (`Buffer.position(int)`'s `newPosition > limit`).
+    pub fn with_first_position<T: Into<ByteBuffer>>(
+        buffers: Vec<T>,
+        first_position: usize,
+    ) -> Result<Self> {
+        let mut buffers: Vec<ByteBuffer> = buffers.into_iter().map(Into::into).collect();
+        if let Some(first) = buffers.first_mut() {
+            first.set_position(first_position)?;
+        }
+        Self::new(buffers)
     }
 }
 
-impl<B: std::ops::Deref<Target = [Vec<u8>]>> ByteBuffersDataInput<B> {
+impl<B: std::ops::Deref<Target = [ByteBuffer]>> ByteBuffersDataInput<B> {
     /// Creates an input over `buffers`, held as they are given, whose first
     /// buffer is positioned at `first_position`.
     ///
     /// [`with_first_position`](ByteBuffersDataInput::with_first_position) for
     /// any block storage: given a shared `B`, the input reads the shared
-    /// blocks in place, as Java's constructor wraps the caller's buffers in
-    /// views (`ByteBuffersDataInput.java:55-83`).
+    /// blocks in place, as Java's constructor keeps the caller's views
+    /// (`ByteBuffersDataInput.java:55-83`).
     ///
     /// # Errors
     ///
@@ -7511,16 +7756,23 @@ impl<B: std::ops::Deref<Target = [Vec<u8>]>> ByteBuffersDataInput<B> {
     /// assumptions are violated or `first_position` exceeds the first buffer.
     pub(crate) fn over_blocks(buffers: B, first_position: usize) -> Result<Self> {
         ensure_assumptions(&buffers)?;
-        if first_position > buffers[0].len() {
+        if first_position > buffers[0].limit() {
             // `Buffer.position(int)`: `newPosition > limit`.
             return Err(LuceneError::illegal_argument(format!(
                 "newPosition > limit: ({first_position} > {})",
-                buffers[0].len()
+                buffers[0].limit()
             )));
         }
-        let length = buffers.iter().map(Vec::len).sum::<usize>() - first_position;
+        // `length += block.remaining()` over every view
+        // (`ByteBuffersDataInput.java:75-79`); the first view's remaining()
+        // is counted from `first_position`.
+        let length = buffers[1..]
+            .iter()
+            .map(ByteBuffer::remaining)
+            .sum::<usize>()
+            + (buffers[0].limit() - first_position);
         let block_count = buffers.len();
-        let last_limit = buffers[block_count - 1].len();
+        let last_limit = buffers[block_count - 1].limit();
         let (block_bits, block_mask) = if buffers.len() == 1 {
             // Sentinel values for the single-block case; indexing is handled
             // explicitly in `block_index` / `block_offset`.
@@ -7550,11 +7802,11 @@ impl<B: std::ops::Deref<Target = [Vec<u8>]>> ByteBuffersDataInput<B> {
     #[inline]
     fn block(&self, index: usize) -> &[u8] {
         if index + 1 < self.block_count {
-            &self.blocks[self.first_block + index]
+            self.blocks[self.first_block + index].as_slice()
         } else if self.empty_tail {
             &[]
         } else {
-            &self.blocks[self.first_block + index][..self.last_limit]
+            &self.blocks[self.first_block + index].content()[..self.last_limit]
         }
     }
 
@@ -7567,7 +7819,7 @@ impl<B: std::ops::Deref<Target = [Vec<u8>]>> ByteBuffersDataInput<B> {
     // limit-bounded view.
     #[inline]
     fn stream_block(&self, index: usize) -> &[u8] {
-        &self.blocks[self.first_block + index]
+        self.blocks[self.first_block + index].content()
     }
 
     /// Returns the current read position.
@@ -7991,7 +8243,7 @@ fn read_long_byte_by_byte(input: &mut dyn DataInput) -> Result<i64> {
     Ok((high << 32) | low)
 }
 
-impl<B: std::ops::Deref<Target = [Vec<u8>]>> DataInput for ByteBuffersDataInput<B> {
+impl<B: std::ops::Deref<Target = [ByteBuffer]>> DataInput for ByteBuffersDataInput<B> {
     /// `ByteBuffersDataInput.toString()`, ported as this type's `Display`.
     fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
         std::borrow::Cow::Owned(self.to_string())
@@ -8207,12 +8459,13 @@ fn is_power_of_two(v: usize) -> bool {
 /// vector's length.
 ///
 /// Equivalent to `org.apache.lucene.store.ByteBuffersDataInput#determineBlockPage`.
-fn determine_block_page(buffers: &[Vec<u8>]) -> usize {
-    buffers[0].len()
+fn determine_block_page(buffers: &[ByteBuffer]) -> usize {
+    // `first.position() + first.remaining()`: the first view's limit.
+    buffers[0].limit()
 }
 
 /// Validates the assumptions required by [`ByteBuffersDataInput`].
-fn ensure_assumptions(buffers: &[Vec<u8>]) -> Result<()> {
+fn ensure_assumptions(buffers: &[ByteBuffer]) -> Result<()> {
     if buffers.is_empty() {
         return Err(LuceneError::illegal_argument(
             "Buffer list must not be empty.".to_string(),
@@ -8227,8 +8480,21 @@ fn ensure_assumptions(buffers: &[Vec<u8>]) -> Result<()> {
             "The first buffer must have power-of-two position() + remaining(): 0x{block_page:x}"
         )));
     }
-    for (i, buffer) in buffers.iter().enumerate().skip(1) {
-        if i != buffers.len() - 1 && buffer.len() != block_page {
+    // `for (int i = 1, last = buffers.size() - 1; i < last; i++)`
+    // (`ByteBuffersDataInput.java:466-478`): the intermediate views.
+    for buffer in &buffers[1..buffers.len() - 1] {
+        if buffer.position() != 0 {
+            // `"... position() == 0: " + buffer`: a heap buffer's
+            // `toString()`, `java.nio.HeapByteBuffer[pos=.. lim=.. cap=..]`.
+            return Err(LuceneError::illegal_argument(format!(
+                "All buffers except for the first one must have position() == 0: \
+                 java.nio.HeapByteBuffer[pos={} lim={} cap={}]",
+                buffer.position(),
+                buffer.limit(),
+                buffer.content().len()
+            )));
+        }
+        if buffer.remaining() != block_page {
             return Err(LuceneError::illegal_argument(format!(
                 "Intermediate buffers must share an identical remaining() power-of-two block \
                  size: 0x{block_page:x}"
@@ -8356,13 +8622,23 @@ impl ByteBufferRecycler {
 /// Equivalent to `org.apache.lucene.store.ByteBuffersDataOutput`. Blocks are
 /// heap-allocated and grow from a small initial size up to a configured
 /// maximum.
+///
+/// The filled blocks are kept in shared storage, so that
+/// [`to_data_input`](Self::to_data_input) hands out views of them, as Java's
+/// `toBufferList()` does (`ByteBuffersDataOutput.java:236-247`), instead of
+/// copies.
 #[derive(Clone)]
 pub struct ByteBuffersDataOutput {
     min_bits: usize,
     max_bits: usize,
     block_bits: usize,
-    completed: Vec<Vec<u8>>,
+    completed: Vec<Arc<Vec<u8>>>,
     current: Vec<u8>,
+    /// The block being filled, while inputs may view it: set by
+    /// [`share_current_block`](Self::share_current_block), with `current` left
+    /// empty and unallocated, so that the next write finds no room in
+    /// `current` and takes it back first (see [`append_block`](Self::append_block)).
+    shared_current: Option<Arc<Vec<u8>>>,
     /// `blockAllocate`; `None` is `ALLOCATE_BB_ON_HEAP`.
     block_allocate: Option<BlockAllocator>,
     /// `blockReuse`; `None` is `NO_REUSE`.
@@ -8376,7 +8652,7 @@ impl std::fmt::Debug for ByteBuffersDataOutput {
             .field("max_bits", &self.max_bits)
             .field("block_bits", &self.block_bits)
             .field("completed", &self.completed)
-            .field("current", &self.current)
+            .field("current", self.last_block())
             .field("block_allocate", &self.block_allocate.is_some())
             .field("block_reuse", &self.block_reuse.is_some())
             .finish()
@@ -8397,10 +8673,10 @@ impl std::fmt::Debug for ByteBuffersDataOutput {
 impl crate::util::Accountable for ByteBuffersDataOutput {
     fn ram_bytes_used(&self) -> i64 {
         let mut blocks = self.completed.len();
-        let mut capacity: usize = self.completed.iter().map(Vec::capacity).sum();
-        if self.current.capacity() > 0 {
+        let mut capacity: usize = self.completed.iter().map(|block| block.capacity()).sum();
+        if self.last_block().capacity() > 0 {
             blocks += 1;
-            capacity += self.current.capacity();
+            capacity += self.last_block().capacity();
         }
         capacity as i64 + blocks as i64 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF
     }
@@ -8529,6 +8805,7 @@ impl ByteBuffersDataOutput {
             block_bits: min_bits,
             completed: Vec::new(),
             current: Vec::new(),
+            shared_current: None,
             block_allocate,
             block_reuse,
         })
@@ -8542,8 +8819,39 @@ impl ByteBuffersDataOutput {
 
     /// Returns the number of bytes written so far.
     pub fn size(&self) -> usize {
-        let completed_size: usize = self.completed.iter().map(Vec::len).sum();
-        completed_size + self.current.len()
+        let completed_size: usize = self.completed.iter().map(|block| block.len()).sum();
+        completed_size + self.last_block().len()
+    }
+
+    /// The block being filled (Java's `currentBlock`), wherever it is held.
+    fn last_block(&self) -> &Vec<u8> {
+        self.shared_current.as_deref().unwrap_or(&self.current)
+    }
+
+    /// Moves the block being filled into shared storage, so that the views
+    /// [`to_data_input`](Self::to_data_input) builds share it instead of
+    /// copying it. Nothing observable changes: the next write takes the
+    /// block back (without a copy unless an input still views it).
+    ///
+    /// Java needs no such step: its `toBufferList()` views every block,
+    /// the one being filled included, while the output keeps writing past
+    /// the views' limits (`ByteBuffersDataOutput.java:236-247`). Rust cannot
+    /// let an owner write into a block another value reads, so the block
+    /// being filled is shared only where the output is not written again:
+    /// [`ByteBuffersDirectory`] calls this when a file's output closes,
+    /// before `outputToInput` (`ByteBuffersDirectory.java:264-267`).
+    pub(crate) fn share_current_block(&mut self) {
+        if self.shared_current.is_none() && !self.current.is_empty() {
+            self.shared_current = Some(Arc::new(std::mem::take(&mut self.current)));
+        }
+    }
+
+    /// Takes back the block [`share_current_block`](Self::share_current_block)
+    /// shared, as `current`.
+    fn take_back_current_block(&mut self) {
+        if let Some(block) = self.shared_current.take() {
+            self.current = unshare_block(block);
+        }
     }
 
     /// Returns the current block size in bytes.
@@ -8553,9 +8861,13 @@ impl ByteBuffersDataOutput {
 
     /// Returns a list of read-only views over the current content.
     pub fn to_buffer_list(&self) -> Vec<&[u8]> {
-        let mut result: Vec<&[u8]> = self.completed.iter().map(Vec::as_slice).collect();
-        if !self.current.is_empty() {
-            result.push(&self.current);
+        let mut result: Vec<&[u8]> = self
+            .completed
+            .iter()
+            .map(|block| block.as_slice())
+            .collect();
+        if !self.last_block().is_empty() {
+            result.push(self.last_block());
         } else if result.is_empty() {
             result.push(&[]);
         }
@@ -8590,7 +8902,11 @@ impl ByteBuffersDataOutput {
     /// `ByteBuffer.capacity()`, i.e. the whole allocated block, not the bytes
     /// written into it.
     pub fn into_buffer_list(mut self) -> Vec<Vec<u8>> {
-        let mut result = std::mem::take(&mut self.completed);
+        self.take_back_current_block();
+        let mut result: Vec<Vec<u8>> = std::mem::take(&mut self.completed)
+            .into_iter()
+            .map(unshare_block)
+            .collect();
         if !self.current.is_empty() {
             result.push(std::mem::take(&mut self.current));
         } else if result.is_empty() {
@@ -8601,12 +8917,23 @@ impl ByteBuffersDataOutput {
 
     /// Equivalent to
     /// `org.apache.lucene.store.ByteBuffersDataOutput#toWriteableBufferList`.
+    ///
+    /// Java's `duplicate()` views write into the very blocks an earlier
+    /// [`to_data_input`](Self::to_data_input) views; a block an input still
+    /// views is copied first here (see `unshare_block`), so writes through
+    /// this list reach the output but not that input.
     pub fn to_writeable_buffer_list(&mut self) -> Vec<&mut [u8]> {
+        self.take_back_current_block();
         let Self {
             completed, current, ..
         } = self;
         let mut result: Vec<&mut [u8]> = Vec::with_capacity(completed.len().max(1));
         for block in completed.iter_mut() {
+            if Arc::get_mut(block).is_none() {
+                *block = Arc::new(unshare_block(Arc::clone(block)));
+            }
+            let block =
+                Arc::get_mut(block).expect("INVARIANT: a freshly copied block has no other owner");
             result.push(block.as_mut_slice());
         }
         if !current.is_empty() || result.is_empty() {
@@ -8621,13 +8948,27 @@ impl ByteBuffersDataOutput {
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`] if the resulting buffer layout
     /// violates the input assumptions (should not happen for normal output).
+    ///
+    /// Equivalent to `ByteBuffersDataOutput.toDataInput()`
+    /// (`ByteBuffersDataOutput.java:277-279`) over `toBufferList()`
+    /// (`:236-247`): the input views the output's filled blocks, sharing
+    /// them, as Java's read-only views do. The block being filled is viewed
+    /// too once [`share_current_block`](Self::share_current_block) shared it
+    /// (a closing [`ByteBuffersDirectory`] file); otherwise its bytes so far
+    /// are copied, because this output keeps writing into it (see
+    /// `share_current_block`). Either way the input reads the content written
+    /// up to this call, as a Java view stops at the limit `flip()` set.
     pub fn to_data_input(&self) -> Result<ByteBuffersDataInput> {
-        let mut buffers: Vec<Vec<u8>> = self.completed.to_vec();
-        if !self.current.is_empty() {
-            buffers.push(self.current.clone());
+        let mut buffers: Vec<ByteBuffer> = Vec::with_capacity(self.completed.len() + 1);
+        buffers.extend(self.completed.iter().cloned().map(ByteBuffer::of_block));
+        if let Some(shared) = &self.shared_current {
+            buffers.push(ByteBuffer::of_block(Arc::clone(shared)));
+        } else if !self.current.is_empty() {
+            buffers.push(ByteBuffer::wrap(self.current.clone()));
         }
         if buffers.is_empty() {
-            buffers.push(Vec::new());
+            // `result.add(EMPTY)`.
+            buffers.push(ByteBuffer::wrap(Vec::new()));
         }
         ByteBuffersDataInput::new(buffers)
     }
@@ -8654,7 +8995,7 @@ impl ByteBuffersDataOutput {
         for block in &self.completed {
             result.extend_from_slice(block);
         }
-        result.extend_from_slice(&self.current);
+        result.extend_from_slice(self.last_block());
         Ok(result)
     }
 
@@ -8665,8 +9006,9 @@ impl ByteBuffersDataOutput {
         for block in &self.completed {
             output.write_bytes(block, 0, block.len())?;
         }
-        if !self.current.is_empty() {
-            output.write_bytes(&self.current, 0, self.current.len())?;
+        let last = self.last_block();
+        if !last.is_empty() {
+            output.write_bytes(last, 0, last.len())?;
         }
         Ok(())
     }
@@ -8687,10 +9029,11 @@ impl ByteBuffersDataOutput {
     /// instead (`ByteBuffersDataOutput.java:470-473`), so this output, like
     /// Java's default one, resets without error.
     pub fn reset(&mut self) -> Result<()> {
+        self.take_back_current_block();
         let current = std::mem::take(&mut self.current);
         if let Some(reuse) = &self.block_reuse {
             for block in self.completed.drain(..) {
-                reuse(block)?;
+                reuse(unshare_block(block))?;
             }
             if current.capacity() > 0 {
                 reuse(current)?;
@@ -8709,9 +9052,17 @@ impl ByteBuffersDataOutput {
     }
 
     fn append_block(&mut self) -> Result<()> {
+        if self.shared_current.is_some() {
+            // The block being filled was shared by `share_current_block`:
+            // take it back, and write on into it while it has room.
+            self.take_back_current_block();
+            if self.current.len() < self.current.capacity() {
+                return Ok(());
+            }
+        }
         if !self.current.is_empty() {
             let full = std::mem::take(&mut self.current);
-            self.completed.push(full);
+            self.completed.push(Arc::new(full));
         }
 
         if self.completed.len() >= MAX_BLOCKS_BEFORE_BLOCK_EXPANSION
@@ -8723,7 +9074,7 @@ impl ByteBuffersDataOutput {
             }
             if !self.current.is_empty() && self.current.len() == self.current.capacity() {
                 let full = std::mem::take(&mut self.current);
-                self.completed.push(full);
+                self.completed.push(Arc::new(full));
             }
         }
 
@@ -8747,13 +9098,13 @@ impl ByteBuffersDataOutput {
         // Java's `blocks` deque ends with the current block.
         if !self.current.is_empty() {
             let current = std::mem::take(&mut self.current);
-            self.completed.push(current);
+            self.completed.push(Arc::new(current));
         }
         while !self.completed.is_empty() {
             let block = self.completed.remove(0);
             cloned.write_bytes(&block, 0, block.len())?;
             if let Some(reuse) = &self.block_reuse {
-                reuse(block)?;
+                reuse(unshare_block(block))?;
             }
         }
         debug_assert!(self.completed.is_empty());
@@ -9017,7 +9368,11 @@ impl FileEntry {
         // output.size();` (`ByteBuffersDirectory.java:264-267`): a failure of
         // the conversion leaves both unset and reaches the output's `close()`.
         let on_close: Option<ByteBuffersOnClose> =
-            Some(Box::new(move |output: ByteBuffersDataOutput| {
+            Some(Box::new(move |mut output: ByteBuffersDataOutput| {
+                // PERF: the closed output is not written again, so its last
+                // block can be viewed rather than copied by the strategy's
+                // `to_data_input` (`ByteBuffersDataOutput.java:236-247`).
+                output.share_current_block();
                 let input = output_to_input(&file_name, &output)?;
                 let mut content = entry_for_close
                     .content
@@ -9912,6 +10267,8 @@ pub struct OutputStreamIndexOutput<W: Write + Send + Sync> {
     crc: BufferedChecksum,
     bytes_written: i64,
     flushed_on_close: bool,
+    /// `DataOutput.copyBuffer`.
+    copy_buffer: CopyBuffer,
 }
 
 impl<W: Write + Send + Sync> OutputStreamIndexOutput<W> {
@@ -9939,6 +10296,7 @@ impl<W: Write + Send + Sync> OutputStreamIndexOutput<W> {
             crc: BufferedChecksum::new(),
             bytes_written: 0,
             flushed_on_close: false,
+            copy_buffer: CopyBuffer::default(),
         })
     }
 }
@@ -9948,6 +10306,16 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
     /// (`IndexOutput.java:83-86`).
     fn to_java_string(&self) -> String {
         self.resource_description().to_string()
+    }
+
+    /// `DataOutput.copyBytes(DataInput, long)` through this output's own
+    /// `copyBuffer` (`DataOutput.java:281-293`).
+    fn copy_bytes(&mut self, input: &mut dyn DataInput, num_bytes: i64) -> Result<()> {
+        // PERF: one buffer per output, as Java's, not one per call.
+        let mut buffer = self.copy_buffer.take();
+        let result = copy_bytes_through(self, &mut buffer, input, num_bytes);
+        self.copy_buffer.restore(buffer);
+        result
     }
 
     fn write_byte(&mut self, b: u8) -> Result<()> {
@@ -10142,6 +10510,12 @@ impl DataOutput for FSIndexOutput {
 
     fn write_long(&mut self, i: i64) -> Result<()> {
         self.0.write_long(i)
+    }
+
+    /// The `copyBytes` of the `OutputStreamIndexOutput` Java's `FSIndexOutput`
+    /// extends, whose `copyBuffer` it is.
+    fn copy_bytes(&mut self, input: &mut dyn DataInput, num_bytes: i64) -> Result<()> {
+        self.0.copy_bytes(input, num_bytes)
     }
 }
 
@@ -11589,7 +11963,7 @@ pub(crate) fn matches_java_text(actual: &str, pattern: &str) -> bool {
 // Object contracts: the `toString()` bodies of this module's store types
 // ---------------------------------------------------------------------------
 
-impl<B: std::ops::Deref<Target = [Vec<u8>]>> std::fmt::Display for ByteBuffersDataInput<B> {
+impl<B: std::ops::Deref<Target = [ByteBuffer]>> std::fmt::Display for ByteBuffersDataInput<B> {
     /// Port of `ByteBuffersDataInput.toString()`, which is
     /// `String.format(Locale.ROOT, "%,d bytes, block size: %,d, blocks: %,d,
     /// position: %,d%s", length(), blockSize(), blocks.length, position(),
@@ -11640,7 +12014,7 @@ impl std::fmt::Display for ByteBuffersDataOutput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::util::java_fmt::format_grouped;
         let mut blocks = self.completed.len();
-        if self.current.capacity() > 0 {
+        if self.last_block().capacity() > 0 {
             blocks += 1;
         }
         write!(
@@ -11692,7 +12066,7 @@ mod tests {
     #[test]
     fn to_array_copy_refuses_content_past_a_java_array() {
         let mut output = ByteBuffersDataOutput::new();
-        output.completed = vec![vec![0u8; 1 << 30], vec![0u8; 1 << 30]];
+        output.completed = vec![Arc::new(vec![0u8; 1 << 30]), Arc::new(vec![0u8; 1 << 30])];
         assert!(matches!(
             output.to_array_copy(),
             Err(LuceneError { kind: LuceneErrorKind::Other(ref message), .. })
@@ -12462,14 +12836,18 @@ mod tests {
             .collect();
         let expected: Vec<u8> = blocks.concat();
         let input = ByteBuffersDataInput::with_first_position(blocks, 10).unwrap();
-        let first = input.blocks[0].as_ptr();
+        let first = input.blocks[0].as_slice().as_ptr();
 
         let slice = input.slice(100, 2000).unwrap();
         assert!(
             Arc::ptr_eq(&slice.blocks, &input.blocks),
             "no new block list"
         );
-        assert_eq!(slice.blocks[0].as_ptr(), first, "no copied block");
+        assert_eq!(
+            slice.blocks[0].as_slice().as_ptr(),
+            first,
+            "no copied block"
+        );
         let nested = slice.slice(1, 1500).unwrap();
         assert!(Arc::ptr_eq(&nested.blocks, &input.blocks));
         let mut read = vec![0u8; 1500];
@@ -12607,6 +12985,115 @@ mod tests {
         assert!(out.copy_bytes(&mut input, -1).is_err());
     }
 
+    /// The message of an `IllegalArgumentException`.
+    fn illegal_argument_message(error: LuceneError) -> String {
+        match error.kind {
+            LuceneErrorKind::IllegalArgument { message, .. } => message,
+            other => panic!("not an IllegalArgumentException: {other:?}"),
+        }
+    }
+
+    /// `ByteBuffer` views share their block and carry Java's position and
+    /// limit (`java.nio.Buffer.position(int)`, `limit(int)`), and an input
+    /// over views of one page — `TestByteBuffersDataInput.testSlicingLargeBuffers`
+    /// (`TestByteBuffersDataInput.java:243-265`) — holds the page once.
+    #[test]
+    fn byte_buffer_views_of_one_page_share_it() {
+        let page = ByteBuffer::wrap((0..1024u32).map(|i| i as u8).collect());
+        let mut views: Vec<ByteBuffer> = (0..4).map(|_| page.duplicate()).collect();
+        views[3].set_limit(100).unwrap();
+        views[0].set_position(10).unwrap();
+        assert!(views.iter().all(|v| Arc::ptr_eq(&v.content, &page.content)));
+        let input = ByteBuffersDataInput::new(views).unwrap();
+        assert!(input
+            .blocks
+            .iter()
+            .all(|v| Arc::ptr_eq(&v.content, &page.content)));
+        assert_eq!(input.length(), 3 * 1024 - 10 + 100);
+        assert_eq!(input.read_byte_at(0).unwrap(), 10);
+        assert_eq!(input.read_byte_at(1024 - 10).unwrap(), 0);
+        assert_eq!(input.read_byte_at(3 * 1024 - 10 + 99).unwrap(), 99);
+        assert!(input.read_byte_at(3 * 1024 - 10 + 100).is_err());
+
+        let mut view = page.duplicate();
+        assert_eq!(
+            illegal_argument_message(view.set_limit(1025).unwrap_err()),
+            "newLimit > capacity: (1025 > 1024)"
+        );
+        view.set_position(8).unwrap();
+        view.set_limit(5).unwrap();
+        assert_eq!((view.position(), view.limit(), view.remaining()), (5, 5, 0));
+        assert_eq!(
+            illegal_argument_message(view.set_position(6).unwrap_err()),
+            "newPosition > limit: (6 > 5)"
+        );
+    }
+
+    /// `ensureAssumptions` refuses an intermediate view with a position
+    /// (`ByteBuffersDataInput.java:466-471`), naming the buffer by its
+    /// `toString()`.
+    #[test]
+    fn byte_buffers_input_refuses_a_positioned_intermediate_view() {
+        let page = ByteBuffer::wrap(vec![0u8; 1024]);
+        let mut middle = page.duplicate();
+        middle.set_position(1).unwrap();
+        let error = ByteBuffersDataInput::new(vec![page.duplicate(), middle, page.duplicate()])
+            .unwrap_err();
+        assert_eq!(
+            illegal_argument_message(error),
+            "All buffers except for the first one must have position() == 0: \
+             java.nio.HeapByteBuffer[pos=1 lim=1024 cap=1024]"
+        );
+    }
+
+    /// `toDataInput()` views the output's blocks (`ByteBuffersDataOutput.java:236-247,
+    /// 277-279`): the filled blocks are shared, not copied; the block being
+    /// filled is shared once `share_current_block` moved it, and writing on
+    /// takes it back, copied only while an input still views it, so the input
+    /// keeps the content it was taken over.
+    #[test]
+    fn byte_buffers_to_data_input_shares_the_blocks() {
+        use crate::util::Accountable;
+        let bytes: Vec<u8> = (0..2500u32).map(|i| (i % 251) as u8).collect();
+        let mut out = ByteBuffersDataOutput::new();
+        out.write_bytes(&bytes, 0, bytes.len()).unwrap();
+        let ram = out.ram_bytes_used();
+
+        let input = out.to_data_input().unwrap();
+        assert_eq!(input.blocks.len(), 3);
+        assert!(Arc::ptr_eq(&input.blocks[0].content, &out.completed[0]));
+        assert!(Arc::ptr_eq(&input.blocks[1].content, &out.completed[1]));
+
+        out.share_current_block();
+        assert_eq!((out.size(), out.ram_bytes_used()), (2500, ram));
+        assert_eq!(out.to_string(), "2,500 bytes, block size: 1,024, blocks: 3");
+        let mut shared = out.to_data_input().unwrap();
+        let last = out
+            .shared_current
+            .clone()
+            .expect("the last block is shared");
+        assert!(Arc::ptr_eq(&shared.blocks[2].content, &last));
+        drop(last);
+
+        out.write_bytes(&bytes, 0, 100).unwrap();
+        assert!(out.shared_current.is_none());
+        let mut read = vec![0u8; 2500];
+        shared.read_bytes(Some(&mut read), 0, 2500).unwrap();
+        assert_eq!(read, bytes, "the input keeps the content it viewed");
+        let mut expected = bytes.clone();
+        expected.extend_from_slice(&bytes[..100]);
+        assert_eq!(out.to_array_copy().unwrap(), expected);
+        assert_eq!(out.ram_bytes_used(), ram);
+
+        drop((input, shared));
+        out.share_current_block();
+        let block = out.shared_current.as_ref().unwrap().as_ptr();
+        out.write_byte(7).unwrap();
+        assert_eq!(out.current.as_ptr(), block, "taken back without a copy");
+        expected.push(7);
+        assert_eq!(out.to_array_copy().unwrap(), expected);
+    }
+
     #[test]
     fn byte_buffers_empty_output_to_input() {
         let out = ByteBuffersDataOutput::new();
@@ -12673,7 +13160,7 @@ mod tests {
     #[test]
     fn byte_buffers_input_validation_rejects_invalid_layout() {
         // Empty buffer list rejected.
-        assert!(ByteBuffersDataInput::new(vec![]).is_err());
+        assert!(ByteBuffersDataInput::new(Vec::<Vec<u8>>::new()).is_err());
         // Non-power-of-two first buffer rejected when multiple blocks.
         assert!(ByteBuffersDataInput::new(vec![vec![0u8; 100], vec![0u8; 100]]).is_err());
         // Mismatched intermediate block rejected.

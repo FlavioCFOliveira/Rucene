@@ -17,7 +17,9 @@ use crate::error::{LuceneError, Result};
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::reader_context::{IndexReaderContext, LeafReaderContext};
 use crate::search::index_searcher::IndexSearcher;
-use crate::store::{ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput};
+use crate::store::{
+    ByteBuffer, ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput,
+};
 use crate::util::attribute::AttributeSource;
 use crate::util::automaton::CompiledAutomaton;
 use crate::util::string_helper::StringHelper;
@@ -1281,7 +1283,7 @@ pub struct PrefixCodedTerms {
     ///
     /// Shared, because every [`iterator`](Self::iterator) reads these blocks in
     /// place, as Java's iterators all wrap the same buffers.
-    content: Arc<[Vec<u8>]>,
+    content: Arc<[ByteBuffer]>,
     size: i64,
     del_gen: i64,
 }
@@ -1309,7 +1311,7 @@ impl PrefixCodedTerms {
     ///
     /// Equivalent to reading the private `content` field, which Lucene's own
     /// `hashCode`/`equals` do (`PrefixCodedTerms.java:180-197`).
-    pub fn content(&self) -> &[Vec<u8>] {
+    pub fn content(&self) -> &[ByteBuffer] {
         &self.content
     }
 
@@ -1335,7 +1337,8 @@ impl PrefixCodedTerms {
         let mut h: i32 = 1;
         for block in self.content.iter() {
             let mut bb: i32 = 1;
-            for &byte in block.iter().rev() {
+            // `ByteBuffer.hashCode()`: from `limit() - 1` down to `position()`.
+            for &byte in block.as_slice()[block.position()..].iter().rev() {
                 bb = bb.wrapping_mul(31).wrapping_add(i32::from(byte as i8));
             }
             h = h.wrapping_add(31i32.wrapping_mul(bb));
@@ -1360,7 +1363,7 @@ impl crate::util::Accountable for PrefixCodedTerms {
     /// 16 — measured against `lucene-core-10.5.0.jar` by
     /// `tests/portability/prefix_coded_terms.rs`.
     fn ram_bytes_used(&self) -> i64 {
-        self.content.iter().map(Vec::capacity).sum::<usize>() as i64 + 2 * 8
+        self.content.iter().map(ByteBuffer::capacity).sum::<usize>() as i64 + 2 * 8
     }
 }
 
@@ -1462,7 +1465,12 @@ impl PrefixCodedTermsBuilder {
         PrefixCodedTerms {
             // `new PrefixCodedTerms(output.toBufferList(), size)`
             // (`PrefixCodedTerms.java:103`).
-            content: Arc::from(self.output.into_buffer_list()),
+            content: self
+                .output
+                .into_buffer_list()
+                .into_iter()
+                .map(ByteBuffer::wrap)
+                .collect(),
             size: self.size,
             del_gen: -1,
         }
@@ -1481,7 +1489,7 @@ pub struct PrefixCodedTermsIterator {
     /// blocks the `PrefixCodedTerms` holds (`:170-172`); it keeps its own
     /// position, so `next()` simply reads on. The blocks are shared, not
     /// copied, as Java's views over them are.
-    input: ByteBuffersDataInput<Arc<[Vec<u8>]>>,
+    input: ByteBuffersDataInput<Arc<[ByteBuffer]>>,
     end: i64,
     del_gen: i64,
     /// `TermIterator.field`: `""` before the first term, the current term's
@@ -1495,7 +1503,7 @@ pub struct PrefixCodedTermsIterator {
 }
 
 impl PrefixCodedTermsIterator {
-    fn new(del_gen: i64, input: ByteBuffersDataInput<Arc<[Vec<u8>]>>) -> Self {
+    fn new(del_gen: i64, input: ByteBuffersDataInput<Arc<[ByteBuffer]>>) -> Self {
         let end = input.length() as i64;
         Self {
             input,
@@ -2187,7 +2195,7 @@ mod prefix_coded_terms_accounting_tests {
         let packet = builder.finish();
         assert_eq!(packet.size(), 3);
         assert_eq!(packet.content().len(), 1, "one block");
-        let written: usize = packet.content().iter().map(Vec::len).sum();
+        let written: usize = packet.content().iter().map(ByteBuffer::limit).sum();
         assert!(
             written < 1024,
             "{written} bytes should fit inside the single block"
@@ -2210,7 +2218,11 @@ mod prefix_coded_terms_accounting_tests {
             packet.content().len() > 1,
             "400 terms should not fit in one block"
         );
-        let capacity: i64 = packet.content().iter().map(Vec::capacity).sum::<usize>() as i64;
+        let capacity: i64 = packet
+            .content()
+            .iter()
+            .map(ByteBuffer::capacity)
+            .sum::<usize>() as i64;
         assert_eq!(packet.ram_bytes_used(), capacity + 16);
     }
 }
@@ -2239,7 +2251,12 @@ mod prefix_coded_terms_builder_tests {
         }
         let packet = builder.finish();
         assert_eq!(packet.size(), 5);
-        let bytes: Vec<u8> = packet.content().concat();
+        let bytes: Vec<u8> = packet
+            .content()
+            .iter()
+            .map(ByteBuffer::as_slice)
+            .collect::<Vec<_>>()
+            .concat();
         assert_eq!(
             bytes,
             vec![
@@ -2706,11 +2723,10 @@ impl PartialEq for PrefixCodedTerms {
     /// count, same content.
     ///
     /// Java's `content` is a `List<ByteBuffer>` and `List.equals` compares it
-    /// buffer by buffer, so two lists holding the same bytes in different
-    /// chunkings are unequal there. This port stores the content as one flat
-    /// buffer, so it compares the bytes themselves — which is what the chunking
-    /// stands for, and cannot disagree for two instances the builder produced
-    /// from the same terms.
+    /// buffer by buffer (`ByteBuffer.equals`: the remaining bytes), so two
+    /// lists holding the same bytes in different chunkings are unequal; the
+    /// port's content is the same list of [`ByteBuffer`] views, compared the
+    /// same way.
     fn eq(&self, other: &Self) -> bool {
         self.del_gen == other.del_gen && self.size == other.size && self.content == other.content
     }

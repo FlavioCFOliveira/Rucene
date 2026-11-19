@@ -5,8 +5,10 @@
 #![deny(unsafe_code)]
 
 use std::fmt;
+use std::sync::Arc;
 
 use super::similarity_base::decoded_length;
+use super::SimilarityRef;
 use super::{CollectionStatistics, Explanation, SimScorer, Similarity, TermStatistics};
 
 /// Expert: a similarity with a simple lexical model of tf-idf scoring.
@@ -132,6 +134,44 @@ pub fn new_tfidf_scorer<'a, S>(
 where
     S: TFIDFSimilarity + ?Sized,
 {
+    build_tfidf_scorer(
+        SimilarityRef::Borrowed(similarity),
+        boost,
+        collection_stats,
+        term_stats,
+    )
+}
+
+/// [`tfidf_scorer`] around the shared similarity: the scorer
+/// [`Similarity::scorer_owned`] returns, built once as Java builds it once per
+/// weight (`TFIDFSimilarity.java:436-449`).
+pub(crate) fn tfidf_scorer_owned<S>(
+    similarity: Arc<S>,
+    boost: f32,
+    collection_stats: &CollectionStatistics,
+    term_stats: &[TermStatistics],
+) -> Box<dyn SimScorer + Send + Sync + 'static>
+where
+    S: TFIDFSimilarity + 'static,
+{
+    Box::new(build_tfidf_scorer(
+        SimilarityRef::Shared(similarity),
+        boost,
+        collection_stats,
+        term_stats,
+    ))
+}
+
+/// The body of `TFIDFSimilarity.scorer` (`TFIDFSimilarity.java:436-449`).
+fn build_tfidf_scorer<'a, S>(
+    similarity: SimilarityRef<'a, S>,
+    boost: f32,
+    collection_stats: &CollectionStatistics,
+    term_stats: &[TermStatistics],
+) -> TFIDFScorer<'a, S>
+where
+    S: TFIDFSimilarity + ?Sized,
+{
     let idf = match term_stats {
         [single] => similarity.idf_explain(collection_stats, single),
         many => similarity.idf_explain_phrase(collection_stats, many),
@@ -150,7 +190,7 @@ where
 /// (`TFIDFSimilarity.java:439-490`), which is non-static so that it can call
 /// `tf(float)` on its enclosing similarity; the borrow here plays that role.
 pub struct TFIDFScorer<'a, S: TFIDFSimilarity + ?Sized> {
-    similarity: &'a S,
+    similarity: SimilarityRef<'a, S>,
     /// The idf and its explanation.
     idf: Explanation,
     boost: f32,
@@ -165,7 +205,12 @@ impl<'a, S: TFIDFSimilarity + ?Sized> TFIDFScorer<'a, S> {
         &self.norm_table
     }
 
-    fn new(similarity: &'a S, boost: f32, idf: Explanation, norm_table: [f32; 256]) -> Self {
+    fn new(
+        similarity: SimilarityRef<'a, S>,
+        boost: f32,
+        idf: Explanation,
+        norm_table: [f32; 256],
+    ) -> Self {
         let query_weight = boost * idf.value().float_value();
         Self {
             similarity,
@@ -271,6 +316,21 @@ impl Similarity for ClassicSimilarity {
         term_stats: &[TermStatistics],
     ) -> Box<dyn SimScorer + 'a> {
         tfidf_scorer(self, boost, collection_stats, term_stats)
+    }
+
+    /// Builds the scorer once around the shared similarity, as
+    /// `TFIDFSimilarity.scorer` does (`TFIDFSimilarity.java:436-449`); see
+    /// [`Similarity::scorer_owned`].
+    fn scorer_owned(
+        self: Arc<Self>,
+        boost: f32,
+        collection_stats: &CollectionStatistics,
+        term_stats: &[TermStatistics],
+    ) -> Box<dyn SimScorer + Send + Sync + 'static>
+    where
+        Self: 'static,
+    {
+        tfidf_scorer_owned(self, boost, collection_stats, term_stats)
     }
 }
 

@@ -2669,13 +2669,18 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
             block_length as usize,
             &mut suffix_bytes,
         )?;
-        let payload_len_usize = payload_len as usize;
-        let payload_bytes = BytesRef {
-            bytes: suffix_bytes.bytes.clone(),
+        // `suffixBytes.length = docLen; payloadBytes = new BytesRef(suffixBytes.bytes,
+        // suffixBytes.offset + docLen, payloadLen);`
+        // (`Lucene90CompressingTermVectorsReader.java:714-716`): two windows of
+        // one decompressed block, which `TVData` holds once.
+        let payload_bytes = ByteWindow {
             offset: suffix_bytes.offset + doc_len as usize,
-            length: payload_len_usize,
+            length: payload_len as usize,
         };
-        suffix_bytes.length = doc_len as usize;
+        let suffix_window = ByteWindow {
+            offset: suffix_bytes.offset,
+            length: doc_len as usize,
+        };
         drop(decompressor);
 
         let mut field_flags = vec![0i32; num_fields as usize];
@@ -2709,16 +2714,19 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
             field_num_offs,
             field_num_terms,
             field_lengths,
-            prefix_lengths,
-            suffix_lengths,
-            field_term_freqs,
-            position_index,
-            positions,
-            start_offsets,
-            lengths,
+            data: Arc::new(TVData {
+                prefix_lengths,
+                suffix_lengths,
+                term_freqs: field_term_freqs,
+                position_index,
+                positions,
+                start_offsets,
+                lengths,
+                payload_index,
+                bytes: suffix_bytes.bytes,
+            }),
             payload_bytes,
-            payload_index,
-            suffix_bytes,
+            suffix_bytes: suffix_window,
         })))
     }
 
@@ -3004,6 +3012,36 @@ impl Lucene90CompressingTermVectorsReader {
 // TVFields / TVTerms / TVTermsEnum / TVPostingsEnum
 // -----------------------------------------------------------------------------
 
+/// A window of [`TVData::bytes`]: Java's `BytesRef` over the shared
+/// decompressed block (`offset`, `length`).
+#[derive(Clone, Copy, Debug, Default)]
+struct ByteWindow {
+    offset: usize,
+    length: usize,
+}
+
+/// The per-field arrays and the decompressed block one `get(doc)` decodes.
+///
+/// Java's `TVFields` keeps them in its fields and passes the very same arrays
+/// to every `TVTerms` it builds, which passes them to every `TVTermsEnum`,
+/// which passes them to every `TVPostingsEnum`
+/// (`Lucene90CompressingTermVectorsReader.java:904-940, 999-1015, 1182-1199`);
+/// here they are held once, behind the `Arc` all four share. The outer index
+/// of each array is the field's index in the document.
+struct TVData {
+    prefix_lengths: Vec<Vec<i32>>,
+    suffix_lengths: Vec<Vec<i32>>,
+    term_freqs: Vec<Vec<i32>>,
+    position_index: Vec<Vec<i32>>,
+    positions: Vec<Option<Vec<i32>>>,
+    start_offsets: Vec<Option<Vec<i32>>>,
+    lengths: Vec<Option<Vec<i32>>>,
+    payload_index: Vec<Option<Vec<i32>>>,
+    /// The decompressed block, Java's `suffixBytes.bytes`, which the term
+    /// suffixes and the payloads are windows of.
+    bytes: Vec<u8>,
+}
+
 struct TVFields {
     field_infos: FieldInfos,
     field_nums: Vec<i32>,
@@ -3011,16 +3049,9 @@ struct TVFields {
     field_num_offs: Vec<i32>,
     field_num_terms: Vec<i32>,
     field_lengths: Vec<i32>,
-    prefix_lengths: Vec<Vec<i32>>,
-    suffix_lengths: Vec<Vec<i32>>,
-    field_term_freqs: Vec<Vec<i32>>,
-    position_index: Vec<Vec<i32>>,
-    positions: Vec<Option<Vec<i32>>>,
-    start_offsets: Vec<Option<Vec<i32>>>,
-    lengths: Vec<Option<Vec<i32>>>,
-    payload_bytes: BytesRef,
-    payload_index: Vec<Option<Vec<i32>>>,
-    suffix_bytes: BytesRef,
+    data: Arc<TVData>,
+    payload_bytes: ByteWindow,
+    suffix_bytes: ByteWindow,
 }
 
 impl Fields for TVFields {
@@ -3070,20 +3101,15 @@ impl Fields for TVFields {
                 ),
             )));
         }
+        // PERF: the arrays and the block are shared, not copied, as Java
+        // passes its arrays to `new TVTerms(...)` (`:931-943`).
         Ok(Some(Arc::new(TVTerms {
             num_terms: self.field_num_terms[idx],
             flags: self.field_flags[idx],
-            prefix_lengths: self.prefix_lengths[idx].clone(),
-            suffix_lengths: self.suffix_lengths[idx].clone(),
-            term_freqs: self.field_term_freqs[idx].clone(),
-            position_index: self.position_index[idx].clone(),
-            positions: self.positions[idx].clone(),
-            start_offsets: self.start_offsets[idx].clone(),
-            lengths: self.lengths[idx].clone(),
-            payload_index: self.payload_index[idx].clone(),
-            payload_bytes: self.payload_bytes.clone(),
-            term_bytes: BytesRef {
-                bytes: self.suffix_bytes.bytes.clone(),
+            data: Arc::clone(&self.data),
+            field: idx,
+            payload_bytes: self.payload_bytes,
+            term_bytes: ByteWindow {
                 offset: self.suffix_bytes.offset + field_off as usize,
                 length: field_len as usize,
             },
@@ -3098,34 +3124,24 @@ impl Fields for TVFields {
 struct TVTerms {
     num_terms: i32,
     flags: i32,
-    prefix_lengths: Vec<i32>,
-    suffix_lengths: Vec<i32>,
-    term_freqs: Vec<i32>,
-    position_index: Vec<i32>,
-    positions: Option<Vec<i32>>,
-    start_offsets: Option<Vec<i32>>,
-    lengths: Option<Vec<i32>>,
-    payload_index: Option<Vec<i32>>,
-    payload_bytes: BytesRef,
-    term_bytes: BytesRef,
+    /// The document's arrays; this field's are at index `field`.
+    data: Arc<TVData>,
+    field: usize,
+    payload_bytes: ByteWindow,
+    term_bytes: ByteWindow,
 }
 
 impl Terms for TVTerms {
     fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+        // PERF: shared, as `termsEnum.reset(numTerms, flags, prefixLengths,
+        // ...)` passes the arrays (`:1001-1013`).
         Ok(Box::new(TVTermsEnum::new(
             self.num_terms,
-            self.flags,
-            self.prefix_lengths.clone(),
-            self.suffix_lengths.clone(),
-            self.term_freqs.clone(),
-            self.position_index.clone(),
-            self.positions.clone(),
-            self.start_offsets.clone(),
-            self.lengths.clone(),
-            self.payload_index.clone(),
-            self.payload_bytes.clone(),
-            self.term_bytes.clone(),
-        )?))
+            Arc::clone(&self.data),
+            self.field,
+            self.payload_bytes,
+            self.term_bytes,
+        )))
     }
 
     fn size(&self) -> Result<i64> {
@@ -3133,7 +3149,10 @@ impl Terms for TVTerms {
     }
 
     fn sum_total_term_freq(&self) -> Result<i64> {
-        Ok(self.term_freqs.iter().map(|&f| f as i64).sum())
+        Ok(self.data.term_freqs[self.field]
+            .iter()
+            .map(|&f| f as i64)
+            .sum())
     }
 
     fn sum_doc_freq(&self) -> Result<i64> {
@@ -3163,24 +3182,17 @@ impl Terms for TVTerms {
 
 struct TVTermsEnum {
     num_terms: i32,
-    prefix_lengths: Vec<i32>,
-    suffix_lengths: Vec<i32>,
-    term_freqs: Vec<i32>,
-    position_index: Vec<i32>,
-    positions: Option<Vec<i32>>,
-    start_offsets: Option<Vec<i32>>,
-    lengths: Option<Vec<i32>>,
-    payload_index: Option<Vec<i32>>,
-    payload_bytes: BytesRef,
+    /// The document's arrays; this field's are at index `field`.
+    data: Arc<TVData>,
+    field: usize,
+    payload_bytes: ByteWindow,
     // Java holds `ByteArrayDataInput in`, constructed over the field's window
     // inside the whole decompressed block
     // (`Lucene90CompressingTermVectorsReader.java:1013`, `:1069`). A struct that
     // holds both a buffer and a view of that buffer is a self-reference Rust
     // forbids, so the block stays here and the view's read position sits beside
     // it; Java never consults the view's limit when reading terms.
-    /// The whole decompressed suffix block this field's terms live in.
-    term_bytes: BytesRef,
-    /// Read position inside `term_bytes.bytes`.
+    /// Read position inside the whole decompressed block, `data.bytes`.
     input_pos: usize,
     /// Where this field's window starts. Java's `TVTermsEnum.startPos`
     /// (`Lucene90CompressingTermVectorsReader.java:1060`, `:1101`).
@@ -3191,21 +3203,13 @@ struct TVTermsEnum {
 }
 
 impl TVTermsEnum {
-    #[allow(clippy::too_many_arguments)]
     fn new(
         num_terms: i32,
-        _flags: i32,
-        prefix_lengths: Vec<i32>,
-        suffix_lengths: Vec<i32>,
-        term_freqs: Vec<i32>,
-        position_index: Vec<i32>,
-        positions: Option<Vec<i32>>,
-        start_offsets: Option<Vec<i32>>,
-        lengths: Option<Vec<i32>>,
-        payload_index: Option<Vec<i32>>,
-        payload_bytes: BytesRef,
-        term_bytes: BytesRef,
-    ) -> Result<Self> {
+        data: Arc<TVData>,
+        field: usize,
+        payload_bytes: ByteWindow,
+        term_bytes: ByteWindow,
+    ) -> Self {
         // `new ByteArrayDataInput(termBytes.bytes, termBytes.offset,
         // termBytes.length)` (`Lucene90CompressingTermVectorsReader.java:1013`):
         // the window is not an enforced limit in Java —
@@ -3213,24 +3217,17 @@ impl TVTermsEnum {
         // backing array (`ByteArrayDataInput.java:141-144`) — so `next()` reads
         // from the whole decompressed block, as Java does.
         let start_pos = term_bytes.offset;
-        Ok(Self {
+        Self {
             num_terms,
-            prefix_lengths,
-            suffix_lengths,
-            term_freqs,
-            position_index,
-            positions,
-            start_offsets,
-            lengths,
-            payload_index,
+            data,
+            field,
             payload_bytes,
-            term_bytes,
             input_pos: start_pos,
             start_pos,
             term: BytesRef::with_capacity(16),
             ord: -1,
             atts: AttributeSource::new(),
-        })
+        }
     }
 
     fn reset(&mut self) {
@@ -3317,29 +3314,47 @@ impl TermsEnum for TVTermsEnum {
     /// `return termFreqs[ord];`: the JVM's `ArrayIndexOutOfBoundsException`
     /// on an unpositioned enum.
     fn total_term_freq(&mut self) -> Result<i64> {
-        Ok(i64::from(int_array_get(&self.term_freqs, self.ord)?))
+        Ok(i64::from(int_array_get(
+            &self.data.term_freqs[self.field],
+            self.ord,
+        )?))
     }
 
+    /// Equivalent to `TVTermsEnum.postings(PostingsEnum, int)`
+    /// (`Lucene90CompressingTermVectorsReader.java:1182-1199`): `reuse` is
+    /// reset and handed back when it is a `TVPostingsEnum`
+    /// ([`PostingsEnum::as_any_mut`] standing for `instanceof`), otherwise a
+    /// new one is built; either way it reads the field's shared arrays.
     fn postings(
         &mut self,
-        _reuse: Option<Box<dyn PostingsEnum>>,
+        mut reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
     ) -> Result<Option<Box<dyn PostingsEnum>>> {
-        let mut postings = TVPostingsEnum::new();
+        // `reuse != null && reuse instanceof TVPostingsEnum`
+        let reusable = reuse
+            .as_mut()
+            .and_then(|reuse| reuse.as_any_mut())
+            .is_some_and(|any| any.is::<TVPostingsEnum>());
+        let mut postings: Box<dyn PostingsEnum> = match reuse {
+            Some(reuse) if reusable => reuse,
+            _ => Box::new(TVPostingsEnum::new()),
+        };
         // `docsEnum.reset(termFreqs[ord], positionIndex[ord], ...)`: the JVM's
         // `ArrayIndexOutOfBoundsException` on an unpositioned enum.
-        let term_freq = int_array_get(&self.term_freqs, self.ord)?;
-        let position_index = int_array_get(&self.position_index, self.ord)?;
-        postings.reset(
-            term_freq,
-            position_index,
-            self.positions.clone(),
-            self.start_offsets.clone(),
-            self.lengths.clone(),
-            self.payload_bytes.clone(),
-            self.payload_index.clone(),
-        );
-        Ok(Some(Box::new(postings)))
+        let term_freq = int_array_get(&self.data.term_freqs[self.field], self.ord)?;
+        let position_index = int_array_get(&self.data.position_index[self.field], self.ord)?;
+        postings
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<TVPostingsEnum>())
+            .expect("INVARIANT: the enum was just checked or built as a TVPostingsEnum")
+            .reset(
+                term_freq,
+                position_index,
+                Arc::clone(&self.data),
+                self.field,
+                self.payload_bytes,
+            );
+        Ok(Some(postings))
     }
 
     /// Equivalent to `TVTermsEnum.impacts(int)`
@@ -3364,8 +3379,8 @@ impl TermsEnum for TVTermsEnum {
         // `in.readBytes(term.bytes, prefixLengths[ord], suffixLengths[ord])`,
         // a `System.arraycopy` from the backing array, which raises the JVM's
         // `ArrayIndexOutOfBoundsException` for a range either array lacks.
-        let prefix = int_array_get(&self.prefix_lengths, self.ord)?;
-        let suffix = int_array_get(&self.suffix_lengths, self.ord)?;
+        let prefix = int_array_get(&self.data.prefix_lengths[self.field], self.ord)?;
+        let suffix = int_array_get(&self.data.suffix_lengths[self.field], self.ord)?;
         let new_len = prefix.wrapping_add(suffix);
         if i64::from(new_len) > self.term.bytes.len() as i64 {
             let grown = ArrayUtil::oversize(new_len as usize, 1);
@@ -3379,7 +3394,7 @@ impl TermsEnum for TVTermsEnum {
             self.term.bytes = bytes;
         }
         crate::util::java_byte_arraycopy(
-            &self.term_bytes.bytes,
+            &self.data.bytes,
             self.input_pos as i32,
             &mut self.term.bytes,
             prefix,
@@ -3400,12 +3415,15 @@ struct TVPostingsEnum {
     doc: i32,
     term_freq: i32,
     position_index: i32,
-    positions: Option<Vec<i32>>,
-    start_offsets: Option<Vec<i32>>,
-    lengths: Option<Vec<i32>>,
-    payload_bytes: BytesRef,
-    payload_index: Option<Vec<i32>>,
-    payload: BytesRef,
+    /// The document's arrays (`positions`, `startOffsets`, `lengths`,
+    /// `payloadIndex` and the payload bytes) of field `field`; `None` until
+    /// the first `reset`, as Java's fields are `null`.
+    data: Option<Arc<TVData>>,
+    field: usize,
+    /// Java's `basePayloadOffset` and the window the payloads live in.
+    payload_bytes: ByteWindow,
+    /// Java's `payload` (`offset`, `length`) over `data.bytes`.
+    payload: ByteWindow,
     i: i32,
 }
 
@@ -3415,38 +3433,55 @@ impl TVPostingsEnum {
             doc: -1,
             term_freq: 0,
             position_index: 0,
-            positions: None,
-            start_offsets: None,
-            lengths: None,
-            payload_bytes: BytesRef::default(),
-            payload_index: None,
-            payload: BytesRef::default(),
+            data: None,
+            field: 0,
+            payload_bytes: ByteWindow::default(),
+            payload: ByteWindow::default(),
             i: -1,
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Equivalent to `TVPostingsEnum.reset(...)`
+    /// (`Lucene90CompressingTermVectorsReader.java:1225-1244`): the arrays are
+    /// the field's shared ones.
     fn reset(
         &mut self,
         freq: i32,
         position_index: i32,
-        positions: Option<Vec<i32>>,
-        start_offsets: Option<Vec<i32>>,
-        lengths: Option<Vec<i32>>,
-        payload_bytes: BytesRef,
-        payload_index: Option<Vec<i32>>,
+        data: Arc<TVData>,
+        field: usize,
+        payload_bytes: ByteWindow,
     ) {
         self.term_freq = freq;
         self.position_index = position_index;
-        self.positions = positions;
-        self.start_offsets = start_offsets;
-        self.lengths = lengths;
-        self.payload_bytes = payload_bytes.clone();
-        self.payload_index = payload_index;
-        self.payload = BytesRef::default();
-        self.payload.bytes = payload_bytes.bytes;
+        self.data = Some(data);
+        self.field = field;
+        self.payload_bytes = payload_bytes;
+        // `payload.offset = payload.length = 0`.
+        self.payload = ByteWindow::default();
         self.doc = -1;
         self.i = -1;
+    }
+
+    fn positions(&self) -> Option<&[i32]> {
+        self.data.as_ref()?.positions[self.field].as_deref()
+    }
+
+    fn start_offsets(&self) -> Option<&[i32]> {
+        self.data.as_ref()?.start_offsets[self.field].as_deref()
+    }
+
+    fn lengths(&self) -> Option<&[i32]> {
+        self.data.as_ref()?.lengths[self.field].as_deref()
+    }
+
+    fn payload_index(&self) -> Option<&[i32]> {
+        self.data.as_ref()?.payload_index[self.field].as_deref()
+    }
+
+    /// The whole decompressed block the payload windows index.
+    fn block_bytes(&self) -> &[u8] {
+        self.data.as_ref().map_or(&[], |data| &data.bytes)
     }
 }
 
@@ -3530,6 +3565,13 @@ impl TVPostingsEnum {
 }
 
 impl PostingsEnum for TVPostingsEnum {
+    /// This enum answers with itself: it is the `true` arm of Java's
+    /// `reuse instanceof TVPostingsEnum`
+    /// (`Lucene90CompressingTermVectorsReader.java:1184`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     /// Equivalent to `TVPostingsEnum.freq()`: `checkDoc()`
     /// (`Lucene90CompressingTermVectorsReader.java:1246-1252`), then the
     /// term's frequency.
@@ -3550,7 +3592,7 @@ impl PostingsEnum for TVPostingsEnum {
             return Err(LuceneError::illegal_state("Read past last position"));
         }
         self.i += 1;
-        if let Some(ref idx) = self.payload_index {
+        if let Some(idx) = self.payload_index() {
             // `payloadIndex[positionIndex + i]` and `[positionIndex + i + 1]`:
             // the JVM's `ArrayIndexOutOfBoundsException` outside the index.
             let slot = self.position_index.wrapping_add(self.i);
@@ -3563,11 +3605,7 @@ impl PostingsEnum for TVPostingsEnum {
             // out-of-buffer window, so such a window is reported here.
             let base = self.payload_bytes.offset;
             let end = self.payload_bytes.offset + self.payload_bytes.length;
-            if from < 0
-                || to < from
-                || base + to as usize > end
-                || end > self.payload_bytes.bytes.len()
-            {
+            if from < 0 || to < from || base + to as usize > end || end > self.block_bytes().len() {
                 return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
                     format!(
                         "payload {slot} spans [{from}, {to}) of a {}-byte payload buffer",
@@ -3578,7 +3616,7 @@ impl PostingsEnum for TVPostingsEnum {
             self.payload.offset = base + from as usize;
             self.payload.length = (to - from) as usize;
         }
-        match &self.positions {
+        match self.positions() {
             Some(positions) => int_array_get(positions, self.position_index.wrapping_add(self.i)),
             None => Ok(-1),
         }
@@ -3588,7 +3626,7 @@ impl PostingsEnum for TVPostingsEnum {
     /// (`Lucene90CompressingTermVectorsReader.java:1284-1292`).
     fn start_offset(&self) -> i32 {
         self.check_position();
-        match &self.start_offsets {
+        match self.start_offsets() {
             Some(offsets) => offsets[(self.position_index + self.i) as usize],
             None => -1,
         }
@@ -3598,7 +3636,7 @@ impl PostingsEnum for TVPostingsEnum {
     /// (`Lucene90CompressingTermVectorsReader.java:1294-1302`).
     fn end_offset(&self) -> i32 {
         self.check_position();
-        match (&self.start_offsets, &self.lengths) {
+        match (self.start_offsets(), self.lengths()) {
             (Some(offsets), Some(lengths)) => {
                 // `startOffsets[i] + lengths[i]` in Java, on `int`s decoded
                 // from the chunk: it wraps there and must wrap here.
@@ -3613,10 +3651,12 @@ impl PostingsEnum for TVPostingsEnum {
     /// (`Lucene90CompressingTermVectorsReader.java:1304-1312`).
     fn get_payload(&self) -> Result<Option<&[u8]>> {
         self.check_position();
-        if self.payload_index.is_none() || self.payload.length == 0 {
+        if self.payload_index().is_none() || self.payload.length == 0 {
             return Ok(None);
         }
-        Ok(Some(self.payload.slice()))
+        Ok(Some(
+            &self.block_bytes()[self.payload.offset..self.payload.offset + self.payload.length],
+        ))
     }
 }
 
@@ -4090,7 +4130,17 @@ mod tests {
 
         let t2 = it.next().unwrap().expect("second term");
         assert_eq!(t2.slice(), b"beta");
-        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap().unwrap();
+        // `reuse instanceof TVPostingsEnum`: the enum offered is reset in
+        // place and handed back (`Lucene90CompressingTermVectorsReader.java:1184-1198`).
+        let reused = &*postings as *const dyn PostingsEnum as *const () as usize;
+        let mut postings = it
+            .postings(Some(postings), POSTINGS_ENUM_POSITIONS)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            &*postings as *const dyn PostingsEnum as *const () as usize, reused,
+            "the TVPostingsEnum offered for reuse is the one returned"
+        );
         assert_eq!(postings.next_doc().unwrap(), 0);
         assert_eq!(postings.freq().unwrap(), 1);
         assert_eq!(postings.next_position().unwrap(), 7);

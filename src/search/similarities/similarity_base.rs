@@ -34,11 +34,13 @@
 #![deny(unsafe_code)]
 
 use std::borrow::{Borrow, BorrowMut};
+use std::sync::Arc;
 use std::sync::LazyLock;
 
 use crate::util::SmallFloat;
 
 use super::multi_similarity::MultiSimScorer;
+use super::SimilarityRef;
 use super::{BasicStats, CollectionStatistics, Explanation, SimScorer, Similarity, TermStatistics};
 
 /// Cache of decoded norm bytes, as `SimilarityBase.LENGTH_TABLE`
@@ -260,6 +262,37 @@ where
     Box::new(MultiSimScorer::new(weights))
 }
 
+/// [`similarity_base_scorer`] around the shared similarity: the scorer
+/// [`Similarity::scorer_owned`](super::Similarity::scorer_owned) returns,
+/// built once as Java builds it once per weight (`SimilarityBase.java:55-68`).
+pub(crate) fn similarity_base_scorer_owned<S>(
+    sim: Arc<S>,
+    boost: f32,
+    collection_stats: &CollectionStatistics,
+    term_stats: &[TermStatistics],
+) -> Box<dyn SimScorer + Send + Sync + 'static>
+where
+    S: SimilarityBase + 'static,
+    S::Stats: Send + Sync + 'static,
+{
+    let mut weights: Vec<Box<dyn SimScorer + Send + Sync + 'static>> =
+        Vec::with_capacity(term_stats.len());
+    for term in term_stats {
+        let mut stats = sim.new_stats(collection_stats.field(), f64::from(boost));
+        sim.fill_basic_stats(&mut stats, collection_stats, term);
+        weights.push(Box::new(BasicSimScorer {
+            base: SimilarityRef::Shared(Arc::clone(&sim)),
+            stats,
+        }));
+    }
+    if weights.len() == 1 {
+        if let Some(single) = weights.pop() {
+            return single;
+        }
+    }
+    Box::new(MultiSimScorer::new(weights))
+}
+
 /// Delegates scoring and explaining to the enclosing [`SimilarityBase`].
 ///
 /// Equivalent to `SimilarityBase.BasicSimScorer`
@@ -267,7 +300,7 @@ where
 /// class so that it can reach `SimilarityBase.this`; the borrow here plays the
 /// same role.
 pub struct BasicSimScorer<'a, S: SimilarityBase + ?Sized> {
-    base: &'a S,
+    base: SimilarityRef<'a, S>,
     stats: S::Stats,
 }
 
@@ -295,7 +328,10 @@ where
 {
     let mut stats = sim.new_stats(collection_stats.field(), f64::from(boost));
     sim.fill_basic_stats(&mut stats, collection_stats, term_stats);
-    BasicSimScorer { base: sim, stats }
+    BasicSimScorer {
+        base: SimilarityRef::Borrowed(sim),
+        stats,
+    }
 }
 
 impl<S: SimilarityBase + ?Sized> SimScorer for BasicSimScorer<'_, S> {

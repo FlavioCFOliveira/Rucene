@@ -375,6 +375,26 @@ impl Similarity for LMDirichletSimilarity {
     ) -> Box<dyn SimScorer + 'a> {
         similarity_base_scorer(self, boost, collection_stats, term_stats)
     }
+
+    /// Builds the scorer once around the shared similarity, as
+    /// `SimilarityBase.scorer` does (`SimilarityBase.java:55-68`); see
+    /// [`Similarity::scorer_owned`].
+    fn scorer_owned(
+        self: std::sync::Arc<Self>,
+        boost: f32,
+        collection_stats: &CollectionStatistics,
+        term_stats: &[TermStatistics],
+    ) -> Box<dyn SimScorer + Send + Sync + 'static>
+    where
+        Self: 'static,
+    {
+        super::similarity_base::similarity_base_scorer_owned(
+            self,
+            boost,
+            collection_stats,
+            term_stats,
+        )
+    }
 }
 
 impl SimilarityBase for LMDirichletSimilarity {
@@ -617,6 +637,26 @@ impl Similarity for LMJelinekMercerSimilarity {
         term_stats: &[TermStatistics],
     ) -> Box<dyn SimScorer + 'a> {
         similarity_base_scorer(self, boost, collection_stats, term_stats)
+    }
+
+    /// Builds the scorer once around the shared similarity, as
+    /// `SimilarityBase.scorer` does (`SimilarityBase.java:55-68`); see
+    /// [`Similarity::scorer_owned`].
+    fn scorer_owned(
+        self: std::sync::Arc<Self>,
+        boost: f32,
+        collection_stats: &CollectionStatistics,
+        term_stats: &[TermStatistics],
+    ) -> Box<dyn SimScorer + Send + Sync + 'static>
+    where
+        Self: 'static,
+    {
+        super::similarity_base::similarity_base_scorer_owned(
+            self,
+            boost,
+            collection_stats,
+            term_stats,
+        )
     }
 }
 
@@ -889,6 +929,26 @@ impl Similarity for IndriDirichletSimilarity {
         term_stats: &[TermStatistics],
     ) -> Box<dyn SimScorer + 'a> {
         similarity_base_scorer(self, boost, collection_stats, term_stats)
+    }
+
+    /// Builds the scorer once around the shared similarity, as
+    /// `SimilarityBase.scorer` does (`SimilarityBase.java:55-68`); see
+    /// [`Similarity::scorer_owned`].
+    fn scorer_owned(
+        self: std::sync::Arc<Self>,
+        boost: f32,
+        collection_stats: &CollectionStatistics,
+        term_stats: &[TermStatistics],
+    ) -> Box<dyn SimScorer + Send + Sync + 'static>
+    where
+        Self: 'static,
+    {
+        super::similarity_base::similarity_base_scorer_owned(
+            self,
+            boost,
+            collection_stats,
+            term_stats,
+        )
     }
 }
 

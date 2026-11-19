@@ -4,7 +4,10 @@
 
 use std::sync::Arc;
 
-use super::{DataOutput, FilterIndexOutput, IndexOutput, RateLimiter};
+use super::{
+    copy_bytes_through, CopyBuffer, DataInput, DataOutput, FilterIndexOutput, IndexOutput,
+    RateLimiter,
+};
 use crate::error::Result;
 
 /// An [`IndexOutput`] that pauses periodically so that the write throughput
@@ -25,7 +28,9 @@ use crate::error::Result;
 /// contains one and delegates to it, overriding the same five write methods
 /// Java overrides. The rate limiter is held behind an [`Arc`] because a single
 /// limiter is shared by every output taking part in one merge, which Java
-/// expresses with a shared object reference.
+/// expresses with a shared object reference. `copy_bytes` is the
+/// `DataOutput.copyBytes` Java inherits, implemented here only to hold its
+/// per-instance `copyBuffer`, which a trait's default method cannot.
 pub struct RateLimitedIndexOutput {
     inner: FilterIndexOutput,
     rate_limiter: Arc<dyn RateLimiter>,
@@ -35,6 +40,8 @@ pub struct RateLimitedIndexOutput {
     /// Cached so that the shared limiter's atomically-read minimum is not
     /// re-read on every write.
     current_min_pause_check_bytes: i64,
+    /// `DataOutput.copyBuffer` (`DataOutput.java:278-279`).
+    copy_buffer: CopyBuffer,
 }
 
 impl RateLimitedIndexOutput {
@@ -51,6 +58,7 @@ impl RateLimitedIndexOutput {
             rate_limiter,
             bytes_since_last_pause: 0,
             current_min_pause_check_bytes,
+            copy_buffer: CopyBuffer::default(),
         }
     }
 
@@ -117,6 +125,18 @@ impl DataOutput for RateLimitedIndexOutput {
         self.bytes_since_last_pause += std::mem::size_of::<i64>() as i64;
         self.check_rate()?;
         self.inner.get_delegate_mut().write_long(i)
+    }
+
+    /// `DataOutput.copyBytes(DataInput, long)`, which
+    /// `RateLimitedIndexOutput` inherits: its own `copyBuffer`, and every
+    /// chunk through this output's rate-limited `writeBytes`
+    /// (`DataOutput.java:281-293`).
+    fn copy_bytes(&mut self, input: &mut dyn DataInput, num_bytes: i64) -> Result<()> {
+        // PERF: one buffer per output, as Java's, not one per call.
+        let mut buffer = self.copy_buffer.take();
+        let result = copy_bytes_through(self, &mut buffer, input, num_bytes);
+        self.copy_buffer.restore(buffer);
+        result
     }
 }
 

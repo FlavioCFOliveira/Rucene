@@ -274,11 +274,17 @@ pub trait Similarity: Send + Sync + Debug {
     ///
     /// The default implementation keeps the shared similarity and the
     /// statistics and rebuilds the borrowed scorer around every call, which is
-    /// always correct. An implementation whose scorer already owns everything
-    /// it reads — [`BM25Similarity`], for instance — overrides this method and
-    /// returns that scorer directly, so that nothing is rebuilt. **The scores
-    /// are the same either way**: an override must return a scorer that agrees
-    /// with [`scorer`](Self::scorer) on every input.
+    /// always correct but repeats, per scored document, the work Java does
+    /// once per weight. Every similarity of this crate overrides it to build
+    /// its scorer once, as `scorer` does: [`BM25Similarity`],
+    /// [`BooleanSimilarity`] and [`RawTFSimilarity`] return the scorer
+    /// `scorer` builds, which borrows nothing; the [`TFIDFSimilarity`] and
+    /// [`SimilarityBase`] descendants build theirs around the shared
+    /// similarity (`SimilarityRef`); [`MultiSimilarity`] sums its
+    /// sub-similarities' owned scorers. The default remains for similarities
+    /// defined outside this crate. **The scores are the same either way**: an
+    /// override must return a scorer that agrees with
+    /// [`scorer`](Self::scorer) on every input.
     ///
     /// The returned scorer is `Send + Sync`, because a weight is shared across
     /// the threads of a concurrent search and hands the same scorer to every
@@ -302,6 +308,31 @@ pub trait Similarity: Send + Sync + Debug {
             collection_stats: collection_stats.clone(),
             term_stats: term_stats.to_vec(),
         })
+    }
+}
+
+/// The similarity a scorer reads: borrowed by [`Similarity::scorer`], shared
+/// by [`Similarity::scorer_owned`].
+///
+/// Java's scorers of `TFIDFSimilarity` and `SimilarityBase` are inner classes
+/// holding a reference to their enclosing similarity; one scorer type stands
+/// for both of this port's ways of holding it, so that the owned scorer is the
+/// very scorer [`Similarity::scorer`] builds, built once.
+pub(crate) enum SimilarityRef<'a, S: ?Sized> {
+    /// The reference [`Similarity::scorer`] borrows.
+    Borrowed(&'a S),
+    /// The similarity [`Similarity::scorer_owned`] shares.
+    Shared(Arc<S>),
+}
+
+impl<S: ?Sized> std::ops::Deref for SimilarityRef<'_, S> {
+    type Target = S;
+
+    fn deref(&self) -> &S {
+        match self {
+            Self::Borrowed(similarity) => similarity,
+            Self::Shared(similarity) => similarity,
+        }
     }
 }
 
@@ -873,6 +904,49 @@ impl fmt::Display for BM25Similarity {
 mod tests {
     use super::*;
     use crate::error::LuceneErrorKind;
+
+    /// `scorer_owned` builds the scorer `scorer` builds, once
+    /// (`TFIDFSimilarity.java:436-449`, `SimilarityBase.java:55-68`,
+    /// `MultiSimilarity.java:47-54`): the owned and the borrowed scorers agree
+    /// on every score and explanation, for one term and for a phrase.
+    #[test]
+    fn owned_scorers_agree_with_the_borrowed_ones() {
+        fn check<S: Similarity + 'static>(sim: S) {
+            let sim = Arc::new(sim);
+            let collection = CollectionStatistics::new("body", 100, 90, 1000, 400).unwrap();
+            let one =
+                [TermStatistics::new(crate::util::BytesRef::new(b"a".to_vec()), 7, 20).unwrap()];
+            let two = [
+                one[0].clone(),
+                TermStatistics::new(crate::util::BytesRef::new(b"b".to_vec()), 30, 60).unwrap(),
+            ];
+            for terms in [&one[..], &two[..]] {
+                let borrowed = sim.scorer(1.5, &collection, terms);
+                let owned = Arc::clone(&sim).scorer_owned(1.5, &collection, terms);
+                for freq in [1.0f32, 2.0, 7.0] {
+                    for norm in [1i64, 9, 100, 255] {
+                        assert_eq!(
+                            owned.score(freq, norm).to_bits(),
+                            borrowed.score(freq, norm).to_bits(),
+                            "{} score({freq}, {norm})",
+                            sim.java_class_name()
+                        );
+                        let freq = Explanation::matched(freq, "freq", vec![]);
+                        assert_eq!(owned.explain(&freq, norm), borrowed.explain(&freq, norm));
+                    }
+                }
+            }
+        }
+        check(ClassicSimilarity::new());
+        check(LMDirichletSimilarity::new());
+        check(DFISimilarity::new(Box::new(IndependenceChiSquared)));
+        check(BooleanSimilarity::new());
+        check(RawTFSimilarity::new());
+        check(MultiSimilarity::new(vec![
+            Arc::new(ClassicSimilarity::new()),
+            Arc::new(LMDirichletSimilarity::new()),
+        ]));
+    }
 
     fn state(options: IndexOptions, length: i32, overlap: i32, unique: i32) -> FieldInvertState {
         let mut state = FieldInvertState::new(10, "body".to_string(), options);
