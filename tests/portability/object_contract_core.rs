@@ -804,6 +804,40 @@ fn store(m: &Measured) {
         m.get("ByteBuffersDataInput.toString/three-1024-pos1030")
     );
 
+    // Slices are views of the same blocks (`ByteBuffersDataInput.java:406-418,
+    // 487-523`): Java's number of views, first-view position and charged
+    // capacities, for slices inside a block, across blocks, ending on a block
+    // boundary (the appended empty view) and empty.
+    let three = ByteBuffersDataInput::new(vec![vec![0u8; 1024]; 3]).expect("three blocks");
+    for (offset, length) in [
+        (1000, 2048),
+        (1000, 1048),
+        (1030, 5),
+        (1024, 0),
+        (3072, 0),
+        (0, 3072),
+    ] {
+        let slice = three.slice(offset, length).expect("slice");
+        let key = format!("ByteBuffersDataInput.slice/{offset}-{length}");
+        assert_eq!(
+            slice.to_string(),
+            m.get(&format!("{key}/toString")),
+            "{key}"
+        );
+        assert_eq!(
+            rucene::util::Accountable::ram_bytes_used(&slice).to_string(),
+            m.get(&format!("{key}/ramBytesUsed")),
+            "{key}"
+        );
+        if length >= 2 {
+            assert_eq!(
+                slice.slice(1, length - 2).expect("nested").to_string(),
+                m.get(&format!("{key}/slice-1/toString")),
+                "{key}"
+            );
+        }
+    }
+
     // NRTCachingDirectory renders the wrapped directory with an identity hash,
     // which no port can reproduce, so only the portable suffix is compared.
     let nrt = NRTCachingDirectory::new(Box::new(ByteBuffersDirectory::new()), 5.0, 60.0);

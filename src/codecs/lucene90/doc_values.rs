@@ -1265,7 +1265,10 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
     fn maybe_grow_buffer(terms_dict_buffer: &mut Vec<u8>, position: usize, term_length: usize) {
         let original_length = terms_dict_buffer.len();
         if position + term_length + 1 >= original_length {
-            *terms_dict_buffer = ArrayUtil::grow(terms_dict_buffer, original_length + term_length);
+            *terms_dict_buffer = ArrayUtil::grow(
+                std::mem::take(terms_dict_buffer),
+                original_length + term_length,
+            );
         }
     }
 

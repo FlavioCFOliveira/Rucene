@@ -1941,7 +1941,8 @@ pub fn merge_policy_size<P: MergePolicy + ?Sized>(
     info: &SegmentCommitInfo,
     merge_context: &dyn MergeContext,
 ) -> Result<i64> {
-    let byte_size = info.size_in_bytes_uncached()?;
+    // `info.sizeInBytes()` (`MergePolicy.java:762`): the memoised size.
+    let byte_size = info.size_in_bytes()?;
     let del_count = merge_context.num_deletes_to_merge(info)?;
     debug_assert!(policy.assert_del_count(del_count, info)?);
     let max_doc = info.info.max_doc()?;
@@ -2927,7 +2928,8 @@ impl TieredMergePolicy {
             let seg_bytes = segment.size_in_bytes;
             tot_after_merge_bytes += seg_bytes;
             tot_after_merge_bytes_floored += self.floor_size(seg_bytes);
-            tot_before_merge_bytes += infos.info(segment.index).size_in_bytes_uncached()?;
+            // `info.sizeInBytes()` (`TieredMergePolicy.java:728`).
+            tot_before_merge_bytes += infos.info(segment.index).size_in_bytes()?;
         }
 
         // Roughly measure "skew" of the merge, i.e. how "balanced" the merge
@@ -3503,7 +3505,8 @@ impl MergePolicy for TieredMergePolicy {
             while index >= 0 && resulting_segments > max_num_segments {
                 let current = segment_infos.info(sorted[index as usize].index);
                 let initial_candidate_size = candidate.len();
-                let current_segment_size = current.size_in_bytes_uncached()?;
+                // `current.sizeInBytes()` (`TieredMergePolicy.java:926`).
+                let current_segment_size = current.size_in_bytes()?;
                 // We either add to the bin because there's space or because it
                 // is the smallest possible bin since decrementing the index
                 // will move us to even larger segments.
@@ -4074,7 +4077,8 @@ impl LogMergePolicy {
             // policy's override.
             return merge_policy_size(self, info, merge_context);
         }
-        info.size_in_bytes_uncached()
+        // `info.sizeInBytes()` (`LogMergePolicy.java:184`).
+        info.size_in_bytes()
     }
 
     /// Returns the size of `info` in this policy's unit.

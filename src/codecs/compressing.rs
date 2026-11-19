@@ -1185,8 +1185,10 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
         // Read the blocks that intersect the interval.
         while offset_in_block < offset + length {
             if bytes.bytes.len() < bytes.length + block_length {
-                bytes.bytes =
-                    crate::util::ArrayUtil::grow(&bytes.bytes, bytes.length + block_length);
+                bytes.bytes = crate::util::ArrayUtil::grow(
+                    std::mem::take(&mut bytes.bytes),
+                    bytes.length + block_length,
+                );
             }
             self.decompressor.reset(false);
             self.decompressor

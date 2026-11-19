@@ -369,7 +369,10 @@ impl TestBufferedIndexInput {
         // Just to see that "offset" is treated properly in readBytes(), we
         // add an arbitrary offset at the beginning of the array
         let offset = size % 10; // arbitrary
-        self.buffer = rucene::util::ArrayUtil::grow(&self.buffer, (offset + size) as usize);
+        self.buffer = rucene::util::ArrayUtil::grow(
+            std::mem::take(&mut self.buffer),
+            (offset + size) as usize,
+        );
         Assert::assert_equals(pos as i64, input.file_pointer()?);
         let left = TEST_FILE_LENGTH - input.file_pointer()?;
         if left <= 0 {

@@ -512,32 +512,32 @@ fn test_grow_in_range() -> Result<()> {
 
     // If minLength is negative, maxLength does not matter
     expect_throws_panic(AE, || {
-        let _ = ArrayUtil::grow_in_range_int(&array, MINUS_ONE, 4);
+        let _ = ArrayUtil::grow_in_range_int(array.clone(), MINUS_ONE, 4);
     });
     expect_throws_panic(AE, || {
-        let _ = ArrayUtil::grow_in_range_int(&array, MINUS_ONE, 0);
+        let _ = ArrayUtil::grow_in_range_int(array.clone(), MINUS_ONE, 0);
     });
     expect_throws_panic(AE, || {
-        let _ = ArrayUtil::grow_in_range_int(&array, MINUS_ONE, MINUS_ONE);
+        let _ = ArrayUtil::grow_in_range_int(array.clone(), MINUS_ONE, MINUS_ONE);
     });
 
     // If minLength > maxLength, we throw an exception
-    expect_throws(IAE, || ArrayUtil::grow_in_range_int(&array, 1, 0));
-    expect_throws(IAE, || ArrayUtil::grow_in_range_int(&array, 4, 3));
-    expect_throws(IAE, || ArrayUtil::grow_in_range_int(&array, 5, 4));
+    expect_throws(IAE, || ArrayUtil::grow_in_range_int(array.clone(), 1, 0));
+    expect_throws(IAE, || ArrayUtil::grow_in_range_int(array.clone(), 4, 3));
+    expect_throws(IAE, || ArrayUtil::grow_in_range_int(array.clone(), 5, 4));
 
     // If minLength is sufficient, we return the array
     assert_equals(
         &array,
-        &unchecked(ArrayUtil::grow_in_range_int(&array, 1, 4)),
+        &unchecked(ArrayUtil::grow_in_range_int(array.clone(), 1, 4)),
     );
     assert_equals(
         &array,
-        &unchecked(ArrayUtil::grow_in_range_int(&array, 1, 2)),
+        &unchecked(ArrayUtil::grow_in_range_int(array.clone(), 1, 2)),
     );
     assert_equals(
         &array,
-        &unchecked(ArrayUtil::grow_in_range_int(&array, 1, 1)),
+        &unchecked(ArrayUtil::grow_in_range_int(array.clone(), 1, 1)),
     );
 
     let min_length = 4;
@@ -547,7 +547,7 @@ fn test_grow_in_range() -> Result<()> {
     assert_equals(
         &ArrayUtil::oversize(min_length, 4),
         &unchecked(ArrayUtil::grow_in_range_int(
-            &[1, 2, 3],
+            vec![1, 2, 3],
             min_length,
             max_length,
         ))
@@ -558,7 +558,7 @@ fn test_grow_in_range() -> Result<()> {
     assert_equals(
         &min_length,
         &unchecked(ArrayUtil::grow_in_range_int(
-            &[1, 2, 3],
+            vec![1, 2, 3],
             min_length,
             min_length,
         ))
@@ -572,32 +572,32 @@ fn test_grow_in_range_float() -> Result<()> {
 
     // If minLength is negative, maxLength does not matter
     expect_throws_panic(AE, || {
-        let _ = ArrayUtil::grow_in_range_float(&array, MINUS_ONE, 4);
+        let _ = ArrayUtil::grow_in_range_float(array.clone(), MINUS_ONE, 4);
     });
     expect_throws_panic(AE, || {
-        let _ = ArrayUtil::grow_in_range_float(&array, MINUS_ONE, 0);
+        let _ = ArrayUtil::grow_in_range_float(array.clone(), MINUS_ONE, 0);
     });
     expect_throws_panic(AE, || {
-        let _ = ArrayUtil::grow_in_range_float(&array, MINUS_ONE, MINUS_ONE);
+        let _ = ArrayUtil::grow_in_range_float(array.clone(), MINUS_ONE, MINUS_ONE);
     });
 
     // If minLength > maxLength, we throw an exception
-    expect_throws(IAE, || ArrayUtil::grow_in_range_float(&array, 1, 0));
-    expect_throws(IAE, || ArrayUtil::grow_in_range_float(&array, 4, 3));
-    expect_throws(IAE, || ArrayUtil::grow_in_range_float(&array, 5, 4));
+    expect_throws(IAE, || ArrayUtil::grow_in_range_float(array.clone(), 1, 0));
+    expect_throws(IAE, || ArrayUtil::grow_in_range_float(array.clone(), 4, 3));
+    expect_throws(IAE, || ArrayUtil::grow_in_range_float(array.clone(), 5, 4));
 
     // If minLength is sufficient, we return the array
     assert_equals(
         &array,
-        &unchecked(ArrayUtil::grow_in_range_float(&array, 1, 4)),
+        &unchecked(ArrayUtil::grow_in_range_float(array.clone(), 1, 4)),
     );
     assert_equals(
         &array,
-        &unchecked(ArrayUtil::grow_in_range_float(&array, 1, 2)),
+        &unchecked(ArrayUtil::grow_in_range_float(array.clone(), 1, 2)),
     );
     assert_equals(
         &array,
-        &unchecked(ArrayUtil::grow_in_range_float(&array, 1, 1)),
+        &unchecked(ArrayUtil::grow_in_range_float(array.clone(), 1, 1)),
     );
 
     let min_length = 4;
@@ -607,7 +607,7 @@ fn test_grow_in_range_float() -> Result<()> {
     assert_equals(
         &ArrayUtil::oversize(min_length, 4),
         &unchecked(ArrayUtil::grow_in_range_float(
-            &[1.0, 2.0, 3.0],
+            vec![1.0, 2.0, 3.0],
             min_length,
             max_length,
         ))
@@ -618,7 +618,7 @@ fn test_grow_in_range_float() -> Result<()> {
     assert_equals(
         &min_length,
         &unchecked(ArrayUtil::grow_in_range_float(
-            &[1.0, 2.0, 3.0],
+            vec![1.0, 2.0, 3.0],
             min_length,
             min_length,
         ))

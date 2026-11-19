@@ -162,7 +162,7 @@ impl LongBitSet {
         let num_words = Self::bits2words(num_bits)?;
         let mut arr = bits.bits;
         if num_words as usize >= arr.len() {
-            arr = ArrayUtil::grow_long(&arr, num_words as usize + 1);
+            arr = ArrayUtil::grow_long(arr, num_words as usize + 1);
         }
         let new_num_bits = (arr.len() as i64) << 6;
         Self::from_bits(arr, new_num_bits)
