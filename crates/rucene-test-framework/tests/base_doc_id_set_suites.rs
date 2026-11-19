@@ -176,12 +176,12 @@ impl BaseDocIdSetTestCase for TestIntArrayDocIdSet {
         let mut l = 0usize;
         let mut i = bs.next_set_bit(0);
         while i != -1 {
-            docs = ArrayUtil::grow_int(&docs, length as usize + 1);
+            docs = ArrayUtil::grow_int(docs, length as usize + 1);
             docs[l] = i;
             l += 1;
             i = bs.next_set_bit(i as usize + 1);
         }
-        docs = ArrayUtil::grow_int(&docs, length as usize + 1);
+        docs = ArrayUtil::grow_int(docs, length as usize + 1);
         docs[l] = NO_MORE_DOCS;
         let shape = Arc::new(JavaShape::Object {
             class: "org.apache.lucene.util.IntArrayDocIdSet",

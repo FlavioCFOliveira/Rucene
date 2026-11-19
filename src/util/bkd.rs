@@ -5446,7 +5446,7 @@ impl IntersectVisitor for MergeIntersectsVisitor {
         debug_assert_eq!(self.docs_in_block, 0);
         let count = count as usize;
         if self.doc_ids.len() < count {
-            self.doc_ids = ArrayUtil::grow_int(&self.doc_ids, count);
+            self.doc_ids = ArrayUtil::grow_int(std::mem::take(&mut self.doc_ids), count);
             let packed_values_size = crate::error::to_int_exact(
                 self.doc_ids.len() as i64 * self.packed_bytes_length as i64,
             )? as usize;
@@ -6689,7 +6689,7 @@ mod tests {
     /// (`BKDWriter.java:370-376`); the check precedes the allocation.
     #[test]
     fn merge_visitor_grow_refuses_packed_values_past_the_max_array_length() {
-        let doc_ids_len = ArrayUtil::grow_int(&[], 1).len();
+        let doc_ids_len = ArrayUtil::grow_int(Vec::new(), 1).len();
         let packed_bytes_length = i32::MAX as usize / doc_ids_len;
         let size = doc_ids_len * packed_bytes_length;
         assert!(size > ArrayUtil::MAX_ARRAY_LENGTH && size <= i32::MAX as usize);

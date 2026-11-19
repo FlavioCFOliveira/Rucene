@@ -293,7 +293,7 @@ impl PointValuesWriter {
         if self.doc_ids.len() == num_points {
             // `docIDs = ArrayUtil.grow(docIDs, numPoints + 1)`
             // (`PointValuesWriter.java:88-91`).
-            self.doc_ids = ArrayUtil::grow_int(&self.doc_ids, num_points + 1);
+            self.doc_ids = ArrayUtil::grow_int(std::mem::take(&mut self.doc_ids), num_points + 1);
             self.charge(((self.doc_ids.len() - num_points) * std::mem::size_of::<i32>()) as i64);
         }
         let bytes_ram_bytes_used_before = self.bytes.ram_bytes_used();
@@ -475,7 +475,8 @@ impl PointValuesWriter {
         let size = size as usize;
         let old_length = self.doc_ids.len();
         if old_length < num_points + size {
-            self.doc_ids = ArrayUtil::grow_int(&self.doc_ids, num_points + size);
+            self.doc_ids =
+                ArrayUtil::grow_int(std::mem::take(&mut self.doc_ids), num_points + size);
             self.charge(((self.doc_ids.len() - old_length) * std::mem::size_of::<i32>()) as i64);
         }
         for i in 0..size {

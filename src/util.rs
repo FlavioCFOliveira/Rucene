@@ -1878,13 +1878,18 @@ impl ArrayUtil {
         Self::grow_exact(array, new_len)
     }
 
-    /// Grows an `i32` array.
-    pub fn grow_int(array: &[i32], min_size: usize) -> Vec<i32> {
+    /// Grows an `i32` array: returns `array` itself when it already holds
+    /// `min_size` elements, else a copy over-allocated exponentially.
+    ///
+    /// Equivalent to `ArrayUtil.grow(int[], int)`, which returns the same
+    /// array when it is long enough (`ArrayUtil.java:329-347, 377-379`): the
+    /// call costs nothing then, so callers may make it on every append.
+    pub fn grow_int(array: Vec<i32>, min_size: usize) -> Vec<i32> {
         if array.len() >= min_size {
-            return array.to_vec();
+            return array;
         }
         let new_len = Self::oversize(min_size, 4);
-        Self::grow_exact_int(array, new_len)
+        Self::grow_exact_int(&array, new_len)
     }
 
     /// Grows an `i64` array.
@@ -6646,6 +6651,28 @@ mod tests {
         let same = ArrayUtil::grow_no_copy_generic(ints, 8);
         assert_eq!(same.as_ptr(), address, "the generic overloads keep it too");
         assert_eq!(same, vec![5i32; 8]);
+    }
+
+    /// `ArrayUtil.grow(int[], int)` (`ArrayUtil.java:329-347, 377-379`)
+    /// returns the very array it was given when it already holds `minSize`
+    /// elements, so a caller may grow on every append in O(1) (rmp #576:
+    /// the port copied the whole array on each call, and
+    /// `TestIntArrayDocIdSet.copyOf` went quadratic); otherwise a copy of
+    /// `oversize(minSize, 4)` elements.
+    #[test]
+    fn array_util_grow_int_returns_the_same_array_when_long_enough() {
+        let array = vec![3i32, 1, 4, 1, 5];
+        let address = array.as_ptr();
+        let same = ArrayUtil::grow_int(array, 5);
+        assert_eq!(same.as_ptr(), address, "no copy at the exact size");
+        let same = ArrayUtil::grow_int(same, 2);
+        assert_eq!(same.as_ptr(), address, "no copy below the size");
+        assert_eq!(same, [3, 1, 4, 1, 5]);
+
+        let grown = ArrayUtil::grow_int(same, 6);
+        assert_eq!(grown.len(), ArrayUtil::oversize(6, 4));
+        assert_eq!(&grown[..5], [3, 1, 4, 1, 5], "the contents are copied");
+        assert!(grown[5..].iter().all(|&v| v == 0));
     }
 
     #[test]

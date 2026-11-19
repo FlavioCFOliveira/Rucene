@@ -539,22 +539,16 @@ impl LuceneError {
     /// counterpart here drops the leading frames of the backtrace machinery,
     /// of this module, and of the constructors and conversions that built the
     /// error (functions named `new`, `from` or `into`, and `with_*` builders).
+    ///
+    /// A build with `debug = "line-tables-only"` names the frames of its own
+    /// crates by their bare DWARF name, without a path and with the generic
+    /// arguments of a generic function (`into<A, B>`); such a frame is
+    /// recognised by its name without those arguments.
     pub fn get_stack_trace(&self) -> Vec<StackFrame> {
         let Some(backtrace) = self.backtrace.as_ref() else {
             return Vec::new();
         };
-        let frames = parse_backtrace(&format!("{backtrace:?}"));
-        let construction = |frame: &StackFrame| {
-            let path = frame.path.as_str();
-            path.starts_with("std::")
-                || path.starts_with("core::")
-                || path.starts_with("alloc::")
-                || path.starts_with("rucene::error")
-                || path.starts_with("<rucene::error")
-                || matches!(frame.function.as_str(), "new" | "from" | "into" | "capture")
-                || frame.function.starts_with("with_")
-        };
-        frames.into_iter().skip_while(construction).collect()
+        skip_construction_frames(parse_backtrace(&format!("{backtrace:?}")))
     }
 
     /// The kind, by value; the suppressed exceptions are dropped.
@@ -1432,8 +1426,43 @@ fn split_function_path(function_path: &str) -> (String, String) {
     (segments.join("::"), function)
 }
 
+/// The frames of [`LuceneError::get_stack_trace`] past the leading frames
+/// of the backtrace machinery, of this module, and of the constructors and
+/// conversions that built the error. A function is recognised by its name
+/// without generic arguments: the bare name `into<A, B>` a
+/// `line-tables-only` build reports is the conversion `into`.
+fn skip_construction_frames(frames: Vec<StackFrame>) -> Vec<StackFrame> {
+    let construction = |frame: &StackFrame| {
+        let path = frame.path.as_str();
+        let function = match frame.function.find('<') {
+            Some(pos) if pos > 0 => &frame.function[..pos],
+            _ => frame.function.as_str(),
+        };
+        path.starts_with("std::")
+            || path.starts_with("core::")
+            || path.starts_with("alloc::")
+            || path.starts_with("rucene::error")
+            || path.starts_with("<rucene::error")
+            || matches!(function, "new" | "from" | "into" | "capture")
+            || function.starts_with("with_")
+    };
+    frames.into_iter().skip_while(construction).collect()
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// A `line-tables-only` build names its frames by their bare DWARF name:
+    /// the generic conversion `into<A, B>` is a construction frame, so the
+    /// stack trace starts at the function that created the error (rmp #576,
+    /// `TestMultiTermQueryRewrites.testMaxClauseLimitations`).
+    #[test]
+    fn bare_generic_conversion_frames_are_construction_frames() {
+        let text = r#"Backtrace [{ fn: "std::backtrace::Backtrace::capture", file: "/rustc/x/library/std/src/backtrace.rs", line: 296 }, { fn: "from", file: "./src/error.rs", line: 483 }, { fn: "from", file: "./src/search/index_searcher.rs", line: 175 }, { fn: "into<rucene::search::index_searcher::TooManyClauses, rucene::error::LuceneError>", file: "/rustc/x/library/core/src/convert/mod.rs", line: 774 }, { fn: "check_max_clause_count", file: "./src/search/scoring_rewrite.rs", line: 252 }, { fn: "collect", file: "./src/search/scoring_rewrite.rs", line: 300 }]"#;
+        let frames = super::skip_construction_frames(parse_backtrace(text));
+        assert_eq!(frames[0].function, "check_max_clause_count", "{frames:?}");
+        assert_eq!(frames.len(), 2);
+    }
 
     /// The `Debug` rendering of a captured backtrace is parsed into frames,
     /// the last path segment outside `<...>` being the function and the
