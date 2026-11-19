@@ -391,6 +391,10 @@ A divergence the code declares is a `Divergence`, not a `Decision`.
 A `"gap"` decision records a part of a task's acceptance criteria that could not be
 verified end to end, and names the follow-up through `DEPENDS_ON` → `Task`.
 
+A **scope decision** is not curated: every sync rewrites it, `lucene/core`'s from
+`port_coverage_kg.py` and each widening's from `port_modules_kg.DECISIONS`, with
+`CONCERNS` → each port `Module` whose scope it sets.
+
 ### `Defect`
 *Curated.* A non-obvious bug found and fixed — a divergence only a portability or
 fuzz test could catch, or a hazard reachable from a corrupt file. Identity: `name`
@@ -435,7 +439,8 @@ core test corpus reaches the framework through `EXTENDS` between `TestClass` nod
 A file of a port module's resource tree (`lucene/test-framework/src/resources`: the
 line-docs file, the geo fixtures, the `META-INF/services` registrations). Identity:
 `path` (string, relative to the module's clone). Written whole by `lucene_tests_kg.py
---phase framework`, which deletes the nodes the tree no longer holds.
+--phase framework`, which deletes the nodes the tree no longer holds and links each
+from its port `Module` by `CONTAINS`.
 
 | Property | Purpose |
 |---|---|
@@ -457,7 +462,7 @@ A test method of a `TestClass`: `public void testXxx()` or a `void` method carry
 
 | Edge | Meaning |
 |---|---|
-| `CONTAINS` | `Project` → `Module`, `Module` → `Package` / `File` (a crate `Module` → its `.rs` files), `Package` → `Package` / `Class` / `File`. |
+| `CONTAINS` | `Project` → `Module`, `Module` → `Package` / `File` (a crate `Module` → its `.rs` files), port `Module` → `TestResource` (a file of its resource tree), `Package` → `Package` / `Class` / `File`. |
 | `DECLARES` | `File` → `Class`; `Class` → `Method`; crate `File` → `RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn`; Rust type → `RustFn`; `TestClass` → `TestMethod`. |
 | `NESTED_IN` | Inner `Class` → its enclosing top-level `Class`. |
 | `DEPENDS_ON` | Lucene `Package` → `Package` and `Class` → `Class` (imports plus same-package references, within and across the port modules); port `Module` → `Module` (`evidence: "module-info"`, `declaredAt`: the descriptor whose `requires` states it); crate `File` → `File` (`use`, across the workspace crates); curated Rust type → type (`note`); `Task` → `Task` (as `rmp` records); `Decision` → `Task` (a gap's follow-up). |
@@ -478,7 +483,7 @@ A test method of a `TestClass`: `public void testXxx()` or a `void` method carry
 | `REFERENCES` | `Project` → `Project` / `Feature`; `Feature` → `Package`. Not a port relation. |
 | `AWAITS_CALLER` | Rust item → Lucene `Class`: a `W-blocked` #269 item, and each Java class whose code calls its counterpart (the `callerClasses` of the commit's no-caller list). The class may be `ported` while the calling member is not; the item's `noCallerEvidence` names the unported caller. Written whole by `no_caller_verdicts_kg.py`. |
 | `DECLARED_IN` | `Divergence` → `File` that declares it. |
-| `CONCERNS` | `Divergence` → the Rust type or `RustFn` its doc comment documents, when the declaration resolves to exactly one node (a method of an `impl Trait for Type` block resolves to none). |
+| `CONCERNS` | `Divergence` → the Rust type or `RustFn` its doc comment documents, when the declaration resolves to exactly one node (a method of an `impl Trait for Type` block resolves to none); scope `Decision` → each port `Module` whose scope it sets (`Module.scopeRule`). |
 | `DIVERGES_FROM` | `Divergence` → a Lucene `Class` whose source file the paragraph cites, when one top-level type is declared by a file of that name; `lines` holds the cited lines. The Lucene type of a divergence is also reached through `CONCERNS` → `PORTS`. |
 | `TESTS` | `File`/`Class` → `Feature`/`Class`/Rust type/`Component`/`Defect`: a test file and what it pins down; `TestClass` → `Class` with `evidence: "name-convention"` (`TestFoo` → `Foo`). |
 | `COVERED_BY` | `TestClass` → `File`: the Rust file porting the test's subject, which declares a `#[test]`, `evidence: "ported-type-file-has-tests"` (never from a framework class); or, for the port modules' own tests, a crate file whose comments name the test class, `evidence: "names-the-test-class"`. |

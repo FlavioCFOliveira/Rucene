@@ -610,8 +610,17 @@ def test_phase_modules_records_the_sandbox_scope_files_and_the_decision(monkeypa
     monkeypatch.setattr(pm, "unwind", lambda _r, _m, rows, body, label, *a, **k:
                         writes.append((label, rows, body)))
     monkeypatch.setattr(pm, "rmp", lambda _m, _r, q, *a, **k: statements.append(q) or "{}")
-    monkeypatch.setattr(pm, "read", lambda _r, _q: [[0]])
+    def fake_read(_r, q):
+        # The `link_decision` read-back: the decision reaches its listed modules.
+        if "-[:CONCERNS]->(m:Module) RETURN m.name" in q:
+            return [[m] for d in pm.DECISIONS if pm.esc(d["name"]) in q for m in d["modules"]]
+        return [[0]]
+    monkeypatch.setattr(pm, "read", fake_read)
     pm.phase_modules("r", pm.repo_roots(lucene, rt), "c" * 40, "2026-11-14")
+    concerns = {(d["name"], r["m"]) for d in pm.DECISIONS for label, rows, body in writes
+                if label == "Decision CONCERNS Module" and pm.esc(d["name"]) in body
+                for r in rows}
+    assert concerns == {(d["name"], m) for d in pm.DECISIONS for m in d["modules"]}
     label, rows, body = next(w for w in writes if w[0] == "port Module properties")
     assert "m.scopeFiles = row.scopeFiles" in body
     scope = {r["name"]: r["scopeFiles"] for r in rows}
