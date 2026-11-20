@@ -322,12 +322,33 @@ impl<T> ConcurrentApproximatePriorityQueue<T> {
 
     /// Seeds the shard scan so entries spread across shards with a little thread
     /// affinity, as Java does with the thread's hash code.
+    ///
+    /// Equivalent to `Thread.currentThread().hashCode() & 0xFFFF`
+    /// (`ConcurrentApproximatePriorityQueue.java:76, 101`). Java's identity
+    /// hash is computed once per thread and kept in the object header; the
+    /// port's stand-in, the SipHash of the thread's [`ThreadId`](std::thread::ThreadId),
+    /// is likewise computed once per thread and kept in a thread-local.
+    ///
+    /// PERF: hashing `std::thread::current()` on every `add` and `poll` cost
+    /// 0.93 % of `test_postings_suite_draws_match_lucene` (cycle 5, #588
+    /// item 3); the cached value is the same per thread, so shard order is
+    /// unchanged.
     fn seed(&self) -> usize {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        std::thread::current().id().hash(&mut hasher);
-        (hasher.finish() & 0xFFFF) as usize
+        fn compute() -> usize {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            std::thread::current().id().hash(&mut hasher);
+            (hasher.finish() & 0xFFFF) as usize
+        }
+        thread_local! {
+            static THREAD_SEED: usize = compute();
+        }
+        // A thread-local already destroyed (a call from another
+        // thread-local's destructor) falls back to computing the same value.
+        THREAD_SEED
+            .try_with(|seed| *seed)
+            .unwrap_or_else(|_| compute())
     }
 
     /// Adds `entry` with the given `weight`, preferring an uncontended shard.

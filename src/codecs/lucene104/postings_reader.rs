@@ -740,7 +740,6 @@ impl BlockPostingsEnum {
             && crate::index::feature_requested(flags, crate::index::POSTINGS_ENUM_PAYLOADS);
         let needs_offsets_or_payloads = needs_offsets || needs_payloads;
 
-        let freq_buffer = [1i32; BS];
         let pos_delta_buffer = if needs_pos {
             Some(Box::new([0i32; BS]))
         } else {
@@ -805,89 +804,99 @@ impl BlockPostingsEnum {
             None
         };
 
-        // PERF: built straight into its box, which the reader hands out, so
-        // the enum is not first built on the stack and then copied.
-        Ok(Box::new(Self {
-            for_util: ForUtil::new(),
-            pfor_util: Some(PForUtil::new()),
-            encoding: DeltaEncoding::Packed,
-            doc: -1,
-            doc_buffer: [0i32; BS],
-            doc_bit_set: FixedBitSet::new(BS * 32),
-            doc_bit_set_base: 0,
-            level0_last_doc_id: -1,
-            level0_doc_end_fp: 0,
-            level1_last_doc_id: -1,
-            level1_doc_end_fp: 0,
-            level1_doc_count_upto: 0,
-            doc_freq: 0,
-            total_term_freq: 0,
-            singleton_doc_id: -1,
-            doc_count_left: 0,
-            prev_doc_id: -1,
-            doc_buffer_size: BS_I32,
-            doc_buffer_upto: BS_I32,
-            doc_in_util: RefCell::new(None),
-            freq_buffer: RefCell::new(freq_buffer),
-            pos_delta_buffer,
-            payload_length_buffer,
-            offset_start_delta_buffer,
-            offset_length_buffer,
-            payload_bytes,
-            payload_byte_upto: 0,
-            payload_length: 0,
-            payload_offset: 0,
-            last_start_offset: 0,
-            // Java leaves both at the `int` default of zero when the enum
-            // reads offsets, and sets them to -1 only when it does not
-            // (`Lucene104PostingsReader.java:472-480`), where `startOffset()`
-            // and `endOffset()` answer -1 regardless.
-            start_offset: if needs_offsets { 0 } else { -1 },
-            end_offset: if needs_offsets { 0 } else { -1 },
-            pos_buffer_upto: BS_I32,
-            pos_in_util,
-            pay_in_util,
-            index_has_freq,
-            index_has_pos,
-            index_has_offsets,
-            index_has_payloads,
-            index_has_offsets_or_payloads,
-            options: index_options,
-            flags,
-            parent_doc_in_identity,
-            needs_freq,
-            needs_pos,
-            needs_offsets,
-            needs_payloads,
-            needs_offsets_or_payloads,
-            needs_impacts,
-            needs_docs_and_freqs_only: !needs_pos && !needs_impacts,
-            freq_fp: Cell::new(-1),
-            position: 0,
-            pos_doc_buffer_upto: BS_I32,
-            pos_pending_count: 0,
-            last_pos_block_fp: 0,
-            level0_pos_end_fp: 0,
-            level0_block_pos_upto: 0,
-            level0_pay_end_fp: 0,
-            level0_block_pay_upto: 0,
-            level1_pos_end_fp: 0,
-            level1_block_pos_upto: 0,
-            level1_pay_end_fp: 0,
-            level1_block_pay_upto: 0,
-            impacts: BlockImpacts {
+        let doc_bit_set = FixedBitSet::new(BS * 32);
+
+        // PERF: Java constructs the enum in place (`new BlockPostingsEnum(...)`,
+        // `Lucene104PostingsReader.java:433-470`). `Box::new(Self { .. })` built
+        // the 4 688-byte value on the stack and then copied it into the heap
+        // (cycle 5, #588 item 5). Allocating the box first and writing a struct
+        // literal whose fields are plain values (every call is made above)
+        // lets the value be stored straight into the allocation.
+        let boxed = Box::<Self>::new_uninit();
+        Ok(Box::write(
+            boxed,
+            Self {
+                for_util: ForUtil::new(),
+                pfor_util: Some(PForUtil::new()),
+                encoding: DeltaEncoding::Packed,
+                doc: -1,
+                doc_buffer: [0i32; BS],
+                doc_bit_set,
+                doc_bit_set_base: 0,
+                level0_last_doc_id: -1,
+                level0_doc_end_fp: 0,
+                level1_last_doc_id: -1,
+                level1_doc_end_fp: 0,
+                level1_doc_count_upto: 0,
+                doc_freq: 0,
+                total_term_freq: 0,
+                singleton_doc_id: -1,
+                doc_count_left: 0,
+                prev_doc_id: -1,
+                doc_buffer_size: BS_I32,
+                doc_buffer_upto: BS_I32,
+                doc_in_util: RefCell::new(None),
+                freq_buffer: RefCell::new([1i32; BS]),
+                pos_delta_buffer,
+                payload_length_buffer,
+                offset_start_delta_buffer,
+                offset_length_buffer,
+                payload_bytes,
+                payload_byte_upto: 0,
+                payload_length: 0,
+                payload_offset: 0,
+                last_start_offset: 0,
+                // Java leaves both at the `int` default of zero when the enum
+                // reads offsets, and sets them to -1 only when it does not
+                // (`Lucene104PostingsReader.java:472-480`), where `startOffset()`
+                // and `endOffset()` answer -1 regardless.
+                start_offset: if needs_offsets { 0 } else { -1 },
+                end_offset: if needs_offsets { 0 } else { -1 },
+                pos_buffer_upto: BS_I32,
+                pos_in_util,
+                pay_in_util,
                 index_has_freq,
-                level0_last_doc_id: 0,
-                level1_last_doc_id: 0,
-                level0_serialized_impacts,
-                // `new BytesRef(capacity)` has length 0.
-                level0_serialized_impacts_length: 0,
-                level1_serialized_impacts,
-                level1_serialized_impacts_length: 0,
-                impact_buffer,
+                index_has_pos,
+                index_has_offsets,
+                index_has_payloads,
+                index_has_offsets_or_payloads,
+                options: index_options,
+                flags,
+                parent_doc_in_identity,
+                needs_freq,
+                needs_pos,
+                needs_offsets,
+                needs_payloads,
+                needs_offsets_or_payloads,
+                needs_impacts,
+                needs_docs_and_freqs_only: !needs_pos && !needs_impacts,
+                freq_fp: Cell::new(-1),
+                position: 0,
+                pos_doc_buffer_upto: BS_I32,
+                pos_pending_count: 0,
+                last_pos_block_fp: 0,
+                level0_pos_end_fp: 0,
+                level0_block_pos_upto: 0,
+                level0_pay_end_fp: 0,
+                level0_block_pay_upto: 0,
+                level1_pos_end_fp: 0,
+                level1_block_pos_upto: 0,
+                level1_pay_end_fp: 0,
+                level1_block_pay_upto: 0,
+                impacts: BlockImpacts {
+                    index_has_freq,
+                    level0_last_doc_id: 0,
+                    level1_last_doc_id: 0,
+                    level0_serialized_impacts,
+                    // `new BytesRef(capacity)` has length 0.
+                    level0_serialized_impacts_length: 0,
+                    level1_serialized_impacts,
+                    level1_serialized_impacts_length: 0,
+                    impact_buffer,
+                },
+                needs_refilling: false,
             },
-            needs_refilling: false,
-        }))
+        ))
     }
 
     /// Equivalent to `BlockPostingsEnum.canReuse(IndexInput, FieldInfo, int, boolean)`
