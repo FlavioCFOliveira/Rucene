@@ -28,7 +28,7 @@
 //! * **The DWPT lock owns the DWPT state.** Java locks a DWPT and then mutates
 //!   plain fields, asserting `isHeldByCurrentThread()` in every method that
 //!   needs the lock. Rucene stores the mutable part of a DWPT in
-//!   `Mutex<Option<DwptState>>`; locking *takes* the state out and hands it to
+//!   `Mutex<Option<Box<DwptState>>>`; locking *takes* the state out and hands it to
 //!   an owned [`DwptGuard`], and dropping the guard puts it back and wakes one
 //!   waiter. The guard is a movable value, exactly like the Java lock, and the
 //!   borrow checker replaces every `assert isHeldByCurrentThread()`: an
@@ -3660,7 +3660,12 @@ pub struct DocumentsWriterPerThread {
     last_committed_bytes_used: AtomicI64,
 
     // Lucene's `ReentrantLock lock` plus every field it guards.
-    state: Mutex<Option<DwptState>>,
+    //
+    // PERF: boxed, so taking the lock and releasing it move one pointer, as
+    // Java's `ReentrantLock` moves nothing; held inline, the ~0.5 KB state was
+    // copied by every take, put back and pass of the guard through
+    // `Result`/`Option` (#587).
+    state: Mutex<Option<Box<DwptState>>>,
     unlocked: Condvar,
     /// How many threads are blocked on [`unlocked`](Self::unlocked), waiting
     /// for the state to come back.
@@ -3903,7 +3908,7 @@ impl DocumentsWriterPerThread {
             has_flushed: AtomicBool::new(false),
             num_docs_in_ram: AtomicI32::new(0),
             last_committed_bytes_used: AtomicI64::new(0),
-            state: Mutex::new(Some(DwptState {
+            state: Mutex::new(Some(Box::new(DwptState {
                 indexing_chain,
                 field_infos,
                 pending_updates: BufferedUpdates::new(segment_name.clone()),
@@ -3911,7 +3916,7 @@ impl DocumentsWriterPerThread {
                 delete_doc_ids: Vec::new(),
                 files_to_delete: HashSet::new(),
                 aborting_error: None,
-            })),
+            }))),
             unlocked: Condvar::new(),
             unlock_waiters: AtomicUsize::new(0),
             pooled_lock: Mutex::new(None),
@@ -3960,8 +3965,8 @@ impl DocumentsWriterPerThread {
     /// count and its `notify_one` reaches this thread.
     fn wait_unlocked<'a>(
         &self,
-        slot: MutexGuard<'a, Option<DwptState>>,
-    ) -> MutexGuard<'a, Option<DwptState>> {
+        slot: MutexGuard<'a, Option<Box<DwptState>>>,
+    ) -> MutexGuard<'a, Option<Box<DwptState>>> {
         self.unlock_waiters.fetch_add(1, Ordering::Relaxed);
         let slot = self
             .unlocked
@@ -4154,7 +4159,7 @@ impl DocumentsWriterPerThread {
 #[derive(Debug)]
 pub struct DwptGuard {
     dwpt: Arc<DocumentsWriterPerThread>,
-    state: Option<DwptState>,
+    state: Option<Box<DwptState>>,
 }
 
 impl Display for DwptGuard {
@@ -4221,13 +4226,13 @@ impl DwptGuard {
 
     fn state(&self) -> &DwptState {
         self.state
-            .as_ref()
+            .as_deref()
             .expect("INVARIANT: state is only taken in Drop")
     }
 
     fn state_mut(&mut self) -> &mut DwptState {
         self.state
-            .as_mut()
+            .as_deref_mut()
             .expect("INVARIANT: state is only taken in Drop")
     }
 
