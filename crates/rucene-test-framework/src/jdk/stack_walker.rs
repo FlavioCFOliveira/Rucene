@@ -9,7 +9,13 @@
 //! debug information the build keeps:
 //!
 //! * with `debug = "limited"` or `"full"`, every frame, inlined ones included,
-//!   carries its path: both the class and the method are known;
+//!   carries its path: both the class and the method are known. `limited`
+//!   (`debug = 1`) is the least the walker needs, and the level the workspace
+//!   `[profile.test]` sets (rmp #608): it keeps the DWARF names and inline
+//!   records the symboliser reads, and drops the variable and type
+//!   information it never reads. Against `full`, it cuts the peak RSS of
+//!   the tests that walk the stack by about 40 % (the memory std's backtrace
+//!   symboliser takes to load the DWARF) and gives the same answers;
 //! * with `debug = "line-tables-only"`, the frames of a crate built that way
 //!   carry only their bare DWARF name (`flush`, `into<A, B>`): the method is
 //!   known and the class is not, so it is reported empty. `callStackContainsAnyOf`

@@ -270,8 +270,17 @@ codegen-units = 1
 # and overflow checks stay on, the counterpart of Lucene's tests running with
 # `-ea`. Measured (#604, #606, seed DEADBEEF): 6.2-8.1x less CPU on four
 # tests of three crates; the cold test build costs 2.4x the wall time.
+#
+# `debug = 1` ("limited"; rmp #608 R2): the frames of every crate keep their
+# full path, which `callStackContains(Class, ...)` needs (see
+# `crates/rucene-test-framework/src/jdk/stack_walker.rs`); `line-tables-only`
+# is rejected (#606) because it loses that path. Against the default
+# (`debug = 2`): the same 47 stack-walker answers (seed DEADBEEF), and peak RSS
+# 711 -> 429 MB (`test_index_file_deleter`) and 718 -> 439 MB
+# (`test_index_writer_exceptions`), the memory std's backtrace symboliser takes.
 [profile.test]
 opt-level = 1
+debug = 1
 debug-assertions = true
 overflow-checks = true
 [[test]]
