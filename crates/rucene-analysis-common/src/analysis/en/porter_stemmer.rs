@@ -115,7 +115,7 @@ impl PorterStemmer {
     /// reference to the internal buffer can be retrieved by getResultBuffer
     /// and getResultLength (which is generally more efficient.)
     ///
-    /// Equivalent to `toString()`, as UTF-16 units.
+    /// Equivalent to `PorterStemmer.toString()`, as UTF-16 units.
     #[allow(dead_code)] // A member of the Java class that Lucene 10.5.0's main code does not use.
     pub(crate) fn to_units(&self) -> Vec<u16> {
         self.b[..self.i as usize].to_vec()

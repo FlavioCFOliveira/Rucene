@@ -188,7 +188,7 @@ fn read_through_wrapper(index: &dyn Directory, seed: i64) -> rucene::error::Resu
     for name in &names {
         wrapper.copy_from(index, name, name, &*DEFAULT_IO_CONTEXT)?;
     }
-    wrapper.sync(&names)?;
+    wrapper.sync(&names.iter().map(String::as_str).collect::<Vec<_>>())?;
 
     let reader: Arc<dyn IndexReader> = directory_reader::open(wrapper.as_directory())?;
     assert!(reader.num_docs() > 0);

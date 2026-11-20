@@ -539,6 +539,9 @@ const PARALLEL_BYTES_PER_POSTING: i64 = 3 * 4;
 /// (`FreqProxTermsWriterPerField.java:292-305`): the three base columns,
 /// `lastDocIDs` and `lastDocCodes`, and one more `int` for each of
 /// `lastPositions`, `lastOffsets` and `termFreqs` the index options allocate.
+/// It overrides the base `ParallelPostingsArray.bytesPerPosting()`, which
+/// returns [`PARALLEL_BYTES_PER_POSTING`] and which only the two subclasses'
+/// overrides (this one and [`TERM_VECTORS_BYTES_PER_POSTING`]) reach.
 ///
 /// **Divergence from Lucene 10.5.0.** The columns are fields of one
 /// [`FreqProxPosting`] struct per term (see the module notes), which holds
@@ -1923,7 +1926,9 @@ struct FreqProxTerms {
 
 impl Terms for FreqProxTerms {
     fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
-        Ok(Box::new(FreqProxTermsEnum::new(Arc::clone(&self.field))))
+        let mut terms_enum = FreqProxTermsEnum::new(Arc::clone(&self.field));
+        terms_enum.reset();
+        Ok(Box::new(terms_enum))
     }
 
     /// Throws `UnsupportedOperationException`, as Java's does: the buffers
@@ -2003,6 +2008,11 @@ impl FreqProxTermsEnum {
             scratch: BytesRef::default(),
             attributes: AttributeSource::new(),
         }
+    }
+
+    /// Equivalent to `FreqProxTermsEnum.reset()`: `ord = -1`.
+    fn reset(&mut self) {
+        self.ord = -1;
     }
 
     /// `sortedTermIDs[ord]`, which the JVM bounds-checks.

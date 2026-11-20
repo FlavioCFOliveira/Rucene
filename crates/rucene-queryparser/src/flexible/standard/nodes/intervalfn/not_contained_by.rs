@@ -66,6 +66,7 @@ impl IntervalFunction for NotContainedBy {
         )
     }
 
+    /// Equivalent to `NotContainedBy.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:notContainedBy({} {})",

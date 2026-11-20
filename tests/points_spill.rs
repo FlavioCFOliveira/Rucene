@@ -105,7 +105,7 @@ impl Directory for RecordingDirectory {
         Ok(output)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.inner.sync(names)
     }
 

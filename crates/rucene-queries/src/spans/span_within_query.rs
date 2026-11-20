@@ -111,6 +111,8 @@ impl Query for SpanWithinQuery {
         Ok(self.rewrite_span(searcher)?.map(|q| q as Arc<dyn Query>))
     }
 
+    /// Equivalent to the inherited `SpanContainQuery.equals(Object)`:
+    /// `sameClassAs(other) && equalsTo(...)`.
     fn query_eq(&self, other: &dyn Query) -> bool {
         self.same_class_as(other)
             && other

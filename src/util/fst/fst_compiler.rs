@@ -213,6 +213,13 @@ pub struct CompiledNode {
     pub node: i64,
 }
 
+impl CompiledNode {
+    /// Equivalent to `CompiledNode.isCompiled()`: `true`.
+    pub fn is_compiled(&self) -> bool {
+        true
+    }
+}
+
 /// A pending, seen but not yet serialized, node.
 ///
 /// Equivalent to `FSTCompiler.UnCompiledNode<T>`.
@@ -236,6 +243,13 @@ pub struct UnCompiledNode<T> {
     pub is_final: bool,
     /// This node's depth, starting from the automaton root.
     pub depth: usize,
+}
+
+impl<T> UnCompiledNode<T> {
+    /// Equivalent to `UnCompiledNode.isCompiled()`: `false`.
+    pub fn is_compiled(&self) -> bool {
+        false
+    }
 }
 
 impl<T: Clone + Default> UnCompiledNode<T> {

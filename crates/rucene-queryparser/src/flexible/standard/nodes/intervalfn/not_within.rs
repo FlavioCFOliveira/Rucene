@@ -71,6 +71,7 @@ impl IntervalFunction for NotWithin {
         ))
     }
 
+    /// Equivalent to `NotWithin.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:notWithin({} {} {})",

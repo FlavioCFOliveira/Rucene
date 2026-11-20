@@ -39,8 +39,9 @@ use rucene::util::resource_loader::{
 ///
 /// Equivalent to `org.apache.lucene.analysis.util.FilesystemResourceLoader`.
 /// Java's `newInstance` and `findClass` delegate to the delegate loader;
-/// `rucene`'s `ResourceLoader` has no class half (see
-/// `rucene::util::resource_loader`), so there is nothing to delegate here.
+/// `rucene`'s `ResourceLoader` has no class half, the divergence declared in
+/// `rucene::util::resource_loader` (the class half is `ClassRegistry`), so
+/// there is nothing to delegate here.
 pub struct FilesystemResourceLoader {
     base_directory: PathBuf,
     delegate: Box<dyn ResourceLoader>,

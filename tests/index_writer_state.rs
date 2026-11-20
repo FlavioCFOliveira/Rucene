@@ -282,7 +282,7 @@ impl Directory for ObservingDirectory {
     ) -> rucene::error::Result<Box<dyn IndexOutput>> {
         self.inner.create_temp_output(prefix, suffix, context)
     }
-    fn sync(&self, names: &[String]) -> rucene::error::Result<()> {
+    fn sync(&self, names: &[&str]) -> rucene::error::Result<()> {
         self.inner.sync(names)
     }
     fn sync_metadata(&self) -> rucene::error::Result<()> {

@@ -81,7 +81,29 @@ impl FieldInfosFormat for Lucene94FieldInfosFormat {
                     size.to_string(),
                 ));
             }
-            let mut infos = Vec::with_capacity(size as usize);
+            // `new FieldInfo[size]` on JDK 25 (observed, #601): HotSpot's
+            // object-array maximum is `Integer.MAX_VALUE - 2`, above which the
+            // JVM raises `OutOfMemoryError: Requested array size exceeds VM
+            // limit` whatever the heap; below it, `OutOfMemoryError: Java heap
+            // space` when the heap cannot hold the array of references, and
+            // otherwise the read proceeds (and a corrupt count runs out of
+            // file). The array Java allocates is one reference per field, so
+            // the probe reserves one reference-sized slot per field; a Rust
+            // allocation failure would abort the process, so the probe uses
+            // `try_reserve_exact`. Each `FieldInfo` is then allocated as it is
+            // read, as Java allocates each `new FieldInfo(...)`.
+            if size > i32::MAX - 2 {
+                return Err(LuceneError::unchecked(
+                    "java.lang.OutOfMemoryError",
+                    "Requested array size exceeds VM limit",
+                ));
+            }
+            Vec::<Box<FieldInfo>>::new()
+                .try_reserve_exact(size as usize)
+                .map_err(|_| {
+                    LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space")
+                })?;
+            let mut infos = Vec::new();
             // previous field's attribute map, we share when possible:
             // `lastAttributes = Collections.emptyMap()`
             // (`Lucene94FieldInfosFormat.java:150-151`).

@@ -158,6 +158,8 @@ pub trait SrndQuery: Debug + Send + Sync + Any {
     /// with the same text are equal.
     ///
     /// Equivalent to the abstract `toString()`.
+    ///
+    /// Equivalent to `SrndQuery.toString()`.
     fn srnd_to_string(&self) -> String;
 
     /// Equivalent to `isFieldsSubQueryAcceptable()`.
@@ -181,6 +183,8 @@ pub trait SrndQuery: Debug + Send + Sync + Any {
     /// same.
     ///
     /// Equivalent to `equals(Object)`.
+    ///
+    /// Equivalent to `SrndQuery.equals(Object)`.
     fn srnd_equals(&self, other: &dyn SrndQuery) -> bool {
         self.as_any().type_id() == other.as_any().type_id()
             && self.srnd_to_string() == other.srnd_to_string()

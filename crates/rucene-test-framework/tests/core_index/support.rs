@@ -202,7 +202,7 @@ pub fn disable_cfs(conf: &mut IndexWriterConfig) -> Result<()> {
 
 /// `dirCopy.sync(Collections.singleton(name))`.
 pub fn sync_one(dir: &Arc<dyn rucene::store::Directory>, name: &str) -> Result<()> {
-    dir.sync(&[name.to_string()])
+    dir.sync(&[name])
 }
 
 /// `java.util.concurrent.CountDownLatch`: `await` blocks until `countDown`
@@ -914,7 +914,7 @@ impl rucene::store::Directory for SharedDirectory {
     ) -> Result<Box<dyn rucene::store::IndexOutput>> {
         self.r#in.create_temp_output(prefix, suffix, context)
     }
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.r#in.sync(names)
     }
     fn sync_metadata(&self) -> Result<()> {

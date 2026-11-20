@@ -100,6 +100,7 @@ impl MultiTermQueryDocValuesWrapper {
 }
 
 impl Query for MultiTermQueryDocValuesWrapper {
+    /// Equivalent to `MultiTermQueryDocValuesWrapper.toString(String)`.
     fn to_query_string(&self, field: &str) -> String {
         // The wrapped query's rendering is fine for the filter too, since the
         // query boost is 1.

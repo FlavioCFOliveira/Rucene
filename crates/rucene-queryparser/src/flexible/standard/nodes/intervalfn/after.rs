@@ -66,6 +66,7 @@ impl IntervalFunction for After {
         )
     }
 
+    /// Equivalent to `After.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:after({} {})",

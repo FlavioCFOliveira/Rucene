@@ -290,6 +290,8 @@ impl Spans for NearSpansUnordered {
         Ok(())
     }
 
+    /// Equivalent to the inherited `ConjunctionSpans.positionsCost()`: an
+    /// `UnsupportedOperationException`.
     fn positions_cost(&self) -> f32 {
         positions_cost_unsupported() // asTwoPhaseIterator never returns null here.
     }

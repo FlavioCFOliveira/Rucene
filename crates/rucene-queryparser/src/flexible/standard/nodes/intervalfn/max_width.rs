@@ -63,6 +63,7 @@ impl IntervalFunction for MaxWidth {
         ))
     }
 
+    /// Equivalent to `MaxWidth.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:maxwidth({} {})",

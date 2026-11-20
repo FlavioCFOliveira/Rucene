@@ -7108,7 +7108,7 @@ mod tests {
         permissions.set_readonly(true);
         fs::set_permissions(&file, permissions).unwrap();
         let dir = crate::store::FSDirectory::open(tmp.path()).unwrap();
-        let error = dir.sync(&["ro".to_string()]).unwrap_err();
+        let error = dir.sync(&["ro"]).unwrap_err();
         assert!(
             matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::PermissionDenied),
             "{error:?}"

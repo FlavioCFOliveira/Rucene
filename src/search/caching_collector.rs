@@ -427,24 +427,35 @@ impl<'a> CachingLeafCollector<'a> {
         self.docs.is_some()
     }
 
-    /// Equivalent to `NoScoreCachingLeafCollector.postCollect()` and its
-    /// override.
-    fn post_collect(&mut self) {
-        let doc_count = self.doc_count.max(0) as usize;
-        let cached_docs = self
-            .docs
+    /// Equivalent to `NoScoreCachingLeafCollector.cachedDocs()`:
+    /// `docs == null ? null : ArrayUtil.copyOfSubArray(docs, 0, docCount)`.
+    fn cached_docs(&self) -> Option<Vec<i32>> {
+        self.docs
             .as_ref()
-            .map(|docs| docs[..doc_count].to_vec())
-            .unwrap_or_default();
+            .map(|docs| docs[..self.doc_count as usize].to_vec())
+    }
+
+    /// Equivalent to `ScoreCachingLeafCollector.cachedScores()`:
+    /// `docs == null ? null : ArrayUtil.copyOfSubArray(scores, 0, docCount)`;
+    /// `None` too for the variant that caches no scores.
+    fn cached_scores(&self) -> Option<Vec<f32>> {
+        self.docs.as_ref()?;
+        self.scores
+            .as_ref()
+            .map(|scores| scores[..self.doc_count as usize].to_vec())
+    }
+
+    /// Equivalent to `NoScoreCachingLeafCollector.postCollect()` and its
+    /// override. Its only caller, [`finish`](LeafCollector::finish), calls it
+    /// when [`has_cache`](Self::has_cache) holds, so `cachedDocs()` is never
+    /// `null` here.
+    fn post_collect(&mut self) {
+        let cached_docs = self.cached_docs().unwrap_or_default();
         self.state.max_docs_to_cache -= cached_docs.len() as i32;
         if let Some(docs) = self.state.docs.as_mut() {
             docs.push(cached_docs);
         }
-        if let Some(cached_scores) = self
-            .scores
-            .as_ref()
-            .map(|scores| scores[..doc_count].to_vec())
-        {
+        if let Some(cached_scores) = self.cached_scores() {
             if let Some(scores) = self.state.scores.as_mut() {
                 scores.push(cached_scores);
             }

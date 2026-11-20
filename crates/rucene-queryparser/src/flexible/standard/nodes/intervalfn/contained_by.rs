@@ -66,6 +66,7 @@ impl IntervalFunction for ContainedBy {
         )
     }
 
+    /// Equivalent to `ContainedBy.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:containedBy({} {})",

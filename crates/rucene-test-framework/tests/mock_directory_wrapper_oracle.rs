@@ -526,7 +526,7 @@ fn tracking(r: &mut Recorder) {
     });
     r.rec_void("deleteFile after crash", || d.delete_file("q"));
     r.rec_void("rename after crash", || d.rename("q", "q2"));
-    r.rec_void("sync after crash", || d.sync(&["q".to_string()]));
+    r.rec_void("sync after crash", || d.sync(&["q"]));
     r.rec_void("syncMetaData after crash", || d.sync_metadata());
     r.rec_void("openInput after crash", || {
         d.open_input("q", &*READONCE_IO_CONTEXT)?.close()
@@ -614,7 +614,7 @@ fn failure(r: &mut Recorder) {
             c.close()?;
             i.close()
         }),
-        Box::new(|d| d.sync(&["f".to_string()])),
+        Box::new(|d| d.sync(&["f"])),
         Box::new(|d| d.sync_metadata()),
         Box::new(|d| d.rename("f", "g")),
         Box::new(|d| {
@@ -760,7 +760,7 @@ fn crash(r: &mut Recorder, sd: i64, always_corrupt: bool) {
         });
     }
     r.rec_void("sync", || {
-        d.sync(&["_0.dat".to_string(), "_3.dat".to_string()])
+        d.sync(&["_0.dat", "_3.dat"])
     });
     r.rec_void("crash", || d.crash());
     r.rec("files", || digest(d.get_delegate().as_ref()));
@@ -788,7 +788,8 @@ fn copy_index(index: &ByteBuffersDirectory, sd: i64, synced: &[String]) -> MockD
     for name in index.list_all().unwrap() {
         d.copy_from(index, &name, &name, default()).unwrap();
     }
-    d.sync(synced).unwrap();
+    d.sync(&synced.iter().map(String::as_str).collect::<Vec<_>>())
+        .unwrap();
     d
 }
 

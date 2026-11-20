@@ -143,7 +143,39 @@ pub struct DecodedTriangle {
     pub ca: bool,
 }
 
+impl std::fmt::Display for DecodedTriangle {
+    /// pretty print the triangle vertices
+    ///
+    /// Equivalent to `DecodedTriangle.toString()`:
+    /// `aX + ", " + aY + " " + bX + ", " + bY + " " + cX + ", " + cY + " [" + ab + "," + bc + "," + ca + "]"`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}, {} {}, {} {}, {} [{},{},{}]",
+            self.a_x, self.a_y, self.b_x, self.b_y, self.c_x, self.c_y, self.ab, self.bc, self.ca
+        )
+    }
+}
+
 impl DecodedTriangle {
+    /// Equivalent to `DecodedTriangle.hashCode()`:
+    /// `Objects.hash(aX, aY, bX, bY, cX, cY, ab, bc, ca)`, which leaves the
+    /// type out.
+    pub fn hash_code(&self) -> i32 {
+        use crate::util::java_collections::{java_arrays_hash_code_ints, java_boolean_hash_code};
+        java_arrays_hash_code_ints(&[
+            self.a_x,
+            self.a_y,
+            self.b_x,
+            self.b_y,
+            self.c_x,
+            self.c_y,
+            java_boolean_hash_code(self.ab),
+            java_boolean_hash_code(self.bc),
+            java_boolean_hash_code(self.ca),
+        ])
+    }
+
     /// Sets the six coordinates and the three edge flags.
     ///
     /// Equivalent to `DecodedTriangle.setValues(...)`, which takes its
@@ -584,13 +616,56 @@ impl Triangle {
         c_x: i32,
         c_y: i32,
     ) -> Result<Self> {
-        let mut bytes = vec![0u8; 7 * BYTES];
-        ShapeField::encode_triangle(&mut bytes, a_y, a_x, true, b_y, b_x, true, c_y, c_x, true)?;
-        Ok(Self {
+        // `super(name, TYPE)`, then `setTriangleValue(...)`.
+        let mut triangle = Self {
             name: name.into(),
             field_type: Arc::clone(ShapeField::shared_field_type()),
-            fields_data: FieldData::Bytes(BytesRef::new(bytes)),
-        })
+            fields_data: FieldData::Null,
+        };
+        triangle.set_triangle_value(a_x, a_y, true, b_x, b_y, true, c_x, c_y, true)?;
+        Ok(triangle)
+    }
+
+    /// sets the vertices of the triangle as integer encoded values
+    ///
+    /// Equivalent to the protected `Triangle.setTriangleValue(int, int,
+    /// boolean, int, int, boolean, int, int, boolean)`: the first call
+    /// allocates the `7 * BYTES` value, later ones encode into it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`ShapeField::encode_triangle`] raises.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_triangle_value(
+        &mut self,
+        a_x: i32,
+        a_y: i32,
+        ab_from_shape: bool,
+        b_x: i32,
+        b_y: i32,
+        bc_from_shape: bool,
+        c_x: i32,
+        c_y: i32,
+        ca_from_shape: bool,
+    ) -> Result<()> {
+        if !matches!(self.fields_data, FieldData::Bytes(_)) {
+            self.fields_data = FieldData::Bytes(BytesRef::new(vec![0u8; 7 * BYTES]));
+        }
+        let FieldData::Bytes(bytes) = &mut self.fields_data else {
+            unreachable!("the value was set to bytes above");
+        };
+        ShapeField::encode_triangle(
+            &mut bytes.bytes,
+            a_y,
+            a_x,
+            ab_from_shape,
+            b_y,
+            b_x,
+            bc_from_shape,
+            c_y,
+            c_x,
+            ca_from_shape,
+        )
     }
 
     /// Returns the field's name.
@@ -615,24 +690,24 @@ impl Triangle {
         name: impl Into<String>,
         t: &crate::geo::tessellator::Triangle,
     ) -> Result<Self> {
-        let mut bytes = vec![0u8; 7 * BYTES];
-        ShapeField::encode_triangle(
-            &mut bytes,
-            t.get_encoded_y(0),
-            t.get_encoded_x(0),
-            t.is_edge_from_polygon(0),
-            t.get_encoded_y(1),
-            t.get_encoded_x(1),
-            t.is_edge_from_polygon(1),
-            t.get_encoded_y(2),
-            t.get_encoded_x(2),
-            t.is_edge_from_polygon(2),
-        )?;
-        Ok(Self {
+        // `super(name, TYPE)`, then `setTriangleValue(...)`.
+        let mut triangle = Self {
             name: name.into(),
             field_type: Arc::clone(ShapeField::shared_field_type()),
-            fields_data: FieldData::Bytes(BytesRef::new(bytes)),
-        })
+            fields_data: FieldData::Null,
+        };
+        triangle.set_triangle_value(
+            t.get_encoded_x(0),
+            t.get_encoded_y(0),
+            t.is_edge_from_polygon(0),
+            t.get_encoded_x(1),
+            t.get_encoded_y(1),
+            t.is_edge_from_polygon(1),
+            t.get_encoded_x(2),
+            t.get_encoded_y(2),
+            t.is_edge_from_polygon(2),
+        )?;
+        Ok(triangle)
     }
 
     /// Returns the packed triangle.

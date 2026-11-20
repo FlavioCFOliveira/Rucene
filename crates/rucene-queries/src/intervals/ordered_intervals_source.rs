@@ -211,6 +211,9 @@ impl OrderedIntervalIterator {
     }
 
     /// Equivalent to the protected `OrderedIntervalIterator.reset()`.
+    ///
+    /// Equivalent to the abstract `ConjunctionIntervalIterator.reset()` this subclass
+    /// implements, which `conjunction_interval_iterator_disi!` calls on each document.
     fn reset(&mut self) -> Result<()> {
         self.base.sub_iterators[0].next_interval()?;
         self.i = 1;

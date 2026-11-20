@@ -4426,7 +4426,7 @@ mod tests {
                 already: false,
             }))
         }
-        fn sync(&self, names: &[String]) -> Result<()> {
+        fn sync(&self, names: &[&str]) -> Result<()> {
             self.inner.sync(names)
         }
         fn sync_metadata(&self) -> Result<()> {

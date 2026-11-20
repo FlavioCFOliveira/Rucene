@@ -6971,6 +6971,22 @@ impl Resolution {
     }
 }
 
+impl std::fmt::Display for Resolution {
+    /// Equivalent to `Resolution.toString()`: the enum constant's name in
+    /// lowercase (`super.toString().toLowerCase(Locale.ROOT)`), e.g. `"day"`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Resolution::YEAR => "year",
+            Resolution::MONTH => "month",
+            Resolution::DAY => "day",
+            Resolution::HOUR => "hour",
+            Resolution::MINUTE => "minute",
+            Resolution::SECOND => "second",
+            Resolution::MILLISECOND => "millisecond",
+        })
+    }
+}
+
 /// `java.util.Date`: an instant with millisecond precision, as
 /// [`DateTools`] takes and returns it.
 pub type Date = chrono::DateTime<chrono::Utc>;

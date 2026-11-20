@@ -182,6 +182,8 @@ impl IntervalScoreFunction for SaturationFunction {
     }
 
     /// `Objects.hash(pivot)`.
+    ///
+    /// Equivalent to `SaturationFunction.hashCode()`.
     fn function_hash(&self) -> i32 {
         31i32.wrapping_add(java_float_hash_code(self.pivot))
     }
@@ -287,6 +289,8 @@ impl IntervalScoreFunction for SigmoidFunction {
     }
 
     /// `Objects.hash(pivot, a)`.
+    ///
+    /// Equivalent to `SigmoidFunction.hashCode()`.
     fn function_hash(&self) -> i32 {
         (31i32.wrapping_add(java_float_hash_code(self.pivot)))
             .wrapping_mul(31)

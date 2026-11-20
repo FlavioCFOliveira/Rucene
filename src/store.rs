@@ -5800,7 +5800,10 @@ pub trait Directory: Send + Sync {
     ) -> Result<Box<dyn IndexOutput>>;
 
     /// Ensures the named files are durably stored.
-    fn sync(&self, names: &[String]) -> Result<()>;
+    ///
+    /// Equivalent to `Directory.sync(Collection<String>)`: the names are
+    /// borrowed, as Java passes the caller's collection itself.
+    fn sync(&self, names: &[&str]) -> Result<()>;
 
     /// Ensures directory metadata (renames, etc.) are durably stored.
     fn sync_metadata(&self) -> Result<()>;
@@ -6206,7 +6209,7 @@ impl Directory for FilterDirectory {
         self.inner.create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.inner.sync(names)
     }
 
@@ -6562,7 +6565,7 @@ impl Directory for TrackingDirectoryWrapper {
         Ok(out)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.inner.sync(names)
     }
 
@@ -6807,14 +6810,14 @@ impl Directory for FileSwitchDirectory {
             .create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         let mut primary_names = Vec::new();
         let mut secondary_names = Vec::new();
         for name in names {
             if self.primary_extensions.contains(&Self::get_extension(name)) {
-                primary_names.push(name.clone());
+                primary_names.push(*name);
             } else {
-                secondary_names.push(name.clone());
+                secondary_names.push(*name);
             }
         }
         self.primary_dir.sync(&primary_names)?;
@@ -7293,7 +7296,7 @@ impl Directory for NRTCachingDirectory {
         }
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         for name in names {
             self.un_cache(name)?;
         }
@@ -9564,7 +9567,7 @@ impl Directory for ByteBuffersDirectory {
         }
     }
 
-    fn sync(&self, _names: &[String]) -> Result<()> {
+    fn sync(&self, _names: &[&str]) -> Result<()> {
         self.ensure_open()?;
         Ok(())
     }
@@ -10990,7 +10993,7 @@ impl Directory for FSDirectory {
     }
 
     /// Equivalent to `FSDirectory.sync(Collection)` (`FSDirectory.java:238-246`).
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.check_open()?;
         for name in names {
             self.fsync_file(name)?;
@@ -11334,7 +11337,7 @@ impl Directory for NIOFSDirectory {
         self.inner.create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.inner.sync(names)
     }
 
@@ -13676,7 +13679,7 @@ mod tests {
         assert!(dir.get_pending_deletions().unwrap().is_empty());
 
         // Sync and syncMetadata are no-ops for in-memory store.
-        dir.sync(&["renamed.bin".to_string()]).unwrap();
+        dir.sync(&["renamed.bin"]).unwrap();
         dir.sync_metadata().unwrap();
 
         // Close makes the directory unusable.
@@ -13790,7 +13793,7 @@ mod tests {
             ) -> Result<Box<dyn IndexOutput>> {
                 self.dir.create_temp_output(p, s, c)
             }
-            fn sync(&self, names: &[String]) -> Result<()> {
+            fn sync(&self, names: &[&str]) -> Result<()> {
                 self.dir.sync(names)
             }
             fn sync_metadata(&self) -> Result<()> {
@@ -15301,7 +15304,7 @@ mod tests {
             self.inner.create_temp_output(prefix, suffix, context)
         }
 
-        fn sync(&self, names: &[String]) -> Result<()> {
+        fn sync(&self, names: &[&str]) -> Result<()> {
             self.inner.sync(names)
         }
 
@@ -15901,7 +15904,7 @@ mod tests {
             out.write_byte(1).unwrap();
             out.close().unwrap();
         }
-        dir.sync(&["x.bin".to_string()]).unwrap();
+        dir.sync(&["x.bin"]).unwrap();
         assert_eq!(dir.file_length("x.bin").unwrap(), 1);
         dir.sync_metadata().unwrap();
     }
@@ -16366,7 +16369,7 @@ mod tests {
         }
 
         // sync flushes cached file to delegate and clears cache.
-        cache.sync(&["small.bin".to_string()]).unwrap();
+        cache.sync(&["small.bin"]).unwrap();
         assert!(!cache
             .list_cached_files()
             .unwrap()
@@ -16449,7 +16452,7 @@ mod tests {
         state(&dir, "g flush 500", &mut log);
         dir.rename("b", "b2").unwrap();
         state(&dir, "rename b->b2", &mut log);
-        dir.sync(&["c".to_string()]).unwrap();
+        dir.sync(&["c"]).unwrap();
         state(&dir, "sync c", &mut log);
         // The output closes after its file was deleted: the callback returns
         // no input and leaves the counter alone.

@@ -57,7 +57,30 @@ pub(crate) struct PointTransitions {
     pub(crate) starts: TransitionList,
 }
 
+impl PartialEq for PointTransitions {
+    /// Equivalent to `PointTransitions.equals(Object)`: the points alone.
+    fn eq(&self, other: &Self) -> bool {
+        other.point == self.point
+    }
+}
+
+impl Eq for PointTransitions {}
+
+impl std::hash::Hash for PointTransitions {
+    /// Equivalent to `PointTransitions.hashCode()`: hashes the point, which
+    /// Java's returns.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.point.hash(state);
+    }
+}
+
 impl PointTransitions {
+    /// Equivalent to `PointTransitions.compareTo(PointTransitions)`:
+    /// `point - other.point`, with Java's `int` wrap.
+    pub(crate) fn compare_to(&self, other: &PointTransitions) -> i32 {
+        self.point.wrapping_sub(other.point)
+    }
+
     fn reset(&mut self, point: i32) {
         self.point = point;
         self.ends.next = 0;
@@ -74,6 +97,20 @@ pub(crate) struct PointTransitionSet {
     pub(crate) points: Vec<PointTransitions>,
     map: HashMap<i32, usize>,
     use_hash: bool,
+}
+
+impl std::fmt::Display for PointTransitionSet {
+    /// Equivalent to `PointTransitionSet.toString()`: each point as
+    /// `point:starts,ends` (transition counts), separated by a space.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, p) in self.points[..self.count].iter().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{}:{},{}", p.point, p.starts.next / 3, p.ends.next / 3)?;
+        }
+        Ok(())
+    }
 }
 
 impl PointTransitionSet {
@@ -126,10 +163,10 @@ impl PointTransitionSet {
     }
 
     pub(crate) fn sort(&mut self) {
-        // Tim sort performs well on already sorted arrays; the points are unique so
-        // an unstable sort produces the same permutation.
+        // Tim sort performs well on already sorted arrays: `ArrayUtil.timSort`
+        // with `PointTransitions.compareTo`, a stable sort.
         if self.count > 1 {
-            self.points[0..self.count].sort_by_key(|p| p.point);
+            self.points[0..self.count].sort_by(|a, b| a.compare_to(b).cmp(&0));
         }
     }
 

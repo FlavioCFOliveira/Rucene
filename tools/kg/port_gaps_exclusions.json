@@ -304,5 +304,73 @@
     "triageReason": "reset() rewinds `iterator` to the head of the entry set (RandomPostingsTester.java:602-604) and is called once, right after construction (:538); the port constructs the enum already positioned there, `iterator_after: Some(Bound::Unbounded)`, marked `// termsEnum.reset()` (crates/rucene-test-framework/src/index/random_postings_tester.rs:550-556)."
    }
   }
+ },
+ "org.apache.lucene.queryparser.classic.QueryParser$LookaheadSuccess": {
+  "memberVerdicts": {
+   "fillInStackTrace": {
+    "triageClass": "na",
+    "triageReason": "JavaCC's override returns `this` so the shared `jj_ls` Error never captures a stack trace; the port's LookaheadSuccess is a unit value carried in `Raised::LookaheadSuccess` (crates/rucene-queryparser/src/classic/query_parser.rs:1572-1575) and Rust captures no stack trace for a value, so there is no capture to suppress."
+   }
+  }
+ },
+ "org.apache.lucene.queryparser.flexible.standard.parser.StandardSyntaxParser$LookaheadSuccess": {
+  "memberVerdicts": {
+   "fillInStackTrace": {
+    "triageClass": "na",
+    "triageReason": "JavaCC's override returns `this` so the shared `jj_ls` Error never captures a stack trace; the port's LookaheadSuccess is a unit value carried in `Raised::LookaheadSuccess` (crates/rucene-queryparser/src/flexible/standard/parser/standard_syntax_parser.rs:685-688) and Rust captures no stack trace for a value, so there is no capture to suppress."
+   }
+  }
+ },
+ "org.apache.lucene.queryparser.surround.parser.QueryParser$LookaheadSuccess": {
+  "memberVerdicts": {
+   "fillInStackTrace": {
+    "triageClass": "na",
+    "triageReason": "JavaCC's override returns `this` so the shared `jj_ls` Error never captures a stack trace; the port's LookaheadSuccess is a unit value carried in `Raised::LookaheadSuccess` (crates/rucene-queryparser/src/surround/parser/query_parser.rs:1539-1542) and Rust captures no stack trace for a value, so there is no capture to suppress."
+   }
+  }
+ },
+ "org.apache.lucene.analysis.compound.hyphenation.TernaryTree$Iterator$Item": {
+  "memberVerdicts": {
+   "clone": {
+    "triageClass": "na",
+    "triageReason": "`clone()` returns `new Item(parent, child)`, a field copy; the port's `Item` derives `Clone, Copy` (crates/rucene-analysis-common/src/analysis/compound/hyphenation/ternary_tree.rs:484-485). The triage's derive rule misses it because the parser keys the associated `type Item = Vec<u16>` of the iterator impl (:671) over the struct."
+   }
+  }
+ },
+ "org.apache.lucene.search.TimeLimitingBulkScorer$TimeExceededException": {
+  "memberVerdicts": {
+   "fillInStackTrace": {
+    "triageClass": "na",
+    "triageReason": "The override returns `this` so the control-flow exception never captures a stack trace (TimeLimitingBulkScorer.java); the port's TimeExceededException is a unit value carried in `CollectionError::TimeExceeded` (src/search/collection_terminated_exception.rs:82-91) and Rust captures no stack trace for a value, so there is no capture to suppress."
+   }
+  }
+ },
+ "org.apache.lucene.index.FieldUpdatesBuffer$BufferedUpdate": {
+  "memberVerdicts": {
+   "equals": {
+    "triageClass": "na",
+    "triageReason": "Java overrides equals/hashCode only to throw UnsupportedOperationException(\"this struct should not be use in map or other data-structures that use hashCode / equals\") (FieldUpdatesBuffer.java:292-303); the port's BufferedUpdate implements neither PartialEq nor Hash (src/index/field_updates_buffer.rs:536-537: derive(Debug, Clone) only), so such use is refused at compile time."
+   },
+   "hashCode": {
+    "triageClass": "na",
+    "triageReason": "Java overrides equals/hashCode only to throw UnsupportedOperationException(\"this struct should not be use in map or other data-structures that use hashCode / equals\") (FieldUpdatesBuffer.java:292-303); the port's BufferedUpdate implements neither PartialEq nor Hash (src/index/field_updates_buffer.rs:536-537: derive(Debug, Clone) only), so such use is refused at compile time."
+   }
+  }
+ },
+ "org.apache.lucene.index.NoMergeScheduler": {
+  "memberVerdicts": {
+   "clone": {
+    "triageClass": "na",
+    "triageReason": "Java's `clone()` returns `this`, keeping the singleton (NoMergeScheduler.java:53-55); the port hands the singleton out as `Arc<NoMergeScheduler>` (src/index/merge_scheduler.rs:308-317, `NoMergeScheduler::instance`) and the type is not `Clone`, so every copy is `Arc::clone` of the one instance, which is what `return this` gives."
+   }
+  }
+ },
+ "org.apache.lucene.document.ShapeDocValues$Reader": {
+  "memberVerdicts": {
+   "resetBBox": {
+    "triageClass": "na",
+    "triageReason": "Private helper that refills the scratch EncodedRectangle `relateNode` passes to `relateComponent`, `relatePoint`, `relateLine` and `relateTriangle`, none of which reads it (ShapeDocValues.java:836-845, 875-935); the port drops that write-only parameter (src/document/shape_doc_values.rs:1278-1281), so there is no scratch box to reset."
+   }
+  }
  }
 }

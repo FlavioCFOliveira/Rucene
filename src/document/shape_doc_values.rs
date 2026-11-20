@@ -157,6 +157,14 @@ impl<'a> SliceDataInput<'a> {
         Self { bytes, pos: 0 }
     }
 
+    /// Equivalent to `Reader.clone()`: `new Reader(ShapeDocValues.this.data)`,
+    /// a reader over the same bytes positioned at their start (not a copy of
+    /// this reader's position).
+    #[allow(dead_code)] // `Reader` overrides `DataInput.clone()`; Lucene 10.5.0 never calls it.
+    fn clone_reader(&self) -> SliceDataInput<'a> {
+        SliceDataInput::new(self.bytes)
+    }
+
     /// Equivalent to `Reader.rewind()`.
     fn rewind(&mut self) {
         self.pos = 0;
@@ -699,7 +707,9 @@ fn compute_component_size(node: &TreeNode, max_x: i32, max_y: i32) -> i32 {
 
 /// Serialises the depth-first node list.
 ///
-/// Equivalent to the private inner class `ShapeDocValues.Writer`.
+/// Equivalent to the private inner class `ShapeDocValues.Writer`: its
+/// constructor's `writeTree(dfsSerialized)`, and the returned value is
+/// `Writer.getBytesRef()`, the bytes the writer produced.
 fn write_tree(
     nodes: &[TreeNode],
     dfs: &[usize],
@@ -749,12 +759,23 @@ fn write_node(
     // Write the total subtree size.
     output.write_v_int(node.byte_size)?;
     // Write the bounds.
+    write_bounds(output, node, parent)?;
+    write_header(output, node)?;
+    write_component(output, node, parent.max_x, parent.max_y)
+}
+
+/// Equivalent to the private `Writer.writeBounds(TreeNode)`: the node's
+/// bounds as deltas from its parent's maxima.
+fn write_bounds(
+    output: &mut crate::store::ByteBuffersDataOutput,
+    node: &TreeNode,
+    parent: &TreeNode,
+) -> Result<()> {
     output.write_v_long(i64::from(parent.max_x) - i64::from(node.min_x))?;
     output.write_v_long(i64::from(parent.max_y) - i64::from(node.min_y))?;
     output.write_v_long(i64::from(parent.max_x) - i64::from(node.max_x))?;
     output.write_v_long(i64::from(parent.max_y) - i64::from(node.max_y))?;
-    write_header(output, node)?;
-    write_component(output, node, parent.max_x, parent.max_y)
+    Ok(())
 }
 
 /// Equivalent to `Writer.writeComponent(TreeNode, int, int)`.

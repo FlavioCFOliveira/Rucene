@@ -87,6 +87,20 @@ impl UTF8Sequence {
     }
 }
 
+impl std::fmt::Display for UTF8Sequence {
+    /// Equivalent to `UTF8Sequence.toString()`: each byte as
+    /// `Integer.toBinaryString(byteAt(i))`, separated by a space.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for i in 0..self.len {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{:b}", self.byte_at(i))?;
+        }
+        Ok(())
+    }
+}
+
 /// Converts UTF-32 automata to the equivalent UTF-8 representation.
 ///
 /// Equivalent to `org.apache.lucene.util.automaton.UTF32ToUTF8`. The byte ranges

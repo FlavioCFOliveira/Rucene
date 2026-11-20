@@ -173,7 +173,7 @@ impl Directory for SharedDirectory {
         self.0.create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.0.sync(names)
     }
 
@@ -409,6 +409,29 @@ impl DeletedTerms {
             }
         }
         Ok(())
+    }
+}
+
+impl DeletedTerms {
+    /// Every deleted term. Just for test, not efficient.
+    ///
+    /// Equivalent to `DeletedTerms.keySet()`
+    /// (`BufferedUpdates.java:238-244`), with each field's
+    /// `BytesRefIntMap.keySet()` (`BufferedUpdates.java:315-323`) inlined:
+    /// ids `0..size()` of the field's hash, each term copied.
+    pub fn key_set(&self) -> std::collections::HashSet<Term> {
+        let mut set = std::collections::HashSet::new();
+        for (field, terms) in self.delete_terms.iter() {
+            let hash = terms.lock_hash();
+            for i in 0..hash.size() {
+                let bytes = hash.get(&self.pool, i);
+                set.insert(Term::new(
+                    field.clone(),
+                    crate::util::BytesRef::new(bytes.to_vec()),
+                ));
+            }
+        }
+        set
     }
 }
 
@@ -2243,8 +2266,10 @@ impl DeleteSlice {
     }
 
     /// Returns `true` if this slice's tail holds the batch of terms whose
-    /// elements start at `terms`: Java's `isTailItem(Object)`
-    /// (`DocumentsWriterDeleteQueue.java:404-406`), `tail.item == object`,
+    /// elements start at `terms`.
+    ///
+    /// Equivalent to `DeleteSlice.isTailItem(Object)`
+    /// (`DocumentsWriterDeleteQueue.java:386-388`), `sliceTail.item == object`,
     /// asked of the `Term[]` handed to `addDelete(Term...)`.
     ///
     /// The batch moves into its node with its heap buffer unchanged, so the
@@ -2846,6 +2871,15 @@ impl FlushTicket {
     /// Returns `true` if the flush that owns this ticket failed.
     pub fn failed(&self) -> bool {
         self.lock().failed
+    }
+
+    /// Lends the flushed segment to `f`, `None` when this ticket carries no
+    /// segment (a flushed global frozen updates package).
+    ///
+    /// Equivalent to `FlushTicket.getFlushedSegment()`; the segment lives
+    /// under the ticket's lock, so it is lent rather than returned.
+    pub fn get_flushed_segment<R>(&self, f: impl FnOnce(Option<&FlushedSegment>) -> R) -> R {
+        f(self.lock().segment.as_ref())
     }
 
     /// Takes the flushed segment out of the ticket.
@@ -7037,13 +7071,15 @@ impl DocumentsWriter {
         }
         let pending_num_docs = Arc::clone(&self.pending_num_docs);
         self.ticket_queue.force_purge(move |ticket| {
-            if let Some(segment) = ticket.take_flushed_segment() {
-                pending_num_docs.fetch_sub(
-                    i64::from(segment.segment_info.info.max_doc()?),
-                    Ordering::AcqRel,
-                );
-            }
-            Ok(())
+            ticket.get_flushed_segment(|segment| {
+                if let Some(segment) = segment {
+                    pending_num_docs.fetch_sub(
+                        i64::from(segment.segment_info.info.max_doc()?),
+                        Ordering::AcqRel,
+                    );
+                }
+                Ok(())
+            })
         })?;
 
         let delete_queue = self.shared.delete_queue();

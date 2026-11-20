@@ -43,6 +43,14 @@ impl SearcherTracker {
         })
     }
 
+    /// Newer searchers sort before older ones.
+    ///
+    /// Equivalent to `SearcherTracker.compareTo(SearcherTracker)`:
+    /// `Double.compare(other.recordTimeSec, recordTimeSec)`.
+    fn compare_to(&self, other: &SearcherTracker) -> std::cmp::Ordering {
+        crate::util::java_double_compare(other.record_time_sec, self.record_time_sec)
+    }
+
     /// Releases the reference this tracker holds.
     ///
     /// Equivalent to the `synchronized SearcherTracker.close()`; the
@@ -269,12 +277,8 @@ impl SearcherLifetimeManager {
                 .unwrap_or_else(PoisonError::into_inner);
             searchers.values().map(Arc::clone).collect()
         };
-        // Newer searchers sort before older ones.
-        trackers.sort_by(|a, b| {
-            b.record_time_sec
-                .partial_cmp(&a.record_time_sec)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // `Collections.sort(trackers)`: newer searchers sort before older ones.
+        trackers.sort_by(|a, b| a.compare_to(b));
 
         let mut last_record_time_sec: Option<f64> = None;
         let now = self.now_sec();

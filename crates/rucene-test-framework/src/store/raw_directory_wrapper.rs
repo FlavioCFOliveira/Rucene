@@ -85,7 +85,7 @@ impl Directory for RawDirectoryWrapper {
         self.base.create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.base.sync(names)
     }
 

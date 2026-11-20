@@ -43,7 +43,8 @@ pub trait AutomatonAttribute: Attribute {
     /// [`init`](Self::init) has run.
     ///
     /// Equivalent to `AutomatonAttribute.getAutomata()` together with
-    /// `getTermLength()`.
+    /// `AutomatonAttribute.getTermLength()`: Java's only caller, the
+    /// `FuzzyTermsEnum` constructor, reads both right after `init`.
     fn get_automaton_set(&self) -> Option<AutomatonSet>;
 
     /// Builds the automata, unless they have already been built.
@@ -85,6 +86,8 @@ impl AutomatonAttributeImpl {
 impl Attribute for AutomatonAttributeImpl {}
 
 impl AutomatonAttribute for AutomatonAttributeImpl {
+    /// Equivalent to `AutomatonAttributeImpl.getAutomata()` together with
+    /// `AutomatonAttributeImpl.getTermLength()`.
     fn get_automaton_set(&self) -> Option<AutomatonSet> {
         self.automata
             .lock()

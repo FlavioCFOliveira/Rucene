@@ -585,7 +585,8 @@ pub mod event_queue {
     use super::IndexWriter;
     use crate::error::{LuceneError, Result};
 
-    /// `IndexWriter.Event`: `void process(IndexWriter writer)`.
+    /// `IndexWriter.Event`, a functional interface.
+    /// Equivalent to `Event.process(IndexWriter)` when called.
     pub type Event = Box<dyn FnOnce(&IndexWriter) -> Result<()> + Send>;
 
     /// The `Semaphore(Integer.MAX_VALUE)`: the permits held, and whether
@@ -3260,11 +3261,12 @@ impl IndexWriter {
             // false; pendingCommit = null; toSync.rollbackCommit(directory); } }`
             // (`IndexWriter.java:5770-5782`): listing the files is guarded too.
             let synced_files = synced.files_ordered(false).and_then(|files| {
-                // `Directory::sync` takes owned names: a shared name is copied
-                // here, where Java passes the set itself.
-                let files_to_sync: Vec<String> = files.into_iter().map(String::from).collect();
+                // Java passes the set itself; the names are borrowed from it,
+                // not copied.
+                let files_to_sync: Vec<&str> = files.iter().map(|name| &**name).collect();
                 self.directory.sync(&files_to_sync)?;
-                Ok(files_to_sync)
+                drop(files_to_sync);
+                Ok(files)
             });
             let files_to_sync = match synced_files {
                 Ok(files_to_sync) => files_to_sync,
@@ -3283,7 +3285,14 @@ impl IndexWriter {
                     // `"done all syncs: " + filesToSync`: `AbstractCollection.toString()`.
                     .message(
                         IW,
-                        &format!("done all syncs: [{}]", files_to_sync.join(", ")),
+                        &format!(
+                            "done all syncs: [{}]",
+                            files_to_sync
+                                .iter()
+                                .map(|name| &**name)
+                                .collect::<Vec<&str>>()
+                                .join(", ")
+                        ),
                     );
             }
             self.test_point("midStartCommitSuccess");
@@ -6580,7 +6589,7 @@ impl Directory for SharedDirectory {
         self.0.create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.0.sync(names)
     }
 
@@ -11321,8 +11330,11 @@ mod tests {
             self.inner.create_temp_output(prefix, suffix, context)
         }
 
-        fn sync(&self, names: &[String]) -> Result<()> {
-            self.synced.lock().unwrap().push(names.to_vec());
+        fn sync(&self, names: &[&str]) -> Result<()> {
+            self.synced
+                .lock()
+                .unwrap()
+                .push(names.iter().map(|name| name.to_string()).collect());
             self.inner.sync(names)
         }
 
@@ -13964,7 +13976,7 @@ mod tests {
             self.inner.create_temp_output(prefix, suffix, context)
         }
 
-        fn sync(&self, names: &[String]) -> Result<()> {
+        fn sync(&self, names: &[&str]) -> Result<()> {
             self.inner.sync(names)
         }
 

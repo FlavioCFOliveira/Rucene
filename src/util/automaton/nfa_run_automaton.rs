@@ -32,6 +32,16 @@ struct DState {
     outgoing_transitions: i32,
 }
 
+impl PartialEq for DState {
+    /// Equivalent to `DState.equals(Object)`: equal hash codes and equal NFA
+    /// state arrays (`NFARunAutomaton.java:437-443`).
+    fn eq(&self, other: &Self) -> bool {
+        self.hash_code == other.hash_code && self.nfa_states == other.nfa_states
+    }
+}
+
+impl Eq for DState {}
+
 impl DState {
     fn new(nfa_states: Vec<i32>, automaton: &Automaton) -> Self {
         debug_assert!(!nfa_states.is_empty());
@@ -453,6 +463,10 @@ impl Inner {
     }
 
     /// Determinizes this state only.
+    ///
+    /// Equivalent to the private `DState.determinize()`, for the state at
+    /// `ord`: Java's inner class reaches the automaton, its points and the
+    /// registry through its enclosing instance, which this port passes in.
     fn determinize_state(
         &mut self,
         ord: i32,

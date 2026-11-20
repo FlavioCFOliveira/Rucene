@@ -72,6 +72,18 @@ impl ShardRef {
     }
 }
 
+impl std::fmt::Display for ShardRef {
+    /// Equivalent to `ShardRef.toString()`:
+    /// `"ShardRef(shardIndex=" + shardIndex + " hitIndex=" + hitIndex + ")"`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ShardRef(shardIndex={} hitIndex={})",
+            self.shard_index, self.hit_index
+        )
+    }
+}
+
 /// Internal comparator on the shard index.
 ///
 /// Equivalent to `TopDocs.SHARD_INDEX_TIE_BREAKER`.

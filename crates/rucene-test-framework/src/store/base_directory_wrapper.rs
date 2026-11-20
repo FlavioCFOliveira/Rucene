@@ -138,7 +138,7 @@ impl Directory for BaseDirectoryWrapper {
         self.delegate.create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.delegate.sync(names)
     }
 

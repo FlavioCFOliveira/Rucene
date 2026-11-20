@@ -768,7 +768,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testSyncDisabled()`: test that cfs reader is read-only.
     fn test_sync_disabled(&self) -> Result<()> {
-        assert_read_only(true, |cfs, testfile| cfs.sync(&[testfile.to_string()]))
+        assert_read_only(true, |cfs, testfile| cfs.sync(&[testfile]))
     }
 
     /// `testMakeLockDisabled()`: test that cfs reader is read-only.
@@ -1223,7 +1223,7 @@ impl Directory for OwningTestDirectory {
         self.delegate()?.create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.delegate()?.sync(names)
     }
 

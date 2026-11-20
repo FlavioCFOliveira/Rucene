@@ -183,7 +183,11 @@ pub fn rewrite_as_boolean_query(
     collected_terms: &[TermAndState],
 ) -> Result<WeightOrDocIdSetIterator> {
     let mut bq = BooleanQueryBuilder::new();
+    // `new Term(q.field, t.term)` hands every term the query's own field
+    // `String`; one shared name stands for it rather than a copy per term.
+    let mut field: Option<Arc<str>> = None;
     for t in collected_terms {
+        let field = Arc::clone(field.get_or_insert_with(|| Arc::from(state.query.get_field())));
         let mut term_states = TermStates::new(state.searcher.get_top_reader_context())?;
         term_states.register(
             t.state.clone_box(),
@@ -193,7 +197,7 @@ pub fn rewrite_as_boolean_query(
         );
         bq.add(
             Arc::new(TermQuery::with_states(
-                Term::new(state.query.get_field().to_string(), t.term.clone()),
+                Term::new(field, t.term.clone()),
                 Arc::new(term_states),
             )),
             Occur::SHOULD,
@@ -336,6 +340,19 @@ impl RewritingScorerSupplier {
         }
     }
 
+    /// Equivalent to the private
+    /// `RewritingWeight.scorerForIterator(DocIdSetIterator)`:
+    /// `new ConstantScoreScorer(score(), scoreMode, iterator)`. Java returns
+    /// `null` for a `null` iterator; the iterator of
+    /// [`WeightOrDocIdSetIterator::Iterator`] is never absent.
+    fn scorer_for_iterator(&self, iterator: Box<dyn DocIdSetIterator>) -> Box<dyn Scorer> {
+        Box::new(ConstantScoreScorer::from_iterator(
+            self.state.score,
+            self.state.score_mode,
+            iterator,
+        ))
+    }
+
     fn empty_scorer(&self) -> Result<ConstantScoreScorer> {
         Ok(ConstantScoreScorer::from_iterator(
             self.state.score,
@@ -350,13 +367,7 @@ impl ScorerSupplier for RewritingScorerSupplier {
         let weight_or_iterator = self.weight_or_iterator(lead_cost)?;
         let scorer: Option<Box<dyn Scorer>> = match weight_or_iterator {
             WeightOrDocIdSetIterator::Weight(weight) => weight.scorer(&self.context)?,
-            WeightOrDocIdSetIterator::Iterator(iterator) => {
-                Some(Box::new(ConstantScoreScorer::from_iterator(
-                    self.state.score,
-                    self.state.score_mode,
-                    iterator,
-                )))
-            }
+            WeightOrDocIdSetIterator::Iterator(iterator) => Some(self.scorer_for_iterator(iterator)),
         };
         // It is against the API contract to return a null scorer from a
         // non-null ScorerSupplier, so an empty scorer stands in when the

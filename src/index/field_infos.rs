@@ -1651,7 +1651,17 @@ impl FieldInfos {
     /// `FieldInfos` constructor computed over *every* field, and so does this
     /// view.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java's `fieldInfo(String)` and
+    /// The view's accessors are this type's own, which read the filtered flags
+    /// and names: they answer the overrides `FilterFieldInfos.iterator()`
+    /// ([`iter`](Self::iter)), `FilterFieldInfos.size()`,
+    /// `FilterFieldInfos.hasFreq()`, `FilterFieldInfos.hasPostings()`,
+    /// `FilterFieldInfos.hasProx()`, `FilterFieldInfos.hasPayloads()`,
+    /// `FilterFieldInfos.hasOffsets()`, `FilterFieldInfos.hasTermVectors()`,
+    /// `FilterFieldInfos.hasNorms()`, `FilterFieldInfos.hasDocValues()` and
+    /// `FilterFieldInfos.hasPointValues()`; the clone that keeps every
+    /// field for numbering is `FilterFieldInfos.toArray(FieldInfos)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** `FilterFieldInfos`'s `fieldInfo(String)` and
     /// `fieldInfo(int)` throw `IllegalArgumentException` for a field outside
     /// the view (`PerFieldMergeState.java:200-227`); this port's
     /// [`field_info`](Self::field_info) and

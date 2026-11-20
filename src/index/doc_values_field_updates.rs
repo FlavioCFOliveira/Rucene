@@ -12,6 +12,7 @@
 use std::fmt;
 
 use crate::error::{LuceneError, Result};
+use crate::index::doc_values::{BinaryDocValues, DocValuesIterator, NumericDocValues};
 use crate::index::DocValuesType;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::DocIdSetIterator;
@@ -1174,6 +1175,154 @@ impl<'a> DocIdSetIterator for MergedIterator<'a> {
 
     fn cost(&self) -> i64 {
         self.subs.iter().map(|s| s.it.cost()).sum()
+    }
+}
+
+/// The abstract members of `DocValuesFieldUpdates.Iterator` that read the
+/// current update, which both [`DocValuesFieldUpdatesIterator`] and the
+/// [`MergedIterator`] answer, as Java's single abstract class does for every
+/// iterator it hands out.
+pub trait FieldUpdatesIterator: DocValuesIterator {
+    /// Equivalent to `Iterator.longValue()`.
+    fn long_value(&self) -> i64;
+    /// Equivalent to `Iterator.binaryValue()`.
+    fn binary_value(&self) -> BytesRef;
+    /// Equivalent to `Iterator.delGen()`.
+    ///
+    /// # Errors
+    ///
+    /// The `UnsupportedOperationException` of the merged view.
+    fn del_gen(&self) -> Result<i64>;
+    /// Equivalent to `Iterator.hasValue()`.
+    fn has_value(&self) -> bool;
+}
+
+impl DocValuesIterator for DocValuesFieldUpdatesIterator<'_> {
+    /// Equivalent to the final `DocValuesFieldUpdates.Iterator.advanceExact(int)`:
+    /// `throw new UnsupportedOperationException()`.
+    fn advance_exact(&mut self, _target: i32) -> Result<bool> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+}
+
+impl FieldUpdatesIterator for DocValuesFieldUpdatesIterator<'_> {
+    fn long_value(&self) -> i64 {
+        DocValuesFieldUpdatesIterator::long_value(self)
+    }
+    fn binary_value(&self) -> BytesRef {
+        DocValuesFieldUpdatesIterator::binary_value(self)
+    }
+    fn del_gen(&self) -> Result<i64> {
+        Ok(DocValuesFieldUpdatesIterator::del_gen(self))
+    }
+    fn has_value(&self) -> bool {
+        DocValuesFieldUpdatesIterator::has_value(self)
+    }
+}
+
+impl DocValuesIterator for MergedIterator<'_> {
+    /// Equivalent to the final `DocValuesFieldUpdates.Iterator.advanceExact(int)`
+    /// the merged view inherits: `throw new UnsupportedOperationException()`.
+    fn advance_exact(&mut self, _target: i32) -> Result<bool> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+}
+
+impl FieldUpdatesIterator for MergedIterator<'_> {
+    fn long_value(&self) -> i64 {
+        MergedIterator::long_value(self)
+    }
+    fn binary_value(&self) -> BytesRef {
+        MergedIterator::binary_value(self)
+    }
+    fn del_gen(&self) -> Result<i64> {
+        MergedIterator::del_gen(self)
+    }
+    fn has_value(&self) -> bool {
+        MergedIterator::has_value(self)
+    }
+}
+
+/// Wraps the given iterator as a [`BinaryDocValues`].
+///
+/// Equivalent to `DocValuesFieldUpdates.Iterator.asBinaryDocValues(Iterator)`.
+pub fn as_binary_doc_values<I: FieldUpdatesIterator>(iterator: I) -> IteratorBinaryDocValues<I> {
+    IteratorBinaryDocValues { iterator }
+}
+
+/// Wraps the given iterator as a [`NumericDocValues`].
+///
+/// Equivalent to `DocValuesFieldUpdates.Iterator.asNumericDocValues(Iterator)`.
+pub fn as_numeric_doc_values<I: FieldUpdatesIterator>(iterator: I) -> IteratorNumericDocValues<I> {
+    IteratorNumericDocValues { iterator }
+}
+
+/// The anonymous `BinaryDocValues` of [`as_binary_doc_values`]: every
+/// member forwards to the iterator.
+#[derive(Debug)]
+pub struct IteratorBinaryDocValues<I> {
+    iterator: I,
+}
+
+impl<I: FieldUpdatesIterator> DocIdSetIterator for IteratorBinaryDocValues<I> {
+    fn doc_id(&self) -> i32 {
+        self.iterator.doc_id()
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        self.iterator.next_doc()
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.iterator.advance(target)
+    }
+    fn cost(&self) -> i64 {
+        self.iterator.cost()
+    }
+}
+
+impl<I: FieldUpdatesIterator> DocValuesIterator for IteratorBinaryDocValues<I> {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.iterator.advance_exact(target)
+    }
+}
+
+impl<I: FieldUpdatesIterator> BinaryDocValues for IteratorBinaryDocValues<I> {
+    fn binary_value(&self) -> Result<BytesRef> {
+        Ok(self.iterator.binary_value())
+    }
+}
+
+/// The anonymous `NumericDocValues` of [`as_numeric_doc_values`]: it
+/// forwards to the iterator, except `advanceExact`, which throws itself.
+#[derive(Debug)]
+pub struct IteratorNumericDocValues<I> {
+    iterator: I,
+}
+
+impl<I: FieldUpdatesIterator> DocIdSetIterator for IteratorNumericDocValues<I> {
+    fn doc_id(&self) -> i32 {
+        self.iterator.doc_id()
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        self.iterator.next_doc()
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.iterator.advance(target)
+    }
+    fn cost(&self) -> i64 {
+        self.iterator.cost()
+    }
+}
+
+impl<I: FieldUpdatesIterator> DocValuesIterator for IteratorNumericDocValues<I> {
+    /// `throw new UnsupportedOperationException()`.
+    fn advance_exact(&mut self, _target: i32) -> Result<bool> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+}
+
+impl<I: FieldUpdatesIterator> NumericDocValues for IteratorNumericDocValues<I> {
+    fn long_value(&self) -> Result<i64> {
+        Ok(self.iterator.long_value())
     }
 }
 

@@ -117,7 +117,9 @@ impl ConditionalTokenFilterFactory {
     /// Equivalent to the final `ConditionalTokenFilterFactory.inform(ResourceLoader)`:
     /// nothing when there are no inner filters; otherwise every inner
     /// factory that is `ResourceLoaderAware` is informed, then `do_inform`
-    /// (the subclass's `doInform`) runs.
+    /// runs: the subclass's override of the protected
+    /// `ConditionalTokenFilterFactory.doInform(ResourceLoader)`, whose default
+    /// does nothing (a closure returning `Ok(())`).
     ///
     /// **Divergence from Lucene 10.5.0.** An inner factory is held through an
     /// `Arc`; informing it needs the only reference to it (Java mutates the

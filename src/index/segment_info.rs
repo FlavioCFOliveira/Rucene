@@ -1426,10 +1426,15 @@ impl SegmentOrderImpl for NumericSegmentOrder {
 
         // Java sorts inside `BaseCompositeReader`'s constructor with a
         // `Comparator` that memoises each leaf's sort value in a map keyed by
-        // the leaf's core cache key. Computing the key once per leaf and
-        // sorting on it is the same memoisation without the map.
+        // the leaf's core cache key (`getSortValue`). Loading each leaf's
+        // value once, before the sort, is the same memoisation without the
+        // map; the sort is stable, as Java's `Arrays.sort` of objects is.
+        let values: Vec<i64> = leaf_views
+            .iter()
+            .map(|leaf| self.comparator.load_sort_value(leaf.as_ref()))
+            .collect();
         let mut order: Vec<usize> = (0..subs.len()).collect();
-        order.sort_by_cached_key(|&i| self.comparator.sort_value(leaf_views[i].as_ref()));
+        order.sort_by(|&a, &b| self.comparator.compare(values[a], values[b]));
 
         let sorted: Vec<Arc<dyn IndexReader>> =
             order.into_iter().map(|i| Arc::clone(&subs[i])).collect();
@@ -1452,22 +1457,16 @@ struct NumericFieldReaderContextComparator {
 }
 
 impl NumericFieldReaderContextComparator {
-    /// Returns the value the leaf sorts by, reversed so that a plain ascending
-    /// sort of the returned keys reproduces Java's comparator.
+    /// Orders two leaves by their sort values, `v1` and `v2`, which the
+    /// caller loaded once per leaf (Java's memoising `getSortValue`).
     ///
-    /// Equivalent to `NumericFieldReaderContextComparator.getSortValue(LeafReader)`
-    /// combined with its `compare`, which negates the comparison when the sort
-    /// is reversed.
-    fn sort_value(&self, reader: &dyn crate::index::LeafReader) -> i64 {
-        let value = self.load_sort_value(reader);
+    /// Equivalent to `NumericFieldReaderContextComparator.compare(LeafReader, LeafReader)`:
+    /// `reverse ? Long.compare(v2, v1) : Long.compare(v1, v2)`.
+    fn compare(&self, v1: i64, v2: i64) -> std::cmp::Ordering {
         if self.reverse {
-            // `Long.compare(v2, v1)` orders descending; negating the key
-            // reproduces that with an ascending sort. `i64::MIN` has no
-            // negation, and it is the value a reversed load never returns
-            // (that branch yields `i64::MAX`), so saturating is exact here.
-            value.saturating_neg()
+            v2.cmp(&v1)
         } else {
-            value
+            v1.cmp(&v2)
         }
     }
 

@@ -1305,7 +1305,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                     "java.io.FileNotFoundException",
                     "java.nio.file.NoSuchFileException",
                 ],
-                || fsdir.sync(&["afile".to_string()]),
+                || fsdir.sync(&["afile"]),
             );
 
             // no new files created
@@ -2329,7 +2329,7 @@ impl Directory for OwnedTestDirectory {
         self.get().create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.get().sync(names)
     }
 

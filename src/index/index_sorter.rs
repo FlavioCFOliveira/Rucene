@@ -23,7 +23,8 @@ use crate::util::{BytesRef, FixedBitSet};
 /// Maps a document to a `long` that orders it against the other documents of a
 /// merge.
 ///
-/// Equivalent to `IndexSorter.ComparableProvider`.
+/// Equivalent to `IndexSorter.ComparableProvider`, a functional interface.
+/// Equivalent to `ComparableProvider.getAsComparableLong(int)` when called.
 pub type ComparableProvider = Box<dyn Fn(i32) -> Result<i64>>;
 
 /// Orders two documents of the same segment.
@@ -152,13 +153,17 @@ pub trait IndexSorter: Send + Sync {
 
 /// Supplies the numeric doc values a sorter reads.
 ///
-/// Equivalent to `IndexSorter.NumericDocValuesProvider`.
+/// Equivalent to `IndexSorter.NumericDocValuesProvider`, a functional
+/// interface; `None` is Java's `null`.
+/// Equivalent to `NumericDocValuesProvider.get(LeafReader)` when called.
 pub type NumericDocValuesProvider =
     Arc<dyn Fn(&dyn LeafReader) -> Result<Option<Box<dyn NumericDocValues>>> + Send + Sync>;
 
 /// Supplies the sorted doc values a sorter reads.
 ///
-/// Equivalent to `IndexSorter.SortedDocValuesProvider`.
+/// Equivalent to `IndexSorter.SortedDocValuesProvider`, a functional
+/// interface; `None` is Java's `null`.
+/// Equivalent to `SortedDocValuesProvider.get(LeafReader)` when called.
 pub type SortedDocValuesProvider =
     Arc<dyn Fn(&dyn LeafReader) -> Result<Option<Box<dyn SortedDocValues>>> + Send + Sync>;
 
@@ -168,6 +173,7 @@ pub type SortedDocValuesProvider =
 /// (`IndexSorter.java:184-189`). As in Java — whose only provider is
 /// `BinarySortField::getSortKeyDocValues`, built on `DocValues.getBinary` — a
 /// reader without the field yields empty values rather than none.
+/// Equivalent to `BinaryDocValuesProvider.get(LeafReader)` when called.
 pub type BinaryDocValuesProvider =
     Arc<dyn Fn(&dyn LeafReader) -> Result<Box<dyn BinaryDocValues>> + Send + Sync>;
 

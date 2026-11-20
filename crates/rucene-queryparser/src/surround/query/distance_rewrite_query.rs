@@ -75,6 +75,7 @@ impl Query for DistanceRewriteQuery {
         self
     }
 
+    /// Equivalent to the abstract `RewriteQuery.rewrite(IndexSearcher)`, as `DistanceRewriteQuery` implements it.
     fn rewrite(&self, index_searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
         self.distance_query
             .get_span_near_query(
@@ -85,6 +86,7 @@ impl Query for DistanceRewriteQuery {
             .map(Some)
     }
 
+    /// Equivalent to the inherited `RewriteQuery.equals(Object)`: `sameClassAs(other) && equalsTo(...)`.
     fn query_eq(&self, other: &dyn Query) -> bool {
         self.same_class_as(other)
             && other

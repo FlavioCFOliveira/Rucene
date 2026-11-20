@@ -139,6 +139,8 @@ impl BasicQueryFactory {
     /// of basic queries, or both cannot generate queries anymore.
     ///
     /// Equivalent to `equals(Object)`.
+    ///
+    /// Equivalent to `BasicQueryFactory.equals(Object)`.
     pub fn java_equals(&self, other: &BasicQueryFactory) -> bool {
         self.at_max() == other.at_max()
     }

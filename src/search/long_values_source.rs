@@ -210,6 +210,7 @@ impl LongValuesSource for ConstantLongValuesSource {
         self
     }
 
+    /// Equivalent to `ConstantLongValuesSource.equals(Object)`.
     fn source_eq(&self, other: &dyn LongValuesSource) -> bool {
         match other.as_any().downcast_ref::<ConstantLongValuesSource>() {
             Some(other) => self.value == other.value,
@@ -217,6 +218,7 @@ impl LongValuesSource for ConstantLongValuesSource {
         }
     }
 
+    /// Equivalent to `ConstantLongValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         // `Objects.hash(value)` (`LongValuesSource.java:208-210`).
         31i32.wrapping_add(crate::util::java_collections::java_long_hash_code(
@@ -224,6 +226,7 @@ impl LongValuesSource for ConstantLongValuesSource {
         ))
     }
 
+    /// Equivalent to `ConstantLongValuesSource.toString()`.
     fn to_source_string(&self) -> String {
         format!("constant({})", self.value)
     }
@@ -396,6 +399,7 @@ impl LongValuesSource for FieldValuesSource {
         }
     }
 
+    /// Equivalent to `FieldValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         // `Objects.hash(field)` (`LongValuesSource.java:258-260`).
         31i32.wrapping_add(crate::util::java_collections::java_string_hash_code(
@@ -467,6 +471,7 @@ impl DoubleValuesSource for DoubleLongValuesSource {
         }
     }
 
+    /// Equivalent to `DoubleLongValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         // `Objects.hash(inner)` (`LongValuesSource.java:149-151`).
         31i32.wrapping_add(self.inner.source_hash())

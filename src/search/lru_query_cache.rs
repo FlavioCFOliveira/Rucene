@@ -343,7 +343,8 @@ pub type LeavesToCache = Arc<dyn Fn(&LeafReaderContext) -> bool + Send + Sync>;
 /// `LRUQueryCache.MinSegmentSizePredicate`: a leaf is cached on when it has at
 /// least `min_size` documents and more than half the average number of
 /// documents per leaf of the index. That guarantees that every leaf of the
-/// upper [tier](crate::index::TieredMergePolicy) is cached.
+/// upper [tier](crate::index::TieredMergePolicy) is cached. The returned
+/// closure is `MinSegmentSizePredicate.test(LeafReaderContext)`.
 pub fn min_segment_size_predicate(min_size: i32) -> LeavesToCache {
     Arc::new(move |context: &LeafReaderContext| {
         let max_doc = context.leaf_reader().max_doc();

@@ -174,8 +174,12 @@ where
     // entries themselves by their bytes produces exactly the same order.
     let mut terms = col.terms;
     terms.sort_by(|a, b| a.bytes.cmp(&b.bytes));
+    // `new Term(query.getField(), ...)` hands every term the query's own field
+    // `String`; one shared name stands for it rather than a copy per term.
+    let mut field: Option<Arc<str>> = None;
     for collected in terms {
-        let term = Term::new(query.get_field().to_string(), collected.bytes);
+        let field = Arc::clone(field.get_or_insert_with(|| Arc::from(query.get_field())));
+        let term = Term::new(field, collected.bytes);
         let doc_freq = collected.term_state.doc_freq()?;
         debug_assert!(index_searcher.get_index_reader().doc_freq(&term)? == doc_freq);
         builder.add_clause(

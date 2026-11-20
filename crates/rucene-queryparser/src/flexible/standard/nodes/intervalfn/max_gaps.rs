@@ -63,6 +63,7 @@ impl IntervalFunction for MaxGaps {
         )
     }
 
+    /// Equivalent to `MaxGaps.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:maxgaps({} {})",

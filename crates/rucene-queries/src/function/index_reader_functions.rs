@@ -193,6 +193,7 @@ impl LongValuesSource for SumTotalTermFreqValuesSource {
         self
     }
 
+    /// Equivalent to `SumTotalTermFreqValuesSource.equals(Object)`.
     fn source_eq(&self, other: &dyn LongValuesSource) -> bool {
         other
             .as_any()
@@ -201,10 +202,13 @@ impl LongValuesSource for SumTotalTermFreqValuesSource {
     }
 
     /// `Objects.hash(field)`.
+    ///
+    /// Equivalent to `SumTotalTermFreqValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         objects_hash(&[java_string_hash_code(&self.field)])
     }
 
+    /// Equivalent to `SumTotalTermFreqValuesSource.toString()`.
     fn to_source_string(&self) -> String {
         format!("sumTotalTermFreq({})", self.field)
     }
@@ -271,6 +275,8 @@ impl LongValuesSource for NoCacheConstantLongValuesSource {
 
     /// `o instanceof NoCacheConstantLongValuesSource` with equal value and
     /// parent.
+    ///
+    /// Equivalent to `NoCacheConstantLongValuesSource.equals(Object)`.
     fn source_eq(&self, other: &dyn LongValuesSource) -> bool {
         same_object(self, other)
             || other
@@ -282,10 +288,13 @@ impl LongValuesSource for NoCacheConstantLongValuesSource {
     }
 
     /// `Objects.hash(value, parent)`.
+    ///
+    /// Equivalent to `NoCacheConstantLongValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         objects_hash(&[java_long_hash_code(self.value), self.parent.source_hash()])
     }
 
+    /// Equivalent to `NoCacheConstantLongValuesSource.toString()`.
     fn to_source_string(&self) -> String {
         self.parent.to_source_string()
     }
@@ -368,6 +377,8 @@ impl DoubleValuesSource for TermFreqDoubleValuesSource {
     }
 
     /// `Objects.hash(term)`.
+    ///
+    /// Equivalent to `TermFreqDoubleValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         objects_hash(&[self.term.hash_code()])
     }
@@ -570,6 +581,8 @@ impl DoubleValuesSource for IndexReaderDoubleValuesSource {
     }
 
     /// `Objects.hash(description, func)`.
+    ///
+    /// Equivalent to `IndexReaderDoubleValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         objects_hash(&[
             java_string_hash_code(&self.description),
@@ -657,6 +670,8 @@ impl DoubleValuesSource for NoCacheConstantDoubleValuesSource {
     }
 
     /// `Objects.hash(value, parent)`.
+    ///
+    /// Equivalent to `NoCacheConstantDoubleValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         objects_hash(&[java_double_hash_code(self.value), self.parent.source_hash()])
     }

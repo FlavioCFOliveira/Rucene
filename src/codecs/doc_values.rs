@@ -876,6 +876,19 @@ struct SortedSetDocValuesSub {
     mapped_doc_id: i32,
 }
 
+impl std::fmt::Display for SortedSetDocValuesSub {
+    /// Equivalent to `SortedSetDocValuesSub.toString()`:
+    /// `"SortedSetDocValuesSub(mappedDocID=" + mappedDocID + " values=" + values + ")"`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SortedSetDocValuesSub(mappedDocID={} values={})",
+            self.mapped_doc_id,
+            self.values.java_to_string()
+        )
+    }
+}
+
 impl DocIDMergerSub for SortedSetDocValuesSub {
     fn next_doc(&mut self) -> Result<i32> {
         self.values.next_doc()
@@ -1710,6 +1723,18 @@ impl BitsFilteredTermsEnum {
     fn new(inner: Box<dyn TermsEnum>, live_terms: LongBitSet) -> Self {
         Self { inner, live_terms }
     }
+
+    /// Equivalent to `BitsFilteredTermsEnum.accept(BytesRef)`
+    /// (`DocValuesConsumer.java:1064-1071`): `YES` when the current ordinal
+    /// is live, `NO` otherwise. The term itself is not read, so it is not
+    /// passed.
+    fn accept(&self) -> Result<crate::index::terms::AcceptStatus> {
+        Ok(if self.live_terms.get(self.inner.ord()?) {
+            crate::index::terms::AcceptStatus::Yes
+        } else {
+            crate::index::terms::AcceptStatus::No
+        })
+    }
 }
 
 impl std::fmt::Display for BitsFilteredTermsEnum {
@@ -1780,7 +1805,7 @@ impl TermsEnum for BitsFilteredTermsEnum {
             if self.inner.next()?.is_none() {
                 return Ok(None);
             }
-            if self.live_terms.get(self.inner.ord()?) {
+            if self.accept()? == crate::index::terms::AcceptStatus::Yes {
                 return self.inner.term();
             }
         }

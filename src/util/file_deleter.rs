@@ -65,6 +65,14 @@ struct RefCount {
     count: i32,
 }
 
+/// `Thread.currentThread().getName()`, which the count assertions print first
+/// (`FileDeleter.java:267-282`): the Rust thread's name, and `main` for an
+/// unnamed thread, as [`crate::util::info_stream::PrintStreamInfoStream`]
+/// names it.
+fn current_thread_name() -> String {
+    std::thread::current().name().unwrap_or("main").to_string()
+}
+
 impl RefCount {
     fn new(file_name: &str) -> Self {
         Self {
@@ -81,7 +89,8 @@ impl RefCount {
         if self.init_done {
             debug_assert!(
                 self.count > 0,
-                "RefCount is 0 pre-increment for file \"{}\"",
+                "{}: RefCount is 0 pre-increment for file \"{}\"",
+                current_thread_name(),
                 self.file_name
             );
         } else {
@@ -103,11 +112,13 @@ impl RefCount {
     /// count is then left unchanged, as the failed `assert` throws before
     /// `--count`. It is an error rather than a panic because Java's caller,
     /// `decRef(Collection)`, catches it and goes on (`FileDeleter.java:98-106`).
-    /// Java prefixes the message with the thread's name; this port does not.
+    /// The message starts with the thread's name, as Java's
+    /// `Thread.currentThread().getName() + ": "` (`FileDeleter.java:278-282`).
     fn dec_ref(&mut self) -> Result<i32> {
         if cfg!(debug_assertions) && self.count <= 0 {
             return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
-                "RefCount is 0 pre-decrement for file \"{}\"",
+                "{}: RefCount is 0 pre-decrement for file \"{}\"",
+                current_thread_name(),
                 self.file_name
             ))));
         }
@@ -190,12 +201,13 @@ impl FileDeleter {
     ///
     /// Equivalent to `FileDeleter.incRef(String)`.
     pub fn inc_ref(&mut self, file_name: &str) {
-        let rc = Self::ref_count_internal(&mut self.ref_counts, file_name);
-        let pre = rc.count;
-        rc.inc_ref();
+        // `FileDeleter.java:83-89`: the message goes out before `rc.incRef()`,
+        // so a failed count assertion follows it.
+        let pre = Self::ref_count_internal(&mut self.ref_counts, file_name).count;
         self.message(MsgType::Ref, || {
             format!("IncRef \"{file_name}\": pre-incr count is {pre}")
         });
+        Self::ref_count_internal(&mut self.ref_counts, file_name).inc_ref();
     }
 
     /// Decrements the reference count of every file in `file_names`, deleting
@@ -392,7 +404,11 @@ impl FileDeleter {
     /// each pass walks `to_delete` in its iteration order.
     fn delete_all(&mut self, to_delete: &JavaHashSet) -> Result<()> {
         self.message(MsgType::File, || {
-            format!("now delete {} files: {to_delete:?}", to_delete.len())
+            // `"now delete " + toDelete.size() + " files: " + toDelete`
+            // (`FileDeleter.java:209`): the set as
+            // `AbstractCollection.toString()` prints it, `[a, b]`.
+            let names: Vec<&str> = to_delete.iter().map(String::as_str).collect();
+            format!("now delete {} files: [{}]", to_delete.len(), names.join(", "))
         });
 
         for file_name in to_delete.iter() {
@@ -583,7 +599,7 @@ mod tests {
         ) -> Result<Box<dyn crate::store::IndexOutput>> {
             self.inner.create_temp_output(prefix, suffix, context)
         }
-        fn sync(&self, names: &[String]) -> Result<()> {
+        fn sync(&self, names: &[&str]) -> Result<()> {
             self.inner.sync(names)
         }
         fn sync_metadata(&self) -> Result<()> {

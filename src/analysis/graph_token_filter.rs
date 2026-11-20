@@ -33,6 +33,14 @@ struct Token {
     next_token: Option<usize>,
 }
 
+impl Token {
+    /// Equivalent to `Token.posInc()`: the position increment the token's
+    /// attributes held when it was cached.
+    fn pos_inc(&self) -> i32 {
+        self.pos_inc
+    }
+}
+
 /// Walks the paths through a token graph.
 ///
 /// Equivalent to `org.apache.lucene.analysis.GraphTokenFilter`.
@@ -246,7 +254,7 @@ impl GraphTokenFilter {
             let Some(index) = current else {
                 return Ok(None);
             };
-            remaining -= self.tokens[index].pos_inc;
+            remaining -= self.tokens[index].pos_inc();
             if remaining <= 0 {
                 return Ok(Some(index));
             }
@@ -261,7 +269,7 @@ impl GraphTokenFilter {
         let next = self.next_token_in_stream(Some(token))?;
         Ok(match next {
             None => true,
-            Some(index) => self.tokens[index].pos_inc != 0,
+            Some(index) => self.tokens[index].pos_inc() != 0,
         })
     }
 

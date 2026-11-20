@@ -1597,7 +1597,7 @@ impl Directory for FileTrackingDirectoryWrapper {
         self.r#in.create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.r#in.sync(names)
     }
 
@@ -1862,7 +1862,7 @@ impl Directory for ReadBytesDirectoryWrapper {
         ))
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.r#in.sync(names)
     }
 

@@ -190,6 +190,7 @@ impl FunctionValues for ConstIntDocValues {
         Ok(Some(self.sval.clone()))
     }
 
+    /// Equivalent to `ConstIntDocValues.toString(int)`.
     fn to_doc_string(&mut self, _doc: i32) -> Result<String> {
         Ok(format!("{}={}", self.parent.description(), self.sval))
     }
@@ -257,6 +258,7 @@ impl FunctionValues for ConstDoubleDocValues {
         Ok(Some(self.sval.clone()))
     }
 
+    /// Equivalent to `ConstDoubleDocValues.toString(int)`.
     fn to_doc_string(&mut self, _doc: i32) -> Result<String> {
         Ok(format!("{}={}", self.parent.description(), self.sval))
     }

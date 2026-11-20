@@ -130,7 +130,7 @@ impl Directory for SleepingLockWrapper {
         self.inner.create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.inner.sync(names)
     }
 
