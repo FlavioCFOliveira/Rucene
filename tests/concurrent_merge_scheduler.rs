@@ -259,6 +259,10 @@ fn force_merge_without_waiting_returns_and_wait_for_merges_waits() {
         .recv_timeout(Duration::from_secs(60))
         .expect("waitForMerges finished once the merge could");
     waiter.join().unwrap().unwrap();
+    // `waitForMerges` returns once `mergeFinish` (inside `IndexWriter.merge`)
+    // has run, which is before the gated `doMerge` counts the merge as
+    // finished: join the merge thread before reading the count.
+    cms.sync();
     assert_eq!(finished.load(Ordering::SeqCst), 1);
     assert_eq!(writer.get_segment_count().unwrap(), 1);
     watchdog(60, move || writer.close()).unwrap();

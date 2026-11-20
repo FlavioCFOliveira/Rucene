@@ -1111,8 +1111,9 @@ const fn postings_oracle(
         extensions,
         codec,
         extra_jars: TEST_FRAMEWORK_RUNTIME_JARS,
-        // Every format keeps its postings in `Lucene104PostingsWriter`'s files.
-        live_impacts_differ: true,
+        // The `live` lines are compared too: the core's live impacts are
+        // fixed (rmp #584).
+        live_impacts_differ: false,
     }
 }
 

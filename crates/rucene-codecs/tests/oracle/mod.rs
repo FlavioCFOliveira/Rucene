@@ -1228,7 +1228,12 @@ pub fn dump_terms(
             // one, taken before the first `advance_shallow`, reports the state
             // each later one leaves. The port's view borrows the enum, so it
             // is taken again after each move: the same view of the same state.
+            // Java's call before the loop is still made, where Java makes it:
+            // it is the one an asserting enum rejects ("Cannot get impacts
+            // until the iterator is positioned ..."), and SimpleText's
+            // `getImpacts` runs `advanceShallow(docID)` there.
             let mut held = te.impacts(POSTINGS_ENUM_FREQS)?;
+            drop(held.get_impacts()?);
             let mut lv = "   live".to_string();
             for target in ADVANCE_TARGETS {
                 held.advance_shallow(target)?;
